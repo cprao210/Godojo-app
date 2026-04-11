@@ -9,11 +9,12 @@ import {
     AnswerLLM, AssistLLM, BrainstormLLM, ClarifyLLM, CodeHintLLM, FollowUpLLM, RecapLLM,
     FollowUpQuestionsLLM, WhatToAnswerLLM,
     prepareTranscriptForWhatToAnswer, buildTemporalContext,
-    AssistantResponse as LLMAssistantResponse, classifyIntent
+    AssistantResponse as LLMAssistantResponse, classifyIntent,
+    WhatAmIMissingLLM
 } from './llm';
 
 // Mode types
-export type IntelligenceMode = 'idle' | 'assist' | 'what_to_say' | 'follow_up' | 'recap' | 'clarify' | 'manual' | 'follow_up_questions' | 'code_hint' | 'brainstorm';
+export type IntelligenceMode = 'idle' | 'assist' | 'what_to_say' | 'what_am_i_missing' | 'follow_up' | 'recap' | 'clarify' | 'manual' | 'follow_up_questions' | 'code_hint' | 'brainstorm';
 
 // Refinement intent detection (refined to avoid false positives)
 function detectRefinementIntent(userText: string): { isRefinement: boolean; intent: string } {
@@ -68,6 +69,7 @@ export class IntelligenceEngine extends EventEmitter {
     private recapLLM: RecapLLM | null = null;
     private followUpQuestionsLLM: FollowUpQuestionsLLM | null = null;
     private whatToAnswerLLM: WhatToAnswerLLM | null = null;
+    private whatAmIMissingLLM: WhatAmIMissingLLM | null = null;
     private codeHintLLM: CodeHintLLM | null = null;
     private brainstormLLM: BrainstormLLM | null = null;
 
@@ -118,6 +120,7 @@ export class IntelligenceEngine extends EventEmitter {
         this.recapLLM = new RecapLLM(this.llmHelper);
         this.followUpQuestionsLLM = new FollowUpQuestionsLLM(this.llmHelper);
         this.whatToAnswerLLM = new WhatToAnswerLLM(this.llmHelper);
+        this.whatAmIMissingLLM = new WhatAmIMissingLLM(this.llmHelper);
         this.codeHintLLM = new CodeHintLLM(this.llmHelper);
         this.brainstormLLM = new BrainstormLLM(this.llmHelper);
 
@@ -275,7 +278,7 @@ export class IntelligenceEngine extends EventEmitter {
                 text: item.text,
                 timestamp: item.timestamp
             }));
-console.log(transcriptTurns,`[IntelligenceEngine] Preparing transcript with ${transcriptTurns.length} turns for WhatToAnswerLLM`);
+            console.log(transcriptTurns, `[IntelligenceEngine] Preparing transcript with ${transcriptTurns.length} turns for WhatToAnswerLLM`);
             const preparedTranscript = prepareTranscriptForWhatToAnswer(transcriptTurns, 12);
 
             const temporalContext = buildTemporalContext(
@@ -343,6 +346,107 @@ console.log(transcriptTurns,`[IntelligenceEngine] Preparing transcript with ${tr
             this.emit('error', error as Error, 'what_to_say');
             this.setMode('idle');
             return "Could you repeat that? I want to make sure I address your question properly.";
+        }
+    }
+
+    /**
+     * MODE: What Am I Missing (Sales Gap Finder)
+     * Manual trigger - analyzes conversation to find blind spots,
+     * missing stakeholders, uncovered topics before call ends.
+     */
+    async runWhatAmIMissing(): Promise<string | null> {
+        const now = Date.now();
+
+        if (now - this.lastTriggerTime < this.triggerCooldown) {
+            return null;
+        }
+
+        if (this.assistCancellationToken) {
+            this.assistCancellationToken.abort();
+            this.assistCancellationToken = null;
+        }
+
+        this.setMode('what_am_i_missing');
+        this.lastTriggerTime = now;
+
+        try {
+            // No LLM configured fallback
+            if (!this.whatAmIMissingLLM) {
+                this.setMode('idle');
+                return "Please configure your API Keys in Settings to use this feature.";
+            }
+
+            // Get last 3 mins of conversation
+            const contextItems = this.session.getContext(180);
+
+            // Inject latest interim transcript if available
+            const lastInterim = this.session.getLastInterimInterviewer();
+            if (lastInterim && lastInterim.text.trim().length > 0) {
+                const lastItem = contextItems[contextItems.length - 1];
+                const isDuplicate = lastItem &&
+                    lastItem.role === 'interviewer' &&
+                    (lastItem.text === lastInterim.text ||
+                        Math.abs(lastItem.timestamp - lastInterim.timestamp) < 1000);
+
+                if (!isDuplicate) {
+                    contextItems.push({
+                        role: 'interviewer',
+                        text: lastInterim.text,
+                        timestamp: lastInterim.timestamp
+                    });
+                }
+            }
+
+            // Format transcript — same pattern as WhatToAnswerLLM
+            const transcript = contextItems
+                .map(item => `${item.role === 'interviewer' ? 'Customer' : 'Sales Rep'}: ${item.text}`)
+                .join('\n');
+
+            console.log(`[IntelligenceEngine] runWhatAmIMissing: ${contextItems.length} turns`);
+
+            const generationId = ++this.currentGenerationId;
+            let fullAnswer = '';
+            let streamAborted = false;
+
+            // Use the dedicated LLM class
+            const stream = this.whatAmIMissingLLM.generateStream(transcript);
+
+            for await (const token of stream) {
+                if (this.currentGenerationId !== generationId) {
+                    console.log('[IntelligenceEngine] what_am_i_missing stream aborted');
+                    await stream.return(undefined);
+                    streamAborted = true;
+                    break;
+                }
+                this.emit('what_am_i_missing_token', token);
+                fullAnswer += token;
+            }
+
+            if (streamAborted) {
+                this.setMode('idle');
+                return null;
+            }
+
+            if (!fullAnswer || fullAnswer.trim().length < 5) {
+                fullAnswer = "Not enough conversation yet. Keep talking and try again.";
+            }
+
+            this.session.addAssistantMessage(fullAnswer);
+            this.session.pushUsage({
+                type: 'what_am_i_missing',
+                timestamp: Date.now(),
+                question: 'What Am I Missing',
+                answer: fullAnswer
+            });
+
+            this.emit('what_am_i_missing', fullAnswer);
+            this.setMode('idle');
+            return fullAnswer;
+
+        } catch (error) {
+            this.emit('error', error as Error, 'what_am_i_missing');
+            this.setMode('idle');
+            return "Could not analyze gaps right now. Please try again.";
         }
     }
 

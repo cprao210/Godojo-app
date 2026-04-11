@@ -641,10 +641,10 @@ export function initializeIpcHandlers(appState: AppState): void {
     try {
       // First try to kill it if it's running
       await appState.processingHelper.getLLMHelper().forceRestartOllama();
-      
+
       // The forceRestartOllama now calls OllamaManager.getInstance().init() internally
       // so we don't need to do it again here.
-      
+
       return true;
     } catch (error: any) {
       console.error("[IPC restart-ollama] Failed to restart:", error);
@@ -1621,6 +1621,17 @@ export function initializeIpcHandlers(appState: AppState): void {
       };
     }
   });
+
+  safeHandle("generate-what-am-i-missing", async () => {
+    try {
+      const intelligenceManager = appState.getIntelligenceManager();
+      const missingInfo = await intelligenceManager.runWhatAmIMissing();
+      return { missingInfo };
+    } catch (error: any) {
+      throw error;
+    }
+  });
+
 
   safeHandle("generate-clarify", async () => {
     try {

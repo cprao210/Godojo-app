@@ -101,6 +101,11 @@ interface ElectronAPI {
   getIntelligenceContext: () => Promise<{ context: string; lastAssistantMessage: string | null; activeMode: string }>
   resetIntelligence: () => Promise<{ success: boolean; error?: string }>
 
+  // WHAT AM I MISSING
+  generateWhatAmIMissing: () => Promise<string | null>;
+  onWhatAmIMissingToken: (callback: (data: { token: string }) => void) => () => void;
+  onWhatAmIMissing: (callback: (data: { answer: string }) => void) => () => void;
+
   // Meeting Lifecycle
   startMeeting: (metadata?: any) => Promise<{ success: boolean; error?: string }>
   endMeeting: () => Promise<{ success: boolean; error?: string }>
@@ -264,7 +269,7 @@ interface ElectronAPI {
   // Verbose / Debug Logging
   getVerboseLogging: () => Promise<boolean>;
   setVerboseLogging: (enabled: boolean) => Promise<{ success: boolean }>;
-  
+
   // Arch
   getArch: () => Promise<string>;
 
@@ -585,6 +590,7 @@ contextBridge.exposeInMainWorld("electronAPI", {
   // Intelligence Mode IPC
   generateAssist: () => ipcRenderer.invoke("generate-assist"),
   generateWhatToSay: (question?: string, imagePaths?: string[]) => ipcRenderer.invoke("generate-what-to-say", question, imagePaths),
+  generateWhatAmIMissing: () => ipcRenderer.invoke("generate-what-am-i-missing"), // WHAT AM I MISSING
   generateClarify: () => ipcRenderer.invoke("generate-clarify"),
   generateCodeHint: (imagePaths?: string[], problemStatement?: string) => ipcRenderer.invoke("generate-code-hint", imagePaths, problemStatement),
   generateBrainstorm: (imagePaths?: string[], problemStatement?: string) => ipcRenderer.invoke("generate-brainstorm", imagePaths, problemStatement),
@@ -925,6 +931,19 @@ contextBridge.exposeInMainWorld("electronAPI", {
   downloadUpdate: () => ipcRenderer.invoke("download-update"),
   testReleaseFetch: () => ipcRenderer.invoke("test-release-fetch"),
 
+  // Intelligence Mode - WHAT AM I MISSING
+  onWhatAmIMissingToken: (callback: (data: { token: string }) => void) => {
+    const subscription = (_: any, data: any) => callback(data)
+    ipcRenderer.on("intelligence-what-am-i-missing-token", subscription)
+    return () => ipcRenderer.removeListener("intelligence-what-am-i-missing-token", subscription)
+  },
+
+  onWhatAmIMissing: (callback: (data: { answer: string }) => void) => {
+    const subscription = (_: any, data: any) => callback(data)
+    ipcRenderer.on("intelligence-what-am-i-missing", subscription)
+    return () => ipcRenderer.removeListener("intelligence-what-am-i-missing", subscription)
+  },
+
   // RAG API
   ragQueryMeeting: (meetingId: string, query: string) => ipcRenderer.invoke('rag:query-meeting', { meetingId, query }),
   ragQueryLive: (query: string) => ipcRenderer.invoke('rag:query-live', { query }),
@@ -933,7 +952,7 @@ contextBridge.exposeInMainWorld("electronAPI", {
   ragIsMeetingProcessed: (meetingId: string) => ipcRenderer.invoke('rag:is-meeting-processed', meetingId),
   ragGetQueueStatus: () => ipcRenderer.invoke('rag:get-queue-status'),
   ragRetryEmbeddings: () => ipcRenderer.invoke('rag:retry-embeddings'),
-  
+
   onIncompatibleProviderWarning: (callback: (data: { count: number, oldProvider: string, newProvider: string }) => void) => {
     const subscription = (_: any, data: any) => callback(data)
     ipcRenderer.on('embedding:incompatible-provider-warning', subscription)
@@ -1033,7 +1052,7 @@ contextBridge.exposeInMainWorld("electronAPI", {
   // Verbose / Debug Logging
   getVerboseLogging: () => ipcRenderer.invoke('get-verbose-logging'),
   setVerboseLogging: (enabled: boolean) => ipcRenderer.invoke('set-verbose-logging', enabled),
-  
+
   // Arch
   getArch: () => ipcRenderer.invoke('get-arch'),
 

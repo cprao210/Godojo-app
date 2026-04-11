@@ -10,6 +10,7 @@ export { FollowUpLLM } from "./FollowUpLLM";
 export { FollowUpQuestionsLLM } from "./FollowUpQuestionsLLM";
 export { RecapLLM } from "./RecapLLM";
 export { WhatToAnswerLLM } from "./WhatToAnswerLLM";
+export { WhatAmIMissingLLM } from "./WhatAmIMissing"; // WHAT AM I MISSING
 export { clampResponse, validateResponse } from "./postProcessor";
 export {
     cleanTranscript,
@@ -38,6 +39,7 @@ export {
     FOLLOWUP_MODE_PROMPT,
     RECAP_MODE_PROMPT,
     WHAT_TO_ANSWER_PROMPT,
+    WHAT_AM_I_MISSING_PROMPT, // WHAT AM I MISSING
     TEMPORAL_CONTEXT_TEMPLATE,
     GROQ_TITLE_PROMPT,
     GROQ_SUMMARY_JSON_PROMPT,
