@@ -53,7 +53,9 @@ export class IntelligenceManager extends EventEmitter {
             'recap', 'recap_token', 'clarify', 'clarify_token',
             'follow_up_questions_update', 'follow_up_questions_token',
             'manual_answer_started', 'manual_answer_result',
-            'mode_changed', 'error'
+            'mode_changed', 'error',
+            'what_am_i_missing',
+            'what_am_i_missing_token'
         ];
 
         for (const event of events) {
@@ -142,6 +144,10 @@ export class IntelligenceManager extends EventEmitter {
 
     async runWhatShouldISay(question?: string, confidence?: number, imagePaths?: string[]): Promise<string | null> {
         return this.engine.runWhatShouldISay(question, confidence, imagePaths);
+    }
+
+    async runWhatAmIMissing(): Promise<string | null> {
+        return this.engine.runWhatAmIMissing();
     }
 
     async runFollowUp(intent: string, userRequest?: string): Promise<string | null> {

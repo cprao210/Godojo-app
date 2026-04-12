@@ -130,6 +130,12 @@ export interface ElectronAPI {
   getIntelligenceContext: () => Promise<{ context: string; lastAssistantMessage: string | null; activeMode: string }>
   resetIntelligence: () => Promise<{ success: boolean; error?: string }>
 
+  // WHAT AM I MISSING
+  generateWhatAmIMissing: () => Promise<string | null>;
+  onWhatAmIMissingToken: (callback: (data: { token: string }) => void) => () => void;
+  onWhatAmIMissing: (callback: (data: { answer: string }) => void) => () => void;
+
+
   // Dynamic Action Button Mode
   getActionButtonMode: () => Promise<'recap' | 'brainstorm'>
   setActionButtonMode: (mode: 'recap' | 'brainstorm') => Promise<{ success: boolean }>
@@ -288,7 +294,7 @@ export interface ElectronAPI {
   setTavilyApiKey: (apiKey: string) => Promise<{ success: boolean; error?: string }>
 
   // Dynamic Model Discovery
-  fetchProviderModels: (provider: 'gemini' | 'groq' | 'openai' | 'claude', apiKey: string) => Promise<{ success: boolean; models?: {id: string, label: string}[]; error?: string }>
+  fetchProviderModels: (provider: 'gemini' | 'groq' | 'openai' | 'claude', apiKey: string) => Promise<{ success: boolean; models?: { id: string, label: string }[]; error?: string }>
   setProviderPreferredModel: (provider: 'gemini' | 'groq' | 'openai' | 'claude', modelId: string) => Promise<void>
 
   // License Management

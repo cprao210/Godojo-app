@@ -26,7 +26,8 @@ import {
     Code,
     Copy,
     Check,
-    PointerOff
+    PointerOff,
+    AlertCircle
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'framer-motion';
 import { Prism as SyntaxHighlighter } from 'react-syntax-highlighter';
@@ -135,7 +136,7 @@ const NativelyInterface: React.FC<NativelyInterfaceProps> = ({ onEndMeeting, ove
         // Load persisted mode
         window.electronAPI?.getActionButtonMode?.()?.then((mode: 'recap' | 'brainstorm') => {
             if (mode) setActionButtonMode(mode);
-        }).catch(() => {});
+        }).catch(() => { });
 
         // Listen for live changes from SettingsPopup / IPC
         const unsubscribe = window.electronAPI?.onActionButtonModeChanged?.((mode: 'recap' | 'brainstorm') => {
@@ -215,7 +216,7 @@ const NativelyInterface: React.FC<NativelyInterfaceProps> = ({ onEndMeeting, ove
     // Mouse Passthrough State
     const [isMousePassthrough, setIsMousePassthrough] = useState(false);
     useEffect(() => {
-        window.electronAPI?.getOverlayMousePassthrough?.().then(setIsMousePassthrough).catch(() => {});
+        window.electronAPI?.getOverlayMousePassthrough?.().then(setIsMousePassthrough).catch(() => { });
         const unsub = window.electronAPI?.onOverlayMousePassthroughChanged?.((v) => setIsMousePassthrough(v));
         return () => unsub?.();
     }, []);
@@ -384,8 +385,8 @@ const NativelyInterface: React.FC<NativelyInterfaceProps> = ({ onEndMeeting, ove
         cleanups.push(window.electronAPI.onNativeAudioTranscript((transcript) => {
             // When Answer button is active, capture USER transcripts for voice input
             // Use ref to avoid stale closure issue
-            console.log(transcript,'[Transcript Event]');
-            
+            console.log(transcript, '[Transcript Event]');
+
             if (isRecordingRef.current && transcript.speaker === 'user') {
                 if (transcript.final) {
                     // Accumulate final transcripts
@@ -739,7 +740,7 @@ const NativelyInterface: React.FC<NativelyInterfaceProps> = ({ onEndMeeting, ove
             cleanupToken();
             cleanupFinal();
         };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
+        // eslint-disable-next-line react-hooks/exhaustive-deps
     }, []); // intentionally empty — these listeners must survive isExpanded changes
 
     // Quick Actions - Updated to use new Intelligence APIs
@@ -772,6 +773,24 @@ const NativelyInterface: React.FC<NativelyInterfaceProps> = ({ onEndMeeting, ove
         try {
             // Pass imagePath if attached
             await window.electronAPI.generateWhatToSay(undefined, currentAttachments.length > 0 ? currentAttachments.map(s => s.path) : undefined);
+        } catch (err) {
+            setMessages(prev => [...prev, {
+                id: Date.now().toString(),
+                role: 'system',
+                text: `Error: ${err}`
+            }]);
+        } finally {
+            setIsProcessing(false);
+        }
+    };
+
+    const handleWhatAmIMissing = async () => {
+        setIsExpanded(true);
+        setIsProcessing(true);
+        analytics.trackCommandExecuted('what_am_i_missing');
+
+        try {
+            await window.electronAPI.generateWhatAmIMissing();
         } catch (err) {
             setMessages(prev => [...prev, {
                 id: Date.now().toString(),
@@ -998,11 +1017,56 @@ const NativelyInterface: React.FC<NativelyInterfaceProps> = ({ onEndMeeting, ove
                                 text: '',
                             }];
                         }
-                    } catch {}
+                    } catch { }
                     // Normal completion
                     return [...prev.slice(0, -1), { ...lastMsg, isStreaming: false }];
                 }
                 return prev;
+            });
+        }));
+
+        // Token stream
+        cleanups.push(window.electronAPI.onWhatAmIMissingToken((data) => {
+            setMessages(prev => {
+                const lastMsg = prev[prev.length - 1];
+                if (lastMsg && lastMsg.isStreaming && lastMsg.intent === 'what_am_i_missing') {
+                    const updated = [...prev];
+                    updated[prev.length - 1] = {
+                        ...lastMsg,
+                        text: lastMsg.text + data.token
+                    };
+                    return updated;
+                }
+                return [...prev, {
+                    id: Date.now().toString(),
+                    role: 'system',
+                    text: data.token,
+                    intent: 'what_am_i_missing',
+                    isStreaming: true
+                }];
+            });
+        }));
+
+        // Final event
+        cleanups.push(window.electronAPI.onWhatAmIMissing((data) => {
+            setIsProcessing(false);
+            setMessages(prev => {
+                const lastMsg = prev[prev.length - 1];
+                if (lastMsg && lastMsg.isStreaming && lastMsg.intent === 'what_am_i_missing') {
+                    const updated = [...prev];
+                    updated[prev.length - 1] = {
+                        ...lastMsg,
+                        text: data.answer,
+                        isStreaming: false
+                    };
+                    return updated;
+                }
+                return [...prev, {
+                    id: Date.now().toString(),
+                    role: 'system',
+                    text: data.answer,
+                    intent: 'what_am_i_missing'
+                }];
             });
         }));
 
@@ -1093,7 +1157,7 @@ const NativelyInterface: React.FC<NativelyInterfaceProps> = ({ onEndMeeting, ove
                                     text: '',
                                 }];
                             }
-                        } catch {}
+                        } catch { }
                         // Normal completion
                         return [...prev.slice(0, -1), { ...lastMsg, isStreaming: false }];
                     }
@@ -1343,6 +1407,22 @@ Provide only the answer, nothing else.`;
                         ));
                     }}
                 />
+            );
+        }
+
+        if (msg.intent === 'what_am_i_missing') {
+            return (
+                <div className={`rounded-lg p-3 my-1 border ${subtleSurfaceClass}`} style={appearance.subtleStyle}>
+                    <div className={`flex items-center gap-2 mb-2 font-semibold text-xs uppercase tracking-wide ${isLightTheme ? 'text-orange-700' : 'text-orange-400'}`}>
+                        <AlertCircle className="w-3.5 h-3.5" />
+                        <span>What You're Missing</span>
+                    </div>
+                    <div className={`text-[13px] leading-relaxed markdown-content ${isLightTheme ? 'text-slate-800' : 'text-slate-200'}`}>
+                        <ReactMarkdown remarkPlugins={[remarkGfm]}>
+                            {msg.text}
+                        </ReactMarkdown>
+                    </div>
+                </div>
             );
         }
 
@@ -1846,7 +1926,7 @@ Provide only the answer, nothing else.`;
             else if (action === 'scrollDown') scrollContainerRef.current?.scrollBy({ top: 100, behavior: 'smooth' });
             else if (action === 'processScreenshots') generalHandlers.processScreenshots();
             else if (action === 'resetCancel') generalHandlers.resetCancel();
-            
+
             // Safety reset if it didn't trigger an expansion
             setTimeout(() => { isStealthRef.current = false; }, 500);
         });
@@ -1855,7 +1935,7 @@ Provide only the answer, nothing else.`;
 
     return (
         <div ref={contentRef} className="flex flex-col items-center w-fit mx-auto h-fit min-h-0 bg-transparent p-0 rounded-[24px] font-sans gap-2 overlay-text-primary">
-xcxc
+            AI Sales Coach
             <AnimatePresence>
                 {isExpanded && (
                     <motion.div
@@ -1973,8 +2053,15 @@ xcxc
 
                             {/* Quick Actions - Minimal & Clean */}
                             <div className={`flex flex-nowrap justify-center items-center gap-1.5 px-4 pb-3 overflow-x-hidden ${rollingTranscript && showTranscript ? 'pt-1' : 'pt-3'}`}>
-                                <button onClick={handleWhatToSay} className={`flex items-center gap-1.5 px-3 py-1.5 rounded-full text-[11px] font-medium border transition-all active:scale-95 duration-200 interaction-base interaction-press whitespace-nowrap shrink-0 ${quickActionClass}`} style={appearance.chipStyle}>
-                                    <Pencil className="w-3 h-3 opacity-70" /> What to answer as a sales?
+                                {/* <button onClick={handleWhatToSay} className={`flex items-center gap-1.5 px-3 py-1.5 rounded-full text-[11px] font-medium border transition-all active:scale-95 duration-200 interaction-base interaction-press whitespace-nowrap shrink-0 ${quickActionClass}`} style={appearance.chipStyle}>
+                                    <Pencil className="w-3 h-3 opacity-70" /> What am I missing?
+                                </button> */}
+                                <button
+                                    onClick={handleWhatAmIMissing}
+                                    className={`flex items-center gap-1.5 px-3 py-1.5 rounded-full text-[11px] font-medium border transition-all active:scale-95 duration-200 whitespace-nowrap shrink-0 ${quickActionClass}`}
+                                    style={appearance.chipStyle}
+                                >
+                                    <AlertCircle className="w-3 h-3 opacity-70" /> What am I missing?
                                 </button>
                                 <button onClick={handleClarify} className={`flex items-center gap-1.5 px-3 py-1.5 rounded-full text-[11px] font-medium border transition-all active:scale-95 duration-200 interaction-base interaction-press whitespace-nowrap shrink-0 ${quickActionClass}`} style={appearance.chipStyle}>
                                     <MessageSquare className="w-3 h-3 opacity-70" /> Clarify
@@ -2153,8 +2240,8 @@ xcxc
                                             w-7 h-7 flex items-center justify-center rounded-lg
                                             interaction-base interaction-press
                                             ${isSettingsOpen
-                                                    ? 'overlay-icon-surface overlay-icon-surface-hover overlay-text-primary'
-                                                    : 'overlay-icon-surface overlay-icon-surface-hover overlay-text-interactive'}
+                                                        ? 'overlay-icon-surface overlay-icon-surface-hover overlay-text-primary'
+                                                        : 'overlay-icon-surface overlay-icon-surface-hover overlay-text-interactive'}
                                         `}
 
                                                 style={appearance.iconStyle}
@@ -2192,7 +2279,7 @@ xcxc
                                     <button
                                         onClick={handleManualSubmit}
                                         disabled={!inputValue.trim()}
-                                    className={`
+                                        className={`
                                     w-7 h-7 rounded-full flex items-center justify-center
                                     interaction-base interaction-press
                                     ${inputValue.trim()
@@ -2200,7 +2287,7 @@ xcxc
                                                 : 'overlay-icon-surface overlay-text-muted cursor-not-allowed'
                                             }
                                 `}
-                                    style={inputValue.trim() ? undefined : appearance.iconStyle}
+                                        style={inputValue.trim() ? undefined : appearance.iconStyle}
                                     >
                                         <ArrowRight className="w-3.5 h-3.5" />
                                     </button>

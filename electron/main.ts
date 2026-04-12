@@ -160,10 +160,10 @@ interface ScreenshotCaptureSession {
 let KnowledgeOrchestratorClass: any = null;
 let KnowledgeDatabaseManagerClass: any = null;
 try {
-    KnowledgeOrchestratorClass = require('../premium/electron/knowledge/KnowledgeOrchestrator').KnowledgeOrchestrator;
-    KnowledgeDatabaseManagerClass = require('../premium/electron/knowledge/KnowledgeDatabaseManager').KnowledgeDatabaseManager;
+  KnowledgeOrchestratorClass = require('../premium/electron/knowledge/KnowledgeOrchestrator').KnowledgeOrchestrator;
+  KnowledgeDatabaseManagerClass = require('../premium/electron/knowledge/KnowledgeDatabaseManager').KnowledgeDatabaseManager;
 } catch {
-    console.log('[Main] Knowledge modules not available — profile intelligence disabled.');
+  console.log('[Main] Knowledge modules not available — profile intelligence disabled.');
 }
 
 import { CredentialsManager } from "./services/CredentialsManager"
@@ -315,9 +315,9 @@ export class AppState {
             });
           }
 
-        // --- STEALTH SHORTCUTS: no focus, no show, pure IPC dispatch ---
+          // --- STEALTH SHORTCUTS: no focus, no show, pure IPC dispatch ---
 
-        // Chat actions — fire into the renderer without focusing the window
+          // Chat actions — fire into the renderer without focusing the window
         } else if (
           actionId === 'chat:whatToAnswer' ||
           actionId === 'chat:clarify' ||
@@ -349,7 +349,7 @@ export class AppState {
             }
           });
 
-        // Window movement — move window position without focus change
+          // Window movement — move window position without focus change
         } else if (actionId === 'window:move-up') {
           this.windowHelper.moveWindowUp();
         } else if (actionId === 'window:move-down') {
@@ -359,7 +359,7 @@ export class AppState {
         } else if (actionId === 'window:move-right') {
           this.windowHelper.moveWindowRight();
 
-        // General actions that are now global (stealth)
+          // General actions that are now global (stealth)
         } else if (actionId === 'general:process-screenshots') {
           const allWindows = BrowserWindow.getAllWindows();
           allWindows.forEach(win => {
@@ -398,7 +398,7 @@ export class AppState {
 
     // Initialize RAGManager (requires database to be ready)
     this.initializeRAGManager()
-    
+
     // Check and prep Ollama embedding model
     this.bootstrapOllamaEmbeddings()
 
@@ -459,18 +459,18 @@ export class AppState {
           this.broadcast('ollama:pull-complete');
           // Re-resolve the embedding provider given that Ollama might now be available
           if (this.ragManager) {
-             console.log('[AppState] Ollama model ready, re-evaluating RAG pipeline provider');
-             const { CredentialsManager } = require('./services/CredentialsManager');
-             const cm = CredentialsManager.getInstance();
-             this.ragManager.initializeEmbeddings({
-                openaiKey: cm.getOpenaiApiKey() || process.env.OPENAI_API_KEY || undefined,
-                geminiKey: cm.getGeminiApiKey() || process.env.GOOGLE_API_KEY || process.env.GEMINI_API_KEY || undefined,
-                ollamaUrl: process.env.OLLAMA_URL || "http://localhost:11434"
-             });
+            console.log('[AppState] Ollama model ready, re-evaluating RAG pipeline provider');
+            const { CredentialsManager } = require('./services/CredentialsManager');
+            const cm = CredentialsManager.getInstance();
+            this.ragManager.initializeEmbeddings({
+              openaiKey: cm.getOpenaiApiKey() || process.env.OPENAI_API_KEY || undefined,
+              geminiKey: cm.getGeminiApiKey() || process.env.GOOGLE_API_KEY || process.env.GEMINI_API_KEY || undefined,
+              ollamaUrl: process.env.OLLAMA_URL || "http://localhost:11434"
+            });
           }
         }
       } catch (err) {
-         console.error('[AppState] Failed to bootstrap Ollama:', err);
+        console.error('[AppState] Failed to bootstrap Ollama:', err);
       }
     })();
   }
@@ -485,14 +485,14 @@ export class AppState {
         const cm = CredentialsManager.getInstance();
         const openaiKey = cm.getOpenaiApiKey() || process.env.OPENAI_API_KEY;
         const geminiKey = cm.getGeminiApiKey() || process.env.GOOGLE_API_KEY || process.env.GEMINI_API_KEY;
-        
-        this.ragManager = new RAGManager({ 
-            db: sqliteDb, 
-            dbPath: db.getDbPath(),
-            extPath: db.getExtPath(),
-            openaiKey,
-            geminiKey,
-            ollamaUrl: process.env.OLLAMA_URL || 'http://localhost:11434'
+
+        this.ragManager = new RAGManager({
+          db: sqliteDb,
+          dbPath: db.getDbPath(),
+          extPath: db.getExtPath(),
+          openaiKey,
+          geminiKey,
+          ollamaUrl: process.env.OLLAMA_URL || 'http://localhost:11434'
         });
         this.ragManager.setLLMHelper(this.processingHelper.getLLMHelper());
         console.log('[AppState] RAGManager initialized');
@@ -1304,7 +1304,7 @@ export class AppState {
     } else {
       // Meeting was too short — still flush the live indexer and clean up
       if (ragManager) {
-        ragManager.stopLiveIndexing().catch(() => {});
+        ragManager.stopLiveIndexing().catch(() => { });
         if (!this.isMeetingActive) ragManager.deleteMeetingData('live-meeting-current');
       }
     }
@@ -1354,6 +1354,16 @@ export class AppState {
       helper.getLauncherWindow()?.webContents.send('intelligence-assist-update', { insight });
       helper.getOverlayWindow()?.webContents.send('intelligence-assist-update', { insight });
     })
+
+    this.intelligenceManager.on('what_am_i_missing_token', (token: string) => {
+      const win = mainWindow();
+      if (win) win.webContents.send('intelligence-what-am-i-missing-token', { token });
+    });
+
+    this.intelligenceManager.on('what_am_i_missing', (answer: string) => {
+      const win = mainWindow();
+      if (win) win.webContents.send('intelligence-what-am-i-missing', { answer });
+    });
 
     this.intelligenceManager.on('suggested_answer', (answer: string, question: string, confidence: number) => {
       const win = mainWindow()
@@ -1596,9 +1606,9 @@ export class AppState {
       "Extra screenshots: ",
       this.screenshotHelper.getExtraScreenshotQueue().length
     )
-    
+
     const mode = this.windowHelper.getCurrentWindowMode();
-    
+
     if (mode === 'launcher') {
       // In launcher mode, just physically hide/show the window
       this.windowHelper.toggleMainWindow();
@@ -2374,7 +2384,7 @@ async function initializeApp() {
         app.dock.show();
       }
     }
-    
+
     // If no window exists, create it
     if (appState.getMainWindow() === null) {
       appState.createWindow()
