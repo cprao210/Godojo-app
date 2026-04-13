@@ -10,11 +10,11 @@ import {
     FollowUpQuestionsLLM, WhatToAnswerLLM,
     prepareTranscriptForWhatToAnswer, buildTemporalContext,
     AssistantResponse as LLMAssistantResponse, classifyIntent,
-    WhatAmIMissingLLM, DiscoveryLLM
+    WhatAmIMissingLLM, DiscoveryLLM, ObjectionHandlerLLM
 } from './llm';
 
 // Mode types
-export type IntelligenceMode = 'idle' | 'assist' | 'what_to_say' | 'what_am_i_missing' | 'discovery' | 'follow_up' | 'recap' | 'clarify' | 'manual' | 'follow_up_questions' | 'code_hint' | 'brainstorm';
+export type IntelligenceMode = 'idle' | 'assist' | 'what_to_say' | 'what_am_i_missing' | 'discovery' | 'objection_handler' | 'follow_up' | 'recap' | 'clarify' | 'manual' | 'follow_up_questions' | 'code_hint' | 'brainstorm';
 
 // Refinement intent detection (refined to avoid false positives)
 function detectRefinementIntent(userText: string): { isRefinement: boolean; intent: string } {
@@ -71,6 +71,7 @@ export class IntelligenceEngine extends EventEmitter {
     private whatToAnswerLLM: WhatToAnswerLLM | null = null;
     private whatAmIMissingLLM: WhatAmIMissingLLM | null = null;
     private discoveryLLM: DiscoveryLLM | null = null;
+    private objectionHandlerLLM: ObjectionHandlerLLM | null = null;
     private codeHintLLM: CodeHintLLM | null = null;
     private brainstormLLM: BrainstormLLM | null = null;
 
@@ -123,6 +124,7 @@ export class IntelligenceEngine extends EventEmitter {
         this.whatToAnswerLLM = new WhatToAnswerLLM(this.llmHelper);
         this.whatAmIMissingLLM = new WhatAmIMissingLLM(this.llmHelper);
         this.discoveryLLM = new DiscoveryLLM(this.llmHelper);
+        this.objectionHandlerLLM = new ObjectionHandlerLLM(this.llmHelper);
         this.codeHintLLM = new CodeHintLLM(this.llmHelper);
         this.brainstormLLM = new BrainstormLLM(this.llmHelper);
 
@@ -453,10 +455,10 @@ export class IntelligenceEngine extends EventEmitter {
     }
 
     /**
- * MODE: Discovery Coach
- * Surfaces pain points and buying signals,
- * guides sales rep with probing questions in real time.
- */
+     * MODE: Discovery Coach
+     * Surfaces pain points and buying signals,
+     * guides sales rep with probing questions in real time.
+     */
     async runDiscovery(): Promise<string | null> {
         const now = Date.now();
 
@@ -549,6 +551,106 @@ export class IntelligenceEngine extends EventEmitter {
             this.emit('error', error as Error, 'discovery');
             this.setMode('idle');
             return "Could not run discovery analysis. Please try again.";
+        }
+    }
+
+    /**
+     * MODE: Objection Handler
+     * Detects prospect pushback from live transcript and suggests
+     * counter-arguments and reframes the sales rep can use immediately.
+     */
+    async runObjectionHandler(): Promise<string | null> {
+        const now = Date.now();
+
+        if (now - this.lastTriggerTime < this.triggerCooldown) {
+            return null;
+        }
+
+        if (this.assistCancellationToken) {
+            this.assistCancellationToken.abort();
+            this.assistCancellationToken = null;
+        }
+
+        this.setMode('objection_handler');
+        this.lastTriggerTime = now;
+
+        try {
+            if (!this.objectionHandlerLLM) {
+                this.setMode('idle');
+                return "Please configure your API Keys in Settings to use this feature.";
+            }
+
+            // Get last 3 mins of conversation
+            const contextItems = this.session.getContext(180);
+
+            // Inject latest interim transcript if available
+            const lastInterim = this.session.getLastInterimInterviewer();
+            if (lastInterim && lastInterim.text.trim().length > 0) {
+                const lastItem = contextItems[contextItems.length - 1];
+                const isDuplicate = lastItem &&
+                    lastItem.role === 'interviewer' &&
+                    (lastItem.text === lastInterim.text ||
+                        Math.abs(lastItem.timestamp - lastInterim.timestamp) < 1000);
+
+                if (!isDuplicate) {
+                    console.log(`[IntelligenceEngine] Injecting interim for ObjectionHandler: "${lastInterim.text.substring(0, 50)}..."`);
+                    contextItems.push({
+                        role: 'interviewer',
+                        text: lastInterim.text,
+                        timestamp: lastInterim.timestamp
+                    });
+                }
+            }
+
+            // Format transcript
+            const transcript = contextItems
+                .map(item => `${item.role === 'interviewer' ? 'Customer' : 'Sales Rep'}: ${item.text}`)
+                .join('\n');
+
+            console.log(`[IntelligenceEngine] runObjectionHandler: ${contextItems.length} turns analyzed`);
+
+            const generationId = ++this.currentGenerationId;
+            let fullAnswer = '';
+            let streamAborted = false;
+
+            const stream = this.objectionHandlerLLM.generateStream(transcript);
+
+            for await (const token of stream) {
+                if (this.currentGenerationId !== generationId) {
+                    console.log('[IntelligenceEngine] objection_handler stream aborted by new generation');
+                    await stream.return(undefined);
+                    streamAborted = true;
+                    break;
+                }
+                this.emit('objection_handler_token', token);
+                fullAnswer += token;
+            }
+
+            if (streamAborted) {
+                this.setMode('idle');
+                return null;
+            }
+
+            if (!fullAnswer || fullAnswer.trim().length < 5) {
+                fullAnswer = "No clear objection detected yet. Keep listening and try again.";
+            }
+
+            this.session.addAssistantMessage(fullAnswer);
+            this.session.pushUsage({
+                type: 'objection_handler',
+                timestamp: Date.now(),
+                question: 'Objection Handler',
+                answer: fullAnswer
+            });
+
+            this.emit('objection_handler', fullAnswer);
+            this.setMode('idle');
+            return fullAnswer;
+
+        } catch (error) {
+            this.emit('error', error as Error, 'objection_handler');
+            this.setMode('idle');
+            return "Could not analyze objection right now. Please try again.";
         }
     }
 

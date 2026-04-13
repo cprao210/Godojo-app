@@ -58,6 +58,8 @@ export class IntelligenceManager extends EventEmitter {
             'what_am_i_missing_token',
             'discovery',
             'discovery_token',
+            'objection_handler',
+            'objection_handler_token'
         ];
 
         for (const event of events) {
@@ -154,6 +156,10 @@ export class IntelligenceManager extends EventEmitter {
 
     async runDiscovery(): Promise<string | null> {
         return this.engine.runDiscovery();
+    }
+
+    async runObjectionHandler(): Promise<string | null> {
+        return this.engine.runObjectionHandler();
     }
 
     async runFollowUp(intent: string, userRequest?: string): Promise<string | null> {
