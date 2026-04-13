@@ -55,7 +55,9 @@ export class IntelligenceManager extends EventEmitter {
             'manual_answer_started', 'manual_answer_result',
             'mode_changed', 'error',
             'what_am_i_missing',
-            'what_am_i_missing_token'
+            'what_am_i_missing_token',
+            'discovery',
+            'discovery_token',
         ];
 
         for (const event of events) {
@@ -148,6 +150,10 @@ export class IntelligenceManager extends EventEmitter {
 
     async runWhatAmIMissing(): Promise<string | null> {
         return this.engine.runWhatAmIMissing();
+    }
+
+    async runDiscovery(): Promise<string | null> {
+        return this.engine.runDiscovery();
     }
 
     async runFollowUp(intent: string, userRequest?: string): Promise<string | null> {

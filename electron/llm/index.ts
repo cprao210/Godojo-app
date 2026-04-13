@@ -11,6 +11,7 @@ export { FollowUpQuestionsLLM } from "./FollowUpQuestionsLLM";
 export { RecapLLM } from "./RecapLLM";
 export { WhatToAnswerLLM } from "./WhatToAnswerLLM";
 export { WhatAmIMissingLLM } from "./WhatAmIMissing"; // WHAT AM I MISSING
+export { DiscoveryLLM } from "./DiscoveryLLM"; // DISCOVERY MODE
 export { clampResponse, validateResponse } from "./postProcessor";
 export {
     cleanTranscript,

@@ -10,11 +10,11 @@ import {
     FollowUpQuestionsLLM, WhatToAnswerLLM,
     prepareTranscriptForWhatToAnswer, buildTemporalContext,
     AssistantResponse as LLMAssistantResponse, classifyIntent,
-    WhatAmIMissingLLM
+    WhatAmIMissingLLM, DiscoveryLLM
 } from './llm';
 
 // Mode types
-export type IntelligenceMode = 'idle' | 'assist' | 'what_to_say' | 'what_am_i_missing' | 'follow_up' | 'recap' | 'clarify' | 'manual' | 'follow_up_questions' | 'code_hint' | 'brainstorm';
+export type IntelligenceMode = 'idle' | 'assist' | 'what_to_say' | 'what_am_i_missing' | 'discovery' | 'follow_up' | 'recap' | 'clarify' | 'manual' | 'follow_up_questions' | 'code_hint' | 'brainstorm';
 
 // Refinement intent detection (refined to avoid false positives)
 function detectRefinementIntent(userText: string): { isRefinement: boolean; intent: string } {
@@ -70,6 +70,7 @@ export class IntelligenceEngine extends EventEmitter {
     private followUpQuestionsLLM: FollowUpQuestionsLLM | null = null;
     private whatToAnswerLLM: WhatToAnswerLLM | null = null;
     private whatAmIMissingLLM: WhatAmIMissingLLM | null = null;
+    private discoveryLLM: DiscoveryLLM | null = null;
     private codeHintLLM: CodeHintLLM | null = null;
     private brainstormLLM: BrainstormLLM | null = null;
 
@@ -121,6 +122,7 @@ export class IntelligenceEngine extends EventEmitter {
         this.followUpQuestionsLLM = new FollowUpQuestionsLLM(this.llmHelper);
         this.whatToAnswerLLM = new WhatToAnswerLLM(this.llmHelper);
         this.whatAmIMissingLLM = new WhatAmIMissingLLM(this.llmHelper);
+        this.discoveryLLM = new DiscoveryLLM(this.llmHelper);
         this.codeHintLLM = new CodeHintLLM(this.llmHelper);
         this.brainstormLLM = new BrainstormLLM(this.llmHelper);
 
@@ -447,6 +449,106 @@ export class IntelligenceEngine extends EventEmitter {
             this.emit('error', error as Error, 'what_am_i_missing');
             this.setMode('idle');
             return "Could not analyze gaps right now. Please try again.";
+        }
+    }
+
+    /**
+ * MODE: Discovery Coach
+ * Surfaces pain points and buying signals,
+ * guides sales rep with probing questions in real time.
+ */
+    async runDiscovery(): Promise<string | null> {
+        const now = Date.now();
+
+        if (now - this.lastTriggerTime < this.triggerCooldown) {
+            return null;
+        }
+
+        if (this.assistCancellationToken) {
+            this.assistCancellationToken.abort();
+            this.assistCancellationToken = null;
+        }
+
+        this.setMode('discovery');
+        this.lastTriggerTime = now;
+
+        try {
+            if (!this.discoveryLLM) {
+                this.setMode('idle');
+                return "Please configure your API Keys in Settings to use this feature.";
+            }
+
+            // Get last 3 mins of conversation
+            const contextItems = this.session.getContext(180);
+
+            // Inject latest interim transcript if available
+            const lastInterim = this.session.getLastInterimInterviewer();
+            if (lastInterim && lastInterim.text.trim().length > 0) {
+                const lastItem = contextItems[contextItems.length - 1];
+                const isDuplicate = lastItem &&
+                    lastItem.role === 'interviewer' &&
+                    (lastItem.text === lastInterim.text ||
+                        Math.abs(lastItem.timestamp - lastInterim.timestamp) < 1000);
+
+                if (!isDuplicate) {
+                    console.log(`[IntelligenceEngine] Injecting interim for Discovery: "${lastInterim.text.substring(0, 50)}..."`);
+                    contextItems.push({
+                        role: 'interviewer',
+                        text: lastInterim.text,
+                        timestamp: lastInterim.timestamp
+                    });
+                }
+            }
+
+            // Format transcript
+            const transcript = contextItems
+                .map(item => `${item.role === 'interviewer' ? 'Customer' : 'Sales Rep'}: ${item.text}`)
+                .join('\n');
+
+            console.log(`[IntelligenceEngine] runDiscovery: ${contextItems.length} turns analyzed`);
+
+            const generationId = ++this.currentGenerationId;
+            let fullAnswer = '';
+            let streamAborted = false;
+
+            const stream = this.discoveryLLM.generateStream(transcript);
+
+            for await (const token of stream) {
+                if (this.currentGenerationId !== generationId) {
+                    console.log('[IntelligenceEngine] discovery stream aborted by new generation');
+                    await stream.return(undefined);
+                    streamAborted = true;
+                    break;
+                }
+                this.emit('discovery_token', token);
+                fullAnswer += token;
+            }
+
+            if (streamAborted) {
+                this.setMode('idle');
+                return null;
+            }
+
+            if (!fullAnswer || fullAnswer.trim().length < 5) {
+                fullAnswer = "Not enough conversation yet. Keep talking and try again.";
+            }
+
+            this.session.addAssistantMessage(fullAnswer);
+            this.session.pushUsage({
+                type: 'discovery',
+                timestamp: Date.now(),
+                question: 'Discovery',
+                answer: fullAnswer
+            });
+
+            this.emit('discovery', fullAnswer);
+            this.setMode('idle');
+            return fullAnswer;
+
+        } catch (error) {
+            this.emit('error', error as Error, 'discovery');
+            this.setMode('idle');
+            return "Could not run discovery analysis. Please try again.";
         }
     }
 

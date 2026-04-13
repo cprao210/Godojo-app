@@ -106,6 +106,11 @@ interface ElectronAPI {
   onWhatAmIMissingToken: (callback: (data: { token: string }) => void) => () => void;
   onWhatAmIMissing: (callback: (data: { answer: string }) => void) => () => void;
 
+  // DISCOVERY MODE
+  generateDiscovery: () => Promise<string | null>;
+  onDiscoveryToken: (callback: (data: { token: string }) => void) => () => void;
+  onDiscovery: (callback: (data: { answer: string }) => void) => () => void;
+
   // Meeting Lifecycle
   startMeeting: (metadata?: any) => Promise<{ success: boolean; error?: string }>
   endMeeting: () => Promise<{ success: boolean; error?: string }>
@@ -591,6 +596,7 @@ contextBridge.exposeInMainWorld("electronAPI", {
   generateAssist: () => ipcRenderer.invoke("generate-assist"),
   generateWhatToSay: (question?: string, imagePaths?: string[]) => ipcRenderer.invoke("generate-what-to-say", question, imagePaths),
   generateWhatAmIMissing: () => ipcRenderer.invoke("generate-what-am-i-missing"), // WHAT AM I MISSING
+  generateDiscovery: () => ipcRenderer.invoke("generate-discovery"), // DISCOVERY MODE
   generateClarify: () => ipcRenderer.invoke("generate-clarify"),
   generateCodeHint: (imagePaths?: string[], problemStatement?: string) => ipcRenderer.invoke("generate-code-hint", imagePaths, problemStatement),
   generateBrainstorm: (imagePaths?: string[], problemStatement?: string) => ipcRenderer.invoke("generate-brainstorm", imagePaths, problemStatement),
@@ -942,6 +948,18 @@ contextBridge.exposeInMainWorld("electronAPI", {
     const subscription = (_: any, data: any) => callback(data)
     ipcRenderer.on("intelligence-what-am-i-missing", subscription)
     return () => ipcRenderer.removeListener("intelligence-what-am-i-missing", subscription)
+  },
+
+  onDiscoveryToken: (callback) => {
+    const subscription = (_: any, data: any) => callback(data)
+    ipcRenderer.on("intelligence-discovery-token", subscription)
+    return () => ipcRenderer.removeListener("intelligence-discovery-token", subscription)
+  },
+
+  onDiscovery: (callback) => {
+    const subscription = (_: any, data: any) => callback(data)
+    ipcRenderer.on("intelligence-discovery", subscription)
+    return () => ipcRenderer.removeListener("intelligence-discovery", subscription)
   },
 
   // RAG API
