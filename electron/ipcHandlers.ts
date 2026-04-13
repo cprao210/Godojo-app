@@ -1642,6 +1642,15 @@ export function initializeIpcHandlers(appState: AppState): void {
     }
   });
 
+  safeHandle("generate-objection-handler", async () => {
+    try {
+      const intelligenceManager = appState.getIntelligenceManager();
+      const objectionInfo = await intelligenceManager.runObjectionHandler();
+      return { objectionInfo };
+    } catch (error: any) {
+      throw error;
+    }
+  });
 
   safeHandle("generate-clarify", async () => {
     try {

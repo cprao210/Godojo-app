@@ -111,6 +111,11 @@ interface ElectronAPI {
   onDiscoveryToken: (callback: (data: { token: string }) => void) => () => void;
   onDiscovery: (callback: (data: { answer: string }) => void) => () => void;
 
+  // OBJECTION HANDLER MODE
+  generateObjectionHandler: () => Promise<string | null>;
+  onObjectionHandlerToken: (callback: (data: { token: string }) => void) => () => void;
+  onObjectionHandler: (callback: (data: { answer: string }) => void) => () => void;
+
   // Meeting Lifecycle
   startMeeting: (metadata?: any) => Promise<{ success: boolean; error?: string }>
   endMeeting: () => Promise<{ success: boolean; error?: string }>
@@ -597,6 +602,7 @@ contextBridge.exposeInMainWorld("electronAPI", {
   generateWhatToSay: (question?: string, imagePaths?: string[]) => ipcRenderer.invoke("generate-what-to-say", question, imagePaths),
   generateWhatAmIMissing: () => ipcRenderer.invoke("generate-what-am-i-missing"), // WHAT AM I MISSING
   generateDiscovery: () => ipcRenderer.invoke("generate-discovery"), // DISCOVERY MODE
+  generateObjectionHandler: () => ipcRenderer.invoke("generate-objection-handler"), // OBJECTION HANDLER MODE
   generateClarify: () => ipcRenderer.invoke("generate-clarify"),
   generateCodeHint: (imagePaths?: string[], problemStatement?: string) => ipcRenderer.invoke("generate-code-hint", imagePaths, problemStatement),
   generateBrainstorm: (imagePaths?: string[], problemStatement?: string) => ipcRenderer.invoke("generate-brainstorm", imagePaths, problemStatement),
@@ -960,6 +966,18 @@ contextBridge.exposeInMainWorld("electronAPI", {
     const subscription = (_: any, data: any) => callback(data)
     ipcRenderer.on("intelligence-discovery", subscription)
     return () => ipcRenderer.removeListener("intelligence-discovery", subscription)
+  },
+
+  onObjectionHandlerToken: (callback) => {
+    const subscription = (_: any, data: any) => callback(data)
+    ipcRenderer.on("intelligence-objection-handler-token", subscription)
+    return () => ipcRenderer.removeListener("intelligence-objection-handler-token", subscription)
+  },
+
+  onObjectionHandler: (callback) => {
+    const subscription = (_: any, data: any) => callback(data)
+    ipcRenderer.on("intelligence-objection-handler", subscription)
+    return () => ipcRenderer.removeListener("intelligence-objection-handler", subscription)
   },
 
   // RAG API

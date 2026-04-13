@@ -140,6 +140,11 @@ export interface ElectronAPI {
   onDiscoveryToken: (callback: (data: { token: string }) => void) => () => void;
   onDiscovery: (callback: (data: { answer: string }) => void) => () => void;
 
+  // OBJECTION HANDLER MODE
+  generateObjectionHandler: () => Promise<string | null>;
+  onObjectionHandlerToken: (callback: (data: { token: string }) => void) => () => void;
+  onObjectionHandler: (callback: (data: { answer: string }) => void) => () => void;
+
   // Dynamic Action Button Mode
   getActionButtonMode: () => Promise<'recap' | 'brainstorm'>
   setActionButtonMode: (mode: 'recap' | 'brainstorm') => Promise<{ success: boolean }>

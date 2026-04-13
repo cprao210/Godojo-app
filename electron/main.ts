@@ -1375,6 +1375,16 @@ export class AppState {
       if (win) win.webContents.send('intelligence-discovery', { answer });
     });
 
+    this.intelligenceManager.on('objection_handler_token', (token: string) => {
+      const win = mainWindow();
+      if (win) win.webContents.send('intelligence-objection-handler-token', { token });
+    });
+
+    this.intelligenceManager.on('objection_handler', (answer: string) => {
+      const win = mainWindow();
+      if (win) win.webContents.send('intelligence-objection-handler', { answer });
+    });
+
     this.intelligenceManager.on('suggested_answer', (answer: string, question: string, confidence: number) => {
       const win = mainWindow()
       if (win) {

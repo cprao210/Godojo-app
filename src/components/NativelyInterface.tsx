@@ -28,7 +28,8 @@ import {
     Check,
     PointerOff,
     AlertCircle,
-    Search
+    Search,
+    ShieldAlert
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'framer-motion';
 import { Prism as SyntaxHighlighter } from 'react-syntax-highlighter';
@@ -821,6 +822,24 @@ const NativelyInterface: React.FC<NativelyInterfaceProps> = ({ onEndMeeting, ove
         }
     };
 
+    const handleObjectionHandler = async () => {
+        setIsExpanded(true);
+        setIsProcessing(true);
+        analytics.trackCommandExecuted('objection_handler');
+
+        try {
+            await window.electronAPI.generateObjectionHandler();
+        } catch (err) {
+            setMessages(prev => [...prev, {
+                id: Date.now().toString(),
+                role: 'system',
+                text: `Error: ${err}`
+            }]);
+        } finally {
+            setIsProcessing(false);
+        }
+    };
+
     const handleFollowUp = async (intent: string = 'rephrase') => {
         setIsExpanded(true);
         setIsProcessing(true);
@@ -1130,6 +1149,51 @@ const NativelyInterface: React.FC<NativelyInterfaceProps> = ({ onEndMeeting, ove
                     role: 'system',
                     text: data.answer,
                     intent: 'discovery'
+                }];
+            });
+        }));
+
+        // Objection Handler token stream
+        cleanups.push(window.electronAPI.onObjectionHandlerToken((data) => {
+            setMessages(prev => {
+                const lastMsg = prev[prev.length - 1];
+                if (lastMsg && lastMsg.isStreaming && lastMsg.intent === 'objection_handler') {
+                    const updated = [...prev];
+                    updated[prev.length - 1] = {
+                        ...lastMsg,
+                        text: lastMsg.text + data.token
+                    };
+                    return updated;
+                }
+                return [...prev, {
+                    id: Date.now().toString(),
+                    role: 'system',
+                    text: data.token,
+                    intent: 'objection_handler',
+                    isStreaming: true
+                }];
+            });
+        }));
+
+        // Objection Handler final
+        cleanups.push(window.electronAPI.onObjectionHandler((data) => {
+            setIsProcessing(false);
+            setMessages(prev => {
+                const lastMsg = prev[prev.length - 1];
+                if (lastMsg && lastMsg.isStreaming && lastMsg.intent === 'objection_handler') {
+                    const updated = [...prev];
+                    updated[prev.length - 1] = {
+                        ...lastMsg,
+                        text: data.answer,
+                        isStreaming: false
+                    };
+                    return updated;
+                }
+                return [...prev, {
+                    id: Date.now().toString(),
+                    role: 'system',
+                    text: data.answer,
+                    intent: 'objection_handler'
                 }];
             });
         }));
@@ -1496,6 +1560,22 @@ Provide only the answer, nothing else.`;
                     <div className={`flex items-center gap-2 mb-2 font-semibold text-xs uppercase tracking-wide ${isLightTheme ? 'text-emerald-700' : 'text-emerald-400'}`}>
                         <Search className="w-3.5 h-3.5" />
                         <span>Discovery Insights</span>
+                    </div>
+                    <div className={`text-[13px] leading-relaxed markdown-content ${isLightTheme ? 'text-slate-800' : 'text-slate-200'}`}>
+                        <ReactMarkdown remarkPlugins={[remarkGfm]}>
+                            {msg.text}
+                        </ReactMarkdown>
+                    </div>
+                </div>
+            );
+        }
+
+        if (msg.intent === 'objection_handler') {
+            return (
+                <div className={`rounded-lg p-3 my-1 border ${subtleSurfaceClass}`} style={appearance.subtleStyle}>
+                    <div className={`flex items-center gap-2 mb-2 font-semibold text-xs uppercase tracking-wide ${isLightTheme ? 'text-red-700' : 'text-red-400'}`}>
+                        <ShieldAlert className="w-3.5 h-3.5" />
+                        <span>Objection Handler</span>
                     </div>
                     <div className={`text-[13px] leading-relaxed markdown-content ${isLightTheme ? 'text-slate-800' : 'text-slate-200'}`}>
                         <ReactMarkdown remarkPlugins={[remarkGfm]}>
@@ -2149,6 +2229,13 @@ Provide only the answer, nothing else.`;
                                     style={appearance.chipStyle}
                                 >
                                     <Search className="w-3 h-3 opacity-70" /> Discovery
+                                </button>
+                                <button
+                                    onClick={handleObjectionHandler}
+                                    className={`flex items-center gap-1.5 px-3 py-1.5 rounded-full text-[11px] font-medium border transition-all active:scale-95 whitespace-nowrap ${quickActionClass}`}
+                                    style={appearance.chipStyle}
+                                >
+                                    <ShieldAlert className="w-3 h-3 opacity-70" /> Objection
                                 </button>
                                 <button onClick={handleClarify} className={`flex items-center gap-1.5 px-3 py-1.5 rounded-full text-[11px] font-medium border transition-all active:scale-95 duration-200 interaction-base interaction-press whitespace-nowrap ${quickActionClass}`} style={appearance.chipStyle}>
                                     <MessageSquare className="w-3 h-3 opacity-70" /> Clarify

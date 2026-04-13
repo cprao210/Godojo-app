@@ -12,6 +12,7 @@ export { RecapLLM } from "./RecapLLM";
 export { WhatToAnswerLLM } from "./WhatToAnswerLLM";
 export { WhatAmIMissingLLM } from "./WhatAmIMissing"; // WHAT AM I MISSING
 export { DiscoveryLLM } from "./DiscoveryLLM"; // DISCOVERY MODE
+export { ObjectionHandlerLLM } from "./ObjectionHandlerLLM"; // OBJECTION HANDLER MODE
 export { clampResponse, validateResponse } from "./postProcessor";
 export {
     cleanTranscript,
