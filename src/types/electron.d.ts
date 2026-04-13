@@ -135,6 +135,10 @@ export interface ElectronAPI {
   onWhatAmIMissingToken: (callback: (data: { token: string }) => void) => () => void;
   onWhatAmIMissing: (callback: (data: { answer: string }) => void) => () => void;
 
+  // DISCOVERY MODE
+  generateDiscovery: () => Promise<string | null>;
+  onDiscoveryToken: (callback: (data: { token: string }) => void) => () => void;
+  onDiscovery: (callback: (data: { answer: string }) => void) => () => void;
 
   // Dynamic Action Button Mode
   getActionButtonMode: () => Promise<'recap' | 'brainstorm'>

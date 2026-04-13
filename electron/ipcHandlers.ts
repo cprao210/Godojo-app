@@ -1632,6 +1632,16 @@ export function initializeIpcHandlers(appState: AppState): void {
     }
   });
 
+  safeHandle("generate-discovery", async () => {
+    try {
+      const intelligenceManager = appState.getIntelligenceManager();
+      const discoveryInfo = await intelligenceManager.runDiscovery();
+      return { discoveryInfo };
+    } catch (error: any) {
+      throw error;
+    }
+  });
+
 
   safeHandle("generate-clarify", async () => {
     try {
