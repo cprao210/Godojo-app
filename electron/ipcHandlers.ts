@@ -1886,6 +1886,71 @@ export function initializeIpcHandlers(appState: AppState): void {
   });
 
   // ==========================================
+  // Sales Meeting Brief Handler (Streaming + Cached)
+  // ==========================================
+
+  const salesBriefCache = new Map<string, string>();
+  let _salesBriefStreamId = 0;
+
+  safeHandle("stream-sales-brief", async (event, eventData: any) => {
+    try {
+      const { SALES_MEETING_BRIEF_PROMPT, GROQ_SALES_MEETING_BRIEF_PROMPT } = require('./llm/prompts');
+      const { buildSalesBriefContext } = require('./utils/salesBriefUtils');
+
+      const eventId = eventData.id;
+
+      // 1. Cache hit → instant return
+      if (salesBriefCache.has(eventId)) {
+        event.sender.send('sales-brief-stream-token', salesBriefCache.get(eventId)!);
+        event.sender.send('sales-brief-stream-done');
+        return { success: true, cached: true };
+      }
+
+      // 2. Build prompt
+      const contextString = buildSalesBriefContext(eventData);
+      const userMessage = `Generate a complete sales meeting brief for this meeting:\n\n${contextString}`;
+
+      const llmHelper = appState.processingHelper.getLLMHelper();
+      const myStreamId = ++_salesBriefStreamId;
+      let fullResponse = '';
+
+      // 3. Try streaming first (fastest path)
+      try {
+        const stream = llmHelper.streamChat(userMessage, undefined, undefined, SALES_MEETING_BRIEF_PROMPT, true);
+
+        for await (const token of stream) {
+          if (_salesBriefStreamId !== myStreamId) return null;
+          event.sender.send('sales-brief-stream-token', token);
+          fullResponse += token;
+        }
+      } catch (streamErr: any) {
+        console.warn('[IPC] Sales brief stream failed, falling back to non-streaming:', streamErr.message);
+
+        // 4. Fallback: chatWithGemini has full retry + provider rotation (handles 503)
+        if (_salesBriefStreamId === myStreamId && !fullResponse) {
+          const geminiPrompt = `${SALES_MEETING_BRIEF_PROMPT}\n\n${userMessage}`;
+          const groqPrompt = `${GROQ_SALES_MEETING_BRIEF_PROMPT}\n\n${userMessage}`;
+          const result = await llmHelper.chatWithGemini(geminiPrompt, undefined, undefined, true, groqPrompt);
+          if (result && _salesBriefStreamId === myStreamId) {
+            event.sender.send('sales-brief-stream-token', result);
+            fullResponse = result;
+          }
+        }
+      }
+
+      if (_salesBriefStreamId === myStreamId) {
+        event.sender.send('sales-brief-stream-done');
+        if (fullResponse.trim()) salesBriefCache.set(eventId, fullResponse);
+      }
+      return { success: true };
+    } catch (error: any) {
+      console.error('[IPC] Error streaming sales brief:', error);
+      event.sender.send('sales-brief-stream-error', error.message || 'Unknown error');
+      return { success: false, error: error.message };
+    }
+  });
+
+  // ==========================================
   // Follow-up Email Handlers
   // ==========================================
 

@@ -25,6 +25,9 @@ export interface CalendarEvent {
     endTime: string; // ISO
     link?: string;
     source: 'google';
+     attendees?: Array<{ email: string; name?: string; organizer?: boolean; self?: boolean }>;
+    organizer?: string;
+    description?: string;
 }
 
 export class CalendarManager extends EventEmitter {
@@ -370,12 +373,21 @@ export class CalendarManager extends EventEmitter {
                     return durationMins >= 5;
                 })
                 .map((item: any) => ({
+                        ...item,
                     id: item.id,
                     title: item.summary || '(No Title)',
                     startTime: item.start.dateTime,
                     endTime: item.end.dateTime,
                     link: this.resolveMeetingLink(item),
-                    source: 'google'
+                    source: 'google',
+                      attendees: (item.attendees || []).map((a: any) => ({
+                        email: a.email,
+                        name: a.displayName || undefined,
+                        organizer: a.organizer || false,
+                        self: a.self || false,
+                    })),
+                    organizer: item.organizer?.email || '',
+                    description: item.description || undefined,
                 }));
 
         } catch (error) {
