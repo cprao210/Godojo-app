@@ -1,4 +1,5 @@
 import { contextBridge, ipcRenderer } from "electron"
+import { CalendarEvent } from "services/CalendarManager"
 
 // Types for the exposed Electron API
 interface ElectronAPI {
@@ -214,6 +215,13 @@ interface ElectronAPI {
   getCalendarStatus: () => Promise<{ connected: boolean; email?: string }>
   getUpcomingEvents: () => Promise<Array<{ id: string; title: string; startTime: string; endTime: string; link?: string; source: 'google' }>>
   calendarRefresh: () => Promise<{ success: boolean; error?: string }>
+
+  // Zoom Calendar
+  zoomCalendarConnect: () => Promise<{ success: boolean; error?: string }>
+  zoomCalendarDisconnect: () => Promise<{ success: boolean; error?: string }>
+  getZoomCalendarStatus: () => Promise<{ connected: boolean }>
+  getZoomUpcomingEvents: () => Promise<CalendarEvent[]>
+  zoomCalendarRefresh: () => Promise<{ success: boolean }>
 
   // Auto-Update
   onUpdateAvailable: (callback: (info: any) => void) => () => void
@@ -894,7 +902,7 @@ contextBridge.exposeInMainWorld("electronAPI", {
   getCalendarStatus: () => ipcRenderer.invoke('get-calendar-status'),
   getUpcomingEvents: () => ipcRenderer.invoke('get-upcoming-events'),
   calendarRefresh: () => ipcRenderer.invoke('calendar-refresh'),
- streamSalesBrief: (eventData: any) => ipcRenderer.invoke('stream-sales-brief', eventData),
+  streamSalesBrief: (eventData: any) => ipcRenderer.invoke('stream-sales-brief', eventData),
   onSalesBriefStreamToken: (callback: (token: string) => void) => {
     const sub = (_event: any, token: string) => callback(token);
     ipcRenderer.on('sales-brief-stream-token', sub);
@@ -910,6 +918,14 @@ contextBridge.exposeInMainWorld("electronAPI", {
     ipcRenderer.on('sales-brief-stream-error', sub);
     return () => { ipcRenderer.removeListener('sales-brief-stream-error', sub); };
   },
+
+  // Zoom Calendar
+  zoomCalendarConnect: () => ipcRenderer.invoke('zoom-calendar-connect'),
+  zoomCalendarDisconnect: () => ipcRenderer.invoke('zoom-calendar-disconnect'),
+  getZoomCalendarStatus: () => ipcRenderer.invoke('get-zoom-calendar-status'),
+  getZoomUpcomingEvents: () => ipcRenderer.invoke('get-zoom-upcoming-events'),
+  zoomCalendarRefresh: () => ipcRenderer.invoke('zoom-calendar-refresh'),
+
   // Auto-Update
   onUpdateAvailable: (callback: (info: any) => void) => {
     const subscription = (_: any, info: any) => callback(info)
