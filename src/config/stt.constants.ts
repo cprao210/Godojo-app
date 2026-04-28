@@ -117,5 +117,5 @@ export const STT_PROVIDERS: Record<SttProviderId, SttProviderConfig> = {
 
 export const STT_PROVIDER_OPTIONS = Object.values(STT_PROVIDERS);
 
-export const DEFAULT_STT_PROVIDER: SttProviderId = 'google';
+export const DEFAULT_STT_PROVIDER: SttProviderId = 'azure';
 
