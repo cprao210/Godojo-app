@@ -413,7 +413,7 @@ const App: React.FC = () => {
         )}
       </AnimatePresence>
 
-      <UpdateBanner />
+      {/* <UpdateBanner /> */}
       <SupportToaster />
       {isLauncherMainView && !isSettingsOpen && (
         <>

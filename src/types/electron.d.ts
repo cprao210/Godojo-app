@@ -246,7 +246,11 @@ export interface ElectronAPI {
   getCalendarStatus: () => Promise<{ connected: boolean; email?: string }>
   getUpcomingEvents: () => Promise<Array<{ id: string; title: string; startTime: string; endTime: string; link?: string; source: 'google' }>>
   calendarRefresh: () => Promise<{ success: boolean; error?: string }>
-
+  streamSalesBrief: (eventData: any) => Promise<{ success: boolean; cached?: boolean; error?: string }>
+  onSalesBriefStreamToken: (callback: (token: string) => void) => () => void
+  onSalesBriefStreamDone: (callback: () => void) => () => void
+  onSalesBriefStreamError: (callback: (error: string) => void) => () => void
+  
   // Auto-Update
   onUpdateAvailable: (callback: (info: any) => void) => () => void
   onUpdateDownloaded: (callback: (info: any) => void) => () => void

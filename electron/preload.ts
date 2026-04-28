@@ -894,7 +894,22 @@ contextBridge.exposeInMainWorld("electronAPI", {
   getCalendarStatus: () => ipcRenderer.invoke('get-calendar-status'),
   getUpcomingEvents: () => ipcRenderer.invoke('get-upcoming-events'),
   calendarRefresh: () => ipcRenderer.invoke('calendar-refresh'),
-
+ streamSalesBrief: (eventData: any) => ipcRenderer.invoke('stream-sales-brief', eventData),
+  onSalesBriefStreamToken: (callback: (token: string) => void) => {
+    const sub = (_event: any, token: string) => callback(token);
+    ipcRenderer.on('sales-brief-stream-token', sub);
+    return () => { ipcRenderer.removeListener('sales-brief-stream-token', sub); };
+  },
+  onSalesBriefStreamDone: (callback: () => void) => {
+    const sub = () => callback();
+    ipcRenderer.on('sales-brief-stream-done', sub);
+    return () => { ipcRenderer.removeListener('sales-brief-stream-done', sub); };
+  },
+  onSalesBriefStreamError: (callback: (error: string) => void) => {
+    const sub = (_event: any, error: string) => callback(error);
+    ipcRenderer.on('sales-brief-stream-error', sub);
+    return () => { ipcRenderer.removeListener('sales-brief-stream-error', sub); };
+  },
   // Auto-Update
   onUpdateAvailable: (callback: (info: any) => void) => {
     const subscription = (_: any, info: any) => callback(info)
