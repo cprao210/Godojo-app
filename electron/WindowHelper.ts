@@ -63,13 +63,14 @@ export class WindowHelper {
     if (!activeWindow || activeWindow.isDestroyed()) return
 
     const [currentX, currentY] = activeWindow.getPosition()
-    const primaryDisplay = screen.getPrimaryDisplay()
-    const workArea = primaryDisplay.workAreaSize
+
+    const currentDisplay = screen.getDisplayNearestPoint({ x: currentX, y: currentY })
+    const workArea = currentDisplay.workArea
     const maxAllowedWidth = Math.floor(workArea.width * 0.9)
     const newWidth = Math.min(width, maxAllowedWidth)
     const newHeight = Math.ceil(height)
-    const maxX = workArea.width - newWidth
-    const newX = Math.min(Math.max(currentX, 0), maxX)
+    const maxX = workArea.x + workArea.width - newWidth
+    const newX = Math.min(Math.max(currentX, workArea.x), maxX)
 
     activeWindow.setBounds({
       x: newX,
@@ -91,16 +92,16 @@ export class WindowHelper {
     console.log('[WindowHelper] setOverlayDimensions:', width, height);
 
     const [currentX, currentY] = this.overlayWindow.getPosition()
-    const primaryDisplay = screen.getPrimaryDisplay()
-    const workArea = primaryDisplay.workAreaSize
+    const currentDisplay = screen.getDisplayNearestPoint({ x: currentX, y: currentY });
+    const workArea = currentDisplay.workArea
     const maxAllowedWidth = Math.floor(workArea.width * 0.9)
     const maxAllowedHeight = Math.floor(workArea.height * 0.9)
     const newWidth = Math.min(Math.max(width, 300), maxAllowedWidth) // min 300, max 90%
     const newHeight = Math.min(Math.max(height, 1), maxAllowedHeight) // min 1, max 90%
-    const maxX = workArea.width - newWidth
-    const maxY = workArea.height - newHeight
-    const newX = Math.min(Math.max(currentX, 0), maxX)
-    const newY = Math.min(Math.max(currentY, 0), maxY)
+    const maxX = workArea.x + workArea.width - newWidth
+    const maxY = workArea.y + workArea.height - newHeight
+    const newX = Math.min(Math.max(currentX, workArea.x), maxX)
+    const newY = Math.min(Math.max(currentY, workArea.y), maxY)
 
     this.overlayWindow.setContentSize(newWidth, newHeight)
     this.overlayWindow.setPosition(newX, newY)
@@ -246,7 +247,7 @@ export class WindowHelper {
     }
 
     this.overlayWindow.loadURL(`${startUrl}?window=overlay`).catch(e => {
-        console.error('[WindowHelper] Failed to load Overlay URL:', e);
+      console.error('[WindowHelper] Failed to load Overlay URL:', e);
     })
 
     // --- 3. Startup Sequence ---
@@ -469,12 +470,19 @@ export class WindowHelper {
     if (this.overlayWindow && !this.overlayWindow.isDestroyed()) {
       // Reset overlay position to center or last known? 
       // For now, center it nicely
-      const primaryDisplay = screen.getPrimaryDisplay()
-      const workArea = primaryDisplay.workArea;
+      const cursorPoint = screen.getCursorScreenPoint()
+      const activeDisplay = screen.getDisplayNearestPoint(cursorPoint)
+
+      const workArea = activeDisplay.workArea;
       const currentBounds = this.overlayWindow.getBounds();
+      const currentDisplay = screen.getDisplayMatching(currentBounds)
       const targetHeight = Math.max(currentBounds.height, 216);
-      const x = Math.floor(workArea.x + (workArea.width - 600) / 2)
-      const y = Math.floor(workArea.y + (workArea.height - 600) / 2)
+      const x = currentDisplay
+        ? currentBounds.x
+        : Math.floor(workArea.x + (workArea.width - 600) / 2)
+      const y = currentDisplay
+        ? currentBounds.y
+        : Math.floor(workArea.y + (workArea.height - 600) / 2)
 
       this.overlayWindow.setBounds({ x, y, width: 600, height: targetHeight });
 
