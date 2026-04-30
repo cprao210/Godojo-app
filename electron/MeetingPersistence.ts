@@ -8,6 +8,103 @@ import { DatabaseManager, Meeting } from './db/DatabaseManager';
 import { GROQ_TITLE_PROMPT, GROQ_SUMMARY_JSON_PROMPT } from './llm';
 const crypto = require('crypto');
 
+const summaryPrompt = `You are an expert B2B sales analyst. A sales call just ended. Analyze the full transcript and generate a structured post-call summary. Return ONLY valid JSON (no markdown code blocks, no commentary).
+
+{
+    "overview": "2-3 sentence summary of what the call covered and the current deal status",
+
+    "dealStatus": {
+        "stage": "one of: Discovery / Qualification / Demo / Proposal / Negotiation / Closed Won / Closed Lost / Unknown",
+        "summary": "1 sentence on where the deal stands right now"
+    },
+
+    "bant": {
+        "budget": { "status": "Clear | Partial | Missing", "detail": "what was said or implied about budget" },
+        "authority": { "status": "Clear | Partial | Missing", "detail": "who the decision maker is and their level of involvement" },
+        "need": { "status": "Clear | Partial | Missing", "detail": "what pain or need was uncovered" },
+        "timeline": { "status": "Clear | Partial | Missing", "detail": "when they want to move or what the urgency is" }
+    },
+
+    "meddicc": {
+        "metrics": { "status": "Clear | Partial | Missing", "detail": "quantifiable business impact discussed" },
+        "economicBuyer": { "status": "Clear | Partial | Missing", "detail": "who controls the budget and were they involved" },
+        "decisionCriteria": { "status": "Clear | Partial | Missing", "detail": "what criteria will be used to evaluate and choose" },
+        "decisionProcess": { "status": "Clear | Partial | Missing", "detail": "what steps does their buying process follow" },
+        "identifyPain": { "status": "Clear | Partial | Missing", "detail": "specific pain points uncovered and their business impact" },
+        "champion": { "status": "Clear | Partial | Missing", "detail": "who internally will advocate for this solution" },
+        "competition": { "status": "Clear | Partial | Missing", "detail": "any competitors or alternatives mentioned" },
+        "gaps": ["list of MEDDICC components that are Missing or Partial — these need follow-up"]
+    },
+
+    "followUpEmail": {
+        "subject": "email subject line",
+        "sections": {
+        "whatWeDiscussed": ["3-4 bullets of key discussion points"],
+        "currentProcess": "1-2 sentences on their current state/workflow",
+        "scopeOfImprovement": ["2-3 bullets on identified gaps or problems"],
+        "howOurSolutionHelps": ["2-3 bullets on how the solution addresses their specific pain"],
+        "expectedBusinessImpact": ["2-3 bullets on quantitative and qualitative ROI"],
+        "nextSteps": ["specific agreed next steps with owners and timelines if mentioned"]
+        }
+    },
+
+    "leadName": "extract prospect full name from transcript — first name + last name if mentioned, else null",
+    "company": "extract company/organization name from transcript, else null",
+
+    "salesCoachReview": {
+         "whatIDidRight": [
+            "MEDDICC: [what the rep did well from a MEDDICC perspective — e.g. Identified Economic Buyer as [name] early in the conversation]",
+            "MEDDICC: [second MEDDICC win — e.g. Mapped Decision Process involving [stakeholders] and [steps]]",
+            "BANT: [what the rep did well from a BANT perspective — e.g. Confirmed Budget allocation specifically for [purpose]]",
+            "BANT: [second BANT win — e.g. Solidified Timeline as [deadline] for [specific reason]]",
+            "SPIN: [what the rep did well from a SPIN perspective — e.g. Used Implication Question to quantify cost of [problem] at $[amount]/mo]"
+        ],
+        "whatICouldHaveDoneBetter": [
+            "Should have pushed harder on [specific topic from call] — ask: [exact question]",
+            "Missed opportunity to [specific action] when prospect said [trigger phrase from transcript]",
+            "Over-explained [topic] instead of focusing on business outcome",
+            "Didn't ask for [specific thing] during [moment in call]",
+            "Talked over prospect when they mentioned [topic] — should have probed deeper"
+        ],
+        "whatIMissedCompletely": [
+            "Identify Champion: [specific gap about champion identification]",
+            "Metrics: [specific metric that was never asked about]",
+            "Authority: [specific authority/stakeholder gap]",
+            "Process: [specific process that was skipped]",
+            "Pain: [specific pain point that was never addressed]"
+        ]
+    },
+
+  "nextCallPlaybook": {
+    "openingRecap": "2-3 sentences to open the next call recapping where things stand",
+    "questionsToAsk": ["5 high-value questions to fill the biggest gaps from this call — focus on Missing MEDDICC/BANT components"],
+    "valueAndROI": {
+      "quantitative": ["2-3 measurable ROI points to reinforce"],
+      "qualitative": ["2-3 strategic or emotional value points to reinforce"]
+    }
+  },
+
+  "keyPoints": ["4-6 bullets — top things to know about this deal right now"],
+  "actionItems": ["specific next steps with owners if mentioned, or implied follow-ups"]
+}
+
+RULES:
+- Do NOT invent information not in the transcript
+- Use "Missing" for any BANT/MEDDICC field with no evidence at all
+- Use "Partial" if mentioned but incomplete or vague
+- Use "Clear" only if explicitly confirmed with specifics
+- The follow-up email tone must be: simple, clear, no jargon, client-friendly
+- Sales coach review must reference actual call moments — not generic advice
+- Next call questions must target the weakest BANT/MEDDICC areas from this call
+- Return ONLY valid JSON — no markdown, no code blocks, no explanation
+- leadName and company: extract from transcript introductions or conversation. Return null if not found.
+- salesCoachReview.whatIDidRight: EVERY item MUST start with a framework label: MEDDICC: | BANT: | SPIN: | DISCOVERY:
+- salesCoachReview.whatIMissedCompletely: EVERY item MUST start with a gap category: Identify Champion: | Metrics: | Authority: | Process: | Pain: | Timeline: | Budget:
+- Reference specific moments, names, numbers from the transcript — never be generic
+- salesCoachReview.whatIDidRight: items MUST follow this strict label sequence: MEDDICC, MEDDICC, BANT, BANT, SPIN. Never randomize the order.
+- salesCoachReview.whatIMissedCompletely: items MUST follow this strict label sequence: Identify Champion, Metrics, Authority, Process, Pain. Never randomize the order.
+`;
+
 export class MeetingPersistence {
     private session: SessionTracker;
     private llmHelper: LLMHelper;
@@ -118,25 +215,6 @@ export class MeetingPersistence {
 
             // Generate Structured Summary
             if (data.transcript.length > 2) {
-                const summaryPrompt = `You are a silent meeting summarizer. Convert this conversation into concise internal meeting notes.
-    
-    RULES:
-    - Do NOT invent information not present in the context
-    - You MAY infer implied action items or next steps if they are logical consequences of the discussion
-    - Do NOT explain or define concepts mentioned
-    - Do NOT use filler phrases like "The meeting covered..." or "Discussed various..."
-    - Do NOT mention transcripts, AI, or summaries
-    - Do NOT sound like an AI assistant
-    - Sound like a senior PM's internal notes
-    
-    STYLE: Calm, neutral, professional, skim-friendly. Short bullets, no sub-bullets.
-    
-    Return ONLY valid JSON (no markdown code blocks):
-    {
-      "overview": "1-2 sentence description of what was discussed",
-      "keyPoints": ["3-6 specific bullets - each = one concrete topic or point discussed"],
-      "actionItems": ["specific next steps, assigned tasks, or implied follow-ups. If absolutely none found, return empty array"]
-    }`;
 
                 const groqSummaryPrompt = GROQ_SUMMARY_JSON_PROMPT;
 

@@ -924,21 +924,53 @@ RULES:
  * GROQ: Structured Summary (JSON)
  * Tuned for Llama 3.3 to ensure valid JSON output
  */
-export const GROQ_SUMMARY_JSON_PROMPT = `You are a silent meeting summarizer. Convert this conversation into concise internal meeting notes.
+export const GROQ_SUMMARY_JSON_PROMPT = `You are a B2B sales call analyst. Return ONLY valid JSON — no markdown, no commentary.
 
-RULES:
-- Do NOT invent information.
-- Sound like a senior PM's internal notes.
-- Calm, neutral, professional.
-- Return ONLY valid JSON.
-
-Response Format (JSON ONLY):
 {
-  "overview": "1-2 sentence description",
-  "keyPoints": ["3-6 specific bullets"],
-  "actionItems": ["specific next steps or empty array"]
+  "overview": "2-3 sentence call summary and deal status",
+  "dealStatus": { "stage": "Discovery|Qualification|Demo|Proposal|Negotiation|Closed Won|Closed Lost|Unknown", "summary": "1 sentence" },
+  "bant": {
+    "budget": { "status": "Clear|Partial|Missing", "detail": "..." },
+    "authority": { "status": "Clear|Partial|Missing", "detail": "..." },
+    "need": { "status": "Clear|Partial|Missing", "detail": "..." },
+    "timeline": { "status": "Clear|Partial|Missing", "detail": "..." }
+  },
+  "meddicc": {
+    "metrics": { "status": "Clear|Partial|Missing", "detail": "..." },
+    "economicBuyer": { "status": "Clear|Partial|Missing", "detail": "..." },
+    "decisionCriteria": { "status": "Clear|Partial|Missing", "detail": "..." },
+    "decisionProcess": { "status": "Clear|Partial|Missing", "detail": "..." },
+    "identifyPain": { "status": "Clear|Partial|Missing", "detail": "..." },
+    "champion": { "status": "Clear|Partial|Missing", "detail": "..." },
+    "competition": { "status": "Clear|Partial|Missing", "detail": "..." },
+    "gaps": ["missing/partial components"]
+  },
+  "followUpEmail": {
+    "subject": "email subject",
+    "sections": {
+      "whatWeDiscussed": ["3-4 bullets"],
+      "currentProcess": "1-2 sentences",
+      "scopeOfImprovement": ["2-3 bullets"],
+      "howOurSolutionHelps": ["2-3 bullets"],
+      "expectedBusinessImpact": ["2-3 bullets"],
+      "nextSteps": ["specific steps"]
+    }
+  },
+  "salesCoachReview": {
+    "whatIDidRight": ["5 specific points from the call"],
+    "whatICouldHaveDoneBetter": ["5 coaching points"],
+    "whatIMissedCompletely": ["5 blind spots"]
+  },
+  "nextCallPlaybook": {
+    "openingRecap": "2-3 sentence opener for next call",
+    "questionsToAsk": ["5 questions targeting BANT/MEDDICC gaps"],
+    "valueAndROI": { "quantitative": ["2-3 points"], "qualitative": ["2-3 points"] }
+  },
+  "keyPoints": ["4-6 bullets"],
+  "actionItems": ["next steps"]
 }
-`;
+
+RULES: Missing = no evidence. Partial = mentioned but vague. Clear = confirmed with specifics. No invented data. Return ONLY JSON.`;
 
 // ==========================================
 // FOLLOW-UP EMAIL PROMPTS
