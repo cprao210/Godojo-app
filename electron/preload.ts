@@ -123,6 +123,7 @@ interface ElectronAPI {
   getRecentMeetings: () => Promise<Array<{ id: string; title: string; date: string; duration: string; summary: string }>>
   getMeetingDetails: (id: string) => Promise<any>
   updateMeetingTitle: (id: string, title: string) => Promise<boolean>
+  regenerateMeetingSummary: (id: string) => Promise<{ success: boolean; meeting?: any; error?: string }>
   updateMeetingSummary: (id: string, updates: { overview?: string, actionItems?: string[], keyPoints?: string[], actionItemsTitle?: string, keyPointsTitle?: string }) => Promise<boolean>
   onMeetingsUpdated: (callback: () => void) => () => void
 
@@ -630,6 +631,7 @@ contextBridge.exposeInMainWorld("electronAPI", {
   getMeetingDetails: (id: string) => ipcRenderer.invoke("get-meeting-details", id),
   updateMeetingTitle: (id: string, title: string) => ipcRenderer.invoke("update-meeting-title", { id, title }),
   updateMeetingSummary: (id: string, updates: any) => ipcRenderer.invoke("update-meeting-summary", { id, updates }),
+  regenerateMeetingSummary: (id: string) => ipcRenderer.invoke('regenerate-meeting-summary', { id }),
   deleteMeeting: (id: string) => ipcRenderer.invoke("delete-meeting", id),
 
   onMeetingsUpdated: (callback: () => void) => {
@@ -894,7 +896,7 @@ contextBridge.exposeInMainWorld("electronAPI", {
   getCalendarStatus: () => ipcRenderer.invoke('get-calendar-status'),
   getUpcomingEvents: () => ipcRenderer.invoke('get-upcoming-events'),
   calendarRefresh: () => ipcRenderer.invoke('calendar-refresh'),
- streamSalesBrief: (eventData: any) => ipcRenderer.invoke('stream-sales-brief', eventData),
+  streamSalesBrief: (eventData: any) => ipcRenderer.invoke('stream-sales-brief', eventData),
   onSalesBriefStreamToken: (callback: (token: string) => void) => {
     const sub = (_event: any, token: string) => callback(token);
     ipcRenderer.on('sales-brief-stream-token', sub);

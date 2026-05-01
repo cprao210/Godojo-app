@@ -238,7 +238,7 @@ const FollowUpEmailModal: React.FC<FollowUpEmailModalProps> = ({ isOpen, onClose
                                     <textarea
                                         value={emailBody}
                                         onChange={(e) => setEmailBody(e.target.value)}
-                                        className="w-full h-full bg-transparent text-[#D4D4D8] text-[15px] leading-7 focus:outline-none resize-none placeholder-[#3F3F46] font-normal"
+                                        className="w-full h-[260px] bg-transparent text-[#D4D4D8] text-[15px] leading-7 focus:outline-none resize-none placeholder-[#3F3F46] font-normal"
                                         placeholder="Write your email..."
                                         spellCheck={false}
                                     />

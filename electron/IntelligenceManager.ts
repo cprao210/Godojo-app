@@ -223,6 +223,10 @@ export class IntelligenceManager extends EventEmitter {
         return this.persistence.stopMeeting();
     }
 
+    async regenerateSummary(meetingId: string): Promise<boolean> {
+        return this.persistence.regenerateSummary(meetingId);
+    }
+
     async recoverUnprocessedMeetings(): Promise<void> {
         return this.persistence.recoverUnprocessedMeetings();
     }

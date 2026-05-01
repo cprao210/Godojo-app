@@ -39,12 +39,12 @@ const summaryPrompt = `You are an expert B2B sales analyst. A sales call just en
     "followUpEmail": {
         "subject": "email subject line",
         "sections": {
-        "whatWeDiscussed": ["3-4 bullets of key discussion points"],
-        "currentProcess": "1-2 sentences on their current state/workflow",
-        "scopeOfImprovement": ["2-3 bullets on identified gaps or problems"],
-        "howOurSolutionHelps": ["2-3 bullets on how the solution addresses their specific pain"],
-        "expectedBusinessImpact": ["2-3 bullets on quantitative and qualitative ROI"],
-        "nextSteps": ["specific agreed next steps with owners and timelines if mentioned"]
+            "whatWeDiscussed": ["3-4 bullets of key discussion points"],
+            "currentProcess": "1-2 sentences on their current state/workflow",
+            "scopeOfImprovement": ["2-3 bullets on identified gaps or problems"],
+            "howOurSolutionHelps": ["2-3 bullets on how the solution addresses their specific pain"],
+            "expectedBusinessImpact": ["2-3 bullets on quantitative and qualitative ROI"],
+            "nextSteps": ["specific agreed next steps with owners and timelines if mentioned"]
         }
     },
 
@@ -267,6 +267,50 @@ export class MeetingPersistence {
     }
 
     /**
+     * Regenerate the summary for a meeting
+     */
+    public async regenerateSummary(meetingId: string): Promise<boolean> {
+
+        try {
+
+            const meeting = DatabaseManager.getInstance().getMeetingDetails(meetingId);
+            if (!meeting || !meeting.transcript || meeting.transcript.length < 3) {
+                console.warn('[MeetingPersistence] Cannot regenerate: meeting not found or transcript too short');
+                return false;
+            }
+
+            // Build the same context string as original processing
+            const context = meeting.transcript
+                .map(t => `${t.speaker === 'user' ? 'Me' : 'Them'}: ${t.text}`)
+                .join('\n');
+
+            const groqSummaryPrompt = GROQ_SUMMARY_JSON_PROMPT;
+
+            const generatedSummary = await this.llmHelper.generateMeetingSummary(
+                summaryPrompt,
+                context.substring(0, 10000),
+                groqSummaryPrompt
+            );
+
+            if (!generatedSummary) return false;
+
+            const jsonMatch = generatedSummary.match(/```json\n([\s\S]*?)\n```/) || [null, generatedSummary];
+            const jsonStr = (jsonMatch[1] || generatedSummary).trim();
+            const summaryData = JSON.parse(jsonStr);
+
+            DatabaseManager.getInstance().updateMeetingSummary(meetingId, summaryData);
+            console.log(`[MeetingPersistence] Regenerated summary for meeting ${meetingId}`);
+            return true;
+
+        } catch (e) {
+
+            console.error('[MeetingPersistence] Failed to regenerate summary:', e);
+            return false;
+
+        }
+    }
+
+    /**
      * Recover meetings that were started but not fully processed (e.g. app crash)
      */
     public async recoverUnprocessedMeetings(): Promise<void> {
@@ -317,4 +361,7 @@ export class MeetingPersistence {
             }
         }
     }
+
+
+
 }

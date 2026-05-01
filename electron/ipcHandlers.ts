@@ -1560,6 +1560,27 @@ export function initializeIpcHandlers(appState: AppState): void {
     return DatabaseManager.getInstance().updateMeetingSummary(id, updates);
   });
 
+  safeHandle("regenerate-meeting-summary", async (_, { id }: { id: string }) => {
+
+    try {
+
+      const success = await appState.getIntelligenceManager().regenerateSummary(id);
+      if (success) {
+        // Return the fresh meeting data so UI can update immediately
+        const updated = DatabaseManager.getInstance().getMeetingDetails(id);
+        return { success: true, meeting: updated };
+      }
+      return { success: false };
+
+    } catch (e) {
+
+      console.error('[ipcHandlers] regenerate-meeting-summary error:', e);
+      return { success: false, error: String(e) };
+
+    }
+
+  });
+
   safeHandle("seed-demo", async () => {
     DatabaseManager.getInstance().seedDemoMeeting();
 

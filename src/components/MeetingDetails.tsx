@@ -1,6 +1,6 @@
-import React, { useState } from 'react';
+import React, { act, useState } from 'react';
 import { useResolvedTheme } from '../hooks/useResolvedTheme';
-import { ArrowLeft, Search, Mail, Link, ChevronDown, Play, ArrowUp, Copy, Check, MoreHorizontal, Settings, ArrowRight, TrendingUp, TriangleAlert, MessageSquare, MessagesSquareIcon, ChartColumnIncreasing, CircleCheck, NotepadText, TableOfContents } from 'lucide-react';
+import { ArrowLeft, Search, Mail, Link, ChevronDown, Play, ArrowUp, Copy, Check, MoreHorizontal, Settings, ArrowRight, TrendingUp, TriangleAlert, MessageSquare, MessagesSquareIcon, ChartColumnIncreasing, CircleCheck, NotepadText, TableOfContents, RefreshCcw, Loader2, RefreshCw } from 'lucide-react';
 import { motion, AnimatePresence } from 'framer-motion';
 import MeetingChatOverlay from './MeetingChatOverlay';
 import EditableTextBlock from './EditableTextBlock';
@@ -9,6 +9,7 @@ import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import { Prism as SyntaxHighlighter } from 'react-syntax-highlighter';
 import { vscDarkPlus } from 'react-syntax-highlighter/dist/esm/styles/prism';
+import FollowUpEmailModal from './FollowUpEmailModal';
 
 const formatTime = (ms: number) => {
     const date = new Date(ms);
@@ -110,6 +111,11 @@ interface MeetingDetailsProps {
     onOpenSettings: () => void;
 }
 
+// Skeleton pulse component
+const Skeleton: React.FC<{ className?: string }> = ({ className = '' }) => (
+    <div className={`animate-pulse bg-white/8 rounded-lg ${className}`} />
+);
+
 const MeetingDetails: React.FC<MeetingDetailsProps> = ({ meeting: initialMeeting }) => {
 
     const isLight = useResolvedTheme() === 'light';
@@ -118,6 +124,9 @@ const MeetingDetails: React.FC<MeetingDetailsProps> = ({ meeting: initialMeeting
     const [activeTab, setActiveTab] = useState<'summary' | 'transcript' | 'usage'>('summary');
     const [query, setQuery] = useState('');
     const [isCopied, setIsCopied] = useState(false);
+    const [isRegenerating, setIsRegenerating] = useState(false);
+    const [regenError, setRegenError] = useState<string | null>(null);
+    const [isFollowUpEmailOpen, setIsFollowUpEmailOpen] = useState(false);
     const [isChatOpen, setIsChatOpen] = useState(false);
     const [submittedQuery, setSubmittedQuery] = useState('');
 
@@ -429,6 +438,41 @@ const MeetingDetails: React.FC<MeetingDetailsProps> = ({ meeting: initialMeeting
         }
     };
 
+    const handleRegenerateSummary = async () => {
+
+        setIsRegenerating(true);
+        setRegenError(null);
+
+        try {
+
+            const result = await window.electronAPI.regenerateMeetingSummary(meeting.id);
+
+            if (result?.success && result.meeting) {
+                // Replace the entire meeting state with fresh data from DB
+                setMeeting(result.meeting);
+            } else {
+                setRegenError('Failed to regenerate. Please try again.');
+            }
+
+        } catch (err) {
+
+            console.log(err);
+
+            setRegenError('Something went wrong.');
+
+        } finally {
+
+            setIsRegenerating(false);
+
+        }
+
+    };
+
+    const handleFollowUpEmail = async () => {
+        console.log('Opening follow-up email modal...');
+        setIsFollowUpEmailOpen(true);
+    };
+
 
     return (
         <div className="h-full w-full flex flex-col bg-bg-secondary text-text-secondary font-sans overflow-hidden">
@@ -445,7 +489,7 @@ const MeetingDetails: React.FC<MeetingDetailsProps> = ({ meeting: initialMeeting
                     <div className="flex items-start justify-between mb-6">
                         <div className="w-full pr-4">
                             {/* Date formatting could be improved to use meeting.date if it's an ISO string */}
-                            <div className="text-xs text-text-tertiary font-medium mb-1">
+                            <div className="text-sm text-text-tertiary font-medium mb-1">
                                 {new Date(meeting.date).toLocaleDateString('en-US', { weekday: 'long', month: 'short', day: 'numeric' })}
                             </div>
 
@@ -461,6 +505,13 @@ const MeetingDetails: React.FC<MeetingDetailsProps> = ({ meeting: initialMeeting
                                             multiline={false}
                                         />
                                     </h1>
+                                    <button
+                                        onClick={handleFollowUpEmail}
+                                        className={`flex items-center gap-1.5 text-xs font-medium text-text-secondary hover:text-text-primary transition-colors border border-white/[0.2] rounded-lg px-2 py-0.5 hover:bg-text-secondary/10`}
+                                    >
+                                        <Mail size={12} />
+                                        Follow-up email
+                                    </button>
                                     {/* <span className="text-xs px-3 py-1 rounded-full bg-blue-500/20 text-blue-400 border border-blue-500/30">
                                         HIGH PRIORITY
                                     </span> */}
@@ -487,6 +538,11 @@ const MeetingDetails: React.FC<MeetingDetailsProps> = ({ meeting: initialMeeting
                             </div>
                         </div>
 
+                        <FollowUpEmailModal
+                            isOpen={isFollowUpEmailOpen}
+                            onClose={() => setIsFollowUpEmailOpen(false)}
+                            meeting={meeting}
+                        />
                         {/* Moved Actions: Follow-up & Share (REMOVED per user request) */}
                         {/* <div className="flex items-center gap-2 mt-1"> ... </div> */}
                     </div>
@@ -517,344 +573,392 @@ const MeetingDetails: React.FC<MeetingDetailsProps> = ({ meeting: initialMeeting
                             ))}
                         </div>
 
-                        {/* Copy Button - Inline with Tabs (Always visible) */}
-                        <button
-                            onClick={handleCopy}
-                            className="flex items-center gap-2 text-xs font-medium text-text-secondary hover:text-text-primary transition-colors"
-                        >
-                            {isCopied ? <Check size={14} className="text-emerald-500" /> : <Copy size={14} />}
-                            {isCopied ? 'Copied' : activeTab === 'summary' ? 'Copy full summary' : activeTab === 'transcript' ? 'Copy full transcript' : 'Copy usage'}
-                        </button>
+                        <div className="flex items-center gap-6">
+
+                            <button
+                                onClick={handleRegenerateSummary}
+                                disabled={isRegenerating}
+                                className={`flex items-center gap-2 text-xs font-medium text-text-secondary ${isRegenerating ? 'text-text-tertiary' : 'hover:text-text-primary'} transition-colors`}
+                            >
+                                <RefreshCcw size={14} className={isRegenerating ? 'animate-spin' : 'hover:text-text-primary'} />
+                                {isRegenerating ? 'Regenerating...' : 'Regenerate'}
+                            </button>
+
+                            {regenError && (
+                                <span className="text-[11px] text-red-400">{regenError}</span>
+                            )}
+
+                            {/* Copy Button - Inline with Tabs (Always visible) */}
+                            <button
+                                onClick={handleCopy}
+                                className="flex items-center gap-2 text-xs font-medium text-text-secondary hover:text-text-primary transition-colors"
+                            >
+                                {isCopied ? <Check size={14} className="text-emerald-500" /> : <Copy size={14} />}
+                                {isCopied ? 'Copied' : activeTab === 'summary' ? 'Copy full summary' : activeTab === 'transcript' ? 'Copy full transcript' : 'Copy usage'}
+                            </button>
+
+                        </div>
                     </div>
 
                     {/* Tab Content */}
                     <div className="space-y-8">
                         {/* Using standard divs for content, framer motion for layout */}
                         {activeTab === 'summary' && (
-                            <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }}>
-
-                                <section className="mb-10">
-                                    <h2 className="text-lg font-semibold flex gap-3 text-white mb-4"><NotepadText className='text-blue-500' /> Call Summary</h2>
-
-                                    <div className="space-y-3">
-                                        {meeting.detailedSummary?.keyPoints?.map((point, i) => (
-                                            <div key={i} className="flex gap-3">
-                                                <div className="mt-2 w-1.5 h-1.5 bg-blue-400 rounded-full" />
-                                                <p className="text-sm text-white/70">{point}</p>
-                                            </div>
-                                        ))}
-                                    </div>
-                                </section>
-
-                                {meeting.detailedSummary?.salesCoachReview !== undefined ?
-                                    <>
-                                        <section className="mb-10">
-                                            <h2 className="text-lg font-semibold text-white mb-4">
-                                                <div className='flex gap-3'>
-                                                    <ChartColumnIncreasing className='text-blue-500' /> Sales Self-Analysis
-                                                </div>
-                                            </h2>
-
-                                            {(() => {
-                                                const validItems = meeting.detailedSummary?.salesCoachReview?.whatIDidRight?.filter(item => {
-                                                    const colonIndex = item.indexOf(':');
-                                                    const content = colonIndex > 0 ? item.substring(colonIndex + 1).trim() : item.trim();
-                                                    const lower = content.toLowerCase();
-                                                    return content &&
-                                                        !lower.startsWith('n/a') &&
-                                                        !lower.startsWith('not ') &&
-                                                        !lower.startsWith('none') &&
-                                                        !lower.startsWith('no ') &&
-                                                        lower !== '-';
-                                                });
-
-                                                if (!validItems || validItems.length === 0) return null;
-
-                                                return (
-                                                    <div className="bg-blue-500/10 border border-blue-500/20 rounded-xl p-4">
-                                                        <p className="text-sm flex gap-2 items-center font-bold text-blue-400 mb-6">
-                                                            <CircleCheck size={18} /> WHAT I DID RIGHT
-                                                        </p>
-                                                        <div className="space-y-2">
-                                                            {validItems.map((item, i) => {
-                                                                const colonIndex = item.indexOf(':');
-                                                                const hasLabel = colonIndex > 0 && colonIndex < 15;
-                                                                const label = hasLabel ? item.substring(0, colonIndex).trim() : null;
-                                                                const content = hasLabel ? item.substring(colonIndex + 1).trim() : item;
-
-                                                                const labelColors: Record<string, string> = {
-                                                                    'MEDDICC': 'text-violet-400 bg-violet-500/10 border-violet-500/20',
-                                                                    'MEDDIC': 'text-violet-400 bg-violet-500/10 border-violet-500/20',
-                                                                    'BANT': 'text-blue-400 bg-blue-500/10 border-blue-500/20',
-                                                                    'SPIN': 'text-emerald-400 bg-emerald-500/10 border-emerald-500/20',
-                                                                    'DISCOVERY': 'text-amber-400 bg-amber-500/10 border-amber-500/20',
-                                                                };
-
-                                                                const labelStyle = label
-                                                                    ? (labelColors[label] || 'text-white/50 bg-white/5 border-white/10')
-                                                                    : '';
-
-                                                                return (
-                                                                    <div key={i} className="flex items-start gap-3 p-3 rounded-lg bg-white/5 border border-white/10">
-                                                                        <span className={`text-[10px] font-bold px-2 py-0.5 rounded border shrink-0 mt-0.5 w-[72px] text-center ${labelStyle}`}>
-                                                                            {label || '—'}
-                                                                        </span>
-                                                                        <div className="w-px self-stretch bg-white/10 shrink-0" />
-                                                                        <p className="text-sm text-white/70 leading-relaxed">{content}</p>
-                                                                    </div>
-                                                                );
-                                                            })}
-                                                        </div>
-                                                    </div>
-                                                );
-                                            })()}
-                                        </section>
-
-                                        <div className="grid grid-cols-2 gap-4 mb-10">
-
-                                            {/* Better Execution */}
-                                            {(() => {
-                                                const validBetterItems = meeting.detailedSummary?.salesCoachReview?.whatICouldHaveDoneBetter
-                                                    ?.filter(item => {
-                                                        const lower = item.toLowerCase().trim();
-                                                        return item.trim() &&
-                                                            !lower.startsWith('n/a') &&
-                                                            !lower.startsWith('not ') &&
-                                                            !lower.startsWith('none') &&
-                                                            !lower.startsWith('no ') &&
-                                                            !lower.startsWith('unknown') &&
-                                                            !lower.startsWith('not discussed') &&
-                                                            !lower.startsWith('not mentioned') &&
-                                                            lower !== '-' &&
-                                                            lower !== '—';
-                                                    });
-
-                                                if (!validBetterItems || validBetterItems.length === 0) return null;
-
-                                                return (
-                                                    <div className="p-4 rounded-xl bg-white/5 border border-white/10">
-                                                        <div className='flex gap-3 mb-3'>
-                                                            <div><TrendingUp size={18} /></div>
-                                                            <div className="text-sm font-bold text-white/50 tracking-wider mb-3">BETTER EXECUTION</div>
-                                                        </div>
-                                                        {validBetterItems.map((item, i) => (
-                                                            <p key={i} className="text-sm italic text-white/70 mb-3">
-                                                                <span className='text-gray-50/30'>•</span> {item}
-                                                            </p>
-                                                        ))}
-                                                    </div>
-                                                );
-                                            })()}
-
-                                            {/* Missed Completely */}
-                                            {(() => {
-                                                const validMissedItems = meeting.detailedSummary?.salesCoachReview?.whatIMissedCompletely
-                                                    ?.map(item => {
-                                                        const colonIndex = item.indexOf(':');
-                                                        const hasLabel = colonIndex > 0 && colonIndex < 25;
-                                                        const label = hasLabel ? item.substring(0, colonIndex).trim() : null;
-                                                        const content = hasLabel ? item.substring(colonIndex + 1).trim() : item;
-                                                        return { label, content };
-                                                    })
-                                                    .filter(({ content }) => {
-                                                        if (!content || content.trim() === '' || content.trim() === '-' || content.trim() === '—') return false;
-                                                        const lower = content.toLowerCase().trim();
-                                                        return (
-                                                            !lower.startsWith('n/a') &&
-                                                            !lower.startsWith('not ') &&
-                                                            !lower.startsWith('none') &&
-                                                            !lower.startsWith('no ') &&
-                                                            !lower.startsWith('unknown') &&
-                                                            !lower.startsWith('not discussed') &&
-                                                            !lower.startsWith('not mentioned') &&
-                                                            lower !== '-' &&
-                                                            lower !== '—'
-                                                        );
-                                                    });
-
-                                                if (!validMissedItems || validMissedItems.length === 0) return null;
-
-                                                return (
-                                                    <div className="p-4 rounded-xl bg-red-500/10 border border-red-500/20">
-                                                        <div className='flex gap-3 mb-3'>
-                                                            <div><TriangleAlert className='text-red-400' size={18} /></div>
-                                                            <div className="text-sm font-bold text-red-400 tracking-wider mb-3">MISSED COMPLETELY</div>
-                                                        </div>
-                                                        {validMissedItems.map(({ label, content }, i) => (
-                                                            <div key={i} className="flex items-start gap-3 mb-2">
-                                                                <span className="text-[10px] font-bold px-2 py-0.5 rounded border shrink-0 mt-0.5 w-[130px] text-center text-red-400 bg-red-500/10 border-red-500/20">
-                                                                    {label || '—'}
-                                                                </span>
-                                                                <div className="w-px self-stretch bg-red-500/20 shrink-0" />
-                                                                <p className="text-sm text-red-300 leading-relaxed">{content}</p>
-                                                            </div>
-                                                        ))}
-                                                    </div>
-                                                );
-                                            })()}
-
+                            <>
+                                {isRegenerating ?
+                                    <motion.div
+                                        initial={{ opacity: 0 }}
+                                        animate={{ opacity: 1 }}
+                                        transition={{ duration: 0.3 }}
+                                    >
+                                        {/* Regenerating banner */}
+                                        <div className="flex items-center gap-3 mb-6 p-3 rounded-xl bg-blue-500/10 border border-blue-500/20">
+                                            <motion.div
+                                                animate={{ rotate: 360 }}
+                                                transition={{ duration: 1.2, repeat: Infinity, ease: 'linear' }}
+                                            >
+                                                <RefreshCw size={13} className="text-blue-400 shrink-0" />
+                                            </motion.div>
+                                            <p className="text-xs text-blue-400 font-medium">
+                                                Regenerating summary — this may take 15–30 seconds...
+                                            </p>
                                         </div>
 
-                                        <section className="mt-8">
-                                            {/* Title */}
-                                            <div className="flex items-center gap-2 mb-10">
-                                                <span className="text-blue-400">✦</span>
-                                                <h2 className="text-lg font-semibold text-white">
-                                                    Next Call Strategy
-                                                </h2>
-                                            </div>
+                                        <Skeleton className='h-[200px] bg-gray-900 w-full mb-3' />
+                                        <div className='flex gap-3'>
+                                            <Skeleton className='h-[400px] bg-gray-900 w-full mb-3' />
+                                            <Skeleton className='h-[400px] bg-gray-900 w-full mb-3' />
+                                        </div>
+                                        <Skeleton className='h-[200px] bg-gray-900 w-full mb-3' />
+                                    </motion.div>
+                                    :
+                                    <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }}>
 
-                                            {/* 2 Column Layout */}
-                                            <div className="grid grid-cols-1 gap-8">
-
-                                                {/* LEFT: QUICK RECAP */}
-                                                <div className="relative pl-5">
-
-                                                    {/* Vertical Blue Line */}
-                                                    <div className="absolute left-0 top-1 w-[2px] h-[100%] bg-blue-500 rounded-full" />
-
-                                                    <p className="text-xs font-semibold tracking-wider text-blue-400 mb-4">
-                                                        QUICK RECAP OF LAST CALL
-                                                    </p>
-
-                                                    <div className="space-y-4">
-                                                        {meeting.detailedSummary?.nextCallPlaybook?.valueAndROI?.quantitative?.map((item, i) => (
-                                                            <div key={i} className="flex gap-3">
-                                                                <div className="mt-2 w-1.5 h-1.5 bg-blue-400 rounded-full shrink-0" />
-                                                                <p className="text-sm text-white/70 leading-relaxed">
-                                                                    {item}
-                                                                </p>
-                                                            </div>
-                                                        ))}
-                                                    </div>
-                                                </div>
-
-                                                {/* RIGHT: CRITICAL QUESTIONS */}
-                                                <div className="relative pl-5">
-
-                                                    {/* Vertical Red Line */}
-                                                    <div className="absolute left-0 top-1 w-[2px] h-[100%] bg-red-400 rounded-full" />
-
-                                                    <p className="text-xs font-semibold tracking-wider text-red-400 mb-4">
-                                                        CRITICAL GAP QUESTIONS
-                                                    </p>
-
-                                                    <div className="space-y-5">
-                                                        {meeting.detailedSummary?.nextCallPlaybook?.questionsToAsk?.map((q, i) => (
-                                                            <p key={i} className="text-sm text-white/80 leading-relaxed">
-                                                                “{q}”
-                                                            </p>
-                                                        ))}
-                                                    </div>
-                                                </div>
-
-                                            </div>
-                                        </section>
-
-                                    </> :
-
-                                    <>
                                         <section className="mb-10">
+                                            <h2 className="text-lg font-semibold flex gap-3 text-white mb-4"><NotepadText className='text-blue-500' /> Call Summary</h2>
 
                                             <div className="space-y-3">
-                                                {/* Action Items - Only show if there are items */}
-                                                {meeting.detailedSummary?.actionItems && meeting.detailedSummary.actionItems.length > 0 && (
-                                                    <section className="mb-8">
-                                                        <div className="flex items-center justify-between mb-4">
-                                                            <EditableTextBlock
-                                                                initialValue={meeting.detailedSummary?.actionItemsTitle || 'Action Items'}
-                                                                onSave={(val) => {
-                                                                    setMeeting(prev => ({
-                                                                        ...prev,
-                                                                        detailedSummary: { ...prev.detailedSummary!, actionItemsTitle: val }
-                                                                    }));
-                                                                    window.electronAPI?.updateMeetingSummary(meeting.id, { actionItemsTitle: val });
-                                                                }}
-                                                                tagName="h2"
-                                                                className="text-lg font-semibold text-text-primary -ml-2 px-2 py-1 rounded-sm transition-colors"
-                                                                multiline={false}
-                                                            />
-                                                        </div>
-                                                        <ul className="space-y-3">
-                                                            {meeting.detailedSummary.actionItems.map((item, i) => (
-                                                                <li key={i} className="flex items-start gap-3 group">
-                                                                    <div className="mt-2 w-1.5 h-1.5 rounded-full bg-text-secondary group-hover:bg-red-500 transition-colors shrink-0" />
-                                                                    <div className="flex-1">
-                                                                        <EditableTextBlock
-                                                                            initialValue={item}
-                                                                            onSave={(val) => handleActionItemSave(i, val)}
-                                                                            tagName="p"
-                                                                            className="text-sm text-text-secondary leading-relaxed -ml-2 px-2 rounded-sm transition-colors"
-                                                                            placeholder="Type an action item..."
-                                                                            onEnter={() => {
-                                                                                const newItems = [...(meeting.detailedSummary?.actionItems || [])];
-                                                                                newItems.splice(i + 1, 0, "");
-                                                                                setMeeting(prev => ({
-                                                                                    ...prev,
-                                                                                    detailedSummary: { ...prev.detailedSummary!, actionItems: newItems }
-                                                                                }));
-                                                                            }}
-                                                                        />
-                                                                    </div>
-                                                                </li>
-                                                            ))}
-                                                        </ul>
-                                                    </section>
-                                                )}
-
-                                                {/* Key Points - Only show if there are items */}
-                                                {meeting.detailedSummary?.keyPoints && meeting.detailedSummary.keyPoints.length > 0 && (
-                                                    <section>
-                                                        <div className="flex items-center justify-between mb-4">
-
-                                                            <EditableTextBlock
-                                                                initialValue={meeting.detailedSummary?.keyPointsTitle || 'Key Points'}
-                                                                onSave={(val) => {
-                                                                    setMeeting(prev => ({
-                                                                        ...prev,
-                                                                        detailedSummary: { ...prev.detailedSummary!, keyPointsTitle: val }
-                                                                    }));
-                                                                    window.electronAPI?.updateMeetingSummary(meeting.id, { keyPointsTitle: val });
-                                                                }}
-                                                                tagName="h2"
-                                                                className="text-lg font-semibold text-text-primary -ml-2 px-2 py-1 rounded-sm transition-colors"
-                                                                multiline={false}
-                                                            />
-                                                        </div>
-                                                        <ul className="space-y-3">
-                                                            {meeting.detailedSummary.keyPoints.map((item, i) => (
-                                                                <li key={i} className="flex items-start gap-3 group">
-                                                                    <div className="mt-2 w-1.5 h-1.5 rounded-full bg-text-secondary group-hover:bg-purple-500 transition-colors shrink-0" />
-                                                                    <div className="flex-1">
-                                                                        <EditableTextBlock
-                                                                            initialValue={item}
-                                                                            onSave={(val) => handleKeyPointSave(i, val)}
-                                                                            tagName="p"
-                                                                            className="text-sm text-text-secondary leading-relaxed -ml-2 px-2 rounded-sm transition-colors"
-                                                                            placeholder="Type a key point..."
-                                                                            onEnter={() => {
-                                                                                const newItems = [...(meeting.detailedSummary?.keyPoints || [])];
-                                                                                newItems.splice(i + 1, 0, "");
-                                                                                setMeeting(prev => ({
-                                                                                    ...prev,
-                                                                                    detailedSummary: { ...prev.detailedSummary!, keyPoints: newItems }
-                                                                                }));
-                                                                            }}
-                                                                        />
-                                                                    </div>
-                                                                </li>
-                                                            ))}
-                                                        </ul>
-                                                    </section>
-                                                )}
+                                                {meeting.detailedSummary?.keyPoints?.map((point, i) => (
+                                                    <div key={i} className="flex gap-3">
+                                                        <div className="mt-2 w-1.5 h-1.5 bg-blue-400 rounded-full" />
+                                                        <p className="text-sm text-white/70">{point}</p>
+                                                    </div>
+                                                ))}
                                             </div>
                                         </section>
-                                    </>
 
+                                        {meeting.detailedSummary?.salesCoachReview !== undefined ?
+                                            <>
+                                                <section className="mb-10">
+                                                    <h2 className="text-lg font-semibold text-white mb-4">
+                                                        <div className='flex gap-3'>
+                                                            <ChartColumnIncreasing className='text-blue-500' /> Sales Self-Analysis
+                                                        </div>
+                                                    </h2>
+
+                                                    {(() => {
+                                                        const validItems = meeting.detailedSummary?.salesCoachReview?.whatIDidRight?.filter(item => {
+                                                            const colonIndex = item.indexOf(':');
+                                                            const content = colonIndex > 0 ? item.substring(colonIndex + 1).trim() : item.trim();
+                                                            const lower = content.toLowerCase();
+                                                            return content &&
+                                                                !lower.startsWith('n/a') &&
+                                                                !lower.startsWith('not ') &&
+                                                                !lower.startsWith('none') &&
+                                                                !lower.startsWith('no ') &&
+                                                                lower !== '-';
+                                                        });
+
+                                                        if (!validItems || validItems.length === 0) return null;
+
+                                                        return (
+                                                            <div className="bg-blue-500/10 border border-blue-500/20 rounded-xl p-4">
+                                                                <p className="text-sm flex gap-2 items-center font-bold text-blue-400 mb-6">
+                                                                    <CircleCheck size={18} /> WHAT I DID RIGHT
+                                                                </p>
+                                                                <div className="space-y-2">
+                                                                    {validItems.map((item, i) => {
+                                                                        const colonIndex = item.indexOf(':');
+                                                                        const hasLabel = colonIndex > 0 && colonIndex < 15;
+                                                                        const label = hasLabel ? item.substring(0, colonIndex).trim() : null;
+                                                                        const content = hasLabel ? item.substring(colonIndex + 1).trim() : item;
+
+                                                                        const labelColors: Record<string, string> = {
+                                                                            'MEDDICC': 'text-violet-400 bg-violet-500/10 border-violet-500/20',
+                                                                            'MEDDIC': 'text-violet-400 bg-violet-500/10 border-violet-500/20',
+                                                                            'BANT': 'text-blue-400 bg-blue-500/10 border-blue-500/20',
+                                                                            'SPIN': 'text-emerald-400 bg-emerald-500/10 border-emerald-500/20',
+                                                                            'DISCOVERY': 'text-amber-400 bg-amber-500/10 border-amber-500/20',
+                                                                        };
+
+                                                                        const labelStyle = label
+                                                                            ? (labelColors[label] || 'text-white/50 bg-white/5 border-white/10')
+                                                                            : '';
+
+                                                                        return (
+                                                                            <div key={i} className="flex items-start gap-3 p-3 rounded-lg bg-white/5 border border-white/10">
+                                                                                <span className={`text-[10px] font-bold px-2 py-0.5 rounded border shrink-0 mt-0.5 w-[72px] text-center ${labelStyle}`}>
+                                                                                    {label || '—'}
+                                                                                </span>
+                                                                                <div className="w-px self-stretch bg-white/10 shrink-0" />
+                                                                                <p className="text-sm text-white/70 leading-relaxed">{content}</p>
+                                                                            </div>
+                                                                        );
+                                                                    })}
+                                                                </div>
+                                                            </div>
+                                                        );
+                                                    })()}
+                                                </section>
+
+                                                <div className="grid grid-cols-2 gap-4 mb-10">
+
+                                                    {/* Better Execution */}
+                                                    {(() => {
+                                                        const validBetterItems = meeting.detailedSummary?.salesCoachReview?.whatICouldHaveDoneBetter
+                                                            ?.filter(item => {
+                                                                const lower = item.toLowerCase().trim();
+                                                                return item.trim() &&
+                                                                    !lower.startsWith('n/a') &&
+                                                                    !lower.startsWith('not ') &&
+                                                                    !lower.startsWith('none') &&
+                                                                    !lower.startsWith('no ') &&
+                                                                    !lower.startsWith('unknown') &&
+                                                                    !lower.startsWith('not discussed') &&
+                                                                    !lower.startsWith('not mentioned') &&
+                                                                    lower !== '-' &&
+                                                                    lower !== '—';
+                                                            });
+
+                                                        if (!validBetterItems || validBetterItems.length === 0) return null;
+
+                                                        return (
+                                                            <div className="p-4 rounded-xl bg-white/5 border border-white/10">
+                                                                <div className='flex gap-3 mb-3'>
+                                                                    <div><TrendingUp size={18} /></div>
+                                                                    <div className="text-sm font-bold text-white/50 tracking-wider mb-3">BETTER EXECUTION</div>
+                                                                </div>
+                                                                {validBetterItems.map((item, i) => (
+                                                                    <p key={i} className="text-sm italic text-white/70 mb-4">
+                                                                        <span className='text-gray-50/30'>•</span> {item}
+                                                                    </p>
+                                                                ))}
+                                                            </div>
+                                                        );
+                                                    })()}
+
+                                                    {/* Missed Completely */}
+                                                    {(() => {
+                                                        const validMissedItems = meeting.detailedSummary?.salesCoachReview?.whatIMissedCompletely
+                                                            ?.map(item => {
+                                                                const colonIndex = item.indexOf(':');
+                                                                const hasLabel = colonIndex > 0 && colonIndex < 25;
+                                                                const label = hasLabel ? item.substring(0, colonIndex).trim() : null;
+                                                                const content = hasLabel ? item.substring(colonIndex + 1).trim() : item;
+                                                                return { label, content };
+                                                            })
+                                                            .filter(({ content }) => {
+                                                                if (!content || content.trim() === '' || content.trim() === '-' || content.trim() === '—') return false;
+                                                                const lower = content.toLowerCase().trim();
+                                                                return (
+                                                                    !lower.startsWith('n/a') &&
+                                                                    !lower.startsWith('not ') &&
+                                                                    !lower.startsWith('none') &&
+                                                                    !lower.startsWith('no ') &&
+                                                                    !lower.startsWith('unknown') &&
+                                                                    !lower.startsWith('not discussed') &&
+                                                                    !lower.startsWith('not mentioned') &&
+                                                                    lower !== '-' &&
+                                                                    lower !== '—'
+                                                                );
+                                                            });
+
+                                                        if (!validMissedItems || validMissedItems.length === 0) return null;
+
+                                                        return (
+                                                            <div className="p-4 rounded-xl bg-red-500/10 border border-red-500/20">
+                                                                <div className='flex gap-3 mb-3'>
+                                                                    <div><TriangleAlert className='text-red-400' size={18} /></div>
+                                                                    <div className="text-sm font-bold text-red-400 tracking-wider mb-3">MISSED COMPLETELY</div>
+                                                                </div>
+                                                                {validMissedItems.map(({ label, content }, i) => (
+                                                                    <div key={i} className="flex items-start gap-3 mb-4">
+                                                                        <span className="text-[10px] font-bold px-2 py-0.5 rounded border shrink-0 mt-0.5 w-[130px] text-center text-red-400 bg-red-500/10 border-red-500/20">
+                                                                            {label || '—'}
+                                                                        </span>
+                                                                        <div className="w-px self-stretch bg-red-500/20 shrink-0" />
+                                                                        <p className="text-sm text-red-300 leading-relaxed">{content}</p>
+                                                                    </div>
+                                                                ))}
+                                                            </div>
+                                                        );
+                                                    })()}
+
+                                                </div>
+
+                                                <section className="mt-8">
+                                                    {/* Title */}
+                                                    <div className="flex items-center gap-2 mb-10">
+                                                        <span className="text-blue-400">✦</span>
+                                                        <h2 className="text-lg font-semibold text-white">
+                                                            Next Call Strategy
+                                                        </h2>
+                                                    </div>
+
+                                                    {/* 2 Column Layout */}
+                                                    <div className="grid grid-cols-1 gap-8">
+
+                                                        {/* LEFT: QUICK RECAP */}
+                                                        <div className="relative pl-5">
+
+                                                            {/* Vertical Blue Line */}
+                                                            <div className="absolute left-0 top-1 w-[2px] h-[100%] bg-blue-500 rounded-full" />
+
+                                                            <p className="text-xs font-semibold tracking-wider text-blue-400 mb-4">
+                                                                QUICK RECAP OF LAST CALL
+                                                            </p>
+
+                                                            <div className="space-y-4">
+                                                                {meeting.detailedSummary?.nextCallPlaybook?.valueAndROI?.quantitative?.map((item, i) => (
+                                                                    <div key={i} className="flex gap-3">
+                                                                        <div className="mt-2 w-1.5 h-1.5 bg-blue-400 rounded-full shrink-0" />
+                                                                        <p className="text-sm text-white/70 leading-relaxed">
+                                                                            {item}
+                                                                        </p>
+                                                                    </div>
+                                                                ))}
+                                                            </div>
+                                                        </div>
+
+                                                        {/* RIGHT: CRITICAL QUESTIONS */}
+                                                        <div className="relative pl-5">
+
+                                                            {/* Vertical Red Line */}
+                                                            <div className="absolute left-0 top-1 w-[2px] h-[100%] bg-red-400 rounded-full" />
+
+                                                            <p className="text-xs font-semibold tracking-wider text-red-400 mb-4">
+                                                                CRITICAL GAP QUESTIONS
+                                                            </p>
+
+                                                            <div className="space-y-5">
+                                                                {meeting.detailedSummary?.nextCallPlaybook?.questionsToAsk?.map((q, i) => (
+                                                                    <p key={i} className="text-sm text-white/80 leading-relaxed">
+                                                                        “{q}”
+                                                                    </p>
+                                                                ))}
+                                                            </div>
+                                                        </div>
+
+                                                    </div>
+                                                </section>
+
+                                            </> :
+
+                                            <>
+                                                <section className="mb-10">
+
+                                                    <div className="space-y-3">
+                                                        {/* Action Items - Only show if there are items */}
+                                                        {meeting.detailedSummary?.actionItems && meeting.detailedSummary.actionItems.length > 0 && (
+                                                            <section className="mb-8">
+                                                                <div className="flex items-center justify-between mb-4">
+                                                                    <EditableTextBlock
+                                                                        initialValue={meeting.detailedSummary?.actionItemsTitle || 'Action Items'}
+                                                                        onSave={(val) => {
+                                                                            setMeeting(prev => ({
+                                                                                ...prev,
+                                                                                detailedSummary: { ...prev.detailedSummary!, actionItemsTitle: val }
+                                                                            }));
+                                                                            window.electronAPI?.updateMeetingSummary(meeting.id, { actionItemsTitle: val });
+                                                                        }}
+                                                                        tagName="h2"
+                                                                        className="text-lg font-semibold text-text-primary -ml-2 px-2 py-1 rounded-sm transition-colors"
+                                                                        multiline={false}
+                                                                    />
+                                                                </div>
+                                                                <ul className="space-y-3">
+                                                                    {meeting.detailedSummary.actionItems.map((item, i) => (
+                                                                        <li key={i} className="flex items-start gap-3 group">
+                                                                            <div className="mt-2 w-1.5 h-1.5 rounded-full bg-text-secondary group-hover:bg-red-500 transition-colors shrink-0" />
+                                                                            <div className="flex-1">
+                                                                                <EditableTextBlock
+                                                                                    initialValue={item}
+                                                                                    onSave={(val) => handleActionItemSave(i, val)}
+                                                                                    tagName="p"
+                                                                                    className="text-sm text-text-secondary leading-relaxed -ml-2 px-2 rounded-sm transition-colors"
+                                                                                    placeholder="Type an action item..."
+                                                                                    onEnter={() => {
+                                                                                        const newItems = [...(meeting.detailedSummary?.actionItems || [])];
+                                                                                        newItems.splice(i + 1, 0, "");
+                                                                                        setMeeting(prev => ({
+                                                                                            ...prev,
+                                                                                            detailedSummary: { ...prev.detailedSummary!, actionItems: newItems }
+                                                                                        }));
+                                                                                    }}
+                                                                                />
+                                                                            </div>
+                                                                        </li>
+                                                                    ))}
+                                                                </ul>
+                                                            </section>
+                                                        )}
+
+                                                        {/* Key Points - Only show if there are items */}
+                                                        {meeting.detailedSummary?.keyPoints && meeting.detailedSummary.keyPoints.length > 0 && (
+                                                            <section>
+                                                                <div className="flex items-center justify-between mb-4">
+
+                                                                    <EditableTextBlock
+                                                                        initialValue={meeting.detailedSummary?.keyPointsTitle || 'Key Points'}
+                                                                        onSave={(val) => {
+                                                                            setMeeting(prev => ({
+                                                                                ...prev,
+                                                                                detailedSummary: { ...prev.detailedSummary!, keyPointsTitle: val }
+                                                                            }));
+                                                                            window.electronAPI?.updateMeetingSummary(meeting.id, { keyPointsTitle: val });
+                                                                        }}
+                                                                        tagName="h2"
+                                                                        className="text-lg font-semibold text-text-primary -ml-2 px-2 py-1 rounded-sm transition-colors"
+                                                                        multiline={false}
+                                                                    />
+                                                                </div>
+                                                                <ul className="space-y-3">
+                                                                    {meeting.detailedSummary.keyPoints.map((item, i) => (
+                                                                        <li key={i} className="flex items-start gap-3 group">
+                                                                            <div className="mt-2 w-1.5 h-1.5 rounded-full bg-text-secondary group-hover:bg-purple-500 transition-colors shrink-0" />
+                                                                            <div className="flex-1">
+                                                                                <EditableTextBlock
+                                                                                    initialValue={item}
+                                                                                    onSave={(val) => handleKeyPointSave(i, val)}
+                                                                                    tagName="p"
+                                                                                    className="text-sm text-text-secondary leading-relaxed -ml-2 px-2 rounded-sm transition-colors"
+                                                                                    placeholder="Type a key point..."
+                                                                                    onEnter={() => {
+                                                                                        const newItems = [...(meeting.detailedSummary?.keyPoints || [])];
+                                                                                        newItems.splice(i + 1, 0, "");
+                                                                                        setMeeting(prev => ({
+                                                                                            ...prev,
+                                                                                            detailedSummary: { ...prev.detailedSummary!, keyPoints: newItems }
+                                                                                        }));
+                                                                                    }}
+                                                                                />
+                                                                            </div>
+                                                                        </li>
+                                                                    ))}
+                                                                </ul>
+                                                            </section>
+                                                        )}
+                                                    </div>
+                                                </section>
+                                            </>
+
+                                        }
+
+
+                                    </motion.div>
                                 }
 
-
-                            </motion.div>
+                            </>
                         )}
 
                         {activeTab === 'transcript' && (
