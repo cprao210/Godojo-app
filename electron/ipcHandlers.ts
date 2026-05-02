@@ -1977,6 +1977,7 @@ export function initializeIpcHandlers(appState: AppState): void {
 
   safeHandle("generate-followup-email", async (_, input: any) => {
     try {
+
       const { FOLLOWUP_EMAIL_PROMPT, GROQ_FOLLOWUP_EMAIL_PROMPT } = require('./llm/prompts');
       const { buildFollowUpEmailPromptInput } = require('./utils/emailUtils');
 

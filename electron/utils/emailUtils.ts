@@ -51,6 +51,7 @@ export function buildGmailComposeUrl(to: string, subject: string, body: string):
     return `https://mail.google.com/mail/?${params.toString()}`;
 }
 
+
 /**
  * Generate a suggested email subject from meeting title
  */
@@ -78,37 +79,47 @@ export interface FollowUpEmailInput {
     tone?: 'friendly' | 'neutral' | 'formal';
 }
 
-export function buildFollowUpEmailPromptInput(input: FollowUpEmailInput): string {
+export function buildFollowUpEmailPromptInput(input: any): string {
     const parts: string[] = [];
 
-    parts.push(`Meeting Type: ${input.meeting_type}`);
-    parts.push(`Title: ${input.title}`);
+    if (input.title) parts.push(`Meeting Title: ${input.title}`);
+    if (input.date) parts.push(`Date: ${new Date(input.date).toLocaleDateString()}`);
+    if (input.leadName) parts.push(`Prospect Name: ${input.leadName}`);
+    if (input.company) parts.push(`Company: ${input.company}`);
 
-    if (input.recipient_name) {
-        parts.push(`Recipient Name: ${input.recipient_name}`);
+    if (input.overview) parts.push(`\nCall Overview:\n${input.overview}`);
+
+    if (input.keyPoints?.length) {
+        parts.push(`\nKey Discussion Points:\n${input.keyPoints.map((p: string) => `- ${p}`).join('\n')}`);
     }
 
-    if (input.sender_name) {
-        parts.push(`Sender Name: ${input.sender_name}`);
+    if (input.bant) {
+        parts.push(`\nBANT:\n- Budget: ${input.bant.budget?.detail || 'Unknown'}\n- Authority: ${input.bant.authority?.detail || 'Unknown'}\n- Need: ${input.bant.need?.detail || 'Unknown'}\n- Timeline: ${input.bant.timeline?.detail || 'Unknown'}`);
     }
 
-    if (input.summary) {
-        parts.push(`Summary: ${input.summary}`);
+    if (input.followUpEmail?.sections) {
+        const s = input.followUpEmail.sections;
+        if (s.whatWeDiscussed?.length) parts.push(`\nWhat Was Discussed:\n${s.whatWeDiscussed.map((p: string) => `- ${p}`).join('\n')}`);
+        if (s.currentProcess) parts.push(`\nCurrent Process:\n${s.currentProcess}`);
+        if (s.scopeOfImprovement?.length) parts.push(`\nScope of Improvement:\n${s.scopeOfImprovement.map((p: string) => `- ${p}`).join('\n')}`);
+        if (s.howOurSolutionHelps?.length) parts.push(`\nHow Solution Helps:\n${s.howOurSolutionHelps.map((p: string) => `- ${p}`).join('\n')}`);
+        if (s.expectedBusinessImpact?.length) parts.push(`\nExpected Business Impact:\n${s.expectedBusinessImpact.map((p: string) => `- ${p}`).join('\n')}`);
+        if (s.nextSteps?.length) parts.push(`\nAgreed Next Steps:\n${s.nextSteps.map((p: string) => `- ${p}`).join('\n')}`);
     }
 
-    if (input.action_items && input.action_items.length > 0) {
-        parts.push(`Action Items:\n${input.action_items.map(item => `- ${item}`).join('\n')}`);
+    if (input.actionItems?.length) {
+        parts.push(`\nAction Items:\n${input.actionItems.map((a: string) => `- ${a}`).join('\n')}`);
     }
 
-    if (input.key_points && input.key_points.length > 0) {
-        parts.push(`Key Points:\n${input.key_points.map(point => `- ${point}`).join('\n')}`);
+    if (input.transcript?.length) {
+        const transcriptText = input.transcript
+            .slice(-60) // last 60 segments to stay within token limits
+            .map((t: any) => `${t.speaker === 'user' ? 'Rep' : 'Prospect'}: ${t.text}`)
+            .join('\n');
+        parts.push(`\nTranscript Excerpt:\n${transcriptText}`);
     }
 
-    if (input.tone) {
-        parts.push(`Tone: ${input.tone}`);
-    }
-
-    return parts.join('\n\n');
+    return parts.join('\n');
 }
 
 /**

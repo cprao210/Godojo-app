@@ -53,11 +53,11 @@ const summaryPrompt = `You are an expert B2B sales analyst. A sales call just en
 
     "salesCoachReview": {
          "whatIDidRight": [
-            "MEDDICC: [what the rep did well from a MEDDICC perspective — e.g. Identified Economic Buyer as [name] early in the conversation]",
-            "MEDDICC: [second MEDDICC win — e.g. Mapped Decision Process involving [stakeholders] and [steps]]",
-            "BANT: [what the rep did well from a BANT perspective — e.g. Confirmed Budget allocation specifically for [purpose]]",
-            "BANT: [second BANT win — e.g. Solidified Timeline as [deadline] for [specific reason]]",
-            "SPIN: [what the rep did well from a SPIN perspective — e.g. Used Implication Question to quantify cost of [problem] at $[amount]/mo]"
+            "MEDDICC [ComponentName]: [what the rep did well — e.g. MEDDICC Metrics: Quantified the cost of manual mapping at $15k/mo using an implication question]",
+            "MEDDICC [ComponentName]: [second MEDDICC win — e.g. MEDDICC EconomicBuyer: Identified Sarah Chen (CFO) as the budget owner early in the conversation]",
+            "BANT [ComponentName]: [BANT win — e.g. BANT Budget: Confirmed budget allocated specifically for Operational Efficiency in FY24]",
+            "BANT [ComponentName]: [second BANT win — e.g. BANT Timeline: Solidified Dec 15th as a hard deadline for system parity]",
+            "MEDDICC [ComponentName]: [optional additional win if applicable — else omit this item entirely]"
         ],
         "whatICouldHaveDoneBetter": [
             "Should have pushed harder on [specific topic from call] — ask: [exact question]",
@@ -101,7 +101,9 @@ RULES:
 - salesCoachReview.whatIDidRight: EVERY item MUST start with a framework label: MEDDICC: | BANT: | SPIN: | DISCOVERY:
 - salesCoachReview.whatIMissedCompletely: EVERY item MUST start with a gap category: Identify Champion: | Metrics: | Authority: | Process: | Pain: | Timeline: | Budget:
 - Reference specific moments, names, numbers from the transcript — never be generic
-- salesCoachReview.whatIDidRight: items MUST follow this strict label sequence: MEDDICC, MEDDICC, BANT, BANT, SPIN. Never randomize the order.
+- salesCoachReview.whatIDidRight: EVERY item MUST start with a framework label followed by the component name: e.g. "MEDDICC Metrics:", "MEDDICC Champion:", "BANT Budget:", "BANT Timeline:"
+- salesCoachReview.whatIDidRight: return ONLY items where something genuinely happened in the call — do NOT pad with generic or empty items. Minimum 2, maximum 6.
+- salesCoachReview.whatIDidRight: group MEDDICC items first, then BANT items. No fixed count required — only include items grounded in actual transcript moments.
 - salesCoachReview.whatIMissedCompletely: items MUST follow this strict label sequence: Identify Champion, Metrics, Authority, Process, Pain. Never randomize the order.
 `;
 

@@ -469,7 +469,6 @@ const MeetingDetails: React.FC<MeetingDetailsProps> = ({ meeting: initialMeeting
     };
 
     const handleFollowUpEmail = async () => {
-        console.log('Opening follow-up email modal...');
         setIsFollowUpEmailOpen(true);
     };
 
@@ -512,29 +511,8 @@ const MeetingDetails: React.FC<MeetingDetailsProps> = ({ meeting: initialMeeting
                                         <Mail size={12} />
                                         Follow-up email
                                     </button>
-                                    {/* <span className="text-xs px-3 py-1 rounded-full bg-blue-500/20 text-blue-400 border border-blue-500/30">
-                                        HIGH PRIORITY
-                                    </span> */}
                                 </div>
 
-                                {/* <div className="grid grid-cols-3 gap-4 p-4 rounded-xl bg-white/5 border border-white/10">
-                                    <div>
-                                        <p className="text-xs text-white/40">DATE</p>
-                                        <p className="text-sm text-white">{new Date(meeting.date).toLocaleDateString('en-US', {
-                                            year: 'numeric',
-                                            month: 'long',
-                                            day: 'numeric',
-                                        })}</p>
-                                    </div>
-                                    <div>
-                                        <p className="text-xs text-white/40">LEAD NAME</p>
-                                        <p className="text-sm text-white">{meeting.detailedSummary?.leadName || 'Unknown'}</p>
-                                    </div>
-                                    <div>
-                                        <p className="text-xs text-white/40">COMPANY</p>
-                                        <p className="text-sm text-white">{meeting.detailedSummary?.company || 'Unknown'}</p>
-                                    </div>
-                                </div> */}
                             </div>
                         </div>
 
@@ -620,7 +598,7 @@ const MeetingDetails: React.FC<MeetingDetailsProps> = ({ meeting: initialMeeting
                                                 <RefreshCw size={13} className="text-blue-400 shrink-0" />
                                             </motion.div>
                                             <p className="text-xs text-blue-400 font-medium">
-                                                Regenerating summary — this may take 15–30 seconds...
+                                                Regenerating summary — this may take 15-30 seconds...
                                             </p>
                                         </div>
 
@@ -657,7 +635,7 @@ const MeetingDetails: React.FC<MeetingDetailsProps> = ({ meeting: initialMeeting
                                                     </h2>
 
                                                     {(() => {
-                                                        const validItems = meeting.detailedSummary?.salesCoachReview?.whatIDidRight?.filter(item => {
+                                                        const allItems = meeting.detailedSummary?.salesCoachReview?.whatIDidRight?.filter(item => {
                                                             const colonIndex = item.indexOf(':');
                                                             const content = colonIndex > 0 ? item.substring(colonIndex + 1).trim() : item.trim();
                                                             const lower = content.toLowerCase();
@@ -669,39 +647,117 @@ const MeetingDetails: React.FC<MeetingDetailsProps> = ({ meeting: initialMeeting
                                                                 lower !== '-';
                                                         });
 
-                                                        if (!validItems || validItems.length === 0) return null;
+                                                        if (!allItems || allItems.length === 0) return null;
+
+                                                        // ── Group by framework prefix ──────────────────────────────
+                                                        const groups: Record<string, { component: string; content: string }[]> = {};
+                                                        const ORDER = ['MEDDICC', 'BANT', 'DISCOVERY', 'OTHER'];
+
+                                                        allItems.forEach(item => {
+                                                            const colonIndex = item.indexOf(':');
+                                                            const hasLabel = colonIndex > 0 && colonIndex < 30;
+                                                            const rawLabel = hasLabel ? item.substring(0, colonIndex).trim() : 'OTHER';
+                                                            const content = hasLabel ? item.substring(colonIndex + 1).trim() : item;
+                                                            const upper = rawLabel.toUpperCase();
+
+                                                            let framework = 'OTHER';
+                                                            let component = '';
+
+                                                            if (upper.startsWith('MEDDICC') || upper.startsWith('MEDDIC')) {
+                                                                framework = 'MEDDICC';
+                                                                component = rawLabel.replace(/^MEDDIC{1,2}\s*/i, '').trim();
+                                                            } else if (upper.startsWith('BANT')) {
+                                                                framework = 'BANT';
+                                                                component = rawLabel.replace(/^BANT\s*/i, '').trim();
+                                                            } else if (upper.startsWith('DISCOVERY')) {
+                                                                framework = 'DISCOVERY';
+                                                                component = rawLabel.replace(/^DISCOVERY\s*/i, '').trim();
+                                                            }
+
+                                                            if (!groups[framework]) groups[framework] = [];
+                                                            groups[framework].push({ component, content });
+                                                        });
+
+                                                        const frameworkConfig: Record<string, {
+                                                            headerBg: string; headerBorder: string; headerText: string;
+                                                            dot: string; cardBg: string; cardBorder: string;
+                                                            badgeBg: string; badgeText: string; badgeBorder: string;
+                                                        }> = {
+                                                            'MEDDICC': {
+                                                                headerBg: 'bg-violet-500/10', headerBorder: 'border-violet-500/25', headerText: 'text-violet-300',
+                                                                dot: 'bg-violet-400', cardBg: 'bg-violet-500/5', cardBorder: 'border-violet-500/15',
+                                                                badgeBg: 'bg-violet-500/15', badgeText: 'text-violet-300', badgeBorder: 'border-violet-500/30',
+                                                            },
+                                                            'BANT': {
+                                                                headerBg: 'bg-blue-500/10', headerBorder: 'border-blue-500/25', headerText: 'text-blue-300',
+                                                                dot: 'bg-blue-400', cardBg: 'bg-blue-500/5', cardBorder: 'border-blue-500/15',
+                                                                badgeBg: 'bg-blue-500/15', badgeText: 'text-blue-300', badgeBorder: 'border-blue-500/30',
+                                                            },
+                                                            'DISCOVERY': {
+                                                                headerBg: 'bg-amber-500/10', headerBorder: 'border-amber-500/25', headerText: 'text-amber-300',
+                                                                dot: 'bg-amber-400', cardBg: 'bg-amber-500/5', cardBorder: 'border-amber-500/15',
+                                                                badgeBg: 'bg-amber-500/15', badgeText: 'text-amber-300', badgeBorder: 'border-amber-500/30',
+                                                            },
+                                                            'OTHER': {
+                                                                headerBg: 'bg-white/5', headerBorder: 'border-white/10', headerText: 'text-white/50',
+                                                                dot: 'bg-white/30', cardBg: 'bg-white/[0.03]', cardBorder: 'border-white/[0.08]',
+                                                                badgeBg: 'bg-white/10', badgeText: 'text-white/50', badgeBorder: 'border-white/15',
+                                                            },
+                                                        };
+
+                                                        // Render in fixed order: MEDDICC → BANT → DISCOVERY → OTHER
+                                                        const sortedFrameworks = ORDER.filter(f => groups[f]);
 
                                                         return (
-                                                            <div className="bg-blue-500/10 border border-blue-500/20 rounded-xl p-4">
-                                                                <p className="text-sm flex gap-2 items-center font-bold text-blue-400 mb-6">
-                                                                    <CircleCheck size={18} /> WHAT I DID RIGHT
-                                                                </p>
-                                                                <div className="space-y-2">
-                                                                    {validItems.map((item, i) => {
-                                                                        const colonIndex = item.indexOf(':');
-                                                                        const hasLabel = colonIndex > 0 && colonIndex < 15;
-                                                                        const label = hasLabel ? item.substring(0, colonIndex).trim() : null;
-                                                                        const content = hasLabel ? item.substring(colonIndex + 1).trim() : item;
+                                                            <div className="mb-2">
+                                                                {/* Section header */}
+                                                                <div className="flex items-center gap-2 mb-4">
+                                                                    <CircleCheck size={14} className="text-emerald-400" />
+                                                                    <p className="text-xs font-bold uppercase tracking-[0.12em] text-emerald-400">What I Did Right</p>
+                                                                    <div className="flex-1 h-px bg-white/[0.06]" />
+                                                                </div>
 
-                                                                        const labelColors: Record<string, string> = {
-                                                                            'MEDDICC': 'text-violet-400 bg-violet-500/10 border-violet-500/20',
-                                                                            'MEDDIC': 'text-violet-400 bg-violet-500/10 border-violet-500/20',
-                                                                            'BANT': 'text-blue-400 bg-blue-500/10 border-blue-500/20',
-                                                                            'SPIN': 'text-emerald-400 bg-emerald-500/10 border-emerald-500/20',
-                                                                            'DISCOVERY': 'text-amber-400 bg-amber-500/10 border-amber-500/20',
-                                                                        };
-
-                                                                        const labelStyle = label
-                                                                            ? (labelColors[label] || 'text-white/50 bg-white/5 border-white/10')
-                                                                            : '';
-
+                                                                {/* One card per framework */}
+                                                                <div className="space-y-3">
+                                                                    {sortedFrameworks.map(framework => {
+                                                                        const items = groups[framework];
+                                                                        const cfg = frameworkConfig[framework];
                                                                         return (
-                                                                            <div key={i} className="flex items-start gap-3 p-3 rounded-lg bg-white/5 border border-white/10">
-                                                                                <span className={`text-[10px] font-bold px-2 py-0.5 rounded border shrink-0 mt-0.5 w-[72px] text-center ${labelStyle}`}>
-                                                                                    {label || '—'}
-                                                                                </span>
-                                                                                <div className="w-px self-stretch bg-white/10 shrink-0" />
-                                                                                <p className="text-sm text-white/70 leading-relaxed">{content}</p>
+                                                                            <div key={framework} className={`rounded-xl border ${cfg.headerBorder} overflow-hidden`}>
+
+                                                                                {/* Framework header row */}
+                                                                                <div className={`flex items-center gap-2.5 px-4 py-2.5 ${cfg.headerBg} border-b ${cfg.headerBorder}`}>
+                                                                                    <div className={`w-1.5 h-1.5 rounded-full ${cfg.dot}`} />
+                                                                                    <span className={`text-[10px] font-bold uppercase tracking-[0.14em] ${cfg.headerText}`}>
+                                                                                        {framework}
+                                                                                    </span>
+                                                                                    <span className="text-[10px] text-white/20 font-medium ml-1">
+                                                                                        {items.length} {items.length === 1 ? 'point' : 'points'}
+                                                                                    </span>
+                                                                                </div>
+
+                                                                                {/* Items inside this framework */}
+                                                                                <div className="divide-y divide-white/[0.04]">
+                                                                                    {items.map((item, i) => (
+                                                                                        <div key={i} className="flex items-start gap-3 p-3 rounded-lg bg-white/5 border border-white/10">
+                                                                                            {item.component && <span className={`text-[10px] font-bold px-2 py-0.5 rounded border shrink-0 mt-0.5 w-[100px] text-center ${cfg.badgeBg} ${cfg.badgeText} ${cfg.badgeBorder}`}>
+                                                                                                {item.component}
+                                                                                            </span>}
+                                                                                            <div className="w-px self-stretch bg-white/10 shrink-0" />
+                                                                                            <p className="text-sm text-white/70 leading-relaxed">{item.content}</p>
+                                                                                        </div>
+
+                                                                                        // <div key={i} className={`flex items-start gap-3 px-4 py-3 ${cfg.cardBg}`}>
+                                                                                        //     {/* Component badge — only show if there's a component name */}
+                                                                                        //     {item.component && (
+                                                                                        //         <span className={`text-[9px] font-bold px-2 py-0.5 rounded-md border shrink-0 mt-0.5 whitespace-nowrap ${cfg.badgeBg} ${cfg.badgeText} ${cfg.badgeBorder}`}>
+                                                                                        //             {item.component}
+                                                                                        //         </span>
+                                                                                        //     )}
+                                                                                        //     <p className="text-sm text-white/65 leading-relaxed">{item.content}</p>
+                                                                                        // </div>
+                                                                                    ))}
+                                                                                </div>
                                                                             </div>
                                                                         );
                                                                     })}
@@ -752,7 +808,7 @@ const MeetingDetails: React.FC<MeetingDetailsProps> = ({ meeting: initialMeeting
                                                         const validMissedItems = meeting.detailedSummary?.salesCoachReview?.whatIMissedCompletely
                                                             ?.map(item => {
                                                                 const colonIndex = item.indexOf(':');
-                                                                const hasLabel = colonIndex > 0 && colonIndex < 25;
+                                                                const hasLabel = colonIndex > 0 && colonIndex < 30;
                                                                 const label = hasLabel ? item.substring(0, colonIndex).trim() : null;
                                                                 const content = hasLabel ? item.substring(colonIndex + 1).trim() : item;
                                                                 return { label, content };
