@@ -1,4 +1,6 @@
 export interface ElectronAPI {
+  getZoomCalendarStatus(): any
+  zoomCalendarConnect(): any
   updateContentDimensions: (dimensions: {
     width: number
     height: number

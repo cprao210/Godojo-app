@@ -927,7 +927,7 @@ export function initializeIpcHandlers(appState: AppState): void {
         hasOpenaiKey: hasKey(creds.openaiApiKey),
         hasClaudeKey: hasKey(creds.claudeApiKey),
         googleServiceAccountPath: creds.googleServiceAccountPath || null,
-        sttProvider: creds.sttProvider || 'google',
+        sttProvider: creds.sttProvider || 'azure',
         groqSttModel: creds.groqSttModel || 'whisper-large-v3-turbo',
         hasSttGroqKey: hasKey(creds.groqSttApiKey),
         hasSttOpenaiKey: hasKey(creds.openAiSttApiKey),
@@ -946,7 +946,7 @@ export function initializeIpcHandlers(appState: AppState): void {
         claudePreferredModel: creds.claudePreferredModel || undefined,
       };
     } catch (error: any) {
-      return { hasGeminiKey: false, hasGroqKey: false, hasOpenaiKey: false, hasClaudeKey: false, googleServiceAccountPath: null, sttProvider: 'google', groqSttModel: 'whisper-large-v3-turbo', hasSttGroqKey: false, hasSttOpenaiKey: false, hasDeepgramKey: false, hasElevenLabsKey: false, hasAzureKey: false, azureRegion: 'eastus', hasIbmWatsonKey: false, ibmWatsonRegion: 'us-south', hasSonioxKey: false, hasTavilyKey: false };
+      return { hasGeminiKey: false, hasGroqKey: false, hasOpenaiKey: false, hasClaudeKey: false, googleServiceAccountPath: null, sttProvider: 'azure', groqSttModel: 'whisper-large-v3-turbo', hasSttGroqKey: false, hasSttOpenaiKey: false, hasDeepgramKey: false, hasElevenLabsKey: false, hasAzureKey: false, azureRegion: 'southeastasia', hasIbmWatsonKey: false, ibmWatsonRegion: 'us-south', hasSonioxKey: false, hasTavilyKey: false };
     }
   });
 
@@ -1897,7 +1897,17 @@ export function initializeIpcHandlers(appState: AppState): void {
 
   safeHandle("get-upcoming-events", async () => {
     const { CalendarManager } = require('./services/CalendarManager');
-    return CalendarManager.getInstance().getUpcomingEvents();
+    const { ZoomCalendarManager } = require('./services/ZoomCalendarManager');
+
+    const [google, zoom] = await Promise.all([
+      CalendarManager.getInstance().getUpcomingEvents(),
+      ZoomCalendarManager.getInstance().getUpcomingEvents(),
+    ]);
+
+    return [...google, ...zoom].sort(
+      (a, b) => new Date(a.startTime).getTime() - new Date(b.startTime).getTime()
+    );
+
   });
 
   safeHandle("calendar-refresh", async () => {
@@ -1905,6 +1915,44 @@ export function initializeIpcHandlers(appState: AppState): void {
     await CalendarManager.getInstance().refreshState();
     return { success: true };
   });
+
+  // ==========================================
+  // Zoom Calendar Integration Handlers
+  // ==========================================
+
+  safeHandle("zoom-calendar-connect", async () => {
+    try {
+      const { ZoomCalendarManager } = require('./services/ZoomCalendarManager');
+      await ZoomCalendarManager.getInstance().startAuthFlow();
+      return { success: true };
+    } catch (error) {
+      console.error("Zoom Calendar auth error:", error);
+      return { success: false, error: String(error) };
+    }
+  });
+
+  safeHandle("zoom-calendar-disconnect", async () => {
+    const { ZoomCalendarManager } = require('./services/ZoomCalendarManager');
+    await ZoomCalendarManager.getInstance().disconnect();
+    return { success: true };
+  });
+
+  safeHandle("get-zoom-calendar-status", async () => {
+    const { ZoomCalendarManager } = require('./services/ZoomCalendarManager');
+    return ZoomCalendarManager.getInstance().getConnectionStatus();
+  });
+
+  safeHandle("get-zoom-upcoming-events", async () => {
+    const { ZoomCalendarManager } = require('./services/ZoomCalendarManager');
+    return ZoomCalendarManager.getInstance().getUpcomingEvents();
+  });
+
+  safeHandle("zoom-calendar-refresh", async () => {
+    const { ZoomCalendarManager } = require('./services/ZoomCalendarManager');
+    await ZoomCalendarManager.getInstance().refreshState();
+    return { success: true };
+  });
+
 
   // ==========================================
   // Sales Meeting Brief Handler (Streaming + Cached)
