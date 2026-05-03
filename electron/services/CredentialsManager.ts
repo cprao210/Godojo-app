@@ -107,7 +107,7 @@ export class CredentialsManager {
     }
 
     public getSttProvider(): 'google' | 'groq' | 'openai' | 'deepgram' | 'elevenlabs' | 'azure' | 'ibmwatson' | 'soniox' {
-        return this.credentials.sttProvider || 'google';
+        return this.credentials.sttProvider || 'azure';
     }
 
     public getDeepgramApiKey(): string | undefined {
@@ -131,11 +131,11 @@ export class CredentialsManager {
     }
 
     public getAzureApiKey(): string | undefined {
-        return this.credentials.azureApiKey;
+        return this.credentials.azureApiKey || process.env.AZURE_SPEECH_API_KEY;
     }
 
     public getAzureRegion(): string {
-        return this.credentials.azureRegion || 'eastus';
+        return this.credentials.azureRegion || process.env.AZURE_SPEECH_REGION || 'southeastasia';
     }
 
     public getIbmWatsonApiKey(): string | undefined {
