@@ -1876,7 +1876,17 @@ export function initializeIpcHandlers(appState: AppState): void {
 
   safeHandle("get-upcoming-events", async () => {
     const { CalendarManager } = require('./services/CalendarManager');
-    return CalendarManager.getInstance().getUpcomingEvents();
+    const { ZoomCalendarManager } = require('./services/ZoomCalendarManager');
+
+    const [google, zoom] = await Promise.all([
+      CalendarManager.getInstance().getUpcomingEvents(),
+      ZoomCalendarManager.getInstance().getUpcomingEvents(),
+    ]);
+
+    return [...google, ...zoom].sort(
+      (a, b) => new Date(a.startTime).getTime() - new Date(b.startTime).getTime()
+    );
+
   });
 
   safeHandle("calendar-refresh", async () => {
@@ -1884,6 +1894,44 @@ export function initializeIpcHandlers(appState: AppState): void {
     await CalendarManager.getInstance().refreshState();
     return { success: true };
   });
+
+  // ==========================================
+  // Zoom Calendar Integration Handlers
+  // ==========================================
+
+  safeHandle("zoom-calendar-connect", async () => {
+    try {
+      const { ZoomCalendarManager } = require('./services/ZoomCalendarManager');
+      await ZoomCalendarManager.getInstance().startAuthFlow();
+      return { success: true };
+    } catch (error) {
+      console.error("Zoom Calendar auth error:", error);
+      return { success: false, error: String(error) };
+    }
+  });
+
+  safeHandle("zoom-calendar-disconnect", async () => {
+    const { ZoomCalendarManager } = require('./services/ZoomCalendarManager');
+    await ZoomCalendarManager.getInstance().disconnect();
+    return { success: true };
+  });
+
+  safeHandle("get-zoom-calendar-status", async () => {
+    const { ZoomCalendarManager } = require('./services/ZoomCalendarManager');
+    return ZoomCalendarManager.getInstance().getConnectionStatus();
+  });
+
+  safeHandle("get-zoom-upcoming-events", async () => {
+    const { ZoomCalendarManager } = require('./services/ZoomCalendarManager');
+    return ZoomCalendarManager.getInstance().getUpcomingEvents();
+  });
+
+  safeHandle("zoom-calendar-refresh", async () => {
+    const { ZoomCalendarManager } = require('./services/ZoomCalendarManager');
+    await ZoomCalendarManager.getInstance().refreshState();
+    return { success: true };
+  });
+
 
   // ==========================================
   // Sales Meeting Brief Handler (Streaming + Cached)

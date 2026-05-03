@@ -1,4 +1,6 @@
 export interface ElectronAPI {
+  getZoomCalendarStatus(): any
+  zoomCalendarConnect(): any
   updateContentDimensions: (dimensions: {
     width: number
     height: number
@@ -250,7 +252,7 @@ export interface ElectronAPI {
   onSalesBriefStreamToken: (callback: (token: string) => void) => () => void
   onSalesBriefStreamDone: (callback: () => void) => () => void
   onSalesBriefStreamError: (callback: (error: string) => void) => () => void
-  
+
   // Auto-Update
   onUpdateAvailable: (callback: (info: any) => void) => () => void
   onUpdateDownloaded: (callback: (info: any) => void) => () => void

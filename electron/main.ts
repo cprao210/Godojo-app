@@ -2388,6 +2388,16 @@ async function initializeApp() {
     console.error('[Main] Failed to initialize CalendarManager:', e);
   }
 
+  // Initialize Zoom Calendar Manager
+  try {
+    const { ZoomCalendarManager } = require('./services/ZoomCalendarManager');
+    const zoomCal = ZoomCalendarManager.getInstance();
+    zoomCal.init();
+    console.log('[Main] ZoomCalendarManager initialized');
+  } catch (e) {
+    console.error('[Main] Failed to initialize ZoomCalendarManager:', e);
+  }
+
   // Recover unprocessed meetings (persistence check)
   appState.getIntelligenceManager().recoverUnprocessedMeetings().catch(err => {
     console.error('[Main] Failed to recover unprocessed meetings:', err);
