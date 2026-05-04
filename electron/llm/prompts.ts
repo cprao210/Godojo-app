@@ -992,28 +992,28 @@ Hi [prospect first name],
 
 [1-2 sentence warm opener referencing something specific from the call — not generic]
 
-🗒️ What We Discussed
+What We Discussed
 - [bullet]
 - [bullet]
 - [bullet]
 
-⚙️ Current Process
+Current Process
 - [bullet describing their current workflow/pain as discussed]
 - [bullet]
 
-🔍 Scope of Improvement
+Scope of Improvement
 - [bullet on gap or problem identified]
 - [bullet]
 
-💡 How Our Solution Helps
+How Our Solution Helps
 - [bullet directly tied to their specific pain]
 - [bullet]
 
-📈 Expected Business Impact
+Expected Business Impact
 - [quantitative impact if numbers were mentioned — e.g. "Reduce X by Y%"]
 - [qualitative impact — e.g. "Eliminate manual effort across the team"]
 
-✅ Next Steps
+Next Steps
 - [specific agreed action with owner and timeline]
 - [e.g. "I will send the ROI model by Thursday"]
 - [e.g. "We reconvene on [date] with [stakeholder]"]
@@ -1046,24 +1046,24 @@ Hi [prospect name],
 
 [1-2 sentence specific opener from the call]
 
-🗒️ What We Discussed
+What We Discussed
 - [bullet from call]
 - [bullet from call]
 
-⚙️ Current Process
+Current Process
 - [their current workflow as discussed]
 
-🔍 Scope of Improvement
+Scope of Improvement
 - [identified gaps]
 
-💡 How Our Solution Helps
+How Our Solution Helps
 - [tied to their specific pain]
 
-📈 Expected Business Impact
+Expected Business Impact
 - [quantitative if numbers mentioned]
 - [qualitative]
 
-✅ Next Steps
+Next Steps
 - [agreed actions with timeline]
 
 Best regards,
