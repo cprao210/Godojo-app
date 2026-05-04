@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useRef } from 'react';
-import { X, Mail, RotateCcw, ExternalLink, Loader2, Paperclip } from 'lucide-react';
+import { X, Mail, RotateCcw, ExternalLink, Loader2, Paperclip, Check, Copy } from 'lucide-react';
 import { motion, AnimatePresence } from 'framer-motion';
 
 interface Meeting {
@@ -34,6 +34,7 @@ const FollowUpEmailModal: React.FC<FollowUpEmailModalProps> = ({ isOpen, onClose
     // Subject & Body
     const [subject, setSubject] = useState('');
     const [emailBody, setEmailBody] = useState('');
+    const [isCopied, setIsCopied] = useState(false);
 
     // State
     const [isGenerating, setIsGenerating] = useState(false);
@@ -61,6 +62,7 @@ const FollowUpEmailModal: React.FC<FollowUpEmailModalProps> = ({ isOpen, onClose
 
         try {
             // Try Calendar
+
             if (meeting.calendarEventId) {
                 // @ts-ignore
                 const attendees = await window.electronAPI?.invoke('get-calendar-attendees', meeting.calendarEventId);
@@ -106,9 +108,22 @@ const FollowUpEmailModal: React.FC<FollowUpEmailModalProps> = ({ isOpen, onClose
             };
 
             // @ts-ignore
-            const generatedBody = await window.electronAPI?.invoke('generate-followup-email', input);
+            const generatedBody = await window.electronAPI?.generateFollowupEmail(input);
+
             if (generatedBody) {
-                setEmailBody(generatedBody);
+                // Extract subject line if LLM included it in the body
+                const subjectMatch = generatedBody.match(/^Subject:\s*(.+)/m);
+                if (subjectMatch) {
+                    setSubject(subjectMatch[1].trim());
+                    // Remove the subject line from the body
+                    const bodyWithoutSubject = generatedBody
+                        .replace(/^Subject:\s*.+\n?/m, '')
+                        .trimStart();
+                    setEmailBody(bodyWithoutSubject);
+                } else {
+                    setEmailBody(generatedBody);
+                }
+                setHasGeneratedOnce(true);
             }
         } catch (error) {
             console.error('Failed to generate email:', error);
@@ -137,6 +152,19 @@ const FollowUpEmailModal: React.FC<FollowUpEmailModalProps> = ({ isOpen, onClose
             body: emailBody
         });
         onClose();
+    };
+
+    const handleCopy = async () => {
+        const fullEmail = subject
+            ? `Subject: ${subject}\n\n${emailBody}`
+            : emailBody;
+        try {
+            await navigator.clipboard.writeText(fullEmail);
+            setIsCopied(true);
+            setTimeout(() => setIsCopied(false), 2000);
+        } catch (err) {
+            console.error('Failed to copy email:', err);
+        }
     };
 
 
@@ -238,7 +266,7 @@ const FollowUpEmailModal: React.FC<FollowUpEmailModalProps> = ({ isOpen, onClose
                                     <textarea
                                         value={emailBody}
                                         onChange={(e) => setEmailBody(e.target.value)}
-                                        className="w-full h-full bg-transparent text-[#D4D4D8] text-[15px] leading-7 focus:outline-none resize-none placeholder-[#3F3F46] font-normal"
+                                        className="w-full h-[260px] bg-transparent text-[#D4D4D8] text-[15px] leading-7 focus:outline-none resize-none placeholder-[#3F3F46] font-normal"
                                         placeholder="Write your email..."
                                         spellCheck={false}
                                     />
@@ -248,8 +276,16 @@ const FollowUpEmailModal: React.FC<FollowUpEmailModalProps> = ({ isOpen, onClose
                             {/* Footer */}
                             <div className="flex items-center justify-between px-6 py-5 bg-[#18181B]/50 border-t border-white/[0.06]">
                                 <div className="flex items-center gap-3">
-                                    {/* Send with Gmail */}
+                                    {/* Copy the draft */}
                                     <button
+                                        onClick={handleCopy}
+                                        disabled={isGenerating}
+                                        className="flex items-center gap-2 text-xs font-medium text-text-secondary hover:text-text-primary transition-colors disabled:opacity-30 disabled:cursor-not-allowed"
+                                    >
+                                        {isCopied ? <Check size={14} className="text-emerald-500" /> : <Copy size={14} />}
+                                        {isCopied ? 'Copied' : 'Copy'}
+                                    </button>
+                                    {/* <button
                                         onClick={handleSendGmail}
                                         className="flex items-center gap-2 px-5 py-2.5 bg-[#202124] hover:bg-[#303134] rounded-full border border-[#5F6368] transition-colors group"
                                     >
@@ -257,7 +293,7 @@ const FollowUpEmailModal: React.FC<FollowUpEmailModalProps> = ({ isOpen, onClose
                                             <span className="font-bold text-lg leading-none bg-clip-text text-transparent bg-gradient-to-r from-blue-500 via-red-500 to-yellow-500">G</span>
                                         </div>
                                         <span className="text-[#E8EAED] text-[13px] font-medium tracking-wide">Gmail</span>
-                                    </button>
+                                    </button> */}
                                 </div>
 
                                 {/* Right Side Actions */}
