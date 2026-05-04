@@ -227,6 +227,10 @@ export class IntelligenceManager extends EventEmitter {
         return this.persistence.regenerateSummary(meetingId);
     }
 
+    async uploadTranscript(rawText: string, title?: string): Promise<string | null> {
+        return this.persistence.uploadTranscript(rawText, title);
+    }
+
     async recoverUnprocessedMeetings(): Promise<void> {
         return this.persistence.recoverUnprocessedMeetings();
     }

@@ -161,6 +161,7 @@ export interface ElectronAPI {
   updateMeetingTitle: (id: string, title: string) => Promise<boolean>
   updateMeetingSummary: (id: string, updates: { overview?: string, actionItems?: string[], keyPoints?: string[], actionItemsTitle?: string, keyPointsTitle?: string }) => Promise<boolean>
   regenerateMeetingSummary: (id: string) => Promise<any>
+  uploadTranscript: (text: string, title?: string) => Promise<{ success: boolean; meetingId?: string; error?: string }>
   deleteMeeting: (id: string) => Promise<boolean>
   setWindowMode: (mode: 'launcher' | 'overlay', inactive?: boolean) => Promise<void>
 
