@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from 'react';
-import { ToggleLeft, ToggleRight, Search, Zap, Calendar, ArrowRight, ArrowLeft, MoreHorizontal, Globe, Clock, ChevronRight, Settings, LayoutGrid, RefreshCw, Eye, EyeOff, Ghost, Plus, Mail, Link as LinkIcon, ChevronDown, Trash2, Bell, Check, Download, DownloadCloud, CheckCircle, AlertCircle, Briefcase } from 'lucide-react';
+import { ToggleLeft, ToggleRight, Search, Zap, Calendar, ArrowRight, ArrowLeft, MoreHorizontal, Globe, Clock, ChevronRight, Settings, LayoutGrid, RefreshCw, Eye, EyeOff, Ghost, Plus, Mail, Link as LinkIcon, ChevronDown, Trash2, Bell, Check, Download, DownloadCloud, CheckCircle, AlertCircle, Briefcase, Upload, X } from 'lucide-react';
 import { generateMeetingPDF } from '../utils/pdfGenerator';
 import icon from "./icon.png";
 import mainui from "../UI_comp/mainui.png";
@@ -93,6 +93,7 @@ const Launcher: React.FC<LauncherProps> = ({ onStartMeeting, onOpenSettings, onP
     const [isGlobalChatOpen, setIsGlobalChatOpen] = useState(false);
     const [submittedGlobalQuery, setSubmittedGlobalQuery] = useState('');
 
+
     const fetchMeetings = () => {
         if (window.electronAPI && window.electronAPI.getRecentMeetings) {
             window.electronAPI.getRecentMeetings().then(setMeetings).catch(err => console.error("Failed to fetch meetings:", err));
@@ -162,7 +163,7 @@ const Launcher: React.FC<LauncherProps> = ({ onStartMeeting, onOpenSettings, onP
         if (window.electronAPI?.getMeetingActive) {
             window.electronAPI.getMeetingActive()
                 .then((active) => { if (mounted) setIsMeetingActive(active); })
-                .catch(() => {});
+                .catch(() => { });
         }
 
         // Listen for meeting state changes (e.g. meeting started/ended from overlay)
@@ -189,7 +190,7 @@ const Launcher: React.FC<LauncherProps> = ({ onStartMeeting, onOpenSettings, onP
             if (removeMeetingStateListener) removeMeetingStateListener();
             clearInterval(interval);
         };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
+        // eslint-disable-next-line react-hooks/exhaustive-deps
     }, []); // Mount-only: stable setup that must run exactly once
 
     // Separate effect for keyboard listener — re-registers when isShortcutPressed changes
@@ -283,6 +284,36 @@ const Launcher: React.FC<LauncherProps> = ({ onStartMeeting, onOpenSettings, onP
     const [forwardMeeting, setForwardMeeting] = useState<Meeting | null>(null);
     const [activeMenuId, setActiveMenuId] = useState<string | null>(null);
     const [menuEntered, setMenuEntered] = useState(false);
+
+    const [isUploadOpen, setIsUploadOpen] = useState(false);
+    const [uploadText, setUploadText] = useState('');
+    const [uploadTitle, setUploadTitle] = useState('');
+    const [isUploading, setIsUploading] = useState(false);
+    const [uploadError, setUploadError] = useState<string | null>(null);
+
+    const handleUploadTranscript = async () => {
+        if (!uploadText.trim()) return;
+        setIsUploading(true);
+        setUploadError(null);
+        try {
+            const result = await window.electronAPI.uploadTranscript(
+                uploadText.trim(),
+                uploadTitle.trim() || undefined
+            );
+            if (result?.success) {
+                setIsUploadOpen(false);
+                setUploadText('');
+                setUploadTitle('');
+                fetchMeetings(); // refresh list
+            } else {
+                setUploadError(result?.error || 'Upload failed');
+            }
+        } catch (e) {
+            setUploadError('Something went wrong');
+        } finally {
+            setIsUploading(false);
+        }
+    };
 
     useEffect(() => {
         setMenuEntered(false);
@@ -526,6 +557,7 @@ const Launcher: React.FC<LauncherProps> = ({ onStartMeeting, onOpenSettings, onP
                                                     <div className={`absolute top-0.5 w-3 h-3 rounded-full bg-white shadow-sm transition-all ${!isDetectable ? 'left-[18px]' : 'left-0.5'}`} />
                                                 </div>
                                             </div>
+
                                         </div>
 
                                         {/* Center: Ollama Pull Status Pill (flex-1 to center evenly) */}
@@ -645,7 +677,9 @@ const Launcher: React.FC<LauncherProps> = ({ onStartMeeting, onOpenSettings, onP
                                     </div>
 
                                     {/* 2. Hero Section Cards */}
-                                      <div className="grid grid-cols-1 md:grid-cols-3 gap-3 h-[198px]">
+                                    <div className="grid grid-cols-1 md:grid-cols-3 gap-3 h-[198px]">
+
+
                                         {/* PREPARED STATE CARD */}
                                         {isPrepared && preparedEvent ? (
                                             <div className={`md:col-span-3 relative group rounded-xl overflow-hidden border border-emerald-500/30 ${isLight ? 'bg-bg-elevated' : 'bg-bg-secondary'} flex flex-col items-center justify-center p-6 bg-[radial-gradient(ellipse_at_top,_var(--tw-gradient-stops))] from-emerald-900/40 ${isLight ? 'via-bg-elevated to-bg-elevated' : 'via-bg-secondary to-bg-secondary'}`}>
@@ -789,6 +823,22 @@ const Launcher: React.FC<LauncherProps> = ({ onStartMeeting, onOpenSettings, onP
                                 <section className="px-8 py-8 min-h-full">
                                     <div className="max-w-4xl mx-auto space-y-8">
 
+                                        {/* Meetings section header — add upload button here */}
+                                        <div className="flex items-center justify-between mb-3 pl-1">
+                                            <span className="text-[13px] font-medium text-text-secondary">
+                                                Recent Meetings
+                                            </span>
+                                            {/* DEV ONLY — transcript upload */}
+                                            {process.env.NODE_ENV === 'development' && (
+                                                <button
+                                                    onClick={() => setIsUploadOpen(true)}
+                                                    className="flex items-center gap-1.5 text-[11px] font-medium text-text-tertiary hover:text-text-secondary border border-white/[0.08] hover:border-white/20 rounded-lg px-2.5 py-1 transition-all"
+                                                >
+                                                    <Upload size={11} />
+                                                    Upload Transcript
+                                                </button>
+                                            )}
+                                        </div>
                                         {/* Iterating Date Groups */}
                                         {sortedGroups.map((label) => (
                                             <section key={label}>
@@ -958,7 +1008,7 @@ const Launcher: React.FC<LauncherProps> = ({ onStartMeeting, onOpenSettings, onP
                 }}
                 initialQuery={submittedGlobalQuery}
             />
-               {/* Sales Brief Panel */}
+            {/* Sales Brief Panel */}
             <AnimatePresence>
                 {salesBriefEvent && (
                     <SalesBriefPanel
@@ -967,6 +1017,103 @@ const Launcher: React.FC<LauncherProps> = ({ onStartMeeting, onOpenSettings, onP
                     />
                 )}
             </AnimatePresence>
+
+            {/* DEV ONLY — Transcript Upload Modal */}
+            {isUploadOpen && (
+                <div className="fixed inset-0 z-[100] flex items-center justify-center p-4">
+                    {/* Backdrop */}
+                    <div
+                        className="absolute inset-0 bg-black/70 backdrop-blur-sm"
+                        onClick={() => setIsUploadOpen(false)}
+                    />
+
+                    {/* Modal */}
+                    <div className="relative w-full max-w-2xl bg-[#121214] border border-white/[0.08] rounded-2xl shadow-2xl overflow-hidden">
+
+                        {/* Header */}
+                        <div className="flex items-center justify-between px-6 py-4 border-b border-white/[0.06]">
+                            <div>
+                                <p className="text-sm font-semibold text-white">Upload Transcript</p>
+                                <p className="text-[11px] text-white/30 mt-0.5">Dev only — paste a transcript to generate a full sales analysis</p>
+                            </div>
+                            <button
+                                onClick={() => setIsUploadOpen(false)}
+                                className="p-1.5 rounded-full hover:bg-white/10 text-white/40 hover:text-white transition-colors"
+                            >
+                                <X size={14} />
+                            </button>
+                        </div>
+
+                        {/* Body */}
+                        <div className="px-6 py-5 space-y-4">
+
+                            {/* Title field */}
+                            <div>
+                                <label className="text-[11px] font-medium text-white/40 uppercase tracking-wider mb-1.5 block">
+                                    Meeting Title (optional)
+                                </label>
+                                <input
+                                    type="text"
+                                    value={uploadTitle}
+                                    onChange={e => setUploadTitle(e.target.value)}
+                                    placeholder="e.g. Q4 Discovery Call — TechFlow"
+                                    className="w-full bg-white/[0.04] border border-white/[0.08] rounded-xl px-4 py-2.5 text-sm text-white placeholder-white/20 focus:outline-none focus:border-white/20 transition-colors"
+                                />
+                            </div>
+
+                            {/* Transcript textarea */}
+                            <div>
+                                <label className="text-[11px] font-medium text-white/40 uppercase tracking-wider mb-1.5 block">
+                                    Transcript
+                                </label>
+                                <textarea
+                                    value={uploadText}
+                                    onChange={e => setUploadText(e.target.value)}
+                                    placeholder={`Paste transcript here. Supported formats:\n\n[00:00:12] REP: Hello, thanks for joining...\nPROSPECT: Happy to be here...\n\nor plain text lines`}
+                                    rows={12}
+                                    className="w-full bg-white/[0.04] border border-white/[0.08] rounded-xl px-4 py-3 text-sm text-white/80 placeholder-white/15 focus:outline-none focus:border-white/20 transition-colors resize-none font-mono leading-relaxed"
+                                />
+                                <p className="text-[10px] text-white/20 mt-1.5">
+                                    {uploadText.split('\n').filter(l => l.trim()).length} lines · Supports [timestamp] SPEAKER: text format
+                                </p>
+                            </div>
+
+                            {uploadError && (
+                                <p className="text-[12px] text-red-400 bg-red-500/10 border border-red-500/20 rounded-lg px-3 py-2">
+                                    {uploadError}
+                                </p>
+                            )}
+                        </div>
+
+                        {/* Footer */}
+                        <div className="flex items-center justify-end gap-3 px-6 py-4 border-t border-white/[0.06] bg-white/[0.02]">
+                            <button
+                                onClick={() => { setIsUploadOpen(false); setUploadText(''); setUploadTitle(''); }}
+                                className="px-4 py-2 text-sm text-white/40 hover:text-white/70 transition-colors"
+                            >
+                                Cancel
+                            </button>
+                            <button
+                                onClick={handleUploadTranscript}
+                                disabled={isUploading || !uploadText.trim()}
+                                className="flex items-center gap-2 px-5 py-2 bg-blue-600 hover:bg-blue-500 disabled:opacity-40 disabled:cursor-not-allowed rounded-xl text-sm font-semibold text-white transition-all"
+                            >
+                                {isUploading ? (
+                                    <>
+                                        <RefreshCw size={13} className="animate-spin" />
+                                        Processing...
+                                    </>
+                                ) : (
+                                    <>
+                                        <Upload size={13} />
+                                        Upload & Analyse
+                                    </>
+                                )}
+                            </button>
+                        </div>
+                    </div>
+                </div>
+            )}
         </div >
     );
 };

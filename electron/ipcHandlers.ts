@@ -1581,6 +1581,17 @@ export function initializeIpcHandlers(appState: AppState): void {
 
   });
 
+  safeHandle("upload-transcript", async (_, { text, title }: { text: string; title?: string }) => {
+    try {
+      const meetingId = await appState.getIntelligenceManager().uploadTranscript(text, title);
+      if (meetingId) return { success: true, meetingId };
+      return { success: false, error: 'Transcript too short or could not be parsed' };
+    } catch (e) {
+      console.error('[ipcHandlers] upload-transcript error:', e);
+      return { success: false, error: String(e) };
+    }
+  });
+
   safeHandle("seed-demo", async () => {
     DatabaseManager.getInstance().seedDemoMeeting();
 

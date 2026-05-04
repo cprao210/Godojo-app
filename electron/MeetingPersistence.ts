@@ -313,6 +313,85 @@ export class MeetingPersistence {
     }
 
     /**
+     * DEV ONLY: Upload a raw transcript text and process it as a real meeting
+     */
+    public async uploadTranscript(
+        rawText: string,
+        title?: string
+    ): Promise<string | null> {
+        try {
+            // Parse lines like "[00:00:12] REP: text" or "REP: text" or plain text
+            const transcript: TranscriptSegment[] = [];
+            const lines = rawText.split('\n').filter(l => l.trim());
+
+            lines.forEach((line, i) => {
+                // Match "[timestamp] SPEAKER: text" or "SPEAKER: text"
+                const withTimestamp = line.match(/^\[[\d:]+\]\s*(REP|PROSPECT|ME|THEM|USER|SPEAKER\s*\d*|[A-Z][A-Z\s]{0,15}):\s*(.+)/i);
+                const withoutTimestamp = line.match(/^(REP|PROSPECT|ME|THEM|USER|SPEAKER\s*\d*|[A-Z][A-Z\s]{0,15}):\s*(.+)/i);
+                const match = withTimestamp || withoutTimestamp;
+
+                if (match) {
+                    const speakerRaw = match[1].trim().toUpperCase();
+                    const text = match[2].trim();
+                    // Map common speaker names to user/other
+                    const speaker = ['REP', 'ME', 'USER', 'SALES', 'SELLER'].includes(speakerRaw) ? 'user' : 'other';
+                    transcript.push({
+                        speaker, text, timestamp: i * 5000,
+                        final: false
+                    });
+                } else if (line.trim()) {
+                    // Plain line — treat as 'other'
+                    transcript.push({
+                        speaker: 'other', text: line.trim(), timestamp: i * 5000,
+                        final: false
+                    });
+                }
+            });
+
+            if (transcript.length < 2) {
+                console.warn('[MeetingPersistence] Upload: transcript too short');
+                return null;
+            }
+
+            const meetingId = crypto.randomUUID();
+            const now = Date.now();
+            const durationMs = transcript.length * 5000;
+            const durationStr = `${Math.floor(durationMs / 60000)}:${String(Math.floor((durationMs % 60000) / 1000)).padStart(2, '0')}`;
+            const context = transcript.map(t => `${t.speaker === 'user' ? 'Me' : 'Them'}: ${t.text}`).join('\n');
+
+            // Save placeholder immediately so it appears in the list
+            const placeholder: Meeting = {
+                id: meetingId,
+                title: 'Processing...',
+                date: new Date().toISOString(),
+                duration: durationStr,
+                summary: 'Generating summary...',
+                detailedSummary: { actionItems: [], keyPoints: [] },
+                transcript,
+                usage: [],
+                isProcessed: false,
+            };
+
+            DatabaseManager.getInstance().saveMeeting(placeholder, now, durationMs);
+            const wins = require('electron').BrowserWindow.getAllWindows();
+            wins.forEach((w: any) => w.webContents.send('meetings-updated'));
+
+            // Pass the user's title as metadata so processAndSaveMeeting uses it
+            // instead of generating a new one from the transcript
+            this.processAndSaveMeeting(
+                { transcript, usage: [], startTime: now, durationMs, context },
+                meetingId,
+                { title: title || undefined, source: 'manual' }
+            ).catch(err => console.error('[MeetingPersistence] Upload processing failed:', err));
+
+            return meetingId;
+        } catch (e) {
+            console.error('[MeetingPersistence] uploadTranscript error:', e);
+            return null;
+        }
+    }
+
+    /**
      * Recover meetings that were started but not fully processed (e.g. app crash)
      */
     public async recoverUnprocessedMeetings(): Promise<void> {
