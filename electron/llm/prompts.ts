@@ -928,49 +928,82 @@ export const GROQ_SUMMARY_JSON_PROMPT = `You are a B2B sales call analyst. Retur
 
 {
   "overview": "2-3 sentence call summary and deal status",
-  "dealStatus": { "stage": "Discovery|Qualification|Demo|Proposal|Negotiation|Closed Won|Closed Lost|Unknown", "summary": "1 sentence" },
+  "dealStatus": { 
+    "stage": "Discovery|Qualification|Demo|Proposal|Negotiation|Closed Won|Closed Lost|Unknown", 
+    "summary": "1 sentence on where the deal stands" 
+  },
   "bant": {
-    "budget": { "status": "Clear|Partial|Missing", "detail": "..." },
-    "authority": { "status": "Clear|Partial|Missing", "detail": "..." },
-    "need": { "status": "Clear|Partial|Missing", "detail": "..." },
-    "timeline": { "status": "Clear|Partial|Missing", "detail": "..." }
+    "budget": { "status": "Clear|Partial|Missing", "detail": "what was said or implied about budget" },
+    "authority": { "status": "Clear|Partial|Missing", "detail": "who the decision maker is" },
+    "need": { "status": "Clear|Partial|Missing", "detail": "what pain or need was uncovered" },
+    "timeline": { "status": "Clear|Partial|Missing", "detail": "when they want to move" }
   },
   "meddicc": {
-    "metrics": { "status": "Clear|Partial|Missing", "detail": "..." },
-    "economicBuyer": { "status": "Clear|Partial|Missing", "detail": "..." },
-    "decisionCriteria": { "status": "Clear|Partial|Missing", "detail": "..." },
-    "decisionProcess": { "status": "Clear|Partial|Missing", "detail": "..." },
-    "identifyPain": { "status": "Clear|Partial|Missing", "detail": "..." },
-    "champion": { "status": "Clear|Partial|Missing", "detail": "..." },
-    "competition": { "status": "Clear|Partial|Missing", "detail": "..." },
-    "gaps": ["missing/partial components"]
+    "metrics": { "status": "Clear|Partial|Missing", "detail": "quantifiable business impact discussed" },
+    "economicBuyer": { "status": "Clear|Partial|Missing", "detail": "who controls the budget" },
+    "decisionCriteria": { "status": "Clear|Partial|Missing", "detail": "evaluation criteria" },
+    "decisionProcess": { "status": "Clear|Partial|Missing", "detail": "buying process steps" },
+    "identifyPain": { "status": "Clear|Partial|Missing", "detail": "specific pain points and business impact" },
+    "champion": { "status": "Clear|Partial|Missing", "detail": "internal advocate identified" },
+    "competition": { "status": "Clear|Partial|Missing", "detail": "competitors or alternatives mentioned" },
+    "gaps": ["MEDDICC components that are Missing or Partial — these need follow-up"]
   },
   "followUpEmail": {
-    "subject": "email subject",
+    "subject": "specific email subject line",
     "sections": {
-      "whatWeDiscussed": ["3-4 bullets"],
-      "currentProcess": "1-2 sentences",
-      "scopeOfImprovement": ["2-3 bullets"],
-      "howOurSolutionHelps": ["2-3 bullets"],
-      "expectedBusinessImpact": ["2-3 bullets"],
-      "nextSteps": ["specific steps"]
+      "whatWeDiscussed": ["3-4 bullets of key discussion points"],
+      "currentProcess": "1-2 sentences on their current state/workflow",
+      "scopeOfImprovement": ["2-3 bullets on identified gaps or problems"],
+      "howOurSolutionHelps": ["2-3 bullets on how the solution addresses their specific pain"],
+      "expectedBusinessImpact": ["2-3 bullets on quantitative and qualitative ROI"],
+      "nextSteps": ["specific agreed next steps with owners and timelines if mentioned"]
     }
   },
+  "leadName": "extract prospect full name from transcript — first name + last name if mentioned, else null",
+  "company": "extract company/organization name from transcript, else null",
   "salesCoachReview": {
-    "whatIDidRight": ["5 specific points from the call"],
-    "whatICouldHaveDoneBetter": ["5 coaching points"],
-    "whatIMissedCompletely": ["5 blind spots"]
+    "whatIDidRight": [
+      "MEDDICC Metrics: [specific win — e.g. Quantified cost of manual mapping at $15k/mo using implication question]",
+      "MEDDICC EconomicBuyer: [specific win — e.g. Identified Sarah Chen (CFO) as budget owner early in conversation]",
+      "BANT Budget: [specific win — e.g. Confirmed budget allocated for Operational Efficiency in FY24]",
+      "BANT Timeline: [specific win — e.g. Solidified Dec 15th as hard deadline for system parity]"
+    ],
+    "whatICouldHaveDoneBetter": [
+      "Should have pushed harder on [specific topic] — ask: [exact question]",
+      "Missed opportunity to [specific action] when prospect said [trigger phrase]",
+      "Over-explained [topic] instead of focusing on business outcome",
+      "Didn't ask for [specific thing] during [moment in call]",
+      "Talked over prospect when they mentioned [topic] — should have probed deeper"
+    ],
+    "whatIMissedCompletely": [
+      "Identify Champion: [specific gap about champion identification]",
+      "Metrics: [specific metric that was never asked about]",
+      "Authority: [specific authority/stakeholder gap]",
+      "Process: [specific process that was skipped]",
+      "Pain: [specific pain point that was never addressed]"
+    ]
   },
   "nextCallPlaybook": {
-    "openingRecap": "2-3 sentence opener for next call",
-    "questionsToAsk": ["5 questions targeting BANT/MEDDICC gaps"],
-    "valueAndROI": { "quantitative": ["2-3 points"], "qualitative": ["2-3 points"] }
+    "openingRecap": "2-3 sentences to open next call recapping where things stand",
+    "questionsToAsk": ["5 high-value questions targeting weakest BANT/MEDDICC areas from this call"],
+    "valueAndROI": { 
+      "quantitative": ["2-3 measurable ROI points to reinforce"], 
+      "qualitative": ["2-3 strategic or emotional value points to reinforce"] 
+    }
   },
-  "keyPoints": ["4-6 bullets"],
-  "actionItems": ["next steps"]
+  "keyPoints": ["4-6 bullets — top things to know about this deal right now"],
+  "actionItems": ["specific next steps with owners if mentioned, or implied follow-ups"]
 }
 
-RULES: Missing = no evidence. Partial = mentioned but vague. Clear = confirmed with specifics. No invented data. Return ONLY JSON.`;
+CRITICAL RULES — follow exactly:
+- Missing = no evidence at all. Partial = mentioned but vague. Clear = explicitly confirmed with specifics.
+- Do NOT invent information not in the transcript — reference actual moments, names, numbers.
+- followUpEmail tone: simple, clear, no jargon, client-friendly.
+- leadName and company: extract from transcript introductions. Return null if not found.
+- salesCoachReview.whatIDidRight: EVERY item MUST start with framework label + component name in this format: "MEDDICC ComponentName:" or "BANT ComponentName:" — e.g. "MEDDICC Metrics:", "MEDDICC EconomicBuyer:", "BANT Budget:", "BANT Timeline:". Group ALL MEDDICC items first, then BANT items. Return ONLY items grounded in actual transcript moments — minimum 2, maximum 6. Do NOT pad with generic items.
+- salesCoachReview.whatIMissedCompletely: MUST follow this EXACT label sequence in this order: "Identify Champion:", "Metrics:", "Authority:", "Process:", "Pain:". Never change the order. Never randomize.
+- salesCoachReview.whatICouldHaveDoneBetter: reference specific moments from the transcript — not generic coaching advice.
+- Return ONLY valid JSON — no markdown, no code blocks, no explanation.`;
 
 // ==========================================
 // FOLLOW-UP EMAIL PROMPTS

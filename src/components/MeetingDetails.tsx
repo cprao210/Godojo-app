@@ -612,7 +612,7 @@ const MeetingDetails: React.FC<MeetingDetailsProps> = ({ meeting: initialMeeting
                                     :
                                     <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }}>
 
-                                        <section className="mb-10">
+                                        {meeting.detailedSummary?.keyPoints?.length !== 0 && <section className="mb-10">
                                             <h2 className="text-lg font-semibold flex gap-3 text-white mb-4"><NotepadText className='text-blue-500' /> Call Summary</h2>
 
                                             <div className="space-y-3">
@@ -623,7 +623,7 @@ const MeetingDetails: React.FC<MeetingDetailsProps> = ({ meeting: initialMeeting
                                                     </div>
                                                 ))}
                                             </div>
-                                        </section>
+                                        </section>}
 
                                         {meeting.detailedSummary?.salesCoachReview !== undefined ?
                                             <>

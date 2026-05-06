@@ -11,6 +11,17 @@ interface Meeting {
         overview?: string;
         actionItems: string[];
         keyPoints: string[];
+        followUpEmail?: {
+            subject?: string;
+            sections?: {
+                whatWeDiscussed?: string[];
+                currentProcess?: string;
+                scopeOfImprovement?: string[];
+                howOurSolutionHelps?: string[];
+                expectedBusinessImpact?: string[];
+                nextSteps?: string[];
+            };
+        };
     };
     transcript?: Array<{
         speaker: string;
@@ -94,6 +105,32 @@ const FollowUpEmailModal: React.FC<FollowUpEmailModalProps> = ({ isOpen, onClose
     };
 
     const generateEmail = async (rName?: string, sName?: string) => {
+        // ── Use pre-generated data from summary if available ──────────────
+        const prebuilt = meeting.detailedSummary?.followUpEmail;
+        if (prebuilt?.sections && !hasGeneratedOnce) {
+            const sections = prebuilt.sections;
+            const lines: string[] = [];
+
+            if (sections.whatWeDiscussed?.length)
+                lines.push(`What We Discussed\n${sections.whatWeDiscussed.map(s => `• ${s}`).join('\n')}`);
+            if (sections.currentProcess)
+                lines.push(`Current Process\n${sections.currentProcess}`);
+            if (sections.scopeOfImprovement?.length)
+                lines.push(`Scope of Improvement\n${sections.scopeOfImprovement.map(s => `• ${s}`).join('\n')}`);
+            if (sections.howOurSolutionHelps?.length)
+                lines.push(`How Our Solution Helps\n${sections.howOurSolutionHelps.map(s => `• ${s}`).join('\n')}`);
+            if (sections.expectedBusinessImpact?.length)
+                lines.push(`Expected Business Impact\n${sections.expectedBusinessImpact.map(s => `• ${s}`).join('\n')}`);
+            if (sections.nextSteps?.length)
+                lines.push(`Next Steps\n${sections.nextSteps.map(s => `• ${s}`).join('\n')}`);
+
+            if (prebuilt.subject) setSubject(prebuilt.subject);
+            setEmailBody(lines.join('\n\n'));
+            setHasGeneratedOnce(true);
+            return;
+        }
+
+        // ── Fallback: call API if no pre-generated data ───────────────────
         setIsGenerating(true);
         try {
             const input = {
@@ -104,22 +141,18 @@ const FollowUpEmailModal: React.FC<FollowUpEmailModalProps> = ({ isOpen, onClose
                 key_points: meeting.detailedSummary?.keyPoints || [],
                 recipient_name: rName || recipientName,
                 sender_name: sName || senderName,
-                tone: 'neutral' as const // Default to neutral for auto-gen
+                tone: 'neutral' as const
             };
 
             // @ts-ignore
             const generatedBody = await window.electronAPI?.generateFollowupEmail(input);
 
             if (generatedBody) {
-                // Extract subject line if LLM included it in the body
+                // Extract subject if LLM included it
                 const subjectMatch = generatedBody.match(/^Subject:\s*(.+)/m);
                 if (subjectMatch) {
                     setSubject(subjectMatch[1].trim());
-                    // Remove the subject line from the body
-                    const bodyWithoutSubject = generatedBody
-                        .replace(/^Subject:\s*.+\n?/m, '')
-                        .trimStart();
-                    setEmailBody(bodyWithoutSubject);
+                    setEmailBody(generatedBody.replace(/^Subject:\s*.+\n?/m, '').trimStart());
                 } else {
                     setEmailBody(generatedBody);
                 }

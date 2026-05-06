@@ -98,7 +98,6 @@ RULES:
 - Next call questions must target the weakest BANT/MEDDICC areas from this call
 - Return ONLY valid JSON — no markdown, no code blocks, no explanation
 - leadName and company: extract from transcript introductions or conversation. Return null if not found.
-- salesCoachReview.whatIDidRight: EVERY item MUST start with a framework label: MEDDICC: | BANT: | SPIN: | DISCOVERY:
 - salesCoachReview.whatIMissedCompletely: EVERY item MUST start with a gap category: Identify Champion: | Metrics: | Authority: | Process: | Pain: | Timeline: | Budget:
 - Reference specific moments, names, numbers from the transcript — never be generic
 - salesCoachReview.whatIDidRight: EVERY item MUST start with a framework label followed by the component name: e.g. "MEDDICC Metrics:", "MEDDICC Champion:", "BANT Budget:", "BANT Timeline:"
