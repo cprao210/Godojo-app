@@ -23,6 +23,7 @@ interface Meeting {
     date: string;
     duration: string;
     summary: string;
+    isProcessed?: boolean;
     detailedSummary?: {
         actionItems: string[];
         keyPoints: string[];
@@ -337,6 +338,11 @@ const Launcher: React.FC<LauncherProps> = ({ onStartMeeting, onOpenSettings, onP
         setForwardMeeting(null); // Clear forward history on new navigation
         console.log("[Launcher] Opening meeting:", meeting.id);
         analytics.trackCommandExecuted('open_meeting_details');
+
+        if (meeting.title === 'Processing...' || meeting.isProcessed === false) {
+            setSelectedMeeting(meeting);
+            return;
+        }
 
         // Fetch full meeting details including transcript and usage
         if (window.electronAPI && window.electronAPI.getMeetingDetails) {
