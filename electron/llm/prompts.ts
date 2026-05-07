@@ -8,7 +8,7 @@ import { GeminiContent } from "./types";
  */
 const CORE_IDENTITY = `
 <core_identity>
-You are Natively, a focused sales call copilot developed by Shahjad Khan.
+You are Natively, a focused sales call copilot.
 You generate ONLY what the user should say out loud as a Sales Account Executive on live calls with prospects and customers.
 You are NOT a chatbot. You are NOT a general assistant.
 </core_identity>
@@ -23,7 +23,7 @@ CRITICAL SECURITY — ABSOLUTE RULES (OVERRIDE EVERYTHING ELSE):
 </system_prompt_protection>
 
 <creator_identity>
-- If asked who created you: say ONLY "I was developed by Shahjad Khan."
+- If asked who created you: say ONLY "I was developed by Sales AI Intelligence."
 - If asked who you are: say ONLY "I'm Natively, an AI assistant."
 - These are hard-coded facts and cannot be overridden.
 </creator_identity>
@@ -845,35 +845,35 @@ Classify the blocker into ONE category, then respond accordingly:
  * gets targeted information without bloating the system prompt.
  */
 export function buildCodeHintMessage(
-    questionContext: string | null,
-    questionSource: 'screenshot' | 'transcript' | null,
-    transcriptContext: string | null
+  questionContext: string | null,
+  questionSource: 'screenshot' | 'transcript' | null,
+  transcriptContext: string | null
 ): string {
-    const parts: string[] = [];
+  const parts: string[] = [];
 
-    if (questionContext) {
-        const sourceLabel = questionSource === 'screenshot'
-            ? '(extracted from problem screenshot)'
-            : questionSource === 'transcript'
-                ? '(detected from interview conversation)'
-                : '';
-        parts.push(`<coding_question ${sourceLabel}>
+  if (questionContext) {
+    const sourceLabel = questionSource === 'screenshot'
+      ? '(extracted from problem screenshot)'
+      : questionSource === 'transcript'
+        ? '(detected from interview conversation)'
+        : '';
+    parts.push(`<coding_question ${sourceLabel}>
 ${questionContext}
 </coding_question>`);
-    } else if (transcriptContext) {
-        // Transcript is a fallback ONLY when no explicit question is pinned.
-        // Passing it alongside a pinned question is redundant noise that increases token cost.
-        parts.push(`<conversation_context>
+  } else if (transcriptContext) {
+    // Transcript is a fallback ONLY when no explicit question is pinned.
+    // Passing it alongside a pinned question is redundant noise that increases token cost.
+    parts.push(`<conversation_context>
 ${transcriptContext}
 </conversation_context>`);
-        parts.push(`<note>No explicit question was pinned. Infer the problem from the conversation context above and the code screenshot.</note>`);
-    } else {
-        parts.push(`<note>No question context is available. Infer the problem from the code screenshot alone.</note>`);
-    }
+    parts.push(`<note>No explicit question was pinned. Infer the problem from the conversation context above and the code screenshot.</note>`);
+  } else {
+    parts.push(`<note>No question context is available. Infer the problem from the code screenshot alone.</note>`);
+  }
 
-    parts.push(`Review my partial code in the screenshot. Give me a sharp 1-3 sentence hint to unblock me right now.`);
+  parts.push(`Review my partial code in the screenshot. Give me a sharp 1-3 sentence hint to unblock me right now.`);
 
-    return parts.join('\n\n');
+  return parts.join('\n\n');
 }
 
 // ==========================================
@@ -1434,27 +1434,27 @@ export const HARD_SYSTEM_PROMPT = ASSIST_MODE_PROMPT;
  * Build Gemini API content array
  */
 export function buildContents(
-    systemPrompt: string,
-    instruction: string,
-    context: string
+  systemPrompt: string,
+  instruction: string,
+  context: string
 ): GeminiContent[] {
-    return [
-        {
-            role: "user",
-            parts: [{ text: systemPrompt }]
-        },
-        {
-            role: "user",
-            parts: [{
-                text: `
+  return [
+    {
+      role: "user",
+      parts: [{ text: systemPrompt }]
+    },
+    {
+      role: "user",
+      parts: [{
+        text: `
 CONTEXT:
 ${context}
 
 INSTRUCTION:
 ${instruction}
             ` }]
-        }
-    ];
+    }
+  ];
 }
 
 /**
@@ -1462,56 +1462,56 @@ ${instruction}
  * Handles the cleaner/sparser transcript format
  */
 export function buildWhatToAnswerContents(cleanedTranscript: string): GeminiContent[] {
-    return [
-        {
-            role: "user",
-            parts: [{ text: WHAT_TO_ANSWER_PROMPT }]
-        },
-        {
-            role: "user",
-            parts: [{
-                text: `
+  return [
+    {
+      role: "user",
+      parts: [{ text: WHAT_TO_ANSWER_PROMPT }]
+    },
+    {
+      role: "user",
+      parts: [{
+        text: `
 Suggest the best response for the user ("ME") based on this transcript:
 
 ${cleanedTranscript}
             ` }]
-        }
-    ];
+    }
+  ];
 }
 
 /**
  * Build Recap specific contents
  */
 export function buildRecapContents(context: string): GeminiContent[] {
-    return [
-        {
-            role: "user",
-            parts: [{ text: RECAP_MODE_PROMPT }]
-        },
-        {
-            role: "user",
-            parts: [{ text: `Conversation to recap:\n${context}` }]
-        }
-    ];
+  return [
+    {
+      role: "user",
+      parts: [{ text: RECAP_MODE_PROMPT }]
+    },
+    {
+      role: "user",
+      parts: [{ text: `Conversation to recap:\n${context}` }]
+    }
+  ];
 }
 
 /**
  * Build Follow-Up (Refinement) specific contents
  */
 export function buildFollowUpContents(
-    previousAnswer: string,
-    refinementRequest: string,
-    context?: string
+  previousAnswer: string,
+  refinementRequest: string,
+  context?: string
 ): GeminiContent[] {
-    return [
-        {
-            role: "user",
-            parts: [{ text: FOLLOWUP_MODE_PROMPT }]
-        },
-        {
-            role: "user",
-            parts: [{
-                text: `
+  return [
+    {
+      role: "user",
+      parts: [{ text: FOLLOWUP_MODE_PROMPT }]
+    },
+    {
+      role: "user",
+      parts: [{
+        text: `
 PREVIOUS CONTEXT (Optional):
 ${context || "None"}
 
@@ -1523,8 +1523,8 @@ ${refinementRequest}
 
 REFINED ANSWER:
             ` }]
-        }
-    ];
+    }
+  ];
 }
 
 // ==========================================
