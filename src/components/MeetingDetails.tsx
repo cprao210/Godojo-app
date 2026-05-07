@@ -1,4 +1,4 @@
-import React, { act, useState } from 'react';
+import React, { act, useEffect, useState } from 'react';
 import { useResolvedTheme } from '../hooks/useResolvedTheme';
 import { ArrowLeft, Search, Mail, Link, ChevronDown, Play, ArrowUp, Copy, Check, MoreHorizontal, Settings, ArrowRight, TrendingUp, TriangleAlert, MessageSquare, MessagesSquareIcon, ChartColumnIncreasing, CircleCheck, NotepadText, TableOfContents, RefreshCcw, Loader2, RefreshCw } from 'lucide-react';
 import { motion, AnimatePresence } from 'framer-motion';
@@ -34,6 +34,7 @@ interface Meeting {
     date: string;
     duration: string;
     summary: string;
+    isProcessed?: boolean;
     detailedSummary?: {
         // Old fields (keep for backward compat with existing meetings)
         overview?: string;
@@ -69,13 +70,16 @@ interface Meeting {
         followUpEmail?: {
             subject?: string;
             sections?: {
+                whatYouWillAchieveAfterTransformation?: string[];
                 whatWeDiscussed?: string[];
+                whatIsTheNeed?: string[];
                 currentProcess?: string;
                 scopeOfImprovement?: string[];
                 howOurSolutionHelps?: string[];
                 expectedBusinessImpact?: string[];
                 nextSteps?: string[];
             };
+            fullEmail?: string;
         };
         salesCoachReview?: {
             whatIDidRight?: string[];
@@ -129,6 +133,31 @@ const MeetingDetails: React.FC<MeetingDetailsProps> = ({ meeting: initialMeeting
     const [isFollowUpEmailOpen, setIsFollowUpEmailOpen] = useState(false);
     const [isChatOpen, setIsChatOpen] = useState(false);
     const [submittedQuery, setSubmittedQuery] = useState('');
+    const [isProcessing, setIsProcessing] = useState<boolean>(
+        initialMeeting.title === 'Processing...' || initialMeeting.isProcessed === false
+    );
+
+    useEffect(() => {
+        if (!isProcessing) return;
+        if (!window.electronAPI?.onMeetingsUpdated) return;
+
+        const unsubscribe = window.electronAPI.onMeetingsUpdated(() => {
+            if (window.electronAPI?.getMeetingDetails) {
+                window.electronAPI.getMeetingDetails(meeting.id)
+                    .then((updated: any) => {
+                        if (updated && updated.isProcessed) {
+                            setMeeting(updated);
+                            setIsProcessing(false); // ← stop skeleton
+                        }
+                    })
+                    .catch((e) => {
+                        console.log("[ERROR: Get Meeting Details]: ", e);
+                    });
+            }
+        });
+
+        return () => unsubscribe();
+    }, [isProcessing, meeting.id]);
 
     const handleSubmitQuestion = () => {
         if (query.trim()) {
@@ -506,7 +535,8 @@ const MeetingDetails: React.FC<MeetingDetailsProps> = ({ meeting: initialMeeting
                                     </h1>
                                     <button
                                         onClick={handleFollowUpEmail}
-                                        className={`flex items-center gap-1.5 text-xs font-medium text-text-secondary hover:text-text-primary transition-colors border border-white/[0.2] rounded-lg px-2 py-0.5 hover:bg-text-secondary/10`}
+                                        disabled={isRegenerating || isProcessing}
+                                        className={`flex items-center gap-1.5 text-xs font-medium text-text-secondary ${isRegenerating || isProcessing ? 'opacity-50 cursor-not-allowed' : 'hover:text-text-primary hover:bg-text-secondary/10'}  transition-colors border border-white/[0.2] rounded-lg px-2 py-0.5`}
                                     >
                                         <Mail size={12} />
                                         Follow-up email
@@ -555,10 +585,11 @@ const MeetingDetails: React.FC<MeetingDetailsProps> = ({ meeting: initialMeeting
 
                             <button
                                 onClick={handleRegenerateSummary}
-                                disabled={isRegenerating}
-                                className={`flex items-center gap-2 text-xs font-medium text-text-secondary ${isRegenerating ? 'text-text-tertiary' : 'hover:text-text-primary'} transition-colors`}
+                                disabled={isRegenerating || isProcessing}
+                                title={isProcessing ? 'Wait for analysis to complete first' : 'Regenerate summary'}
+                                className={`flex items-center gap-2 text-xs font-medium text-text-secondary ${isRegenerating || isProcessing ? 'text-text-tertiary' : 'hover:text-text-primary'} transition-colors`}
                             >
-                                <RefreshCcw size={14} className={isRegenerating ? 'animate-spin' : 'hover:text-text-primary'} />
+                                <RefreshCcw size={14} className={isRegenerating || isProcessing ? 'animate-spin' : 'hover:text-text-primary'} />
                                 {isRegenerating ? 'Regenerating...' : 'Regenerate'}
                             </button>
 
@@ -583,7 +614,7 @@ const MeetingDetails: React.FC<MeetingDetailsProps> = ({ meeting: initialMeeting
                         {/* Using standard divs for content, framer motion for layout */}
                         {activeTab === 'summary' && (
                             <>
-                                {isRegenerating ?
+                                {(isRegenerating || isProcessing) ?
                                     <motion.div
                                         initial={{ opacity: 0 }}
                                         animate={{ opacity: 1 }}
@@ -598,7 +629,10 @@ const MeetingDetails: React.FC<MeetingDetailsProps> = ({ meeting: initialMeeting
                                                 <RefreshCw size={13} className="text-blue-400 shrink-0" />
                                             </motion.div>
                                             <p className="text-xs text-blue-400 font-medium">
-                                                Regenerating summary — this may take 15-30 seconds...
+                                                {isProcessing
+                                                    ? 'Analysing transcript — this may take 15-30 seconds...'
+                                                    : 'Regenerating summary — this may take 15-30 seconds...'
+                                                }
                                             </p>
                                         </div>
 
@@ -612,7 +646,7 @@ const MeetingDetails: React.FC<MeetingDetailsProps> = ({ meeting: initialMeeting
                                     :
                                     <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }}>
 
-                                        <section className="mb-10">
+                                        {meeting.detailedSummary?.keyPoints?.length !== 0 && <section className="mb-10">
                                             <h2 className="text-lg font-semibold flex gap-3 text-white mb-4"><NotepadText className='text-blue-500' /> Call Summary</h2>
 
                                             <div className="space-y-3">
@@ -623,7 +657,7 @@ const MeetingDetails: React.FC<MeetingDetailsProps> = ({ meeting: initialMeeting
                                                     </div>
                                                 ))}
                                             </div>
-                                        </section>
+                                        </section>}
 
                                         {meeting.detailedSummary?.salesCoachReview !== undefined ?
                                             <>

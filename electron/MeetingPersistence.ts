@@ -37,15 +37,41 @@ const summaryPrompt = `You are an expert B2B sales analyst. A sales call just en
     },
 
     "followUpEmail": {
-        "subject": "email subject line",
+        "subject": "sharp and specific email subject line tied to their pain or goal",
+
         "sections": {
-            "whatWeDiscussed": ["3-4 bullets of key discussion points"],
-            "currentProcess": "1-2 sentences on their current state/workflow",
-            "scopeOfImprovement": ["2-3 bullets on identified gaps or problems"],
-            "howOurSolutionHelps": ["2-3 bullets on how the solution addresses their specific pain"],
-            "expectedBusinessImpact": ["2-3 bullets on quantitative and qualitative ROI"],
-            "nextSteps": ["specific agreed next steps with owners and timelines if mentioned"]
-        }
+            "whatWeDiscussed": [
+                "3-4 complete bullet points summarizing the discussion",
+                "Include company context, workflows, tools, numbers, timelines",
+                "Each bullet must be standalone and specific"
+            ],
+
+            "whatIsTheNeed": [
+                "3-4 bullets describing the core business problem",
+                "Use prospect language wherever possible",
+                "Mention operational impact, delays, inefficiencies, risks"
+            ],
+
+            "scopeOfImprovement": [
+                "3-4 bullets covering pain points and blockers",
+                "Quantify impact wherever possible",
+                "Mention time loss, affected teams, manual work, risks, failure rates"
+            ],
+
+            "whatYouWillAchieveAfterTransformation": [
+                "3-4 bullets describing measurable business outcomes",
+                "Frame improvements as before vs after",
+                "Tie every point to a target, KPI, timeline, or business result mentioned"
+            ],
+
+            "nextSteps": [
+                "3-4 bullets covering agreed actions, owners, and timelines",
+                "Mention meetings, technical reviews, procurement, security review, etc",
+                "If nothing was agreed, provide the most logical next action"
+            ]
+        },
+
+        "fullEmail": "Full ready-to-send email with bold section headings and bullet points under each section. Must stay under 250 words. No emojis. No generic filler. Human, concise, executive-friendly tone."
     },
 
     "leadName": "extract prospect full name from transcript — first name + last name if mentioned, else null",
@@ -98,13 +124,27 @@ RULES:
 - Next call questions must target the weakest BANT/MEDDICC areas from this call
 - Return ONLY valid JSON — no markdown, no code blocks, no explanation
 - leadName and company: extract from transcript introductions or conversation. Return null if not found.
-- salesCoachReview.whatIDidRight: EVERY item MUST start with a framework label: MEDDICC: | BANT: | SPIN: | DISCOVERY:
 - salesCoachReview.whatIMissedCompletely: EVERY item MUST start with a gap category: Identify Champion: | Metrics: | Authority: | Process: | Pain: | Timeline: | Budget:
 - Reference specific moments, names, numbers from the transcript — never be generic
 - salesCoachReview.whatIDidRight: EVERY item MUST start with a framework label followed by the component name: e.g. "MEDDICC Metrics:", "MEDDICC Champion:", "BANT Budget:", "BANT Timeline:"
 - salesCoachReview.whatIDidRight: return ONLY items where something genuinely happened in the call — do NOT pad with generic or empty items. Minimum 2, maximum 6.
 - salesCoachReview.whatIDidRight: group MEDDICC items first, then BANT items. No fixed count required — only include items grounded in actual transcript moments.
 - salesCoachReview.whatIMissedCompletely: items MUST follow this strict label sequence: Identify Champion, Metrics, Authority, Process, Pain. Never randomize the order.
+
+FOLLOW-UP EMAIL RULES:
+- No emojis under any circumstance
+- No generic openers like "Hope you're doing well"
+- Write like a senior AE or consultant, not a template
+- Use concrete numbers, timelines, percentages, stakeholders, and operational details from the call
+- Do NOT invent anything not present in transcript
+- Every section must contain 3-4 standalone bullet points
+- Bullets must be concise, specific, and readable
+- Email body must remain under 250 words total
+- Tone should be direct, professional, and client-friendly
+- Subject line must reference the prospect's actual pain, KPI, urgency, or initiative
+- Quantify business impact whenever possible
+- Include stakeholder names and responsibilities if mentioned
+- "fullEmail" must be fully formatted and ready to send immediately
 `;
 
 export class MeetingPersistence {
