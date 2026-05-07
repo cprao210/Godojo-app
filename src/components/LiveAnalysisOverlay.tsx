@@ -175,7 +175,6 @@ const LiveAnalysisOverlay: React.FC<LiveAnalysisOverlayProps> = ({
     overlayPanelClass,
     onClose,
     transcriptRef,
-    meetingTitle = 'Live Call',
 }) => {
     const [analysisData, setAnalysisData] = useState<LiveAnalysisData | null>(null);
     const [isLoading, setIsLoading] = useState(false);
