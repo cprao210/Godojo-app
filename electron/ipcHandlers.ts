@@ -325,8 +325,14 @@ export function initializeIpcHandlers(appState: AppState): void {
       // Don't process empty responses
       if (!result || result.trim().length === 0) {
         console.warn("[IPC] Empty response from LLM, not updating IntelligenceManager");
-        return "I apologize, but I couldn't generate a response. Please try again.";
+        throw new Error("Empty response from LLM");
       }
+
+      // // Don't process empty responses
+      // if (!result || result.trim().length === 0) {
+      //   console.warn("[IPC] Empty response from LLM, not updating IntelligenceManager");
+      //   return "I apologize, but I couldn't generate a response. Please try again.";
+      // }
 
       // Sync with IntelligenceManager so Follow-Up/Recap work
       const intelligenceManager = appState.getIntelligenceManager();
