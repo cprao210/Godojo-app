@@ -109,6 +109,13 @@ interface Meeting {
     }>;
 }
 
+interface Message {
+    id: string;
+    role: 'user' | 'assistant';
+    content: string;
+    isStreaming?: boolean;
+}
+
 interface MeetingDetailsProps {
     meeting: Meeting;
     onBack: () => void;
@@ -132,7 +139,8 @@ const MeetingDetails: React.FC<MeetingDetailsProps> = ({ meeting: initialMeeting
     const [regenError, setRegenError] = useState<string | null>(null);
     const [isFollowUpEmailOpen, setIsFollowUpEmailOpen] = useState(false);
     const [isChatOpen, setIsChatOpen] = useState(false);
-    const [submittedQuery, setSubmittedQuery] = useState('');
+    const [pendingQuery, setPendingQuery] = useState<{ text: string; id: number } | null>(null);
+    const [chatMessages, setChatMessages] = useState<Message[]>([]);
     const [isProcessing, setIsProcessing] = useState<boolean>(
         initialMeeting.title === 'Processing...' || initialMeeting.isProcessed === false
     );
@@ -161,7 +169,7 @@ const MeetingDetails: React.FC<MeetingDetailsProps> = ({ meeting: initialMeeting
 
     const handleSubmitQuestion = () => {
         if (query.trim()) {
-            setSubmittedQuery(query);
+            setPendingQuery({ text: query.trim(), id: Date.now() });
             if (!isChatOpen) {
                 setIsChatOpen(true);
             }
@@ -1203,7 +1211,6 @@ const MeetingDetails: React.FC<MeetingDetailsProps> = ({ meeting: initialMeeting
                 onClose={() => {
                     setIsChatOpen(false);
                     setQuery('');
-                    setSubmittedQuery('');
                 }}
                 meetingContext={{
                     id: meeting.id,  // Required for RAG queries
@@ -1213,10 +1220,9 @@ const MeetingDetails: React.FC<MeetingDetailsProps> = ({ meeting: initialMeeting
                     actionItems: meeting.detailedSummary?.actionItems,
                     transcript: meeting.transcript
                 }}
-                initialQuery={submittedQuery}
-                onNewQuery={(newQuery) => {
-                    setSubmittedQuery(newQuery);
-                }}
+                initialQuery={pendingQuery}
+                messages={chatMessages}
+                onMessagesChange={setChatMessages}
             />
         </div>
     )
