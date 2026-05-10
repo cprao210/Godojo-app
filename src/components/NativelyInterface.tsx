@@ -351,11 +351,17 @@ const NativelyInterface: React.FC<NativelyInterfaceProps> = ({ onEndMeeting, ove
             setManualTranscript('');
             setVoiceInput('');
             setIsProcessing(false);
-            // Optionally reset connection status if needed, but connection persists
 
-            // Track new conversation/session if applicable?
-            // Actually 'app_opened' is global, 'assistant_started' is overlay.
-            // Maybe 'conversation_started' event?
+            // CRITICAL FIX: Clear the live transcript ref when meeting resets
+            liveTranscriptRef.current = [];
+
+            // Also reset rolling transcript
+            setRollingTranscript('');
+
+            // Close Live Analysis overlay if open
+            setIsLiveAnalysisOpen(false);
+
+            // Track new conversation
             analytics.trackConversationStarted();
         });
         return () => unsubscribe();

@@ -284,6 +284,24 @@ const LiveAnalysisOverlay: React.FC<LiveAnalysisOverlayProps> = ({
     const [checkedObjections, setCheckedObjections] = useState<Set<number>>(new Set());
     const [aiInsight, setAiInsight] = useState<string>('');
     const scrollRef = useRef<HTMLDivElement>(null);
+    const prevTranscriptLengthRef = useRef<number>(0); // Track previous length to detect transcript reset
+
+    // Reset analysis when transcript is cleared (new meeting)
+    useEffect(() => {
+        const currentLength = transcriptRef.current?.length || 0;
+
+        // If length decreased significantly (transcript was cleared)
+        if (currentLength < prevTranscriptLengthRef.current) {
+            console.log('[LiveAnalysis] Transcript reset detected, clearing analysis');
+            setAnalysisData(null);
+            setError(null);
+            setCheckedObjections(new Set());
+            setAiInsight('');
+            // Don't auto-run - wait for user to click Regenerate
+        }
+
+        prevTranscriptLengthRef.current = currentLength;
+    }, [transcriptRef.current?.length]);
 
     // Count confirmed MEDDIC fields
     const meddicFound = analysisData
@@ -400,12 +418,18 @@ const LiveAnalysisOverlay: React.FC<LiveAnalysisOverlayProps> = ({
         }
     }, [transcriptRef]);
 
-    // Auto-run on open
+    // Auto-run on open - ONLY if there's transcript data
     useEffect(() => {
-        if (!analysisData && !isLoading) {
+        // Only run if:
+        // 1. No analysis data yet
+        // 2. Not currently loading
+        // 3. There's transcript data (meeting has started)
+        // 4. No error (don't auto-run after error)
+        if (!analysisData && !isLoading && !error && transcriptRef.current?.length > 0) {
+            console.log('[LiveAnalysis] Auto-running analysis on open with', transcriptRef.current.length, 'segments');
             runAnalysis();
         }
-    }, []);
+    }, [analysisData, isLoading, error, transcriptRef.current?.length]);
 
     const toggleObjection = (index: number) => {
         setCheckedObjections(prev => {
