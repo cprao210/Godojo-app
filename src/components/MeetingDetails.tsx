@@ -70,13 +70,16 @@ interface Meeting {
         followUpEmail?: {
             subject?: string;
             sections?: {
+                whatYouWillAchieveAfterTransformation?: string[];
                 whatWeDiscussed?: string[];
+                whatIsTheNeed?: string[];
                 currentProcess?: string;
                 scopeOfImprovement?: string[];
                 howOurSolutionHelps?: string[];
                 expectedBusinessImpact?: string[];
                 nextSteps?: string[];
             };
+            fullEmail?: string;
         };
         salesCoachReview?: {
             whatIDidRight?: string[];
@@ -147,7 +150,9 @@ const MeetingDetails: React.FC<MeetingDetailsProps> = ({ meeting: initialMeeting
                             setIsProcessing(false); // ← stop skeleton
                         }
                     })
-                    .catch(() => { });
+                    .catch((e) => {
+                        console.log("[ERROR: Get Meeting Details]: ", e);
+                    });
             }
         });
 

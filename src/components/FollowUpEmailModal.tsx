@@ -11,16 +11,21 @@ interface Meeting {
         overview?: string;
         actionItems: string[];
         keyPoints: string[];
+        leadName?: string;
+        company?: string;
         followUpEmail?: {
             subject?: string;
             sections?: {
+                whatYouWillAchieveAfterTransformation?: string[];
                 whatWeDiscussed?: string[];
+                whatIsTheNeed?: string[];
                 currentProcess?: string;
                 scopeOfImprovement?: string[];
                 howOurSolutionHelps?: string[];
                 expectedBusinessImpact?: string[];
                 nextSteps?: string[];
             };
+            fullEmail?: string;
         };
     };
     transcript?: Array<{
@@ -107,31 +112,77 @@ const FollowUpEmailModal: React.FC<FollowUpEmailModalProps> = ({ isOpen, onClose
     const generateEmail = async (rName?: string, sName?: string) => {
         // ── Use pre-generated data from summary if available ──────────────
         const prebuilt = meeting.detailedSummary?.followUpEmail;
+
+        console.log(prebuilt?.fullEmail)
+
         if (prebuilt?.sections && !hasGeneratedOnce) {
             const sections = prebuilt.sections;
             const lines: string[] = [];
 
-            if (sections.whatWeDiscussed?.length)
-                lines.push(`What We Discussed\n${sections.whatWeDiscussed.map(s => `• ${s}`).join('\n')}`);
-            if (sections.currentProcess)
-                lines.push(`Current Process\n${sections.currentProcess}`);
-            if (sections.scopeOfImprovement?.length)
-                lines.push(`Scope of Improvement\n${sections.scopeOfImprovement.map(s => `• ${s}`).join('\n')}`);
-            if (sections.howOurSolutionHelps?.length)
-                lines.push(`How Our Solution Helps\n${sections.howOurSolutionHelps.map(s => `• ${s}`).join('\n')}`);
-            if (sections.expectedBusinessImpact?.length)
-                lines.push(`Expected Business Impact\n${sections.expectedBusinessImpact.map(s => `• ${s}`).join('\n')}`);
-            if (sections.nextSteps?.length)
-                lines.push(`Next Steps\n${sections.nextSteps.map(s => `• ${s}`).join('\n')}`);
+            // ── WHAT WE DISCUSSED ─────────────────────────────────────
+            if (sections.whatWeDiscussed?.length) {
+                lines.push(
+                    `WHAT WE DISCUSSED\n${sections.whatWeDiscussed
+                        .map((s: string) => `• ${s}`)
+                        .join('\n')}`
+                );
+            }
 
-            if (prebuilt.subject) setSubject(prebuilt.subject);
-            setEmailBody(lines.join('\n\n'));
+            // ── WHAT IS THE NEED ──────────────────────────────────────
+            if (sections.whatIsTheNeed?.length) {
+                lines.push(
+                    `WHAT IS THE NEED\n${sections.whatIsTheNeed
+                        .map((s: string) => `• ${s}`)
+                        .join('\n')}`
+                );
+            }
+
+            // ── SCOPE OF IMPROVEMENT ─────────────────────────────────
+            if (sections.scopeOfImprovement?.length) {
+                lines.push(
+                    `SCOPE OF IMPROVEMENT / CHALLENGES\n${sections.scopeOfImprovement
+                        .map((s: string) => `• ${s}`)
+                        .join('\n')}`
+                );
+            }
+
+            // ── TRANSFORMATION OUTCOMES ──────────────────────────────
+            if (sections.whatYouWillAchieveAfterTransformation?.length) {
+                lines.push(
+                    `WHAT YOU WILL ACHIEVE AFTER TRANSFORMATION\n${sections.whatYouWillAchieveAfterTransformation
+                        .map((s: string) => `• ${s}`)
+                        .join('\n')}`
+                );
+            }
+
+            // ── NEXT STEPS ───────────────────────────────────────────
+            if (sections.nextSteps?.length) {
+                lines.push(
+                    `NEXT STEPS\n${sections.nextSteps
+                        .map((s: string) => `• ${s}`)
+                        .join('\n')}`
+                );
+            }
+
+            // ── SUBJECT ──────────────────────────────────────────────
+            if (prebuilt.subject) {
+                setSubject(prebuilt.subject);
+            }
+
+            // ── FULL EMAIL SUPPORT ───────────────────────────────────
+            if (prebuilt.fullEmail) {
+                setEmailBody(prebuilt.fullEmail);
+            } else {
+                setEmailBody(lines.join('\n\n'));
+            }
+
             setHasGeneratedOnce(true);
             return;
         }
 
-        // ── Fallback: call API if no pre-generated data ───────────────────
+        // ── Fallback: call API if no pre-generated data ─────────────
         setIsGenerating(true);
+
         try {
             const input = {
                 meeting_type: 'meeting' as const,
@@ -148,19 +199,35 @@ const FollowUpEmailModal: React.FC<FollowUpEmailModalProps> = ({ isOpen, onClose
             const generatedBody = await window.electronAPI?.generateFollowupEmail(input);
 
             if (generatedBody) {
-                // Extract subject if LLM included it
+                // Extract subject if included
                 const subjectMatch = generatedBody.match(/^Subject:\s*(.+)/m);
+
                 if (subjectMatch) {
                     setSubject(subjectMatch[1].trim());
-                    setEmailBody(generatedBody.replace(/^Subject:\s*.+\n?/m, '').trimStart());
+
+                    setEmailBody(
+                        generatedBody
+                            .replace(/^Subject:\s*.+\n?/m, '')
+                            .trimStart()
+                    );
                 } else {
                     setEmailBody(generatedBody);
                 }
+
                 setHasGeneratedOnce(true);
             }
         } catch (error) {
             console.error('Failed to generate email:', error);
-            setEmailBody('Hi there,\n\nI enjoyed our conversation. Let me know if you have any questions.\n\nBest,');
+
+            setEmailBody(`WHAT WE DISCUSSED
+    • Thank you for taking the time to speak today.
+    • We reviewed your current workflow and operational challenges.
+    • We discussed potential improvements and next steps.
+    
+    NEXT STEPS
+    • Please review the shared materials.
+    • We will coordinate the next discussion internally.
+    • Let us know if additional stakeholders should be included.`);
         } finally {
             setIsGenerating(false);
         }
@@ -191,9 +258,12 @@ const FollowUpEmailModal: React.FC<FollowUpEmailModalProps> = ({ isOpen, onClose
         const fullEmail = subject
             ? `Subject: ${subject}\n\n${emailBody}`
             : emailBody;
+
         try {
             await navigator.clipboard.writeText(fullEmail);
+
             setIsCopied(true);
+
             setTimeout(() => setIsCopied(false), 2000);
         } catch (err) {
             console.error('Failed to copy email:', err);
