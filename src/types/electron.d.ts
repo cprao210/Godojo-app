@@ -191,6 +191,11 @@ export interface ElectronAPI {
   onGeminiStreamDone: (callback: () => void) => () => void
   onGeminiStreamError: (callback: (error: string) => void) => () => void;
 
+  // NEW: Dedicated Live Analysis with its own events
+  startLiveAnalysis: (prompt: string) => Promise<{ success: boolean; error?: string }>;
+  onLiveAnalysisResult: (callback: (result: string) => void) => () => void;
+  onLiveAnalysisError: (callback: (error: string) => void) => () => void;
+
   // Model Management
   getDefaultModel: () => Promise<{ model: string }>;
   setModel: (modelId: string) => Promise<{ success: boolean; error?: string }>;

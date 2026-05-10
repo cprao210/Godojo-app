@@ -170,6 +170,108 @@ const FieldRow: React.FC<{
 // Main Component
 // ─────────────────────────────────────────────
 
+const getLiveAnalysisPrompt = (context: string) => `You are an expert real-time sales intelligence engine analyzing a live sales call transcript. Your job is to extract structured insights across four areas: BANT, MEDDIC, Objections, and Buying Signals. Return ONLY valid JSON. No explanation, no markdown, no text outside the JSON object. 
+
+    ═══════════════════════════════════════
+    RULES
+    ═══════════════════════════════════════
+
+    OVERWRITE on every call:
+    → bant
+    → meddic
+
+    APPEND ONLY (never remove prior entries) on every call:
+    → objections
+    → signals
+
+    ═══════════════════════════════════════
+    SECTION 1: BANT
+    ═══════════════════════════════════════
+
+    Scan the transcript for Budget, Authority, Need, and Timeline signals.
+
+    For each field return:
+    - emoji:    "✅" if clearly confirmed, "⚠️" if implied or partial, "❌" if not mentioned
+    - status:   "confirmed" | "partial" | "missing"
+    - evidence: One line — exact quote or closest paraphrase from the customer. If missing, return ""
+
+    Budget    → Money mentioned, approval thresholds, "we have budget", "we're looking at X"
+    Authority → Decision-maker named, approval chain mentioned, "I need sign-off from", "our CFO decides"
+    Need      → Problem stated, current pain, why they're looking, "we need", "we're trying to"
+    Timeline  → Deadlines, urgency, "we need this by", "our Q3 goal", "we're hoping to launch"
+
+    ═══════════════════════════════════════
+    SECTION 2: MEDDIC
+    ═══════════════════════════════════════
+
+    Scan the transcript for MEDDIC signals.
+
+    Same structure as BANT: emoji + status + evidence per field.
+
+    Metrics          → Quantified outcomes, ROI, KPIs, "reduce by X%", "save X hours", "increase revenue"
+    Economic Buyer   → Who owns the budget/final yes, "our CFO", "VP of Finance signs off"
+    Decision Criteria→ What they're evaluating on, "we need it to integrate with", "most important to us is"
+    Decision Process → How they decide, "we do a POC", "we need legal review", "committee votes"
+    Identify Pain    → Core problem driving the search, inefficiency, risk, or cost they're trying to fix
+    Champion         → Internal sponsor, "I've been pushing for this", "I'm going to present this to"
+    Competition      → Other vendors mentioned, "we're also looking at", "our current tool", "compared to"
+
+    ═══════════════════════════════════════
+    SECTION 3: OBJECTIONS
+    ═══════════════════════════════════════
+
+    Capture two types. APPEND new entries — never remove existing ones.
+
+    TYPE A — Customer Questions (open or unanswered)
+    TYPE B — AE Deferrals (follow-up commitments made by the AE)
+
+    For each objection return:
+    - type:   "customer_question" | "ae_deferral"
+    - quote:  Exact quote or tight one-line paraphrase
+    - owner:  "customer" | "ae"
+    - status: "open" | "deferred"
+
+    ═══════════════════════════════════════
+    SECTION 4: SIGNALS
+    ═══════════════════════════════════════
+
+    Detect buying signals. For each signal return:
+    - quote:       Exact quote or tight one-line paraphrase from the customer
+    - signal_type: Array of: frustration | urgency | cost | risk | aspiration | buying_intent
+    - ask_now:     The single follow-up question the AE should ask (natural, specific, under 20 words)
+
+    ═══════════════════════════════════════
+    OUTPUT FORMAT
+    ═══════════════════════════════════════
+
+    {
+        "bant": {
+            "budget":    { "emoji": "", "status": "", "evidence": "" },
+            "authority": { "emoji": "", "status": "", "evidence": "" },
+            "need":      { "emoji": "", "status": "", "evidence": "" },
+            "timeline":  { "emoji": "", "status": "", "evidence": "" }
+        },
+        "meddic": {
+            "metrics":           { "emoji": "", "status": "", "evidence": "" },
+            "economic_buyer":    { "emoji": "", "status": "", "evidence": "" },
+            "decision_criteria": { "emoji": "", "status": "", "evidence": "" },
+            "decision_process":  { "emoji": "", "status": "", "evidence": "" },
+            "identify_pain":     { "emoji": "", "status": "", "evidence": "" },
+            "champion":          { "emoji": "", "status": "", "evidence": "" },
+            "competition":       { "emoji": "", "status": "", "evidence": "" }
+        },
+        "objections": [
+            { "type": "", "quote": "", "owner": "", "status": "" }
+        ],
+        "signals": [
+            { "quote": "", "signal_type": [], "ask_now": "" }
+        ]
+    }
+
+    TRANSCRIPT:
+    ${context}
+`;
+
 const LiveAnalysisOverlay: React.FC<LiveAnalysisOverlayProps> = ({
     appearance,
     overlayPanelClass,
@@ -215,6 +317,7 @@ const LiveAnalysisOverlay: React.FC<LiveAnalysisOverlayProps> = ({
 
     const runAnalysis = useCallback(async () => {
         const transcript = transcriptRef.current;
+        console.log('[LiveAnalysis] Starting analysis with transcript length:', transcript?.length);
         if (!transcript || transcript.length < 1) {
             setError(`Not enough transcript data yet (${transcript?.length ?? 0} segments). Keep talking!`);
             return;
@@ -222,140 +325,78 @@ const LiveAnalysisOverlay: React.FC<LiveAnalysisOverlayProps> = ({
         setIsLoading(true);
         setError(null);
 
+        // Setup temporary listeners for this analysis session
+        let resultCleanup: (() => void) | undefined;
+        let errorCleanup: (() => void) | undefined;
+
         try {
             const context = transcript
                 .filter(t => !['system', 'ai', 'assistant', 'model'].includes(t.speaker?.toLowerCase()))
                 .map(t => `${t.speaker === 'user' ? 'REP' : 'PROSPECT'}: ${t.text}`)
                 .join('\n');
 
-            const livePrompt = `You are an expert real-time sales intelligence engine analyzing a live sales call transcript. Your job is to extract structured insights across four areas: BANT, MEDDIC, Objections, and Buying Signals. Return ONLY valid JSON. No explanation, no markdown, no text outside the JSON object. 
 
-═══════════════════════════════════════
-RULES
-═══════════════════════════════════════
+            const livePrompt = getLiveAnalysisPrompt(context);
 
-OVERWRITE on every call:
-  → bant
-  → meddic
+            const analysisPromise = new Promise<LiveAnalysisData>((resolve, reject) => {
+                let timeoutId: NodeJS.Timeout;
 
-APPEND ONLY (never remove prior entries) on every call:
-  → objections
-  → signals
+                resultCleanup = window.electronAPI?.onLiveAnalysisResult?.((result: string) => {
+                    clearTimeout(timeoutId);
+                    try {
+                        // Parse the JSON result
+                        let jsonStr = result.trim();
+                        const jsonMatch = result.match(/```(?:json)?\s*([\s\S]*?)\s*```/);
+                        if (jsonMatch) {
+                            jsonStr = jsonMatch[1];
+                        }
+                        const parsed: LiveAnalysisData = JSON.parse(jsonStr);
+                        resolve(parsed);
+                    } catch (parseError) {
+                        reject(new Error('Failed to parse analysis result'));
+                    }
+                });
 
-═══════════════════════════════════════
-SECTION 1: BANT
-═══════════════════════════════════════
+                errorCleanup = window.electronAPI?.onLiveAnalysisError?.((error: string) => {
+                    clearTimeout(timeoutId);
+                    reject(new Error(error));
+                });
 
-Scan the transcript for Budget, Authority, Need, and Timeline signals.
+                // Set timeout for analysis (60 seconds)
+                timeoutId = setTimeout(() => {
+                    reject(new Error('Analysis timed out after 60 seconds'));
+                }, 60000);
+            });
 
-For each field return:
-  - emoji:    "✅" if clearly confirmed, "⚠️" if implied or partial, "❌" if not mentioned
-  - status:   "confirmed" | "partial" | "missing"
-  - evidence: One line — exact quote or closest paraphrase from the customer. If missing, return ""
+            // Start the analysis
+            await window.electronAPI?.startLiveAnalysis?.(livePrompt);
 
-Budget    → Money mentioned, approval thresholds, "we have budget", "we're looking at X"
-Authority → Decision-maker named, approval chain mentioned, "I need sign-off from", "our CFO decides"
-Need      → Problem stated, current pain, why they're looking, "we need", "we're trying to"
-Timeline  → Deadlines, urgency, "we need this by", "our Q3 goal", "we're hoping to launch"
+            // Wait for the result
+            const parsed = await analysisPromise;
 
-═══════════════════════════════════════
-SECTION 2: MEDDIC
-═══════════════════════════════════════
+            setAnalysisData(parsed);
 
-Scan the transcript for MEDDIC signals.
-
-Same structure as BANT: emoji + status + evidence per field.
-
-Metrics          → Quantified outcomes, ROI, KPIs, "reduce by X%", "save X hours", "increase revenue"
-Economic Buyer   → Who owns the budget/final yes, "our CFO", "VP of Finance signs off"
-Decision Criteria→ What they're evaluating on, "we need it to integrate with", "most important to us is"
-Decision Process → How they decide, "we do a POC", "we need legal review", "committee votes"
-Identify Pain    → Core problem driving the search, inefficiency, risk, or cost they're trying to fix
-Champion         → Internal sponsor, "I've been pushing for this", "I'm going to present this to"
-Competition      → Other vendors mentioned, "we're also looking at", "our current tool", "compared to"
-
-═══════════════════════════════════════
-SECTION 3: OBJECTIONS
-═══════════════════════════════════════
-
-Capture two types. APPEND new entries — never remove existing ones.
-
-TYPE A — Customer Questions (open or unanswered)
-TYPE B — AE Deferrals (follow-up commitments made by the AE)
-
-For each objection return:
-  - type:   "customer_question" | "ae_deferral"
-  - quote:  Exact quote or tight one-line paraphrase
-  - owner:  "customer" | "ae"
-  - status: "open" | "deferred"
-
-═══════════════════════════════════════
-SECTION 4: SIGNALS
-═══════════════════════════════════════
-
-Detect buying signals. For each signal return:
-  - quote:       Exact quote or tight one-line paraphrase from the customer
-  - signal_type: Array of: frustration | urgency | cost | risk | aspiration | buying_intent
-  - ask_now:     The single follow-up question the AE should ask (natural, specific, under 20 words)
-
-═══════════════════════════════════════
-OUTPUT FORMAT
-═══════════════════════════════════════
-
-{
-  "bant": {
-    "budget":    { "emoji": "", "status": "", "evidence": "" },
-    "authority": { "emoji": "", "status": "", "evidence": "" },
-    "need":      { "emoji": "", "status": "", "evidence": "" },
-    "timeline":  { "emoji": "", "status": "", "evidence": "" }
-  },
-  "meddic": {
-    "metrics":           { "emoji": "", "status": "", "evidence": "" },
-    "economic_buyer":    { "emoji": "", "status": "", "evidence": "" },
-    "decision_criteria": { "emoji": "", "status": "", "evidence": "" },
-    "decision_process":  { "emoji": "", "status": "", "evidence": "" },
-    "identify_pain":     { "emoji": "", "status": "", "evidence": "" },
-    "champion":          { "emoji": "", "status": "", "evidence": "" },
-    "competition":       { "emoji": "", "status": "", "evidence": "" }
-  },
-  "objections": [
-    { "type": "", "quote": "", "owner": "", "status": "" }
-  ],
-  "signals": [
-    { "quote": "", "signal_type": [], "ask_now": "" }
-  ]
-}
-
-TRANSCRIPT:
-${context}`;
-
-
-            // Use chatWithGemini for the analysis
-            const result = await window.electronAPI.chatWithGemini(livePrompt, undefined, undefined, true);
-
-            if (result) {
-                const jsonMatch = result.match(/```json\n([\s\S]*?)\n```/) || [null, result];
-                const jsonStr = (jsonMatch[1] || result).trim();
-                const parsed: LiveAnalysisData = JSON.parse(jsonStr);
-                setAnalysisData(parsed);
-
-                // Generate AI insight from top signal
-                const topSignal = parsed.signals?.[0];
-                if (topSignal) {
-                    setAiInsight(topSignal.ask_now);
-                } else if (parsed.meddic.competition.status === 'missing') {
-                    setAiInsight("No competitor mentioned yet — ask if they're evaluating alternatives before the call ends.");
-                } else if (parsed.bant.budget.status === 'partial') {
-                    setAiInsight(`Budget is partial — push to confirm exact number and approval owner now.`);
-                } else {
-                    setAiInsight("Strong call signals detected. Review MEDDIC gaps below before closing.");
-                }
+            // Generate AI insight from top signal
+            const topSignal = parsed.signals?.[0];
+            if (topSignal) {
+                setAiInsight(topSignal.ask_now);
+            } else if (parsed.meddic?.competition?.status === 'missing') {
+                setAiInsight("No competitor mentioned yet — ask if they're evaluating alternatives before the call ends.");
+            } else if (parsed.bant?.budget?.status === 'partial') {
+                setAiInsight(`Budget is partial — push to confirm exact number and approval owner now.`);
+            } else {
+                setAiInsight("Strong call signals detected. Review MEDDIC gaps below before closing.");
             }
+
+
         } catch (e) {
             console.error('[LiveAnalysis] Error:', e);
             setError('Analysis failed. Please try again.');
         } finally {
             setIsLoading(false);
+            // Cleanup listeners
+            resultCleanup?.();
+            errorCleanup?.();
         }
     }, [transcriptRef]);
 

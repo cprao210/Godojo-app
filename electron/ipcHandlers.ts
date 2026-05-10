@@ -367,6 +367,7 @@ export function initializeIpcHandlers(appState: AppState): void {
   // Each new invocation increments the ID; any in-flight iteration bails as soon as it detects
   // that a newer stream has taken over.
   let _chatStreamId = 0;
+  let _analysisStreamId = 0;
 
   safeHandle("gemini-chat-stream", async (event, message: string, imagePaths?: string[], context?: string, options?: { skipSystemPrompt?: boolean }) => {
     try {
@@ -443,7 +444,28 @@ export function initializeIpcHandlers(appState: AppState): void {
     }
   });
 
+  safeHandle("live-analysis-stream", async (event, prompt: string) => {
+    try {
+      console.log('[IPC] live-analysis-stream called, prompt length:', prompt.length);
 
+      const llmHelper = appState.processingHelper.getLLMHelper();
+      const myStreamId = ++_analysisStreamId;
+
+      // Use a direct call that doesn't use the shared stream infrastructure
+      const result = await llmHelper.chatWithGemini(prompt, undefined, undefined, true);
+
+      // Send result as a single chunk (non-streaming for analysis)
+      if (_analysisStreamId === myStreamId) {
+        event.sender.send('live-analysis-result', result);
+      }
+
+      return { success: true };
+    } catch (error: any) {
+      console.error('[IPC] live-analysis-stream error:', error);
+      event.sender.send('live-analysis-error', error.message || 'Analysis failed');
+      return { success: false, error: error.message };
+    }
+  });
 
   safeHandle("quit-app", () => {
     app.quit()

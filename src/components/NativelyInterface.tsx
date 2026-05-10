@@ -1256,12 +1256,24 @@ const NativelyInterface: React.FC<NativelyInterfaceProps> = ({ onEndMeeting, ove
             });
         }));
 
-        // JIT RAG Stream listeners (for live meeting RAG responses)
+        // Update the onRAGStreamChunk handler as well
         if (window.electronAPI.onRAGStreamChunk) {
-            cleanups.push(window.electronAPI.onRAGStreamChunk((data: { chunk: string }) => {
-                // Same guard as onGeminiStreamToken: suppress raw JSON if this chunk is
-                // the negotiation coaching sentinel. The onRAGStreamComplete handler will
-                // convert it to the proper card UI.
+            cleanups.push(window.electronAPI.onRAGStreamChunk((data: { chunk: string; meetingId?: string; global?: boolean }) => {
+                // Check if this chunk is the start of a Live Analysis response
+                if (data.chunk.includes('"bant"') || data.chunk.includes('"meddic"') || data.chunk.includes('"objections"')) {
+                    // Don't add analysis to messages - just ignore it silently
+                    console.log('[NativelyInterface] Ignoring Live Analysis chunk in chat');
+                    return;
+                }
+
+                // Check if this chunk is from a meeting RAG query (has meetingId or global)
+                // These are valid chat responses
+                if (!data.meetingId && !data.global) {
+                    // Not a chat response - ignore
+                    return;
+                }
+
+                // Same guard for negotiation coaching
                 try {
                     const parsed = JSON.parse(data.chunk);
                     if (parsed?.__negotiationCoaching) {
@@ -1274,12 +1286,13 @@ const NativelyInterface: React.FC<NativelyInterfaceProps> = ({ onEndMeeting, ove
                             }
                             return prev;
                         });
-                        return; // Skip normal append
+                        return;
                     }
                 } catch {
                     // Normal text chunk — fall through.
                 }
 
+                // Only process non-analysis chunks
                 setMessages(prev => {
                     const lastMsg = prev[prev.length - 1];
                     if (lastMsg && lastMsg.isStreaming && lastMsg.role === 'system') {
@@ -1297,7 +1310,14 @@ const NativelyInterface: React.FC<NativelyInterfaceProps> = ({ onEndMeeting, ove
         }
 
         if (window.electronAPI.onRAGStreamComplete) {
-            cleanups.push(window.electronAPI.onRAGStreamComplete(() => {
+            cleanups.push(window.electronAPI.onRAGStreamComplete((data: { meetingId?: string; global?: boolean }) => {
+
+                // Only process if this is a chat response (has meetingId or global)
+                if (!data.meetingId && !data.global) {
+                    console.log('[NativelyInterface] Ignoring non-chat stream completion');
+                    return;
+                }
+
                 setIsProcessing(false);
                 requestStartTimeRef.current = null;
                 setMessages(prev => {
@@ -1317,7 +1337,8 @@ const NativelyInterface: React.FC<NativelyInterfaceProps> = ({ onEndMeeting, ove
                                 }];
                             }
                         } catch { }
-                        // Normal completion
+
+                        // Normal completion - keep the message
                         return [...prev.slice(0, -1), { ...lastMsg, isStreaming: false }];
                     }
                     if (lastMsg && lastMsg.isStreaming) {
