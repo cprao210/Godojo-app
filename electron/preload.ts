@@ -1,4 +1,5 @@
 import { contextBridge, ipcRenderer } from "electron"
+import { LiveAnalysisData } from "../src/types/liveAnalysis"
 import { CalendarEvent } from "services/CalendarManager"
 
 // Types for the exposed Electron API
@@ -124,6 +125,7 @@ interface ElectronAPI {
   getRecentMeetings: () => Promise<Array<{ id: string; title: string; date: string; duration: string; summary: string }>>
   getMeetingDetails: (id: string) => Promise<any>
   updateMeetingTitle: (id: string, title: string) => Promise<boolean>
+  updateLiveAnalysis: (data: LiveAnalysisData) => Promise<{ success: boolean }>;
   regenerateMeetingSummary: (id: string) => Promise<{ success: boolean; meeting?: any; error?: string }>
   uploadTranscript: (text: string, title?: string) => Promise<{ success: boolean; meetingId?: string; error?: string }>
   updateMeetingSummary: (id: string, updates: { overview?: string, actionItems?: string[], keyPoints?: string[], actionItemsTitle?: string, keyPointsTitle?: string }) => Promise<boolean>
@@ -657,6 +659,8 @@ contextBridge.exposeInMainWorld("electronAPI", {
       ipcRenderer.removeListener("meetings-updated", subscription)
     }
   },
+
+  updateLiveAnalysis: (data: LiveAnalysisData) => ipcRenderer.invoke("update-live-analysis", data),
 
   // Window Mode
   setWindowMode: (mode: 'launcher' | 'overlay', inactive?: boolean) => ipcRenderer.invoke("set-window-mode", mode, inactive),

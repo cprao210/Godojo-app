@@ -1,3 +1,5 @@
+import { LiveAnalysisData } from "./liveAnalysis"
+
 export interface ElectronAPI {
   getZoomCalendarStatus(): any
   zoomCalendarConnect(): any
@@ -195,6 +197,8 @@ export interface ElectronAPI {
   startLiveAnalysis: (prompt: string) => Promise<{ success: boolean; error?: string }>;
   onLiveAnalysisResult: (callback: (result: string) => void) => () => void;
   onLiveAnalysisError: (callback: (error: string) => void) => () => void;
+
+  updateLiveAnalysis: (data: LiveAnalysisData) => Promise<{ success: boolean }>;
 
   // Model Management
   getDefaultModel: () => Promise<{ model: string }>;

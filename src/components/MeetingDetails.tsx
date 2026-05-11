@@ -1,6 +1,6 @@
 import React, { act, useEffect, useState } from 'react';
 import { useResolvedTheme } from '../hooks/useResolvedTheme';
-import { ArrowLeft, Search, Mail, Link, ChevronDown, Play, ArrowUp, Copy, Check, MoreHorizontal, Settings, ArrowRight, TrendingUp, TriangleAlert, MessageSquare, MessagesSquareIcon, ChartColumnIncreasing, CircleCheck, NotepadText, TableOfContents, RefreshCcw, Loader2, RefreshCw } from 'lucide-react';
+import { ArrowLeft, Search, Mail, Link, ChevronDown, Play, ArrowUp, Copy, Check, MoreHorizontal, Settings, ArrowRight, TrendingUp, TriangleAlert, MessageSquare, MessagesSquareIcon, ChartColumnIncreasing, CircleCheck, NotepadText, TableOfContents, RefreshCcw, Loader2, RefreshCw, Shield } from 'lucide-react';
 import { motion, AnimatePresence } from 'framer-motion';
 import MeetingChatOverlay from './MeetingChatOverlay';
 import EditableTextBlock from './EditableTextBlock';
@@ -10,6 +10,8 @@ import remarkGfm from 'remark-gfm';
 import { Prism as SyntaxHighlighter } from 'react-syntax-highlighter';
 import { vscDarkPlus } from 'react-syntax-highlighter/dist/esm/styles/prism';
 import FollowUpEmailModal from './FollowUpEmailModal';
+import { LiveAnalysisContent } from './LiveAnalysisContent';
+import { LiveAnalysisData } from '../types/liveAnalysis';
 
 const formatTime = (ms: number) => {
     const date = new Date(ms);
@@ -45,6 +47,8 @@ interface Meeting {
 
         leadName?: string;
         company?: string;
+
+        liveAnalysis?: LiveAnalysisData;
 
         // New sales fields
         dealStatus?: {
@@ -125,7 +129,7 @@ const MeetingDetails: React.FC<MeetingDetailsProps> = ({ meeting: initialMeeting
     const isLight = useResolvedTheme() === 'light';
     // We need local state for the meeting object to reflect optimistic updates
     const [meeting, setMeeting] = useState<Meeting>(initialMeeting);
-    const [activeTab, setActiveTab] = useState<'summary' | 'transcript' | 'usage'>('summary');
+    const [activeTab, setActiveTab] = useState<'summary' | 'transcript' | 'usage' | 'analysis'>('summary');
     const [query, setQuery] = useState('');
     const [isCopied, setIsCopied] = useState(false);
     const [isRegenerating, setIsRegenerating] = useState(false);
@@ -396,7 +400,86 @@ const MeetingDetails: React.FC<MeetingDetailsProps> = ({ meeting: initialMeeting
             textToCopy = meeting.usage
                 .map(u => `Q: ${u.question || ''}\nA: ${u.answer || ''}`)
                 .join('\n\n');
+        } else if (activeTab === 'analysis' && meeting.detailedSummary?.liveAnalysis) {
+            // Format the live analysis data for copying
+            const la = meeting.detailedSummary.liveAnalysis;
+            const sections: string[] = [];
+
+            // Helper to format a field
+            const formatField = (label: string, field: any) => {
+                if (!field || !field.status) return '';
+                const statusIcon = field.status === 'confirmed' ? '✅' : field.status === 'partial' ? '⚠️' : '❌';
+                return `  ${statusIcon} ${label}: ${field.status.toUpperCase()} - ${field.evidence || 'Not mentioned'}`;
+            };
+
+            // MEDDIC Section
+            if (la.meddic) {
+                const meddicLines = [
+                    formatField('Metrics', la.meddic.metrics),
+                    formatField('Economic Buyer', la.meddic.economic_buyer),
+                    formatField('Decision Criteria', la.meddic.decision_criteria),
+                    formatField('Decision Process', la.meddic.decision_process),
+                    formatField('Identify Pain', la.meddic.identify_pain),
+                    formatField('Champion', la.meddic.champion),
+                    formatField('Competition', la.meddic.competition)
+                ].filter(Boolean);
+
+                if (meddicLines.length) {
+                    sections.push(`MEDDICC QUALIFICATION`);
+                    sections.push(`${'─'.repeat(40)}`);
+                    sections.push(...meddicLines);
+                    sections.push('');
+                }
+            }
+
+            // BANT Section
+            if (la.bant) {
+                const bantLines = [
+                    formatField('Budget', la.bant.budget),
+                    formatField('Authority', la.bant.authority),
+                    formatField('Need', la.bant.need),
+                    formatField('Timeline', la.bant.timeline)
+                ].filter(Boolean);
+
+                if (bantLines.length) {
+                    sections.push(`BANT QUALIFICATION`);
+                    sections.push(`${'─'.repeat(40)}`);
+                    sections.push(...bantLines);
+                    sections.push('');
+                }
+            }
+
+            // Signals Section
+            if (la.signals && la.signals.length > 0) {
+                sections.push(`BUYING SIGNALS (${la.signals.length})`);
+                sections.push(`${'─'.repeat(40)}`);
+                la.signals.forEach((signal, idx) => {
+                    sections.push(`  ${idx + 1}. "${signal.quote}"`);
+                    sections.push(`     Type: ${signal.signal_type.join(', ')}`);
+                    sections.push(`     Ask: ${signal.ask_now}`);
+                    sections.push('');
+                });
+            }
+
+            // Objections Section
+            if (la.objections && la.objections.length > 0) {
+                sections.push(`OBJECTIONS (${la.objections.length})`);
+                sections.push(`${'─'.repeat(40)}`);
+                la.objections.forEach((obj, idx) => {
+                    const typeLabel = obj.type === 'ae_deferral' ? 'Follow-up' : 'Question';
+                    sections.push(`  ${idx + 1}. [${typeLabel}] "${obj.quote}"`);
+                    sections.push(`     Owner: ${obj.owner}`);
+                    sections.push('');
+                });
+            }
+
+            textToCopy = sections.join('\n').trim();
+
+            if (!textToCopy) {
+                textToCopy = 'No analysis data available.';
+            }
         }
+
 
         if (!textToCopy) return;
 
@@ -559,7 +642,7 @@ const MeetingDetails: React.FC<MeetingDetailsProps> = ({ meeting: initialMeeting
                     {/* Designing Tabs to match reference 1:1 (Dark Pill Container) */}
                     <div className="flex items-center justify-between mb-8">
                         <div className={`p-1 rounded-xl inline-flex items-center gap-0.5 ${isLight ? 'bg-[#E5E5EA] border border-black/[0.04]' : 'bg-[#121214] border border-white/[0.08]'}`}>
-                            {['summary', 'transcript', 'usage'].map((tab) => (
+                            {['summary', 'transcript', 'usage', 'analysis'].map((tab) => (
                                 <button
                                     key={tab}
                                     onClick={() => setActiveTab(tab as any)}
@@ -576,7 +659,7 @@ const MeetingDetails: React.FC<MeetingDetailsProps> = ({ meeting: initialMeeting
                                             transition={{ type: "spring", stiffness: 400, damping: 30 }}
                                         />
                                     )}
-                                    {tab.charAt(0).toUpperCase() + tab.slice(1)}
+                                    {tab === 'analysis' ? 'Call Analysis' : tab.charAt(0).toUpperCase() + tab.slice(1)}
                                 </button>
                             ))}
                         </div>
@@ -1169,6 +1252,24 @@ const MeetingDetails: React.FC<MeetingDetailsProps> = ({ meeting: initialMeeting
                                     </div>
                                 ))}
                                 {!meeting.usage?.length && <p className="text-text-tertiary">No usage history.</p>}
+                            </motion.section>
+                        )}
+
+                        {activeTab === 'analysis' && (
+                            <motion.section initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }}>
+                                {meeting.detailedSummary?.liveAnalysis ? (
+                                    <LiveAnalysisContent
+                                        analysisData={meeting.detailedSummary.liveAnalysis}
+                                        aiInsight={meeting.detailedSummary.liveAnalysis.signals?.[0]?.ask_now || undefined}
+                                    />
+                                ) : (
+                                    <div className="flex flex-col items-center justify-center h-48 gap-3">
+                                        <Shield size={24} className="text-white/10" />
+                                        <p className="text-[12px] text-white/25 text-center px-8">
+                                            No live analysis data available for this meeting.
+                                        </p>
+                                    </div>
+                                )}
                             </motion.section>
                         )}
                     </div>
