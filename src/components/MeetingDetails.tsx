@@ -1,6 +1,6 @@
-import React, { act, useEffect, useState } from 'react';
+import React, { act, useEffect, useMemo, useState } from 'react';
 import { useResolvedTheme } from '../hooks/useResolvedTheme';
-import { ArrowLeft, Search, Mail, Link, ChevronDown, Play, ArrowUp, Copy, Check, MoreHorizontal, Settings, ArrowRight, TrendingUp, TriangleAlert, MessageSquare, MessagesSquareIcon, ChartColumnIncreasing, CircleCheck, NotepadText, TableOfContents, RefreshCcw, Loader2, RefreshCw, Shield } from 'lucide-react';
+import { ArrowLeft, Search, Mail, Link, ChevronDown, BarChart3, Play, ArrowUp, Copy, Check, MoreHorizontal, Settings, ArrowRight, TrendingUp, TriangleAlert, MessageSquare, MessagesSquareIcon, ChartColumnIncreasing, CircleCheck, NotepadText, TableOfContents, RefreshCcw, Loader2, RefreshCw, Shield } from 'lucide-react';
 import { motion, AnimatePresence } from 'framer-motion';
 import MeetingChatOverlay from './MeetingChatOverlay';
 import EditableTextBlock from './EditableTextBlock';
@@ -12,6 +12,7 @@ import { vscDarkPlus } from 'react-syntax-highlighter/dist/esm/styles/prism';
 import FollowUpEmailModal from './FollowUpEmailModal';
 import { LiveAnalysisContent } from './LiveAnalysisContent';
 import { LiveAnalysisData } from '../types/liveAnalysis';
+import { FaCircleHalfStroke } from "react-icons/fa6";
 
 const formatTime = (ms: number) => {
     const date = new Date(ms);
@@ -29,6 +30,11 @@ const cleanMarkdown = (content: string) => {
     // Ensure code blocks are on new lines to fix rendering issues
     return content.replace(/([^\n])```/g, '$1\n\n```');
 };
+
+// email: a.email,
+// name: a.displayName || a.email!.split('@')[0] || undefined,
+// organizer: a.organizer || false,
+// self: a.self || false,
 
 interface Meeting {
     id: string;
@@ -99,6 +105,7 @@ interface Meeting {
             };
         };
     };
+    participants?: { email: string | null, name: string | null, oraganizer: boolean, self: boolean }[];
     transcript?: Array<{
         speaker: string;
         text: string;
@@ -140,6 +147,7 @@ const MeetingDetails: React.FC<MeetingDetailsProps> = ({ meeting: initialMeeting
     const [isProcessing, setIsProcessing] = useState<boolean>(
         initialMeeting.title === 'Processing...' || initialMeeting.isProcessed === false
     );
+    const [isTalktimeOpen, setIsTalktimeOpen] = useState(false);
 
     useEffect(() => {
         if (!isProcessing) return;
@@ -583,6 +591,29 @@ const MeetingDetails: React.FC<MeetingDetailsProps> = ({ meeting: initialMeeting
     const handleFollowUpEmail = async () => {
         setIsFollowUpEmailOpen(true);
     };
+
+    const computeTalkTime = (transcript: { speaker: string; text: string; timestamp: number; }[] | undefined) => {
+        if (!transcript || transcript.length === 0) return { user: 0, interviewer: 0, userWords: 0, interviewerWords: 0 };
+        let userWords = 0, interviewerWords = 0;
+        for (const seg of transcript) {
+            if (!seg.text?.trim()) continue; // Ignore empty/system messages
+            const wordCount = seg.text.trim().split(/\s+/).filter(Boolean).length; // Count words
+            if (seg.speaker === 'user') { userWords += wordCount; }
+            else if (seg.speaker === 'interviewer') { interviewerWords += wordCount };
+        }
+        const totalWords = userWords + interviewerWords;
+        if (totalWords === 0) return { user: 0, interviewer: 0, userWords, interviewerWords };
+        return {
+            user: Math.round((userWords / totalWords) * 100),
+            interviewer: Math.round((interviewerWords / totalWords) * 100),
+            // Optional raw counts
+            userWords,
+            interviewerWords,
+        };
+    };
+
+    const talkTime = useMemo(() => computeTalkTime(meeting.transcript), [meeting.transcript]);
+    const remoteParticipantName = meeting.participants?.find(p => p.email !== 'you@example.com')?.name || 'Other Party';
 
 
     return (
@@ -1136,6 +1167,122 @@ const MeetingDetails: React.FC<MeetingDetailsProps> = ({ meeting: initialMeeting
 
                         {activeTab === 'transcript' && (
                             <motion.section initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }}>
+
+                                {meeting.transcript && meeting.transcript.length > 0 && (
+                                    <div className="mb-6 overflow-hidden rounded-2xl border border-white/10 bg-white/5">
+                                        {/* Accordion Header */}
+                                        <button
+                                            onClick={() => setIsTalktimeOpen(prev => !prev)}
+                                            className="flex w-full items-center justify-between px-4 py-3 transition-colors hover:bg-white/[0.03]"
+                                        >
+                                            <div className="flex items-center gap-3">
+                                                <div className="flex h-8 w-8 items-center justify-center rounded-xl bg-white/10">
+                                                    <BarChart3 className="h-4 w-4 text-white/70" />
+                                                </div>
+
+                                                <div className="text-left">
+                                                    <h3 className="text-sm font-semibold text-white/90">
+                                                        Speaking Balance
+                                                    </h3>
+
+                                                    <p className="text-xs text-white/40">
+                                                        Conversation analytics
+                                                    </p>
+                                                </div>
+                                            </div>
+
+                                            <ChevronDown
+                                                className={`h-4 w-4 text-white/50 transition-transform duration-300 ${isTalktimeOpen ? 'rotate-180' : ''
+                                                    }`}
+                                            />
+                                        </button>
+
+                                        {/* Accordion Content */}
+                                        <AnimatePresence initial={false}>
+                                            {isTalktimeOpen && (
+                                                <motion.div
+                                                    initial={{ height: 0, opacity: 0 }}
+                                                    animate={{ height: 'auto', opacity: 1 }}
+                                                    exit={{ height: 0, opacity: 0 }}
+                                                    transition={{ duration: 0.25 }}
+                                                    className="overflow-hidden"
+                                                >
+                                                    <div className="border-t border-white/10 px-4 py-4">
+
+                                                        {/* User */}
+                                                        <div className="mb-4">
+                                                            <div className="mb-2 flex items-center justify-between">
+                                                                <div className='flex gap-3 items-center'>
+
+                                                                    <div className="flex items-center gap-2">
+                                                                        <span className="text-sm text-white/80">
+                                                                            {meeting.participants?.find(
+                                                                                p => p.email === 'you@example.com'
+                                                                            )?.name || 'You'}
+                                                                        </span>
+                                                                    </div>
+
+                                                                    <div className="text-xs text-white/40">
+                                                                        • {talkTime.userWords.toLocaleString()} words spoken
+                                                                    </div>
+
+                                                                </div>
+
+                                                                <span className="text-sm font-medium text-white">
+                                                                    {talkTime.user}%
+                                                                </span>
+                                                            </div>
+
+                                                            <div className="h-1 overflow-hidden rounded-full bg-white/10">
+                                                                <div
+                                                                    className="h-full rounded-full bg-blue-600 transition-all duration-500"
+                                                                    style={{ width: `${talkTime.user}%` }}
+                                                                />
+                                                            </div>
+                                                        </div>
+
+                                                        {/* Remote Participant */}
+                                                        <div>
+                                                            <div className="mb-2 flex items-center justify-between">
+                                                                <div className='flex gap-3 items-center'>
+
+                                                                    <div className="flex items-center gap-2">
+
+                                                                        <span className="text-sm text-white/80">
+                                                                            {remoteParticipantName}
+                                                                        </span>
+                                                                    </div>
+
+                                                                    <div className="text-xs text-white/40">
+                                                                        • {talkTime.interviewerWords.toLocaleString()} words spoken
+                                                                    </div>
+
+                                                                </div>
+                                                                <span className="text-sm font-medium text-white">
+                                                                    {talkTime.interviewer}%
+                                                                </span>
+                                                            </div>
+
+                                                            <div className="h-1 overflow-hidden rounded-full bg-white/10">
+                                                                <div
+                                                                    className="h-full rounded-full bg-white/40 transition-all duration-500"
+                                                                    style={{ width: `${talkTime.interviewer}%` }}
+                                                                />
+                                                            </div>
+                                                        </div>
+
+                                                        {/* Optional Footer */}
+                                                        <div className="mt-4 border-t border-white/5 pt-3">
+                                                            <p className="text-xs leading-relaxed text-white/40">
+                                                                Speaking balance helps understand participation and engagement during the meeting.
+                                                            </p>
+                                                        </div>
+                                                    </div>
+                                                </motion.div>
+                                            )}
+                                        </AnimatePresence>
+                                    </div>
+                                )}
                                 <div className="space-y-6">
                                     {(() => {
                                         console.log('Raw Transcript:', meeting.transcript);
@@ -1153,8 +1300,8 @@ const MeetingDetails: React.FC<MeetingDetailsProps> = ({ meeting: initialMeeting
                                         return filteredTranscript.map((entry, i) => (
                                             <div key={i} className="group">
                                                 <div className="flex items-center gap-2 mb-1">
-                                                    <span className="text-xs font-semibold text-text-secondary">
-                                                        {entry.speaker === 'user' ? 'Me' : 'Them'}
+                                                    <span className={`text-xs font-semibold text-white ${entry.speaker === "user" ? "bg-blue-600" : "bg-white/40"} px-2 py-0.5 rounded-full truncate min-w-[30px] max-w-[100px]`}>
+                                                        {entry.speaker === 'user' ? 'You' : 'Them'}
                                                     </span>
                                                     <span className="text-xs text-text-tertiary font-mono">{entry.timestamp ? formatTime(entry.timestamp) : '0:00'}</span>
                                                 </div>
