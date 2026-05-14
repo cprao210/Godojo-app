@@ -6,6 +6,8 @@ import { SessionTracker, TranscriptSegment } from './SessionTracker';
 import { LLMHelper } from './LLMHelper';
 import { DatabaseManager, Meeting } from './db/DatabaseManager';
 import { GROQ_TITLE_PROMPT, GROQ_SUMMARY_JSON_PROMPT } from './llm';
+import { LiveAnalysisData } from '../src/types/liveAnalysis';
+import { AppState } from './main';
 const crypto = require('crypto');
 
 const summaryPrompt = `You are an expert B2B sales analyst. A sales call just ended. Analyze the full transcript and generate a structured post-call summary. Return ONLY valid JSON (no markdown code blocks, no commentary).
@@ -174,6 +176,14 @@ export class MeetingPersistence {
             return null;
         }
 
+        const appState = AppState.getInstance();
+        const liveAnalysisData = appState?.getCurrentLiveAnalysis?.() || null;
+        console.log('[MeetingPersistence] Retrieved liveAnalysisData:', !!liveAnalysisData);
+        if (liveAnalysisData) {
+            console.log('[MeetingPersistence] Live analysis keys:', Object.keys(liveAnalysisData));
+            appState?.clearCurrentLiveAnalysis?.();
+        }
+
         const snapshot = {
             transcript: [...this.session.getFullTranscript()],
             usage: [...this.session.getFullUsage()],
@@ -190,7 +200,7 @@ export class MeetingPersistence {
         this.session.reset();
 
         const meetingId = crypto.randomUUID();
-        this.processAndSaveMeeting(snapshot, meetingId, metadataSnapshot).catch(err => {
+        this.processAndSaveMeeting(snapshot, meetingId, metadataSnapshot, liveAnalysisData).catch(err => {
             console.error('[MeetingPersistence] Background processing failed:', err);
         });
 
@@ -230,10 +240,12 @@ export class MeetingPersistence {
         data: { transcript: TranscriptSegment[], usage: any[], startTime: number, durationMs: number, context: string },
         meetingId: string,
         // BUG-04 fix: accept metadata snapshot so calendar info is not lost after session.reset()
-        metadata?: { title?: string; calendarEventId?: string; source?: 'manual' | 'calendar' } | null
+        metadata?: { title?: string; calendarEventId?: string; source?: 'manual' | 'calendar' } | null,
+        liveAnalysisData?: LiveAnalysisData | null
+
     ): Promise<void> {
         let title = "Untitled Session";
-        let summaryData: { actionItems: string[], keyPoints: string[] } = { actionItems: [], keyPoints: [] };
+        let summaryData: { actionItems: string[], keyPoints: string[], liveAnalysis?: LiveAnalysisData } = { actionItems: [], keyPoints: [] };
 
         // Use passed-in metadata snapshot (NOT this.session.getMeetingMetadata() which is already cleared)
         let calendarEventId: string | undefined;
@@ -277,6 +289,12 @@ export class MeetingPersistence {
         }
 
         try {
+
+            let detailedSummary = { ...summaryData };
+            if (liveAnalysisData) {
+                detailedSummary = { ...summaryData, liveAnalysis: liveAnalysisData };
+            }
+
             const minutes = Math.floor(data.durationMs / 60000);
             const seconds = ((data.durationMs % 60000) / 1000).toFixed(0);
             const durationStr = `${minutes}:${Number(seconds) < 10 ? '0' : ''}${seconds}`;
@@ -287,7 +305,7 @@ export class MeetingPersistence {
                 date: new Date().toISOString(),
                 duration: durationStr,
                 summary: "See detailed summary",
-                detailedSummary: summaryData,
+                detailedSummary: detailedSummary,
                 transcript: data.transcript,
                 usage: data.usage,
                 calendarEventId: calendarEventId,

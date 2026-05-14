@@ -171,6 +171,7 @@ import { SettingsManager } from "./services/SettingsManager"
 import { setVerboseLoggingFlag } from "./verboseLog"
 import { ReleaseNotesManager } from "./update/ReleaseNotesManager"
 import { OllamaManager } from './services/OllamaManager'
+import { LiveAnalysisData } from "../src/types/liveAnalysis";
 
 export class AppState {
   private static instance: AppState | null = null
@@ -189,6 +190,7 @@ export class AppState {
   private tray: Tray | null = null
   private updateAvailable: boolean = false
   private disguiseMode: 'terminal' | 'settings' | 'activity' | 'none' = 'none'
+  private _currentLiveAnalysis: LiveAnalysisData | null = null;
 
   // View management
   private view: "queue" | "solutions" = "queue"
@@ -385,7 +387,6 @@ export class AppState {
     // Inject WindowHelper into other helpers
     this.settingsWindowHelper.setWindowHelper(this.windowHelper);
     this.modelSelectorWindowHelper.setWindowHelper(this.windowHelper);
-
 
 
 
@@ -1309,6 +1310,18 @@ export class AppState {
       }
     }
     // ─────────────────────────────────────────────────────────────────────────
+  }
+
+  public getCurrentLiveAnalysis(): LiveAnalysisData | null {
+    return this._currentLiveAnalysis;
+  }
+
+  public setCurrentLiveAnalysis(data: LiveAnalysisData | null): void {
+    this._currentLiveAnalysis = data;
+  }
+
+  public clearCurrentLiveAnalysis(): void {
+    this._currentLiveAnalysis = null;
   }
 
   private async processCompletedMeetingForRAG(meetingId: string): Promise<void> {

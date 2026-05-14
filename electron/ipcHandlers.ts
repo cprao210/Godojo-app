@@ -10,6 +10,7 @@ import { AudioDevices } from "./audio/AudioDevices";
 
 
 import { RECOGNITION_LANGUAGES, AI_RESPONSE_LANGUAGES } from "./config/languages"
+import { LiveAnalysisData } from "../src/types/liveAnalysis";
 
 export function initializeIpcHandlers(appState: AppState): void {
   const safeHandle = (channel: string, listener: (event: any, ...args: any[]) => Promise<any> | any) => {
@@ -465,6 +466,12 @@ export function initializeIpcHandlers(appState: AppState): void {
       event.sender.send('live-analysis-error', error.message || 'Analysis failed');
       return { success: false, error: error.message };
     }
+  });
+
+  safeHandle("update-live-analysis", async (event, data: LiveAnalysisData) => {
+    console.log('[IPC] Received live analysis:', Object.keys(data));
+    appState.setCurrentLiveAnalysis(data);
+    return { success: true };
   });
 
   safeHandle("quit-app", () => {
