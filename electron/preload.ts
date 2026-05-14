@@ -197,6 +197,12 @@ interface ElectronAPI {
   onGeminiStreamDone: (callback: () => void) => () => void
   onGeminiStreamError: (callback: (error: string) => void) => () => void
 
+  chatWithGemini: (message: string, imagePaths?: string[], context?: string, skipSystemPrompt?: boolean) => Promise<string>
+
+  // NEW: Dedicated Live Analysis with its own events
+  startLiveAnalysis: (prompt: string) => Promise<{ success: boolean; error?: string }>;
+  onLiveAnalysisResult: (callback: (result: string) => void) => () => void;
+  onLiveAnalysisError: (callback: (error: string) => void) => () => void;
 
   onUndetectableChanged: (callback: (state: boolean) => void) => () => void
   onGroqFastTextChanged: (callback: (enabled: boolean) => void) => () => void
@@ -773,12 +779,31 @@ contextBridge.exposeInMainWorld("electronAPI", {
   // Streaming Chat
   streamGeminiChat: (message: string, imagePaths?: string[], context?: string, options?: { skipSystemPrompt?: boolean }) => ipcRenderer.invoke("gemini-chat-stream", message, imagePaths, context, options),
 
+  chatWithGemini: (message: string, imagePaths?: string[], context?: string, skipSystemPrompt?: boolean) => ipcRenderer.invoke('gemini-chat', message, imagePaths, context, { skipSystemPrompt }),
   onGeminiStreamToken: (callback: (token: string) => void) => {
     const subscription = (_: any, token: string) => callback(token)
     ipcRenderer.on("gemini-stream-token", subscription)
     return () => {
       ipcRenderer.removeListener("gemini-stream-token", subscription)
     }
+  },
+
+  startLiveAnalysis: (prompt: string) => ipcRenderer.invoke('live-analysis-stream', prompt),
+
+  onLiveAnalysisResult: (callback: (result: string) => void) => {
+    const subscription = (_: any, result: string) => callback(result);
+    ipcRenderer.on('live-analysis-result', subscription);
+    return () => {
+      ipcRenderer.removeListener('live-analysis-result', subscription);
+    };
+  },
+
+  onLiveAnalysisError: (callback: (error: string) => void) => {
+    const subscription = (_: any, error: string) => callback(error);
+    ipcRenderer.on('live-analysis-error', subscription);
+    return () => {
+      ipcRenderer.removeListener('live-analysis-error', subscription);
+    };
   },
 
   onGeminiStreamDone: (callback: () => void) => {
