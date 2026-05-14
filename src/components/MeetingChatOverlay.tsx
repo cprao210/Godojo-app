@@ -36,8 +36,9 @@ interface MeetingChatOverlayProps {
     isOpen: boolean;
     onClose: () => void;
     meetingContext: MeetingContext;
-    initialQuery?: string;
-    onNewQuery: (query: string) => void;
+    initialQuery?: { text: string; id: number } | null;
+    messages: Message[];
+    onMessagesChange: React.Dispatch<React.SetStateAction<Message[]>>;
 }
 
 type ChatState = 'idle' | 'opening' | 'waiting_for_llm' | 'streaming_response' | 'error' | 'closing';
@@ -185,17 +186,24 @@ const AssistantMessage: React.FC<{ content: string; isStreaming?: boolean }> = (
 const MeetingChatOverlay: React.FC<MeetingChatOverlayProps> = ({
     isOpen,
     onClose,
+    onMessagesChange,
+    messages,
     meetingContext,
-    initialQuery = '',
-    // onNewQuery
+    initialQuery,
 }) => {
-    const [messages, setMessages] = useState<Message[]>([]);
     const [chatState, setChatState] = useState<ChatState>('idle');
     const [errorMessage, setErrorMessage] = useState<string | null>(null);
 
     const messagesEndRef = useRef<HTMLDivElement>(null);
     const chatWindowRef = useRef<HTMLDivElement>(null);
     const streamBuffer = useStreamBuffer();
+
+    const pendingQuestionRef = useRef<string | null>(null);
+    const chatStateRef = useRef<ChatState>('idle');
+
+    useEffect(() => {
+        chatStateRef.current = chatState;
+    }, [chatState]);
 
     // Auto-scroll to bottom on new messages
     useEffect(() => {
@@ -204,27 +212,17 @@ const MeetingChatOverlay: React.FC<MeetingChatOverlayProps> = ({
 
     // Submit initial query when overlay opens
     useEffect(() => {
-        if (isOpen && initialQuery && messages.length === 0) {
-            setChatState('opening');
-            setTimeout(() => {
-                submitQuestion(initialQuery);
-            }, 100);
+        if (isOpen && initialQuery?.text) {
+            // Small delay so overlay is visible before question fires
+            const t = setTimeout(() => submitQuestion(initialQuery.text), 100);
+            return () => clearTimeout(t);
         }
-    }, [isOpen, initialQuery]);
-
-    // Listen for new queries from parent
-    useEffect(() => {
-        if (isOpen && initialQuery && messages.length > 0) {
-            // This is a follow-up query
-            submitQuestion(initialQuery);
-        }
-    }, [initialQuery]);
+    }, [isOpen, initialQuery?.id]); // ← id changes every time, even same question text
 
     // Reset state when overlay closes
     useEffect(() => {
         if (!isOpen) {
             setChatState('idle');
-            setMessages([]);
             setErrorMessage(null);
         }
     }, [isOpen]);
@@ -282,14 +280,18 @@ const MeetingChatOverlay: React.FC<MeetingChatOverlayProps> = ({
 
     // Submit question using RAG streaming
     const submitQuestion = useCallback(async (question: string) => {
-        if (!question.trim() || chatState === 'waiting_for_llm' || chatState === 'streaming_response') return;
+        if (!question.trim()) return;
+        if (chatStateRef.current === 'waiting_for_llm' || chatStateRef.current === 'streaming_response') {
+            pendingQuestionRef.current = question; // store it, don't drop it
+            return;
+        }
 
         const userMessage: Message = {
             id: `user-${Date.now()}`,
             role: 'user',
             content: question
         };
-        setMessages(prev => [...prev, userMessage]);
+        onMessagesChange((prev) => [...prev, userMessage]);
         setChatState('waiting_for_llm');
         setErrorMessage(null);
 
@@ -300,7 +302,7 @@ const MeetingChatOverlay: React.FC<MeetingChatOverlayProps> = ({
             await new Promise(resolve => setTimeout(resolve, 200));
 
             // Create assistant message placeholder
-            setMessages(prev => [...prev, {
+            onMessagesChange(prev => [...prev, {
                 id: assistantMessageId,
                 role: 'assistant',
                 content: '',
@@ -312,7 +314,7 @@ const MeetingChatOverlay: React.FC<MeetingChatOverlayProps> = ({
             const tokenCleanup = window.electronAPI?.onRAGStreamChunk((data: { chunk: string }) => {
                 setChatState('streaming_response');
                 streamBuffer.appendToken(data.chunk, (content) => {
-                    setMessages(prev => prev.map(msg =>
+                    onMessagesChange(prev => prev.map(msg =>
                         msg.id === assistantMessageId
                             ? { ...msg, content }
                             : msg
@@ -323,12 +325,17 @@ const MeetingChatOverlay: React.FC<MeetingChatOverlayProps> = ({
             const doneCleanup = window.electronAPI?.onRAGStreamComplete(() => {
                 // Final commit — flush any remaining buffered content
                 const finalContent = streamBuffer.getBufferedContent();
-                setMessages(prev => prev.map(msg =>
+                onMessagesChange(prev => prev.map(msg =>
                     msg.id === assistantMessageId
                         ? { ...msg, content: finalContent, isStreaming: false }
                         : msg
                 ));
                 setChatState('idle');
+                if (pendingQuestionRef.current) {
+                    const next = pendingQuestionRef.current;
+                    pendingQuestionRef.current = null;
+                    setTimeout(() => submitQuestion(next), 50);
+                }
                 streamBuffer.reset();
                 tokenCleanup?.();
                 doneCleanup?.();
@@ -337,9 +344,14 @@ const MeetingChatOverlay: React.FC<MeetingChatOverlayProps> = ({
 
             const errorCleanup = window.electronAPI?.onRAGStreamError((data: { error: string }) => {
                 console.error('[MeetingChat] RAG stream error:', data.error);
-                setMessages(prev => prev.filter(msg => msg.id !== assistantMessageId));
+                onMessagesChange(prev => prev.filter(msg => msg.id !== assistantMessageId));
                 setErrorMessage("Couldn't get a response. Please try again.");
                 setChatState('error');
+                if (pendingQuestionRef.current) {
+                    const next = pendingQuestionRef.current;
+                    pendingQuestionRef.current = null;
+                    setTimeout(() => submitQuestion(next), 50);
+                }
                 streamBuffer.reset();
                 tokenCleanup?.();
                 doneCleanup?.();
@@ -371,7 +383,7 @@ ${contextString}`;
                     const oldTokenCleanup = window.electronAPI?.onGeminiStreamToken((token: string) => {
                         setChatState('streaming_response');
                         streamBuffer.appendToken(token, (content) => {
-                            setMessages(prev => prev.map(msg =>
+                            onMessagesChange(prev => prev.map(msg =>
                                 msg.id === assistantMessageId
                                     ? { ...msg, content }
                                     : msg
@@ -381,11 +393,12 @@ ${contextString}`;
 
                     const oldDoneCleanup = window.electronAPI?.onGeminiStreamDone(() => {
                         const finalContent = streamBuffer.getBufferedContent();
-                        setMessages(prev => prev.map(msg =>
+                        onMessagesChange(prev => prev.map(msg =>
                             msg.id === assistantMessageId
                                 ? { ...msg, content: finalContent, isStreaming: false }
                                 : msg
                         ));
+                        setChatState('idle');
                         streamBuffer.reset();
                         oldTokenCleanup?.();
                         oldDoneCleanup?.();
@@ -394,7 +407,7 @@ ${contextString}`;
 
                     const oldErrorCleanup = window.electronAPI?.onGeminiStreamError((error: string) => {
                         console.error('[MeetingChat] Gemini stream error (fallback):', error);
-                        setMessages(prev => prev.filter(msg => msg.id !== assistantMessageId));
+                        onMessagesChange(prev => prev.filter(msg => msg.id !== assistantMessageId));
                         setErrorMessage("Couldn't get a response. Please check your settings.");
                         setChatState('error');
                         streamBuffer.reset();
@@ -422,7 +435,7 @@ ${contextString}`;
                 const oldTokenCleanup = window.electronAPI?.onGeminiStreamToken((token: string) => {
                     setChatState('streaming_response');
                     streamBuffer.appendToken(token, (content) => {
-                        setMessages(prev => prev.map(msg =>
+                        onMessagesChange(prev => prev.map(msg =>
                             msg.id === assistantMessageId
                                 ? { ...msg, content }
                                 : msg
@@ -432,7 +445,7 @@ ${contextString}`;
 
                 const oldDoneCleanup = window.electronAPI?.onGeminiStreamDone(() => {
                     const finalContent = streamBuffer.getBufferedContent();
-                    setMessages(prev => prev.map(msg =>
+                    onMessagesChange(prev => prev.map(msg =>
                         msg.id === assistantMessageId
                             ? { ...msg, content: finalContent, isStreaming: false }
                             : msg
@@ -446,7 +459,7 @@ ${contextString}`;
 
                 const oldErrorCleanup = window.electronAPI?.onGeminiStreamError((error: string) => {
                     console.error('[MeetingChat] Gemini stream error:', error);
-                    setMessages(prev => prev.filter(msg => msg.id !== assistantMessageId));
+                    onMessagesChange(prev => prev.filter(msg => msg.id !== assistantMessageId));
                     setErrorMessage("Couldn't get a response. Please check your settings.");
                     setChatState('error');
                     streamBuffer.reset();
@@ -465,7 +478,7 @@ ${contextString}`;
 
         } catch (error) {
             console.error('[MeetingChat] Error:', error);
-            setMessages(prev => prev.filter(msg => msg.id !== assistantMessageId));
+            onMessagesChange(prev => prev.filter(msg => msg.id !== assistantMessageId));
             setErrorMessage("Something went wrong. Please try again.");
             setChatState('error');
         }
