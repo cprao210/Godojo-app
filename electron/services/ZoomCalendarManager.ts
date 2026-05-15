@@ -12,6 +12,13 @@ const CLIENT_SECRET = process.env.ZOOM_CLIENT_SECRET || '';
 const REDIRECT_URI = 'http://localhost:11113/auth/callback';
 const TOKEN_PATH = path.join(app.getPath('userData'), 'zoom_calendar_tokens.enc');
 
+const REGISTRANT_CACHE_TTL = 5 * 60 * 1000;
+
+interface RegistrantCacheEntry {
+    attendees: Array<{ email: string; name?: string }>;
+    fetchedAt: number;
+}
+
 export class ZoomCalendarManager extends EventEmitter {
     private static instance: ZoomCalendarManager;
     private accessToken: string | null = null;
@@ -19,6 +26,9 @@ export class ZoomCalendarManager extends EventEmitter {
     private expiryDate: number | null = null;
     private isConnected: boolean = false;
     private reminderTimeouts: NodeJS.Timeout[] = [];
+
+    private registrantCache: Map<string, RegistrantCacheEntry> = new Map();
+    private currentUserEmail: string | null = null;
 
     private constructor() { super(); }
 
@@ -122,7 +132,27 @@ export class ZoomCalendarManager extends EventEmitter {
         this.isConnected = true;
         this.saveTokens();
         this.emit('connection-changed', true);
-        this.fetchUpcomingEvents();
+        // Resolve the current user's email once so we can mark self:true on the
+        // host entry in fetchEventsInternal without an extra per-meeting API call.
+        this.fetchCurrentUserEmail().then(() => this.fetchUpcomingEvents());
+    }
+
+    /**
+     * Fetches the authenticated user's own email from /v2/users/me and caches it.
+     * Called once after token exchange / refresh so all subsequent event fetches
+     * can mark the self attendee correctly.
+     */
+    private async fetchCurrentUserEmail(): Promise<void> {
+        if (!this.accessToken) return;
+        try {
+            const res = await axios.get('https://api.zoom.us/v2/users/me', {
+                headers: { Authorization: `Bearer ${this.accessToken}` },
+            });
+            this.currentUserEmail = res.data.email ?? null;
+            console.log('[ZoomCalendarManager] Current user email:', this.currentUserEmail);
+        } catch (err: any) {
+            console.warn('[ZoomCalendarManager] Could not fetch current user email:', err.message);
+        }
     }
 
     private async refreshAccessToken() {
@@ -204,10 +234,38 @@ export class ZoomCalendarManager extends EventEmitter {
     }
 
     public async refreshState(): Promise<void> {
+        this.clearRegistrantCache();
         this.reminderTimeouts.forEach(t => clearTimeout(t));
         this.reminderTimeouts = [];
         if (this.isConnected) await this.getUpcomingEvents(true);
         this.emit('events-updated');
+    }
+
+    private extractNameFromEmail(email: string): string {
+
+        let username = email.split("@")[0];
+
+        return username
+            // replace special chars with space
+            .replace(/[^a-zA-Z0-9]/g, " ")
+
+            // split camelCase: rajRao -> raj Rao
+            .replace(/([a-z])([A-Z])/g, "$1 $2")
+
+            // remove numbers
+            .replace(/\d+/g, "")
+
+            // remove extra spaces
+            .replace(/\s+/g, " ")
+            .trim()
+
+            // capitalize words
+            .split(" ")
+            .map(
+                word => word.charAt(0).toUpperCase() + word.slice(1).toLowerCase()
+            )
+            .join(" ");
+
     }
 
     private async fetchEventsInternal(): Promise<CalendarEvent[]> {
@@ -215,6 +273,7 @@ export class ZoomCalendarManager extends EventEmitter {
 
         const now = new Date();
         const tomorrow = new Date(now.getTime() + 24 * 60 * 60 * 1000);
+        const MAX_MEETINGS_TO_ENRICH = 8; // Only fetch registrants for first 8 meetings
 
         try {
             // Zoom's /meetings only returns scheduled meetings (type=2)
@@ -228,30 +287,84 @@ export class ZoomCalendarManager extends EventEmitter {
 
             const meetings = response.data.meetings || [];
 
-            return meetings
+            // Filter and sort meetings by start time
+            let filteredMeetings = meetings
                 .filter((m: any) => {
                     if (!m.start_time) return false;
                     const start = new Date(m.start_time).getTime();
                     const end = start + m.duration * 60 * 1000;
-                    // Only show meetings in next 24h
                     if (start > tomorrow.getTime() || end < now.getTime()) return false;
                     return m.duration >= 5;
                 })
-                .map((m: any): CalendarEvent => ({
+                .sort((a: any, b: any) =>
+                    new Date(a.start_time).getTime() - new Date(b.start_time).getTime()
+                );
+
+            // Process meetings in batches to avoid overwhelming the API
+            const enrichedMeetings: CalendarEvent[] = [];
+
+            for (let i = 0; i < filteredMeetings.length; i++) {
+                const m = filteredMeetings[i];
+
+                // Only fetch invitees for the earliest N meetings
+                let attendees: Array<{ email: string; name?: string; displayName?: string; self?: boolean }> = [];
+                if (i < MAX_MEETINGS_TO_ENRICH) {
+                    const invitees = await this.fetchMeetingInvitees(String(m.id));
+                    attendees = invitees.map(inv => ({
+                        ...inv,
+                        displayName: inv.name,
+                        self: this.currentUserEmail ? inv.email === this.currentUserEmail : false,
+                    }));
+                } else {
+                    console.log(`[ZoomCalendarManager] Skipping invitee fetch for meeting ${m.id} (beyond limit ${MAX_MEETINGS_TO_ENRICH})`);
+                }
+
+                // Ensure the host appears in the attendee list.
+                // Mark self:true when the host is the authenticated user.
+                if (m.host_email) {
+                    const existingHost = attendees.find(a => a.email === m.host_email);
+                    if (!existingHost) {
+                        const isSelf = this.currentUserEmail
+                            ? m.host_email === this.currentUserEmail
+                            : false;
+                        attendees.unshift({
+                            email: m.host_email,
+                            name: this.extractNameFromEmail(m.host_email),
+                            displayName: this.extractNameFromEmail(m.host_email),
+                            self: isSelf,
+                        });
+                    } else if (this.currentUserEmail && existingHost.email === this.currentUserEmail) {
+                        // If they were already in invitees, still ensure self flag is set
+                        existingHost.self = true;
+                    }
+                }
+
+                enrichedMeetings.push({
                     id: String(m.id),
                     title: m.topic || '(No Title)',
                     startTime: m.start_time,
                     endTime: new Date(new Date(m.start_time).getTime() + m.duration * 60 * 1000).toISOString(),
                     link: m.join_url,
                     source: 'zoom' as any,
-                    attendees: [],   // Zoom meetings endpoint doesn't include attendees
-                    organizer: '',
-                    description: undefined,
-                }));
+                    attendees: attendees,
+                    organizer: m.host_email || '',  // Zoom API doesn't expose organizer email in this endpoint
+                    description: m.agenda || undefined,
+                });
+            }
+
+            return enrichedMeetings;
         } catch (err) {
             console.error('[ZoomCalendarManager] Fetch failed:', err);
             return [];
         }
+    }
+
+    /**
+     * Clear registrant cache (useful after token refresh or manual refresh)
+     */
+    public clearRegistrantCache(): void {
+        this.registrantCache.clear();
+        console.log('[ZoomCalendarManager] Registrant cache cleared');
     }
 
     // =========================================================================
@@ -270,6 +383,59 @@ export class ZoomCalendarManager extends EventEmitter {
                 this.reminderTimeouts.push(timeout);
             }
         });
+    }
+
+    /**
+     * Fetch the invite list for a scheduled meeting via /v2/meetings/{id}/invitees.
+     *
+     * Why NOT /registrants:
+     *   /registrants is for webinar-style registration flows. Regular scheduled
+     *   meetings have no registrants, so that endpoint returns 400. /invitees
+     *   returns the email addresses the host explicitly invited — which is exactly
+     *   what we need to populate the attendee list.
+     *
+     * Requires OAuth scope: meeting:read or meeting:read:admin
+     */
+    private async fetchMeetingInvitees(meetingId: string): Promise<Array<{ email: string; name?: string }>> {
+        // Check cache first
+        const cached = this.registrantCache.get(meetingId);
+        if (cached && (Date.now() - cached.fetchedAt) < REGISTRANT_CACHE_TTL) {
+            console.log(`[ZoomCalendarManager] Using cached invitees for meeting ${meetingId}`);
+            return cached.attendees;
+        }
+
+        if (!this.accessToken) return [];
+
+        try {
+            const response = await axios.get(`https://api.zoom.us/v2/meetings/${meetingId}/invitees`, {
+                headers: { Authorization: `Bearer ${this.accessToken}` },
+                params: { page_size: 100 },
+            });
+
+            const invitees: Array<{ email: string }> = response.data.invitees || [];
+
+            const attendees = invitees.map((r) => ({
+                email: r.email,
+                name: this.extractNameFromEmail(r.email),
+            }));
+
+            this.registrantCache.set(meetingId, { attendees, fetchedAt: Date.now() });
+            console.log(`[ZoomCalendarManager] Fetched ${attendees.length} invitees for meeting ${meetingId}`);
+            return attendees;
+
+        } catch (err: any) {
+            const status: number | undefined = err.response?.status;
+            if (status === 404) {
+                console.log(`[ZoomCalendarManager] No invitees found for meeting ${meetingId} (empty invite list)`);
+            } else if (status === 401 || status === 403) {
+                console.warn(`[ZoomCalendarManager] Insufficient permissions to fetch invitees for meeting ${meetingId}`);
+            } else {
+                console.error(`[ZoomCalendarManager] Failed to fetch invitees for meeting ${meetingId}:`, err.message);
+            }
+            // Cache empty result to avoid hammering the API on repeated calls
+            this.registrantCache.set(meetingId, { attendees: [], fetchedAt: Date.now() });
+            return [];
+        }
     }
 
     private showNotification(event: CalendarEvent) {

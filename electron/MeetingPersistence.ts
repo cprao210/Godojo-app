@@ -195,12 +195,13 @@ export class MeetingPersistence {
         // BUG-04 fix: snapshot metadata BEFORE reset() clears it so the
         // background processAndSaveMeeting worker receives the calendar info.
         const metadataSnapshot = this.session.getMeetingMetadata();
+        const speakerNamesSnapshot = this.session.getSpeakerNameMap();
 
         // 2. Reset state immediately so new meeting can start or UI is clean
         this.session.reset();
 
         const meetingId = crypto.randomUUID();
-        this.processAndSaveMeeting(snapshot, meetingId, metadataSnapshot, liveAnalysisData).catch(err => {
+        this.processAndSaveMeeting(snapshot, meetingId, metadataSnapshot, liveAnalysisData, speakerNamesSnapshot).catch(err => {
             console.error('[MeetingPersistence] Background processing failed:', err);
         });
 
@@ -241,11 +242,12 @@ export class MeetingPersistence {
         meetingId: string,
         // BUG-04 fix: accept metadata snapshot so calendar info is not lost after session.reset()
         metadata?: { title?: string; calendarEventId?: string; source?: 'manual' | 'calendar' } | null,
-        liveAnalysisData?: LiveAnalysisData | null
+        liveAnalysisData?: LiveAnalysisData | null,
+        speakerNames?: { user: string; interviewer: string }
 
     ): Promise<void> {
         let title = "Untitled Session";
-        let summaryData: { actionItems: string[], keyPoints: string[], liveAnalysis?: LiveAnalysisData } = { actionItems: [], keyPoints: [] };
+        let summaryData: { actionItems: string[], keyPoints: string[], liveAnalysis?: LiveAnalysisData, speakerNames?: { user: string, interviewer: string } } = { actionItems: [], keyPoints: [] };
 
         // Use passed-in metadata snapshot (NOT this.session.getMeetingMetadata() which is already cleared)
         let calendarEventId: string | undefined;
@@ -293,6 +295,19 @@ export class MeetingPersistence {
             let detailedSummary = { ...summaryData };
             if (liveAnalysisData) {
                 detailedSummary = { ...summaryData, liveAnalysis: liveAnalysisData };
+            }
+
+            // Use the speaker names snapshot captured BEFORE session.reset() was called.
+            // Do NOT call this.session.getSpeakerNameMap() here — the session is already
+            // reset at this point and would return the defaults { user: 'Me', interviewer: 'Them' }.
+            const resolvedSpeakerNames = speakerNames ?? this.session.getSpeakerNameMap();
+
+            // Persist whenever at least one name differs from the generic default.
+            if (resolvedSpeakerNames.user !== 'Me' || resolvedSpeakerNames.interviewer !== 'Them') {
+                detailedSummary = {
+                    ...detailedSummary,
+                    speakerNames: resolvedSpeakerNames
+                };
             }
 
             const minutes = Math.floor(data.durationMs / 60000);
@@ -392,16 +407,16 @@ export class MeetingPersistence {
                     const speakerRaw = match[1].trim().toUpperCase();
                     const text = match[2].trim();
                     // Map common speaker names to user/other
-                    const speaker = ['REP', 'ME', 'USER', 'SALES', 'SELLER'].includes(speakerRaw) ? 'user' : 'other';
+                    const speaker = ['REP', 'ME', 'USER', 'SALES', 'SELLER'].includes(speakerRaw) ? 'user' : 'interviewer';
                     transcript.push({
                         speaker, text, timestamp: i * 5000,
-                        final: false
+                        final: true
                     });
                 } else if (line.trim()) {
-                    // Plain line — treat as 'other'
+                    // Plain line — treat as interviewer (remote/other party)
                     transcript.push({
-                        speaker: 'other', text: line.trim(), timestamp: i * 5000,
-                        final: false
+                        speaker: 'interviewer', text: line.trim(), timestamp: i * 5000,
+                        final: true
                     });
                 }
             });

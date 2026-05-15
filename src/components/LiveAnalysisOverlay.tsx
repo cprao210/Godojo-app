@@ -7,7 +7,7 @@ interface LiveAnalysisOverlayProps {
     appearance: any;
     overlayPanelClass: string;
     onClose: () => void;
-    transcriptRef: React.MutableRefObject<Array<{ speaker: string; text: string; timestamp: number }>>;
+    transcriptRef: React.MutableRefObject<Array<{ speaker: string; displayName?: string; text: string; timestamp: number }>>;
     meetingTitle?: string;
 }
 

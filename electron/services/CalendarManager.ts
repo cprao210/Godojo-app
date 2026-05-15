@@ -340,6 +340,33 @@ export class CalendarManager extends EventEmitter {
         return events;
     }
 
+    private extractNameFromEmail(email: string): string {
+
+        let username = email.split("@")[0];
+
+        return username
+            // replace special chars with space
+            .replace(/[^a-zA-Z0-9]/g, " ")
+
+            // split camelCase: rajRao -> raj Rao
+            .replace(/([a-z])([A-Z])/g, "$1 $2")
+
+            // remove numbers
+            .replace(/\d+/g, "")
+
+            // remove extra spaces
+            .replace(/\s+/g, " ")
+            .trim()
+
+            // capitalize words
+            .split(" ")
+            .map(
+                word => word.charAt(0).toUpperCase() + word.slice(1).toLowerCase()
+            )
+            .join(" ");
+
+    }
+
     private async fetchEventsInternal(): Promise<CalendarEvent[]> {
         if (!this.accessToken) return [];
 
@@ -355,7 +382,8 @@ export class CalendarManager extends EventEmitter {
                     timeMin: now.toISOString(),
                     timeMax: tomorrow.toISOString(),
                     singleEvents: true,
-                    orderBy: 'startTime'
+                    orderBy: 'startTime',
+                    fields: 'items(id,summary,start,end,hangoutLink,description,attendees,organizer,creator)'
                 }
             });
 
@@ -372,23 +400,62 @@ export class CalendarManager extends EventEmitter {
 
                     return durationMins >= 5;
                 })
-                .map((item: any) => ({
-                    ...item,
-                    id: item.id,
-                    title: item.summary || '(No Title)',
-                    startTime: item.start.dateTime,
-                    endTime: item.end.dateTime,
-                    link: this.resolveMeetingLink(item),
-                    source: 'google',
-                    attendees: (item.attendees || []).map((a: any) => ({
-                        email: a.email,
-                        name: a.displayName || undefined,
-                        organizer: a.organizer || false,
-                        self: a.self || false,
-                    })),
-                    organizer: item.organizer?.email || '',
-                    description: item.description || undefined,
-                }));
+                .map((item: any) => {
+                    // Enhanced attendee name resolution
+                    const attendees = (item.attendees || []).map((a: any) => {
+                        // Try multiple sources for display name
+                        let displayName = a.displayName;
+                        if (!displayName && a.email) {
+                            // Try to extract from email
+                            const emailPrefix = a.email.split('@')[0];
+                            displayName = this.extractNameFromEmail(emailPrefix);
+                        }
+                        if (!displayName && a.self) {
+                            displayName = 'You';
+                        }
+
+                        return {
+                            email: a.email,
+                            name: displayName || a.email?.split('@')[0] || 'Unknown',
+                            displayName: displayName || a.displayName,
+                            organizer: a.organizer || false,
+                            self: a.self || false,
+                        };
+                    });
+
+                    // If no attendees, try to extract from creator/organizer
+                    if (attendees.length === 0 && item.organizer?.email) {
+                        attendees.push({
+                            email: item.organizer.email,
+                            name: this.extractNameFromEmail(item.organizer.email.split('@')[0]),
+                            displayName: null,
+                            organizer: true,
+                            self: false,
+                        });
+                    }
+
+                    if (attendees.length === 0 && item.creator?.email) {
+                        attendees.push({
+                            email: item.creator.email,
+                            name: this.extractNameFromEmail(item.creator.email.split('@')[0]),
+                            displayName: null,
+                            organizer: false,
+                            self: false,
+                        });
+                    }
+
+                    return {
+                        id: item.id,
+                        title: item.summary || '(No Title)',
+                        startTime: item.start.dateTime,
+                        endTime: item.end.dateTime,
+                        link: this.resolveMeetingLink(item),
+                        source: 'google',
+                        attendees,
+                        organizer: item.organizer?.email || '',
+                        description: item.description || undefined,
+                    };
+                });
 
         } catch (error) {
             console.error('[CalendarManager] Failed to fetch events:', error);

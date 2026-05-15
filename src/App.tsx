@@ -94,7 +94,7 @@ const App: React.FC = () => {
     const isUserSet = Number.isFinite(parsed) && parsed !== OVERLAY_OPACITY_DEFAULT;
     return isUserSet ? clampOverlayOpacity(parsed) : getDefaultOverlayOpacity();
   });
-  
+
   // Profile state for ad targeting
   const [hasProfile, setHasProfile] = useState(false);
   const [isLauncherMainView, setIsLauncherMainView] = useState(true);
@@ -103,19 +103,19 @@ const App: React.FC = () => {
   const [appStartTime] = useState<number>(Date.now());
   const [lastMeetingEndTime, setLastMeetingEndTime] = useState<number | null>(null);
   const [isProcessingMeeting, setIsProcessingMeeting] = useState<boolean>(false);
-  
+
   // Ollama Auto-Pull State
   const [ollamaPullStatus, setOllamaPullStatus] = useState<'idle' | 'downloading' | 'complete' | 'failed'>('idle');
   const [ollamaPullPercent, setOllamaPullPercent] = useState<number>(0);
   const [ollamaPullMessage, setOllamaPullMessage] = useState<string>('');
 
   // Re-index State
-  const [incompatibleWarning, setIncompatibleWarning] = useState<{count: number; oldProvider: string; newProvider: string} | null>(null);
-  
+  const [incompatibleWarning, setIncompatibleWarning] = useState<{ count: number; oldProvider: string; newProvider: string } | null>(null);
+
   const isAppReady = !isSettingsWindow && !isOverlayWindow && !isModelSelectorWindow && !showStartup && !isSettingsOpen && isLauncherMainView;
   const { activeAd, dismissAd } = useAdCampaigns(
-    isPremiumActive, 
-    hasProfile, 
+    isPremiumActive,
+    hasProfile,
     isAppReady,
     appStartTime,
     lastMeetingEndTime,
@@ -127,8 +127,8 @@ const App: React.FC = () => {
     localStorage.removeItem('useLegacyAudioBackend');
 
     // Basic status check for campaign targeting
-    window.electronAPI?.profileGetStatus?.().then(s => setHasProfile(s?.hasProfile || false)).catch(() => {});
-    window.electronAPI?.licenseCheckPremium?.().then(setIsPremiumActive).catch(() => {});
+    window.electronAPI?.profileGetStatus?.().then(s => setHasProfile(s?.hasProfile || false)).catch(() => { });
+    window.electronAPI?.licenseCheckPremium?.().then(setIsPremiumActive).catch(() => { });
 
     // Listen for meeting processing completion to trigger post-meeting ads
     const removeMeetingsListener = window.electronAPI?.onMeetingsUpdated?.(() => {
@@ -201,7 +201,7 @@ const App: React.FC = () => {
     }
   };
 
-  const handleStartMeeting = async () => {
+  const handleStartMeeting = async (calendarEvent?: any) => {
     try {
       localStorage.setItem('natively_last_meeting_start', Date.now().toString());
       const inputDeviceId = localStorage.getItem('preferredInputDeviceId');
@@ -217,9 +217,20 @@ const App: React.FC = () => {
         console.log("[App] Using CoreAudio backend (Default).");
       }
 
-      const result = await window.electronAPI.startMeeting({
-        audio: { inputDeviceId, outputDeviceId }
-      });
+      // Merge calendar event data if provided
+      const meetingMetadata = {
+        audio: { inputDeviceId, outputDeviceId },
+        ...(calendarEvent && {
+          title: calendarEvent.title,
+          calendarEventId: calendarEvent.id,
+          source: 'calendar',
+          attendees: calendarEvent.attendees || [],
+          organizer: calendarEvent.organizer || '',
+        })
+      };
+
+      console.log("-------------------------------> meetingMetadata [App.tsx - 232]: ", meetingMetadata);
+      const result = await window.electronAPI.startMeeting(meetingMetadata);
       if (result.success) {
         analytics.trackMeetingStarted();
         // Switch to Overlay Mode via IPC
@@ -243,7 +254,7 @@ const App: React.FC = () => {
     try {
       await window.electronAPI.endMeeting();
       console.log("[App.tsx] endMeeting IPC completed");
-      
+
       const startStr = localStorage.getItem('natively_last_meeting_start');
       if (startStr) {
         const duration = Date.now() - parseInt(startStr, 10);
@@ -324,148 +335,148 @@ const App: React.FC = () => {
   // Renders if window=launcher OR no param
   return (
     <ErrorBoundary context="Launcher">
-    <div className="h-full min-h-0 w-full relative bg-[#000000]">
-      <AnimatePresence>
-        {showStartup ? (
-          <motion.div
-            key="startup"
-            initial={{ opacity: 1 }}
-            exit={{ opacity: 0, scale: 1.1, pointerEvents: "none", transition: { duration: 0.6, ease: "easeInOut" } }}
-          >
-            <StartupSequence onComplete={() => setShowStartup(false)} />
-          </motion.div>
-        ) : (
-          <motion.div
-            key="main"
-            className="h-full w-full"
-            initial={{ opacity: 0, scale: 0.98, y: 15 }} // "Linear" style entry: slightly down and scaled down
-            animate={{ opacity: 1, scale: 1, y: 0 }}      // Slide up and snap to place
-            transition={{
-              duration: 0.8,
-              ease: [0.19, 1, 0.22, 1], // Expo-out: snappy start, smooth landing
-              delay: 0.1
-            }}
-          >
-            <QueryClientProvider client={queryClient}>
-              <ToastProvider>
-                <div id="launcher-container" className="h-full w-full relative">
-                  <Launcher
-                    onStartMeeting={handleStartMeeting}
-                    onOpenSettings={(tab = 'general') => {
-                      setSettingsInitialTab(tab);
-                      setIsSettingsOpen(true);
+      <div className="h-full min-h-0 w-full relative bg-[#000000]">
+        <AnimatePresence>
+          {showStartup ? (
+            <motion.div
+              key="startup"
+              initial={{ opacity: 1 }}
+              exit={{ opacity: 0, scale: 1.1, pointerEvents: "none", transition: { duration: 0.6, ease: "easeInOut" } }}
+            >
+              <StartupSequence onComplete={() => setShowStartup(false)} />
+            </motion.div>
+          ) : (
+            <motion.div
+              key="main"
+              className="h-full w-full"
+              initial={{ opacity: 0, scale: 0.98, y: 15 }} // "Linear" style entry: slightly down and scaled down
+              animate={{ opacity: 1, scale: 1, y: 0 }}      // Slide up and snap to place
+              transition={{
+                duration: 0.8,
+                ease: [0.19, 1, 0.22, 1], // Expo-out: snappy start, smooth landing
+                delay: 0.1
+              }}
+            >
+              <QueryClientProvider client={queryClient}>
+                <ToastProvider>
+                  <div id="launcher-container" className="h-full w-full relative">
+                    <Launcher
+                      onStartMeeting={(event?: any) => handleStartMeeting(event)}
+                      onOpenSettings={(tab = 'general') => {
+                        setSettingsInitialTab(tab);
+                        setIsSettingsOpen(true);
+                      }}
+                      onPageChange={setIsLauncherMainView}
+                      ollamaPullStatus={ollamaPullStatus}
+                      ollamaPullPercent={ollamaPullPercent}
+                      ollamaPullMessage={ollamaPullMessage}
+                    />
+                  </div>
+                  <SettingsOverlay
+                    isOpen={isSettingsOpen}
+                    onClose={() => {
+                      setIsSettingsOpen(false);
                     }}
-                    onPageChange={setIsLauncherMainView}
-                    ollamaPullStatus={ollamaPullStatus}
-                    ollamaPullPercent={ollamaPullPercent}
-                    ollamaPullMessage={ollamaPullMessage}
+                    initialTab={settingsInitialTab}
                   />
+                  <ToastViewport />
+                </ToastProvider>
+              </QueryClientProvider>
+            </motion.div>
+          )}
+        </AnimatePresence>
+
+
+        <AnimatePresence>
+          {incompatibleWarning && isDefault && (
+            <motion.div
+              initial={{ opacity: 0, y: 50, scale: 0.95 }}
+              animate={{ opacity: 1, y: 0, scale: 1 }}
+              exit={{ opacity: 0, scale: 0.95, y: 20 }}
+              className="fixed bottom-6 right-6 z-50 pointer-events-auto"
+            >
+              <div className="bg-[#1A1A1A] border border-[#ff3333]/30 shadow-2xl rounded-2xl p-5 max-w-[340px] flex flex-col gap-3">
+                <div className="flex items-start gap-3">
+                  <AlertCircle className="w-5 h-5 text-[#ff3333] shrink-0 mt-0.5" />
+                  <div>
+                    <h3 className="text-[#E0E0E0] font-medium text-sm">Provider Changed</h3>
+                    <p className="text-[#A0A0A0] text-xs mt-1 leading-relaxed">
+                      ⚠ {incompatibleWarning.count} meetings used your previous AI provider ({incompatibleWarning.oldProvider}) and won't appear in search results under {incompatibleWarning.newProvider}.
+                    </p>
+                  </div>
                 </div>
-                <SettingsOverlay
-                  isOpen={isSettingsOpen}
-                  onClose={() => {
-                    setIsSettingsOpen(false);
-                  }}
-                  initialTab={settingsInitialTab}
-                />
-                <ToastViewport />
-              </ToastProvider>
-            </QueryClientProvider>
-          </motion.div>
-        )}
-      </AnimatePresence>
-
-
-      <AnimatePresence>
-        {incompatibleWarning && isDefault && (
-          <motion.div
-            initial={{ opacity: 0, y: 50, scale: 0.95 }}
-            animate={{ opacity: 1, y: 0, scale: 1 }}
-            exit={{ opacity: 0, scale: 0.95, y: 20 }}
-            className="fixed bottom-6 right-6 z-50 pointer-events-auto"
-          >
-            <div className="bg-[#1A1A1A] border border-[#ff3333]/30 shadow-2xl rounded-2xl p-5 max-w-[340px] flex flex-col gap-3">
-              <div className="flex items-start gap-3">
-                <AlertCircle className="w-5 h-5 text-[#ff3333] shrink-0 mt-0.5" />
-                <div>
-                  <h3 className="text-[#E0E0E0] font-medium text-sm">Provider Changed</h3>
-                  <p className="text-[#A0A0A0] text-xs mt-1 leading-relaxed">
-                    ⚠ {incompatibleWarning.count} meetings used your previous AI provider ({incompatibleWarning.oldProvider}) and won't appear in search results under {incompatibleWarning.newProvider}.
-                  </p>
+                <div className="flex gap-2 mt-1 justify-end">
+                  <button
+                    onClick={() => setIncompatibleWarning(null)}
+                    className="px-3 py-1.5 rounded-lg text-xs font-medium text-[#A0A0A0] hover:text-white hover:bg-white/5 transition-colors"
+                  >
+                    Dismiss
+                  </button>
+                  <button
+                    onClick={handleReindex}
+                    className="px-3 py-1.5 rounded-lg text-xs font-semibold bg-[#ff3333]/10 text-[#ff3333] hover:bg-[#ff3333]/20 transition-colors"
+                  >
+                    Re-index automatically
+                  </button>
                 </div>
               </div>
-              <div className="flex gap-2 mt-1 justify-end">
-                <button 
-                  onClick={() => setIncompatibleWarning(null)}
-                  className="px-3 py-1.5 rounded-lg text-xs font-medium text-[#A0A0A0] hover:text-white hover:bg-white/5 transition-colors"
-                >
-                  Dismiss
-                </button>
-                <button 
-                  onClick={handleReindex}
-                  className="px-3 py-1.5 rounded-lg text-xs font-semibold bg-[#ff3333]/10 text-[#ff3333] hover:bg-[#ff3333]/20 transition-colors"
-                >
-                  Re-index automatically
-                </button>
-              </div>
-            </div>
-          </motion.div>
+            </motion.div>
+          )}
+        </AnimatePresence>
+
+        {/* <UpdateBanner /> */}
+        <SupportToaster />
+        {isLauncherMainView && !isSettingsOpen && (
+          <>
+            <ProfileFeatureToaster
+              isOpen={activeAd === 'profile'}
+              onDismiss={dismissAd}
+              onSetupProfile={() => {
+                setSettingsInitialTab('profile');
+                setIsSettingsOpen(true);
+              }}
+            />
+            <JDAwarenessToaster
+              isOpen={activeAd === 'jd'}
+              onDismiss={dismissAd}
+              onSetupJD={() => {
+                setSettingsInitialTab('profile');
+                setIsSettingsOpen(true);
+              }}
+            />
+            <PremiumPromoToaster
+              isOpen={activeAd === 'promo'}
+              onDismiss={dismissAd}
+              onUpgrade={() => {
+                setShowPremiumModal(true);
+              }}
+            />
+
+            {/* Remote Campaigns Render Logic */}
+            <RemoteCampaignToaster
+              isOpen={typeof activeAd === 'object' && activeAd !== null}
+              campaign={typeof activeAd === 'object' && activeAd !== null ? activeAd : undefined as any}
+              onDismiss={dismissAd}
+            />
+          </>
         )}
-      </AnimatePresence>
 
-      {/* <UpdateBanner /> */}
-      <SupportToaster />
-      {isLauncherMainView && !isSettingsOpen && (
-        <>
-          <ProfileFeatureToaster 
-            isOpen={activeAd === 'profile'} 
-            onDismiss={dismissAd}
-            onSetupProfile={() => {
+        <PremiumUpgradeModal
+          isOpen={showPremiumModal}
+          onClose={() => setShowPremiumModal(false)}
+          isPremium={isPremiumActive}
+          onActivated={() => {
+            setIsPremiumActive(true);
+            setShowPremiumModal(false);
+            // After activation, open settings to Profile Intelligence
+            setTimeout(() => {
               setSettingsInitialTab('profile');
               setIsSettingsOpen(true);
-            }} 
-          />
-          <JDAwarenessToaster 
-            isOpen={activeAd === 'jd'} 
-            onDismiss={dismissAd}
-            onSetupJD={() => {
-              setSettingsInitialTab('profile');
-              setIsSettingsOpen(true);
-            }} 
-          />
-          <PremiumPromoToaster 
-            isOpen={activeAd === 'promo'} 
-            onDismiss={dismissAd}
-            onUpgrade={() => {
-              setShowPremiumModal(true);
-            }} 
-          />
-          
-          {/* Remote Campaigns Render Logic */}
-          <RemoteCampaignToaster
-            isOpen={typeof activeAd === 'object' && activeAd !== null}
-            campaign={typeof activeAd === 'object' && activeAd !== null ? activeAd : undefined as any}
-            onDismiss={dismissAd}
-          />
-        </>
-      )}
-
-      <PremiumUpgradeModal
-        isOpen={showPremiumModal}
-        onClose={() => setShowPremiumModal(false)}
-        isPremium={isPremiumActive}
-        onActivated={() => {
-          setIsPremiumActive(true);
-          setShowPremiumModal(false);
-          // After activation, open settings to Profile Intelligence
-          setTimeout(() => {
-            setSettingsInitialTab('profile');
-            setIsSettingsOpen(true);
-          }, 300);
-        }}
-        onDeactivated={() => setIsPremiumActive(false)}
-      />
-    </div>
+            }, 300);
+          }}
+          onDeactivated={() => setIsPremiumActive(false)}
+        />
+      </div>
     </ErrorBoundary>
   )
 }
