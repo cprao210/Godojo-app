@@ -50,7 +50,14 @@ export class SessionTracker {
         title?: string;
         calendarEventId?: string;
         source?: 'manual' | 'calendar';
+        attendees?: Array<{ email: string; name?: string; organizer?: boolean; self?: boolean }>;
+        organizer?: string;
     } | null = null;
+
+    private speakerNameMap: { user: string; interviewer: string } = {
+        user: 'Me',
+        interviewer: 'Them'
+    };
 
     // Full Session Tracking (Persisted)
     private fullTranscript: TranscriptSegment[] = [];
@@ -87,8 +94,164 @@ export class SessionTracker {
         this.recapLLM = recapLLM;
     }
 
+    /**
+     * Get display name for a speaker role
+     * Used by UI to show real names instead of 'Me'/'Them'
+     */
+    public getDisplayNameForSpeaker(role: 'user' | 'interviewer' | 'assistant'): string {
+        if (role === 'user') {
+            return this.speakerNameMap.user;
+        }
+        if (role === 'interviewer') {
+            return this.speakerNameMap.interviewer;
+        }
+        return 'Assistant';
+    }
+
     public setMeetingMetadata(metadata: any): void {
         this.currentMeetingMetadata = metadata;
+
+        // Reset to defaults first so a re-used session never bleeds names from a previous meeting.
+        this.speakerNameMap = { user: 'Me', interviewer: 'Them' };
+
+        const attendees: any[] = metadata?.attendees || [];
+
+        if (attendees.length === 0) {
+            // No attendee list — try to extract the opposite party's name from the meeting title.
+            if (metadata?.title) {
+                const fromTitle = this.extractNameFromTitle(metadata.title);
+                if (fromTitle) this.speakerNameMap.interviewer = fromTitle;
+            }
+            console.log('[SessionTracker] Speaker name map resolved (no attendees):', this.speakerNameMap);
+            return;
+        }
+
+        // Extract a display name: prefer displayName, fall back to name, then email prefix.
+        const resolveName = (attendee: any): string | null => {
+            if (attendee.displayName && attendee.displayName.trim()) {
+                return attendee.displayName.trim();
+            }
+            if (attendee.name && attendee.name.trim()) {
+                return attendee.name.trim();
+            }
+            if (attendee.email) {
+                const prefix = attendee.email.split('@')[0];
+                const parts = prefix.split(/[._\-+]/).filter(Boolean);
+                return parts.map((p: string) =>
+                    p.charAt(0).toUpperCase() + p.slice(1).toLowerCase()
+                ).join(' ');
+            }
+            return null;
+        };
+
+        // The attendee with self:true is the local user (microphone = 'user' channel).
+        const selfAttendee = attendees.find(a => a.self);
+        const selfName = selfAttendee ? resolveName(selfAttendee) : null;
+        if (selfName) {
+            this.speakerNameMap.user = selfName;
+        }
+
+        // The remaining non-self attendees are the remote participants (system audio = 'interviewer').
+        // Include all non-self attendees (not just those with a name) so email-only entries
+        // can still contribute a company label.
+        const others = attendees.filter(a => !a.self);
+
+        if (others.length === 1) {
+            // Exactly one opposite party → use their real name.
+            const name = resolveName(others[0]);
+            if (name) this.speakerNameMap.interviewer = name;
+        } else if (others.length > 1) {
+            // Multiple opposite participants → apply company-domain labeling rules.
+
+            /** Personal/free email domains that must NOT be treated as company names. */
+            const PERSONAL_DOMAINS = new Set([
+                'gmail.com', 'yahoo.com', 'outlook.com', 'hotmail.com',
+                'icloud.com', 'proton.me', 'protonmail.com', 'live.com',
+                'msn.com', 'aol.com', 'ymail.com', 'mail.com',
+            ]);
+
+            /**
+             * Returns a capitalised company name from a professional email domain,
+             * or null for personal/free providers.
+             *   john@instagram.com  → "Instagram"
+             *   kane@facebook.com   → "Facebook"
+             *   abc@gmail.com       → null
+             */
+            const companyFromEmail = (email: string): string | null => {
+                const domain = email.split('@')[1];
+                if (!domain) return null;
+                if (PERSONAL_DOMAINS.has(domain.toLowerCase())) return null;
+                // Take the segment just before the TLD(s).
+                // e.g. "instagram.com" → "instagram", "sub.company.co.uk" → "company"
+                const parts = domain.split('.');
+                const namePart = parts.length >= 2 ? parts[parts.length - 2] : parts[0];
+                return namePart.charAt(0).toUpperCase() + namePart.slice(1).toLowerCase();
+            };
+
+            // Collect unique company labels; track whether any attendee has a personal domain.
+            const companyLabels: string[] = [];
+            let hasPersonalDomain = false;
+
+            for (const attendee of others) {
+                if (!attendee.email) continue;
+                const company = companyFromEmail(attendee.email);
+                if (company) {
+                    if (!companyLabels.includes(company)) companyLabels.push(company);
+                } else {
+                    hasPersonalDomain = true;
+                }
+            }
+
+            if (companyLabels.length > 0 && !hasPersonalDomain) {
+                // All professional domains → e.g. "Instagram, Facebook"
+                this.speakerNameMap.interviewer = companyLabels.join(', ');
+            } else if (companyLabels.length > 0 && hasPersonalDomain) {
+                // Mix of professional and personal → e.g. "Instagram + Other Party"
+                this.speakerNameMap.interviewer = companyLabels.join(', ') + ' + Other Party';
+            } else {
+                // All personal/unknown domains → generic fallback
+                this.speakerNameMap.interviewer = 'Other Party';
+            }
+        } else {
+            // No non-self attendees at all — try meeting title as last resort.
+            if (metadata?.title) {
+                const fromTitle = this.extractNameFromTitle(metadata.title);
+                if (fromTitle) this.speakerNameMap.interviewer = fromTitle;
+            }
+        }
+        console.log('[SessionTracker] Speaker name map resolved:', this.speakerNameMap);
+    }
+
+    /**
+     * Attempt to extract an opposite-party name from a meeting title.
+     * Handles common patterns like "Meeting with John Doe" or "John Doe - Interview".
+     */
+    private extractNameFromTitle(title: string): string | null {
+        const patterns = [
+            /with\s+([A-Z][a-z]+(?:\s+[A-Z][a-z]+)?)/,
+            /Meeting:\s*([A-Z][a-z]+(?:\s+[A-Z][a-z]+)?)/,
+            /-\s*([A-Z][a-z]+(?:\s+[A-Z][a-z]+)?)$/,
+        ];
+        for (const pattern of patterns) {
+            const match = title.match(pattern);
+            if (match?.[1]) return match[1];
+        }
+        return null;
+    }
+
+    // Expose for IPC / display layer:
+    public getSpeakerNameMap(): { user: string; interviewer: string } {
+        return { ...this.speakerNameMap };
+    }
+
+    public updateSpeakerNames(names: { user: string; interviewer: string }): void {
+        if (names.user && names.user.trim()) {
+            this.speakerNameMap.user = names.user.trim();
+        }
+        if (names.interviewer && names.interviewer.trim()) {
+            this.speakerNameMap.interviewer = names.interviewer.trim();
+        }
+        console.log('[SessionTracker] Speaker names updated manually:', this.speakerNameMap);
     }
 
     public getMeetingMetadata() {
@@ -331,6 +494,17 @@ export class SessionTracker {
         return this.addTranscript(segment);
     }
 
+    public getFormattedTranscript(): Array<{ speaker: string; text: string; timestamp: number }> {
+        return this.fullTranscript.map(seg => ({
+            ...seg,
+            speaker: seg.speaker === 'user'
+                ? (this.speakerNameMap.user || 'Me')
+                : seg.speaker === 'interviewer'
+                    ? (this.speakerNameMap.interviewer || 'Them')
+                    : seg.speaker,
+        }));
+    }
+
     // ============================================
     // Context Accessors
     // ============================================
@@ -361,9 +535,9 @@ export class SessionTracker {
     getFormattedContext(lastSeconds: number = 120): string {
         const items = this.getContext(lastSeconds);
         return items.map(item => {
-            const label = item.role === 'interviewer' ? 'INTERVIEWER' :
-                item.role === 'user' ? 'ME' :
-                    'ASSISTANT (PREVIOUS SUGGESTION)';
+            const label = item.role === 'interviewer' ? (this.speakerNameMap.interviewer || 'INTERVIEWER').toUpperCase() :
+                item.role === 'user' ? (this.speakerNameMap.user || 'ME').toUpperCase() :
+                    'ASSISTANT';
             return `[${label}]: ${item.text}`;
         }).join('\n');
     }
@@ -386,8 +560,8 @@ export class SessionTracker {
     getFullSessionContext(): string {
         const recentTranscript = this.fullTranscript.map(segment => {
             const role = this.mapSpeakerToRole(segment.speaker);
-            const label = role === 'interviewer' ? 'INTERVIEWER' :
-                role === 'user' ? 'ME' :
+            const label = role === 'interviewer' ? (this.speakerNameMap.interviewer || 'INTERVIEWER').toUpperCase() :
+                role === 'user' ? (this.speakerNameMap.user || 'ME').toUpperCase() :
                     'ASSISTANT';
             return `[${label}]: ${segment.text}`;
         }).join('\n');
@@ -480,6 +654,7 @@ export class SessionTracker {
         this.codingQuestionSource = null;
         this.codingQuestionSetAt = null;
         this.recentInterviewerBuffer = [];
+        this.speakerNameMap = { user: 'Me', interviewer: 'Them' };
     }
 
     // ============================================
@@ -516,8 +691,8 @@ export class SessionTracker {
             const oldEntries = this.fullTranscript.slice(0, summarizeCount);
             const summaryInput = oldEntries.map(seg => {
                 const role = this.mapSpeakerToRole(seg.speaker);
-                const label = role === 'interviewer' ? 'INTERVIEWER' :
-                    role === 'user' ? 'ME' : 'ASSISTANT';
+                const label = role === 'interviewer' ? (this.speakerNameMap.interviewer || 'INTERVIEWER').toUpperCase() :
+                    role === 'user' ? (this.speakerNameMap.user || 'ME').toUpperCase() : 'ASSISTANT';
                 return `[${label}]: ${seg.text}`;
             }).join('\n');
 

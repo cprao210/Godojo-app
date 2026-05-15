@@ -97,7 +97,33 @@ const NativelyInterface: React.FC<NativelyInterfaceProps> = ({ onEndMeeting, ove
     });
     const [isLiveAnalysisOpen, setIsLiveAnalysisOpen] = useState(false);
     const [isLiveAnalysisLoading, setIsLiveAnalysisLoading] = useState(false);
-    const liveTranscriptRef = useRef<Array<{ speaker: string; text: string; timestamp: number }>>([]);
+    const liveTranscriptRef = useRef<Array<{ speaker: string; displayName?: string; text: string; timestamp: number }>>([]);
+
+    const speakerNamesRef = useRef<{ user: string; interviewer: string }>({ user: 'Me', interviewer: 'Them' });
+    const [speakerNames, setSpeakerNames] = useState<{ user: string; interviewer: string }>({
+        user: 'Me',
+        interviewer: 'Them'
+    });
+
+    useEffect(() => {
+        const loadSpeakerNames = async () => {
+            if (window.electronAPI?.getDisplayName) {
+                const user = await window.electronAPI.getDisplayName('user');
+                const interviewer = await window.electronAPI.getDisplayName('interviewer');
+                setSpeakerNames({ user, interviewer });
+            }
+        };
+
+        loadSpeakerNames();
+
+        // Listen for speaker name resolution events
+        const unsubscribe = window.electronAPI?.onSpeakerNamesResolved?.((names) => {
+            console.log('[NativelyInterface] Speaker names resolved event:', names); // ✅ Debug log
+            setSpeakerNames(names);
+        });
+
+        return () => unsubscribe?.();
+    }, []);
 
     // Analytics State
     const requestStartTimeRef = useRef<number | null>(null);
@@ -363,6 +389,21 @@ const NativelyInterface: React.FC<NativelyInterfaceProps> = ({ onEndMeeting, ove
 
             // Track new conversation
             analytics.trackConversationStarted();
+
+            // Re-fetch resolved names from main process instead of resetting to generic labels.
+            // The main process keeps resolved names in SessionTracker across session resets.
+            window.electronAPI?.getSpeakerNames?.().then((names) => {
+                if (names) {
+                    speakerNamesRef.current = names;
+                    setSpeakerNames(names);
+                } else {
+                    speakerNamesRef.current = { user: 'Me', interviewer: 'Them' };
+                    setSpeakerNames({ user: 'Me', interviewer: 'Them' });
+                }
+            }).catch(() => {
+                speakerNamesRef.current = { user: 'Me', interviewer: 'Them' };
+                setSpeakerNames({ user: 'Me', interviewer: 'Them' });
+            });
         });
         return () => unsubscribe();
     }, []);
@@ -428,8 +469,12 @@ const NativelyInterface: React.FC<NativelyInterfaceProps> = ({ onEndMeeting, ove
             }
 
             if (transcript.speaker === 'user' && transcript.final) {
+                const userDisplayName = (transcript as any).displayName
+                    || speakerNamesRef.current.user
+                    || undefined;
                 liveTranscriptRef.current.push({
                     speaker: 'user',
+                    displayName: userDisplayName,
                     text: transcript.text,
                     timestamp: Date.now(),
                 });
@@ -456,10 +501,15 @@ const NativelyInterface: React.FC<NativelyInterfaceProps> = ({ onEndMeeting, ove
                     return prev + separator + transcript.text;
                 });
 
-                // Accumulate for LiveAnalysisOverlay — store every final segment
-                // regardless of speaker so the overlay gets the full conversation.
+                // Use displayName from payload (resolved in main process) for accurate attribution.
+                // Fall back to speakerNamesRef for older payloads without displayName.
+                const resolvedDisplayName = (transcript as any).displayName
+                    || (transcript.speaker === "interviewer" ? speakerNamesRef.current.interviewer : speakerNamesRef.current.user)
+                    || undefined;
+
                 liveTranscriptRef.current.push({
-                    speaker: transcript.speaker,   // 'interviewer'
+                    speaker: 'interviewer',   // keep the role, not the name
+                    displayName: resolvedDisplayName,
                     text: transcript.text,
                     timestamp: Date.now(),
                 });
@@ -2188,6 +2238,7 @@ Provide only the answer, nothing else.`;
                                             text={rollingTranscript}
                                             isActive={isInterviewerSpeaking}
                                             surfaceStyle={appearance.transcriptStyle}
+                                            speakerName={speakerNames.interviewer}
                                         />
                                     )}
 
@@ -2215,7 +2266,7 @@ Provide only the answer, nothing else.`;
                     `}>
                                                         {msg.role === 'interviewer' && (
                                                             <div className="flex items-center gap-1.5 mb-1 text-[10px] font-medium uppercase tracking-wider overlay-text-muted">
-                                                                Interviewer
+                                                                {speakerNames.interviewer}
                                                                 {msg.isStreaming && <span className="w-1 h-1 bg-green-500 rounded-full animate-pulse" />}
                                                             </div>
                                                         )}

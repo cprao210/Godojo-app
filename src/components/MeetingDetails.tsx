@@ -108,8 +108,11 @@ interface Meeting {
     participants?: { email: string | null, name: string | null, oraganizer: boolean, self: boolean }[];
     transcript?: Array<{
         speaker: string;
+        displayName?: string;
         text: string;
         timestamp: number;
+        final?: boolean;
+        confidence?: number;
     }>;
     usage?: Array<{
         type: 'assist' | 'followup' | 'chat' | 'followup_questions';
@@ -148,6 +151,20 @@ const MeetingDetails: React.FC<MeetingDetailsProps> = ({ meeting: initialMeeting
         initialMeeting.title === 'Processing...' || initialMeeting.isProcessed === false
     );
     const [isTalktimeOpen, setIsTalktimeOpen] = useState(false);
+    const [isTranscriptOpen, setIsTranscriptOpen] = useState(true);
+
+    const speakerNames = (meeting.detailedSummary as any)?.speakerNames as
+        { user: string; interviewer: string } | undefined;
+
+    const getSpeakerDisplayName = (speaker: string, displayName?: string): string => {
+        // Prefer the live displayName from the transcript entry when available
+
+        if (displayName) return displayName;
+        if (speaker === 'user') return speakerNames?.user === "Me" ? "You" : (speakerNames?.user || 'You');
+        if (speaker === 'interviewer') return speakerNames?.interviewer === "Them" ? "Other Party" : (speakerNames?.interviewer || 'Other Party');
+        if (speaker === 'assistant') return 'Assistant';
+        return speaker;
+    };
 
     useEffect(() => {
         if (!isProcessing) return;
@@ -401,7 +418,7 @@ const MeetingDetails: React.FC<MeetingDetailsProps> = ({ meeting: initialMeeting
         } else if (activeTab === 'transcript' && meeting.transcript) {
             textToCopy = meeting.transcript
                 .filter(t => !['system', 'ai', 'assistant', 'model'].includes(t.speaker?.toLowerCase()))
-                .map(t => `[${formatTime(t.timestamp)}] ${t.speaker === 'user' ? 'Me' : 'Them'}: ${t.text}`)
+                .map(t => `[${formatTime(t.timestamp)}] ${getSpeakerDisplayName(t.speaker, t.displayName)}: ${t.text}`)
                 .join('\n');
 
         } else if (activeTab === 'usage' && meeting.usage) {
@@ -613,8 +630,6 @@ const MeetingDetails: React.FC<MeetingDetailsProps> = ({ meeting: initialMeeting
     };
 
     const talkTime = useMemo(() => computeTalkTime(meeting.transcript), [meeting.transcript]);
-    const remoteParticipantName = meeting.participants?.find(p => p.email !== 'you@example.com')?.name || 'Other Party';
-
 
     return (
         <div className="h-full w-full flex flex-col bg-bg-secondary text-text-secondary font-sans overflow-hidden">
@@ -1216,9 +1231,7 @@ const MeetingDetails: React.FC<MeetingDetailsProps> = ({ meeting: initialMeeting
 
                                                                     <div className="flex items-center gap-2">
                                                                         <span className="text-sm text-white/80">
-                                                                            {meeting.participants?.find(
-                                                                                p => p.email === 'you@example.com'
-                                                                            )?.name || 'You'}
+                                                                            You
                                                                         </span>
                                                                     </div>
 
@@ -1249,7 +1262,7 @@ const MeetingDetails: React.FC<MeetingDetailsProps> = ({ meeting: initialMeeting
                                                                     <div className="flex items-center gap-2">
 
                                                                         <span className="text-sm text-white/80">
-                                                                            {remoteParticipantName}
+                                                                            Other Party
                                                                         </span>
                                                                     </div>
 
@@ -1283,32 +1296,120 @@ const MeetingDetails: React.FC<MeetingDetailsProps> = ({ meeting: initialMeeting
                                         </AnimatePresence>
                                     </div>
                                 )}
-                                <div className="space-y-6">
-                                    {(() => {
-                                        console.log('Raw Transcript:', meeting.transcript);
-                                        const filteredTranscript = meeting.transcript?.filter(entry => {
-                                            const isHidden = ['system', 'ai', 'assistant', 'model'].includes(entry.speaker?.toLowerCase());
-                                            if (isHidden) console.log('Filtered out:', entry);
-                                            return !isHidden;
-                                        }) || [];
-                                        console.log('Filtered Transcript:', filteredTranscript);
-
-                                        if (filteredTranscript.length === 0) {
-                                            return <p className="text-text-tertiary">No transcript available.</p>;
-                                        }
-
-                                        return filteredTranscript.map((entry, i) => (
-                                            <div key={i} className="group">
-                                                <div className="flex items-center gap-2 mb-1">
-                                                    <span className={`text-xs font-semibold text-white ${entry.speaker === "user" ? "bg-blue-600" : "bg-white/40"} px-2 py-0.5 rounded-full truncate min-w-[30px] max-w-[100px]`}>
-                                                        {entry.speaker === 'user' ? 'You' : 'Them'}
-                                                    </span>
-                                                    <span className="text-xs text-text-tertiary font-mono">{entry.timestamp ? formatTime(entry.timestamp) : '0:00'}</span>
-                                                </div>
-                                                <p className="text-text-secondary text-[15px] leading-relaxed transition-colors select-text cursor-text">{entry.text}</p>
+                                <div className="overflow-hidden rounded-2xl border border-white/10 bg-white/5">
+                                    {/* Transcript Header */}
+                                    <button
+                                        onClick={() => setIsTranscriptOpen(prev => !prev)}
+                                        className="flex w-full items-center justify-between px-4 py-3 transition-colors hover:bg-white/[0.03]"
+                                    >
+                                        <div className="flex items-center gap-3">
+                                            <div className="flex h-8 w-8 items-center justify-center rounded-xl bg-white/10">
+                                                <MessageSquare className="h-4 w-4 text-white/70" />
                                             </div>
-                                        ));
-                                    })()}
+
+                                            <div className="text-left">
+                                                <h3 className="text-sm font-semibold text-white/90">
+                                                    Transcript
+                                                </h3>
+
+                                                <p className="text-xs text-white/40">
+                                                    Full meeting conversation
+                                                </p>
+                                            </div>
+                                        </div>
+
+                                        <div className="flex items-center gap-3">
+                                            <span className="text-xs text-white/40">
+                                                {meeting.transcript?.length || 0} messages
+                                            </span>
+
+                                            <ChevronDown
+                                                className={`h-4 w-4 text-white/50 transition-transform duration-300 ${isTranscriptOpen ? 'rotate-180' : ''
+                                                    }`}
+                                            />
+                                        </div>
+                                    </button>
+
+                                    <AnimatePresence initial={false}>
+                                        {isTranscriptOpen && (
+                                            <motion.div
+                                                initial={{ height: 0, opacity: 0 }}
+                                                animate={{
+                                                    height: 'auto',
+                                                    opacity: 1,
+                                                }}
+                                                exit={{
+                                                    height: 0,
+                                                    opacity: 0,
+                                                }}
+                                                transition={{
+                                                    duration: 0.25,
+                                                }}
+                                                className="overflow-hidden"
+                                            >
+                                                <div className="border-t border-white/10 px-4 py-5">
+                                                    <div className="space-y-6">
+                                                        {(() => {
+                                                            const filteredTranscript =
+                                                                meeting.transcript?.filter(entry => {
+                                                                    return ![
+                                                                        'system',
+                                                                        'ai',
+                                                                        'assistant',
+                                                                        'model',
+                                                                    ].includes(
+                                                                        entry.speaker?.toLowerCase()
+                                                                    );
+                                                                }) || [];
+
+                                                            if (filteredTranscript.length === 0) {
+                                                                return (
+                                                                    <p className="text-text-tertiary">
+                                                                        No transcript available.
+                                                                    </p>
+                                                                );
+                                                            }
+
+                                                            return filteredTranscript.map(
+                                                                (entry, i) => (
+                                                                    <div
+                                                                        key={i}
+                                                                        className="group rounded-2xl border border-white/[0.04] bg-white/[0.02] p-4 transition-all hover:bg-white/[0.03]"
+                                                                    >
+                                                                        <div className="mb-2 flex items-center gap-2">
+                                                                            <span
+                                                                                className={`text-xs font-semibold text-white ${entry.speaker === 'user'
+                                                                                    ? 'bg-blue-600'
+                                                                                    : 'bg-white/40'
+                                                                                    } px-2 py-1 rounded-full truncate max-w-[120px]`}
+                                                                            >
+                                                                                {getSpeakerDisplayName(
+                                                                                    entry.speaker,
+                                                                                    entry.displayName
+                                                                                )}
+                                                                            </span>
+
+                                                                            <span className="font-mono text-xs text-white/30">
+                                                                                {entry.timestamp
+                                                                                    ? formatTime(
+                                                                                        entry.timestamp
+                                                                                    )
+                                                                                    : '0:00'}
+                                                                            </span>
+                                                                        </div>
+
+                                                                        <p className="text-[15px] leading-relaxed text-text-secondary select-text">
+                                                                            {entry.text}
+                                                                        </p>
+                                                                    </div>
+                                                                )
+                                                            );
+                                                        })()}
+                                                    </div>
+                                                </div>
+                                            </motion.div>
+                                        )}
+                                    </AnimatePresence>
                                 </div>
                             </motion.section>
                         )}
@@ -1406,6 +1507,7 @@ const MeetingDetails: React.FC<MeetingDetailsProps> = ({ meeting: initialMeeting
                             <motion.section initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }}>
                                 {meeting.detailedSummary?.liveAnalysis ? (
                                     <LiveAnalysisContent
+                                        hideBar="Missing Details"
                                         analysisData={meeting.detailedSummary.liveAnalysis}
                                         aiInsight={meeting.detailedSummary.liveAnalysis.signals?.[0]?.ask_now || undefined}
                                     />

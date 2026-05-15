@@ -101,6 +101,9 @@ export interface ElectronAPI {
   setGroqSttModel: (model: string) => Promise<{ success: boolean; error?: string }>
   setSonioxApiKey: (apiKey: string) => Promise<{ success: boolean; error?: string }>
   testSttConnection: (provider: 'groq' | 'openai' | 'deepgram' | 'elevenlabs' | 'azure' | 'ibmwatson' | 'soniox', apiKey: string, region?: string) => Promise<{ success: boolean; error?: string }>
+  getDisplayName: (role: 'user' | 'interviewer' | 'assistant') => Promise<string>;
+  getSpeakerNames: () => Promise<{ user: string; interviewer: string }>;
+  onSpeakerNamesResolved: (callback: (names: { user: string; interviewer: string }) => void) => () => void;
 
   // Native Audio Service Events
   onNativeAudioTranscript: (callback: (transcript: { speaker: string; text: string; final: boolean }) => void) => () => void

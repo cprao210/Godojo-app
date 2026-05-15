@@ -106,9 +106,10 @@ const FieldRow: React.FC<{
 interface LiveAnalysisContentProps {
     analysisData: LiveAnalysisData;
     aiInsight?: string;
+    hideBar?: "MEDDICC Details" | "BANT Details" | "Missing Details" | "Buying Signals" | "Objections" | null;
 }
 
-export const LiveAnalysisContent: React.FC<LiveAnalysisContentProps> = ({ analysisData, aiInsight }) => {
+export const LiveAnalysisContent: React.FC<LiveAnalysisContentProps> = ({ analysisData, aiInsight, hideBar = null }) => {
     const meddicFound = Object.values(analysisData.meddic).filter(f => f.status === 'confirmed').length;
     const bantConfirmed = Object.values(analysisData.bant).filter(f => f.status === 'confirmed').length;
     const bantPct = Math.round((bantConfirmed / 4) * 100);
@@ -159,7 +160,7 @@ export const LiveAnalysisContent: React.FC<LiveAnalysisContentProps> = ({ analys
                 </div>
             )}
 
-            <SectionToggle
+            {hideBar !== "MEDDICC Details" && <SectionToggle
                 icon={<Shield size={13} />}
                 title="MEDDICC Details"
                 badge={`${meddicFound}/7 Found`}
@@ -180,11 +181,11 @@ export const LiveAnalysisContent: React.FC<LiveAnalysisContentProps> = ({ analys
                     <FieldRow label="Champion" field={analysisData.meddic.champion} />
                     <FieldRow label="Competition" field={analysisData.meddic.competition} />
                 </div>
-            </SectionToggle>
+            </SectionToggle>}
 
             <div className="h-px bg-white/[0.04] mx-4" />
 
-            <SectionToggle
+            {hideBar !== "BANT Details" && <SectionToggle
                 icon={<BarChart2 size={13} />}
                 title="BANT Details"
                 badge={`${bantPct}% Complete`}
@@ -202,9 +203,9 @@ export const LiveAnalysisContent: React.FC<LiveAnalysisContentProps> = ({ analys
                     <FieldRow label="Need" field={analysisData.bant.need} />
                     <FieldRow label="Timeline" field={analysisData.bant.timeline} />
                 </div>
-            </SectionToggle>
+            </SectionToggle>}
 
-            {missingSignals.length > 0 && (
+            {missingSignals.length > 0 && hideBar !== "Missing Details" && (
                 <>
                     <div className="h-px bg-white/[0.04] mx-4" />
                     <SectionToggle icon={<AlertTriangle size={13} />} title="What I'm Missing">
@@ -240,7 +241,7 @@ export const LiveAnalysisContent: React.FC<LiveAnalysisContentProps> = ({ analys
                 </>
             )}
 
-            {analysisData.signals.length > 0 && (
+            {analysisData.signals.length > 0 && hideBar !== "Buying Signals" && (
                 <>
                     <SectionToggle
                         icon={<Zap size={13} />}
@@ -282,7 +283,7 @@ export const LiveAnalysisContent: React.FC<LiveAnalysisContentProps> = ({ analys
                 </>
             )}
 
-            {analysisData.objections.length > 0 && (
+            {analysisData.objections.length > 0 && hideBar !== "Objections" && (
                 <SectionToggle
                     icon={<CheckSquare size={13} />}
                     title="Objections"
