@@ -220,11 +220,38 @@ const Launcher: React.FC<LauncherProps> = ({ onStartMeeting, onOpenSettings, onP
         };
     }, [isShortcutPressed]);
 
-    // Filter next meeting (within 60 mins)
+    // Filter next meeting (within 24 hours)
+    const MINUTE = 60 * 1000;
+    const HOUR = 60 * MINUTE;
+
     const nextMeeting = upcomingEvents.find(e => {
         const diff = new Date(e.startTime).getTime() - Date.now();
-        return diff > -5 * 60000 && diff < 60 * 60000; // -5 min to +60 min
+
+        return diff > -5 * MINUTE && diff < 24 * HOUR; // -5 min to 24 hours
     });
+
+    const getMeetingStartText = (startTime: string) => {
+        const diffMs = new Date(startTime).getTime() - Date.now();
+
+        if (diffMs <= 0) {
+            return "Starting now";
+        }
+
+        const totalMinutes = Math.ceil(diffMs / (1000 * 60));
+
+        if (totalMinutes < 60) {
+            return `Starts in ${totalMinutes} min`;
+        }
+
+        const hours = Math.floor(totalMinutes / 60);
+        const minutes = totalMinutes % 60;
+
+        if (minutes === 0) {
+            return `Starts in ${hours} ${hours === 1 ? 'hour' : 'hours'}`;
+        }
+
+        return `Starts in ${hours}h ${minutes}m`;
+    };
 
     const handlePrepare = (event: any) => {
         setPreparedEvent(event);
@@ -734,7 +761,7 @@ const Launcher: React.FC<LauncherProps> = ({ onStartMeeting, onOpenSettings, onP
                                                         <div className="flex items-center gap-2 mb-2">
                                                             <div className="w-1.5 h-1.5 rounded-full bg-emerald-500 animate-pulse" />
                                                             <span className="text-[11px] font-bold text-emerald-400 uppercase tracking-wider">Up Next</span>
-                                                            <span className="text-[11px] text-text-tertiary">• Starts in {Math.max(0, Math.ceil((new Date(nextMeeting.startTime).getTime() - Date.now()) / 60000))} min</span>
+                                                            <span className="text-[11px] text-text-tertiary">• {getMeetingStartText(nextMeeting.startTime)}</span>
                                                         </div>
 
                                                         <h2 className="text-xl font-bold text-text-primary leading-tight mb-1 line-clamp-2">
