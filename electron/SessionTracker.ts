@@ -126,7 +126,34 @@ export class SessionTracker {
             return;
         }
 
-        // Extract a display name: prefer displayName, fall back to name, then email prefix.
+        // Personal/free email domains that must NOT be treated as company names.
+        const PERSONAL_DOMAINS = new Set([
+            'gmail.com', 'yahoo.com', 'outlook.com', 'hotmail.com',
+            'icloud.com', 'proton.me', 'protonmail.com', 'live.com',
+            'msn.com', 'aol.com', 'ymail.com', 'mail.com',
+        ]);
+
+        /**
+         * Returns a capitalised company name from a professional email domain,
+         * or null for personal/free providers.
+         *   peter@salesforce.com  → "Salesforce"
+         *   john@instagram.com    → "Instagram"
+         *   kane@stripe.io        → "Stripe"
+         *   abc@gmail.com         → null
+         */
+        const companyFromEmail = (email: string): string | null => {
+            const domain = email.split('@')[1];
+            if (!domain) return null;
+            if (PERSONAL_DOMAINS.has(domain.toLowerCase())) return null;
+            // Take the segment just before the TLD(s).
+            // "salesforce.com" → "salesforce", "sub.company.co.uk" → "company"
+            const parts = domain.split('.');
+            const namePart = parts.length >= 2 ? parts[parts.length - 2] : parts[0];
+            return namePart.charAt(0).toUpperCase() + namePart.slice(1).toLowerCase();
+        };
+
+        // Extract a display name from an attendee: prefer displayName, fall back to name,
+        // then derive from email local-part. Used only when domain is personal (no company label).
         const resolveName = (attendee: any): string | null => {
             if (attendee.displayName && attendee.displayName.trim()) {
                 return attendee.displayName.trim();
@@ -145,6 +172,7 @@ export class SessionTracker {
         };
 
         // The attendee with self:true is the local user (microphone = 'user' channel).
+        // Self-attendees always use their display name regardless of domain.
         const selfAttendee = attendees.find(a => a.self);
         const selfName = selfAttendee ? resolveName(selfAttendee) : null;
         if (selfName) {
@@ -152,43 +180,13 @@ export class SessionTracker {
         }
 
         // The remaining non-self attendees are the remote participants (system audio = 'interviewer').
-        // Include all non-self attendees (not just those with a name) so email-only entries
-        // can still contribute a company label.
         const others = attendees.filter(a => !a.self);
 
-        if (others.length === 1) {
-            // Exactly one opposite party → use their real name.
-            const name = resolveName(others[0]);
-            if (name) this.speakerNameMap.interviewer = name;
-        } else if (others.length > 1) {
-            // Multiple opposite participants → apply company-domain labeling rules.
-
-            /** Personal/free email domains that must NOT be treated as company names. */
-            const PERSONAL_DOMAINS = new Set([
-                'gmail.com', 'yahoo.com', 'outlook.com', 'hotmail.com',
-                'icloud.com', 'proton.me', 'protonmail.com', 'live.com',
-                'msn.com', 'aol.com', 'ymail.com', 'mail.com',
-            ]);
-
-            /**
-             * Returns a capitalised company name from a professional email domain,
-             * or null for personal/free providers.
-             *   john@instagram.com  → "Instagram"
-             *   kane@facebook.com   → "Facebook"
-             *   abc@gmail.com       → null
-             */
-            const companyFromEmail = (email: string): string | null => {
-                const domain = email.split('@')[1];
-                if (!domain) return null;
-                if (PERSONAL_DOMAINS.has(domain.toLowerCase())) return null;
-                // Take the segment just before the TLD(s).
-                // e.g. "instagram.com" → "instagram", "sub.company.co.uk" → "company"
-                const parts = domain.split('.');
-                const namePart = parts.length >= 2 ? parts[parts.length - 2] : parts[0];
-                return namePart.charAt(0).toUpperCase() + namePart.slice(1).toLowerCase();
-            };
-
-            // Collect unique company labels; track whether any attendee has a personal domain.
+        if (others.length >= 1) {
+            // Apply company-domain labeling rules for ALL cases (1 or more opposite attendees).
+            // BUG FIX: previously this logic only ran for others.length > 1, so a single
+            // professional-domain attendee (e.g. peter@salesforce.com) incorrectly fell through
+            // to resolveName() and showed "Peter" instead of "Salesforce".
             const companyLabels: string[] = [];
             let hasPersonalDomain = false;
 
@@ -203,14 +201,19 @@ export class SessionTracker {
             }
 
             if (companyLabels.length > 0 && !hasPersonalDomain) {
-                // All professional domains → e.g. "Instagram, Facebook"
+                // All professional domains → e.g. "Salesforce" or "Instagram, Facebook"
                 this.speakerNameMap.interviewer = companyLabels.join(', ');
             } else if (companyLabels.length > 0 && hasPersonalDomain) {
-                // Mix of professional and personal → e.g. "Instagram + Other Party"
+                // Mix of professional and personal → e.g. "Salesforce + Other Party"
                 this.speakerNameMap.interviewer = companyLabels.join(', ') + ' + Other Party';
             } else {
-                // All personal/unknown domains → generic fallback
-                this.speakerNameMap.interviewer = 'Other Party';
+                // All personal/unknown domains → use display name (single attendee) or generic fallback.
+                if (others.length === 1) {
+                    const name = resolveName(others[0]);
+                    if (name) this.speakerNameMap.interviewer = name;
+                } else {
+                    this.speakerNameMap.interviewer = 'Other Party';
+                }
             }
         } else {
             // No non-self attendees at all — try meeting title as last resort.

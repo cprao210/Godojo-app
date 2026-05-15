@@ -123,6 +123,13 @@ interface Meeting {
     }>;
 }
 
+interface Message {
+    id: string;
+    role: 'user' | 'assistant';
+    content: string;
+    isStreaming?: boolean;
+}
+
 interface MeetingDetailsProps {
     meeting: Meeting;
     onBack: () => void;
@@ -146,7 +153,8 @@ const MeetingDetails: React.FC<MeetingDetailsProps> = ({ meeting: initialMeeting
     const [regenError, setRegenError] = useState<string | null>(null);
     const [isFollowUpEmailOpen, setIsFollowUpEmailOpen] = useState(false);
     const [isChatOpen, setIsChatOpen] = useState(false);
-    const [submittedQuery, setSubmittedQuery] = useState('');
+    const [pendingQuery, setPendingQuery] = useState<{ text: string; id: number } | null>(null);
+    const [chatMessages, setChatMessages] = useState<Message[]>([]);
     const [isProcessing, setIsProcessing] = useState<boolean>(
         initialMeeting.title === 'Processing...' || initialMeeting.isProcessed === false
     );
@@ -157,11 +165,13 @@ const MeetingDetails: React.FC<MeetingDetailsProps> = ({ meeting: initialMeeting
         { user: string; interviewer: string } | undefined;
 
     const getSpeakerDisplayName = (speaker: string, displayName?: string): string => {
-        // Prefer the live displayName from the transcript entry when available
-
+        // 1. Live transcription supplies displayName directly — always prefer it.
         if (displayName) return displayName;
-        if (speaker === 'user') return speakerNames?.user === "Me" ? "You" : (speakerNames?.user || 'You');
-        if (speaker === 'interviewer') return speakerNames?.interviewer === "Them" ? "Other Party" : (speakerNames?.interviewer || 'Other Party');
+        // 2. Use resolved calendar names saved in detailedSummary.speakerNames.
+        //    These are set by SessionTracker (e.g. "Nikhilbarot", "Salesforce").
+        //    Fall back to "You" / "Other Party" only when no calendar data was resolved.
+        if (speaker === 'user') return speakerNames?.user || 'You';
+        if (speaker === 'interviewer') return speakerNames?.interviewer || 'Other Party';
         if (speaker === 'assistant') return 'Assistant';
         return speaker;
     };
@@ -190,7 +200,7 @@ const MeetingDetails: React.FC<MeetingDetailsProps> = ({ meeting: initialMeeting
 
     const handleSubmitQuestion = () => {
         if (query.trim()) {
-            setSubmittedQuery(query);
+            setPendingQuery({ text: query.trim(), id: Date.now() });
             if (!isChatOpen) {
                 setIsChatOpen(true);
             }
@@ -1231,7 +1241,7 @@ const MeetingDetails: React.FC<MeetingDetailsProps> = ({ meeting: initialMeeting
 
                                                                     <div className="flex items-center gap-2">
                                                                         <span className="text-sm text-white/80">
-                                                                            You
+                                                                            {getSpeakerDisplayName('user')}
                                                                         </span>
                                                                     </div>
 
@@ -1262,7 +1272,7 @@ const MeetingDetails: React.FC<MeetingDetailsProps> = ({ meeting: initialMeeting
                                                                     <div className="flex items-center gap-2">
 
                                                                         <span className="text-sm text-white/80">
-                                                                            Other Party
+                                                                            {getSpeakerDisplayName('interviewer')}
                                                                         </span>
                                                                     </div>
 
@@ -1553,7 +1563,6 @@ const MeetingDetails: React.FC<MeetingDetailsProps> = ({ meeting: initialMeeting
                 onClose={() => {
                     setIsChatOpen(false);
                     setQuery('');
-                    setSubmittedQuery('');
                 }}
                 meetingContext={{
                     id: meeting.id,  // Required for RAG queries
@@ -1563,517 +1572,13 @@ const MeetingDetails: React.FC<MeetingDetailsProps> = ({ meeting: initialMeeting
                     actionItems: meeting.detailedSummary?.actionItems,
                     transcript: meeting.transcript
                 }}
-                initialQuery={submittedQuery}
-                onNewQuery={(newQuery) => {
-                    setSubmittedQuery(newQuery);
-                }}
+                initialQuery={pendingQuery}
+                messages={chatMessages}
+                onMessagesChange={setChatMessages}
             />
         </div>
     )
 
-    // return (
-    //     <div className="h-full w-full flex flex-col bg-bg-secondary text-text-secondary font-sans overflow-hidden">
-    //         {/* Main Content */}
-    //         <main className="flex-1 overflow-y-auto custom-scrollbar">
-    //             <motion.div
-    //                 initial={{ opacity: 0, y: 10 }}
-    //                 animate={{ opacity: 1, y: 0 }}
-    //                 transition={{ delay: 0.1, duration: 0.3 }}
-    //                 className="max-w-4xl mx-auto px-8 py-8 pb-32" // Added pb-32 for floating footer clearance
-    //             >
-    //                 {/* Meta Info & Actions Row */}
-    //                 <div className="flex items-start justify-between mb-6">
-    //                     <div className="w-full pr-4">
-    //                         {/* Date formatting could be improved to use meeting.date if it's an ISO string */}
-    //                         <div className="text-xs text-text-tertiary font-medium mb-1">
-    //                             {new Date(meeting.date).toLocaleDateString('en-US', { weekday: 'long', month: 'short', day: 'numeric' })}
-    //                         </div>
-
-    //                         {/* Editable Title */}
-    //                         <EditableTextBlock
-    //                             initialValue={meeting.title}
-    //                             onSave={handleTitleSave}
-    //                             tagName="h1"
-    //                             className="text-3xl font-bold text-text-primary tracking-tight -ml-2 px-2 py-1 rounded-md transition-colors"
-    //                             multiline={false}
-    //                         />
-    //                     </div>
-
-    //                     {/* Moved Actions: Follow-up & Share (REMOVED per user request) */}
-    //                     {/* <div className="flex items-center gap-2 mt-1"> ... </div> */}
-    //                 </div>
-
-    //                 {/* Tabs */}
-    //                 {/* Designing Tabs to match reference 1:1 (Dark Pill Container) */}
-    //                 <div className="flex items-center justify-between mb-8">
-    //                     <div className={`p-1 rounded-xl inline-flex items-center gap-0.5 ${isLight ? 'bg-[#E5E5EA] border border-black/[0.04]' : 'bg-[#121214] border border-white/[0.08]'}`}>
-    //                         {['summary', 'transcript', 'usage'].map((tab) => (
-    //                             <button
-    //                                 key={tab}
-    //                                 onClick={() => setActiveTab(tab as any)}
-    //                                 className={`
-    //                                     relative px-3 py-1 text-[13px] font-medium rounded-lg transition-all duration-200 z-10
-    //                                     ${activeTab === tab ? (isLight ? 'text-black' : 'text-[#E9E9E9]') : `${isLight ? 'text-text-secondary' : 'text-text-tertiary'} hover:text-text-primary`}
-    //                                 `}
-    //                             >
-    //                                 {activeTab === tab && (
-    //                                     <motion.div
-    //                                         layoutId="activeTabBackground"
-    //                                         className={`absolute inset-0 rounded-lg -z-10 shadow-sm ${isLight ? 'bg-white' : 'bg-[#3A3A3C]'}`}
-    //                                         initial={false}
-    //                                         transition={{ type: "spring", stiffness: 400, damping: 30 }}
-    //                                     />
-    //                                 )}
-    //                                 {tab.charAt(0).toUpperCase() + tab.slice(1)}
-    //                             </button>
-    //                         ))}
-    //                     </div>
-
-    //                     {/* Copy Button - Inline with Tabs (Always visible) */}
-    //                     <button
-    //                         onClick={handleCopy}
-    //                         className="flex items-center gap-2 text-xs font-medium text-text-secondary hover:text-text-primary transition-colors"
-    //                     >
-    //                         {isCopied ? <Check size={14} className="text-emerald-500" /> : <Copy size={14} />}
-    //                         {isCopied ? 'Copied' : activeTab === 'summary' ? 'Copy full summary' : activeTab === 'transcript' ? 'Copy full transcript' : 'Copy usage'}
-    //                     </button>
-    //                 </div>
-
-    //                 {/* Tab Content */}
-    //                 <div className="space-y-8">
-    //                     {/* Using standard divs for content, framer motion for layout */}
-    //                     {activeTab === 'summary' && (
-    //                         <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }}>
-    //                             {/* Overview - Rendered as Markdown */}
-    //                             <div className="mb-6 pb-6 border-b border-border-subtle prose prose-sm max-w-none">
-    //                                 <ReactMarkdown
-    //                                     remarkPlugins={[remarkGfm]}
-    //                                     components={{
-    //                                         h1: ({ node, ...props }) => <h1 className="text-xl font-bold text-text-primary mt-4 mb-2" {...props} />,
-    //                                         h2: ({ node, ...props }) => <h2 className="text-lg font-semibold text-text-primary mt-4 mb-2" {...props} />,
-    //                                         h3: ({ node, ...props }) => <h3 className="text-base font-semibold text-text-primary mt-3 mb-1" {...props} />,
-    //                                         p: ({ node, ...props }) => <p className="text-sm text-text-secondary leading-relaxed mb-2" {...props} />,
-    //                                         ul: ({ node, ...props }) => <ul className="list-disc ml-4 mb-2 space-y-1" {...props} />,
-    //                                         ol: ({ node, ...props }) => <ol className="list-decimal ml-4 mb-2 space-y-1" {...props} />,
-    //                                         li: ({ node, ...props }) => <li className="text-sm text-text-secondary" {...props} />,
-    //                                         strong: ({ node, ...props }) => <strong className="font-semibold text-text-primary" {...props} />,
-    //                                         a: ({ node, ...props }) => <a className="text-blue-500 hover:underline" {...props} />,
-    //                                     }}
-    //                                 >
-    //                                     {meeting.detailedSummary?.overview || ''}
-    //                                 </ReactMarkdown>
-    //                             </div>
-
-
-    //                             {/* Action Items - Only show if there are items */}
-    //                             {meeting.detailedSummary?.actionItems && meeting.detailedSummary.actionItems.length > 0 && (
-    //                                 <section className="mb-8">
-    //                                     <div className="flex items-center justify-between mb-4">
-    //                                         <EditableTextBlock
-    //                                             initialValue={meeting.detailedSummary?.actionItemsTitle || 'Action Items'}
-    //                                             onSave={(val) => {
-    //                                                 setMeeting(prev => ({
-    //                                                     ...prev,
-    //                                                     detailedSummary: { ...prev.detailedSummary!, actionItemsTitle: val }
-    //                                                 }));
-    //                                                 window.electronAPI?.updateMeetingSummary(meeting.id, { actionItemsTitle: val });
-    //                                             }}
-    //                                             tagName="h2"
-    //                                             className="text-lg font-semibold text-text-primary -ml-2 px-2 py-1 rounded-sm transition-colors"
-    //                                             multiline={false}
-    //                                         />
-    //                                     </div>
-    //                                     <ul className="space-y-3">
-    //                                         {meeting.detailedSummary.actionItems.map((item, i) => (
-    //                                             <li key={i} className="flex items-start gap-3 group">
-    //                                                 <div className="mt-2 w-1.5 h-1.5 rounded-full bg-text-secondary group-hover:bg-blue-500 transition-colors shrink-0" />
-    //                                                 <div className="flex-1">
-    //                                                     <EditableTextBlock
-    //                                                         initialValue={item}
-    //                                                         onSave={(val) => handleActionItemSave(i, val)}
-    //                                                         tagName="p"
-    //                                                         className="text-sm text-text-secondary leading-relaxed -ml-2 px-2 rounded-sm transition-colors"
-    //                                                         placeholder="Type an action item..."
-    //                                                         onEnter={() => {
-    //                                                             const newItems = [...(meeting.detailedSummary?.actionItems || [])];
-    //                                                             newItems.splice(i + 1, 0, "");
-    //                                                             setMeeting(prev => ({
-    //                                                                 ...prev,
-    //                                                                 detailedSummary: { ...prev.detailedSummary!, actionItems: newItems }
-    //                                                             }));
-    //                                                         }}
-    //                                                     />
-    //                                                 </div>
-    //                                             </li>
-    //                                         ))}
-    //                                     </ul>
-    //                                 </section>
-    //                             )}
-
-    //                             {/* Key Points - Only show if there are items */}
-    //                             {meeting.detailedSummary?.keyPoints && meeting.detailedSummary.keyPoints.length > 0 && (
-    //                                 <section>
-    //                                     <div className="flex items-center justify-between mb-4">
-    //                                         <EditableTextBlock
-    //                                             initialValue={meeting.detailedSummary?.keyPointsTitle || 'Key Points'}
-    //                                             onSave={(val) => {
-    //                                                 setMeeting(prev => ({
-    //                                                     ...prev,
-    //                                                     detailedSummary: { ...prev.detailedSummary!, keyPointsTitle: val }
-    //                                                 }));
-    //                                                 window.electronAPI?.updateMeetingSummary(meeting.id, { keyPointsTitle: val });
-    //                                             }}
-    //                                             tagName="h2"
-    //                                             className="text-lg font-semibold text-text-primary -ml-2 px-2 py-1 rounded-sm transition-colors"
-    //                                             multiline={false}
-    //                                         />
-    //                                     </div>
-    //                                     <ul className="space-y-3">
-    //                                         {meeting.detailedSummary.keyPoints.map((item, i) => (
-    //                                             <li key={i} className="flex items-start gap-3 group">
-    //                                                 <div className="mt-2 w-1.5 h-1.5 rounded-full bg-text-secondary group-hover:bg-purple-500 transition-colors shrink-0" />
-    //                                                 <div className="flex-1">
-    //                                                     <EditableTextBlock
-    //                                                         initialValue={item}
-    //                                                         onSave={(val) => handleKeyPointSave(i, val)}
-    //                                                         tagName="p"
-    //                                                         className="text-sm text-text-secondary leading-relaxed -ml-2 px-2 rounded-sm transition-colors"
-    //                                                         placeholder="Type a key point..."
-    //                                                         onEnter={() => {
-    //                                                             const newItems = [...(meeting.detailedSummary?.keyPoints || [])];
-    //                                                             newItems.splice(i + 1, 0, "");
-    //                                                             setMeeting(prev => ({
-    //                                                                 ...prev,
-    //                                                                 detailedSummary: { ...prev.detailedSummary!, keyPoints: newItems }
-    //                                                             }));
-    //                                                         }}
-    //                                                     />
-    //                                                 </div>
-    //                                             </li>
-    //                                         ))}
-    //                                     </ul>
-    //                                 </section>
-    //                             )}
-
-    //                             {/* ── Deal Status ───────────────────────────────────── */}
-    //                             {meeting.detailedSummary?.dealStatus && (
-    //                                 <div className="mt-4 p-3 rounded-lg bg-white/5 border border-white/10">
-    //                                     <div className="text-xs font-semibold text-white/50 uppercase tracking-wider mb-1">Deal Stage</div>
-    //                                     <span className="text-sm font-bold text-violet-400">{meeting.detailedSummary.dealStatus.stage}</span>
-    //                                     <p className="text-sm text-white/70 mt-1">{meeting.detailedSummary.dealStatus.summary}</p>
-    //                                 </div>
-    //                             )}
-
-    //                             {/* ── BANT ──────────────────────────────────────────── */}
-    //                             {meeting.detailedSummary?.bant && (
-    //                                 <div className="mt-4">
-    //                                     <div className="text-xs font-semibold text-white/50 uppercase tracking-wider mb-2">BANT Qualification</div>
-    //                                     <div className="grid grid-cols-2 gap-2">
-    //                                         {(['budget', 'authority', 'need', 'timeline'] as const).map(key => {
-    //                                             const item = meeting.detailedSummary?.bant?.[key];
-    //                                             if (!item) return null;
-    //                                             const color = item.status === 'Clear' ? 'text-green-400' : item.status === 'Partial' ? 'text-yellow-400' : 'text-red-400';
-    //                                             return (
-    //                                                 <div key={key} className="p-2 rounded-lg bg-white/5 border border-white/10">
-    //                                                     <div className="flex items-center justify-between mb-1">
-    //                                                         <span className="text-xs font-semibold text-white/70 capitalize">{key}</span>
-    //                                                         <span className={`text-xs font-bold ${color}`}>{item.status}</span>
-    //                                                     </div>
-    //                                                     <p className="text-xs text-white/50">{item.detail}</p>
-    //                                                 </div>
-    //                                             );
-    //                                         })}
-    //                                     </div>
-    //                                 </div>
-    //                             )}
-
-    //                             {/* ── MEDDICC ───────────────────────────────────────── */}
-    //                             {meeting.detailedSummary?.meddicc && (
-    //                                 <div className="mt-4">
-    //                                     <div className="text-xs font-semibold text-white/50 uppercase tracking-wider mb-2">MEDDICC Qualification</div>
-    //                                     <div className="flex flex-col gap-2">
-    //                                         {(['metrics', 'economicBuyer', 'decisionCriteria', 'decisionProcess', 'identifyPain', 'champion', 'competition'] as const).map(key => {
-    //                                             const item = meeting.detailedSummary?.meddicc?.[key];
-    //                                             if (!item) return null;
-    //                                             const color = item.status === 'Clear' ? 'text-green-400' : item.status === 'Partial' ? 'text-yellow-400' : 'text-red-400';
-    //                                             const label = key.replace(/([A-Z])/g, ' $1').trim();
-    //                                             return (
-    //                                                 <div key={key} className="p-2 rounded-lg bg-white/5 border border-white/10 flex items-start gap-3">
-    //                                                     <span className={`text-xs font-bold mt-0.5 w-14 shrink-0 ${color}`}>{item.status}</span>
-    //                                                     <div>
-    //                                                         <span className="text-xs font-semibold text-white/70 capitalize">{label}</span>
-    //                                                         <p className="text-xs text-white/50 mt-0.5">{item.detail}</p>
-    //                                                     </div>
-    //                                                 </div>
-    //                                             );
-    //                                         })}
-    //                                     </div>
-    //                                     {meeting.detailedSummary.meddicc.gaps && meeting.detailedSummary.meddicc.gaps.length > 0 && (
-    //                                         <div className="mt-2 p-2 rounded-lg bg-red-500/10 border border-red-500/20">
-    //                                             <div className="text-xs font-semibold text-red-400 mb-1">⚠ Gaps to address</div>
-    //                                             {meeting.detailedSummary.meddicc.gaps.map((gap, i) => (
-    //                                                 <div key={i} className="text-xs text-red-300">• {gap}</div>
-    //                                             ))}
-    //                                         </div>
-    //                                     )}
-    //                                 </div>
-    //                             )}
-
-    //                             {/* ── Follow-up Email ───────────────────────────────── */}
-    //                             {meeting.detailedSummary?.followUpEmail?.sections && (
-    //                                 <div className="mt-4">
-    //                                     <div className="text-xs font-semibold text-white/50 uppercase tracking-wider mb-2">Follow-up Email Draft</div>
-    //                                     {meeting.detailedSummary.followUpEmail.subject && (
-    //                                         <div className="text-xs text-white/70 mb-2">
-    //                                             <span className="font-semibold text-white/50">Subject: </span>
-    //                                             {meeting.detailedSummary.followUpEmail.subject}
-    //                                         </div>
-    //                                     )}
-    //                                     <div className="flex flex-col gap-2 p-3 rounded-lg bg-white/5 border border-white/10 text-xs text-white/70">
-    //                                         {(['whatWeDiscussed', 'currentProcess', 'scopeOfImprovement', 'howOurSolutionHelps', 'expectedBusinessImpact', 'nextSteps'] as const).map(key => {
-    //                                             const section = meeting.detailedSummary?.followUpEmail?.sections?.[key];
-    //                                             if (!section || (Array.isArray(section) && section.length === 0)) return null;
-    //                                             const label = key.replace(/([A-Z])/g, ' $1').trim();
-    //                                             return (
-    //                                                 <div key={key}>
-    //                                                     <div className="font-semibold text-white/50 mb-1 capitalize">{label}</div>
-    //                                                     {Array.isArray(section)
-    //                                                         ? section.map((s, i) => <div key={i}>• {s}</div>)
-    //                                                         : <div>{section}</div>
-    //                                                     }
-    //                                                 </div>
-    //                                             );
-    //                                         })}
-    //                                     </div>
-    //                                 </div>
-    //                             )}
-
-    //                             {/* ── Sales Coach Review ────────────────────────────── */}
-    //                             {meeting.detailedSummary?.salesCoachReview && (
-    //                                 <div className="mt-4">
-    //                                     <div className="text-xs font-semibold text-white/50 uppercase tracking-wider mb-2">Sales Coach Review</div>
-    //                                     {([
-    //                                         { key: 'whatIDidRight', label: '✅ What I did right', color: 'text-green-400' },
-    //                                         { key: 'whatICouldHaveDoneBetter', label: '🔶 What I could have done better', color: 'text-yellow-400' },
-    //                                         { key: 'whatIMissedCompletely', label: '❌ What I missed completely', color: 'text-red-400' },
-    //                                     ] as const).map(({ key, label, color }) => {
-    //                                         const items = meeting.detailedSummary?.salesCoachReview?.[key];
-    //                                         if (!items || items.length === 0) return null;
-    //                                         return (
-    //                                             <div key={key} className="mb-3">
-    //                                                 <div className={`text-xs font-semibold mb-1 ${color}`}>{label}</div>
-    //                                                 {items.map((item, i) => (
-    //                                                     <div key={i} className="text-xs text-white/60 mb-0.5">• {item}</div>
-    //                                                 ))}
-    //                                             </div>
-    //                                         );
-    //                                     })}
-    //                                 </div>
-    //                             )}
-
-    //                             {/* ── Next Call Playbook ────────────────────────────── */}
-    //                             {meeting.detailedSummary?.nextCallPlaybook && (
-    //                                 <div className="mt-4 p-3 rounded-lg bg-violet-500/10 border border-violet-500/20">
-    //                                     <div className="text-xs font-semibold text-violet-400 uppercase tracking-wider mb-2">Next Call Playbook</div>
-    //                                     {meeting.detailedSummary.nextCallPlaybook.openingRecap && (
-    //                                         <div className="mb-3">
-    //                                             <div className="text-xs font-semibold text-white/50 mb-1">Opening Recap</div>
-    //                                             <p className="text-xs text-white/70">{meeting.detailedSummary.nextCallPlaybook.openingRecap}</p>
-    //                                         </div>
-    //                                     )}
-    //                                     {meeting.detailedSummary.nextCallPlaybook.questionsToAsk && (
-    //                                         <div className="mb-3">
-    //                                             <div className="text-xs font-semibold text-white/50 mb-1">Questions to Ask</div>
-    //                                             {meeting.detailedSummary.nextCallPlaybook.questionsToAsk.map((q, i) => (
-    //                                                 <div key={i} className="text-xs text-white/70 mb-0.5">• {q}</div>
-    //                                             ))}
-    //                                         </div>
-    //                                     )}
-    //                                     {meeting.detailedSummary.nextCallPlaybook.valueAndROI && (
-    //                                         <div>
-    //                                             <div className="text-xs font-semibold text-white/50 mb-1">Value & ROI to Reinforce</div>
-    //                                             {meeting.detailedSummary.nextCallPlaybook.valueAndROI.quantitative?.map((v, i) => (
-    //                                                 <div key={i} className="text-xs text-white/70 mb-0.5">📊 {v}</div>
-    //                                             ))}
-    //                                             {meeting.detailedSummary.nextCallPlaybook.valueAndROI.qualitative?.map((v, i) => (
-    //                                                 <div key={i} className="text-xs text-white/70 mb-0.5">💡 {v}</div>
-    //                                             ))}
-    //                                         </div>
-    //                                     )}
-    //                                 </div>
-    //                             )}
-    //                         </motion.div>
-    //                     )}
-
-    //                     {activeTab === 'transcript' && (
-    //                         <motion.section initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }}>
-    //                             <div className="space-y-6">
-    //                                 {(() => {
-    //                                     console.log('Raw Transcript:', meeting.transcript);
-    //                                     const filteredTranscript = meeting.transcript?.filter(entry => {
-    //                                         const isHidden = ['system', 'ai', 'assistant', 'model'].includes(entry.speaker?.toLowerCase());
-    //                                         if (isHidden) console.log('Filtered out:', entry);
-    //                                         return !isHidden;
-    //                                     }) || [];
-    //                                     console.log('Filtered Transcript:', filteredTranscript);
-
-    //                                     if (filteredTranscript.length === 0) {
-    //                                         return <p className="text-text-tertiary">No transcript available.</p>;
-    //                                     }
-
-    //                                     return filteredTranscript.map((entry, i) => (
-    //                                         <div key={i} className="group">
-    //                                             <div className="flex items-center gap-2 mb-1">
-    //                                                 <span className="text-xs font-semibold text-text-secondary">
-    //                                                     {entry.speaker === 'user' ? 'Me' : 'Them'}
-    //                                                 </span>
-    //                                                 <span className="text-xs text-text-tertiary font-mono">{entry.timestamp ? formatTime(entry.timestamp) : '0:00'}</span>
-    //                                             </div>
-    //                                             <p className="text-text-secondary text-[15px] leading-relaxed transition-colors select-text cursor-text">{entry.text}</p>
-    //                                         </div>
-    //                                     ));
-    //                                 })()}
-    //                             </div>
-    //                         </motion.section>
-    //                     )}
-
-    //                     {activeTab === 'usage' && (
-    //                         <motion.section initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }} className="space-y-8 pb-10">
-    //                             {meeting.usage?.map((interaction, i) => (
-    //                                 <div key={i} className="space-y-4">
-    //                                     {/* User Question */}
-    //                                     {interaction.question && (
-    //                                         <div className="flex justify-end">
-    //                                             <div className="bg-accent-primary text-white px-5 py-2.5 rounded-2xl rounded-tr-sm max-w-[80%] text-[15px] leading-relaxed shadow-sm">
-    //                                                 {interaction.question}
-    //                                             </div>
-    //                                         </div>
-    //                                     )}
-
-    //                                     {/* AI Answer */}
-    //                                     {interaction.answer && (
-    //                                         <div className="flex items-start gap-4">
-    //                                             <div className="mt-1 w-6 h-6 rounded-full bg-bg-input flex items-center justify-center border border-border-subtle shrink-0">
-    //                                                 <img src={NativelyLogo} alt="AI" className="w-4 h-4 opacity-50 object-contain force-black-icon" />
-    //                                             </div>
-    //                                             <div>
-    //                                                 <div className="text-[11px] text-text-tertiary mb-1.5 font-medium">{formatTime(interaction.timestamp)}</div>
-    //                                                 <div className="text-text-secondary text-[15px] leading-relaxed max-w-none">
-    //                                                     <ReactMarkdown
-    //                                                         remarkPlugins={[remarkGfm]}
-    //                                                         components={{
-    //                                                             h1: ({ node, ...props }) => <p className="text-[15px] text-text-secondary font-normal leading-relaxed mb-2 whitespace-pre-wrap" {...props} />,
-    //                                                             h2: ({ node, ...props }) => <p className="text-[15px] text-text-secondary font-normal leading-relaxed mb-2 whitespace-pre-wrap" {...props} />,
-    //                                                             h3: ({ node, ...props }) => <p className="text-[15px] text-text-secondary font-normal leading-relaxed mb-2 whitespace-pre-wrap" {...props} />,
-    //                                                             p: ({ node, ...props }) => <p className="text-[15px] text-text-secondary font-normal leading-relaxed mb-2 whitespace-pre-wrap" {...props} />,
-    //                                                             ul: ({ node, ...props }) => <ul className="list-disc ml-4 mb-2 space-y-1" {...props} />,
-    //                                                             ol: ({ node, ...props }) => <ol className="list-decimal ml-4 mb-2 space-y-1" {...props} />,
-    //                                                             li: ({ node, ...props }) => <li className="text-[15px] text-text-secondary font-normal" {...props} />,
-    //                                                             strong: ({ node, ...props }) => <span className="font-normal text-text-secondary" {...props} />,
-    //                                                             a: ({ node, ...props }: any) => <a className="text-blue-500 hover:underline" {...props} />,
-    //                                                             pre: ({ children }: any) => <div className="not-prose mb-4">{children}</div>,
-    //                                                             code: ({ node, inline, className, children, ...props }: any) => {
-    //                                                                 const match = /language-(\w+)/.exec(className || '');
-    //                                                                 const isInline = inline ?? false;
-    //                                                                 const lang = match ? match[1] : '';
-
-    //                                                                 return !isInline ? (
-    //                                                                     <div className="my-3 rounded-xl overflow-hidden border border-white/[0.08] shadow-lg bg-zinc-800/60 backdrop-blur-md">
-    //                                                                         <div className="bg-white/[0.04] px-3 py-1.5 border-b border-white/[0.08]">
-    //                                                                             <span className="text-[10px] uppercase tracking-widest font-semibold text-white/40 font-mono">
-    //                                                                                 {lang || 'CODE'}
-    //                                                                             </span>
-    //                                                                         </div>
-    //                                                                         <div className="bg-transparent">
-    //                                                                             <SyntaxHighlighter
-    //                                                                                 language={lang || 'text'}
-    //                                                                                 style={vscDarkPlus}
-    //                                                                                 customStyle={{
-    //                                                                                     margin: 0,
-    //                                                                                     borderRadius: 0,
-    //                                                                                     fontSize: '13px',
-    //                                                                                     lineHeight: '1.6',
-    //                                                                                     background: 'transparent',
-    //                                                                                     padding: '16px',
-    //                                                                                     fontFamily: 'ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace'
-    //                                                                                 }}
-    //                                                                                 wrapLongLines={true}
-    //                                                                                 showLineNumbers={true}
-    //                                                                                 lineNumberStyle={{ minWidth: '2.5em', paddingRight: '1.2em', color: 'rgba(255,255,255,0.2)', textAlign: 'right', fontSize: '11px' }}
-    //                                                                                 {...props}
-    //                                                                             >
-    //                                                                                 {String(children).replace(/\n$/, '')}
-    //                                                                             </SyntaxHighlighter>
-    //                                                                         </div>
-    //                                                                     </div>
-    //                                                                 ) : (
-    //                                                                     <code className="bg-bg-tertiary px-1.5 py-0.5 rounded text-[13px] font-mono text-text-primary border border-border-subtle whitespace-pre-wrap" {...props}>
-    //                                                                         {children}
-    //                                                                     </code>
-    //                                                                 );
-    //                                                             }
-    //                                                         }}
-    //                                                     >
-    //                                                         {cleanMarkdown(interaction.answer || '')}
-    //                                                     </ReactMarkdown>
-    //                                                 </div>
-    //                                             </div>
-    //                                         </div>
-    //                                     )}
-    //                                 </div>
-    //                             ))}
-    //                             {!meeting.usage?.length && <p className="text-text-tertiary">No usage history.</p>}
-    //                         </motion.section>
-    //                     )}
-    //                 </div>
-    //             </motion.div>
-    //         </main>
-
-    //         {/* Floating Footer (Ask Bar) */}
-    //         <div className={`absolute bottom-0 left-0 right-0 p-6 flex justify-center pointer-events-none ${isChatOpen ? 'z-50' : 'z-20'}`}>
-    //             <div className="w-full max-w-[440px] relative group pointer-events-auto">
-    //                 {/* Dark Glass Effect Input (Matching Reference) */}
-    //                 <input
-    //                     type="text"
-    //                     value={query}
-    //                     onChange={(e) => setQuery(e.target.value)}
-    //                     onKeyDown={handleInputKeyDown}
-    //                     placeholder="Ask about this meeting..."
-    //                     className="w-full pl-5 pr-12 py-3 bg-transparent backdrop-blur-[24px] backdrop-saturate-[140%] shadow-[0_8px_30px_rgb(0,0,0,0.12)] border border-white/20 rounded-full text-sm text-text-primary placeholder-text-tertiary/70 focus:outline-none transition-shadow duration-200"
-    //                 />
-    //                 <button
-    //                     onClick={handleSubmitQuestion}
-    //                     className={`absolute right-2 top-1/2 -translate-y-1/2 p-1.5 rounded-full transition-all duration-200 border border-white/5 ${query.trim() ? 'bg-text-primary text-bg-primary hover:scale-105' : 'bg-bg-item-active text-text-primary hover:bg-bg-item-hover'
-    //                         }`}
-    //                 >
-    //                     <ArrowUp size={16} className="transform rotate-45" />
-    //                 </button>
-    //             </div>
-    //         </div>
-
-    //         {/* Chat Overlay */}
-    //         <MeetingChatOverlay
-    //             isOpen={isChatOpen}
-    //             onClose={() => {
-    //                 setIsChatOpen(false);
-    //                 setQuery('');
-    //                 setSubmittedQuery('');
-    //             }}
-    //             meetingContext={{
-    //                 id: meeting.id,  // Required for RAG queries
-    //                 title: meeting.title,
-    //                 summary: meeting.detailedSummary?.overview,
-    //                 keyPoints: meeting.detailedSummary?.keyPoints,
-    //                 actionItems: meeting.detailedSummary?.actionItems,
-    //                 transcript: meeting.transcript
-    //             }}
-    //             initialQuery={submittedQuery}
-    //             onNewQuery={(newQuery) => {
-    //                 setSubmittedQuery(newQuery);
-    //             }}
-    //         />
-    //     </div>
-    // );
 };
 
 export default MeetingDetails;

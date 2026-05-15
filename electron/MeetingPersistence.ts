@@ -297,14 +297,16 @@ export class MeetingPersistence {
                 detailedSummary = { ...summaryData, liveAnalysis: liveAnalysisData };
             }
 
-            // After building detailedSummary (alongside the liveAnalysis you already persist):
-            const speakerNames = this.session.getSpeakerNameMap();
+            // Use the speaker names snapshot captured BEFORE session.reset() was called.
+            // Do NOT call this.session.getSpeakerNameMap() here — the session is already
+            // reset at this point and would return the defaults { user: 'Me', interviewer: 'Them' }.
+            const resolvedSpeakerNames = speakerNames ?? this.session.getSpeakerNameMap();
 
-            // Only persist non-default names (i.e., actual calendar names were resolved)
-            if (speakerNames.user !== 'Me' || speakerNames.interviewer !== 'Them') {
+            // Persist whenever at least one name differs from the generic default.
+            if (resolvedSpeakerNames.user !== 'Me' || resolvedSpeakerNames.interviewer !== 'Them') {
                 detailedSummary = {
                     ...detailedSummary,
-                    speakerNames: speakerNames
+                    speakerNames: resolvedSpeakerNames
                 };
             }
 
