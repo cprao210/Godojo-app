@@ -39,41 +39,37 @@ const summaryPrompt = `You are an expert B2B sales analyst. A sales call just en
     },
 
     "followUpEmail": {
-        "subject": "sharp and specific email subject line tied to their pain or goal",
+        "subject": "sharp, specific subject line — reference their company name, pain point, or goal. Max 10 words.",
 
         "sections": {
             "whatWeDiscussed": [
-                "3-4 complete bullet points summarizing the discussion",
-                "Include company context, workflows, tools, numbers, timelines",
-                "Each bullet must be standalone and specific"
+                "2-3 tight bullets — only the most important discussion points",
+                "Reference specific names, numbers, tools, or workflows mentioned",
+                "Each bullet one sentence max"
             ],
 
             "whatIsTheNeed": [
-                "3-4 bullets describing the core business problem",
-                "Use prospect language wherever possible",
-                "Mention operational impact, delays, inefficiencies, risks"
+                "2-3 bullets on the core business problem they described",
+                "Use their exact language where possible"
             ],
 
             "scopeOfImprovement": [
-                "3-4 bullets covering pain points and blockers",
-                "Quantify impact wherever possible",
-                "Mention time loss, affected teams, manual work, risks, failure rates"
+                "2-3 bullets on the gaps or pain points identified",
+                "Quantify where numbers were mentioned"
             ],
 
             "whatYouWillAchieveAfterTransformation": [
-                "3-4 bullets describing measurable business outcomes",
-                "Frame improvements as before vs after",
-                "Tie every point to a target, KPI, timeline, or business result mentioned"
+                "2-3 bullets on the outcomes they want",
+                "Tie to KPIs, timelines, or goals they mentioned"
             ],
 
             "nextSteps": [
-                "3-4 bullets covering agreed actions, owners, and timelines",
-                "Mention meetings, technical reviews, procurement, security review, etc",
-                "If nothing was agreed, provide the most logical next action"
+                "2-3 bullets — agreed actions with owners and dates if mentioned",
+                "If nothing agreed, state the single most logical next step"
             ]
         },
 
-        "fullEmail": "Full ready-to-send email with bold section headings and bullet points under each section. Must stay under 250 words. No emojis. No generic filler. Human, concise, executive-friendly tone."
+        "fullEmail": "Write a complete, ready-to-send follow-up email. RULES: (1) Under 180 words total — count them. (2) No section headers or ALL-CAPS labels — write in flowing prose and short bullets. (3) Open with one specific sentence referencing something real from the call — not 'Great speaking with you'. (4) Summarise what was discussed in 2-3 tight bullets. (5) State agreed next steps clearly. (6) Close with one warm sentence. (7) Do NOT use: 'As per our discussion', 'I hope this finds you well', 'Please do not hesitate', 'synergy', 'leverage', 'going forward'. (8) Every sentence must earn its place — cut anything generic. (9) If numbers, names, timelines, or company details were mentioned in the transcript, use them. (10) Sign off with the rep's name if known."
     },
 
     "leadName": "extract prospect full name from transcript — first name + last name if mentioned, else null",

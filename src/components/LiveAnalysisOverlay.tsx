@@ -39,6 +39,7 @@ const getLiveAnalysisPrompt = (context: string) => `You are an expert real-time 
     - emoji:    "✅" if clearly confirmed, "⚠️" if implied or partial, "❌" if not mentioned
     - status:   "confirmed" | "partial" | "missing"
     - evidence: One line — exact quote or closest paraphrase from the customer. If missing, return ""
+    - suggested_question: ONLY when status is "missing" — one short, natural question the sales rep should ask RIGHT NOW to uncover this field (under 15 words, no filler). If status is confirmed or partial, return ""
 
     Budget    → Money mentioned, approval thresholds, "we have budget", "we're looking at X"
     Authority → Decision-maker named, approval chain mentioned, "I need sign-off from", "our CFO decides"
@@ -51,7 +52,7 @@ const getLiveAnalysisPrompt = (context: string) => `You are an expert real-time 
 
     Scan the transcript for MEDDIC signals.
 
-    Same structure as BANT: emoji + status + evidence per field.
+    Same structure as BANT: emoji + status + evidence + suggested_question per field.
 
     Metrics          → Quantified outcomes, ROI, KPIs, "reduce by X%", "save X hours", "increase revenue"
     Economic Buyer   → Who owns the budget/final yes, "our CFO", "VP of Finance signs off"
@@ -80,10 +81,134 @@ const getLiveAnalysisPrompt = (context: string) => `You are an expert real-time 
     SECTION 4: SIGNALS
     ═══════════════════════════════════════
 
-    Detect buying signals. For each signal return:
-    - quote:       Exact quote or tight one-line paraphrase from the customer
-    - signal_type: Array of: frustration | urgency | cost | risk | aspiration | buying_intent
-    - ask_now:     The single follow-up question the AE should ask (natural, specific, under 20 words)
+    You are detecting EVERY meaningful signal in the conversation — positive buying signals,
+    negative risk signals, and neutral informational signals that affect deal outcome.
+    Cast a wide net. It is better to capture more signals than to miss important ones.
+    APPEND new signals only — never remove prior ones.
+
+    ── SIGNAL TYPES (use ALL that apply per signal, can be multiple) ──────────────────
+
+    POSITIVE SIGNALS (category: "positive"):
+
+    buying_intent
+    → Direct or indirect indicators the prospect wants to move forward.
+    → Triggers: "let's do this", "how do we get started", "can you send a proposal",
+      "I want to move forward", "we're ready", "let's schedule next steps",
+      asking about contract/pricing/timeline to start, asking to include others
+      in next call, referencing internal approval steps as if already decided,
+      comparing your product favourably to alternatives.
+
+    aspiration
+    → Prospect expresses a goal, vision, or outcome they want to achieve.
+    → Triggers: "we want to become", "our goal is to", "we're trying to achieve",
+      "we need to scale", "we're building toward", "ideally we'd", "the dream is",
+      referencing growth targets, headcount plans, product roadmap goals,
+      competitive positioning they want to reach.
+
+    engagement
+    → Prospect is actively engaged, curious, and invested in the conversation.
+    → Triggers: asking detailed follow-up questions, requesting demos or trials,
+      asking to loop in colleagues, taking notes ("let me write that down"),
+      referencing prior conversations accurately, spending more time than planned,
+      asking about edge cases or advanced features — signals deep evaluation.
+
+    validation_seeking
+    → Prospect is looking for reassurance or social proof before committing.
+    → Triggers: "do other companies like ours use this?", "what's the typical ROI?",
+      "can you share case studies?", "have you worked with [competitor's client]?",
+      "who else in our industry uses this?", asking for references or testimonials.
+      This is a POSITIVE signal — they are doing pre-close due diligence.
+
+    authority_signal
+    → Prospect reveals or implies they have decision-making power.
+    → Triggers: "I can approve this", "I'll take this to my team", "the final call is mine",
+      "I've done this before at my last company", mentioning budget ownership,
+      describing past purchasing decisions they made.
+
+    NEGATIVE SIGNALS (category: "negative"):
+
+    frustration
+    → Prospect expresses dissatisfaction, impatience, or friction — about current tools,
+      processes, vendors, or the sales conversation itself.
+    → Triggers: "this is really painful", "we've been dealing with this for months",
+      "our current tool doesn't", "I'm frustrated with", "we keep running into",
+      "it's a mess", "nothing works the way we need it to", sighing or expressing
+      exhaustion about current state, complaining about past vendor experiences.
+
+    risk
+    → Prospect raises concerns, doubts, or obstacles that could block or delay the deal.
+    → Triggers: "I'm not sure if", "we're worried about", "our legal team will ask",
+      "there could be pushback from", "we've had issues with implementations like this",
+      "what if it doesn't work", "we had a bad experience with", mentioning
+      security/compliance requirements, expressing concern about switching costs,
+      data migration complexity, or organisational change management.
+
+    urgency (negative pressure)
+    → External deadlines or pressure creating urgency that could stall or accelerate.
+    → Triggers: "our contract with [vendor] expires", "we have a board deadline",
+      "our team is blocked until we solve this", "we're already behind",
+      "we need this yesterday", "leadership is asking about this weekly".
+      NOTE: capture both positive urgency (accelerates deal) and negative urgency
+      (pressure that may cause hasty objections or budget freezes).
+
+    competitor_signal
+    → Prospect mentions alternative vendors, current tools, or is running a parallel evaluation.
+    → Triggers: "we're also looking at", "we currently use", "we evaluated X",
+      "how do you compare to", "X does this differently", "our board prefers X",
+      naming any specific competitor or incumbent tool directly or by implication.
+      CRITICAL: always capture this — it affects deal strategy immediately.
+
+    stall_signal
+    → Prospect is deprioritising, delaying, or showing low urgency in a way that risks deal loss.
+    → Triggers: "let's revisit this next quarter", "we have a lot going on right now",
+      "I need to check with more people", "we're not in a rush", "budget is uncertain",
+      "we're pausing evaluations for now", vague next steps, non-committal language
+      about timing or follow-up.
+
+    NEUTRAL / INFORMATIONAL SIGNALS (category: "neutral"):
+
+    cost
+    → Any discussion of price, budget, ROI, cost comparison, or financial justification.
+    → Triggers: asking about pricing tiers, asking about ROI calculations,
+      referencing a specific budget number, asking about cost vs. competitors,
+      mentioning TCO (total cost of ownership), asking about implementation costs,
+      payment terms, discounts, or multi-year deals. Neutral — needs context to determine
+      if it's a positive (budget confirmed) or friction (price too high) signal.
+
+    process_signal
+    → Prospect reveals internal decision-making process, stakeholders, or evaluation criteria.
+    → Triggers: "we have a security review", "procurement will need to sign off",
+      "we do a 30-day POC", "legal reviews all contracts", "our IT team will need to test",
+      describing an internal committee or approval chain, mentioning a specific
+      evaluation scorecard or criteria they're using.
+
+    timeline
+    → Any statement revealing when the prospect wants or needs to be live.
+    → Triggers: mentioning a specific date, quarter, or milestone for go-live,
+      tying the purchase to a business event (launch, fiscal year, hiring cycle),
+      asking about implementation time, mentioning internal deadlines or commitments.
+
+    ── INTENSITY ─────────────────────────────────────────────────────────────────────
+
+    Score each signal:
+    "high"   → Explicit, direct, clear statement. Quote is verbatim or near-verbatim.
+               Requires immediate AE response or action.
+    "medium" → Implied or indirect. Requires some interpretation. Worth tracking.
+    "low"    → Subtle, background context. May be relevant later but not urgent now.
+
+    ── DETECTION RULES ───────────────────────────────────────────────────────────────
+
+    1. Capture signals from BOTH speakers — what the PROSPECT says AND how the AE responds
+       (AE responses can reveal competitor mentions, risk acknowledgements, or stalls).
+    2. Do NOT require the signal to be explicit — implied signals count.
+       "We've been on our current tool for 5 years" → implied stall_signal + competitor_signal.
+    3. One quote can carry MULTIPLE signal types — use all that apply.
+    4. Short quotes are better than long ones — tightest excerpt that captures the signal.
+    5. The ask_now must be a precise, natural follow-up question the AE should ask
+       immediately in response to THIS specific signal. Under 20 words.
+       NOT generic ("Can you tell me more?") — specific to what was said.
+    6. Prioritise high-intensity signals at the top of the array.
+    7. APPEND ONLY — never remove or overwrite prior signals between analysis runs.
 
     ═══════════════════════════════════════
     OUTPUT FORMAT
@@ -91,25 +216,25 @@ const getLiveAnalysisPrompt = (context: string) => `You are an expert real-time 
 
     {
         "bant": {
-            "budget":    { "emoji": "", "status": "", "evidence": "" },
-            "authority": { "emoji": "", "status": "", "evidence": "" },
-            "need":      { "emoji": "", "status": "", "evidence": "" },
-            "timeline":  { "emoji": "", "status": "", "evidence": "" }
+            "budget":    { "emoji": "", "status": "", "evidence": "", "suggested_question": "" },
+            "authority": { "emoji": "", "status": "", "evidence": "", "suggested_question": "" },
+            "need":      { "emoji": "", "status": "", "evidence": "", "suggested_question": "" },
+            "timeline":  { "emoji": "", "status": "", "evidence": "", "suggested_question": "" }
         },
         "meddic": {
-            "metrics":           { "emoji": "", "status": "", "evidence": "" },
-            "economic_buyer":    { "emoji": "", "status": "", "evidence": "" },
-            "decision_criteria": { "emoji": "", "status": "", "evidence": "" },
-            "decision_process":  { "emoji": "", "status": "", "evidence": "" },
-            "identify_pain":     { "emoji": "", "status": "", "evidence": "" },
-            "champion":          { "emoji": "", "status": "", "evidence": "" },
-            "competition":       { "emoji": "", "status": "", "evidence": "" }
+            "metrics":           { "emoji": "", "status": "", "evidence": "", "suggested_question": "" },
+            "economic_buyer":    { "emoji": "", "status": "", "evidence": "", "suggested_question": "" },
+            "decision_criteria": { "emoji": "", "status": "", "evidence": "", "suggested_question": "" },
+            "decision_process":  { "emoji": "", "status": "", "evidence": "", "suggested_question": "" },
+            "identify_pain":     { "emoji": "", "status": "", "evidence": "", "suggested_question": "" },
+            "champion":          { "emoji": "", "status": "", "evidence": "", "suggested_question": "" },
+            "competition":       { "emoji": "", "status": "", "evidence": "", "suggested_question": "" }
         },
         "objections": [
             { "type": "", "quote": "", "owner": "", "status": "" }
         ],
         "signals": [
-            { "quote": "", "signal_type": [], "ask_now": "" }
+            { "quote": "", "signal_type": [], "ask_now": "", "intensity": "", "category": "" }
         ]
     }
 
@@ -117,16 +242,11 @@ const getLiveAnalysisPrompt = (context: string) => `You are an expert real-time 
     ${context}
 `;
 
-const LiveAnalysisOverlay: React.FC<LiveAnalysisOverlayProps> = ({
-    appearance,
-    overlayPanelClass,
-    onClose,
-    transcriptRef,
-}) => {
+const LiveAnalysisOverlay: React.FC<LiveAnalysisOverlayProps> = ({ appearance, overlayPanelClass, onClose, transcriptRef }) => {
+
     const [analysisData, setAnalysisData] = useState<LiveAnalysisData | null>(null);
     const [isLoading, setIsLoading] = useState(false);
     const [error, setError] = useState<string | null>(null);
-    const [checkedObjections, setCheckedObjections] = useState<Set<number>>(new Set());
     const [aiInsight, setAiInsight] = useState<string>('');
     const scrollRef = useRef<HTMLDivElement>(null);
     const prevTranscriptLengthRef = useRef<number>(0); // Track previous length to detect transcript reset
@@ -148,7 +268,6 @@ const LiveAnalysisOverlay: React.FC<LiveAnalysisOverlayProps> = ({
             console.log('[LiveAnalysis] Transcript reset detected, clearing analysis');
             setAnalysisData(null);
             setError(null);
-            setCheckedObjections(new Set());
             setAiInsight('');
             // Don't auto-run - wait for user to click Regenerate
         }
@@ -156,35 +275,6 @@ const LiveAnalysisOverlay: React.FC<LiveAnalysisOverlayProps> = ({
         prevTranscriptLengthRef.current = currentLength;
     }, [transcriptRef.current?.length]);
 
-    // Count confirmed MEDDIC fields
-    const meddicFound = analysisData
-        ? Object.values(analysisData.meddic).filter(f => f.status === 'confirmed').length
-        : 0;
-
-    // Count BANT completion
-    const bantConfirmed = analysisData
-        ? Object.values(analysisData.bant).filter(f => f.status === 'confirmed').length
-        : 0;
-    const bantPct = Math.round((bantConfirmed / 4) * 100);
-
-    // Build missing signals from MEDDIC + signals array
-    const missingSignals = analysisData ? [
-        ...(analysisData.meddic.competition.status === 'missing'
-            ? [{ title: 'Competitor Presence', desc: 'No direct confirmation on other vendors.', icon: '!' }]
-            : []),
-        ...(analysisData.meddic.champion.status !== 'confirmed'
-            ? [{ title: 'Internal Champion', desc: analysisData.meddic.champion.evidence || 'Champion not confirmed — need internal sponsor.', icon: '?' }]
-            : []),
-        ...(analysisData.meddic.decision_process.status === 'missing'
-            ? [{ title: 'Decision Process', desc: 'Buying process not mapped — need legal/procurement timeline.', icon: '!' }]
-            : []),
-        ...(analysisData.meddic.metrics.status === 'missing'
-            ? [{ title: 'Quantified Metrics', desc: 'No ROI or KPIs established yet.', icon: '?' }]
-            : []),
-        ...analysisData.signals
-            .filter(s => s.signal_type.includes('risk') || s.signal_type.includes('frustration'))
-            .map(s => ({ title: 'Risk Signal', desc: s.ask_now, icon: '⚠' })),
-    ] : [];
 
     const runAnalysis = useCallback(async () => {
         const transcript = transcriptRef.current;
@@ -284,15 +374,6 @@ const LiveAnalysisOverlay: React.FC<LiveAnalysisOverlayProps> = ({
         }
     }, [analysisData, isLoading, error, transcriptRef.current?.length]);
 
-    const toggleObjection = (index: number) => {
-        setCheckedObjections(prev => {
-            const next = new Set(prev);
-            if (next.has(index)) next.delete(index);
-            else next.add(index);
-            return next;
-        });
-    };
-
     return (
         <div className={`relative w-[560px] max-w-full backdrop-blur-2xl border rounded-[24px] overflow-hidden flex flex-col draggable-area min-h-0 overlay-shell-surface ${overlayPanelClass}`}
             style={{ ...appearance.shellStyle, height: '650px' }}
@@ -315,22 +396,11 @@ const LiveAnalysisOverlay: React.FC<LiveAnalysisOverlayProps> = ({
 
                 <div className="flex items-center gap-1">
                     {/* Regenerate */}
-                    <button
-                        onClick={runAnalysis}
-                        disabled={isLoading}
-                        title="Regenerate analysis"
-                        className="p-2 rounded-xl hover:bg-white/[0.06] text-white/40 hover:text-white/70 disabled:opacity-30 disabled:cursor-not-allowed transition-all group"
-                    >
-                        <RefreshCw
-                            size={14}
-                            className={`transition-transform ${isLoading ? 'animate-spin' : 'group-hover:rotate-180 duration-500'}`}
-                        />
+                    <button onClick={runAnalysis} disabled={isLoading} title="Regenerate analysis" className="p-2 rounded-xl hover:bg-white/[0.06] text-white/40 hover:text-white/70 disabled:opacity-30 disabled:cursor-not-allowed transition-all group">
+                        <RefreshCw size={14} className={`transition-transform ${isLoading ? 'animate-spin' : 'group-hover:rotate-180 duration-500'}`} />
                     </button>
                     {/* Close */}
-                    <button
-                        onClick={onClose}
-                        className="p-2 rounded-xl hover:bg-white/[0.06] text-white/40 hover:text-red-400 hover:drop-shadow-[0_0_8px_rgba(239,68,68,0.4)] transition-all duration-300 group"
-                    >
+                    <button onClick={onClose} className="p-2 rounded-xl hover:bg-white/[0.06] text-white/40 hover:text-red-400 hover:drop-shadow-[0_0_8px_rgba(239,68,68,0.4)] transition-all duration-300 group">
                         <X size={14} />
                     </button>
                 </div>
@@ -360,7 +430,7 @@ const LiveAnalysisOverlay: React.FC<LiveAnalysisOverlayProps> = ({
 
                 {/* Analysis content */}
                 {!isLoading && analysisData && (
-                    <LiveAnalysisContent analysisData={analysisData} aiInsight={aiInsight} />
+                    <LiveAnalysisContent analysisData={analysisData} aiInsight={aiInsight} hideBar="Missing Details" />
                 )}
 
                 {/* Empty state */}
@@ -376,11 +446,7 @@ const LiveAnalysisOverlay: React.FC<LiveAnalysisOverlayProps> = ({
 
             {/* ── Footer ─────────────────────────────────────── */}
             <div className="shrink-0 px-4 py-4 border-t border-border-subtle">
-                <button
-                    onClick={runAnalysis}
-                    disabled={isLoading}
-                    className="w-full flex items-center justify-center gap-2 py-3 rounded-xl bg-blue-600/20 hover:bg-blue-600/30 border border-blue-500/25 hover:border-blue-500/40 text-[13px] font-semibold text-blue-300 hover:text-blue-200 disabled:opacity-40 disabled:cursor-not-allowed transition-all duration-200"
-                >
+                <button onClick={runAnalysis} disabled={isLoading} className="w-full flex items-center justify-center gap-2 py-3 rounded-xl bg-blue-600/20 hover:bg-blue-600/30 border border-blue-500/25 hover:border-blue-500/40 text-[13px] font-semibold text-blue-300 hover:text-blue-200 disabled:opacity-40 disabled:cursor-not-allowed transition-all duration-200">
                     <RefreshCw size={14} className={isLoading ? 'animate-spin' : ''} />
                     {isLoading ? 'Analysing...' : 'Regenerate Live Analysis'}
                 </button>
