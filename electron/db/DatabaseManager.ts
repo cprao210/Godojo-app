@@ -16,6 +16,7 @@ export interface Meeting {
         overview?: string;
         actionItems: string[];
         keyPoints: string[];
+        speakerNames?: { user: string; interviewer: string };
     };
     transcript?: Array<{
         speaker: string;
@@ -338,8 +339,8 @@ export class DatabaseManager {
         if (version < 8) {
             console.log('[DatabaseManager] Applying migration v7 → v8: Provision per-dimension vec0 tables');
             // Drop the legacy single-dim tables from v3/v4 if they exist and are unusable
-            try { this.db.exec('DROP TABLE IF EXISTS vec_chunks;'); } catch (_) {}
-            try { this.db.exec('DROP TABLE IF EXISTS vec_summaries;'); } catch (_) {}
+            try { this.db.exec('DROP TABLE IF EXISTS vec_chunks;'); } catch (_) { }
+            try { this.db.exec('DROP TABLE IF EXISTS vec_summaries;'); } catch (_) { }
 
             for (const dim of DatabaseManager.KNOWN_DIMS) {
                 this.ensureVecTableForDim(dim);
@@ -354,8 +355,8 @@ export class DatabaseManager {
         if (version < 9) {
             console.log('[DatabaseManager] Applying migration v8 → v9: Ensure per-dimension vec0 tables exist');
             // Drop old single-dim orphan tables if they exist (float[1536] schema)
-            try { this.db.exec('DROP TABLE IF EXISTS vec_chunks;'); } catch (_) {}
-            try { this.db.exec('DROP TABLE IF EXISTS vec_summaries;'); } catch (_) {}
+            try { this.db.exec('DROP TABLE IF EXISTS vec_chunks;'); } catch (_) { }
+            try { this.db.exec('DROP TABLE IF EXISTS vec_summaries;'); } catch (_) { }
 
             let allOk = true;
             for (const dim of DatabaseManager.KNOWN_DIMS) {
@@ -595,7 +596,7 @@ export class DatabaseManager {
      */
     public getDb(): Database.Database | null {
         console.log(this.db, '[DatabaseManager] getDb() called');
-        
+
         return this.db;
     }
 

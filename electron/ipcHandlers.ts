@@ -1582,6 +1582,12 @@ export function initializeIpcHandlers(appState: AppState): void {
     return DatabaseManager.getInstance().getRecentMeetings(50);
   });
 
+  // Add this handler
+  safeHandle("get-display-name", async (_, role: 'user' | 'interviewer' | 'assistant') => {
+    const intelligenceManager = appState.getIntelligenceManager();
+    return intelligenceManager.getDisplayNameForSpeaker(role);
+  });
+
   safeHandle("get-meeting-details", async (event, id) => {
     // Helper to fetch full details
     return DatabaseManager.getInstance().getMeetingDetails(id);
@@ -1616,6 +1622,20 @@ export function initializeIpcHandlers(appState: AppState): void {
 
   });
 
+  safeHandle("update-speaker-names", async (_, names: { user: string; interviewer: string }) => {
+    const intelligenceManager = appState.getIntelligenceManager();
+    // Need to add method to update speaker names in SessionTracker
+    (intelligenceManager as any).updateSpeakerNames?.(names);
+
+    // Broadcast to all windows
+    BrowserWindow.getAllWindows().forEach(win => {
+      if (!win.isDestroyed()) {
+        win.webContents.send('speaker-names-resolved', names);
+      }
+    });
+    return { success: true };
+  });
+
   safeHandle("upload-transcript", async (_, { text, title }: { text: string; title?: string }) => {
     try {
       const meetingId = await appState.getIntelligenceManager().uploadTranscript(text, title);
@@ -1625,6 +1645,11 @@ export function initializeIpcHandlers(appState: AppState): void {
       console.error('[ipcHandlers] upload-transcript error:', e);
       return { success: false, error: String(e) };
     }
+  });
+
+  safeHandle("get-speaker-names", async () => {
+    return appState.getIntelligenceManager().getSpeakerNameMap?.()
+      ?? { user: 'Me', interviewer: 'Them' };
   });
 
   safeHandle("seed-demo", async () => {

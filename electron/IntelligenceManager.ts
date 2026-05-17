@@ -59,7 +59,8 @@ export class IntelligenceManager extends EventEmitter {
             'discovery',
             'discovery_token',
             'objection_handler',
-            'objection_handler_token'
+            'objection_handler_token',
+            'speaker-names-resolved'
         ];
 
         for (const event of events) {
@@ -88,8 +89,24 @@ export class IntelligenceManager extends EventEmitter {
     // Context Management (delegates to session)
     // ============================================
 
+    public getSpeakerNameMap(): { user: string; interviewer: string } {
+        return this.session.getSpeakerNameMap();
+    }
+
+    /**
+     * Get display name for a speaker role
+     */
+    public getDisplayNameForSpeaker(role: 'user' | 'interviewer' | 'assistant'): string {
+        return this.session.getDisplayNameForSpeaker(role);
+    }
+
+    public updateSpeakerNames(names: { user: string; interviewer: string }): void {
+        this.session.updateSpeakerNames(names);
+    }
+
     setMeetingMetadata(metadata: any): void {
         this.session.setMeetingMetadata(metadata);
+        this.emit('speaker-names-resolved', this.session.getSpeakerNameMap());
     }
 
     addTranscript(segment: import('./SessionTracker').TranscriptSegment, skipRefinementCheck: boolean = false): void {

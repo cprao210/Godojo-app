@@ -45,7 +45,7 @@ interface Meeting {
 }
 
 interface LauncherProps {
-    onStartMeeting: () => void;
+    onStartMeeting: (calendarEvent?: any) => void;
     onOpenSettings: (tab?: string) => void;
     onPageChange?: (isMain: boolean) => void;
     ollamaPullStatus?: 'idle' | 'downloading' | 'complete' | 'failed';
@@ -251,10 +251,29 @@ const Launcher: React.FC<LauncherProps> = ({ onStartMeeting, onOpenSettings, onP
         }
 
         return `Starts in ${hours}h ${minutes}m`;
+    }
+    
+    const extractNameFromEmail = (email: string): string => {
+        if (!email) return 'Unknown';
+        const prefix = email.split('@')[0];
+        const parts = prefix.split(/[._\-+]/);
+        return parts
+            .map(part => part.charAt(0).toUpperCase() + part.slice(1).toLowerCase())
+            .join(' ');
     };
 
     const handlePrepare = (event: any) => {
-        setPreparedEvent(event);
+        // Enrich event with better attendee information
+        const enrichedEvent = {
+            ...event,
+            attendees: (event.attendees || []).map((a: any) => ({
+                ...a,
+                // Ensure display name is properly set
+                displayName: a.displayName || a.name || extractNameFromEmail(a.email),
+                self: a.self || a.email === (window as any).currentUserEmail, // Need to track current user
+            }))
+        };
+        setPreparedEvent(enrichedEvent);
         setIsPrepared(true);
     };
 
@@ -265,10 +284,18 @@ const Launcher: React.FC<LauncherProps> = ({ onStartMeeting, onOpenSettings, onP
             const inputDeviceId = localStorage.getItem('preferredInputDeviceId');
             const outputDeviceId = localStorage.getItem('preferredOutputDeviceId');
 
+            // Ensure attendees have proper names
+            const attendeesWithNames = (preparedEvent.attendees || []).map((a: any) => ({
+                ...a,
+                name: a.displayName || a.name || extractNameFromEmail(a.email),
+            }));
+
             await window.electronAPI.startMeeting({
                 title: preparedEvent.title,
                 calendarEventId: preparedEvent.id,
                 source: 'calendar',
+                attendees: attendeesWithNames,
+                organizer: preparedEvent.organizer || '',
                 audio: { inputDeviceId, outputDeviceId }
             });
             setIsPrepared(false);
@@ -405,7 +432,6 @@ const Launcher: React.FC<LauncherProps> = ({ onStartMeeting, onOpenSettings, onP
         }
     };
 
-    // Helper to format duration to mm:ss or mmm:ss
     // Helper to format duration to mm:ss or mmm:ss
     const formatDurationPill = (durationStr: string) => {
         if (!durationStr) return "00:00";
@@ -641,7 +667,7 @@ const Launcher: React.FC<LauncherProps> = ({ onStartMeeting, onOpenSettings, onP
                                                     window.electronAPI?.setWindowMode?.('overlay', true);
                                                     analytics.trackCommandExecuted('resume_meeting_from_launcher');
                                                 } else {
-                                                    onStartMeeting();
+                                                    onStartMeeting(nextMeeting);
                                                     analytics.trackCommandExecuted('start_natively_cta');
                                                 }
                                             }}
@@ -799,7 +825,7 @@ const Launcher: React.FC<LauncherProps> = ({ onStartMeeting, onOpenSettings, onP
                                                             Sales Brief
                                                         </button>
                                                         <button
-                                                            onClick={onStartMeeting}
+                                                            onClick={() => onStartMeeting(nextMeeting)}
                                                             className={`px-4 py-2 rounded-lg text-xs font-medium text-text-secondary hover:text-text-primary transition-all ${isLight ? 'hover:bg-bg-item-surface' : 'hover:bg-white/5'}`}
                                                         >
                                                             Start now

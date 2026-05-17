@@ -191,6 +191,7 @@ export class AppState {
   private updateAvailable: boolean = false
   private disguiseMode: 'terminal' | 'settings' | 'activity' | 'none' = 'none'
   private _currentLiveAnalysis: LiveAnalysisData | null = null;
+  private speakerNameMap: { user: string, interviewer: string };
 
   // View management
   private view: "queue" | "solutions" = "queue"
@@ -848,8 +849,15 @@ export class AppState {
       }
 
       const helper = this.getWindowHelper();
+      // Resolve real display name at emit-time so the renderer always gets
+      // a human-readable label, even before a speaker-names-resolved event fires.
+      const speakerNameMap = this.intelligenceManager.getSpeakerNameMap();
+      const displayName = speaker === 'user'
+        ? (speakerNameMap.user || 'Me')
+        : (speakerNameMap.interviewer || 'Them');
       const payload = {
-        speaker: speaker,
+        speaker: speaker,          // internal role — kept for renderer routing logic
+        displayName: displayName,  // resolved human name for UI display
         text: segment.text,
         timestamp: Date.now(),
         final: segment.isFinal,
@@ -1164,6 +1172,7 @@ export class AppState {
     }
   }
 
+
   public async startMeeting(metadata?: any): Promise<void> {
     console.log('[Main] Starting Meeting...', metadata);
 
@@ -1175,9 +1184,22 @@ export class AppState {
 
     this.isMeetingActive = true;
     this.broadcastMeetingState();
+
+    // Pass metadata directly to SessionTracker, which owns all name-resolution logic:
+    // single attendee → real name, multiple → company-domain labeling, title fallback, etc.
+    // Do NOT pre-resolve here — that would duplicate and potentially contradict SessionTracker.
     if (metadata) {
       this.intelligenceManager.setMeetingMetadata(metadata);
     }
+
+    // Read back the names that SessionTracker just resolved and broadcast to renderer.
+    // This runs unconditionally so the renderer always gets an update at meeting start,
+    // even for manual meetings where metadata is undefined (defaults: Me / Them).
+    // The 100 ms delay ensures the renderer's session-reset handler fires first.
+    const resolvedNames = this.intelligenceManager.getSpeakerNameMap();
+    setTimeout(() => {
+      this.broadcast('speaker-names-resolved', resolvedNames);
+    }, 100);
 
     // Emit session reset to clear UI state immediately
     this.getWindowHelper().getOverlayWindow()?.webContents.send('session-reset');
@@ -1492,6 +1514,15 @@ export class AppState {
       }
     })
 
+    this.intelligenceManager.on('speaker-names-resolved', (names: { user: string; interviewer: string }) => {
+      console.log('[AppState] Speaker names resolved, broadcasting to all windows:', names);
+      BrowserWindow.getAllWindows().forEach(win => {
+        if (!win.isDestroyed()) {
+          win.webContents.send('speaker-names-resolved', names);
+        }
+      });
+    });
+
     this.intelligenceManager.on('error', (error: Error, mode: string) => {
       console.error(`[IntelligenceManager] Error in ${mode}:`, error)
       const win = mainWindow()
@@ -1591,6 +1622,10 @@ export class AppState {
 
   public getExtraScreenshotQueue(): string[] {
     return this.screenshotHelper.getExtraScreenshotQueue()
+  }
+
+  public getSpeakerNameMap(): { user: string; interviewer: string } {
+    return { ...this.speakerNameMap };
   }
 
   // Window management methods
@@ -2388,7 +2423,9 @@ async function initializeApp() {
       appState.startMeeting({
         title: event.title,
         calendarEventId: event.id,
-        source: 'calendar'
+        source: 'calendar',
+        attendees: event.attendees || [],
+        organizer: event.organizer || '',
       });
     });
 
