@@ -96,6 +96,7 @@ const NativelyInterface: React.FC<NativelyInterfaceProps> = ({ onEndMeeting, ove
         return stored !== 'false';
     });
     const [isLiveAnalysisOpen, setIsLiveAnalysisOpen] = useState(false);
+    const [isMeetingPaused, setIsMeetingPaused] = useState(false);
     const [isLiveAnalysisLoading, setIsLiveAnalysisLoading] = useState(false);
     const liveTranscriptRef = useRef<Array<{ speaker: string; displayName?: string; text: string; timestamp: number }>>([]);
 
@@ -122,6 +123,17 @@ const NativelyInterface: React.FC<NativelyInterfaceProps> = ({ onEndMeeting, ove
             setSpeakerNames(names);
         });
 
+        return () => unsubscribe?.();
+    }, []);
+
+    useEffect(() => {
+        // Fetch initial pause state (handles reload/refresh while paused)
+        window.electronAPI?.getMeetingPaused?.().then(setIsMeetingPaused).catch(() => { });
+
+        // Subscribe to live pause state changes pushed from main process
+        const unsubscribe = window.electronAPI?.onMeetingPauseStateChanged?.((data) => {
+            setIsMeetingPaused(data.isPaused);
+        });
         return () => unsubscribe?.();
     }, []);
 
@@ -1625,8 +1637,19 @@ Provide only the answer, nothing else.`;
         setMessages([]);
     };
 
-
-
+    const handlePauseMeeting = async () => {
+        try {
+            if (isMeetingPaused) {
+                await window.electronAPI?.resumeMeeting?.();
+            } else {
+                await window.electronAPI?.pauseMeeting?.();
+            }
+            // State is updated via onMeetingPauseStateChanged listener — no local setState needed here.
+            // This avoids double-state-setting and race conditions.
+        } catch (err) {
+            console.error('[NativelyInterface] Failed to toggle meeting pause:', err);
+        }
+    };
 
     const renderMessageText = (msg: Message) => {
         // Negotiation coaching card takes priority
@@ -2221,6 +2244,8 @@ Provide only the answer, nothing else.`;
                                     expanded={isExpanded}
                                     onToggle={() => setIsExpanded(!isExpanded)}
                                     onQuit={() => onEndMeeting ? onEndMeeting() : window.electronAPI.quitApp()}
+                                    onPause={handlePauseMeeting}
+                                    isPaused={isMeetingPaused}
                                     appearance={appearance}
                                     onLogoClick={() => window.electronAPI?.setWindowMode?.('launcher')}
                                 />
@@ -2230,7 +2255,21 @@ Provide only the answer, nothing else.`;
                                 >
 
 
-
+                                    {/* ── MEETING PAUSED BANNER ─────────────────────────────────── */}
+                                    {isMeetingPaused && (
+                                        <div className="flex items-center gap-2.5 px-4 py-2.5 border-b border-amber-500/20 bg-amber-500/[0.06] shrink-0">
+                                            <div className="relative flex items-center justify-center w-4 h-4">
+                                                {/* Static dot — no ping animation while paused */}
+                                                <span className="w-2 h-2 rounded-full bg-amber-400 opacity-80" />
+                                            </div>
+                                            <div className="flex flex-col">
+                                                <span className="text-[12px] font-semibold text-amber-300/90">Meeting Paused</span>
+                                                <span className="text-[10px] text-amber-400/50 leading-tight">
+                                                    Live analysis temporarily suspended
+                                                </span>
+                                            </div>
+                                        </div>
+                                    )}
 
                                     {/* Rolling Transcript Bar - Single-line interviewer speech */}
                                     {(rollingTranscript || isInterviewerSpeaking) && showTranscript && (
@@ -2599,6 +2638,7 @@ Provide only the answer, nothing else.`;
                                     onClose={() => setIsLiveAnalysisOpen(false)}
                                     transcriptRef={liveTranscriptRef}
                                     meetingTitle="Live Call"
+                                    isMeetingPaused={isMeetingPaused}
                                 />
                             </motion.div>
                         )}

@@ -188,6 +188,10 @@ interface ElectronAPI {
   hideOverlay: () => Promise<void>
   getMeetingActive: () => Promise<boolean>
   onMeetingStateChanged: (callback: (data: { isActive: boolean }) => void) => () => void
+  getMeetingPaused: () => Promise<boolean>
+  pauseMeeting: () => Promise<{ success: boolean; error?: string }>
+  resumeMeeting: () => Promise<{ success: boolean; error?: string }>
+  onMeetingPauseStateChanged: (callback: (data: { isPaused: boolean }) => void) => () => void
   onWindowMaximizedChanged: (callback: (isMaximized: boolean) => void) => () => void
   onEnsureExpanded: (callback: () => void) => () => void
   onToggleExpand: (callback: () => void) => () => void
@@ -489,6 +493,14 @@ contextBridge.exposeInMainWorld("electronAPI", {
     const subscription = (_: any, data: { isActive: boolean }) => callback(data);
     ipcRenderer.on('meeting-state-changed', subscription);
     return () => { ipcRenderer.removeListener('meeting-state-changed', subscription); };
+  },
+  getMeetingPaused: () => ipcRenderer.invoke("get-meeting-paused"),
+  pauseMeeting: () => ipcRenderer.invoke("pause-meeting"),
+  resumeMeeting: () => ipcRenderer.invoke("resume-meeting"),
+  onMeetingPauseStateChanged: (callback: (data: { isPaused: boolean }) => void) => {
+    const subscription = (_event: any, data: { isPaused: boolean }) => callback(data);
+    ipcRenderer.on('meeting-pause-state-changed', subscription);
+    return () => { ipcRenderer.removeListener('meeting-pause-state-changed', subscription); };
   },
   onWindowMaximizedChanged: (callback: (isMaximized: boolean) => void) => {
     const subscription = (_: any, isMaximized: boolean) => callback(isMaximized);

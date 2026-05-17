@@ -9,6 +9,7 @@ interface LiveAnalysisOverlayProps {
     onClose: () => void;
     transcriptRef: React.MutableRefObject<Array<{ speaker: string; displayName?: string; text: string; timestamp: number }>>;
     meetingTitle?: string;
+    isMeetingPaused?: boolean;
 }
 
 // ─────────────────────────────────────────────
@@ -122,6 +123,7 @@ const LiveAnalysisOverlay: React.FC<LiveAnalysisOverlayProps> = ({
     overlayPanelClass,
     onClose,
     transcriptRef,
+    isMeetingPaused = false
 }) => {
     const [analysisData, setAnalysisData] = useState<LiveAnalysisData | null>(null);
     const [isLoading, setIsLoading] = useState(false);
@@ -187,6 +189,12 @@ const LiveAnalysisOverlay: React.FC<LiveAnalysisOverlayProps> = ({
     ] : [];
 
     const runAnalysis = useCallback(async () => {
+
+        if (isMeetingPaused) {
+            console.log('[LiveAnalysis] Skipping analysis — meeting is paused.');
+            return;
+        }
+
         const transcript = transcriptRef.current;
         console.log('[LiveAnalysis] Starting analysis with transcript length:', transcript?.length);
         if (!transcript || transcript.length < 1) {
@@ -269,7 +277,7 @@ const LiveAnalysisOverlay: React.FC<LiveAnalysisOverlayProps> = ({
             resultCleanup?.();
             errorCleanup?.();
         }
-    }, [transcriptRef]);
+    }, [transcriptRef, isMeetingPaused]);
 
     // Auto-run on open - ONLY if there's transcript data
     useEffect(() => {
@@ -278,11 +286,11 @@ const LiveAnalysisOverlay: React.FC<LiveAnalysisOverlayProps> = ({
         // 2. Not currently loading
         // 3. There's transcript data (meeting has started)
         // 4. No error (don't auto-run after error)
-        if (!analysisData && !isLoading && !error && transcriptRef.current?.length > 0) {
+        if (!analysisData && !isLoading && !error && !isMeetingPaused && transcriptRef.current?.length > 0) {
             console.log('[LiveAnalysis] Auto-running analysis on open with', transcriptRef.current.length, 'segments');
             runAnalysis();
         }
-    }, [analysisData, isLoading, error, transcriptRef.current?.length]);
+    }, [analysisData, isLoading, error, isMeetingPaused, transcriptRef.current?.length]);
 
     const toggleObjection = (index: number) => {
         setCheckedObjections(prev => {
