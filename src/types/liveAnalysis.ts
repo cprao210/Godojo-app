@@ -2,12 +2,14 @@ export interface BANTField {
     emoji: '✅' | '⚠️' | '❌' | '';
     status: 'confirmed' | 'partial' | 'missing' | '';
     evidence: string;
+    suggested_question?: string;
 }
 
 export interface MEDDICField {
     emoji: '✅' | '⚠️' | '❌' | '';
     status: 'confirmed' | 'partial' | 'missing' | '';
     evidence: string;
+    suggested_question?: string;
 }
 
 export interface Objection {
@@ -21,6 +23,8 @@ export interface Signal {
     quote: string;
     signal_type: string[];
     ask_now: string;
+    intensity: 'high' | 'medium' | 'low';
+    category: 'positive' | 'negative' | 'neutral';
 }
 
 export interface LiveAnalysisData {
