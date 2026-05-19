@@ -1577,6 +1577,30 @@ export function initializeIpcHandlers(appState: AppState): void {
     }
   });
 
+  safeHandle("pause-meeting", async () => {
+    try {
+      appState.pauseMeeting();
+      return { success: true };
+    } catch (error: any) {
+      console.error("Error pausing meeting:", error);
+      return { success: false, error: error.message };
+    }
+  });
+
+  safeHandle("resume-meeting", async () => {
+    try {
+      await appState.resumeMeeting();
+      return { success: true };
+    } catch (error: any) {
+      console.error("Error resuming meeting:", error);
+      return { success: false, error: error.message };
+    }
+  });
+
+  safeHandle("get-meeting-paused", async () => {
+    return appState.getIsMeetingPaused();
+  });
+
   safeHandle("get-recent-meetings", async () => {
     // Fetch from SQLite (limit 50)
     return DatabaseManager.getInstance().getRecentMeetings(50);
