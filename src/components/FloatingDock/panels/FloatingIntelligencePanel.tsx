@@ -156,7 +156,7 @@ export const FloatingIntelligencePanel: React.FC<FloatingIntelligencePanelProps>
     onRegenerate,
     onAutoRefresh,
 }) => {
-    const [autoRefreshInterval, setAutoRefreshInterval] = useState<number | null>(null);
+    const [autoRefreshInterval, setAutoRefreshInterval] = useState<number | null>(5);
     const [showRefreshPicker, setShowRefreshPicker] = useState(false);
     const autoRefreshTimerRef = useRef<ReturnType<typeof setInterval> | null>(null);
     const refreshPickerRef = useRef<HTMLDivElement>(null);
@@ -225,7 +225,7 @@ export const FloatingIntelligencePanel: React.FC<FloatingIntelligencePanelProps>
                         <Radio size={17} className="text-blue-400" strokeWidth={1.8} />
                     </div>
                     <div>
-                        <div className="text-[13px] font-bold text-white tracking-wide uppercase">Live Call Intelligence</div>
+                        <div className="text-[13px] font-bold text-white tracking-wide uppercase">GoDojo Intelligence</div>
                         <div className="flex items-center gap-1.5 mt-0.5">
                             <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-pulse block" />
                             <span className="text-[11px] text-emerald-400 font-medium">

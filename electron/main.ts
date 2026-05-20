@@ -1361,6 +1361,7 @@ export class AppState {
 
     console.log('[Main] Pausing Meeting...');
     this.isMeetingPaused = true;
+    this.intelligenceManager.recordPauseStart();
 
     // 1. Stop audio capture — drop incoming audio chunks on the floor.
     //    We call stop() (not destroy) so we can restart without re-initializing
@@ -1381,6 +1382,20 @@ export class AppState {
 
     // 4. Broadcast pause state to all renderer windows.
     this.broadcastMeetingPauseState();
+
+    // 5. Update tray menu to show paused state
+    this.updateTrayMenu();
+
+    // 6. Show a native OS notification so the user knows recording is paused
+    // (uses Electron's Notification API — works on macOS, Windows, Linux)
+    const { Notification } = require('electron');
+    if (Notification.isSupported()) {
+      new Notification({
+        title: 'Meeting Paused',
+        body: 'Audio capture and transcription are paused.',
+        silent: true,          // no sound — it's just an informational ping
+      }).show();
+    }
 
     console.log('[Main] Meeting paused. Audio capture and STT stopped.');
   }
@@ -1415,6 +1430,7 @@ export class AppState {
 
       // 4. Only clear the pause flag after the entire pipeline has successfully restarted.
       this.isMeetingPaused = false;
+      this.intelligenceManager.recordPauseEnd();
     } catch (err) {
       console.error('[Main] Error resuming audio pipeline:', err);
       // Restore paused state so UI stays consistent with the actual pipeline state.
@@ -1426,6 +1442,19 @@ export class AppState {
 
     // 5. Broadcast resumed state to all renderer windows only on success.
     this.broadcastMeetingPauseState();
+
+    // 6. Update tray menu to remove paused state indicator
+    this.updateTrayMenu();
+
+    // 7. Native OS notification — meeting resumed
+    const { Notification } = require('electron');
+    if (Notification.isSupported()) {
+      new Notification({
+        title: 'Meeting Resumed',
+        body: 'Audio capture and transcription have resumed.',
+        silent: true,
+      }).show();
+    }
 
     console.log('[Main] Meeting resumed. Audio capture and STT restarted.');
   }
@@ -2014,6 +2043,10 @@ export class AppState {
   public updateTrayMenu() {
     if (!this.tray) return;
 
+    // ── NEW: capture live state ──
+    const isActive = this.isMeetingActive;
+    const isPaused = this.isMeetingPaused;
+
     const keybindManager = KeybindManager.getInstance();
     const screenshotAccel = keybindManager.getKeybind('general:take-screenshot') || 'CommandOrControl+H';
 
@@ -2039,6 +2072,13 @@ export class AppState {
     const displayToggle = formatAccel(toggleAccel);
 
     const contextMenu = Menu.buildFromTemplate([
+      // ── NEW: pause status indicator (only shown during an active meeting) ──
+      ...(isActive ? [{
+        label: isPaused ? '⏸  Meeting Paused' : '🔴  Meeting Active',
+        enabled: false,   // non-clickable status label
+      }, {
+        type: 'separator' as const,
+      }] : []),
       {
         label: 'Show Natively',
         click: () => {

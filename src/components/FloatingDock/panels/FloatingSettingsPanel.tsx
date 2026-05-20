@@ -1,13 +1,29 @@
 import React from 'react';
 import { motion } from 'framer-motion';
-import { Settings, EyeOff, Zap, AlignLeft, Camera, Eye, Cpu, MousePointerClick } from 'lucide-react';
+import { Settings, AlignLeft, Camera, Eye, Cpu, MousePointerClick } from 'lucide-react';
 import { ShortcutConfig } from '../../../hooks/useShortcuts';
 import { ModelSelector } from '../../ui/ModelSelector';
+import { isMac } from '../../../utils/platformUtils';
 
 interface AnimatedToggleProps {
     value: boolean;
     onChange: (v: boolean) => void;
     accentColor?: string;
+}
+
+// ── Platform-aware fallback keys for when the IPC keybinds haven't loaded yet ──
+// These mirror buildDefaultShortcuts() in useShortcuts.ts so both sides stay in sync.
+const mod = isMac ? '⌘' : 'Ctrl';
+const shift = isMac ? '⇧' : 'Shift';
+const SETTINGS_FALLBACKS: Partial<ShortcutConfig> = {
+    takeScreenshot: [mod, 'H'],
+    toggleVisibility: [mod, 'B'],
+    selectiveScreenshot: [mod, shift, 'H'],
+    toggleMousePassthrough: [mod, shift, 'B'],
+};
+
+function buildSettingsFallback(key: keyof typeof SETTINGS_FALLBACKS): string[] {
+    return SETTINGS_FALLBACKS[key] ?? [];
 }
 
 const AnimatedToggle: React.FC<AnimatedToggleProps> = ({
@@ -108,20 +124,18 @@ interface FloatingSettingsPanelProps {
 export const FloatingSettingsPanel: React.FC<FloatingSettingsPanelProps> = ({
     showTranscript,
     onToggleTranscript,
-    isMousePassthrough,
-    onToggleMousePassthrough,
-    isUndetectable,
-    onToggleGhost,
     shortcuts,
     currentModel,
     onSelectModel,
 }) => {
-    const screenshotKeys = shortcuts.takeScreenshot || ['Ctrl', 'H'];
-    const showHideKeys = shortcuts.toggleVisibility || ['Ctrl', 'B'];
+
+    const screenshotKeys = shortcuts.takeScreenshot?.length ? shortcuts.takeScreenshot : buildSettingsFallback('takeScreenshot');
+    const showHideKeys = shortcuts.toggleVisibility?.length ? shortcuts.toggleVisibility : buildSettingsFallback('toggleVisibility');
+    const showClickThroughKeys = shortcuts.toggleMousePassthrough?.length ? shortcuts.toggleMousePassthrough : buildSettingsFallback('toggleMousePassthrough');
 
     return (
         <div
-            className="rounded-2xl overflow-hidden"
+            className="rounded-2xl overflow-hiddenSettings"
             style={{
                 width: 420,
                 background: 'rgba(14, 18, 30, 0.93)',
@@ -147,30 +161,6 @@ export const FloatingSettingsPanel: React.FC<FloatingSettingsPanelProps> = ({
 
             {/* Toggle rows */}
             <div>
-                <SettingRow
-                    icon={<EyeOff size={18} strokeWidth={1.8} />}
-                    label="Ghost Mode"
-                    iconColor={isUndetectable ? '#10b981' : 'rgba(255,255,255,0.35)'}
-                    emphasis={isUndetectable}
-                    divider
-                >
-                    <AnimatedToggle
-                        value={isUndetectable}
-                        onChange={onToggleGhost}
-                        accentColor="#10b981"
-                    />
-                </SettingRow>
-
-                <SettingRow
-                    icon={<MousePointerClick size={18} strokeWidth={1.8} />}
-                    label="Click-Through"
-                    divider
-                >
-                    <AnimatedToggle
-                        value={isMousePassthrough}
-                        onChange={onToggleMousePassthrough}
-                    />
-                </SettingRow>
 
                 <SettingRow
                     icon={<AlignLeft size={18} strokeWidth={1.8} style={{ color: showTranscript ? '#3b82f6' : undefined }} />}
@@ -216,6 +206,12 @@ export const FloatingSettingsPanel: React.FC<FloatingSettingsPanelProps> = ({
                     label="Show / Hide"
                 >
                     <KeyBadge keys={showHideKeys} />
+                </SettingRow>
+                <SettingRow
+                    icon={<MousePointerClick size={18} strokeWidth={1.8} />}
+                    label="Click-Through"
+                >
+                    <KeyBadge keys={showClickThroughKeys} />
                 </SettingRow>
             </div>
         </div>

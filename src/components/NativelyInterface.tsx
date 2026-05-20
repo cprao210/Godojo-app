@@ -51,6 +51,12 @@ import { log } from 'three/src/utils.js';
 import LiveAnalysisButton from './ui/LiveAnalysisButton';
 import LiveAnalysisOverlay from './LiveAnalysisOverlay';
 import { FloatingDock } from './FloatingDock';
+import {
+    Toast,
+    ToastTitle,
+    ToastDescription,
+    ToastViewport,
+} from './ui/toast';
 
 interface Message {
     id: string;
@@ -92,6 +98,12 @@ const NativelyInterface: React.FC<NativelyInterfaceProps> = ({ onEndMeeting, ove
     const isRecordingRef = useRef(false);  // Ref to track recording state (avoids stale closure)
     const [manualTranscript, setManualTranscript] = useState('');
     const manualTranscriptRef = useRef<string>('');
+    const [pauseToastOpen, setPauseToastOpen] = useState(false);
+    const [pauseToastMessage, setPauseToastMessage] = useState<{
+        title: string;
+        description: string;
+        variant: 'neutral' | 'success' | 'error';
+    }>({ title: '', description: '', variant: 'neutral' });
     const [showTranscript, setShowTranscript] = useState(() => {
         const stored = localStorage.getItem('natively_interviewer_transcript');
         return stored !== 'false';
@@ -134,6 +146,14 @@ const NativelyInterface: React.FC<NativelyInterfaceProps> = ({ onEndMeeting, ove
         // Subscribe to live pause state changes pushed from main process
         const unsubscribe = window.electronAPI?.onMeetingPauseStateChanged?.((data) => {
             setIsMeetingPaused(data.isPaused);
+
+            // ── NEW: show a toast notification ──
+            setPauseToastMessage(
+                data.isPaused
+                    ? { title: 'Meeting Paused', description: 'Audio capture & transcription stopped.', variant: 'neutral' }
+                    : { title: 'Meeting Resumed', description: 'Audio capture & transcription restarted.', variant: 'success' }
+            );
+            setPauseToastOpen(true);
         });
         return () => unsubscribe?.();
     }, []);
@@ -2268,6 +2288,19 @@ Provide only the answer, nothing else.`;
                     </motion.div>
                 </AnimatePresence>
             </motion.div>
+            {/* ── NEW: Pause/Resume Toast Notification ── */}
+            {/* {pauseToastOpen && (
+                <Toast
+                    className='left-[160px]'
+                    open={pauseToastOpen}
+                    onOpenChange={setPauseToastOpen}
+                    variant={pauseToastMessage.variant}
+                    duration={3000}
+                >
+                    <ToastTitle>{pauseToastMessage.title}</ToastTitle>
+                    <ToastDescription>{pauseToastMessage.description}</ToastDescription>
+                </Toast>
+            )} */}
         </div>
     )
 
