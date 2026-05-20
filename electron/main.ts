@@ -207,6 +207,7 @@ export class AppState {
 
   private hasDebugged: boolean = false
   private isMeetingActive: boolean = false; // Guard for session state leaks
+  private isMeetingPaused: boolean = false; // Pause guard — blocks audio and AI while paused
   private _isQuitting: boolean = false;
   private _verboseLogging: boolean = false;
   private _disguiseTimers: NodeJS.Timeout[] = []; // Track forceUpdate timeouts
@@ -433,6 +434,10 @@ export class AppState {
     return this.isMeetingActive;
   }
 
+  public getIsMeetingPaused(): boolean {
+    return this.isMeetingPaused;
+  }
+
   public isQuitting(): boolean {
     return this._isQuitting;
   }
@@ -443,6 +448,10 @@ export class AppState {
 
   private broadcastMeetingState(): void {
     this.broadcast('meeting-state-changed', { isActive: this.isMeetingActive });
+  }
+
+  private broadcastMeetingPauseState(): void {
+    this.broadcast('meeting-pause-state-changed', { isPaused: this.isMeetingPaused });
   }
 
   private async bootstrapOllamaEmbeddings() {
@@ -829,6 +838,10 @@ export class AppState {
     stt.on('transcript', (segment: { text: string, isFinal: boolean, confidence: number }) => {
       if (!this.isMeetingActive) {
         return;
+      }
+
+      if (this.isMeetingPaused) {
+        return; // Drop transcript segments received during pause (rare, in-flight audio)
       }
 
       this.intelligenceManager.handleTranscript({
@@ -1259,7 +1272,9 @@ export class AppState {
   public async endMeeting(): Promise<void> {
     console.log('[Main] Ending Meeting...');
     this.isMeetingActive = false; // Block new data immediately
+    this.isMeetingPaused = false; // Reset pause flag — clean slate for next meeting
     this.broadcastMeetingState();
+    this.broadcastMeetingPauseState(); // Notify renderers so they don't retain stale paused UI
 
     // Reset Mouse Passthrough so the next meeting overlay starts fresh and focusable
     if (this.overlayMousePassthrough) {
@@ -1332,6 +1347,87 @@ export class AppState {
       }
     }
     // ─────────────────────────────────────────────────────────────────────────
+  }
+
+  public pauseMeeting(): void {
+    if (!this.isMeetingActive) {
+      console.warn('[Main] pauseMeeting() called but no meeting is active — ignoring.');
+      return;
+    }
+    if (this.isMeetingPaused) {
+      console.warn('[Main] pauseMeeting() called but meeting is already paused — ignoring.');
+      return;
+    }
+
+    console.log('[Main] Pausing Meeting...');
+    this.isMeetingPaused = true;
+
+    // 1. Stop audio capture — drop incoming audio chunks on the floor.
+    //    We call stop() (not destroy) so we can restart without re-initializing
+    //    the capture objects. The STT streams stay alive but receive no new data.
+    this.systemAudioCapture?.stop();
+    this.microphoneCapture?.stop();
+
+    // 2. Stop STT streams. They will be restarted on resume.
+    //    GoogleSTT / DeepgramSTT / OpenAISTT all have .stop() + .start() lifecycle.
+    this.googleSTT?.stop();
+    this.googleSTT_User?.stop();
+
+    // 3. Pause live RAG indexing so no partial sentences are embedded.
+    //    RAGManager does not have a pause() API — we stop it; resume will restart it.
+    if (this.ragManager) {
+      this.ragManager.stopLiveIndexing().catch(() => { });
+    }
+
+    // 4. Broadcast pause state to all renderer windows.
+    this.broadcastMeetingPauseState();
+
+    console.log('[Main] Meeting paused. Audio capture and STT stopped.');
+  }
+
+  public async resumeMeeting(): Promise<void> {
+    if (!this.isMeetingActive) {
+      console.warn('[Main] resumeMeeting() called but no meeting is active — ignoring.');
+      return;
+    }
+    if (!this.isMeetingPaused) {
+      console.warn('[Main] resumeMeeting() called but meeting is not paused — ignoring.');
+      return;
+    }
+
+    console.log('[Main] Resuming Meeting...');
+
+    try {
+      // 1. Restart STT streams. Same pattern as startMeeting() audio init.
+      this.googleSTT?.start();
+      this.googleSTT_User?.start();
+
+      // 2. Restart audio capture — chunks will flow again to the running STT streams.
+      this.systemAudioCapture?.start();
+      this.microphoneCapture?.start();
+
+      // 3. Resume live RAG indexing using the SAME session key 'live-meeting-current'
+      //    so all new transcript segments are appended to the existing session,
+      //    not a new one. No duplicate meeting ID is created.
+      if (this.ragManager) {
+        this.ragManager.startLiveIndexing('live-meeting-current');
+      }
+
+      // 4. Only clear the pause flag after the entire pipeline has successfully restarted.
+      this.isMeetingPaused = false;
+    } catch (err) {
+      console.error('[Main] Error resuming audio pipeline:', err);
+      // Restore paused state so UI stays consistent with the actual pipeline state.
+      this.isMeetingPaused = true;
+      this.broadcast('meeting-audio-error', (err as Error).message || 'Audio failed to resume');
+      this.broadcastMeetingPauseState();
+      return;
+    }
+
+    // 5. Broadcast resumed state to all renderer windows only on success.
+    this.broadcastMeetingPauseState();
+
+    console.log('[Main] Meeting resumed. Audio capture and STT restarted.');
   }
 
   public getCurrentLiveAnalysis(): LiveAnalysisData | null {
