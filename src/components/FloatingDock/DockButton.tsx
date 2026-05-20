@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useEffect, useState } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
 
 interface DockButtonProps {
@@ -35,6 +35,14 @@ export const DockButton: React.FC<DockButtonProps> = ({
         if (tooltipTimerRef.current) clearTimeout(tooltipTimerRef.current);
         setShowTooltip(false);
     };
+
+    // Clear any pending tooltip timer if the component unmounts mid-hover,
+    // preventing a setState call on an unmounted component.
+    useEffect(() => {
+        return () => {
+            if (tooltipTimerRef.current) clearTimeout(tooltipTimerRef.current);
+        };
+    }, []);
 
     const iconColor = dangerColor
         ? '#ef4444'

@@ -264,12 +264,24 @@ export const useLiveAnalysis = (
   const [analysisData, setAnalysisData] = useState<LiveAnalysisData | null>(null);
   const [isLoading, setIsLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  // Ref-based in-flight guard — avoids stale closure issues that a state-based check would have.
+  const isLoadingRef = useRef(false);
 
   const runAnalysis = useCallback(async (force = false) => {
     const transcript = transcriptRef.current;
     // Allow forced runs (manual button clicks, end-of-meeting analysis) to bypass
     // the pause guard. Only automatic/scheduled refreshes should be blocked when paused.
     if (!transcript?.length || (!force && isMeetingPaused)) return;
+
+    // Prevent concurrent runs: a second call while one is in-flight would register
+    // duplicate IPC listeners on the shared 'live-analysis-result' channel, causing
+    // both promises to resolve with the same result.
+    if (isLoadingRef.current) {
+      console.warn('[useLiveAnalysis] Analysis already in-flight, skipping duplicate call.');
+      return;
+    }
+
+    isLoadingRef.current = true;
 
     setIsLoading(true);
     setError(null);
@@ -327,6 +339,7 @@ export const useLiveAnalysis = (
     } catch (e: any) {
       setError(e?.message || 'Analysis failed');
     } finally {
+      isLoadingRef.current = false;
       setIsLoading(false);
       resultCleanup?.();
       errorCleanup?.();

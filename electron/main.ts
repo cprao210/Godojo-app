@@ -1274,6 +1274,7 @@ export class AppState {
     this.isMeetingActive = false; // Block new data immediately
     this.isMeetingPaused = false; // Reset pause flag — clean slate for next meeting
     this.broadcastMeetingState();
+    this.broadcastMeetingPauseState(); // Notify renderers so they don't retain stale paused UI
 
     // Reset Mouse Passthrough so the next meeting overlay starts fresh and focusable
     if (this.overlayMousePassthrough) {
@@ -1395,7 +1396,6 @@ export class AppState {
     }
 
     console.log('[Main] Resuming Meeting...');
-    this.isMeetingPaused = false;
 
     try {
       // 1. Restart STT streams. Same pattern as startMeeting() audio init.
@@ -1412,12 +1412,19 @@ export class AppState {
       if (this.ragManager) {
         this.ragManager.startLiveIndexing('live-meeting-current');
       }
+
+      // 4. Only clear the pause flag after the entire pipeline has successfully restarted.
+      this.isMeetingPaused = false;
     } catch (err) {
       console.error('[Main] Error resuming audio pipeline:', err);
+      // Restore paused state so UI stays consistent with the actual pipeline state.
+      this.isMeetingPaused = true;
       this.broadcast('meeting-audio-error', (err as Error).message || 'Audio failed to resume');
+      this.broadcastMeetingPauseState();
+      return;
     }
 
-    // 4. Broadcast resumed state to all renderer windows.
+    // 5. Broadcast resumed state to all renderer windows only on success.
     this.broadcastMeetingPauseState();
 
     console.log('[Main] Meeting resumed. Audio capture and STT restarted.');
