@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
-import { Brain, ArrowRight, Copy, Check, RotateCcw } from 'lucide-react';
+import { Brain, ArrowRight, Copy, Check, RotateCcw, Search } from 'lucide-react';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 
@@ -152,6 +152,7 @@ export const FloatingChatPanel: React.FC<FloatingChatPanelProps> = ({
     const [isProcessing, setIsProcessing] = useState(false);
     const messagesEndRef = useRef<HTMLDivElement>(null);
     const inputRef = useRef<HTMLTextAreaElement>(null);
+    const [tavilySearchingFor, setTavilySearchingFor] = useState<string | null>(null);
 
     // Auto-scroll
     useEffect(() => {
@@ -229,6 +230,18 @@ export const FloatingChatPanel: React.FC<FloatingChatPanelProps> = ({
                     }
                     return prev;
                 });
+            }));
+        }
+
+        if (window.electronAPI?.onTavilySearching) {
+            cleanups.push(window.electronAPI.onTavilySearching((data) => {
+                setTavilySearchingFor(data.entity);
+            }));
+        }
+
+        if (window.electronAPI?.onTavilySearchDone) {
+            cleanups.push(window.electronAPI.onTavilySearchDone(() => {
+                setTavilySearchingFor(null);
             }));
         }
 
@@ -370,6 +383,19 @@ export const FloatingChatPanel: React.FC<FloatingChatPanelProps> = ({
                 )}
                 <div ref={messagesEndRef} />
             </div>
+
+            {tavilySearchingFor && (
+                <div
+                    className="px-5 py-2 shrink-0 flex items-center gap-2"
+                    style={{ borderTop: '1px solid rgba(255,255,255,0.05)', background: 'rgba(139,92,246,0.05)' }}
+                >
+                    <Search size={11} className="text-violet-400 animate-pulse shrink-0" />
+                    <span className="text-[11px] text-violet-300/70">
+                        Searching company information for{' '}
+                        <span className="font-semibold text-violet-300">{tavilySearchingFor}</span>…
+                    </span>
+                </div>
+            )}
 
             {/* Input Area */}
             <div

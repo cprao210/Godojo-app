@@ -265,6 +265,9 @@ interface ElectronAPI {
   onRAGStreamComplete: (callback: (data: { meetingId?: string; global?: boolean }) => void) => () => void
   onRAGStreamError: (callback: (data: { meetingId?: string; global?: boolean; error: string }) => void) => () => void
 
+  onTavilySearching: (callback: (data: { entity: string }) => void) => () => void
+  onTavilySearchDone: (callback: (data: { entity: string | null; status: string; fromCache: boolean }) => void) => () => void
+
   // Keybind Management
   getKeybinds: () => Promise<Array<{ id: string; label: string; accelerator: string; isGlobal: boolean; defaultAccelerator: string }>>
   setKeybind: (id: string, accelerator: string) => Promise<boolean>
@@ -1107,6 +1110,17 @@ contextBridge.exposeInMainWorld("electronAPI", {
     return () => {
       ipcRenderer.removeListener('rag:stream-error', subscription)
     }
+  },
+
+  onTavilySearching: (callback) => {
+    const subscription = (_: any, data: any) => callback(data);
+    ipcRenderer.on('tavily-searching', subscription);
+    return () => ipcRenderer.removeListener('tavily-searching', subscription);
+  },
+  onTavilySearchDone: (callback) => {
+    const subscription = (_: any, data: any) => callback(data);
+    ipcRenderer.on('tavily-search-done', subscription);
+    return () => ipcRenderer.removeListener('tavily-search-done', subscription);
   },
 
   // Keybind Management
