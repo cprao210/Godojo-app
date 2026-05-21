@@ -30,6 +30,20 @@ if (window.electronAPI?.getThemeMode) {
   });
 }
 
+// Step 3: Boot Firebase Auth bridge. This installs the onIdTokenChanged listener
+// that forwards every fresh ID token to main, and (if a refresh token is
+// persisted) silently exchanges it for a new ID token. Runs once per renderer
+// (multi-window: launcher + overlay each call this independently — both bridges
+// will simply forward the same token to main, which is idempotent).
+import('./lib/firebase').then(({ getFirebaseAuth, trySilentRestore }) => {
+  try {
+    getFirebaseAuth();
+    void trySilentRestore();
+  } catch (e) {
+    console.warn('[main.tsx] Firebase bootstrap failed (non-fatal):', e);
+  }
+});
+
 ReactDOM.createRoot(document.getElementById("root")!).render(
   <React.StrictMode>
     <App />
