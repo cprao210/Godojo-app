@@ -135,7 +135,7 @@ export const FloatingSettingsPanel: React.FC<FloatingSettingsPanelProps> = ({
 
     return (
         <div
-            className="rounded-2xl overflow-hiddenSettings"
+            className="rounded-2xl overflow-hidden"
             style={{
                 width: 420,
                 background: 'rgba(14, 18, 30, 0.93)',

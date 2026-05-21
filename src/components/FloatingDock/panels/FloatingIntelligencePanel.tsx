@@ -45,6 +45,8 @@ interface FloatingIntelligencePanelProps {
     showTranscript: boolean;
     onRegenerate: () => void;      // Manual / forced refresh
     onAutoRefresh?: () => void;    // Scheduled auto-refresh (respects pause state)
+    autoRefreshInterval: number | null;
+    onAutoRefreshIntervalChange: (interval: number | null) => void;
 }
 
 // ─── AI Skeleton Loader ──────────────────────────────────────────────────────
@@ -155,8 +157,9 @@ export const FloatingIntelligencePanel: React.FC<FloatingIntelligencePanelProps>
     isLoading,
     onRegenerate,
     onAutoRefresh,
+    autoRefreshInterval,
+    onAutoRefreshIntervalChange,
 }) => {
-    const [autoRefreshInterval, setAutoRefreshInterval] = useState<number | null>(5);
     const [showRefreshPicker, setShowRefreshPicker] = useState(false);
     const autoRefreshTimerRef = useRef<ReturnType<typeof setInterval> | null>(null);
     const refreshPickerRef = useRef<HTMLDivElement>(null);
@@ -182,9 +185,15 @@ export const FloatingIntelligencePanel: React.FC<FloatingIntelligencePanelProps>
         return () => document.removeEventListener('mousedown', handleClickOutside);
     }, [showRefreshPicker]);
 
+    useEffect(() => {
+        if (autoRefreshInterval !== null) {
+            handleAutoRefresh(autoRefreshInterval);
+        }
+    }, []);
+
     const handleAutoRefresh = (minutes: number | null) => {
         if (autoRefreshTimerRef.current) clearInterval(autoRefreshTimerRef.current);
-        setAutoRefreshInterval(minutes);
+        onAutoRefreshIntervalChange(minutes);
         setShowRefreshPicker(false);
 
         if (minutes !== null) {

@@ -84,6 +84,9 @@ export const FloatingDock: React.FC<FloatingDockProps> = ({
     // Chat messages lifted here so history survives panel switches.
     const [chatMessages, setChatMessages] = useState<ChatMessage[]>([]);
 
+    // Auto-refresh interval lifted here so it survives panel switches.
+    const [autoRefreshInterval, setAutoRefreshInterval] = useState<number | null>(5);
+
     // Reset all state when a new meeting starts (IPC session-reset event)
     useEffect(() => {
         if (!window.electronAPI?.onSessionReset) return;
@@ -153,6 +156,8 @@ export const FloatingDock: React.FC<FloatingDockProps> = ({
                                     isLoading={analysisLoading}
                                     onRegenerate={() => runAnalysis(true)}
                                     onAutoRefresh={() => runAnalysis(false)}
+                                    autoRefreshInterval={autoRefreshInterval}
+                                    onAutoRefreshIntervalChange={setAutoRefreshInterval}
                                 />
                             )}
                             {activePanel === 'chat' && (

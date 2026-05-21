@@ -698,7 +698,7 @@ const MeetingDetails: React.FC<MeetingDetailsProps> = ({ meeting: initialMeeting
                     {/* Designing Tabs to match reference 1:1 (Dark Pill Container) */}
                     <div className="flex items-center justify-between mb-8">
                         <div className={`p-1 rounded-xl inline-flex items-center gap-0.5 ${isLight ? 'bg-[#E5E5EA] border border-black/[0.04]' : 'bg-[#121214] border border-white/[0.08]'}`}>
-                            {['summary', 'transcript', 'ask Dojo', 'analysis'].map((tab) => (
+                            {['summary', 'transcript', 'usage', 'analysis'].map((tab) => (
                                 <button
                                     key={tab}
                                     onClick={() => setActiveTab(tab as any)}
@@ -715,7 +715,7 @@ const MeetingDetails: React.FC<MeetingDetailsProps> = ({ meeting: initialMeeting
                                             transition={{ type: "spring", stiffness: 400, damping: 30 }}
                                         />
                                     )}
-                                    {tab === 'analysis' ? 'Call Analysis' : tab.charAt(0).toUpperCase() + tab.slice(1)}
+                                    {tab === 'analysis' ? 'Call Analysis' : tab === 'usage' ? 'Ask Dojo' : tab.charAt(0).toUpperCase() + tab.slice(1)}
                                 </button>
                             ))}
                         </div>
@@ -1310,13 +1310,11 @@ const MeetingDetails: React.FC<MeetingDetailsProps> = ({ meeting: initialMeeting
                                 <motion.section initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }}>
                                     <div className="space-y-6">
                                         {(() => {
-                                            console.log('Raw Transcript:', meeting.transcript);
                                             const filteredTranscript = meeting.transcript?.filter(entry => {
                                                 const isHidden = ['system', 'ai', 'assistant', 'model'].includes(entry.speaker?.toLowerCase());
                                                 if (isHidden) console.log('Filtered out:', entry);
                                                 return !isHidden;
                                             }) || [];
-                                            console.log('Filtered Transcript:', filteredTranscript);
 
                                             if (filteredTranscript.length === 0) {
                                                 return <p className="text-text-tertiary">No transcript available.</p>;

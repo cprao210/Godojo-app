@@ -607,7 +607,7 @@ const Launcher: React.FC<LauncherProps> = ({ onStartMeeting, onOpenSettings, onP
                                                     </svg>
                                                 )}
                                                 <span className="text-xs font-medium flex-1 transition-colors text-text-secondary">
-                                                    {isDetectable ? "Ghost Mode" : "Ghost Mode OFF"}
+                                                    {!isDetectable ? "Ghost Mode ON" : "Ghost Mode OFF"}
                                                 </span>
                                                 <div
                                                     className={`w-8 h-4 rounded-full relative transition-colors cursor-pointer ${!isDetectable ? 'bg-accent-primary' : 'bg-bg-toggle-switch'}`}
