@@ -356,6 +356,40 @@ export interface ElectronAPI {
   cropperCancelled: () => void;
   onResetCropper: (callback: (data: { hudPosition: { x: number; y: number } }) => void) => () => void;
 
+  // ===== Firebase Auth =====
+  authSetIdToken: (session: {
+    idToken: string;
+    refreshToken: string;
+    uid: string;
+    email?: string | null;
+    displayName?: string | null;
+    photoURL?: string | null;
+    expiresAt: number;
+  }) => Promise<{ success: boolean; error?: string }>;
+  authClear: () => Promise<{ success: boolean }>;
+  authGetState: () => Promise<{
+    signedIn: boolean;
+    uid?: string;
+    email?: string | null;
+    displayName?: string | null;
+    photoURL?: string | null;
+  }>;
+  authGetPersistedRefreshToken: () => Promise<{ refreshToken: string | null; uid: string | null }>;
+  onAuthStateChanged: (
+    callback: (state: { signedIn: boolean; uid?: string; email?: string | null; displayName?: string | null; photoURL?: string | null }) => void
+  ) => () => void;
+
+  // ===== Supabase mirror =====
+  supabaseSetCredentials: (url: string, anonKey: string) => Promise<{ success: boolean; error?: string }>;
+  supabaseGetMirrorStatus: () => Promise<{
+    configured: boolean;
+    signedIn: boolean;
+    outboxLength: number;
+    lastSyncAt: number | null;
+    lastError?: string | null;
+  }>;
+  supabaseForceBackfill: () => Promise<{ success: boolean; error?: string }>;
+
   // Platform
   platform: NodeJS.Platform;
 }

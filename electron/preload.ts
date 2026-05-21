@@ -317,6 +317,40 @@ interface ElectronAPI {
   cropperCancelled: () => void;
   onResetCropper: (callback: (data: { hudPosition: { x: number; y: number } }) => void) => () => void;
 
+  // ===== Firebase Auth (renderer owns the SDK; main holds the current ID token) =====
+  authSetIdToken: (session: {
+    idToken: string;
+    refreshToken: string;
+    uid: string;
+    email?: string | null;
+    displayName?: string | null;
+    photoURL?: string | null;
+    expiresAt: number;
+  }) => Promise<{ success: boolean; error?: string }>;
+  authClear: () => Promise<{ success: boolean }>;
+  authGetState: () => Promise<{
+    signedIn: boolean;
+    uid?: string;
+    email?: string | null;
+    displayName?: string | null;
+    photoURL?: string | null;
+  }>;
+  authGetPersistedRefreshToken: () => Promise<{ refreshToken: string | null; uid: string | null }>;
+  onAuthStateChanged: (
+    callback: (state: { signedIn: boolean; uid?: string; email?: string | null; displayName?: string | null; photoURL?: string | null }) => void
+  ) => () => void;
+
+  // ===== Supabase mirror config & status =====
+  supabaseSetCredentials: (url: string, anonKey: string) => Promise<{ success: boolean; error?: string }>;
+  supabaseGetMirrorStatus: () => Promise<{
+    configured: boolean;
+    signedIn: boolean;
+    outboxLength: number;
+    lastSyncAt: number | null;
+    lastError?: string | null;
+  }>;
+  supabaseForceBackfill: () => Promise<{ success: boolean; error?: string }>;
+
   // Platform
   platform: NodeJS.Platform;
 }
@@ -1205,6 +1239,26 @@ contextBridge.exposeInMainWorld("electronAPI", {
       ipcRenderer.removeListener('reset-cropper', subscription)
     }
   },
+
+  // ===== Firebase Auth =====
+  authSetIdToken: (session: { idToken: string; refreshToken: string; uid: string; email?: string | null; displayName?: string | null; photoURL?: string | null; expiresAt: number }) =>
+    ipcRenderer.invoke('auth:set-id-token', session),
+  authClear: () => ipcRenderer.invoke('auth:clear'),
+  authGetState: () => ipcRenderer.invoke('auth:get-state'),
+  authGetPersistedRefreshToken: () => ipcRenderer.invoke('auth:get-persisted-refresh-token'),
+  onAuthStateChanged: (callback: (state: any) => void) => {
+    const subscription = (_: Electron.IpcRendererEvent, state: any) => callback(state)
+    ipcRenderer.on('auth:state-changed', subscription)
+    return () => {
+      ipcRenderer.removeListener('auth:state-changed', subscription)
+    }
+  },
+
+  // ===== Supabase mirror =====
+  supabaseSetCredentials: (url: string, anonKey: string) =>
+    ipcRenderer.invoke('supabase:set-credentials', { url, anonKey }),
+  supabaseGetMirrorStatus: () => ipcRenderer.invoke('supabase:get-mirror-status'),
+  supabaseForceBackfill: () => ipcRenderer.invoke('supabase:force-backfill'),
 
   // Platform
   platform: process.platform,

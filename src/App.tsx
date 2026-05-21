@@ -22,6 +22,9 @@ import {
 } from './premium'
 import { analytics } from "./lib/analytics/analytics.service"
 import { ErrorBoundary } from "./components/ErrorBoundary"
+import { SignIn } from "./_pages/SignIn"
+import { subscribeAuthState, signOut as fbSignOut } from "./lib/firebase"
+import type { User } from "firebase/auth"
 
 const queryClient = new QueryClient()
 
@@ -84,6 +87,27 @@ const App: React.FC = () => {
   const [settingsInitialTab, setSettingsInitialTab] = useState('general');
   const [showPremiumModal, setShowPremiumModal] = useState(false);
   const [isPremiumActive, setIsPremiumActive] = useState(false);
+
+  // Auth gate — only relevant for the launcher window. We start in a "checking"
+  // state so we don't briefly flash the SignIn page before silent-restore /
+  // onAuthStateChanged resolves on first render.
+  const [authUser, setAuthUser] = useState<User | null>(null);
+  const [authChecked, setAuthChecked] = useState(false);
+
+  useEffect(() => {
+    // Only the launcher / default window enforces auth UI. Child windows
+    // (overlay, settings, model-selector, cropper) inherit the signed-in
+    // session via the main process.
+    if (!(isLauncherWindow || isDefault)) {
+      setAuthChecked(true);
+      return;
+    }
+    const unsub = subscribeAuthState((user) => {
+      setAuthUser(user);
+      setAuthChecked(true);
+    });
+    return () => unsub();
+  }, [isLauncherWindow, isDefault]);
 
   // Overlay opacity — only meaningful when isOverlayWindow, but stored centrally
   // so it can be initialized once from localStorage and updated via IPC.
@@ -336,6 +360,21 @@ const App: React.FC = () => {
   return (
     <ErrorBoundary context="Launcher">
       <div className="h-full min-h-0 w-full relative bg-[#000000]">
+        {/* Auth gate: while we don't know yet, render nothing (avoids SignIn flash).
+            Once known, if no user is signed in show the SignIn page instead of the
+            launcher. The SignIn component triggers onIdTokenChanged on success, which
+            updates `authUser` below and unmounts itself. */}
+        {!authChecked ? (
+          <div className="h-full w-full" />
+        ) : !authUser ? (
+          <QueryClientProvider client={queryClient}>
+            <ToastProvider>
+              <SignIn onSignedIn={() => { /* auth state listener will flip the gate */ }} />
+              <ToastViewport />
+            </ToastProvider>
+          </QueryClientProvider>
+        ) : (
+          <>
         <AnimatePresence>
           {showStartup ? (
             <motion.div
@@ -426,6 +465,36 @@ const App: React.FC = () => {
 
         {/* <UpdateBanner /> */}
         <SupportToaster />
+
+        {/* Signed-in user pill — positioned just below the launcher's 40px
+            top header (z-[200]) so it isn't covered by the drag-region. Hidden
+            during startup / settings / non-main views so it doesn't clash with
+            overlays. The auth-state listener will null `authUser` after
+            signOut, automatically swapping the SignIn page back in. */}
+        {authUser && isLauncherMainView && !isSettingsOpen && !showStartup && (
+          <div className="fixed top-[48px] right-3 z-[300] pointer-events-auto">
+            <div className="flex items-center gap-2 rounded-full bg-[#1A1A1A]/90 backdrop-blur border border-white/10 px-3 py-1.5 shadow-lg">
+              <div className="flex flex-col leading-tight max-w-[180px]">
+                <span className="text-[11px] font-medium text-[#E0E0E0] truncate">
+                  {authUser.displayName || authUser.email?.split('@')[0] || 'Signed in'}
+                </span>
+                {authUser.email && (
+                  <span className="text-[10px] text-[#A0A0A0] truncate">{authUser.email}</span>
+                )}
+              </div>
+              <button
+                type="button"
+                onClick={() => {
+                  void fbSignOut().catch((e) => console.warn('[App] sign-out failed:', e));
+                }}
+                className="ml-1 rounded-full px-2.5 py-1 text-[10px] font-semibold uppercase tracking-wider text-[#A0A0A0] hover:text-white hover:bg-white/5 transition-colors"
+                title="Sign out"
+              >
+                Sign out
+              </button>
+            </div>
+          </div>
+        )}
         {isLauncherMainView && !isSettingsOpen && (
           <>
             <ProfileFeatureToaster
@@ -476,6 +545,8 @@ const App: React.FC = () => {
           }}
           onDeactivated={() => setIsPremiumActive(false)}
         />
+          </>
+        )}
       </div>
     </ErrorBoundary>
   )
