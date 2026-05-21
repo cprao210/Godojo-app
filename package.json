@@ -180,6 +180,7 @@
     "@grpc/proto-loader": "^0.8.0",
     "@radix-ui/react-dialog": "^1.1.2",
     "@radix-ui/react-toast": "^1.2.2",
+    "@supabase/supabase-js": "^2.45.4",
     "@tavily/core": "^0.7.2",
     "@types/keytar": "^4.4.0",
     "@types/three": "^0.182.0",
@@ -191,6 +192,7 @@
     "diff": "^7.0.0",
     "electron-store": "^8.1.0",
     "electron-updater": "^6.7.3",
+    "firebase": "^10.13.2",
     "form-data": "^4.0.1",
     "framer-motion": "^12.29.2",
     "groq-sdk": "^0.37.0",
@@ -221,7 +223,7 @@
     "three": "^0.182.0",
     "tree-kill": "^1.2.2",
     "uuid": "^11.0.3",
-    "ws": "^8.19.0"
+    "ws": "^8.20.1"
   },
   "optionalDependencies": {
     "sqlite-vec-darwin-arm64": "^0.1.7-alpha.2",

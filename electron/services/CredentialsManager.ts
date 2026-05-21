@@ -52,6 +52,18 @@ export interface StoredCredentials {
     groqPreferredModel?: string;
     openaiPreferredModel?: string;
     claudePreferredModel?: string;
+    // Firebase Auth — refresh token + last-known profile fields
+    // The short-lived ID token is NEVER persisted (1h expiry); the renderer
+    // exchanges the refresh token for a fresh ID token on every launch.
+    firebaseRefreshToken?: string;
+    firebaseUid?: string;
+    firebaseEmail?: string;
+    firebaseDisplayName?: string;
+    firebasePhotoURL?: string;
+    // Supabase project credentials (URL is non-sensitive; anon key is public-by-design
+    // but we keep both encrypted at rest to avoid casual exfiltration)
+    supabaseUrl?: string;
+    supabaseAnonKey?: string;
 }
 
 export class CredentialsManager {
@@ -350,6 +362,70 @@ export class CredentialsManager {
         this.credentials.curlProviders = this.credentials.curlProviders.filter(p => p.id !== id);
         this.saveCredentials();
         console.log(`[CredentialsManager] Curl Provider '${id}' deleted`);
+    }
+
+    // =========================================================================
+    // Firebase Identity
+    // =========================================================================
+
+    public setFirebaseIdentity(identity: {
+        refreshToken: string;
+        uid: string;
+        email?: string;
+        displayName?: string;
+        photoURL?: string;
+    }): void {
+        this.credentials.firebaseRefreshToken = identity.refreshToken;
+        this.credentials.firebaseUid = identity.uid;
+        this.credentials.firebaseEmail = identity.email;
+        this.credentials.firebaseDisplayName = identity.displayName;
+        this.credentials.firebasePhotoURL = identity.photoURL;
+        this.saveCredentials();
+    }
+
+    public getFirebaseIdentity(): {
+        refreshToken: string;
+        uid: string;
+        email?: string;
+        displayName?: string;
+        photoURL?: string;
+    } | null {
+        const rt = this.credentials.firebaseRefreshToken;
+        const uid = this.credentials.firebaseUid;
+        if (!rt || !uid) return null;
+        return {
+            refreshToken: rt,
+            uid,
+            email: this.credentials.firebaseEmail,
+            displayName: this.credentials.firebaseDisplayName,
+            photoURL: this.credentials.firebasePhotoURL,
+        };
+    }
+
+    public clearFirebaseIdentity(): void {
+        this.credentials.firebaseRefreshToken = undefined;
+        this.credentials.firebaseUid = undefined;
+        this.credentials.firebaseEmail = undefined;
+        this.credentials.firebaseDisplayName = undefined;
+        this.credentials.firebasePhotoURL = undefined;
+        this.saveCredentials();
+    }
+
+    // =========================================================================
+    // Supabase Credentials
+    // =========================================================================
+
+    public setSupabaseCredentials(url: string, anonKey: string): void {
+        this.credentials.supabaseUrl = url;
+        this.credentials.supabaseAnonKey = anonKey;
+        this.saveCredentials();
+    }
+
+    public getSupabaseCredentials(): { url: string; anonKey: string } | null {
+        const url = this.credentials.supabaseUrl;
+        const anonKey = this.credentials.supabaseAnonKey;
+        if (!url || !anonKey) return null;
+        return { url, anonKey };
     }
 
     public clearAll(): void {

@@ -2656,5 +2656,155 @@ export function initializeIpcHandlers(appState: AppState): void {
     });
     return;
   });
+
+  // ==========================================
+  // Firebase Auth bridge
+  // (Renderer owns the Firebase Web SDK and pushes the live ID token here.)
+  // ==========================================
+
+  // Wire AuthManager events → broadcast to renderers (one-time per process).
+  try {
+    const { AuthManager } = require('./services/AuthManager');
+    const am = AuthManager.getInstance();
+    const broadcast = () => {
+      const snap = am.snapshot();
+      BrowserWindow.getAllWindows().forEach(win => {
+        if (!win.isDestroyed()) win.webContents.send('auth:state-changed', snap);
+      });
+    };
+    am.on('signed-in', broadcast);
+    am.on('signed-out', broadcast);
+    am.on('auth-changed', broadcast);
+  } catch (e) {
+    console.warn('[ipc] AuthManager event wiring failed:', e);
+  }
+
+  safeHandle('auth:set-id-token', async (_, session: {
+    idToken: string;
+    refreshToken: string;
+    uid: string;
+    email?: string | null;
+    displayName?: string | null;
+    photoURL?: string | null;
+    expiresAt: number;
+  }) => {
+    try {
+      if (!session?.idToken || !session?.uid) {
+        return { success: false, error: 'idToken and uid required' };
+      }
+      const { AuthManager } = require('./services/AuthManager');
+      AuthManager.getInstance().setSession(session);
+      return { success: true };
+    } catch (error: any) {
+      console.error('[ipc] auth:set-id-token failed:', error);
+      return { success: false, error: error?.message ?? String(error) };
+    }
+  });
+
+  safeHandle('auth:clear', async () => {
+    try {
+      const { AuthManager } = require('./services/AuthManager');
+      AuthManager.getInstance().clearSession();
+      return { success: true };
+    } catch (error: any) {
+      return { success: false, error: error?.message ?? String(error) };
+    }
+  });
+
+  safeHandle('auth:get-state', async () => {
+    try {
+      const { AuthManager } = require('./services/AuthManager');
+      return AuthManager.getInstance().snapshot();
+    } catch (_) {
+      return { signedIn: false };
+    }
+  });
+
+  safeHandle('auth:get-persisted-refresh-token', async () => {
+    try {
+      const { AuthManager } = require('./services/AuthManager');
+      const persisted = AuthManager.getInstance().getPersistedIdentity();
+      return {
+        refreshToken: persisted?.refreshToken ?? null,
+        uid: persisted?.uid ?? null
+      };
+    } catch (_) {
+      return { refreshToken: null, uid: null };
+    }
+  });
+
+  // ==========================================
+  // Supabase mirror config & status
+  // ==========================================
+
+  safeHandle('supabase:set-credentials', async (_, args: { url: string; anonKey: string }) => {
+    try {
+      if (!args?.url || !args?.anonKey) {
+        return { success: false, error: 'url and anonKey required' };
+      }
+      const { CredentialsManager } = require('./services/CredentialsManager');
+      CredentialsManager.getInstance().setSupabaseCredentials(args.url, args.anonKey);
+      const { SupabaseClientManager } = require('./db/SupabaseClient');
+      SupabaseClientManager.configure(args.url, args.anonKey);
+      return { success: true };
+    } catch (error: any) {
+      console.error('[ipc] supabase:set-credentials failed:', error);
+      return { success: false, error: error?.message ?? String(error) };
+    }
+  });
+
+  safeHandle('supabase:get-mirror-status', async () => {
+    try {
+      const { SupabaseMirrorService } = require('./db/SupabaseMirrorService');
+      const { SupabaseClientManager } = require('./db/SupabaseClient');
+      const mirror = SupabaseMirrorService.getInstance();
+      const status = typeof mirror.getStatus === 'function'
+        ? mirror.getStatus()
+        : { outboxLength: 0, lastSyncAt: null, lastError: null };
+      return {
+        configured: SupabaseClientManager.hasCredentials?.() ?? false,
+        signedIn: !!SupabaseClientManager.getCurrentUserId?.(),
+        outboxLength: status.outboxLength ?? 0,
+        lastSyncAt: status.lastSyncAt ?? null,
+        lastError: status.lastError ?? null
+      };
+    } catch (error: any) {
+      return { configured: false, signedIn: false, outboxLength: 0, lastSyncAt: null, lastError: error?.message };
+    }
+  });
+
+  // Force a fresh historical backfill. Clears the 'supabase_backfill_done'
+  // checkpoint AND the per-table cursors, then re-runs SupabaseBackfill.run().
+  // Useful for development / re-syncing after schema changes. No-op if the
+  // mirror isn't configured or no user is signed in.
+  safeHandle('supabase:force-backfill', async () => {
+    try {
+      const { SupabaseBackfill } = require('./db/SupabaseBackfill');
+      const { DatabaseManager } = require('./db/DatabaseManager');
+      const { SupabaseClientManager } = require('./db/SupabaseClient');
+      if (!SupabaseClientManager.isConfigured?.()) {
+        return { success: false, error: 'Supabase not configured or not signed in' };
+      }
+      const db = DatabaseManager.getInstance().getDb();
+      if (!db) return { success: false, error: 'SQLite not ready' };
+
+      // Wipe the "done" flag and all per-table cursors so backfill restarts.
+      try {
+        db.prepare("DELETE FROM app_state WHERE key = 'supabase_backfill_done'").run();
+        db.prepare("DELETE FROM app_state WHERE key LIKE 'supabase_backfill_cursor_%'").run();
+      } catch (e) {
+        console.warn('[ipc] supabase:force-backfill — failed to clear checkpoints:', e);
+      }
+
+      // Fire-and-forget the run; UI can poll supabase:get-mirror-status.
+      SupabaseBackfill.run(db).catch((err: any) => {
+        console.warn('[ipc] supabase:force-backfill run error:', err);
+      });
+      return { success: true };
+    } catch (error: any) {
+      console.error('[ipc] supabase:force-backfill failed:', error);
+      return { success: false, error: error?.message ?? String(error) };
+    }
+  });
 }
 

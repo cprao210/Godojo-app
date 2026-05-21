@@ -4,6 +4,20 @@ import path from 'path';
 import { app } from 'electron';
 import fs from 'fs';
 import * as sqliteVec from 'sqlite-vec';
+import { SupabaseMirrorService } from './SupabaseMirrorService';
+
+/**
+ * Allow-list of app_state keys that are safe to mirror to the cloud.
+ * Anything not on this list is treated as local-only (auth tokens, machine-specific
+ * paths, transient flags, etc. must NEVER leave the device).
+ */
+const MIRRORED_APP_STATE_KEYS = new Set<string>([
+    'supabase_backfill_done',
+    'user_profile_summary',
+    'onboarding_complete',
+    'preferred_embedding_provider',
+    'preferred_embedding_dim'
+]);
 
 // Interfaces for our data objects
 export interface Meeting {
@@ -455,6 +469,13 @@ export class DatabaseManager {
         try {
             const stmt = this.db.prepare('INSERT OR REPLACE INTO app_state (key, value) VALUES (?, ?)');
             stmt.run(key, value);
+            if (MIRRORED_APP_STATE_KEYS.has(key)) {
+                try {
+                    SupabaseMirrorService.getInstance().upsertRow('app_state', { key, value });
+                } catch (e) {
+                    console.warn(`[DatabaseManager] Mirror enqueue failed for app_state ${key}:`, e);
+                }
+            }
         } catch (error) {
             console.error(`[DatabaseManager] Failed to set app_state for key: ${key}`, error);
         }
@@ -465,6 +486,13 @@ export class DatabaseManager {
         try {
             const stmt = this.db.prepare('DELETE FROM app_state WHERE key = ?');
             stmt.run(key);
+            if (MIRRORED_APP_STATE_KEYS.has(key)) {
+                try {
+                    SupabaseMirrorService.getInstance().deleteRow('app_state', 'key', key);
+                } catch (e) {
+                    console.warn(`[DatabaseManager] Mirror enqueue failed for app_state delete ${key}:`, e);
+                }
+            }
         } catch (error) {
             console.error(`[DatabaseManager] Failed to delete app_state for key: ${key}`, error);
         }
@@ -639,6 +667,12 @@ export class DatabaseManager {
             detailedSummary: meeting.detailedSummary
         });
 
+        // Mirror payloads collected inside the transaction. We only enqueue them at the
+        // mirror AFTER the transaction commits — never enqueue cloud writes for data that
+        // was rolled back locally.
+        const transcriptMirror: Array<Record<string, any>> = [];
+        const interactionMirror: Array<Record<string, any>> = [];
+
         const runTransaction = this.db.transaction(() => {
             // 1. Insert Meeting
             insertMeeting.run(
@@ -656,12 +690,19 @@ export class DatabaseManager {
             // 2. Insert Transcript
             if (meeting.transcript) {
                 for (const segment of meeting.transcript) {
-                    insertTranscript.run(
+                    const info = insertTranscript.run(
                         meeting.id,
                         segment.speaker,
                         segment.text,
                         segment.timestamp
                     );
+                    transcriptMirror.push({
+                        id: Number(info.lastInsertRowid),
+                        meeting_id: meeting.id,
+                        speaker: segment.speaker,
+                        content: segment.text,
+                        timestamp_ms: segment.timestamp
+                    });
                 }
             }
 
@@ -684,7 +725,7 @@ export class DatabaseManager {
                     const answerText = Array.isArray(usage.answer) ? null : usage.answer || null;
                     const queryText = usage.question || null;
 
-                    insertInteraction.run(
+                    const info = insertInteraction.run(
                         meeting.id,
                         usage.type,
                         usage.timestamp,
@@ -692,6 +733,15 @@ export class DatabaseManager {
                         answerText,
                         metadata
                     );
+                    interactionMirror.push({
+                        id: Number(info.lastInsertRowid),
+                        meeting_id: meeting.id,
+                        type: usage.type,
+                        timestamp: usage.timestamp,
+                        user_query: queryText,
+                        ai_response: answerText,
+                        metadata_json: metadata
+                    });
                 }
             }
         });
@@ -699,6 +749,26 @@ export class DatabaseManager {
         try {
             runTransaction();
             console.log(`[DatabaseManager] Successfully saved meeting ${meeting.id}`);
+
+            // Mirror to Supabase (no-op if disabled / unauthenticated — queues otherwise).
+            try {
+                const mirror = SupabaseMirrorService.getInstance();
+                mirror.upsertRow('meetings', {
+                    id: meeting.id,
+                    title: meeting.title,
+                    start_time: startTimeMs,
+                    duration_ms: durationMs,
+                    summary_json: summaryJson,
+                    created_at: meeting.date,
+                    calendar_event_id: meeting.calendarEventId || null,
+                    source: meeting.source || 'manual',
+                    is_processed: meeting.isProcessed ? 1 : 0
+                });
+                if (transcriptMirror.length > 0) mirror.upsertRows('transcripts', transcriptMirror);
+                if (interactionMirror.length > 0) mirror.upsertRows('ai_interactions', interactionMirror);
+            } catch (mirrorErr) {
+                console.warn(`[DatabaseManager] Mirror enqueue failed for meeting ${meeting.id} (local save OK):`, mirrorErr);
+            }
         } catch (err) {
             console.error(`[DatabaseManager] Failed to save meeting ${meeting.id}`, err);
             throw err;
@@ -710,6 +780,13 @@ export class DatabaseManager {
         try {
             const stmt = this.db.prepare('UPDATE meetings SET title = ? WHERE id = ?');
             const info = stmt.run(title, id);
+            if (info.changes > 0) {
+                try {
+                    SupabaseMirrorService.getInstance().upsertRow('meetings', { id, title });
+                } catch (e) {
+                    console.warn(`[DatabaseManager] Mirror enqueue failed for title update ${id}:`, e);
+                }
+            }
             return info.changes > 0;
         } catch (error) {
             console.error(`[DatabaseManager] Failed to update title for meeting ${id}:`, error);
@@ -751,6 +828,13 @@ export class DatabaseManager {
             // 3. Write back
             const stmt = this.db.prepare('UPDATE meetings SET summary_json = ? WHERE id = ?');
             const info = stmt.run(jsonStr, id);
+            if (info.changes > 0) {
+                try {
+                    SupabaseMirrorService.getInstance().upsertRow('meetings', { id, summary_json: jsonStr });
+                } catch (e) {
+                    console.warn(`[DatabaseManager] Mirror enqueue failed for summary update ${id}:`, e);
+                }
+            }
             return info.changes > 0;
 
         } catch (error) {
@@ -868,6 +952,14 @@ export class DatabaseManager {
             const stmt = this.db.prepare('DELETE FROM meetings WHERE id = ?');
             const info = stmt.run(id);
             console.log(`[DatabaseManager] Deleted meeting ${id}. Changes: ${info.changes}`);
+            if (info.changes > 0) {
+                try {
+                    // Postgres ON DELETE CASCADE removes child transcripts/interactions/chunks/vectors
+                    SupabaseMirrorService.getInstance().deleteRow('meetings', 'id', id);
+                } catch (e) {
+                    console.warn(`[DatabaseManager] Mirror enqueue failed for delete ${id}:`, e);
+                }
+            }
             return info.changes > 0;
         } catch (error) {
             console.error(`[DatabaseManager] Failed to delete meeting ${id}:`, error);
@@ -915,6 +1007,12 @@ export class DatabaseManager {
         if (!this.db) return false;
 
         try {
+            // Snapshot meeting ids BEFORE we wipe, so we can fan out mirrored deletes after.
+            let meetingIds: string[] = [];
+            try {
+                meetingIds = (this.db.prepare('SELECT id FROM meetings').all() as any[]).map(r => r.id);
+            } catch (_) { /* table may not exist on first run */ }
+
             // Clear all tables atomically (order matters due to foreign keys,
             // but SQLite handles cascades). Using a transaction ensures we never
             // end up in a half-cleared state if one statement fails.
@@ -928,6 +1026,15 @@ export class DatabaseManager {
             })();
 
             console.log('[DatabaseManager] All data cleared from database.');
+
+            // Mirror per-meeting deletes (Postgres cascade removes children).
+            // We do NOT mirror app_state wipes — that's machine-local config.
+            try {
+                const mirror = SupabaseMirrorService.getInstance();
+                for (const id of meetingIds) mirror.deleteRow('meetings', 'id', id);
+            } catch (e) {
+                console.warn('[DatabaseManager] Mirror enqueue failed during clearAllData:', e);
+            }
             return true;
         } catch (error) {
             console.error('[DatabaseManager] Failed to clear all data:', error);

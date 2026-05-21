@@ -2459,6 +2459,82 @@ async function initializeApp() {
   const { CredentialsManager } = require('./services/CredentialsManager');
   CredentialsManager.getInstance().init();
 
+  // 3a. Initialize cloud sync stack: Firebase Auth identity restore + Supabase client.
+  //     The renderer's trySilentRestore() owns the actual refresh-token exchange
+  //     (it has the Firebase Web SDK + project apiKey). Main-side we just:
+  //       a. SupabaseClientManager.init() picks up persisted project URL/anon key
+  //          and constructs the supabase-js client with the accessToken callback.
+  //       b. SupabaseMirrorService.getInstance().init(db) below — done after
+  //          DatabaseManager is up — wires the outbox table and starts listening
+  //          for AuthManager 'signed-in' / 'auth-changed' events.
+
+  // Dev convenience: in unpackaged builds, if SUPABASE_URL / SUPABASE_KEY are present
+  // in the loaded .env AND no credentials have been persisted yet, hydrate them once
+  // so the SQL DDL / mirror flow works without manually calling supabaseSetCredentials
+  // from DevTools on every fresh machine. No-op in production builds.
+  try {
+    if (!app.isPackaged && process.env.SUPABASE_URL && process.env.SUPABASE_KEY) {
+      const cm = CredentialsManager.getInstance();
+      const existing = cm.getSupabaseCredentials?.();
+      if (!existing?.url || !existing?.anonKey) {
+        cm.setSupabaseCredentials(process.env.SUPABASE_URL, process.env.SUPABASE_KEY);
+        console.log('[Main] Supabase credentials hydrated from .env (dev only)');
+      }
+    }
+  } catch (e) {
+    console.warn('[Main] Supabase .env hydration failed (non-fatal):', e);
+  }
+
+  try {
+    const { SupabaseClientManager } = require('./db/SupabaseClient');
+    SupabaseClientManager.init();
+  } catch (e) {
+    console.warn('[Main] SupabaseClientManager.init failed (non-fatal):', e);
+  }
+  try {
+    const { SupabaseMirrorService } = require('./db/SupabaseMirrorService');
+    const { DatabaseManager } = require('./db/DatabaseManager');
+    const sqliteDb = DatabaseManager.getInstance().getDb();
+    if (sqliteDb) {
+      SupabaseMirrorService.getInstance().init(sqliteDb);
+      console.log('[Main] SupabaseMirrorService initialized');
+
+      // One-time historical backfill: pushes any local SQLite rows that pre-date
+      // mirror configuration up to Supabase. Idempotent — the backfill module
+      // checkpoints progress in app_state ('supabase_backfill_done') so it's a
+      // no-op after the first successful run. Must wait for a Firebase session
+      // because every upsert is RLS-scoped on auth.jwt() -> 'sub'.
+      try {
+        const { SupabaseBackfill } = require('./db/SupabaseBackfill');
+        const { AuthManager } = require('./services/AuthManager');
+        const auth = AuthManager.getInstance();
+
+        const runBackfillOnce = () => {
+          // Fire-and-forget; SupabaseBackfill.run handles its own errors and
+          // re-checkpoints, so a transient failure just means we'll resume on
+          // the next launch.
+          SupabaseBackfill.run(sqliteDb).catch((err: any) => {
+            console.warn('[Main] SupabaseBackfill.run failed (non-fatal):', err);
+          });
+        };
+
+        if (auth.isSignedIn()) {
+          runBackfillOnce();
+        } else {
+          // Wait for the renderer's silent-restore / first sign-in to deliver
+          // an ID token, then run exactly once.
+          auth.once('signed-in', runBackfillOnce);
+        }
+      } catch (e) {
+        console.warn('[Main] SupabaseBackfill wiring failed (non-fatal):', e);
+      }
+    } else {
+      console.warn('[Main] DatabaseManager has no DB handle yet — mirror service deferred');
+    }
+  } catch (e) {
+    console.warn('[Main] SupabaseMirrorService init failed (non-fatal):', e);
+  }
+
   // 4. Initialize State
   const appState = AppState.getInstance()
 

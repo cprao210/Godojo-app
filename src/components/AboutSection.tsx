@@ -174,11 +174,11 @@ export const AboutSection: React.FC<AboutSectionProps> = () => {
 
 
             {/* Community Section */}
-            <div>
-                <h4 className="text-xs font-bold text-text-tertiary uppercase tracking-wider mb-2 px-1">Community</h4>
-                <div className="space-y-4">
+            {/* <div> */}
+                {/* <h4 className="text-xs font-bold text-text-tertiary uppercase tracking-wider mb-2 px-1">Community</h4> */}
+                {/* <div className="space-y-4"> */}
                     {/* 0. Official Website */}
-                    <div className="bg-bg-item-surface rounded-xl border border-border-subtle p-5 flex flex-col md:flex-row items-center justify-between gap-4">
+                    {/* <div className="bg-bg-item-surface rounded-xl border border-border-subtle p-5 flex flex-col md:flex-row items-center justify-between gap-4">
                         <div className="flex items-center gap-4">
                             <div className="w-10 h-10 rounded-full bg-indigo-500/10 flex items-center justify-center text-indigo-500 shadow-sm shadow-indigo-500/5">
                                 <Globe size={18} className="opacity-80" />
@@ -195,10 +195,10 @@ export const AboutSection: React.FC<AboutSectionProps> = () => {
                             <Globe size={14} />
                             Visit Website
                         </a>
-                    </div>
+                    </div> */}
 
                     {/* 1. Founder Profile */}
-                    <div className="bg-bg-item-surface rounded-xl p-5">
+                    {/* <div className="bg-bg-item-surface rounded-xl p-5">
                         <div className="flex flex-col gap-4">
                             <div className="flex items-start gap-4">
                                 <div className="w-12 h-12 rounded-full bg-bg-elevated border border-border-subtle flex items-center justify-center overflow-hidden shrink-0">
@@ -251,10 +251,10 @@ export const AboutSection: React.FC<AboutSectionProps> = () => {
                                 </a>
                             </div>
                         </div>
-                    </div>
+                    </div> */}
 
                     {/* 2. Star & Report */}
-                    <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                    {/* <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
                         <a
                             href="https://github.com/evinjohnn/natively-cluely-ai-assistant"
                             onClick={(e) => handleOpenLink(e, "https://github.com/evinjohnn/natively-cluely-ai-assistant")}
@@ -282,10 +282,10 @@ export const AboutSection: React.FC<AboutSectionProps> = () => {
                                 <p className="text-xs text-text-secondary mt-0.5">Found a bug? Let us know so we can fix it.</p>
                             </div>
                         </a>
-                    </div>
+                    </div> */}
 
                     {/* 3. Get in Touch */}
-                    <div className="bg-bg-item-surface rounded-xl border border-border-subtle p-5 flex flex-col md:flex-row items-center justify-between gap-4">
+                    {/* <div className="bg-bg-item-surface rounded-xl border border-border-subtle p-5 flex flex-col md:flex-row items-center justify-between gap-4">
                         <div className="flex items-center gap-4">
                             <div className="w-10 h-10 rounded-full bg-blue-500/10 flex items-center justify-center text-blue-500 shadow-sm shadow-blue-500/5">
                                 <Mail size={18} className="opacity-80" />
@@ -303,10 +303,10 @@ export const AboutSection: React.FC<AboutSectionProps> = () => {
                             <Mail size={14} />
                             Contact Me
                         </a>
-                    </div>
+                    </div> */}
 
                     {/* 4. Support */}
-                    <div className="bg-bg-item-surface rounded-xl border border-border-subtle p-5 flex flex-col md:flex-row items-center justify-between gap-4">
+                    {/* <div className="bg-bg-item-surface rounded-xl border border-border-subtle p-5 flex flex-col md:flex-row items-center justify-between gap-4">
                         <div className="flex items-center gap-4">
                             <div className="w-10 h-10 rounded-full bg-pink-500/10 flex items-center justify-center text-pink-500 shadow-sm shadow-pink-500/5">
                                 <Heart size={18} fill="currentColor" className="opacity-80" />
@@ -323,9 +323,9 @@ export const AboutSection: React.FC<AboutSectionProps> = () => {
                         >
                             Support Project
                         </a>
-                    </div>
-                </div>
-            </div>
+                    </div> */}
+                {/* </div> */}
+            {/* </div> */}
 
             {/* Credits */}
             <div className="pt-4 border-t border-border-subtle">
