@@ -16,6 +16,7 @@ import { useShortcuts } from '../hooks/useShortcuts';
 import { useResolvedTheme } from '../hooks/useResolvedTheme';
 import { isMac } from '../utils/platformUtils';
 import WindowControls from './WindowControls';
+import UserProfileButton from './ui/UserProfileButton';
 
 interface Meeting {
     id: string;
@@ -51,6 +52,8 @@ interface LauncherProps {
     ollamaPullStatus?: 'idle' | 'downloading' | 'complete' | 'failed';
     ollamaPullPercent?: number;
     ollamaPullMessage?: string;
+    authUser?: { displayName?: string | null; email?: string | null; photoURL?: string | null } | null;
+    onSignOut?: () => void;
 }
 
 // Helper to format date groups
@@ -78,7 +81,7 @@ const formatTime = (dateStr: string) => {
     return date.toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit', hour12: true }).toLowerCase();
 };
 
-const Launcher: React.FC<LauncherProps> = ({ onStartMeeting, onOpenSettings, onPageChange, ollamaPullStatus = 'idle', ollamaPullPercent = 0, ollamaPullMessage = '' }) => {
+const Launcher: React.FC<LauncherProps> = ({ onStartMeeting, onOpenSettings, onPageChange, ollamaPullStatus = 'idle', ollamaPullPercent = 0, ollamaPullMessage = '', authUser, onSignOut }) => {
     const [meetings, setMeetings] = useState<Meeting[]>([]);
     const [isDetectable, setIsDetectable] = useState(false);
     const [isMeetingActive, setIsMeetingActive] = useState(false);
@@ -516,16 +519,23 @@ const Launcher: React.FC<LauncherProps> = ({ onStartMeeting, onOpenSettings, onP
                 />
 
                 {/* Right: Actions */}
-                <div className={`flex items-center gap-3 no-drag shrink-0 ${isMac ? 'mr-1' : ''}`}>
+                <div className={`flex items-center gap-1 no-drag shrink-0 ${isMac ? 'mr-1' : ''}`}>
                     <button
                         onClick={() => {
                             onOpenSettings();
-                            // analytics.trackCommandExecuted('open_settings'); // Optional, high volume
                         }}
-                        className={`p-2 text-text-secondary hover:text-text-primary transition-all duration-300 ${isLight ? 'hover:drop-shadow-[0_0_6px_rgba(0,0,0,0.25)]' : 'hover:drop-shadow-[0_0_8px_rgba(255,255,255,0.5)]'}`}
+                        className={`p-2 rounded-lg text-text-secondary hover:text-text-primary transition-all duration-200 ${isLight ? 'hover:bg-black/5 hover:drop-shadow-[0_0_6px_rgba(0,0,0,0.25)]' : 'hover:bg-white/8 hover:drop-shadow-[0_0_8px_rgba(255,255,255,0.5)]'}`}
                     >
-                        <Settings size={18} />
+                        <Settings size={16} />
                     </button>
+                    {authUser && onSignOut && (
+                        <UserProfileButton
+                            displayName={authUser.displayName}
+                            email={authUser.email}
+                            photoURL={authUser.photoURL}
+                            onSignOut={onSignOut}
+                        />
+                    )}
                     {!isMac && <WindowControls />}
                 </div>
             </header>
