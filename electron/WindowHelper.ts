@@ -468,21 +468,31 @@ export class WindowHelper {
 
     // Show Overlay FIRST
     if (this.overlayWindow && !this.overlayWindow.isDestroyed()) {
-      // Reset overlay position to center or last known? 
-      // For now, center it nicely
-      const cursorPoint = screen.getCursorScreenPoint()
-      const activeDisplay = screen.getDisplayNearestPoint(cursorPoint)
+      // AFTER
+      const targetHeight = Math.max(this.overlayWindow.getBounds().height, 216);
 
-      const workArea = activeDisplay.workArea;
+      // Always follow the launcher's current display — it may have been moved to an
+      // external monitor. Using the cursor or the overlay's stale bounds both fail
+      // because getDisplayMatching() never returns falsy (it always picks the nearest).
+      const launcherBounds = this.launcherWindow?.getBounds();
+      const referenceDisplay = launcherBounds
+        ? screen.getDisplayMatching(launcherBounds)
+        : screen.getDisplayNearestPoint(screen.getCursorScreenPoint());
+
+      const workArea = referenceDisplay.workArea;
+
+      // If the overlay is already on the same display as the launcher, keep its
+      // current x/y so the user's manual repositioning is respected.
       const currentBounds = this.overlayWindow.getBounds();
-      const currentDisplay = screen.getDisplayMatching(currentBounds)
-      const targetHeight = Math.max(currentBounds.height, 216);
-      const x = currentDisplay
+      const currentDisplay = screen.getDisplayMatching(currentBounds);
+      const onSameDisplay = currentDisplay.id === referenceDisplay.id;
+
+      const x = onSameDisplay
         ? currentBounds.x
-        : Math.floor(workArea.x + (workArea.width - 600) / 2)
-      const y = currentDisplay
+        : Math.floor(workArea.x + (workArea.width - 600) / 2);
+      const y = onSameDisplay
         ? currentBounds.y
-        : Math.floor(workArea.y + (workArea.height - 600) / 2)
+        : Math.floor(workArea.y + (workArea.height - 600) / 2);
 
       this.overlayWindow.setBounds({ x, y, width: 600, height: targetHeight });
 
