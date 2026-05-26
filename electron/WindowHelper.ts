@@ -219,11 +219,32 @@ export class WindowHelper {
     // silently blocks every new-window request, so the popup never appears
     // and the sign-in call hangs / throws "popup-blocked".
     this.launcherWindow.webContents.setWindowOpenHandler(({ url }) => {
-      const isGoogleAuth =
-        url.startsWith('https://accounts.google.com') ||
-        url.startsWith('https://www.google.com/accounts') ||
-        url.includes('firebaseapp.com/__/auth') ||
-        url.includes('google.com/o/oauth2');
+      // Parse the URL strictly — substring checks on raw strings can be
+      // bypassed by an attacker embedding the trusted hostname in a path or
+      // query string (e.g. `evil.com/accounts.google.com`).
+      let parsed: URL;
+      try {
+        parsed = new URL(url);
+      } catch {
+        // Unparseable URL — deny silently
+        return { action: 'deny' };
+      }
+
+      const { protocol, hostname, pathname } = parsed;
+
+      // Only https is ever allowed into an app-owned popup
+      const isHttps = protocol === 'https:';
+
+      const isGoogleAuth = isHttps && (
+        // Google's own consent screen
+        hostname === 'accounts.google.com' ||
+        // www.google.com only for the /accounts/... path family
+        (hostname === 'www.google.com' && pathname.startsWith('/accounts/')) ||
+        // Firebase auth relay — must be *.firebaseapp.com AND the /__/auth path
+        (hostname.endsWith('.firebaseapp.com') && pathname.startsWith('/__/auth')) ||
+        // Google OAuth2 token endpoint
+        (hostname === 'accounts.google.com' && pathname.startsWith('/o/oauth2'))
+      );
 
       if (isGoogleAuth) {
         // Center the popup on whichever display the launcher window is currently
@@ -272,7 +293,12 @@ export class WindowHelper {
       }
 
       // For all other external links, open in the system browser.
-      require('electron').shell.openExternal(url);
+      // Only allow http/https — deny mailto, file, javascript, custom schemes etc.
+      if (isHttps || protocol === 'http:') {
+        require('electron').shell.openExternal(url);
+      } else {
+        console.warn('[WindowHelper] Blocked non-http(s) external URL:', url);
+      }
       return { action: 'deny' };
     });
 

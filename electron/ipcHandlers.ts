@@ -2195,9 +2195,11 @@ Return this exact JSON structure (use null for unknown fields, never omit a key)
   "geographicPresence": string[] | null,
   "topCustomers": string[] | null
 }
-  
+
 RULES:
-- Make sure to return "," separated data in all string[] data types`;
+- All string[] fields MUST be JSON arrays (e.g. ["Alice", "Bob"]), never comma-separated strings
+- Use null for any field you cannot determine from the snippets
+- Do not add keys beyond those listed above`;
 
       const raw = await llmHelper.chatWithGemini(extractionPrompt, undefined, undefined, false);
       if (!raw) return { success: false, error: 'LLM extraction failed' };
@@ -2220,6 +2222,47 @@ RULES:
         url: r.url,
         date: r.published_date || null,
       }));
+
+      // Normalize string[] fields — the LLM occasionally returns a
+      // comma-separated string despite the prompt instruction.  Defensively
+      // coerce every known list field so the renderer never crashes on .map().
+      const LIST_FIELDS = [
+        'founders', 'investors', 'keyProducts', 'competitors',
+        'geographicPresence', 'topCustomers',
+      ] as const;
+
+      for (const field of LIST_FIELDS) {
+        const v = intel[field];
+        if (v === null || v === undefined) {
+          intel[field] = null;
+        } else if (Array.isArray(v)) {
+          // Filter nulls, trim whitespace
+          intel[field] = v
+            .filter((x: any) => typeof x === 'string' && x.trim())
+            .map((x: string) => x.trim());
+          if (intel[field].length === 0) intel[field] = null;
+        } else if (typeof v === 'string' && v.trim()) {
+          // Comma-separated fallback
+          intel[field] = v.split(',').map((s: string) => s.trim()).filter(Boolean);
+          if (intel[field].length === 0) intel[field] = null;
+        } else {
+          intel[field] = null;
+        }
+      }
+
+      // Validate object-array fields — ensure shape is correct or null them
+      if (intel.recentNews !== null && intel.recentNews !== undefined) {
+        if (!Array.isArray(intel.recentNews) ||
+          !intel.recentNews.every((n: any) => typeof n?.headline === 'string')) {
+          intel.recentNews = null;
+        }
+      }
+      if (intel.leadershipChanges !== null && intel.leadershipChanges !== undefined) {
+        if (!Array.isArray(intel.leadershipChanges) ||
+          !intel.leadershipChanges.every((n: any) => typeof n?.name === 'string' && typeof n?.role === 'string')) {
+          intel.leadershipChanges = null;
+        }
+      }
 
       return { success: true, intel };
     } catch (error: any) {

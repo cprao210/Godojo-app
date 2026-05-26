@@ -37,7 +37,7 @@ import React, { useEffect, useRef } from 'react';
 import { motion } from 'framer-motion';
 import { SiGooglemeet, SiZoom } from 'react-icons/si';
 import { BsMicrosoftTeams } from "react-icons/bs";
-import { Video, Clock } from 'lucide-react';
+import { Clock } from 'lucide-react';
 
 // ─────────────────────────────────────────────────────────────────
 // TYPES
@@ -57,7 +57,7 @@ interface MeetingTimelineProps {
     events: CalendarEvent[];
     selectedId: string | null;
     onSelect: (id: string) => void;
-    isLight: boolean;
+    isLight?: boolean;
 }
 
 // ─────────────────────────────────────────────────────────────────

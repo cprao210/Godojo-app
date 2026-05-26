@@ -112,7 +112,20 @@ const App: React.FC = () => {
   // Overlay opacity — only meaningful when isOverlayWindow, but stored centrally
   // so it can be initialized once from localStorage and updated via IPC.
   const [overlayOpacity, setOverlayOpacity] = useState<number>(() => {
-    const stored = localStorage.getItem('gd_dock_opacity');
+    const NEW_KEY = 'gd_dock_opacity';
+    const OLD_KEY = 'natively_overlay_opacity'; // key used before the rename
+
+    // Migration: if the new key is absent, try the old key and promote it.
+    let stored = localStorage.getItem(NEW_KEY);
+    if (stored === null) {
+      const legacy = localStorage.getItem(OLD_KEY);
+      if (legacy !== null) {
+        localStorage.setItem(NEW_KEY, legacy);
+        localStorage.removeItem(OLD_KEY); // clean up old key
+        stored = legacy;
+      }
+    }
+
     const parsed = stored ? parseFloat(stored) : NaN;
     // Treat missing value or the old default (0.65) as "not user-set"
     const isUserSet = Number.isFinite(parsed) && parsed !== OVERLAY_OPACITY_DEFAULT;

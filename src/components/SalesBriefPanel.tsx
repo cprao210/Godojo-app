@@ -335,8 +335,17 @@ const SalesBriefPanel: React.FC<SalesBriefPanelProps> = ({ eventData, onClose })
 
     const openUrl = (url: string) => {
         if (!url) return;
-        const safeUrl = url.startsWith('http') ? url : `https://${url}`;
-        window.open(safeUrl, '_blank');
+        // Normalise missing scheme, then validate — only http/https are allowed.
+        // This prevents javascript:, file:, and other dangerous schemes from
+        // being handed to shell.openExternal via the IPC open-external handler.
+        const normalised = /^https?:\/\//i.test(url) ? url : `https://${url}`;
+        try {
+            const { protocol } = new URL(normalised);
+            if (protocol !== 'https:' && protocol !== 'http:') return;
+        } catch {
+            return; // unparseable — skip silently
+        }
+        window.open(normalised, '_blank');
     };
 
     const val = (v: any) => v && v !== 'null' && v !== 'N/A' ? v : null;
