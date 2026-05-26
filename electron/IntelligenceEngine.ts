@@ -12,6 +12,8 @@ import {
     AssistantResponse as LLMAssistantResponse, classifyIntent,
     WhatAmIMissingLLM, DiscoveryLLM, ObjectionHandlerLLM
 } from './llm';
+import { detectTavilyIntent, extractAllowedCompaniesFromAttendees } from './services/TavilyIntentDetector';
+import { searchCompany, buildCompanyContextBlock, CompanySearchResult, clearCompanyCache } from './services/TavilyManager';
 
 // Mode types
 export type IntelligenceMode = 'idle' | 'assist' | 'what_to_say' | 'what_am_i_missing' | 'discovery' | 'objection_handler' | 'follow_up' | 'recap' | 'clarify' | 'manual' | 'follow_up_questions' | 'code_hint' | 'brainstorm';
@@ -89,6 +91,13 @@ export class IntelligenceEngine extends EventEmitter {
     private lastTranscriptTime: number = 0;
     private lastTriggerTime: number = 0;
     private readonly triggerCooldown: number = 3000; // 3 seconds
+
+    /**
+     * Per-session Tavily cache.
+     * Key: entity name (lowercased) → in-flight Promise or resolved CompanySearchResult.
+     * One Tavily call per unique entity per session, even on rapid duplicate messages.
+     */
+    private tavilyAllowedCompanies: Set<string> = new Set();
 
     constructor(llmHelper: LLMHelper, session: SessionTracker) {
         super();
@@ -913,9 +922,24 @@ export class IntelligenceEngine extends EventEmitter {
         }
     }
 
+    public setAllowedTavilyCompanies(companies: Set<string>): void {
+        this.tavilyAllowedCompanies = companies;
+    }
+
     /**
-     * MODE 5: Manual Answer (Fallback)
-     * Explicit bypass when auto-detection fails
+     * MODE 5: Manual Answer with Tavily Company Enrichment
+     *
+     * Pipeline:
+     *   1. Synchronously classify whether the question needs external company data
+     *      (TavilyIntentDetector — <1 ms, no I/O).
+     *   2. If yes, fetch from Tavily — deduped via tavilyCache so rapid duplicate
+     *      messages never fire a second HTTP call for the same entity.
+     *   3. Prepend a compact company-context block to the transcript context so the
+     *      LLM can reference it without any prompt-template changes.
+     *   4. Generate answer exactly as before and emit the same events.
+     *
+     * Transcript behaviour is fully preserved — Tavily data is appended to the
+     * existing context string; the session is written to only after generation.
      */
     async runManualAnswer(question: string): Promise<string | null> {
         this.emit('manual_answer_started');
@@ -927,8 +951,52 @@ export class IntelligenceEngine extends EventEmitter {
                 return null;
             }
 
-            const context = this.session.getFormattedContext(120);
-            const answer = await this.answerLLM.generate(question, context);
+            // ── Step 1: Intent detection (synchronous, <1 ms) ───────────────
+            const intentResult = detectTavilyIntent(question, this.tavilyAllowedCompanies);
+            let companyContext = '';
+            if (intentResult.needsExternalSearch && intentResult.searchQuery && intentResult.entityName) {
+                this.emit('tavily_searching', intentResult.entityName);
+                const state = await searchCompany(intentResult.searchQuery, intentResult.entityName);
+                this.emit('tavily_search_done', { entity: intentResult.entityName, status: state.status, fromCache: state.data?.fromCache ?? false });
+                if ((state.status === 'success' || state.status === 'cached') && state.data) {
+                    companyContext = buildCompanyContextBlock(state.data);
+                } else {
+                    console.warn(`[IntelligenceEngine] Tavily fallback for "${intentResult.entityName}": ${state.message}`);
+                }
+            }
+
+            // ── Step 3: Build context — transcript first, company block appended ─
+            const transcriptContext = this.session.getFormattedContext(120);
+
+            // ── Scope Guard ──────────────────────────────────────────────────
+            const _hasContext = transcriptContext && transcriptContext.trim().length > 0;
+            const _hasAllowedCompanies = this.tavilyAllowedCompanies.size > 0;
+
+            if (!_hasContext && !_hasAllowedCompanies) {
+                const refusal = "I can only help with questions related to this meeting, the transcript, the meeting brief, or companies of the participants. This question is outside that scope.";
+                this.emit('manual_answer_result', refusal, question);
+                this.setMode('idle');
+                return refusal;
+            }
+
+            // Inject inferred company names so the LLM knows the allowed scope
+            let participantNote = '';
+            if (_hasAllowedCompanies) {
+                const companyList = [...this.tavilyAllowedCompanies].join(', ');
+                participantNote =
+                    '\n\n--- MEETING PARTICIPANTS (inferred companies from professional email domains) ---\n' +
+                    `Companies represented in this meeting: ${companyList}\n` +
+                    'You may answer questions about these companies using any external context provided.\n' +
+                    '--- END PARTICIPANT INFO ---';
+            }
+            // ── End Scope Guard ──────────────────────────────────────────────
+
+            const enrichedContext = [transcriptContext, companyContext, participantNote]
+                .filter(Boolean)
+                .join('\n\n');
+
+            // ── Step 4: Generate (no prompt changes) ────────────────────────
+            const answer = await this.answerLLM.generate(question, enrichedContext);
 
             if (answer) {
                 this.session.addAssistantMessage(answer);
@@ -1132,5 +1200,8 @@ export class IntelligenceEngine extends EventEmitter {
             this.assistCancellationToken.abort();
             this.assistCancellationToken = null;
         }
+        // Clear per-session Tavily cache so a new meeting starts fresh
+        clearCompanyCache();
+        this.tavilyAllowedCompanies = new Set();
     }
 }
