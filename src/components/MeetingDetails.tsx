@@ -1,6 +1,6 @@
 import React, { act, useEffect, useMemo, useState } from 'react';
 import { useResolvedTheme } from '../hooks/useResolvedTheme';
-import { ArrowLeft, Search, Mail, Link, ChevronDown, BarChart3, Play, ArrowUp, Copy, Check, MoreHorizontal, Settings, ArrowRight, TrendingUp, TriangleAlert, MessageSquare, MessagesSquareIcon, ChartColumnIncreasing, CircleCheck, NotepadText, TableOfContents, RefreshCcw, Loader2, RefreshCw, Shield } from 'lucide-react';
+import { ArrowLeft, Search, Mail, Link, ChevronDown, BarChart3, Play, ArrowUp, Copy, Check, MoreHorizontal, Settings, ArrowRight, TrendingUp, TriangleAlert, MessageSquare, MessagesSquareIcon, ChartColumnIncreasing, CircleCheck, NotepadText, TableOfContents, RefreshCcw, Loader2, RefreshCw, Shield, NotebookPen, ClipboardList } from 'lucide-react';
 import { motion, AnimatePresence } from 'framer-motion';
 import MeetingChatOverlay from './MeetingChatOverlay';
 import EditableTextBlock from './EditableTextBlock';
@@ -138,7 +138,7 @@ interface MeetingDetailsProps {
 
 // Skeleton pulse component
 const Skeleton: React.FC<{ className?: string }> = ({ className = '' }) => (
-    <div className={`animate-pulse bg-white/8 rounded-lg ${className}`} />
+    <div className={`animate-pulse rounded-lg ${className}`} style={{ background: 'rgba(128,128,128,0.12)' }} />
 );
 
 const MeetingDetails: React.FC<MeetingDetailsProps> = ({ meeting: initialMeeting }) => {
@@ -159,7 +159,6 @@ const MeetingDetails: React.FC<MeetingDetailsProps> = ({ meeting: initialMeeting
         initialMeeting.title === 'Processing...' || initialMeeting.isProcessed === false
     );
     const [isTalktimeOpen, setIsTalktimeOpen] = useState(false);
-    const [isTranscriptOpen, setIsTranscriptOpen] = useState(true);
 
     const speakerNames = (meeting.detailedSummary as any)?.speakerNames as
         { user: string; interviewer: string } | undefined;
@@ -535,19 +534,6 @@ const MeetingDetails: React.FC<MeetingDetailsProps> = ({ meeting: initialMeeting
         }
     };
 
-    const handleOverviewSave = async (newOverview: string) => {
-        setMeeting(prev => ({
-            ...prev,
-            detailedSummary: {
-                ...prev.detailedSummary!,
-                overview: newOverview
-            }
-        }));
-        if (window.electronAPI?.updateMeetingSummary) {
-            await window.electronAPI.updateMeetingSummary(meeting.id, { overview: newOverview });
-        }
-    };
-
     const handleActionItemSave = async (index: number, newVal: string) => {
         const newItems = [...(meeting.detailedSummary?.actionItems || [])];
         if (!newVal.trim()) {
@@ -642,7 +628,7 @@ const MeetingDetails: React.FC<MeetingDetailsProps> = ({ meeting: initialMeeting
     const talkTime = useMemo(() => computeTalkTime(meeting.transcript), [meeting.transcript]);
 
     return (
-        <div className="h-full w-full flex flex-col bg-bg-secondary text-text-secondary font-sans overflow-hidden">
+        <div className={`h-full w-full flex flex-col font-sans overflow-hidden ${isLight ? 'bg-[#f0f2f8] text-slate-700' : 'bg-[#0a0c14] text-slate-300'}`}>
 
             {/* Main Content */}
             <main className="flex-1 overflow-y-auto custom-scrollbar">
@@ -654,34 +640,41 @@ const MeetingDetails: React.FC<MeetingDetailsProps> = ({ meeting: initialMeeting
                 >
                     {/* Meta Info & Actions Row */}
                     <div className="flex items-start justify-between mb-6">
-                        <div className="w-full pr-4">
-                            {/* Date formatting could be improved to use meeting.date if it's an ISO string */}
-                            <div className="text-sm text-text-tertiary font-medium mb-1">
+                        <div className="w-full">
+                            {/* Date */}
+                            <div className={`text-sm font-medium mb-1.5 ${isLight ? 'text-slate-500' : 'text-text-tertiary'}`}>
                                 {new Date(meeting.date).toLocaleDateString('en-US', { weekday: 'long', month: 'short', day: 'numeric' })}
                             </div>
 
-                            {/* Editable Title */}
-                            <div className="mb-5">
-                                <div className="flex items-center justify-between mb-4">
-                                    <h1 className="text-2xl font-semibold text-white">
-                                        <EditableTextBlock
-                                            initialValue={meeting.title}
-                                            onSave={handleTitleSave}
-                                            tagName="h1"
-                                            className="text-3xl font-bold text-text-primary tracking-tight -ml-2 px-2 py-1 rounded-md transition-colors"
-                                            multiline={false}
-                                        />
-                                    </h1>
-                                    <button
-                                        onClick={handleFollowUpEmail}
-                                        disabled={isRegenerating || isProcessing}
-                                        className={`flex items-center gap-1.5 text-xs font-medium text-text-secondary ${isRegenerating || isProcessing ? 'opacity-50 cursor-not-allowed' : 'hover:text-text-primary hover:bg-text-secondary/10'}  transition-colors border border-white/[0.2] rounded-lg px-2 py-0.5`}
-                                    >
-                                        <Mail size={12} />
-                                        Follow-up email
-                                    </button>
-                                </div>
+                            {/* Title row + Follow-up button */}
+                            <div className="flex items-center justify-between gap-4 mb-2">
+                                <h1 className="flex-1 min-w-0">
+                                    <EditableTextBlock
+                                        initialValue={meeting.title}
+                                        onSave={handleTitleSave}
+                                        tagName="h1"
+                                        className={`text-[26px] font-bold tracking-tight -ml-2 px-2 py-1 rounded-md transition-colors ${isLight ? 'text-slate-900' : 'text-white'}`}
+                                        multiline={false}
+                                    />
+                                </h1>
 
+                                {/* Follow-up email — bordered pill button */}
+                                <button
+                                    onClick={handleFollowUpEmail}
+                                    disabled={isRegenerating || isProcessing}
+                                    className={`
+                                        shrink-0 flex items-center gap-2 px-3.5 py-2 rounded-lg text-[13px] font-medium
+                                        transition-all duration-200 active:scale-[0.97]
+                                        ${isRegenerating || isProcessing ? 'opacity-40 cursor-not-allowed' : ''}
+                                        ${isLight
+                                            ? 'bg-white border border-slate-200 text-slate-700 hover:border-slate-300 hover:bg-slate-50 shadow-sm'
+                                            : 'bg-slate-700/30 border border-slate-700/10 text-white/80 hover:bg-slate-700/40 hover:border-slate-500/40'
+                                        }
+                                    `}
+                                >
+                                    <Mail size={13} strokeWidth={1.8} />
+                                    Follow-up email
+                                </button>
                             </div>
                         </div>
 
@@ -690,29 +683,31 @@ const MeetingDetails: React.FC<MeetingDetailsProps> = ({ meeting: initialMeeting
                             onClose={() => setIsFollowUpEmailOpen(false)}
                             meeting={meeting}
                         />
-                        {/* Moved Actions: Follow-up & Share (REMOVED per user request) */}
-                        {/* <div className="flex items-center gap-2 mt-1"> ... </div> */}
                     </div>
 
-                    {/* Tabs */}
-                    {/* Designing Tabs to match reference 1:1 (Dark Pill Container) */}
+                    {/* Tabs + Action buttons row */}
                     <div className="flex items-center justify-between mb-8">
-                        <div className={`p-1 rounded-xl inline-flex items-center gap-0.5 ${isLight ? 'bg-[#E5E5EA] border border-black/[0.04]' : 'bg-[#121214] border border-white/[0.08]'}`}>
-                            {['summary', 'transcript', 'usage', 'analysis'].map((tab) => (
+
+                        {/* Tab pill container */}
+                        <div className={`p-1 rounded-xl inline-flex items-center gap-0.5 ${isLight ? 'bg-slate-100 border border-slate-200' : 'bg-slate-700/20 border border-border-subtle'}`}>
+                            {(['summary', 'transcript', 'usage', 'analysis'] as const).map((tab) => (
                                 <button
                                     key={tab}
-                                    onClick={() => setActiveTab(tab as any)}
+                                    onClick={() => setActiveTab(tab)}
                                     className={`
-                                        relative px-3 py-1 text-[13px] font-medium rounded-lg transition-all duration-200 z-10
-                                        ${activeTab === tab ? (isLight ? 'text-black' : 'text-[#E9E9E9]') : `${isLight ? 'text-text-secondary' : 'text-text-tertiary'} hover:text-text-primary`}
+                                        relative px-3.5 py-1.5 text-[13px] font-medium rounded-lg transition-all duration-200 z-10
+                                        ${activeTab === tab
+                                            ? isLight ? 'text-slate-900' : 'text-white'
+                                            : isLight ? 'text-slate-500 hover:text-slate-700' : 'text-text-tertiary hover:text-text-primary'
+                                        }
                                     `}
                                 >
                                     {activeTab === tab && (
                                         <motion.div
-                                            layoutId="activeTabBackground"
-                                            className={`absolute inset-0 rounded-lg -z-10 shadow-sm ${isLight ? 'bg-white' : 'bg-[#3A3A3C]'}`}
+                                            layoutId="activeTabBg"
+                                            className={`absolute inset-0 rounded-lg -z-10 shadow-sm ${isLight ? 'bg-white shadow-slate-200/80' : 'bg-bg-card'}`}
                                             initial={false}
-                                            transition={{ type: "spring", stiffness: 400, damping: 30 }}
+                                            transition={{ type: 'spring', stiffness: 400, damping: 30 }}
                                         />
                                     )}
                                     {tab === 'analysis' ? 'Call Analysis' : tab === 'usage' ? 'Ask Dojo' : tab.charAt(0).toUpperCase() + tab.slice(1)}
@@ -720,29 +715,54 @@ const MeetingDetails: React.FC<MeetingDetailsProps> = ({ meeting: initialMeeting
                             ))}
                         </div>
 
-                        <div className="flex items-center gap-6">
+                        {/* Right-side action buttons */}
+                        <div className="flex items-center gap-2">
 
+                            {/* Regenerate */}
                             <button
                                 onClick={handleRegenerateSummary}
                                 disabled={isRegenerating || isProcessing}
                                 title={isProcessing ? 'Wait for analysis to complete first' : 'Regenerate summary'}
-                                className={`flex items-center gap-2 text-xs font-medium text-text-secondary ${isRegenerating || isProcessing ? 'text-text-tertiary' : 'hover:text-text-primary'} transition-colors`}
+                                className={`
+                                    flex items-center gap-2 px-3.5 py-2 rounded-lg text-[13px] font-medium
+                                    transition-all duration-200 active:scale-[0.97]
+                                    ${isRegenerating || isProcessing ? 'opacity-40 cursor-not-allowed' : ''}
+                                    ${isLight
+                                        ? 'bg-white border border-slate-200 text-slate-600 hover:border-slate-300 hover:bg-slate-50 shadow-sm'
+                                        : 'bg-slate-700/30 border border-slate-700/10 text-white/70 hover:bg-slate-700/40 hover:border-slate-500/40'
+                                    }
+                                `}
                             >
-                                <RefreshCcw size={14} className={isRegenerating || isProcessing ? 'animate-spin' : 'hover:text-text-primary'} />
+                                <RefreshCcw size={13} strokeWidth={1.8} className={isRegenerating ? 'animate-spin' : ''} />
                                 {isRegenerating ? 'Regenerating...' : 'Regenerate'}
                             </button>
 
                             {regenError && (
-                                <span className="text-[11px] text-red-400">{regenError}</span>
+                                <span className="text-[11px] text-red-400 mx-1">{regenError}</span>
                             )}
 
-                            {/* Copy Button - Inline with Tabs (Always visible) */}
+                            {/* Copy full summary */}
                             <button
                                 onClick={handleCopy}
-                                className="flex items-center gap-2 text-xs font-medium text-text-secondary hover:text-text-primary transition-colors"
+                                className={`
+                                    flex items-center gap-2 px-3.5 py-2 rounded-lg text-[13px] font-medium
+                                    transition-all duration-200 active:scale-[0.97]
+                                    ${isLight
+                                        ? 'bg-white border border-slate-200 text-slate-600 hover:border-slate-300 hover:bg-slate-50 shadow-sm'
+                                        : 'bg-slate-700/30 border border-slate-700/10 text-white/70 hover:bg-slate-700/40 hover:border-slate-500/40'
+                                    }
+                                `}
                             >
-                                {isCopied ? <Check size={14} className="text-emerald-500" /> : <Copy size={14} />}
-                                {isCopied ? 'Copied' : activeTab === 'summary' ? 'Copy full summary' : activeTab === 'transcript' ? 'Copy full transcript' : 'Copy usage'}
+                                {isCopied
+                                    ? <Check size={13} strokeWidth={2} className="text-emerald-500" />
+                                    : <Copy size={13} strokeWidth={1.8} />
+                                }
+                                {isCopied
+                                    ? 'Copied!'
+                                    : activeTab === 'summary' ? 'Copy full summary'
+                                        : activeTab === 'transcript' ? 'Copy transcript'
+                                            : 'Copy'
+                                }
                             </button>
 
                         </div>
@@ -775,33 +795,138 @@ const MeetingDetails: React.FC<MeetingDetailsProps> = ({ meeting: initialMeeting
                                             </p>
                                         </div>
 
-                                        <Skeleton className='h-[200px] bg-gray-900 w-full mb-3' />
+                                        <Skeleton className='h-[200px] w-full mb-3' />
                                         <div className='flex gap-3'>
-                                            <Skeleton className='h-[400px] bg-gray-900 w-full mb-3' />
-                                            <Skeleton className='h-[400px] bg-gray-900 w-full mb-3' />
+                                            <Skeleton className='h-[400px] w-full mb-3' />
+                                            <Skeleton className='h-[400px] w-full mb-3' />
                                         </div>
-                                        <Skeleton className='h-[200px] bg-gray-900 w-full mb-3' />
+                                        <Skeleton className='h-[200px] w-full mb-3' />
                                     </motion.div>
                                     :
                                     <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }}>
 
-                                        {meeting.detailedSummary?.keyPoints?.length !== 0 && <section className="mb-10">
-                                            <h2 className="text-lg font-semibold flex gap-3 text-white mb-4"><NotepadText className='text-blue-500' /> Call Summary</h2>
+                                        {!meeting.detailedSummary && (
+                                            <div className={`flex flex-col items-center justify-center py-20 gap-4 rounded-2xl border border-dashed ${isLight ? 'border-slate-200 bg-slate-50/50' : 'border-white/[0.07] bg-white/[0.02]'}`}>
+                                                <div className={`w-12 h-12 rounded-2xl flex items-center justify-center ${isLight ? 'bg-slate-100' : 'bg-white/[0.05]'}`}>
+                                                    <NotepadText size={22} strokeWidth={1.5} className={isLight ? 'text-slate-400' : 'text-white/25'} />
+                                                </div>
+                                                <div className="text-center">
+                                                    <p className={`text-[14px] font-medium mb-1 ${isLight ? 'text-slate-600' : 'text-white/50'}`}>No summary yet</p>
+                                                    <p className={`text-[12px] ${isLight ? 'text-slate-400' : 'text-white/25'}`}>Summary will appear here once the meeting is processed</p>
+                                                </div>
+                                                <button
+                                                    onClick={handleRegenerateSummary}
+                                                    className={`mt-1 flex items-center gap-2 px-4 py-2 rounded-lg text-[12px] font-medium transition-all ${isLight ? 'bg-white border border-slate-200 text-slate-600 hover:bg-slate-50 shadow-sm' : 'bg-white/[0.05] border border-white/[0.1] text-white/60 hover:bg-white/[0.08]'}`}
+                                                >
+                                                    <RefreshCcw size={12} strokeWidth={1.8} />
+                                                    Generate summary
+                                                </button>
+                                            </div>
+                                        )}
 
-                                            <div className="space-y-3">
-                                                {meeting.detailedSummary?.keyPoints?.map((point, i) => (
-                                                    <div key={i} className="flex gap-3">
-                                                        <div className="mt-2 w-1.5 h-1.5 bg-blue-400 rounded-full" />
-                                                        <p className="text-sm text-white/70">{point}</p>
+                                        {meeting.detailedSummary?.keyPoints?.length !== 0 && <section className="mb-10">
+
+                                            {/* Card — matches the CallSummary component design */}
+                                            <div
+                                                className={`relative w-full overflow-hidden rounded-2xl border backdrop-blur-xl ${isLight
+                                                    ? 'border-slate-200/80 bg-white shadow-[0_20px_60px_-25px_rgba(30,58,138,0.18)]'
+                                                    : 'border-white/[0.06] shadow-[0_30px_80px_-30px_rgba(0,0,0,0.9)]'
+                                                    }`}
+                                                style={isLight ? undefined : {
+                                                    background: 'linear-gradient(180deg, rgba(20,28,48,0.85) 0%, rgba(10,15,28,0.9) 100%)',
+                                                }}
+                                            >
+                                                {/* Concentric rings decoration — right side */}
+                                                <div className="pointer-events-none absolute right-0 top-0 h-full w-[55%]">
+                                                    <svg viewBox="0 0 500 320" className="absolute right-0 top-1/2 h-[140%] w-full -translate-y-1/2" fill="none">
+                                                        <defs>
+                                                            <radialGradient id="csSummaryRingFade" cx="70%" cy="50%" r="60%">
+                                                                <stop offset="0%" stopColor={isLight ? '#3b82f6' : '#60a5fa'} stopOpacity={isLight ? '0.18' : '0.15'} />
+                                                                <stop offset="100%" stopColor={isLight ? '#3b82f6' : '#60a5fa'} stopOpacity="0" />
+                                                            </radialGradient>
+                                                        </defs>
+                                                        {[60, 100, 145, 195, 250].map((r, i) => (
+                                                            <circle
+                                                                key={r}
+                                                                cx="370" cy="160" r={r}
+                                                                stroke={isLight ? '#93c5fd' : '#1e3a8a'}
+                                                                strokeOpacity={isLight ? 0.35 - i * 0.04 : 0.5 - i * 0.07}
+                                                                strokeWidth="1"
+                                                                strokeDasharray={i % 2 === 0 ? '0' : '2 4'}
+                                                            />
+                                                        ))}
+                                                        <circle cx="370" cy="160" r="200" fill="url(#csSummaryRingFade)" />
+                                                        {[[180, 70], [240, 40], [470, 90], [490, 230], [200, 260], [150, 180]].map(([x, y], i) => (
+                                                            <g key={i} stroke={isLight ? '#60a5fa' : '#93c5fd'} strokeWidth="1" strokeLinecap="round" opacity={isLight ? 0.5 : 0.7}>
+                                                                <line x1={x - 3} y1={y} x2={x + 3} y2={y} />
+                                                                <line x1={x} y1={y - 3} x2={x} y2={y + 3} />
+                                                            </g>
+                                                        ))}
+                                                    </svg>
+                                                </div>
+
+                                                {/* Top border highlight (dark only) */}
+                                                {!isLight && (
+                                                    <div className="pointer-events-none absolute inset-x-0 top-0 h-px bg-gradient-to-r from-transparent via-white/15 to-transparent" />
+                                                )}
+
+                                                <div className="relative flex items-center gap-6 p-7">
+                                                    {/* Left: header + bullets */}
+                                                    <div className="relative z-10 flex-1">
+                                                        <div className="flex items-center gap-2.5">
+                                                            <ClipboardList size={18} className={isLight ? 'text-blue-500' : 'text-blue-400'} />
+                                                            <h3 className={`text-[15px] font-semibold tracking-tight ${isLight ? 'text-blue-600' : 'text-blue-300'}`}>
+                                                                Call Summary
+                                                            </h3>
+                                                        </div>
+                                                        <ul className="mt-4 space-y-2.5">
+                                                            {meeting.detailedSummary?.keyPoints?.map((point, i) => (
+                                                                <li key={i} className={`flex items-start gap-2.5 text-[13.5px] leading-relaxed ${isLight ? 'text-slate-700' : 'text-slate-300'}`}>
+                                                                    <span
+                                                                        className={`mt-[7px] inline-block h-1.5 w-1.5 flex-shrink-0 rounded-full ${isLight ? 'bg-blue-500' : 'bg-blue-400'}`}
+                                                                        style={{ boxShadow: isLight ? '0 0 6px rgba(59,130,246,0.5)' : '0 0 8px rgba(96,165,250,0.8)' }}
+                                                                    />
+                                                                    <span>{point}</span>
+                                                                </li>
+                                                            ))}
+                                                        </ul>
                                                     </div>
-                                                ))}
+
+                                                    {/* Right: notepad icon */}
+                                                    <div className="relative z-10 hidden sm:flex h-[140px] w-[140px] flex-shrink-0 items-center justify-center">
+                                                        <div
+                                                            className="absolute inset-0 rounded-full blur-2xl"
+                                                            style={{ background: isLight ? 'radial-gradient(circle, rgba(59,130,246,0.10) 0%, transparent 30%)' : 'radial-gradient(circle, rgba(59,130,246,0.20) 0%, transparent 30%)' }}
+                                                        />
+                                                        <div
+                                                            className={`relative flex h-[88px] w-[78px] items-center justify-center rounded-xl border ${isLight
+                                                                ? 'border-blue-400/60 bg-gradient-to-b from-white to-blue-50'
+                                                                : 'border-blue-400/40 bg-gradient-to-b from-[#0e1a3575] to-[#0a122671]'
+                                                                }`}
+                                                        // style={{ boxShadow: isLight ? '0 8px 30px -8px rgba(59,130,246,0.4), inset 0 1px 0 rgba(255,255,255,0.8)' : '0 0 30px rgba(59,130,246,0.5), inset 0 1px 0 rgba(147,197,253,0.2)' }}
+                                                        >
+                                                            {/* Spiral binding dots */}
+                                                            <div className="absolute -top-1 left-0 right-0 flex justify-around px-3">
+                                                                {[0, 1, 2].map(i => (
+                                                                    <span key={i} className={`h-2 w-1.5 rounded-full ${isLight ? 'bg-blue-400' : 'bg-blue-300'}`} />
+                                                                ))}
+                                                            </div>
+                                                            <NotebookPen
+                                                                size={36}
+                                                                strokeWidth={1.8}
+                                                                className={isLight ? 'text-blue-400' : 'text-blue-300'}
+                                                            // style={{ filter: isLight ? 'drop-shadow(0 0 4px rgba(59,130,246,0.4))' : 'drop-shadow(0 0 8px rgba(96,165,250,0.9))' }}
+                                                            />
+                                                        </div>
+                                                    </div>
+                                                </div>
                                             </div>
                                         </section>}
 
                                         {meeting.detailedSummary?.salesCoachReview !== undefined ?
                                             <>
                                                 <section className="mb-10">
-                                                    <h2 className="text-lg font-semibold text-white mb-4">
+                                                    <h2 className={`text-lg font-semibold mb-4 ${isLight ? 'text-slate-800' : 'text-white'}`}>
                                                         <div className='flex gap-3'>
                                                             <ChartColumnIncreasing className='text-blue-500' /> Sales Self-Analysis
                                                         </div>
@@ -856,22 +981,38 @@ const MeetingDetails: React.FC<MeetingDetailsProps> = ({ meeting: initialMeeting
                                                             dot: string; cardBg: string; cardBorder: string;
                                                             badgeBg: string; badgeText: string; badgeBorder: string;
                                                         }> = {
-                                                            'MEDDICC': {
+                                                            'MEDDICC': isLight ? {
+                                                                headerBg: 'bg-violet-50', headerBorder: 'border-violet-200', headerText: 'text-violet-700',
+                                                                dot: 'bg-violet-500', cardBg: 'bg-violet-50', cardBorder: 'border-violet-200',
+                                                                badgeBg: 'bg-violet-100', badgeText: 'text-violet-700', badgeBorder: 'border-violet-200',
+                                                            } : {
                                                                 headerBg: 'bg-violet-500/10', headerBorder: 'border-violet-500/25', headerText: 'text-violet-300',
                                                                 dot: 'bg-violet-400', cardBg: 'bg-violet-500/5', cardBorder: 'border-violet-500/15',
                                                                 badgeBg: 'bg-violet-500/15', badgeText: 'text-violet-300', badgeBorder: 'border-violet-500/30',
                                                             },
-                                                            'BANT': {
+                                                            'BANT': isLight ? {
+                                                                headerBg: 'bg-blue-50', headerBorder: 'border-blue-200', headerText: 'text-blue-700',
+                                                                dot: 'bg-blue-500', cardBg: 'bg-blue-50', cardBorder: 'border-blue-200',
+                                                                badgeBg: 'bg-blue-100', badgeText: 'text-blue-700', badgeBorder: 'border-blue-200',
+                                                            } : {
                                                                 headerBg: 'bg-blue-500/10', headerBorder: 'border-blue-500/25', headerText: 'text-blue-300',
                                                                 dot: 'bg-blue-400', cardBg: 'bg-blue-500/5', cardBorder: 'border-blue-500/15',
                                                                 badgeBg: 'bg-blue-500/15', badgeText: 'text-blue-300', badgeBorder: 'border-blue-500/30',
                                                             },
-                                                            'DISCOVERY': {
+                                                            'DISCOVERY': isLight ? {
+                                                                headerBg: 'bg-amber-50', headerBorder: 'border-amber-200', headerText: 'text-amber-700',
+                                                                dot: 'bg-amber-500', cardBg: 'bg-amber-50', cardBorder: 'border-amber-200',
+                                                                badgeBg: 'bg-amber-100', badgeText: 'text-amber-700', badgeBorder: 'border-amber-200',
+                                                            } : {
                                                                 headerBg: 'bg-amber-500/10', headerBorder: 'border-amber-500/25', headerText: 'text-amber-300',
                                                                 dot: 'bg-amber-400', cardBg: 'bg-amber-500/5', cardBorder: 'border-amber-500/15',
                                                                 badgeBg: 'bg-amber-500/15', badgeText: 'text-amber-300', badgeBorder: 'border-amber-500/30',
                                                             },
-                                                            'OTHER': {
+                                                            'OTHER': isLight ? {
+                                                                headerBg: 'bg-slate-100', headerBorder: 'border-slate-200', headerText: 'text-slate-400',
+                                                                dot: 'bg-slate-300', cardBg: 'bg-slate-50', cardBorder: 'border-slate-200',
+                                                                badgeBg: 'bg-slate-100', badgeText: 'text-slate-400', badgeBorder: 'border-slate-300',
+                                                            } : {
                                                                 headerBg: 'bg-white/5', headerBorder: 'border-white/10', headerText: 'text-white/50',
                                                                 dot: 'bg-white/30', cardBg: 'bg-white/[0.03]', cardBorder: 'border-white/[0.08]',
                                                                 badgeBg: 'bg-white/10', badgeText: 'text-white/50', badgeBorder: 'border-white/15',
@@ -887,7 +1028,7 @@ const MeetingDetails: React.FC<MeetingDetailsProps> = ({ meeting: initialMeeting
                                                                 <div className="flex items-center gap-2 mb-4">
                                                                     <CircleCheck size={14} className="text-emerald-400" />
                                                                     <p className="text-xs font-bold uppercase tracking-[0.12em] text-emerald-400">What I Did Right</p>
-                                                                    <div className="flex-1 h-px bg-white/[0.06]" />
+                                                                    <div className={`flex-1 h-px ${isLight ? 'bg-black/[0.08]' : 'bg-white/[0.06]'}`} />
                                                                 </div>
 
                                                                 {/* One card per framework */}
@@ -904,7 +1045,7 @@ const MeetingDetails: React.FC<MeetingDetailsProps> = ({ meeting: initialMeeting
                                                                                     <span className={`text-[10px] font-bold uppercase tracking-[0.14em] ${cfg.headerText}`}>
                                                                                         {framework}
                                                                                     </span>
-                                                                                    <span className="text-[10px] text-white/20 font-medium ml-1">
+                                                                                    <span className={`text-[10px] font-medium ml-1 ${isLight ? 'text-slate-400' : 'text-white/20'}`}>
                                                                                         {items.length} {items.length === 1 ? 'point' : 'points'}
                                                                                     </span>
                                                                                 </div>
@@ -912,12 +1053,12 @@ const MeetingDetails: React.FC<MeetingDetailsProps> = ({ meeting: initialMeeting
                                                                                 {/* Items inside this framework */}
                                                                                 <div className="divide-y divide-white/[0.04]">
                                                                                     {items.map((item, i) => (
-                                                                                        <div key={i} className="flex items-start gap-3 p-3 rounded-lg bg-white/5 border border-white/10">
+                                                                                        <div key={i} className={`flex items-start gap-3 p-3 rounded-lg border ${isLight ? 'bg-slate-50 border-slate-200' : 'bg-gray-800/10 border-white/10'}`}>
                                                                                             {item.component && <span className={`text-[10px] font-bold px-2 py-0.5 rounded border shrink-0 mt-0.5 w-[100px] text-center ${cfg.badgeBg} ${cfg.badgeText} ${cfg.badgeBorder}`}>
                                                                                                 {item.component}
                                                                                             </span>}
-                                                                                            <div className="w-px self-stretch bg-white/10 shrink-0" />
-                                                                                            <p className="text-sm text-white/70 leading-relaxed">{item.content}</p>
+                                                                                            <div className={`w-px self-stretch shrink-0 ${isLight ? 'bg-slate-200' : 'bg-white/10'}`} />
+                                                                                            <p className={`text-sm leading-relaxed ${isLight ? 'text-slate-600' : 'text-white/70'}`}>{item.content}</p>
                                                                                         </div>
 
                                                                                         // <div key={i} className={`flex items-start gap-3 px-4 py-3 ${cfg.cardBg}`}>
@@ -962,14 +1103,14 @@ const MeetingDetails: React.FC<MeetingDetailsProps> = ({ meeting: initialMeeting
                                                         if (!validBetterItems || validBetterItems.length === 0) return null;
 
                                                         return (
-                                                            <div className="p-4 rounded-xl bg-white/5 border border-white/10">
+                                                            <div className={`p-4 rounded-xl border ${isLight ? 'bg-white border-slate-200' : 'bg-gray-800/30 border-white/10'}`}>
                                                                 <div className='flex gap-3 mb-3'>
-                                                                    <div><TrendingUp size={18} /></div>
-                                                                    <div className="text-sm font-bold text-white/50 tracking-wider mb-3">BETTER EXECUTION</div>
+                                                                    <div><TrendingUp size={18} className={isLight ? 'text-slate-400' : 'text-white/50'} /></div>
+                                                                    <div className={`text-sm font-bold tracking-wider mb-3 ${isLight ? 'text-slate-400' : 'text-white/50'}`}>BETTER EXECUTION</div>
                                                                 </div>
                                                                 {validBetterItems.map((item, i) => (
-                                                                    <p key={i} className="text-sm italic text-white/70 mb-4">
-                                                                        <span className='text-gray-50/30'>•</span> {item}
+                                                                    <p key={i} className={`text-sm italic mb-4 ${isLight ? 'text-slate-600' : 'text-white/70'}`}>
+                                                                        <span className={isLight ? 'text-slate-300' : 'text-gray-50/30'}>•</span> {item}
                                                                     </p>
                                                                 ))}
                                                             </div>
@@ -1005,14 +1146,14 @@ const MeetingDetails: React.FC<MeetingDetailsProps> = ({ meeting: initialMeeting
                                                         if (!validMissedItems || validMissedItems.length === 0) return null;
 
                                                         return (
-                                                            <div className="p-4 rounded-xl bg-red-500/10 border border-red-500/20">
+                                                            <div className={`p-4 rounded-xl border ${isLight ? 'bg-red-50 border-red-200' : 'bg-red-500/10 border-red-500/20'}`}>
                                                                 <div className='flex gap-3 mb-3'>
                                                                     <div><TriangleAlert className='text-red-400' size={18} /></div>
                                                                     <div className="text-sm font-bold text-red-400 tracking-wider mb-3">MISSED COMPLETELY</div>
                                                                 </div>
                                                                 {validMissedItems.map(({ label, content }, i) => (
                                                                     <div key={i} className="flex items-start gap-3 mb-4">
-                                                                        <span className="text-[10px] font-bold px-2 py-0.5 rounded border shrink-0 mt-0.5 w-[130px] text-center text-red-400 bg-red-500/10 border-red-500/20">
+                                                                        <span className={`text-[10px] font-bold px-2 py-0.5 rounded border shrink-0 mt-0.5 w-[130px] text-center ${isLight ? 'text-red-600 bg-red-50 border-red-200' : 'text-red-400 bg-red-500/10 border-red-500/20'}`}>
                                                                             {label || '—'}
                                                                         </span>
                                                                         <div className="w-px self-stretch bg-red-500/20 shrink-0" />
@@ -1029,7 +1170,7 @@ const MeetingDetails: React.FC<MeetingDetailsProps> = ({ meeting: initialMeeting
                                                     {/* Title */}
                                                     <div className="flex items-center gap-2 mb-10">
                                                         <span className="text-blue-400">✦</span>
-                                                        <h2 className="text-lg font-semibold text-white">
+                                                        <h2 className={`text-lg font-semibold ${isLight ? 'text-slate-800' : 'text-white'}`}>
                                                             Next Call Strategy
                                                         </h2>
                                                     </div>
@@ -1051,7 +1192,7 @@ const MeetingDetails: React.FC<MeetingDetailsProps> = ({ meeting: initialMeeting
                                                                 {meeting.detailedSummary?.nextCallPlaybook?.valueAndROI?.quantitative?.map((item, i) => (
                                                                     <div key={i} className="flex gap-3">
                                                                         <div className="mt-2 w-1.5 h-1.5 bg-blue-400 rounded-full shrink-0" />
-                                                                        <p className="text-sm text-white/70 leading-relaxed">
+                                                                        <p className={`text-sm ${isLight ? 'text-slate-800' : 'text-white/70'} leading-relaxed`}>
                                                                             {item}
                                                                         </p>
                                                                     </div>
@@ -1071,7 +1212,7 @@ const MeetingDetails: React.FC<MeetingDetailsProps> = ({ meeting: initialMeeting
 
                                                             <div className="space-y-5">
                                                                 {meeting.detailedSummary?.nextCallPlaybook?.questionsToAsk?.map((q, i) => (
-                                                                    <p key={i} className="text-sm text-white/80 leading-relaxed">
+                                                                    <p key={i} className={`text-sm ${isLight ? 'text-slate-800' : 'text-white/70'} leading-relaxed`}>
                                                                         “{q}”
                                                                     </p>
                                                                 ))}
@@ -1135,46 +1276,117 @@ const MeetingDetails: React.FC<MeetingDetailsProps> = ({ meeting: initialMeeting
                                                         {/* Key Points - Only show if there are items */}
                                                         {meeting.detailedSummary?.keyPoints && meeting.detailedSummary.keyPoints.length > 0 && (
                                                             <section>
-                                                                <div className="flex items-center justify-between mb-4">
+                                                                <div
+                                                                    className={`relative w-full overflow-hidden rounded-2xl border backdrop-blur-xl ${isLight
+                                                                        ? 'border-slate-200/80 bg-white shadow-[0_20px_60px_-25px_rgba(30,58,138,0.18)]'
+                                                                        : 'border-white/[0.06] shadow-[0_30px_80px_-30px_rgba(0,0,0,0.9)]'
+                                                                        }`}
+                                                                    style={isLight ? undefined : {
+                                                                        background: 'linear-gradient(180deg, rgba(20,28,48,0.85) 0%, rgba(10,15,28,0.9) 100%)',
+                                                                    }}
+                                                                >
+                                                                    {/* Concentric rings */}
+                                                                    <div className="pointer-events-none absolute right-0 top-0 h-full w-[55%]">
+                                                                        <svg viewBox="0 0 500 320" className="absolute right-0 top-1/2 h-[140%] w-full -translate-y-1/2" fill="none">
+                                                                            <defs>
+                                                                                <radialGradient id="csKeyRingFade" cx="70%" cy="50%" r="60%">
+                                                                                    <stop offset="0%" stopColor={isLight ? '#3b82f6' : '#60a5fa'} stopOpacity={isLight ? '0.18' : '0.35'} />
+                                                                                    <stop offset="100%" stopColor={isLight ? '#3b82f6' : '#60a5fa'} stopOpacity="0" />
+                                                                                </radialGradient>
+                                                                            </defs>
+                                                                            {[60, 100, 145, 195, 250].map((r, i) => (
+                                                                                <circle key={r} cx="370" cy="160" r={r}
+                                                                                    stroke={isLight ? '#93c5fd' : '#1e3a8a'}
+                                                                                    strokeOpacity={isLight ? 0.35 - i * 0.04 : 0.5 - i * 0.07}
+                                                                                    strokeWidth="1"
+                                                                                    strokeDasharray={i % 2 === 0 ? '0' : '2 4'}
+                                                                                />
+                                                                            ))}
+                                                                            <circle cx="370" cy="160" r="200" fill="url(#csKeyRingFade)" />
+                                                                            {[[180, 70], [240, 40], [470, 90], [490, 230], [200, 260], [150, 180]].map(([x, y], i) => (
+                                                                                <g key={i} stroke={isLight ? '#60a5fa' : '#93c5fd'} strokeWidth="1" strokeLinecap="round" opacity={isLight ? 0.5 : 0.7}>
+                                                                                    <line x1={x - 3} y1={y} x2={x + 3} y2={y} />
+                                                                                    <line x1={x} y1={y - 3} x2={x} y2={y + 3} />
+                                                                                </g>
+                                                                            ))}
+                                                                        </svg>
+                                                                    </div>
 
-                                                                    <EditableTextBlock
-                                                                        initialValue={meeting.detailedSummary?.keyPointsTitle || 'Key Points'}
-                                                                        onSave={(val) => {
-                                                                            setMeeting(prev => ({
-                                                                                ...prev,
-                                                                                detailedSummary: { ...prev.detailedSummary!, keyPointsTitle: val }
-                                                                            }));
-                                                                            window.electronAPI?.updateMeetingSummary(meeting.id, { keyPointsTitle: val });
-                                                                        }}
-                                                                        tagName="h2"
-                                                                        className="text-lg font-semibold text-text-primary -ml-2 px-2 py-1 rounded-sm transition-colors"
-                                                                        multiline={false}
-                                                                    />
-                                                                </div>
-                                                                <ul className="space-y-3">
-                                                                    {meeting.detailedSummary.keyPoints.map((item, i) => (
-                                                                        <li key={i} className="flex items-start gap-3 group">
-                                                                            <div className="mt-2 w-1.5 h-1.5 rounded-full bg-text-secondary group-hover:bg-purple-500 transition-colors shrink-0" />
-                                                                            <div className="flex-1">
+                                                                    {!isLight && (
+                                                                        <div className="pointer-events-none absolute inset-x-0 top-0 h-px bg-gradient-to-r from-transparent via-white/15 to-transparent" />
+                                                                    )}
+
+                                                                    <div className="relative flex items-center gap-6 p-7">
+                                                                        <div className="relative z-10 flex-1">
+                                                                            <div className="flex items-center gap-2.5">
+                                                                                <ClipboardList size={18} className={isLight ? 'text-blue-600' : 'text-blue-400'} />
                                                                                 <EditableTextBlock
-                                                                                    initialValue={item}
-                                                                                    onSave={(val) => handleKeyPointSave(i, val)}
-                                                                                    tagName="p"
-                                                                                    className="text-sm text-text-secondary leading-relaxed -ml-2 px-2 rounded-sm transition-colors"
-                                                                                    placeholder="Type a key point..."
-                                                                                    onEnter={() => {
-                                                                                        const newItems = [...(meeting.detailedSummary?.keyPoints || [])];
-                                                                                        newItems.splice(i + 1, 0, "");
+                                                                                    initialValue={meeting.detailedSummary?.keyPointsTitle || 'Key Points'}
+                                                                                    onSave={(val) => {
                                                                                         setMeeting(prev => ({
                                                                                             ...prev,
-                                                                                            detailedSummary: { ...prev.detailedSummary!, keyPoints: newItems }
+                                                                                            detailedSummary: { ...prev.detailedSummary!, keyPointsTitle: val }
                                                                                         }));
+                                                                                        window.electronAPI?.updateMeetingSummary(meeting.id, { keyPointsTitle: val });
                                                                                     }}
+                                                                                    tagName="h3"
+                                                                                    className={`text-[15px] font-semibold tracking-tight -ml-1 px-1 rounded-sm transition-colors ${isLight ? 'text-blue-700' : 'text-blue-300'}`}
+                                                                                    multiline={false}
                                                                                 />
                                                                             </div>
-                                                                        </li>
-                                                                    ))}
-                                                                </ul>
+                                                                            <ul className="mt-4 space-y-2.5">
+                                                                                {meeting.detailedSummary.keyPoints.map((item, i) => (
+                                                                                    <li key={i} className={`flex items-start gap-2.5 text-[13.5px] leading-relaxed ${isLight ? 'text-slate-700' : 'text-slate-300'}`}>
+                                                                                        <span
+                                                                                            className={`mt-[7px] inline-block h-1.5 w-1.5 flex-shrink-0 rounded-full ${isLight ? 'bg-blue-500' : 'bg-blue-400'}`}
+                                                                                            style={{ boxShadow: isLight ? '0 0 6px rgba(59,130,246,0.5)' : '0 0 8px rgba(96,165,250,0.8)' }}
+                                                                                        />
+                                                                                        <div className="flex-1">
+                                                                                            <EditableTextBlock
+                                                                                                initialValue={item}
+                                                                                                onSave={(val) => handleKeyPointSave(i, val)}
+                                                                                                tagName="p"
+                                                                                                className={`text-[13.5px] leading-relaxed -ml-2 px-2 rounded-sm transition-colors ${isLight ? 'text-slate-700' : 'text-slate-300'}`}
+                                                                                                placeholder="Type a key point..."
+                                                                                                onEnter={() => {
+                                                                                                    const newItems = [...(meeting.detailedSummary?.keyPoints || [])];
+                                                                                                    newItems.splice(i + 1, 0, "");
+                                                                                                    setMeeting(prev => ({
+                                                                                                        ...prev,
+                                                                                                        detailedSummary: { ...prev.detailedSummary!, keyPoints: newItems }
+                                                                                                    }));
+                                                                                                }}
+                                                                                            />
+                                                                                        </div>
+                                                                                    </li>
+                                                                                ))}
+                                                                            </ul>
+                                                                        </div>
+
+                                                                        {/* Right: notepad icon */}
+                                                                        <div className="relative z-10 hidden sm:flex h-[140px] w-[140px] flex-shrink-0 items-center justify-center">
+                                                                            <div
+                                                                                className="absolute inset-0 rounded-full blur-2xl"
+                                                                                style={{ background: isLight ? 'radial-gradient(circle, rgba(59,130,246,0.25) 0%, transparent 70%)' : 'radial-gradient(circle, rgba(59,130,246,0.45) 0%, transparent 70%)' }}
+                                                                            />
+                                                                            <div
+                                                                                className={`relative flex h-[88px] w-[78px] items-center justify-center rounded-xl border ${isLight ? 'border-blue-400/60 bg-gradient-to-b from-white to-blue-50' : 'border-blue-400/40 bg-gradient-to-b from-[#0e1a35] to-[#0a1226]'}`}
+                                                                                style={{ boxShadow: isLight ? '0 8px 30px -8px rgba(59,130,246,0.4), inset 0 1px 0 rgba(255,255,255,0.8)' : '0 0 30px rgba(59,130,246,0.5), inset 0 1px 0 rgba(147,197,253,0.2)' }}
+                                                                            >
+                                                                                <div className="absolute -top-1 left-0 right-0 flex justify-around px-3">
+                                                                                    {[0, 1, 2].map(i => (
+                                                                                        <span key={i} className={`h-2 w-1.5 rounded-full ${isLight ? 'bg-blue-400' : 'bg-blue-300'}`} />
+                                                                                    ))}
+                                                                                </div>
+                                                                                <NotebookPen
+                                                                                    size={36} strokeWidth={1.8}
+                                                                                    className={isLight ? 'text-blue-600' : 'text-blue-300'}
+                                                                                    style={{ filter: isLight ? 'drop-shadow(0 0 4px rgba(59,130,246,0.4))' : 'drop-shadow(0 0 8px rgba(96,165,250,0.9))' }}
+                                                                                />
+                                                                            </div>
+                                                                        </div>
+                                                                    </div>
+                                                                </div>
                                                             </section>
                                                         )}
                                                     </div>
@@ -1194,31 +1406,30 @@ const MeetingDetails: React.FC<MeetingDetailsProps> = ({ meeting: initialMeeting
                             <motion.section initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }}>
 
                                 {meeting.transcript && meeting.transcript.length > 0 && (
-                                    <div className="mb-6 overflow-hidden rounded-2xl border border-white/10 bg-white/5">
+                                    <div className={`mb-6 overflow-hidden rounded-2xl border ${isLight ? 'border-slate-200 bg-white' : 'border-white/10 bg-gray-800/10'}`}>
                                         {/* Accordion Header */}
                                         <button
                                             onClick={() => setIsTalktimeOpen(prev => !prev)}
-                                            className="flex w-full items-center justify-between px-4 py-3 transition-colors hover:bg-white/[0.03]"
+                                            className={`flex w-full items-center justify-between px-4 py-3 transition-colors ${isLight ? 'hover:bg-slate-50' : 'hover:bg-gray-800/30'}`}
                                         >
                                             <div className="flex items-center gap-3">
-                                                <div className="flex h-8 w-8 items-center justify-center rounded-xl bg-white/10">
-                                                    <BarChart3 className="h-4 w-4 text-white/70" />
+                                                <div className={`flex h-8 w-8 items-center justify-center rounded-xl ${isLight ? 'bg-slate-100' : 'bg-gray-800'}`}>
+                                                    <BarChart3 className={`h-4 w-4 ${isLight ? 'text-slate-500' : 'text-white/70'}`} />
                                                 </div>
 
                                                 <div className="text-left">
-                                                    <h3 className="text-sm font-semibold text-white/90">
+                                                    <h3 className={`text-sm font-semibold ${isLight ? 'text-slate-700' : 'text-white/90'}`}>
                                                         Speaking Balance
                                                     </h3>
 
-                                                    <p className="text-xs text-white/40">
+                                                    <p className={`text-xs ${isLight ? 'text-slate-400' : 'text-white/40'}`}>
                                                         Conversation analytics
                                                     </p>
                                                 </div>
                                             </div>
 
                                             <ChevronDown
-                                                className={`h-4 w-4 text-white/50 transition-transform duration-300 ${isTalktimeOpen ? 'rotate-180' : ''
-                                                    }`}
+                                                className={`h-4 w-4 transition-transform duration-300 ${isTalktimeOpen ? 'rotate-180' : ''} ${isLight ? 'text-slate-400' : 'text-white/50'}`}
                                             />
                                         </button>
 
@@ -1232,7 +1443,7 @@ const MeetingDetails: React.FC<MeetingDetailsProps> = ({ meeting: initialMeeting
                                                     transition={{ duration: 0.25 }}
                                                     className="overflow-hidden"
                                                 >
-                                                    <div className="border-t border-white/10 px-4 py-4">
+                                                    <div className={`border-t px-4 py-4 ${isLight ? 'border-slate-200' : 'border-white/10'}`}>
 
                                                         {/* User */}
                                                         <div className="mb-4">
@@ -1240,25 +1451,25 @@ const MeetingDetails: React.FC<MeetingDetailsProps> = ({ meeting: initialMeeting
                                                                 <div className='flex gap-3 items-center'>
 
                                                                     <div className="flex items-center gap-2">
-                                                                        <span className="text-sm text-white/80">
+                                                                        <span className={`text-sm ${isLight ? 'text-slate-700' : 'text-white/80'}`}>
                                                                             {getSpeakerDisplayName('user')}
                                                                         </span>
                                                                     </div>
 
-                                                                    <div className="text-xs text-white/40">
+                                                                    <div className={`text-xs ${isLight ? 'text-slate-400' : 'text-white/40'}`}>
                                                                         • {talkTime.userWords.toLocaleString()} words spoken
                                                                     </div>
 
                                                                 </div>
 
-                                                                <span className="text-sm font-medium text-white">
+                                                                <span className={`text-sm font-medium ${isLight ? 'text-slate-800' : 'text-white'}`}>
                                                                     {talkTime.user}%
                                                                 </span>
                                                             </div>
 
-                                                            <div className="h-1 overflow-hidden rounded-full bg-white/10">
+                                                            <div className={`h-1 overflow-hidden rounded-full ${isLight ? 'bg-slate-200' : 'bg-white/10'}`}>
                                                                 <div
-                                                                    className="h-full rounded-full bg-blue-600 transition-all duration-500"
+                                                                    className="h-full rounded-full bg-blue-500 transition-all duration-500"
                                                                     style={{ width: `${talkTime.user}%` }}
                                                                 />
                                                             </div>
@@ -1271,32 +1482,32 @@ const MeetingDetails: React.FC<MeetingDetailsProps> = ({ meeting: initialMeeting
 
                                                                     <div className="flex items-center gap-2">
 
-                                                                        <span className="text-sm text-white/80">
+                                                                        <span className={`text-sm ${isLight ? 'text-slate-700' : 'text-white/80'}`}>
                                                                             {getSpeakerDisplayName('interviewer')}
                                                                         </span>
                                                                     </div>
 
-                                                                    <div className="text-xs text-white/40">
+                                                                    <div className={`text-xs ${isLight ? 'text-slate-400' : 'text-white/40'}`}>
                                                                         • {talkTime.interviewerWords.toLocaleString()} words spoken
                                                                     </div>
 
                                                                 </div>
-                                                                <span className="text-sm font-medium text-white">
+                                                                <span className={`text-sm font-medium ${isLight ? 'text-slate-800' : 'text-white'}`}>
                                                                     {talkTime.interviewer}%
                                                                 </span>
                                                             </div>
 
-                                                            <div className="h-1 overflow-hidden rounded-full bg-white/10">
+                                                            <div className={`h-1 overflow-hidden rounded-full ${isLight ? 'bg-slate-200' : 'bg-white/10'}`}>
                                                                 <div
-                                                                    className="h-full rounded-full bg-white/40 transition-all duration-500"
+                                                                    className={`h-full rounded-full transition-all duration-500 ${isLight ? 'bg-slate-400' : 'bg-blue-500/30'}`}
                                                                     style={{ width: `${talkTime.interviewer}%` }}
                                                                 />
                                                             </div>
                                                         </div>
 
                                                         {/* Optional Footer */}
-                                                        <div className="mt-4 border-t border-white/5 pt-3">
-                                                            <p className="text-xs leading-relaxed text-white/40">
+                                                        <div className={`mt-4 border-t pt-3 ${isLight ? 'border-slate-100' : 'border-white/5'}`}>
+                                                            <p className={`text-xs leading-relaxed ${isLight ? 'text-slate-400' : 'text-white/40'}`}>
                                                                 Speaking balance helps understand participation and engagement during the meeting.
                                                             </p>
                                                         </div>
@@ -1317,7 +1528,17 @@ const MeetingDetails: React.FC<MeetingDetailsProps> = ({ meeting: initialMeeting
                                             }) || [];
 
                                             if (filteredTranscript.length === 0) {
-                                                return <p className="text-text-tertiary">No transcript available.</p>;
+                                                return (
+                                                    <div className={`flex flex-col items-center justify-center py-16 gap-4 rounded-2xl border border-dashed ${isLight ? 'border-slate-200 bg-slate-50/50' : 'border-white/[0.07] bg-white/[0.02]'}`}>
+                                                        <div className={`w-12 h-12 rounded-2xl flex items-center justify-center ${isLight ? 'bg-slate-100' : 'bg-white/[0.05]'}`}>
+                                                            <MessageSquare size={22} strokeWidth={1.5} className={isLight ? 'text-slate-400' : 'text-white/25'} />
+                                                        </div>
+                                                        <div className="text-center">
+                                                            <p className={`text-[14px] font-medium mb-1 ${isLight ? 'text-slate-600' : 'text-white/50'}`}>No transcript recorded</p>
+                                                            <p className={`text-[12px] ${isLight ? 'text-slate-400' : 'text-white/25'}`}>Transcription will appear here during a live meeting</p>
+                                                        </div>
+                                                    </div>
+                                                );
                                             }
 
                                             return filteredTranscript.map((entry, i) => (
@@ -1325,7 +1546,7 @@ const MeetingDetails: React.FC<MeetingDetailsProps> = ({ meeting: initialMeeting
                                                     <div className="flex items-center gap-2 mb-1">
                                                         <span className={`text-xs font-semibold text-white ${entry.speaker === 'user'
                                                             ? 'bg-blue-600'
-                                                            : 'bg-white/40'
+                                                            : isLight ? 'bg-slate-400' : 'bg-blue-500/30'
                                                             } px-2 py-1 rounded-full truncate max-w-[120px]`}>
                                                             {getSpeakerDisplayName(
                                                                 entry.speaker,
@@ -1337,123 +1558,11 @@ const MeetingDetails: React.FC<MeetingDetailsProps> = ({ meeting: initialMeeting
                                                     <p className="text-text-secondary text-[15px] leading-relaxed transition-colors select-text cursor-text">{entry.text}</p>
                                                 </div>
                                             ));
+
                                         })()}
                                     </div>
                                 </motion.section>
-                                {/* <div className="overflow-hidden rounded-2xl border border-white/10 bg-white/5">
-                                    <button
-                                        onClick={() => setIsTranscriptOpen(prev => !prev)}
-                                        className="flex w-full items-center justify-between px-4 py-3 transition-colors hover:bg-white/[0.03]"
-                                    >
-                                        <div className="flex items-center gap-3">
-                                            <div className="flex h-8 w-8 items-center justify-center rounded-xl bg-white/10">
-                                                <MessageSquare className="h-4 w-4 text-white/70" />
-                                            </div>
 
-                                            <div className="text-left">
-                                                <h3 className="text-sm font-semibold text-white/90">
-                                                    Transcript
-                                                </h3>
-
-                                                <p className="text-xs text-white/40">
-                                                    Full meeting conversation
-                                                </p>
-                                            </div>
-                                        </div>
-
-                                        <div className="flex items-center gap-3">
-                                            <span className="text-xs text-white/40">
-                                                {meeting.transcript?.length || 0} messages
-                                            </span>
-
-                                            <ChevronDown
-                                                className={`h-4 w-4 text-white/50 transition-transform duration-300 ${isTranscriptOpen ? 'rotate-180' : ''
-                                                    }`}
-                                            />
-                                        </div>
-                                    </button>
-
-                                    <AnimatePresence initial={false}>
-                                        {isTranscriptOpen && (
-                                            <motion.div
-                                                initial={{ height: 0, opacity: 0 }}
-                                                animate={{
-                                                    height: 'auto',
-                                                    opacity: 1,
-                                                }}
-                                                exit={{
-                                                    height: 0,
-                                                    opacity: 0,
-                                                }}
-                                                transition={{
-                                                    duration: 0.25,
-                                                }}
-                                                className="overflow-hidden"
-                                            >
-                                                <div className="border-t border-white/10 px-4 py-5">
-                                                    <div className="space-y-6">
-                                                        {(() => {
-                                                            const filteredTranscript =
-                                                                meeting.transcript?.filter(entry => {
-                                                                    return ![
-                                                                        'system',
-                                                                        'ai',
-                                                                        'assistant',
-                                                                        'model',
-                                                                    ].includes(
-                                                                        entry.speaker?.toLowerCase()
-                                                                    );
-                                                                }) || [];
-
-                                                            if (filteredTranscript.length === 0) {
-                                                                return (
-                                                                    <p className="text-text-tertiary">
-                                                                        No transcript available.
-                                                                    </p>
-                                                                );
-                                                            }
-
-                                                            return filteredTranscript.map(
-                                                                (entry, i) => (
-                                                                    <div
-                                                                        key={i}
-                                                                        className="group rounded-2xl border border-white/[0.04] bg-white/[0.02] p-4 transition-all hover:bg-white/[0.03]"
-                                                                    >
-                                                                        <div className="mb-2 flex items-center gap-2">
-                                                                            <span
-                                                                                className={`text-xs font-semibold text-white ${entry.speaker === 'user'
-                                                                                    ? 'bg-blue-600'
-                                                                                    : 'bg-white/40'
-                                                                                    } px-2 py-1 rounded-full truncate max-w-[120px]`}
-                                                                            >
-                                                                                {getSpeakerDisplayName(
-                                                                                    entry.speaker,
-                                                                                    entry.displayName
-                                                                                )}
-                                                                            </span>
-
-                                                                            <span className="font-mono text-xs text-white/30">
-                                                                                {entry.timestamp
-                                                                                    ? formatTime(
-                                                                                        entry.timestamp
-                                                                                    )
-                                                                                    : '0:00'}
-                                                                            </span>
-                                                                        </div>
-
-                                                                        <p className="text-[15px] leading-relaxed text-text-secondary select-text">
-                                                                            {entry.text}
-                                                                        </p>
-                                                                    </div>
-                                                                )
-                                                            );
-                                                        })()}
-                                                    </div>
-                                                </div>
-                                            </motion.div>
-                                        )}
-                                    </AnimatePresence>
-                                </div> */}
                             </motion.section>
                         )}
 
@@ -1542,7 +1651,21 @@ const MeetingDetails: React.FC<MeetingDetailsProps> = ({ meeting: initialMeeting
                                         )}
                                     </div>
                                 ))}
-                                {!meeting.usage?.length && <p className="text-text-tertiary">No history found.</p>}
+                                {!meeting.usage?.length && (
+                                    <div className={`flex flex-col items-center justify-center py-16 gap-4 rounded-2xl border border-dashed ${isLight ? 'border-slate-200 bg-slate-50/50' : 'border-white/[0.07] bg-white/[0.02]'}`}>
+                                        <div className={`w-12 h-12 rounded-2xl flex items-center justify-center ${isLight ? 'bg-slate-100' : 'bg-white/[0.05]'}`}>
+                                            <MessagesSquareIcon size={22} strokeWidth={1.5} className={isLight ? 'text-slate-400' : 'text-white/25'} />
+                                        </div>
+                                        <div className="text-center">
+                                            <p className={`text-[14px] font-medium mb-1 ${isLight ? 'text-slate-600' : 'text-white/50'}`}>No questions asked yet</p>
+                                            <p className={`text-[12px] ${isLight ? 'text-slate-400' : 'text-white/25'}`}>Questions you ask Dojo about this meeting will appear here</p>
+                                        </div>
+                                        <div className={`flex items-center gap-2 px-3.5 py-2 rounded-lg text-[12px] ${isLight ? 'bg-blue-50 border border-blue-100 text-blue-500' : 'bg-blue-500/10 border border-blue-500/20 text-blue-400'}`}>
+                                            <ArrowUp size={12} className="rotate-45" />
+                                            Use the search bar below to ask anything
+                                        </div>
+                                    </div>
+                                )}
                             </motion.section>
                         )}
 
@@ -1553,13 +1676,19 @@ const MeetingDetails: React.FC<MeetingDetailsProps> = ({ meeting: initialMeeting
                                         hideBar="Missing Details"
                                         analysisData={meeting.detailedSummary.liveAnalysis}
                                         aiInsight={meeting.detailedSummary.liveAnalysis.signals?.[0]?.ask_now || undefined}
+                                        calledFromAnalysisTab
                                     />
                                 ) : (
-                                    <div className="flex flex-col items-center justify-center h-48 gap-3">
-                                        <Shield size={24} className="text-white/10" />
-                                        <p className="text-[12px] text-white/25 text-center px-8">
-                                            No live analysis data available for this meeting.
-                                        </p>
+                                    <div className={`flex flex-col items-center justify-center py-16 gap-4 rounded-2xl border border-dashed ${isLight ? 'border-slate-200 bg-slate-50/50' : 'border-white/[0.07] bg-white/[0.02]'}`}>
+                                        <div className={`w-12 h-12 rounded-2xl flex items-center justify-center ${isLight ? 'bg-slate-100' : 'bg-white/[0.05]'}`}>
+                                            <BarChart3 size={22} strokeWidth={1.5} className={isLight ? 'text-slate-400' : 'text-white/25'} />
+                                        </div>
+                                        <div className="text-center">
+                                            <p className={`text-[14px] font-medium mb-1 ${isLight ? 'text-slate-600' : 'text-white/50'}`}>No live analysis captured</p>
+                                            <p className={`text-[12px] max-w-[260px] leading-relaxed ${isLight ? 'text-slate-400' : 'text-white/25'}`}>
+                                                Live intelligence is captured during active meetings. Start a new meeting to see BANT, MEDDIC, and signal analysis here.
+                                            </p>
+                                        </div>
                                     </div>
                                 )}
                             </motion.section>
@@ -1578,7 +1707,7 @@ const MeetingDetails: React.FC<MeetingDetailsProps> = ({ meeting: initialMeeting
                         onChange={(e) => setQuery(e.target.value)}
                         onKeyDown={handleInputKeyDown}
                         placeholder="Ask about this meeting..."
-                        className="w-full pl-5 pr-12 py-3 bg-transparent backdrop-blur-[24px] backdrop-saturate-[140%] shadow-[0_8px_30px_rgb(0,0,0,0.12)] border border-white/20 rounded-full text-sm text-text-primary placeholder-text-tertiary/70 focus:outline-none transition-shadow duration-200"
+                        className={`w-full pl-5 pr-12 py-3 backdrop-blur-[24px] backdrop-saturate-[140%] focus:outline-none transition-shadow duration-200 rounded-full text-sm text-text-primary placeholder-text-tertiary/70 ${isLight ? 'bg-white/80 border border-slate-200 shadow-[0_8px_30px_rgba(0,0,0,0.08)]' : 'bg-transparent border border-white/20 shadow-[0_8px_30px_rgb(0,0,0,0.12)]'}`}
                     />
                     <button
                         onClick={handleSubmitQuestion}

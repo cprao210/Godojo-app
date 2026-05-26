@@ -256,7 +256,7 @@ const SettingsPopup = () => {
                                 setShowTranscript(newState);
                                 localStorage.setItem('natively_interviewer_transcript', String(newState));
                                 // Dispatch event for same-window listeners
-                                window.dispatchEvent(new Event('storage'));
+                                window.dispatchEvent(new StorageEvent('storage', { key: 'natively_interviewer_transcript', newValue: String(newState) }));
                             }}
                             className={`w-[30px] h-[18px] rounded-full p-[1.5px] transition-all duration-300 ease-spring active:scale-[0.92] ${showTranscript ? 'bg-emerald-500 shadow-[0_2px_10px_rgba(16,185,129,0.3)]' : defaultToggleTrackClass}`}
                         >

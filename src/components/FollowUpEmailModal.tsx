@@ -1,5 +1,5 @@
-import React, { useState, useEffect, useRef } from 'react';
-import { X, Mail, RotateCcw, ExternalLink, Loader2, Paperclip, Check, Copy } from 'lucide-react';
+import React, { useState, useEffect } from 'react';
+import { X, RotateCcw, Check, Copy } from 'lucide-react';
 import { motion, AnimatePresence } from 'framer-motion';
 
 interface Meeting {
@@ -46,55 +46,39 @@ const FollowUpEmailModal: React.FC<FollowUpEmailModalProps> = ({ isOpen, onClose
     const [recipientEmail, setRecipientEmail] = useState('');
     const [senderName, setSenderName] = useState('');
     const [recipientName, setRecipientName] = useState('');
-
-    // Subject & Body
     const [subject, setSubject] = useState('');
     const [emailBody, setEmailBody] = useState('');
     const [isCopied, setIsCopied] = useState(false);
-
-    // State
     const [isGenerating, setIsGenerating] = useState(false);
     const [hasGeneratedOnce, setHasGeneratedOnce] = useState(false);
 
-    // Mount effect - Initialize and Generate
     useEffect(() => {
-        if (isOpen) {
-            initializeFields();
-        }
+        if (isOpen) initializeFields();
     }, [isOpen, meeting]);
 
     const initializeFields = async () => {
-        // 1. Set Subject
-        const cleanTitle = meeting.title.replace(/["\*]/g, '').trim();
-        setSubject(`Follow up - ${cleanTitle}`); // Default subject
+        const cleanTitle = meeting.title.replace(/["*]/g, '').trim();
+        setSubject(`Follow up - ${cleanTitle}`);
 
-        // 2. Load Sender Name
         const storedName = localStorage.getItem('natively_user_name');
         if (storedName) setSenderName(storedName);
 
-        // 3. Load Recipient (Async)
         let loadedRecipientEmail = '';
         let loadedRecipientName = '';
 
         try {
-            // Try Calendar
-
             if (meeting.calendarEventId) {
                 // @ts-ignore
                 const attendees = await window.electronAPI?.invoke('get-calendar-attendees', meeting.calendarEventId);
-                if (attendees && attendees.length > 0) {
+                if (attendees?.length > 0) {
                     loadedRecipientEmail = attendees[0].email;
                     if (attendees[0].name) loadedRecipientName = attendees[0].name.split(' ')[0];
                 }
             }
-
-            // Fallback: Transcript
             if (!loadedRecipientEmail && meeting.transcript) {
                 // @ts-ignore
                 const extracted = await window.electronAPI?.invoke('extract-emails-from-transcript', meeting.transcript);
-                if (extracted && extracted.length > 0) {
-                    loadedRecipientEmail = extracted[0];
-                }
+                if (extracted?.length > 0) loadedRecipientEmail = extracted[0];
             }
         } catch (e) {
             console.error(e);
@@ -103,86 +87,36 @@ const FollowUpEmailModal: React.FC<FollowUpEmailModalProps> = ({ isOpen, onClose
         if (loadedRecipientEmail) setRecipientEmail(loadedRecipientEmail);
         if (loadedRecipientName) setRecipientName(loadedRecipientName);
 
-        // 4. Generate Content automatically if not done
         if (!emailBody && !isGenerating) {
             generateEmail(loadedRecipientName, storedName || '');
         }
     };
 
     const generateEmail = async (rName?: string, sName?: string) => {
-        // ── Use pre-generated data from summary if available ──────────────
         const prebuilt = meeting.detailedSummary?.followUpEmail;
-
-        console.log(prebuilt?.fullEmail)
 
         if (prebuilt?.sections && !hasGeneratedOnce) {
             const sections = prebuilt.sections;
             const lines: string[] = [];
 
-            // ── WHAT WE DISCUSSED ─────────────────────────────────────
-            if (sections.whatWeDiscussed?.length) {
-                lines.push(
-                    `WHAT WE DISCUSSED\n${sections.whatWeDiscussed
-                        .map((s: string) => `• ${s}`)
-                        .join('\n')}`
-                );
-            }
+            if (sections.whatWeDiscussed?.length)
+                lines.push(`WHAT WE DISCUSSED\n${sections.whatWeDiscussed.map((s: string) => `• ${s}`).join('\n')}`);
+            if (sections.whatIsTheNeed?.length)
+                lines.push(`WHAT IS THE NEED\n${sections.whatIsTheNeed.map((s: string) => `• ${s}`).join('\n')}`);
+            if (sections.scopeOfImprovement?.length)
+                lines.push(`SCOPE OF IMPROVEMENT / CHALLENGES\n${sections.scopeOfImprovement.map((s: string) => `• ${s}`).join('\n')}`);
+            if (sections.whatYouWillAchieveAfterTransformation?.length)
+                lines.push(`WHAT YOU WILL ACHIEVE AFTER TRANSFORMATION\n${sections.whatYouWillAchieveAfterTransformation.map((s: string) => `• ${s}`).join('\n')}`);
+            if (sections.nextSteps?.length)
+                lines.push(`NEXT STEPS\n${sections.nextSteps.map((s: string) => `• ${s}`).join('\n')}`);
 
-            // ── WHAT IS THE NEED ──────────────────────────────────────
-            if (sections.whatIsTheNeed?.length) {
-                lines.push(
-                    `WHAT IS THE NEED\n${sections.whatIsTheNeed
-                        .map((s: string) => `• ${s}`)
-                        .join('\n')}`
-                );
-            }
-
-            // ── SCOPE OF IMPROVEMENT ─────────────────────────────────
-            if (sections.scopeOfImprovement?.length) {
-                lines.push(
-                    `SCOPE OF IMPROVEMENT / CHALLENGES\n${sections.scopeOfImprovement
-                        .map((s: string) => `• ${s}`)
-                        .join('\n')}`
-                );
-            }
-
-            // ── TRANSFORMATION OUTCOMES ──────────────────────────────
-            if (sections.whatYouWillAchieveAfterTransformation?.length) {
-                lines.push(
-                    `WHAT YOU WILL ACHIEVE AFTER TRANSFORMATION\n${sections.whatYouWillAchieveAfterTransformation
-                        .map((s: string) => `• ${s}`)
-                        .join('\n')}`
-                );
-            }
-
-            // ── NEXT STEPS ───────────────────────────────────────────
-            if (sections.nextSteps?.length) {
-                lines.push(
-                    `NEXT STEPS\n${sections.nextSteps
-                        .map((s: string) => `• ${s}`)
-                        .join('\n')}`
-                );
-            }
-
-            // ── SUBJECT ──────────────────────────────────────────────
-            if (prebuilt.subject) {
-                setSubject(prebuilt.subject);
-            }
-
-            // ── FULL EMAIL SUPPORT ───────────────────────────────────
-            if (prebuilt.fullEmail) {
-                setEmailBody(prebuilt.fullEmail);
-            } else {
-                setEmailBody(lines.join('\n\n'));
-            }
-
+            if (prebuilt.subject) setSubject(prebuilt.subject);
+            setEmailBody(prebuilt.fullEmail || lines.join('\n\n'));
             setHasGeneratedOnce(true);
             return;
         }
 
-        // ── Fallback: call API if no pre-generated data ─────────────
         setIsGenerating(true);
-
         try {
             const input = {
                 meeting_type: 'meeting' as const,
@@ -192,84 +126,41 @@ const FollowUpEmailModal: React.FC<FollowUpEmailModalProps> = ({ isOpen, onClose
                 key_points: meeting.detailedSummary?.keyPoints || [],
                 recipient_name: rName || recipientName,
                 sender_name: sName || senderName,
-                tone: 'neutral' as const
+                tone: 'neutral' as const,
             };
 
             // @ts-ignore
             const generatedBody = await window.electronAPI?.generateFollowupEmail(input);
-
             if (generatedBody) {
-                // Extract subject if included
                 const subjectMatch = generatedBody.match(/^Subject:\s*(.+)/m);
-
                 if (subjectMatch) {
                     setSubject(subjectMatch[1].trim());
-
-                    setEmailBody(
-                        generatedBody
-                            .replace(/^Subject:\s*.+\n?/m, '')
-                            .trimStart()
-                    );
+                    setEmailBody(generatedBody.replace(/^Subject:\s*.+\n?/m, '').trimStart());
                 } else {
                     setEmailBody(generatedBody);
                 }
-
                 setHasGeneratedOnce(true);
             }
         } catch (error) {
             console.error('Failed to generate email:', error);
-
-            setEmailBody(`WHAT WE DISCUSSED
-    • Thank you for taking the time to speak today.
-    • We reviewed your current workflow and operational challenges.
-    • We discussed potential improvements and next steps.
-    
-    NEXT STEPS
-    • Please review the shared materials.
-    • We will coordinate the next discussion internally.
-    • Let us know if additional stakeholders should be included.`);
+            setEmailBody(`WHAT WE DISCUSSED\n• Thank you for taking the time to speak today.\n• We reviewed your current workflow and operational challenges.\n• We discussed potential improvements and next steps.\n\nNEXT STEPS\n• Please review the shared materials.\n• We will coordinate the next discussion internally.\n• Let us know if additional stakeholders should be included.`);
         } finally {
             setIsGenerating(false);
         }
     };
 
-    const handleReset = () => {
-        generateEmail();
-    };
-
-    const handleSendGmail = async () => {
-        const gmailUrl = `https://mail.google.com/mail/?view=cm&fs=1&to=${encodeURIComponent(recipientEmail)}&su=${encodeURIComponent(subject)}&body=${encodeURIComponent(emailBody)}`;
-        // @ts-ignore
-        await window.electronAPI?.invoke('open-external', gmailUrl);
-        onClose();
-    };
-
-    const handleSendDefault = async () => {
-        // @ts-ignore
-        await window.electronAPI?.invoke('open-mailto', {
-            to: recipientEmail,
-            subject: subject,
-            body: emailBody
-        });
-        onClose();
-    };
+    const handleReset = () => generateEmail();
 
     const handleCopy = async () => {
-        const fullEmail = subject
-            ? `Subject: ${subject}\n\n${emailBody}`
-            : emailBody;
-
+        const fullEmail = subject ? `Subject: ${subject}\n\n${emailBody}` : emailBody;
         try {
             await navigator.clipboard.writeText(fullEmail);
-
             setIsCopied(true);
-
             setTimeout(() => setIsCopied(false), 2000);
         } catch (err) {
             console.error('Failed to copy email:', err);
         }
     };
-
 
     if (!isOpen) return null;
 
@@ -283,7 +174,7 @@ const FollowUpEmailModal: React.FC<FollowUpEmailModalProps> = ({ isOpen, onClose
                         animate={{ opacity: 1 }}
                         exit={{ opacity: 0 }}
                         onClick={onClose}
-                        className="fixed inset-0 bg-black/70 backdrop-blur-sm z-50 transition-opacity"
+                        className="fixed inset-0 z-50 bg-black/50 backdrop-blur-sm transition-opacity"
                     />
 
                     {/* Modal Container */}
@@ -291,34 +182,37 @@ const FollowUpEmailModal: React.FC<FollowUpEmailModalProps> = ({ isOpen, onClose
                         initial={{ opacity: 0, scale: 0.95, y: 10 }}
                         animate={{ opacity: 1, scale: 1, y: 0 }}
                         exit={{ opacity: 0, scale: 0.95, y: 10 }}
-                        transition={{ duration: 0.3, type: "spring", damping: 25, stiffness: 300 }}
+                        transition={{ duration: 0.25, type: 'spring', damping: 25, stiffness: 300 }}
                         className="fixed inset-0 z-50 flex items-center justify-center p-4 pointer-events-none"
                     >
-                        {/* The Window */}
-                        <div className="w-full max-w-[640px] bg-[#121212]/95 backdrop-blur-xl rounded-2xl shadow-2xl border border-white/[0.08] flex flex-col pointer-events-auto overflow-hidden ring-1 ring-white/5">
+                        <div className="w-full max-w-[640px] rounded-2xl flex flex-col pointer-events-auto overflow-hidden bg-gray-900 border border-border-muted shadow-[var(--shadow-card)]">
 
-                            {/* Header / Top Bar */}
-                            <div className="flex px-6 py-4 justify-between items-center border-b border-white/[0.06]">
-                                <h2 className="text-sm font-medium text-[#E9E9E9] tracking-wide">Draft Follow-up</h2>
-                                <button onClick={onClose} className="text-[#71717A] hover:text-white transition-colors bg-white/5 hover:bg-white/10 p-1.5 rounded-full">
+                            {/* ── Header ─────────────────────────────────────────────── */}
+                            <div className="flex px-6 py-4 justify-between items-center border-b border-border-subtle">
+                                <h2 className="text-sm font-semibold tracking-wide text-text-primary">Draft Follow-up</h2>
+                                <button
+                                    onClick={onClose}
+                                    className="p-1.5 rounded-full transition-colors text-text-tertiary hover:text-text-primary bg-bg-item-surface hover:bg-bg-item-active"
+                                >
                                     <X size={14} />
                                 </button>
                             </div>
 
-                            {/* Inputs Area */}
+                            {/* ── Input Fields ────────────────────────────────────────── */}
                             <div className="px-8 pt-6 space-y-5">
 
-                                {/* TO Field */}
+                                {/* TO */}
                                 <div className="flex items-start gap-6 group">
-                                    <label className="text-[#71717A] text-[13px] w-[50px] font-medium pt-2">To</label>
-                                    <div className="flex-1 min-h-[32px] flex items-center border-b border-white/[0.06] group-focus-within:border-white/20 transition-colors pb-1">
+                                    <label className="text-[13px] w-[50px] font-medium pt-2 text-text-tertiary">To</label>
+                                    <div className="flex-1 min-h-[32px] flex items-center border-b border-border-subtle group-focus-within:border-border-muted transition-colors pb-1">
                                         {recipientEmail ? (
-                                            <div className="inline-flex items-center gap-2 px-3 py-1 bg-[#27272A] border border-white/10 rounded-full text-[#E9E9E9] text-[13px] shadow-sm animate-in fade-in zoom-in duration-200">
-                                                <span className="w-1.5 h-1.5 rounded-full bg-emerald-500 shadow-[0_0_8px_rgba(16,185,129,0.4)]"></span>
+                                            <div className="inline-flex items-center gap-2 px-3 py-1 rounded-full text-[13px] shadow-sm animate-in fade-in zoom-in duration-200 bg-bg-component border border-border-muted text-text-primary">
+                                                {/* Intentional green dot — status indicator, keep explicit color */}
+                                                <span className="w-1.5 h-1.5 rounded-full bg-emerald-500 shadow-[0_0_8px_rgba(16,185,129,0.4)]" />
                                                 {recipientEmail}
                                                 <button
                                                     onClick={() => setRecipientEmail('')}
-                                                    className="hover:text-white text-[#71717A] transition-colors ml-1"
+                                                    className="transition-colors ml-1 text-text-tertiary hover:text-text-primary"
                                                 >
                                                     <X size={12} />
                                                 </button>
@@ -329,85 +223,84 @@ const FollowUpEmailModal: React.FC<FollowUpEmailModalProps> = ({ isOpen, onClose
                                                 value={recipientEmail}
                                                 onChange={(e) => setRecipientEmail(e.target.value)}
                                                 placeholder="Recipient email"
-                                                className="w-full bg-transparent text-[#E9E9E9] placeholder-[#525255] focus:outline-none text-[14px]"
+                                                className="w-full bg-transparent focus:outline-none text-[14px] text-text-primary placeholder-text-tertiary"
                                                 autoFocus
                                             />
                                         )}
                                     </div>
                                 </div>
 
-                                {/* SUBJECT Field */}
+                                {/* SUBJECT */}
                                 <div className="flex items-center gap-6 group">
-                                    <label className="text-[#71717A] text-[13px] w-[50px] font-medium">Subject</label>
-                                    <div className="flex-1 border-b border-white/[0.06] group-focus-within:border-white/20 transition-colors pb-1">
+                                    <label className="text-[13px] w-[50px] font-medium text-text-tertiary">Subject</label>
+                                    <div className="flex-1 border-b border-border-subtle group-focus-within:border-border-muted transition-colors pb-1">
                                         <input
                                             type="text"
                                             value={subject}
                                             onChange={(e) => setSubject(e.target.value)}
-                                            className="w-full bg-transparent text-[#E9E9E9] focus:outline-none text-[14px] font-medium placeholder-[#525255]"
+                                            className="w-full bg-transparent focus:outline-none text-[14px] font-medium text-text-primary placeholder-text-tertiary"
                                             placeholder="Subject line"
                                         />
                                     </div>
                                 </div>
                             </div>
 
-                            {/* Body Area */}
+                            {/* ── Body ────────────────────────────────────────────────── */}
                             <div className="flex-1 px-8 py-6 min-h-[320px] relative">
                                 {isGenerating ? (
-                                    <div className="absolute inset-0 flex items-center justify-center z-10 bg-[#121212]/50 backdrop-blur-[2px]">
+                                    <div className="absolute inset-0 flex items-center justify-center z-10 backdrop-blur-[2px] bg-bg-elevated/50">
                                         <div className="flex flex-col items-center gap-4">
                                             <div className="relative">
-                                                <div className="w-10 h-10 border-2 border-[#27272A] border-t-blue-500 rounded-full animate-spin"></div>
+                                                {/* Spinner uses accent-primary via Tailwind — intentional */}
+                                                <div className="w-10 h-10 border-2 rounded-full animate-spin border-border-muted border-t-accent-primary" />
                                                 <div className="absolute inset-0 flex items-center justify-center">
-                                                    <div className="w-2 h-2 bg-blue-500 rounded-full animate-pulse"></div>
+                                                    <div className="w-2 h-2 rounded-full animate-pulse bg-accent-primary" />
                                                 </div>
                                             </div>
-                                            <span className="text-xs font-medium text-[#71717A] animate-pulse">Drafting perfect follow-up...</span>
+                                            <span className="text-xs font-medium animate-pulse text-text-tertiary">
+                                                Drafting perfect follow-up...
+                                            </span>
                                         </div>
                                     </div>
                                 ) : (
                                     <textarea
                                         value={emailBody}
                                         onChange={(e) => setEmailBody(e.target.value)}
-                                        className="w-full h-[260px] bg-transparent text-[#D4D4D8] text-[15px] leading-7 focus:outline-none resize-none placeholder-[#3F3F46] font-normal"
+                                        className="w-full h-[260px] bg-transparent text-[15px] leading-7 focus:outline-none resize-none font-normal text-text-secondary placeholder-text-tertiary"
                                         placeholder="Write your email..."
                                         spellCheck={false}
                                     />
                                 )}
                             </div>
 
-                            {/* Footer */}
-                            <div className="flex items-center justify-between px-6 py-5 bg-[#18181B]/50 border-t border-white/[0.06]">
+                            {/* ── Footer ──────────────────────────────────────────────── */}
+                            <div className="flex items-center justify-between px-6 py-5 border-t border-border-subtle bg-bg-secondary/50">
+                                {/* Left */}
                                 <div className="flex items-center gap-3">
-                                    {/* Copy the draft */}
                                     <button
                                         onClick={handleCopy}
                                         disabled={isGenerating}
-                                        className="flex items-center gap-2 text-xs font-medium text-text-secondary hover:text-text-primary transition-colors disabled:opacity-30 disabled:cursor-not-allowed"
+                                        className="flex items-center gap-2 text-xs font-medium transition-colors disabled:opacity-30 disabled:cursor-not-allowed text-text-secondary hover:text-text-primary"
                                     >
-                                        {isCopied ? <Check size={14} className="text-emerald-500" /> : <Copy size={14} />}
+                                        {isCopied
+                                            ? <Check size={14} className="text-emerald-500" />
+                                            : <Copy size={14} />}
                                         {isCopied ? 'Copied' : 'Copy'}
                                     </button>
-                                    {/* <button
-                                        onClick={handleSendGmail}
-                                        className="flex items-center gap-2 px-5 py-2.5 bg-[#202124] hover:bg-[#303134] rounded-full border border-[#5F6368] transition-colors group"
-                                    >
-                                        <div className="w-4 h-4 relative flex items-center justify-center">
-                                            <span className="font-bold text-lg leading-none bg-clip-text text-transparent bg-gradient-to-r from-blue-500 via-red-500 to-yellow-500">G</span>
-                                        </div>
-                                        <span className="text-[#E8EAED] text-[13px] font-medium tracking-wide">Gmail</span>
-                                    </button> */}
                                 </div>
 
-                                {/* Right Side Actions */}
+                                {/* Right */}
                                 <div className="flex items-center gap-2">
                                     <button
                                         onClick={handleReset}
                                         disabled={isGenerating}
-                                        className="flex items-center gap-2 px-4 py-2.5 hover:bg-white/5 rounded-xl transition-colors text-[#71717A] hover:text-[#E9E9E9] disabled:opacity-30 disabled:cursor-not-allowed group"
+                                        className="flex items-center gap-2 px-4 py-2.5 rounded-xl transition-colors disabled:opacity-30 disabled:cursor-not-allowed group text-text-tertiary hover:text-text-primary hover:bg-bg-item-surface"
                                         title="Regenerate"
                                     >
-                                        <RotateCcw size={15} className={`group-hover:rotate-180 transition-transform duration-500 ${isGenerating ? 'animate-spin' : ''}`} />
+                                        <RotateCcw
+                                            size={15}
+                                            className={`group-hover:rotate-180 transition-transform duration-500 ${isGenerating ? 'animate-spin' : ''}`}
+                                        />
                                         <span className="text-[13px] font-medium">Reset</span>
                                     </button>
                                 </div>

@@ -1349,6 +1349,149 @@ export class AppState {
     // ─────────────────────────────────────────────────────────────────────────
   }
 
+  /**
+   * Shows a custom toast notification on whichever display the main app window
+   * currently lives on.
+   *
+   * WHY NOT electron.Notification?
+   *   On Windows, native toast notifications are always delivered to the display
+   *   that owns the primary taskbar — there is no Win32 API to redirect them to
+   *   another monitor.  Briefly focusing the app window does not change this.
+   *   The only reliable cross-platform solution is a frameless, transparent
+   *   BrowserWindow that we explicitly position in the bottom-right corner of
+   *   the target display ourselves.  This gives pixel-perfect control on every OS.
+   *
+   * Behaviour:
+   *   - Appears bottom-right of whatever screen the main app window is on.
+   *   - Never steals keyboard focus (showInactive).
+   *   - Always-on-top so it is visible over full-screen meeting apps.
+   *   - Auto-dismisses after `durationMs` (default 4 s) with a CSS fade-out.
+   *   - If a toast is already showing, it is closed first so toasts don't pile up.
+   */
+  private _toastWindow: BrowserWindow | null = null;
+  private _toastTimer: NodeJS.Timeout | null = null;
+
+  private showNotificationOnActiveDisplay(
+    title: string,
+    body: string,
+    _silent = true,          // kept for API compat; custom toast is always silent
+    durationMs = 4000,
+  ): void {
+    // --- 1. Tear down any existing toast immediately ---
+    if (this._toastTimer) {
+      clearTimeout(this._toastTimer);
+      this._toastTimer = null;
+    }
+    if (this._toastWindow && !this._toastWindow.isDestroyed()) {
+      this._toastWindow.close();
+      this._toastWindow = null;
+    }
+
+    // --- 2. Determine target display ---
+    const mainWin = this.getMainWindow();
+    let targetDisplay: Electron.Display;
+    if (mainWin && !mainWin.isDestroyed()) {
+      targetDisplay = screen.getDisplayMatching(mainWin.getBounds());
+    } else {
+      targetDisplay = screen.getPrimaryDisplay();
+    }
+
+    // --- 3. Calculate position: bottom-right corner, 16 px margin ---
+    const TOAST_W = 320;
+    const TOAST_H = 80;
+    const MARGIN = 16;
+    const { workArea } = targetDisplay;
+    const toastX = workArea.x + workArea.width - TOAST_W - MARGIN;
+    const toastY = workArea.y + workArea.height - TOAST_H - MARGIN;
+
+    // --- 4. Build the toast HTML inline (no external file needed) ---
+    const isMac = process.platform === 'darwin';
+    const bgColor = isMac ? '#1e1e1e' : '#2b2b2b';   // match screenshot style
+    const html = `<!DOCTYPE html><html><head><meta charset="utf-8"><style>
+      *{margin:0;padding:0;box-sizing:border-box}
+      html,body{width:100%;height:100%;overflow:hidden;background:transparent}
+      .toast{
+        position:absolute;inset:0;
+        background:${bgColor};
+        border-radius:8px;
+        border:1px solid rgba(255,255,255,0.12);
+        padding:12px 16px;
+        display:flex;flex-direction:column;justify-content:center;gap:4px;
+        font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;
+        color:#fff;
+        box-shadow:0 4px 24px rgba(0,0,0,0.5);
+        animation:fadeIn 0.2s ease;
+      }
+      .title{font-size:13px;font-weight:600;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+      .body {font-size:12px;color:rgba(255,255,255,0.72);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+      @keyframes fadeIn{from{opacity:0;transform:translateY(6px)}to{opacity:1;transform:translateY(0)}}
+      @keyframes fadeOut{from{opacity:1}to{opacity:0}}
+      .fading{animation:fadeOut 0.3s ease forwards}
+    </style></head><body>
+      <div class="toast" id="t">
+        <div class="title">${title.replace(/</g, '&lt;')}</div>
+        <div class="body">${body.replace(/</g, '&lt;')}</div>
+      </div>
+      <script>
+        const FADE=300,STAY=${durationMs - 300};
+        setTimeout(()=>{
+          document.getElementById('t').classList.add('fading');
+          setTimeout(()=>window.close(),FADE);
+        },STAY);
+      </script>
+    </body></html>`;
+
+    // --- 5. Create the toast BrowserWindow ---
+    const toast = new BrowserWindow({
+      width: TOAST_W,
+      height: TOAST_H,
+      x: toastX,
+      y: toastY,
+      frame: false,
+      transparent: true,
+      resizable: false,
+      movable: false,
+      focusable: false,
+      skipTaskbar: true,
+      alwaysOnTop: true,
+      show: false,
+      hasShadow: false,
+      webPreferences: {
+        nodeIntegration: false,
+        contextIsolation: true,
+        // No preload needed — the toast is self-contained HTML
+      },
+    });
+
+    // Apply content-protection so the toast is hidden from screen-capture
+    // on the same surfaces as the main window.
+    if (this.windowHelper.getContentProtection?.()) {
+      toast.setContentProtection(true);
+    }
+
+    this._toastWindow = toast;
+
+    toast.loadURL(`data:text/html;charset=utf-8,${encodeURIComponent(html)}`);
+
+    toast.once('ready-to-show', () => {
+      if (toast.isDestroyed()) return;
+      toast.showInactive();           // never steal focus
+    });
+
+    toast.on('closed', () => {
+      if (this._toastWindow === toast) this._toastWindow = null;
+    });
+
+    // --- 6. Hard-kill timer as safety net (CSS animation handles the visual fade) ---
+    this._toastTimer = setTimeout(() => {
+      this._toastTimer = null;
+      if (this._toastWindow && !this._toastWindow.isDestroyed()) {
+        this._toastWindow.close();
+        this._toastWindow = null;
+      }
+    }, durationMs + 500);   // 500 ms grace for the CSS fade-out
+  }
+
   public pauseMeeting(): void {
     if (!this.isMeetingActive) {
       console.warn('[Main] pauseMeeting() called but no meeting is active — ignoring.');
@@ -1386,16 +1529,14 @@ export class AppState {
     // 5. Update tray menu to show paused state
     this.updateTrayMenu();
 
-    // 6. Show a native OS notification so the user knows recording is paused
-    // (uses Electron's Notification API — works on macOS, Windows, Linux)
-    const { Notification } = require('electron');
-    if (Notification.isSupported()) {
-      new Notification({
-        title: 'Meeting Paused',
-        body: 'Audio capture and transcription are paused.',
-        silent: true,          // no sound — it's just an informational ping
-      }).show();
-    }
+    // 6. Show a native OS notification so the user knows recording is paused.
+    //    showNotificationOnActiveDisplay() ensures the notification appears on
+    //    whichever monitor the app window currently occupies (e.g. an external
+    //    display the user dragged the app to), not always the primary screen.
+    this.showNotificationOnActiveDisplay(
+      'Meeting Paused',
+      'Audio capture and transcription are paused.',
+    );
 
     console.log('[Main] Meeting paused. Audio capture and STT stopped.');
   }
@@ -1446,15 +1587,12 @@ export class AppState {
     // 6. Update tray menu to remove paused state indicator
     this.updateTrayMenu();
 
-    // 7. Native OS notification — meeting resumed
-    const { Notification } = require('electron');
-    if (Notification.isSupported()) {
-      new Notification({
-        title: 'Meeting Resumed',
-        body: 'Audio capture and transcription have resumed.',
-        silent: true,
-      }).show();
-    }
+    // 7. Native OS notification — meeting resumed.
+    //    Same display-aware helper as pauseMeeting() above.
+    this.showNotificationOnActiveDisplay(
+      'Meeting Resumed',
+      'Audio capture and transcription have resumed.',
+    );
 
     console.log('[Main] Meeting resumed. Audio capture and STT restarted.');
   }

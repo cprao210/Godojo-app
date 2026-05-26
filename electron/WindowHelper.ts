@@ -44,6 +44,10 @@ export class WindowHelper {
     this.appState = appState
   }
 
+  public getContentProtection(): boolean {
+    return this.contentProtection;
+  }
+
   public setContentProtection(enable: boolean): void {
     this.contentProtection = enable
     this.applyContentProtection(enable)
@@ -207,6 +211,69 @@ export class WindowHelper {
 
     this.launcherWindow.webContents.on('did-fail-load', (event, errorCode, errorDescription) => {
       console.error(`[WindowHelper] did-fail-load: ${errorCode} ${errorDescription}`);
+    });
+
+    // Allow Firebase Google OAuth popup windows.
+    // signInWithPopup() asks Electron to open a new BrowserWindow for the
+    // accounts.google.com consent screen. Without this handler Electron
+    // silently blocks every new-window request, so the popup never appears
+    // and the sign-in call hangs / throws "popup-blocked".
+    this.launcherWindow.webContents.setWindowOpenHandler(({ url }) => {
+      const isGoogleAuth =
+        url.startsWith('https://accounts.google.com') ||
+        url.startsWith('https://www.google.com/accounts') ||
+        url.includes('firebaseapp.com/__/auth') ||
+        url.includes('google.com/o/oauth2');
+
+      if (isGoogleAuth) {
+        // Center the popup on whichever display the launcher window is currently
+        // on. Without explicit x/y Electron defaults to the primary display
+        // (usually the laptop), so moving the app to an external monitor and
+        // clicking "Continue with Google" would open the popup on the wrong screen.
+        const popupWidth = 500;
+        const popupHeight = 650;
+
+        let popupX: number | undefined;
+        let popupY: number | undefined;
+
+        try {
+          const { screen } = require('electron');
+          const winBounds = this.launcherWindow?.getBounds();
+          if (winBounds) {
+            // Find the display that contains the centre of the launcher window
+            const winCenterX = winBounds.x + Math.floor(winBounds.width / 2);
+            const winCenterY = winBounds.y + Math.floor(winBounds.height / 2);
+            const currentDisplay = screen.getDisplayNearestPoint({ x: winCenterX, y: winCenterY });
+            const { workArea } = currentDisplay;
+            // Place popup in the centre of that display's work area
+            popupX = workArea.x + Math.floor((workArea.width - popupWidth) / 2);
+            popupY = workArea.y + Math.floor((workArea.height - popupHeight) / 2);
+          }
+        } catch (e) {
+          console.warn('[WindowHelper] Could not determine current display for auth popup:', e);
+        }
+
+        return {
+          action: 'allow',
+          overrideBrowserWindowOptions: {
+            width: popupWidth,
+            height: popupHeight,
+            ...(popupX !== undefined && popupY !== undefined ? { x: popupX, y: popupY } : {}),
+            webPreferences: {
+              nodeIntegration: false,
+              contextIsolation: true,
+              partition: 'persist:google-auth',
+            },
+            parent: this.launcherWindow ?? undefined,
+            modal: false,
+            autoHideMenuBar: true,
+          },
+        };
+      }
+
+      // For all other external links, open in the system browser.
+      require('electron').shell.openExternal(url);
+      return { action: 'deny' };
     });
 
     // if (isDev) {

@@ -19,12 +19,29 @@ const MIRRORED_APP_STATE_KEYS = new Set<string>([
     'preferred_embedding_dim'
 ]);
 
+/**
+ * Formats a duration in milliseconds to mm:ss or hh:mm:ss.
+ * Uses Math.floor throughout — never rounds up into the next unit.
+ */
+export function formatDuration(ms: number): string {
+    const totalSeconds = Math.floor(ms / 1000);
+    const hours = Math.floor(totalSeconds / 3600);
+    const minutes = Math.floor((totalSeconds % 3600) / 60);
+    const seconds = totalSeconds % 60;
+
+    if (hours > 0) {
+        return `${hours}:${minutes.toString().padStart(2, '0')}:${seconds.toString().padStart(2, '0')}`;
+    }
+    return `${minutes}:${seconds.toString().padStart(2, '0')}`;
+}
+
 // Interfaces for our data objects
 export interface Meeting {
     id: string;
     title: string;
     date: string; // ISO string
     duration: string;
+    durationMs?: number; // raw ms — available when loaded from DB, used for accurate recovery
     summary: string;
     detailedSummary?: {
         overview?: string;
@@ -857,17 +874,12 @@ export class DatabaseManager {
         return rows.map(row => {
             const summaryData = JSON.parse(row.summary_json || '{}');
 
-            // Format duration string if needed, but we typically store ms
-            // Let's recreate the 'duration' string "MM:SS" from duration_ms
-            const minutes = Math.floor(row.duration_ms / 60000);
-            const seconds = Math.floor((row.duration_ms % 60000) / 1000);
-            const durationStr = `${minutes}:${seconds.toString().padStart(2, '0')}`;
-
             return {
                 id: row.id,
                 title: row.title,
                 date: row.created_at, // Use the stored ISO string
-                duration: durationStr,
+                duration: formatDuration(row.duration_ms),
+                durationMs: row.duration_ms,
                 summary: summaryData.legacySummary || '',
                 detailedSummary: summaryData.detailedSummary,
                 calendarEventId: row.calendar_event_id,
@@ -897,9 +909,6 @@ export class DatabaseManager {
 
         // Reconstruct
         const summaryData = JSON.parse(meetingRow.summary_json || '{}');
-        const minutes = Math.floor(meetingRow.duration_ms / 60000);
-        const seconds = Math.floor((meetingRow.duration_ms % 60000) / 1000);
-        const durationStr = `${minutes}:${seconds.toString().padStart(2, '0')}`;
 
         const transcript = transcriptRows.map(row => ({
             speaker: row.speaker,
@@ -935,7 +944,8 @@ export class DatabaseManager {
             id: meetingRow.id,
             title: meetingRow.title,
             date: meetingRow.created_at,
-            duration: durationStr,
+            duration: formatDuration(meetingRow.duration_ms),
+            durationMs: meetingRow.duration_ms,
             summary: summaryData.legacySummary || '',
             detailedSummary: summaryData.detailedSummary,
             calendarEventId: meetingRow.calendar_event_id,
@@ -983,15 +993,12 @@ export class DatabaseManager {
             // Reconstruct minimal meeting object for processing
             // We mainly need ID to fetch transcripts later
             const summaryData = JSON.parse(row.summary_json || '{}');
-            const minutes = Math.floor(row.duration_ms / 60000);
-            const seconds = Math.floor((row.duration_ms % 60000) / 1000);
-            const durationStr = `${minutes}:${seconds.toString().padStart(2, '0')}`;
-
             return {
                 id: row.id,
                 title: row.title,
                 date: row.created_at,
-                duration: durationStr,
+                duration: formatDuration(row.duration_ms),
+                durationMs: row.duration_ms,
                 summary: summaryData.legacySummary || '',
                 detailedSummary: summaryData.detailedSummary,
                 calendarEventId: row.calendar_event_id,

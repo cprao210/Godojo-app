@@ -4,7 +4,7 @@
 
 import { SessionTracker, TranscriptSegment } from './SessionTracker';
 import { LLMHelper } from './LLMHelper';
-import { DatabaseManager, Meeting } from './db/DatabaseManager';
+import { DatabaseManager, Meeting, formatDuration } from './db/DatabaseManager';
 import { GROQ_TITLE_PROMPT, GROQ_SUMMARY_JSON_PROMPT } from './llm';
 import { LiveAnalysisData } from '../src/types/liveAnalysis';
 import { AppState } from './main';
@@ -204,15 +204,12 @@ export class MeetingPersistence {
         });
 
         // 4. Initial Save (Placeholder)
-        const minutes = Math.floor(durationMs / 60000);
-        const seconds = ((durationMs % 60000) / 1000).toFixed(0);
-        const durationStr = `${minutes}:${Number(seconds) < 10 ? '0' : ''}${seconds}`;
-
         const placeholder: Meeting = {
             id: meetingId,
             title: "Processing...",
             date: new Date().toISOString(),
-            duration: durationStr,
+            duration: formatDuration(durationMs),
+            durationMs: durationMs,
             summary: "Generating summary...",
             detailedSummary: { actionItems: [], keyPoints: [] },
             transcript: snapshot.transcript,
@@ -308,15 +305,12 @@ export class MeetingPersistence {
                 };
             }
 
-            const minutes = Math.floor(data.durationMs / 60000);
-            const seconds = ((data.durationMs % 60000) / 1000).toFixed(0);
-            const durationStr = `${minutes}:${Number(seconds) < 10 ? '0' : ''}${seconds}`;
-
             const meetingData: Meeting = {
                 id: meetingId,
                 title: title,
                 date: new Date().toISOString(),
-                duration: durationStr,
+                duration: formatDuration(data.durationMs),
+                durationMs: data.durationMs,
                 summary: "See detailed summary",
                 detailedSummary: detailedSummary,
                 transcript: data.transcript,
@@ -427,7 +421,6 @@ export class MeetingPersistence {
             const meetingId = crypto.randomUUID();
             const now = Date.now();
             const durationMs = transcript.length * 5000;
-            const durationStr = `${Math.floor(durationMs / 60000)}:${String(Math.floor((durationMs % 60000) / 1000)).padStart(2, '0')}`;
             const context = transcript.map(t => `${t.speaker === 'user' ? 'Me' : 'Them'}: ${t.text}`).join('\n');
 
             // Save placeholder immediately so it appears in the list
@@ -435,7 +428,8 @@ export class MeetingPersistence {
                 id: meetingId,
                 title: 'Processing...',
                 date: new Date().toISOString(),
-                duration: durationStr,
+                duration: formatDuration(durationMs),
+                durationMs: durationMs,
                 summary: 'Generating summary...',
                 detailedSummary: { actionItems: [], keyPoints: [] },
                 transcript,
@@ -491,10 +485,19 @@ export class MeetingPersistence {
                 }).join('\n') || "";
 
                 const parts = (details.duration || '0:00').split(':');
-                // EC-07 fix: guard against malformed duration strings (e.g. corrupted DB row)
-                const mins = parseInt(parts[0]) || 0;
-                const secs = parseInt(parts[1]) || 0;
-                const durationMs = ((mins * 60) + secs) * 1000;
+                // Use the raw durationMs if available (always present when loaded from DB).
+                // Fallback: re-parse the formatted string only for very old DB rows that might
+                // lack duration_ms. Handles both mm:ss and hh:mm:ss safely.
+                let durationMs: number;
+                if (details.durationMs != null && details.durationMs > 0) {
+                    durationMs = details.durationMs;
+                } else if (parts.length === 3) {
+                    // hh:mm:ss
+                    durationMs = ((parseInt(parts[0]) || 0) * 3600 + (parseInt(parts[1]) || 0) * 60 + (parseInt(parts[2]) || 0)) * 1000;
+                } else {
+                    // mm:ss
+                    durationMs = ((parseInt(parts[0]) || 0) * 60 + (parseInt(parts[1]) || 0)) * 1000;
+                }
                 const startTime = new Date(details.date).getTime();
 
                 const snapshot = {

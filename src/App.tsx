@@ -112,7 +112,7 @@ const App: React.FC = () => {
   // Overlay opacity — only meaningful when isOverlayWindow, but stored centrally
   // so it can be initialized once from localStorage and updated via IPC.
   const [overlayOpacity, setOverlayOpacity] = useState<number>(() => {
-    const stored = localStorage.getItem('natively_overlay_opacity');
+    const stored = localStorage.getItem('gd_dock_opacity');
     const parsed = stored ? parseFloat(stored) : NaN;
     // Treat missing value or the old default (0.65) as "not user-set"
     const isUserSet = Number.isFinite(parsed) && parsed !== OVERLAY_OPACITY_DEFAULT;
@@ -209,7 +209,7 @@ const App: React.FC = () => {
   useEffect(() => {
     if (!isOverlayWindow || !window.electronAPI?.onThemeChanged) return;
     return window.electronAPI.onThemeChanged(() => {
-      const stored = localStorage.getItem('natively_overlay_opacity');
+      const stored = localStorage.getItem('gd_dock_opacity');
       if (!stored) {
         setOverlayOpacity(getDefaultOverlayOpacity());
       }

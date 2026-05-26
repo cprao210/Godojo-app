@@ -489,15 +489,7 @@ const NativelyInterface: React.FC<NativelyInterfaceProps> = ({ onEndMeeting, ove
                     setManualTranscript(transcript.text);
                     manualTranscriptRef.current = transcript.text;
                 }
-                // Accumulate user finals for LiveAnalysisOverlay even while recording
-                // console.log("[Transcript final]: ", transcript);
-                // if (transcript.final) {
-                //     liveTranscriptRef.current.push({
-                //         speaker: 'user',
-                //         text: transcript.text,
-                //         timestamp: Date.now(),
-                //     });
-                // }
+
                 return;  // Don't add to messages while recording
             }
 
@@ -513,45 +505,44 @@ const NativelyInterface: React.FC<NativelyInterfaceProps> = ({ onEndMeeting, ove
                 });
             }
 
-            // Ignore user mic transcripts when not recording
-            // Only interviewer (system audio) transcripts should appear in chat
-            if (transcript.speaker === 'user') {
-                return;  // Skip user mic input - only relevant when Answer button is active
+            // Route both user and interviewer transcripts to the rolling bar.
+            // Skip any unknown speaker types for safety.
+            if (transcript.speaker !== 'user' && transcript.speaker !== 'interviewer') {
+                return;
             }
 
-            // Only show interviewer (system audio) transcripts in rolling bar
-            if (transcript.speaker !== 'interviewer') {
-                return;  // Safety check for any other speaker types
+            // Track speaking state (used for the animated "..." indicator in the chat bar).
+            // We only animate for the interviewer/system audio since user mic is near-instant.
+            if (transcript.speaker === 'interviewer') {
+                setIsInterviewerSpeaking(!transcript.final);
             }
-
-            // Route to rolling transcript bar - accumulate text continuously
-            setIsInterviewerSpeaking(!transcript.final);
 
             if (transcript.final) {
-                // Append finalized text to accumulated transcript
+                // Use displayName from payload (resolved in main process) for accurate attribution.
+                // Fall back to speakerNamesRef for older payloads without displayName.
+                const resolvedDisplayName = (transcript as any).displayName
+                    || (transcript.speaker === 'interviewer' ? speakerNamesRef.current.interviewer : speakerNamesRef.current.user)
+                    || undefined;
+
+                // Append finalized text to accumulated rolling transcript
                 setRollingTranscript(prev => {
                     const separator = prev ? '  ·  ' : '';
                     return prev + separator + transcript.text;
                 });
 
-                // Use displayName from payload (resolved in main process) for accurate attribution.
-                // Fall back to speakerNamesRef for older payloads without displayName.
-                const resolvedDisplayName = (transcript as any).displayName
-                    || (transcript.speaker === "interviewer" ? speakerNamesRef.current.interviewer : speakerNamesRef.current.user)
-                    || undefined;
-
                 liveTranscriptRef.current.push({
-                    speaker: 'interviewer',   // keep the role, not the name
+                    speaker: transcript.speaker,
                     displayName: resolvedDisplayName,
                     text: transcript.text,
                     timestamp: Date.now(),
                 });
 
-
                 // Clear speaking indicator after pause
-                setTimeout(() => {
-                    setIsInterviewerSpeaking(false);
-                }, 3000);
+                if (transcript.speaker === 'interviewer') {
+                    setTimeout(() => {
+                        setIsInterviewerSpeaking(false);
+                    }, 3000);
+                }
             } else {
                 // For partial transcripts, show current segment appended to accumulated
                 setRollingTranscript(prev => {

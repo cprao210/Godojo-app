@@ -1,16 +1,10 @@
 import React, { useEffect, useRef } from 'react';
-import {
-    Github, Twitter, Shield, Cpu, Database,
-    Heart, Linkedin, Instagram, Mail, MicOff, Star, Bug, Globe, Sparkles, Zap
-} from 'lucide-react';
-import evinProfile from '../assets/evin.png';
-import { useResolvedTheme } from '../hooks/useResolvedTheme';
+import { Shield, Cpu, Database, MicOff, Globe, Sparkles, Zap } from 'lucide-react';
 import { getPlatformShortcut } from '../utils/platformUtils';
 
 interface AboutSectionProps { }
 
 export const AboutSection: React.FC<AboutSectionProps> = () => {
-    const isLight = useResolvedTheme() === 'light';
     const donationClickTimeRef = useRef<number | null>(null);
 
     // Initial check for donation status not needed for visuals anymore (since we removed key input)
@@ -38,27 +32,11 @@ export const AboutSection: React.FC<AboutSectionProps> = () => {
         return () => window.removeEventListener('focus', handleFocus);
     }, []);
 
-    const handleOpenLink = (e: React.MouseEvent<HTMLAnchorElement>, url: string) => {
-        e.preventDefault();
-
-        // Special handling for donation link
-        if (url.includes('buymeacoffee.com')) {
-            donationClickTimeRef.current = Date.now();
-        }
-
-        // Use backend shell.openExternal
-        if (window.electronAPI?.openExternal) {
-            window.electronAPI.openExternal(url);
-        } else {
-            window.open(url, '_blank');
-        }
-    };
-
     return (
         <div className="space-y-6 animated fadeIn pb-10">
             {/* Header */}
             <div>
-                <h3 className="text-lg font-bold text-text-primary mb-1">About Natively</h3>
+                <h3 className="text-lg font-bold text-text-primary mb-1">About GoDojo</h3>
                 <p className="text-sm text-text-secondary">Designed to be invisible, intelligent, and trusted.</p>
             </div>
 
@@ -74,13 +52,13 @@ export const AboutSection: React.FC<AboutSectionProps> = () => {
                             <div>
                                 <h5 className="text-sm font-bold text-text-primary mb-1">Capture & Analyse — {getPlatformShortcut(['⌘', '⇧', 'Enter']).join('+')}</h5>
                                 <p className="text-xs text-text-secondary leading-relaxed">
-                                    One shortcut to screenshot your screen and instantly get AI analysis. No extra clicks — press {getPlatformShortcut(['⌘', '⇧', 'Enter']).join('+')} and Natively does the rest.
+                                    One shortcut to screenshot your screen and instantly get AI analysis. No extra clicks — press {getPlatformShortcut(['⌘', '⇧', 'Enter']).join('+')} and GoDojo does the rest.
                                 </p>
                             </div>
                         </div>
                     </div>
 
-                    <div className="p-3 border-b border-border-subtle bg-bg-card/50">
+                    {/* <div className="p-3 border-b border-border-subtle bg-bg-card/50">
                         <div className="flex items-start gap-4">
                             <div className="w-10 h-10 rounded-lg bg-emerald-500/10 flex items-center justify-center text-emerald-400 shrink-0">
                                 <Sparkles size={20} />
@@ -92,7 +70,7 @@ export const AboutSection: React.FC<AboutSectionProps> = () => {
                                 </p>
                             </div>
                         </div>
-                    </div>
+                    </div> */}
 
                     <div className="p-3 bg-bg-card/50">
                         <div className="flex items-start gap-4">
@@ -112,7 +90,7 @@ export const AboutSection: React.FC<AboutSectionProps> = () => {
 
             {/* Architecture Section */}
             <div>
-                <h4 className="text-xs font-bold text-text-tertiary uppercase tracking-wider mb-2 px-1">How Natively Works</h4>
+                <h4 className="text-xs font-bold text-text-tertiary uppercase tracking-wider mb-2 px-1">How GoDojo Works</h4>
                 <div className="bg-bg-item-surface rounded-xl border border-border-subtle overflow-hidden">
                     <div className="p-3 border-b border-border-subtle bg-bg-card/50">
                         <div className="flex items-start gap-4">
@@ -136,7 +114,7 @@ export const AboutSection: React.FC<AboutSectionProps> = () => {
                             <div>
                                 <h5 className="text-sm font-bold text-text-primary mb-1">Local RAG & Memory</h5>
                                 <p className="text-xs text-text-secondary leading-relaxed">
-                                    A purely local vector memory system allows Natively to recall details from past meetings. Embeddings and retrieval happen on-device via SQLite for maximum privacy.
+                                    A purely local vector memory system allows GoDojo to recall details from past meetings. Embeddings and retrieval happen on-device via SQLite for maximum privacy.
                                 </p>
                             </div>
                         </div>
@@ -162,7 +140,7 @@ export const AboutSection: React.FC<AboutSectionProps> = () => {
                         <div>
                             <h5 className="text-sm font-medium text-text-primary">No Recording</h5>
                             <p className="text-xs text-text-secondary mt-1 leading-relaxed">
-                                Natively listens only when active. It does not record video, take arbitrary screenshots without command, or perform background surveillance.
+                                GoDojo listens only when active. It does not record video, take arbitrary screenshots without command, or perform background surveillance.
                             </p>
                         </div>
                     </div>
@@ -175,10 +153,10 @@ export const AboutSection: React.FC<AboutSectionProps> = () => {
 
             {/* Community Section */}
             {/* <div> */}
-                {/* <h4 className="text-xs font-bold text-text-tertiary uppercase tracking-wider mb-2 px-1">Community</h4> */}
-                {/* <div className="space-y-4"> */}
-                    {/* 0. Official Website */}
-                    {/* <div className="bg-bg-item-surface rounded-xl border border-border-subtle p-5 flex flex-col md:flex-row items-center justify-between gap-4">
+            {/* <h4 className="text-xs font-bold text-text-tertiary uppercase tracking-wider mb-2 px-1">Community</h4> */}
+            {/* <div className="space-y-4"> */}
+            {/* 0. Official Website */}
+            {/* <div className="bg-bg-item-surface rounded-xl border border-border-subtle p-5 flex flex-col md:flex-row items-center justify-between gap-4">
                         <div className="flex items-center gap-4">
                             <div className="w-10 h-10 rounded-full bg-indigo-500/10 flex items-center justify-center text-indigo-500 shadow-sm shadow-indigo-500/5">
                                 <Globe size={18} className="opacity-80" />
@@ -197,8 +175,8 @@ export const AboutSection: React.FC<AboutSectionProps> = () => {
                         </a>
                     </div> */}
 
-                    {/* 1. Founder Profile */}
-                    {/* <div className="bg-bg-item-surface rounded-xl p-5">
+            {/* 1. Founder Profile */}
+            {/* <div className="bg-bg-item-surface rounded-xl p-5">
                         <div className="flex flex-col gap-4">
                             <div className="flex items-start gap-4">
                                 <div className="w-12 h-12 rounded-full bg-bg-elevated border border-border-subtle flex items-center justify-center overflow-hidden shrink-0">
@@ -253,8 +231,8 @@ export const AboutSection: React.FC<AboutSectionProps> = () => {
                         </div>
                     </div> */}
 
-                    {/* 2. Star & Report */}
-                    {/* <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+            {/* 2. Star & Report */}
+            {/* <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
                         <a
                             href="https://github.com/evinjohnn/natively-cluely-ai-assistant"
                             onClick={(e) => handleOpenLink(e, "https://github.com/evinjohnn/natively-cluely-ai-assistant")}
@@ -284,8 +262,8 @@ export const AboutSection: React.FC<AboutSectionProps> = () => {
                         </a>
                     </div> */}
 
-                    {/* 3. Get in Touch */}
-                    {/* <div className="bg-bg-item-surface rounded-xl border border-border-subtle p-5 flex flex-col md:flex-row items-center justify-between gap-4">
+            {/* 3. Get in Touch */}
+            {/* <div className="bg-bg-item-surface rounded-xl border border-border-subtle p-5 flex flex-col md:flex-row items-center justify-between gap-4">
                         <div className="flex items-center gap-4">
                             <div className="w-10 h-10 rounded-full bg-blue-500/10 flex items-center justify-center text-blue-500 shadow-sm shadow-blue-500/5">
                                 <Mail size={18} className="opacity-80" />
@@ -305,8 +283,8 @@ export const AboutSection: React.FC<AboutSectionProps> = () => {
                         </a>
                     </div> */}
 
-                    {/* 4. Support */}
-                    {/* <div className="bg-bg-item-surface rounded-xl border border-border-subtle p-5 flex flex-col md:flex-row items-center justify-between gap-4">
+            {/* 4. Support */}
+            {/* <div className="bg-bg-item-surface rounded-xl border border-border-subtle p-5 flex flex-col md:flex-row items-center justify-between gap-4">
                         <div className="flex items-center gap-4">
                             <div className="w-10 h-10 rounded-full bg-pink-500/10 flex items-center justify-center text-pink-500 shadow-sm shadow-pink-500/5">
                                 <Heart size={18} fill="currentColor" className="opacity-80" />
@@ -324,7 +302,7 @@ export const AboutSection: React.FC<AboutSectionProps> = () => {
                             Support Project
                         </a>
                     </div> */}
-                {/* </div> */}
+            {/* </div> */}
             {/* </div> */}
 
             {/* Credits */}

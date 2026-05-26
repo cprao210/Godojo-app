@@ -1,5 +1,6 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { Trash2, AlertCircle, CheckCircle, ExternalLink, Loader2, ChevronDown, Check, RefreshCw } from 'lucide-react';
+import { useResolvedTheme } from '../../hooks/useResolvedTheme';
 
 interface FetchedModel {
     id: string;
@@ -49,6 +50,7 @@ export const ProviderCard: React.FC<ProviderCardProps> = ({
     const [selectedModel, setSelectedModel] = useState<string>(preferredModel || '');
     const [isDropdownOpen, setIsDropdownOpen] = useState(false);
     const dropdownRef = React.useRef<HTMLDivElement>(null);
+    const isLight = useResolvedTheme() === 'light';
 
     // Refs to avoid stale closures in the auto-save timer
     const savedRef = useRef(savedStatus);
@@ -164,14 +166,14 @@ export const ProviderCard: React.FC<ProviderCardProps> = ({
                     value={apiKey}
                     onChange={(e) => onKeyChange(e.target.value)}
                     placeholder={hasStoredKey ? "••••••••••••" : keyPlaceholder}
-                    className="flex-1 bg-bg-input border border-border-subtle rounded-lg px-4 py-2.5 text-xs text-text-primary focus:outline-none focus:border-accent-primary transition-colors"
+                    className={`flex-1 ${isLight ? "bg-bg-input" : "bg-gray-900"} border border-border-subtle rounded-lg px-4 py-2.5 text-xs text-text-primary focus:outline-none focus:border-accent-primary transition-colors`}
                 />
                 <button
                     onClick={onSaveKey}
                     disabled={savingStatus || !apiKey.trim()}
                     className={`px-5 py-2.5 rounded-lg text-xs font-medium transition-colors ${savedStatus
                         ? 'bg-green-500/20 text-green-400'
-                        : 'bg-bg-input hover:bg-bg-secondary border border-border-subtle text-text-primary disabled:opacity-50'
+                        : `bg-bg-input ${savingStatus || !apiKey.trim() ? "" : "bg-bg-elevated"} border border-border-subtle text-text-primary disabled:cursor-not-allowed disabled:opacity-50`
                         }`}
                 >
                     {savingStatus ? 'Saving...' : savedStatus ? 'Saved!' : 'Save'}
@@ -217,7 +219,7 @@ export const ProviderCard: React.FC<ProviderCardProps> = ({
                         </button>
 
                         {isDropdownOpen && fetchedModels.length > 0 && (
-                            <div className="absolute top-full left-1/2 -translate-x-1/2 mt-1 w-full min-w-[200px] bg-bg-elevated border border-border-subtle rounded-lg shadow-xl z-50 max-h-60 overflow-y-auto animated fadeIn">
+                            <div className={`absolute top-full left-1/2 -translate-x-1/2 mt-1 w-full min-w-[200px] ${isLight ? "bg-bg-elevated" : "bg-gray-900"} border border-border-subtle rounded-lg shadow-xl z-50 max-h-60 overflow-y-auto animated fadeIn`}>
                                 <div className="p-1 space-y-0.5">
                                     {fetchedModels.map((model) => (
                                         <button

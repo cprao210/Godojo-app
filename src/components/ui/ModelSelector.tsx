@@ -42,7 +42,7 @@ const PortalDropdown: React.FC<PortalDropdownProps> = ({ anchorRef, onClose, chi
 
         setPos({
             top: openAbove ? rect.top - dropdownHeight + 40 : rect.bottom + 6,
-            left: rect.left - 20,
+            left: rect.left - 80,
             width: Math.max(rect.width, 260),
         });
     }, [anchorRef]);

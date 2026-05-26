@@ -1,22 +1,21 @@
 import React, { useState, useEffect } from 'react';
-import { ToggleLeft, ToggleRight, Search, Zap, Calendar, ArrowRight, ArrowLeft, MoreHorizontal, Globe, Clock, ChevronRight, Settings, LayoutGrid, RefreshCw, Eye, EyeOff, Ghost, Plus, Mail, Link as LinkIcon, ChevronDown, Trash2, Bell, Check, Download, DownloadCloud, CheckCircle, AlertCircle, Briefcase, Upload, X } from 'lucide-react';
+import { Zap, Calendar, ArrowRight, ArrowLeft, MoreHorizontal, ChevronRight, Settings, RefreshCw, Ghost, Trash2, Download, DownloadCloud, CheckCircle, AlertCircle, Briefcase, Upload, X, ChevronUp, Sparkles } from 'lucide-react';
 import { generateMeetingPDF } from '../utils/pdfGenerator';
-import icon from "./icon.png";
-import mainui from "../UI_comp/mainui.png";
-import calender from "../UI_comp/calender.png";
 import ConnectCalendarButton from './ui/ConnectCalendarButton';
 import MeetingDetails from './MeetingDetails';
 import SalesBriefPanel from './SalesBriefPanel';
 import TopSearchPill from './TopSearchPill';
 import GlobalChatOverlay from './GlobalChatOverlay';
 import { motion, AnimatePresence } from 'framer-motion';
-import { FeatureSpotlight } from './FeatureSpotlight';
 import { analytics } from '../lib/analytics/analytics.service'; // Added analytics import
 import { useShortcuts } from '../hooks/useShortcuts';
 import { useResolvedTheme } from '../hooks/useResolvedTheme';
 import { isMac } from '../utils/platformUtils';
 import WindowControls from './WindowControls';
 import UserProfileButton from './ui/UserProfileButton';
+import { IoSparklesSharp } from 'react-icons/io5';
+import NextMeetingCard from './NextMeetingCard';
+import MeetingTimeline from './MeetingTimeline';
 
 interface Meeting {
     id: string;
@@ -96,7 +95,6 @@ const Launcher: React.FC<LauncherProps> = ({ onStartMeeting, onOpenSettings, onP
     // Global search state (for AI chat overlay)
     const [isGlobalChatOpen, setIsGlobalChatOpen] = useState(false);
     const [submittedGlobalQuery, setSubmittedGlobalQuery] = useState('');
-
 
     const fetchMeetings = () => {
         if (window.electronAPI && window.electronAPI.getRecentMeetings) {
@@ -338,7 +336,6 @@ const Launcher: React.FC<LauncherProps> = ({ onStartMeeting, onOpenSettings, onP
         return new Date(b).getTime() - new Date(a).getTime();
     });
 
-
     const [forwardMeeting, setForwardMeeting] = useState<Meeting | null>(null);
     const [activeMenuId, setActiveMenuId] = useState<string | null>(null);
     const [menuEntered, setMenuEntered] = useState(false);
@@ -348,6 +345,11 @@ const Launcher: React.FC<LauncherProps> = ({ onStartMeeting, onOpenSettings, onP
     const [uploadTitle, setUploadTitle] = useState('');
     const [isUploading, setIsUploading] = useState(false);
     const [uploadError, setUploadError] = useState<string | null>(null);
+    const [focusedMeetingId, setFocusedMeetingId] = useState<string | null>(null);
+    const [isMeetingsExpanded, setIsMeetingsExpanded] = useState(false);
+
+    // Focused meeting for the detail card — defaults to soonest (nextMeeting)
+    const focusedMeeting = upcomingEvents.find(e => e.id === focusedMeetingId) ?? nextMeeting ?? null;
 
     const handleUploadTranscript = async () => {
         if (!uploadText.trim()) return;
@@ -376,6 +378,13 @@ const Launcher: React.FC<LauncherProps> = ({ onStartMeeting, onOpenSettings, onP
     useEffect(() => {
         setMenuEntered(false);
     }, [activeMenuId]);
+
+    // Auto-select the soonest meeting when events first load or change
+    useEffect(() => {
+        if (nextMeeting?.id && !focusedMeetingId) {
+            setFocusedMeetingId(nextMeeting.id);
+        }
+    }, [nextMeeting?.id]);
 
     // Global click listener to close menu
     useEffect(() => {
@@ -457,9 +466,22 @@ const Launcher: React.FC<LauncherProps> = ({ onStartMeeting, onOpenSettings, onP
     };
 
     return (
-        <div className="h-full w-full flex flex-col bg-bg-primary text-text-primary font-sans overflow-hidden selection:bg-accent-secondary/30">
+        <div className={[
+            "h-full w-full flex flex-col text-text-primary font-sans overflow-hidden selection:bg-accent-secondary/30",
+            "bg-bg-main",
+        ].join(" ")} style={{
+            backgroundImage: isLight
+                ? "radial-gradient(900px 500px at 50% -100px, #e3e9f7 0%, #eef1f8 60%)"
+                : "radial-gradient(900px 500px at 50% -100px, #0c1530 0%, #05070d 60%)",
+        }}>
             {/* 1. Header (Static) */}
-            <header className="relative w-full h-[40px] shrink-0 flex items-center justify-between pl-0 drag-region select-none bg-bg-secondary border-b border-border-subtle z-[200]">
+            <header className={[
+                "relative w-full shrink-0 flex items-center gap-3 drag-region select-none border-b z-[200] backdrop-blur-xl",
+                isMac ? "h-[56px]" : "h-[42px]",   // ← Windows keeps original 40px height
+                isLight
+                    ? "bg-bg-sidebar/70 border-border-subtle"
+                    : "bg-bg-primary/70 border-border-subtle",
+            ].join(" ")}>
                 {/* Left: Spacing for Traffic Lights + Navigation Arrows */}
                 <div className="flex items-center gap-1 no-drag">
                     {isMac && <div className="w-[70px]" />} {/* Traffic Light Spacer (macOS only) */}
@@ -468,12 +490,10 @@ const Launcher: React.FC<LauncherProps> = ({ onStartMeeting, onOpenSettings, onP
                     <button
                         onClick={selectedMeeting ? handleBack : undefined}
                         disabled={!selectedMeeting}
-                        className={`
-                            transition-all duration-300 p-1 flex items-center justify-center mt-1 ml-2
+                        className={`p-1 ml-3 flex items-center justify-center rounded-full transition-all
                             ${selectedMeeting
-                                ? `text-text-secondary hover:text-text-primary ${isLight ? 'hover:drop-shadow-[0_0_6px_rgba(0,0,0,0.25)]' : 'hover:drop-shadow-[0_0_8px_rgba(255,255,255,0.5)]'}`
-                                : 'text-text-tertiary opacity-50 cursor-default'}
-                        `}
+                                ? `text-text-secondary hover:text-text-primary ${isLight ? 'hover:bg-bg-item-surface' : 'hover:bg-white/10'}`
+                                : 'text-text-tertiary opacity-30 cursor-default'}`}
                     >
                         <ArrowLeft size={16} />
                     </button>
@@ -482,52 +502,73 @@ const Launcher: React.FC<LauncherProps> = ({ onStartMeeting, onOpenSettings, onP
                     <button
                         onClick={handleForward}
                         disabled={!forwardMeeting}
-                        className={`
-                            transition-all duration-300 p-1 flex items-center justify-center mt-1
+                        className={`p-1 flex items-center justify-center rounded-full transition-all
                             ${forwardMeeting
-                                ? `text-text-secondary hover:text-text-primary ${isLight ? 'hover:drop-shadow-[0_0_6px_rgba(0,0,0,0.25)]' : 'hover:drop-shadow-[0_0_8px_rgba(255,255,255,0.5)]'}`
-                                : 'text-text-tertiary opacity-0 cursor-default'}
-                        `}
+                                ? `text-text-secondary hover:text-text-primary ${isLight ? 'hover:bg-bg-item-surface' : 'hover:bg-white/10'}`
+                                : 'text-text-tertiary opacity-0 cursor-default'}`}
                     >
                         <ArrowRight size={16} />
                     </button>
                 </div>
 
+                {/* Logo */}
+                <div className="flex items-center gap-2 no-drag ml-1">
+                    <div className="relative flex h-5 w-5 items-center justify-center rounded-md bg-gradient-to-br from-blue-500 to-blue-700 shadow-[0_2px_8px_rgba(59,130,246,0.35)]">
+                        <Sparkles className="h-2.5 w-2.5 fill-white text-white" />
+                    </div>
+                    <span className={["text-sm font-semibold tracking-tight", isLight ? "text-text-primary" : "text-white"].join(" ")}>
+                        GoDojo AI
+                    </span>
+                </div>
 
-                {/* Center: Spotlight-style Search Pill */}
-                <TopSearchPill
-                    meetings={meetings}
-                    onAIQuery={(query) => {
-                        analytics.trackCommandExecuted('ai_query_search');
-                        setSubmittedGlobalQuery(query);
-                        setIsGlobalChatOpen(true);
-                    }}
-                    onLiteralSearch={(query) => {
-                        // For now, also use AI query for literal search
-                        // Could be enhanced to do fuzzy filtering in the UI
-                        analytics.trackCommandExecuted('literal_search');
-                        setSubmittedGlobalQuery(query);
-                        setIsGlobalChatOpen(true);
-                    }}
-                    onOpenMeeting={(meetingId) => {
-                        const meeting = meetings.find(m => m.id === meetingId);
-                        if (meeting) {
-                            handleOpenMeeting(meeting);
-                            analytics.trackCommandExecuted('open_meeting_from_search');
-                        }
-                    }}
-                />
+                {/* Center: Search pill */}
+                <div className="mx-2 flex-1 no-drag">
+                    {/* Center: Spotlight-style Search Pill */}
+                    <TopSearchPill
+                        meetings={meetings}
+                        onAIQuery={(query) => {
+                            analytics.trackCommandExecuted('ai_query_search');
+                            setSubmittedGlobalQuery(query);
+                            setIsGlobalChatOpen(true);
+                        }}
+                        onLiteralSearch={(query) => {
+                            // For now, also use AI query for literal search
+                            // Could be enhanced to do fuzzy filtering in the UI
+                            analytics.trackCommandExecuted('literal_search');
+                            setSubmittedGlobalQuery(query);
+                            setIsGlobalChatOpen(true);
+                        }}
+                        onOpenMeeting={(meetingId) => {
+                            const meeting = meetings.find(m => m.id === meetingId);
+                            if (meeting) {
+                                handleOpenMeeting(meeting);
+                                analytics.trackCommandExecuted('open_meeting_from_search');
+                            }
+                        }}
+                    />
+                </div>
 
-                {/* Right: Actions */}
-                <div className={`flex items-center gap-1 no-drag shrink-0 ${isMac ? 'mr-1' : ''}`}>
+                {/* Right: Settings + Profile */}
+                <div className={`flex items-center gap-2 no-drag shrink-0 ${isMac ? 'mr-1' : ''}`}>
+
+                    {/* Settings */}
                     <button
                         onClick={() => {
                             onOpenSettings();
                         }}
-                        className={`p-2 rounded-lg text-text-secondary hover:text-text-primary transition-all duration-200 ${isLight ? 'hover:bg-black/5 hover:drop-shadow-[0_0_6px_rgba(0,0,0,0.25)]' : 'hover:bg-white/8 hover:drop-shadow-[0_0_8px_rgba(255,255,255,0.5)]'}`}
+                        className={[
+                            "inline-flex items-center justify-center rounded-full transition-all no-drag",
+                            isMac ? "h-9 w-9" : "h-7 w-7",   // ← shrink on Windows
+                            isLight
+                                ? "border border-border-muted bg-bg-elevated/80 text-text-secondary hover:bg-bg-elevated hover:text-text-primary"
+                                : "border border-border-subtle bg-bg-item-surface text-text-secondary hover:bg-white/[0.08] hover:text-white",
+                        ].join(" ")}
+                        aria-label="Settings"
                     >
-                        <Settings size={16} />
+                        <Settings size={15} />
                     </button>
+
+                    {/* Profile pill */}
                     {authUser && onSignOut && (
                         <UserProfileButton
                             displayName={authUser.displayName}
@@ -542,7 +583,7 @@ const Launcher: React.FC<LauncherProps> = ({ onStartMeeting, onOpenSettings, onP
 
             <div className="relative flex-1 flex flex-col overflow-hidden">
                 {!isDetectable && (
-                    <div className={`absolute inset-1 border-2 border-dashed rounded-2xl pointer-events-none z-[100] ${isLight ? 'border-black/15' : 'border-white/20'}`} />
+                    <div className={`absolute inset-1 border-2 border-dashed rounded-2xl pointer-events-none z-[100] ${isLight ? 'border-border-muted' : 'border-white/20'}`} />
                 )}
                 <AnimatePresence mode="wait">
                     {selectedMeeting ? (
@@ -573,473 +614,550 @@ const Launcher: React.FC<LauncherProps> = ({ onStartMeeting, onOpenSettings, onP
                             {/* Main Area - Fixed Top, Scrollable Bottom */}
                             {/* Top Section is now effectively static due to parent flex col */}
 
-                            {/* TOP SECTION: Grey Background (Scrolls with content) */}
-                            <section className={`${isLight ? 'bg-bg-primary' : 'bg-bg-elevated'} px-8 pt-6 pb-8 border-b border-border-subtle shrink-0`}>
-                                <div className="max-w-4xl mx-auto space-y-6">
-                                    {/* 1.5. Hero Header (Title + Controls + CTA) */}
-                                    <div className="flex items-center justify-between">
-                                        <div className="flex items-center gap-4">
-                                            <h1 className="text-3xl font-celeb-light font-medium text-text-primary tracking-wide drop-shadow-sm">GoDoJo AI</h1>
+                            {/* TOP SECTION */}
+                            <motion.section
+                                className={[
+                                    "shrink-0 border-b border-border-subtle px-8 pt-5 pb-6 origin-top bg-bg-main",
+                                ].join(" ")}
+                                style={{
+                                    backgroundImage: isLight
+                                        ? "radial-gradient(900px 500px at 50% -100px, #e3e9f7 0%, #eef1f8 60%)"
+                                        : "radial-gradient(900px 500px at 50% -100px, #0c1530 0%, #05070d 60%)",
+                                }}
+                                animate={{
+                                    scale: isMeetingsExpanded ? 0.97 : 1,
+                                    opacity: isMeetingsExpanded ? 0.45 : 1,
+                                    filter: isMeetingsExpanded ? 'blur(1.5px)' : 'blur(0px)',
+                                    y: isMeetingsExpanded ? -6 : 0,
+                                }}
+                                transition={{ duration: 0.42, ease: [0.32, 0.72, 0, 1] }}
+                            >
+                                <div className="max-w-4xl mx-auto space-y-5">
 
-                                            {/* Refresh Button */}
-                                            <button
-                                                onClick={handleRefresh}
-                                                disabled={isRefreshing}
-                                                className={`p-2 text-text-secondary hover:text-text-primary rounded-full transition-colors ${isRefreshing ? 'animate-spin text-blue-400' : ''} ${isLight ? 'hover:bg-black/8' : 'hover:bg-white/10'}`}
-                                                title="Refresh State"
-                                            >
-                                                <RefreshCw size={18} />
-                                            </button>
+                                    {/* Welcome row */}
+                                    <div className="flex items-center justify-between gap-4 py-1">
+                                        <div className="flex items-center gap-3">
+                                            <IoSparklesSharp className="text-blue-500 shrink-0" size={22} />
+                                            <div>
+                                                <h1 className="text-xl font-semibold tracking-tight text-text-primary">
+                                                    Welcome back{authUser?.displayName ? `, ${authUser.displayName.split(' ')[0]}` : ''}
+                                                </h1>
+                                                <p className="text-xs mt-0.5 text-text-secondary">
+                                                    Your meetings, transcripts and AI insights — all in one place.
+                                                </p>
+                                            </div>
+                                        </div>
 
-                                            {/* Detectable Toggle Pill */}
-                                            <div className={`flex items-center gap-3 border rounded-full px-3 py-1.5 min-w-[140px] transition-colors ${isLight ? 'bg-bg-elevated border-border-muted shadow-sm' : 'bg-[#101011] border-border-muted'}`}>
-                                                {isDetectable ? (
-                                                    <Ghost
-                                                        size={14}
-                                                        strokeWidth={2}
-                                                        className="text-text-secondary transition-colors"
-                                                    />
-                                                ) : (
-                                                    <svg
-                                                        width="14"
-                                                        height="14"
-                                                        viewBox="0 0 24 24"
-                                                        fill="none"
-                                                        xmlns="http://www.w3.org/2000/svg"
-                                                        className="transition-colors"
-                                                    >
-                                                        <path
-                                                            d="M12 2C7.58172 2 4 5.58172 4 10V22L7 19L9.5 21.5L12 19L14.5 21.5L17 19L20 22V10C20 5.58172 16.4183 2 12 2Z"
-                                                            fill={isLight ? '#48484A' : 'white'}
-                                                        />
-                                                        <circle cx="9" cy="10" r="1.5" fill={isLight ? 'white' : 'black'} />
-                                                        <circle cx="15" cy="10" r="1.5" fill={isLight ? 'white' : 'black'} />
-                                                    </svg>
-                                                )}
-                                                <span className="text-xs font-medium flex-1 transition-colors text-text-secondary">
-                                                    {!isDetectable ? "Ghost Mode ON" : "Ghost Mode OFF"}
-                                                </span>
-                                                <div
-                                                    className={`w-8 h-4 rounded-full relative transition-colors cursor-pointer ${!isDetectable ? 'bg-accent-primary' : 'bg-bg-toggle-switch'}`}
+                                        <div className="flex items-center gap-2.5">
+
+                                            {/* ── Ghost Mode — redesigned ── */}
+                                            <div className="relative group/ghost">
+                                                <button
                                                     onClick={toggleDetectable}
+                                                    className={[
+                                                        "relative flex items-center gap-2 rounded-xl px-3 py-2 border transition-all duration-200 select-none cursor-pointer",
+                                                        !isDetectable
+                                                            ? isLight
+                                                                ? "bg-blue-50 border-blue-200 text-blue-700 shadow-[0_0_12px_-2px_rgba(59,130,246,0.2)]"
+                                                                : "bg-blue-500/10 border-blue-500/30 text-blue-300 shadow-[0_0_16px_-4px_rgba(59,130,246,0.35)]"
+                                                            : isLight
+                                                                ? "bg-bg-elevated border-border-muted text-text-secondary hover:border-border-muted hover:text-text-primary shadow-sm"
+                                                                : "bg-bg-item-surface border-border-subtle text-text-tertiary hover:bg-white/[0.07] hover:border-border-muted hover:text-text-secondary",
+                                                    ].join(" ")}
+                                                    aria-label={!isDetectable ? "Ghost mode on — app is hidden from screen share" : "Ghost mode off — app is visible"}
                                                 >
-                                                    <div className={`absolute top-0.5 w-3 h-3 rounded-full bg-white shadow-sm transition-all ${!isDetectable ? 'left-[18px]' : 'left-0.5'}`} />
+                                                    {!isDetectable ? (
+                                                        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg" className="shrink-0">
+                                                            <path d="M12 2C7.58172 2 4 5.58172 4 10V22L7 19L9.5 21.5L12 19L14.5 21.5L17 19L20 22V10C20 5.58172 16.4183 2 12 2Z" fill="currentColor" />
+                                                            <circle cx="9" cy="10" r="1.5" fill={isLight ? "white" : "#1e3a5f"} />
+                                                            <circle cx="15" cy="10" r="1.5" fill={isLight ? "white" : "#1e1b4b"} />
+                                                        </svg>
+                                                    ) : (
+                                                        <Ghost size={14} strokeWidth={2} className="shrink-0" />
+                                                    )}
+                                                    <span className="text-[12px] font-medium leading-none whitespace-nowrap">
+                                                        {!isDetectable ? "Ghost On" : "Ghost Off"}
+                                                    </span>
+                                                    <div className={[
+                                                        "w-7 h-3.5 rounded-full relative transition-colors duration-200 shrink-0",
+                                                        !isDetectable ? "bg-accent-primary" : isLight ? "bg-bg-toggle-switch" : "bg-white/15",
+                                                    ].join(" ")}>
+                                                        <div className={[
+                                                            "absolute top-[1.5px] w-[10px] h-[10px] rounded-full bg-white shadow-sm transition-all duration-200",
+                                                            !isDetectable ? "left-[16px]" : "left-[2px]",
+                                                        ].join(" ")} />
+                                                    </div>
+                                                </button>
+                                                {/* Ghost tooltip */}
+                                                <div className={[
+                                                    "pointer-events-none absolute top-[50px] left-1/2 -translate-x-1/2 mb-2 z-[500]",
+                                                    "opacity-0 group-hover/ghost:opacity-100 transition-opacity duration-150 delay-300",
+                                                ].join(" ")}>
+                                                    <div className={[
+                                                        "rounded-lg px-3 py-2 text-[11px] leading-snug whitespace-nowrap shadow-lg",
+                                                        isLight ? "bg-bg-primary" : "bg-bg-card border border-border-subtle text-text-secondary",
+                                                    ].join(" ")}>
+                                                        <p className="font-semibold mb-0.5">{!isDetectable ? "Ghost mode is ON" : "Ghost mode is OFF"}</p>
+                                                        <p className="text-text-tertiary">{!isDetectable ? "Hidden from screen share & recording" : "Visible to screen share & recording"}</p>
+                                                    </div>
+                                                    <div className={["absolute left-1/2 -translate-x-1/2 top-full w-0 h-0 border-l-4 border-r-4 border-t-4 border-l-transparent border-r-transparent", isLight ? "border-t-bg-primary" : "border-t-bg-card"].join(" ")} />
                                                 </div>
                                             </div>
 
-                                        </div>
+                                            {/* ── Refresh — with tooltip ── */}
+                                            <div className="relative group/refresh">
+                                                <button
+                                                    onClick={handleRefresh}
+                                                    disabled={isRefreshing}
+                                                    className={[
+                                                        "h-9 w-9 flex items-center justify-center rounded-xl border transition-all duration-200",
+                                                        isRefreshing ? "cursor-wait" : "",
+                                                        isLight
+                                                            ? "bg-bg-elevated border-border-muted hover:border-border-muted hover:bg-bg-item-surface shadow-sm"
+                                                            : "bg-bg-item-surface border-border-subtle hover:bg-white/[0.07] hover:border-border-muted",
+                                                    ].join(" ")}
+                                                    aria-label="Refresh calendar and meetings"
+                                                >
+                                                    <RefreshCw className={isRefreshing ? "animate-spin text-accent-primary" : "text-text-tertiary"} size={14} />
+                                                </button>
+                                                {/* Refresh tooltip */}
+                                                <div className={[
+                                                    "pointer-events-none absolute top-[50px] left-1/2 -translate-x-1/2 mb-2 z-[500]",
+                                                    "opacity-0 group-hover/refresh:opacity-100 transition-opacity duration-150 delay-300",
+                                                ].join(" ")}>
+                                                    <div className={[
+                                                        "rounded-lg px-3 py-2 text-[11px] leading-snug whitespace-nowrap shadow-lg",
+                                                        isLight ? "bg-bg-primary" : "bg-bg-card border border-border-subtle text-text-secondary",
+                                                    ].join(" ")}>
+                                                        <p className="font-semibold mb-0.5">{isRefreshing ? "Refreshing…" : "Sync calendar & meetings"}</p>
+                                                        <p className="text-text-tertiary">Pull latest events from your calendar</p>
+                                                    </div>
+                                                    <div className={["absolute left-1/2 -translate-x-1/2 top-full w-0 h-0 border-l-4 border-r-4 border-t-4 border-l-transparent border-r-transparent", isLight ? "border-t-bg-primary" : "border-t-bg-card"].join(" ")} />
+                                                </div>
+                                            </div>
 
-                                        {/* Center: Ollama Pull Status Pill (flex-1 to center evenly) */}
-                                        <div className="flex-1 flex justify-center mx-4">
-                                            <AnimatePresence>
-                                                {ollamaPullStatus !== 'idle' && (
-                                                    <motion.div
-                                                        initial={{ opacity: 0, scale: 0.9, y: 10 }}
-                                                        animate={{ opacity: 1, scale: 1, y: 0 }}
-                                                        exit={{ opacity: 0, scale: 0.9, y: 10 }}
-                                                        transition={{ type: "spring", stiffness: 400, damping: 25 }}
-                                                        className={`flex items-center gap-2 px-4 py-2 rounded-full backdrop-blur-xl ${isLight ? 'bg-bg-elevated border border-border-muted shadow-[0_4px_16px_rgba(0,0,0,0.1)]' : 'bg-bg-elevated/80 border border-white/10 shadow-[0_4px_16px_rgba(0,0,0,0.3)]'}`}
-                                                    >
-                                                        {ollamaPullStatus === 'downloading' ? (
-                                                            <DownloadCloud size={14} className="text-blue-400 animate-pulse shrink-0" />
-                                                        ) : ollamaPullStatus === 'complete' ? (
-                                                            <CheckCircle size={14} className="text-emerald-400 shrink-0" />
-                                                        ) : (
-                                                            <AlertCircle size={14} className="text-red-400 shrink-0" />
-                                                        )}
-                                                        <div className="flex flex-col">
-                                                            <span className="text-[11px] font-medium text-text-secondary whitespace-nowrap">
-                                                                {ollamaPullStatus === 'downloading' ? `Setting up AI memory... ${ollamaPullPercent}%` : ollamaPullMessage}
-                                                            </span>
-                                                            {ollamaPullStatus === 'downloading' && (
-                                                                <div className="w-full h-[3px] bg-white/10 rounded-full mt-1 overflow-hidden">
-                                                                    <div
-                                                                        className="h-full bg-blue-500 rounded-full transition-all duration-300"
-                                                                        style={{ width: `${ollamaPullPercent}%` }}
-                                                                    />
-                                                                </div>
-                                                            )}
-                                                        </div>
-                                                    </motion.div>
-                                                )}
-                                            </AnimatePresence>
-                                        </div>
-
-                                        {/* Unified CTA pill — same jelly shape, morphs between idle and active-meeting state */}
-                                        <motion.button
-                                            onClick={() => {
-                                                if (isMeetingActive) {
-                                                    // inactive=true: overlay appears on top but doesn't activate
-                                                    // the Natively app or steal OS focus — preserves stealth.
-                                                    // setWindowMode (not showWindow) is required because
-                                                    // logo-click set currentWindowMode='launcher', so showWindow()
-                                                    // would re-show the launcher rather than switch to overlay.
-                                                    window.electronAPI?.setWindowMode?.('overlay', true);
-                                                    analytics.trackCommandExecuted('resume_meeting_from_launcher');
-                                                } else {
-                                                    onStartMeeting(nextMeeting);
-                                                    analytics.trackCommandExecuted('start_natively_cta');
-                                                }
-                                            }}
-                                            whileHover={{ scale: 1.01, filter: 'brightness(1.1)' }}
-                                            whileTap={{ scale: 0.99 }}
-                                            transition={{ duration: 0.18, ease: 'easeOut' }}
-                                            className="group relative overflow-hidden text-white px-6 py-3 rounded-full font-celeb font-medium tracking-normal flex items-center justify-center gap-3 backdrop-blur-xl shrink-0"
-                                            style={{
-                                                boxShadow: isMeetingActive
-                                                    ? 'inset 0 1px 1px rgba(255,255,255,0.7), inset 0 -1px 2px rgba(0,0,0,0.1), 0 2px 10px rgba(16,185,129,0.45), 0 0 0 1px rgba(255,255,255,0.15)'
-                                                    : 'inset 0 1px 1px rgba(255,255,255,0.7), inset 0 -1px 2px rgba(0,0,0,0.1), 0 2px 10px rgba(14,165,233,0.4), 0 0 0 1px rgba(255,255,255,0.15)',
-                                                transition: 'box-shadow 0.5s ease-out',
-                                                marginRight: "100px"
-                                            }}
-                                        >
-                                            {/* Blue gradient layer (idle) */}
-                                            <div
-                                                className="absolute inset-0 bg-gradient-to-b from-sky-400 via-sky-500 to-blue-600 transition-opacity duration-500 ease-out"
-                                                style={{ opacity: isMeetingActive ? 0 : 1 }}
-                                            />
-                                            {/* Green gradient layer (meeting active) */}
-                                            <div
-                                                className="absolute inset-0 bg-gradient-to-b from-emerald-400 via-emerald-500 to-green-600 transition-opacity duration-500 ease-out"
-                                                style={{ opacity: isMeetingActive ? 1 : 0 }}
-                                            />
-
-                                            {/* Top highlight band — shared between both states */}
-                                            <div className="absolute inset-x-3 top-0 h-[40%] bg-gradient-to-b from-white/40 to-transparent blur-[2px] rounded-b-lg opacity-80 pointer-events-none z-10" />
-                                            {/* Internal suspended-light hover glow */}
-                                            <div className="absolute inset-0 bg-gradient-to-tr from-transparent via-white/5 to-white/10 opacity-0 group-hover:opacity-100 transition-opacity duration-700 pointer-events-none z-10" />
-
-                                            {/* Button content — crossfade between idle and meeting states */}
-                                            <div className="relative z-20 flex items-center gap-3">
+                                            {/* ── Start GoDojo CTA ── */}
+                                            <motion.button
+                                                onClick={() => {
+                                                    if (isMeetingActive) {
+                                                        window.electronAPI?.setWindowMode?.("overlay", true);
+                                                        analytics.trackCommandExecuted("resume_meeting_from_launcher");
+                                                    } else {
+                                                        onStartMeeting(nextMeeting);
+                                                        analytics.trackCommandExecuted("start_natively_cta");
+                                                    }
+                                                }}
+                                                whileHover={{ scale: 1.02, filter: "brightness(1.08)" }}
+                                                whileTap={{ scale: 0.98 }}
+                                                transition={{ duration: 0.15, ease: "easeOut" }}
+                                                className="group relative overflow-hidden text-white pl-3.5 pr-4 py-2 rounded-xl font-medium text-[13px] flex items-center gap-2 shrink-0"
+                                                style={{
+                                                    background: isMeetingActive
+                                                        ? "linear-gradient(to bottom, #10b981, #059669)"
+                                                        : "linear-gradient(to bottom, #3b82f6, #2563eb)",
+                                                    boxShadow: isMeetingActive
+                                                        ? "0 6px 18px -4px rgba(16,185,129,0.6), inset 0 1px 0 rgba(255,255,255,0.2)"
+                                                        : "0 6px 18px -4px rgba(59,130,246,0.6), inset 0 1px 0 rgba(255,255,255,0.2)",
+                                                }}
+                                            >
+                                                <span className="absolute inset-x-0 top-0 h-[45%] bg-gradient-to-b from-white/20 to-transparent pointer-events-none rounded-t-xl" />
                                                 <AnimatePresence mode="wait" initial={false}>
                                                     {isMeetingActive ? (
-                                                        <motion.div
-                                                            key="meeting"
-                                                            initial={{ opacity: 0, y: 6 }}
-                                                            animate={{ opacity: 1, y: 0 }}
-                                                            exit={{ opacity: 0, y: -6 }}
-                                                            transition={{ duration: 0.22, ease: 'easeOut' }}
-                                                            className="flex items-center gap-3"
-                                                        >
-                                                            {/* Ping live-indicator dot */}
-                                                            <span className="relative flex h-[9px] w-[9px] shrink-0">
+                                                        <motion.div key="active" initial={{ opacity: 0, y: 5 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0, y: -5 }} transition={{ duration: 0.18 }} className="relative z-10 flex items-center gap-2">
+                                                            <span className="relative flex h-[7px] w-[7px] shrink-0">
                                                                 <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-white opacity-60" />
-                                                                <span className="relative inline-flex rounded-full h-[9px] w-[9px] bg-white" />
+                                                                <span className="relative inline-flex rounded-full h-[7px] w-[7px] bg-white" />
                                                             </span>
-                                                            <span className="drop-shadow-[0_1px_1px_rgba(0,0,0,0.1)] text-[20px] leading-none">Meeting ongoing</span>
+                                                            Meeting ongoing
                                                         </motion.div>
                                                     ) : (
-                                                        <motion.div
-                                                            key="start"
-                                                            initial={{ opacity: 0, y: 6 }}
-                                                            animate={{ opacity: 1, y: 0 }}
-                                                            exit={{ opacity: 0, y: -6 }}
-                                                            transition={{ duration: 0.22, ease: 'easeOut' }}
-                                                            className="flex items-center gap-3"
-                                                        >
-                                                            <img src={icon} alt="Logo" className="w-[18px] h-[18px] object-contain brightness-0 invert drop-shadow-[0_1px_2px_rgba(0,0,0,0.1)] opacity-90" />
-                                                            <span className="drop-shadow-[0_1px_1px_rgba(0,0,0,0.1)] text-[20px] leading-none">Start GoDojo</span>
+                                                        <motion.div key="start" initial={{ opacity: 0, y: 5 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0, y: -5 }} transition={{ duration: 0.18 }} className="relative z-10 flex items-center gap-2">
+                                                            {/* <img src={icon} alt="" className="w-[13px] h-[13px] object-contain brightness-0 invert opacity-90 shrink-0" /> */}
+                                                            Start GoDojo
                                                         </motion.div>
                                                     )}
                                                 </AnimatePresence>
-                                            </div>
-                                        </motion.button>
+                                            </motion.button>
+
+                                        </div>
                                     </div>
 
-                                    {/* 2. Hero Section Cards */}
-                                    <div className="grid grid-cols-1 md:grid-cols-3 gap-3 h-[198px]">
-
-
-                                        {/* PREPARED STATE CARD */}
-                                        {isPrepared && preparedEvent ? (
-                                            <div className={`md:col-span-3 relative group rounded-xl overflow-hidden border border-emerald-500/30 ${isLight ? 'bg-bg-elevated' : 'bg-bg-secondary'} flex flex-col items-center justify-center p-6 bg-[radial-gradient(ellipse_at_top,_var(--tw-gradient-stops))] from-emerald-900/40 ${isLight ? 'via-bg-elevated to-bg-elevated' : 'via-bg-secondary to-bg-secondary'}`}>
-
-                                                <div className="absolute top-4 right-4 text-emerald-400">
-                                                    <Zap size={16} className="text-yellow-400" />
-                                                </div>
-
-                                                <div className="text-center max-w-lg z-10">
-                                                    <span className="inline-block px-3 py-1 rounded-full bg-emerald-500/10 text-emerald-400 text-[10px] font-bold tracking-wider mb-4 border border-emerald-500/20">
-                                                        READY TO JOIN
-                                                    </span>
-                                                    <h2 className="text-2xl font-bold text-text-primary mb-2">{preparedEvent.title}</h2>
-                                                    <p className="text-xs text-text-secondary mb-6 flex items-center justify-center gap-2">
-                                                        <Calendar size={12} />
-                                                        {new Date(preparedEvent.startTime).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' })} - {new Date(preparedEvent.endTime).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' })}
-                                                        {preparedEvent.link && " • Link Ready"}
-                                                    </p>
-
-                                                    <div className="flex items-center gap-3 justify-center">
-                                                        <button
-                                                            onClick={handleStartPreparedMeeting}
-                                                            className="bg-emerald-500 hover:bg-emerald-400 text-white px-8 py-3 rounded-xl text-sm font-semibold transition-all shadow-lg hover:shadow-emerald-500/25 active:scale-95 flex items-center gap-2"
-                                                        >
-                                                            Start Meeting
-                                                            <ArrowRight size={16} />
-                                                        </button>
-                                                        <button
-                                                            onClick={() => setIsPrepared(false)}
-                                                            className="px-4 py-3 rounded-xl text-xs font-medium text-text-tertiary hover:text-white transition-colors"
-                                                        >
-                                                            Cancel
-                                                        </button>
+                                    {/* Ollama pull status — preserved exactly */}
+                                    <AnimatePresence>
+                                        {ollamaPullStatus !== 'idle' && (
+                                            <motion.div
+                                                initial={{ opacity: 0, scale: 0.9, y: 10 }}
+                                                animate={{ opacity: 1, scale: 1, y: 0 }}
+                                                exit={{ opacity: 0, scale: 0.9, y: 10 }}
+                                                transition={{ type: "spring", stiffness: 400, damping: 25 }}
+                                                className={`flex items-center gap-2 px-4 py-2 rounded-full w-fit ${isLight ? 'bg-bg-elevated border border-border-muted shadow-[0_4px_16px_rgba(0,0,0,0.1)]' : 'bg-bg-elevated/80 border border-white/10 shadow-[0_4px_16px_rgba(0,0,0,0.3)]'}`}
+                                            >
+                                                {ollamaPullStatus === 'downloading' ? (
+                                                    <DownloadCloud size={14} className="text-blue-400 animate-pulse shrink-0" />
+                                                ) : ollamaPullStatus === 'complete' ? (
+                                                    <CheckCircle size={14} className="text-emerald-400 shrink-0" />
+                                                ) : (
+                                                    <AlertCircle size={14} className="text-red-400 shrink-0" />
+                                                )}
+                                                <span className="text-[11px] font-medium text-text-secondary whitespace-nowrap">
+                                                    {ollamaPullStatus === 'downloading' ? `Setting up AI memory... ${ollamaPullPercent}%` : ollamaPullMessage}
+                                                </span>
+                                                {ollamaPullStatus === 'downloading' && (
+                                                    <div className="w-24 h-[3px] bg-white/10 rounded-full overflow-hidden">
+                                                        <div className="h-full bg-blue-500 rounded-full transition-all duration-300" style={{ width: `${ollamaPullPercent}%` }} />
                                                     </div>
-                                                </div>
-
-                                                {/* Glows */}
-                                                <div className="absolute top-0 left-1/2 -translate-x-1/2 w-[300px] h-[300px] bg-emerald-500/10 blur-[100px] pointer-events-none" />
-                                            </div>
-                                        ) : (
-                                            /* Dynamic Next Meeting OR Default Intro */
-                                            nextMeeting ? (
-                                                <div className={`md:col-span-2 relative group rounded-xl overflow-hidden ${isLight ? 'bg-bg-elevated' : 'bg-bg-secondary'} flex flex-col shadow-[0_1px_3px_rgba(0,0,0,0.07),0_1px_2px_rgba(0,0,0,0.04)]`}>
-                                                    {/* Header */}
-                                                    <div className="p-5 flex-1 relative z-10">
-                                                        <div className="flex items-center gap-2 mb-2">
-                                                            <div className="w-1.5 h-1.5 rounded-full bg-emerald-500 animate-pulse" />
-                                                            <span className="text-[11px] font-bold text-emerald-400 uppercase tracking-wider">Up Next</span>
-                                                            <span className="text-[11px] text-text-tertiary">• {getMeetingStartText(nextMeeting.startTime)}</span>
-                                                        </div>
-
-                                                        <h2 className="text-xl font-bold text-text-primary leading-tight mb-1 line-clamp-2">
-                                                            {nextMeeting.title}
-                                                        </h2>
-
-                                                        <div className="flex items-center gap-2 text-text-secondary text-xs mt-2">
-                                                            <Calendar size={12} />
-                                                            <span>{new Date(nextMeeting.startTime).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' })} - {new Date(nextMeeting.endTime).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' })}</span>
-                                                            {nextMeeting.link && (
-                                                                <>
-                                                                    <span className="opacity-20">|</span>
-                                                                    <LinkIcon size={12} />
-                                                                    <span className="truncate max-w-[150px]">Meeting Link Found</span>
-                                                                </>
-                                                            )}
-                                                        </div>
-                                                    </div>
-
-                                                    {/* Actions */}
-                                                    <div className="p-4 bg-bg-elevated/50 border-t border-border-subtle flex items-center gap-3">
-                                                        <button
-                                                            onClick={() => handlePrepare(nextMeeting)}
-                                                            className={`flex-1 border px-4 py-2 rounded-lg text-xs font-medium transition-all flex items-center justify-center gap-2 ${isLight ? 'bg-bg-item-surface hover:bg-bg-item-active border-border-muted text-text-primary' : 'bg-white/10 hover:bg-white/20 border-white/10 text-white'}`}
-                                                        >
-                                                            <Zap size={13} className="text-yellow-400" />
-                                                            Prepare
-                                                        </button>
-                                                        <button
-                                                            onClick={() => setSalesBriefEvent(nextMeeting)}
-                                                            className={`px-4 py-2 rounded-lg text-xs font-medium transition-all flex items-center justify-center gap-2 border ${isLight ? 'bg-sky-50 hover:bg-sky-100 border-sky-200 text-sky-700' : 'bg-sky-500/10 hover:bg-sky-500/20 border-sky-500/20 text-sky-400'}`}
-                                                            title="Generate AI Sales Brief"
-                                                        >
-                                                            <Briefcase size={13} />
-                                                            Sales Brief
-                                                        </button>
-                                                        <button
-                                                            onClick={() => onStartMeeting(nextMeeting)}
-                                                            className={`px-4 py-2 rounded-lg text-xs font-medium text-text-secondary hover:text-text-primary transition-all ${isLight ? 'hover:bg-bg-item-surface' : 'hover:bg-white/5'}`}
-                                                        >
-                                                            Start now
-                                                        </button>
-                                                    </div>
-
-                                                    {/* Background Decoration */}
-                                                    <div className="absolute top-0 right-0 w-[150px] h-[150px] bg-emerald-500/10 blur-[60px] pointer-events-none" />
-                                                </div>
-                                            ) : (
-                                                <div className="md:col-span-2 h-full">
-                                                    {/* <FeatureSpotlight /> */}
-                                                </div>
-                                            )
+                                                )}
+                                            </motion.div>
                                         )}
+                                    </AnimatePresence>
 
+                                    {/* ── Hero cards ── */}
+                                    {isPrepared && preparedEvent ? (
 
+                                        /* PREPARED STATE — full-width, preserved exactly */
+                                        <div className={`relative rounded-xl overflow-hidden border border-emerald-500/30 ${isLight ? 'bg-bg-elevated' : 'bg-bg-secondary'} flex flex-col items-center justify-center p-6 min-h-[180px] bg-[radial-gradient(ellipse_at_top,_var(--tw-gradient-stops))] from-emerald-900/40 ${isLight ? 'via-bg-elevated to-bg-elevated' : 'via-bg-secondary to-bg-secondary'}`}>
+                                            <div className="absolute top-4 right-4"><Zap size={16} className="text-yellow-400" /></div>
+                                            <div className="text-center max-w-lg z-10">
+                                                <span className="inline-block px-3 py-1 rounded-full bg-emerald-500/10 text-emerald-400 text-[10px] font-bold tracking-wider mb-4 border border-emerald-500/20">READY TO JOIN</span>
+                                                <h2 className="text-2xl font-bold text-text-primary mb-2">{preparedEvent.title}</h2>
+                                                <p className="text-xs text-text-secondary mb-6 flex items-center justify-center gap-2">
+                                                    <Calendar size={12} />
+                                                    {new Date(preparedEvent.startTime).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' })} - {new Date(preparedEvent.endTime).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' })}
+                                                    {preparedEvent.link && " • Link Ready"}
+                                                </p>
+                                                <div className="flex items-center gap-3 justify-center">
+                                                    <button onClick={handleStartPreparedMeeting} className="bg-emerald-500 hover:bg-emerald-400 text-white px-8 py-3 rounded-xl text-sm font-semibold transition-all shadow-lg hover:shadow-emerald-500/25 active:scale-95 flex items-center gap-2">
+                                                        Start Meeting <ArrowRight size={16} />
+                                                    </button>
+                                                    <button onClick={() => setIsPrepared(false)} className="px-4 py-3 rounded-xl text-xs font-medium text-text-tertiary hover:text-white transition-colors">Cancel</button>
+                                                </div>
+                                            </div>
+                                            <div className="absolute top-0 left-1/2 -translate-x-1/2 w-[300px] h-[300px] bg-emerald-500/10 blur-[100px] pointer-events-none" />
+                                        </div>
 
-                                        {/* Right Secondary Card */}
-                                        <div className="md:col-span-1 rounded-xl overflow-hidden bg-bg-elevated relative group flex flex-col items-center pt-6 text-center">
-                                            {/* Backdrop Image */}
-                                            <div className="absolute inset-0">
-                                                <img src={calender} alt="" className="w-full h-full object-cover opacity-100 transition-opacity duration-500 translate-x--1 translate-y-[1px] scale-105" />
+                                    ) : (
+
+                                        /* TWO-COLUMN LAYOUT: left = meeting/empty state, right = calendar card */
+                                        <div className="flex gap-4 items-stretch min-h-0">
+
+                                            {/* LEFT — Meeting card + timeline strip below */}
+                                            <div className="flex-1 min-w-0 flex flex-col gap-2">
+
+                                                {/* Detail card — full width always */}
+                                                <div className="flex-1 min-w-0">
+                                                    <NextMeetingCard
+                                                        meeting={focusedMeeting}
+                                                        isLight={isLight}
+                                                        getMeetingStartText={getMeetingStartText}
+                                                        onStart={onStartMeeting}
+                                                        onSalesBrief={setSalesBriefEvent}
+                                                        onPrepare={handlePrepare}
+                                                    />
+                                                </div>
+
+                                                {/* Timeline strip — only when 2+ meetings */}
+                                                {upcomingEvents.length > 1 && (
+                                                    <MeetingTimeline
+                                                        events={upcomingEvents}
+                                                        selectedId={focusedMeetingId}
+                                                        onSelect={setFocusedMeetingId}
+                                                        isLight={isLight}
+                                                    />
+                                                )}
+
                                             </div>
 
-                                            {/* Content Layer */}
-                                            <div className="relative z-10 w-full flex flex-col items-center h-full">
-                                                <h3 className="text-[19px] leading-tight mb-4">
+                                            {/* RIGHT — Calendar connect card */}
+                                            <motion.div
+                                                initial={{ opacity: 0, y: 12 }}
+                                                animate={{ opacity: 1, y: 0 }}
+                                                transition={{ duration: 0.5, delay: 0.08, ease: [0.22, 1, 0.36, 1] }}
+                                                className={[
+                                                    "w-[300px] shrink-0 relative rounded-xl overflow-hidden border p-5 flex flex-col",
+                                                    isLight
+                                                        ? "border-border-muted bg-gradient-to-br from-white via-[#f5f3fb] to-[#ece9f7] shadow-[0_4px_24px_-8px_rgba(99,102,241,0.2)]"
+                                                        : "border-white/[0.08] bg-gradient-to-br from-[#12082e] via-[#0e0625] to-[#090418] shadow-[0_0_60px_-10px_rgba(99,60,255,0.3)]",
+                                                ].join(" ")}
+                                            >
+                                                {/* Ambient glows */}
+                                                <div aria-hidden className={["pointer-events-none absolute -top-20 -left-12 h-48 w-48 rounded-full blur-3xl", isLight ? "bg-blue-300/35" : "bg-indigo-600/20"].join(" ")} />
+                                                <div aria-hidden className={["pointer-events-none absolute -bottom-16 -right-10 h-48 w-48 rounded-full blur-3xl", isLight ? "bg-purple-300/35" : "bg-purple-600/20"].join(" ")} />
+
+                                                {/* Header row */}
+                                                <div className="relative flex items-center justify-between mb-4">
+                                                    <div className="flex items-center gap-2">
+                                                        <span className={["inline-flex h-8 w-8 items-center justify-center rounded-lg relative", isLight ? "bg-gradient-to-br from-purple-100 to-fuchsia-50 text-purple-600 ring-1 ring-inset ring-purple-200/60" : "bg-gradient-to-br from-purple-500/25 to-fuchsia-700/10 text-purple-300"].join(" ")}>
+                                                            <Calendar className="h-[15px] w-[15px]" strokeWidth={2.2} />
+                                                            <span className="absolute -right-1 -top-1 flex h-3 w-3 items-center justify-center rounded-full bg-gradient-to-br from-fuchsia-500 to-purple-600 text-[7px] font-bold text-white">+</span>
+                                                        </span>
+                                                        <span className="text-[13px] font-semibold tracking-tight">Calendar</span>
+                                                    </div>
+                                                    <span className={["inline-flex items-center rounded-full px-2 py-0.5 text-[10px] font-semibold", isLight ? "bg-rose-50 text-rose-500 ring-1 ring-inset ring-rose-200/70" : "bg-rose-500/15 text-rose-300"].join(" ")}>
+                                                        {isCalendarConnected ? "Connected" : "Not Connected"}
+                                                    </span>
+                                                </div>
+
+                                                {/* Title */}
+                                                <h3 className="relative text-[15px] font-semibold leading-snug tracking-tight mb-4">
                                                     {isCalendarConnected ? (
-                                                        <>
-                                                            <span className="block font-semibold text-white">Calendar linked</span>
-                                                            <span className="block font-medium text-white/60 text-[0.95em]">Events synced</span>
-                                                        </>
+                                                        <>Calendar linked<br /><span className="text-[13px] font-normal text-text-secondary">Events are syncing automatically.</span></>
                                                     ) : (
-                                                        <>
-                                                            <span className="block font-semibold text-white">Link your calendar to</span>
-                                                            <span className="block font-medium text-white/60 text-[0.95em]">see upcoming events</span>
-                                                        </>
+                                                        <>Connect your calendar<br />to unlock AI meeting<br />preparation</>
                                                     )}
                                                 </h3>
 
-                                                <ConnectCalendarButton
-                                                    className="-translate-x-0.5"
-                                                    onConnect={() => setIsCalendarConnected(true)}
-                                                />
-                                            </div>
-                                        </div>
-                                    </div>
-                                </div>
-                            </section>
-
-                            {/* BOTTOM SECTION: Black Background (Scrollable content) */}
-                            <main className="flex-1 overflow-y-auto custom-scrollbar bg-bg-primary">
-                                <section className="px-8 py-8 min-h-full">
-                                    <div className="max-w-4xl mx-auto space-y-8">
-
-                                        {/* Meetings section header — add upload button here */}
-                                        <div className="flex items-center justify-between mb-3 pl-1">
-                                            <span className="text-[13px] font-medium text-text-secondary">
-                                                Recent Meetings
-                                            </span>
-                                            {/* DEV ONLY — transcript upload */}
-                                            {process.env.NODE_ENV === 'development' && (
-                                                <button
-                                                    onClick={() => setIsUploadOpen(true)}
-                                                    className="flex items-center gap-1.5 text-[11px] font-medium text-text-tertiary hover:text-text-secondary border border-white/[0.08] hover:border-white/20 rounded-lg px-2.5 py-1 transition-all"
-                                                >
-                                                    <Upload size={11} />
-                                                    Upload Transcript
-                                                </button>
-                                            )}
-                                        </div>
-                                        {/* Iterating Date Groups */}
-                                        {sortedGroups.map((label) => (
-                                            <section key={label}>
-                                                <h3 className="text-[13px] font-medium text-text-secondary mb-3 pl-1">{label}</h3>
-                                                <div className="space-y-1">
-                                                    {groupedMeetings[label].map((m) => (
-                                                        <motion.div
-                                                            key={m.id}
-                                                            layoutId={`meeting-${m.id}`}
-                                                            className="group relative flex items-center justify-between px-3 py-2 rounded-lg bg-transparent hover:bg-bg-elevated transition-colors"
-                                                            onClick={() => handleOpenMeeting(m)}
-                                                        >
-                                                            <div className={`font-medium text-[14px] max-w-[60%] truncate ${m.title === 'Processing...' ? 'text-blue-400 italic animate-pulse' : 'text-text-primary'}`}>
-                                                                {m.title}
-                                                            </div>
-
-                                                            {/* Time & Duration Section */}
-                                                            <div className="flex items-center gap-4">
-                                                                {m.title === 'Processing...' ? (
-                                                                    <div className="flex items-center gap-2 transition-all duration-200 ease-out group-hover:opacity-0 group-hover:translate-x-2 delayed-hover-exit">
-                                                                        <RefreshCw size={12} className="animate-spin text-blue-500" />
-                                                                        <span className="text-xs text-blue-500 font-medium">Finalizing...</span>
-                                                                    </div>
-                                                                ) : (
-                                                                    <>
-                                                                        <span className="relative z-10 bg-bg-elevated text-text-secondary text-[9px] px-1.5 py-0.5 rounded-full font-medium min-w-[35px] text-center tracking-wide">
-                                                                            {formatDurationPill(m.duration)}
-                                                                        </span>
-
-                                                                        {/* Time Text (Should fade out on hover) */}
-                                                                        <span className="text-[13px] text-text-secondary font-medium min-w-[60px] text-right transition-all duration-200 ease-out group-hover:opacity-0 group-hover:translate-x-2 delayed-hover-exit">
-                                                                            {formatTime(m.date)}
-                                                                        </span>
-                                                                    </>
-                                                                )}
-                                                            </div>
-
-                                                            {/* Context Menu Trigger (Slides in on hover) */}
-                                                            <div className="absolute right-3 top-1/2 -translate-y-1/2 opacity-0 translate-x-4 transition-all duration-300 ease-out group-hover:opacity-100 group-hover:translate-x-0">
-                                                                <button
-                                                                    className="p-1.5 text-text-secondary hover:text-text-primary transition-colors"
-                                                                    onClick={(e) => {
-                                                                        e.stopPropagation();
-                                                                        setActiveMenuId(activeMenuId === m.id ? null : m.id);
-                                                                    }}
-                                                                >
-                                                                    <MoreHorizontal size={16} />
-                                                                </button>
-                                                            </div>
-
-                                                            {/* Dropdown Menu */}
-                                                            <AnimatePresence>
-                                                                {activeMenuId === m.id && (
-                                                                    <motion.div
-                                                                        initial={{ opacity: 0, scale: 0.95, y: 10 }}
-                                                                        animate={{ opacity: 1, scale: 1, y: 0 }}
-                                                                        exit={{ opacity: 0, scale: 0.95, y: 5 }}
-                                                                        transition={{ duration: 0.1 }}
-                                                                        className={`absolute right-0 top-full mt-1 w-[90px] backdrop-blur-xl rounded-lg shadow-2xl z-50 overflow-hidden border ${isLight ? 'bg-bg-elevated border-border-muted shadow-[0_8px_24px_rgba(0,0,0,0.12)]' : 'bg-[#1E1E1E]/80 border-white/10'}`}
-                                                                        onClick={(e) => e.stopPropagation()}
-                                                                        onMouseEnter={() => setMenuEntered(true)}
-                                                                        onMouseLeave={() => {
-                                                                            if (menuEntered) setActiveMenuId(null);
-                                                                        }}
-                                                                    >
-                                                                        <div className="p-1 flex flex-col gap-0.5">
-                                                                            <button
-                                                                                className={`w-full flex items-center gap-2 px-3 py-1.5 text-[12px] text-text-primary rounded-lg transition-colors text-left ${isLight ? 'hover:bg-bg-item-surface' : 'hover:bg-white/10'}`}
-                                                                                onClick={async () => {
-                                                                                    setActiveMenuId(null);
-                                                                                    analytics.trackPdfExported();
-                                                                                    // Fetch full details if needed
-                                                                                    if (window.electronAPI && window.electronAPI.getMeetingDetails) {
-                                                                                        try {
-                                                                                            const fullMeeting = await window.electronAPI.getMeetingDetails(m.id);
-                                                                                            if (fullMeeting) {
-                                                                                                generateMeetingPDF(fullMeeting);
-                                                                                            } else {
-                                                                                                generateMeetingPDF(m);
-                                                                                            }
-                                                                                        } catch (e) {
-                                                                                            console.error("Failed to fetch details for PDF", e);
-                                                                                            generateMeetingPDF(m);
-                                                                                        }
-                                                                                    } else {
-                                                                                        generateMeetingPDF(m);
-                                                                                    }
-                                                                                }}
-                                                                            >
-                                                                                <Download size={13} />
-                                                                                Export
-                                                                            </button>
-                                                                            <button
-                                                                                className="w-full flex items-center gap-2 px-3 py-1.5 text-[12px] text-red-400 hover:bg-red-500/10 hover:text-red-300 rounded-lg transition-colors text-left"
-                                                                                onClick={async () => {
-                                                                                    if (window.electronAPI && window.electronAPI.deleteMeeting) {
-                                                                                        const success = await window.electronAPI.deleteMeeting(m.id);
-                                                                                        if (success) {
-                                                                                            // Optimistic update or refetch
-                                                                                            setMeetings(prev => prev.filter(meeting => meeting.id !== m.id));
-                                                                                        }
-                                                                                    }
-                                                                                    setActiveMenuId(null);
-                                                                                }}
-                                                                            >
-                                                                                <Trash2 size={13} />
-                                                                                Delete
-                                                                            </button>
-                                                                        </div>
-                                                                    </motion.div>
-                                                                )}
-                                                            </AnimatePresence>
-                                                        </motion.div>
+                                                {/* Features list */}
+                                                <div className="relative flex-1 space-y-3">
+                                                    {[
+                                                        { icon: Zap, label: "Auto-detect meetings", color: "text-yellow-400" },
+                                                        { icon: Briefcase, label: "AI sales brief per event", color: "text-blue-400" },
+                                                        { icon: Calendar, label: "One-click join", color: "text-purple-400" },
+                                                    ].map(({ icon: Icon, label, color }) => (
+                                                        <div key={label} className="flex items-center gap-2.5">
+                                                            <span className={["inline-flex h-7 w-7 shrink-0 items-center justify-center rounded-lg", isLight ? "bg-bg-elevated shadow-sm border border-border-subtle" : "bg-bg-item-surface"].join(" ")}>
+                                                                <Icon className={`h-3.5 w-3.5 ${color}`} strokeWidth={2.2} />
+                                                            </span>
+                                                            <span className="text-[12px] font-medium text-text-secondary">{label}</span>
+                                                        </div>
                                                     ))}
                                                 </div>
-                                            </section>
-                                        ))}
 
-                                        {meetings.length === 0 && (
-                                            <div className="p-4 text-text-tertiary text-sm">No recent meetings.</div>
+                                                {/* CTA */}
+                                                <ConnectCalendarButton
+                                                    className="relative mt-4 w-full"
+                                                    onConnect={() => setIsCalendarConnected(true)}
+                                                />
+                                            </motion.div>
+
+                                        </div>
+                                    )}
+
+                                </div>
+                            </motion.section>
+
+                            {/* BOTTOM SECTION: Black Background (Scrollable content) */}
+                            <motion.main className="overflow-y-auto custom-scrollbar"
+                                animate={{
+                                    flex: isMeetingsExpanded ? '1 1 100%' : '1 1 0%',
+                                    borderRadius: isMeetingsExpanded ? '16px 16px 0 0' : '0px',
+                                    marginTop: isMeetingsExpanded ? '-320px' : '0px',
+                                    boxShadow: isMeetingsExpanded
+                                        ? '0 -8px 40px rgba(0,0,0,0.35), 0 -2px 8px rgba(0,0,0,0.15)'
+                                        : '0 0px 0px rgba(0,0,0,0)',
+                                    zIndex: isMeetingsExpanded ? 10 : 1,
+                                }}
+                                style={{
+                                    position: 'relative',
+                                    backgroundColor: isLight ? 'var(--bg-sidebar)' : 'var(--bg-secondary)',
+                                }}
+                                transition={{ duration: 0.42, ease: [0.32, 0.72, 0, 1] }}
+                            >
+                                <section className="px-8 py-5 min-h-full">
+                                    <div className="max-w-4xl mx-auto">
+
+                                        {/* Section header */}
+                                        <div className="flex items-center justify-between mb-3">
+                                            <div className="flex items-center gap-2.5">
+                                                <div className={[
+                                                    "flex h-7 w-7 items-center justify-center rounded-lg",
+                                                    isLight ? "bg-accent-muted text-accent-primary" : "bg-accent-muted text-blue-400",
+                                                ].join(" ")}>
+                                                    <Calendar size={14} strokeWidth={2.2} />
+                                                </div>
+                                                <span className="text-[15px] font-semibold text-text-primary tracking-tight">
+                                                    Recent Meetings
+                                                </span>
+                                            </div>
+
+                                            {/* Right-side header actions */}
+                                            <div className="flex items-center gap-2">
+
+                                                {/* Upload Transcript — dev only */}
+                                                {process.env.NODE_ENV === 'development' && (
+                                                    <button
+                                                        onClick={() => setIsUploadOpen(true)}
+                                                        className={[
+                                                            "flex items-center gap-1.5 text-[11px] font-medium rounded-lg px-2.5 py-1.5 border transition-all duration-150",
+                                                            isLight
+                                                                ? "text-text-secondary border-border-muted bg-bg-elevated hover:bg-bg-component hover:text-text-primary hover:border-border-muted shadow-sm"
+                                                                : "text-text-tertiary border-border-muted bg-bg-item-surface hover:bg-white/[0.06] hover:border-white/[0.14] hover:text-text-secondary",
+                                                        ].join(" ")}
+                                                    >
+                                                        <Upload size={11} />
+                                                        Upload Transcript
+                                                    </button>
+                                                )}
+
+                                                {/* Expand / Collapse */}
+                                                <motion.button
+                                                    onClick={() => setIsMeetingsExpanded(prev => !prev)}
+                                                    className={[
+                                                        "flex items-center gap-1.5 text-[11px] font-medium rounded-lg px-2.5 py-1.5 border transition-colors duration-150",
+                                                        isMeetingsExpanded
+                                                            ? isLight
+                                                                ? "text-accent-primary border-accent-primary/30 bg-accent-muted shadow-sm"
+                                                                : "text-blue-400 border-blue-500/30 bg-blue-500/10"
+                                                            : isLight
+                                                                ? "text-text-secondary border-border-muted bg-bg-elevated hover:bg-bg-component hover:text-text-primary shadow-sm"
+                                                                : "text-text-tertiary border-border-muted bg-bg-item-surface hover:bg-white/[0.06] hover:border-white/[0.14] hover:text-text-secondary",
+                                                    ].join(" ")}
+                                                    whileTap={{ scale: 0.95 }}
+                                                >
+                                                    <motion.span
+                                                        animate={{ rotate: isMeetingsExpanded ? 180 : 0 }}
+                                                        transition={{ duration: 0.3, ease: [0.32, 0.72, 0, 1] }}
+                                                        style={{ display: 'flex' }}
+                                                    >
+                                                        <ChevronUp size={11} />
+                                                    </motion.span>
+                                                    {isMeetingsExpanded ? 'Collapse' : 'Expand'}
+                                                </motion.button>
+
+                                            </div>
+
+                                        </div>
+
+                                        {/* Rows — no outer card, dividers only between rows */}
+                                        {meetings.length === 0 ? (
+                                            <div className="py-8 text-center text-sm text-text-tertiary">
+                                                No recent meetings yet.
+                                            </div>
+                                        ) : (
+                                            <div className="rounded-xl first:rounded-t-xl last:rounded-b-xl border border-border-muted">
+                                                {meetings.map((m, index) => (
+                                                    <motion.div
+                                                        key={m.id}
+                                                        layoutId={`meeting-${m.id}`}
+                                                        onClick={() => handleOpenMeeting(m)}
+                                                        className={[
+                                                            "group relative flex items-center gap-4 px-5 py-4 cursor-pointer transition-colors",
+                                                            index !== meetings.length - 1 ? "border-b border-border-subtle" : "",
+                                                            "bg-bg-sidebar hover:bg-bg-item-surface",
+                                                        ].join(" ")}
+                                                    >
+                                                        {/* Left: Icon */}
+                                                        <div className={[
+                                                            "flex h-9 w-9 shrink-0 items-center justify-center rounded-lg bg-blue-500/10",
+                                                            isLight ? "text-accent-primary" : "text-blue-400",
+                                                        ].join(" ")}>
+                                                            {m.title === 'Processing...'
+                                                                ? <RefreshCw size={15} className="animate-spin text-blue-500" />
+                                                                : <Calendar size={15} strokeWidth={2} />
+                                                            }
+                                                        </div>
+
+                                                        {/* Center: Title + subtitle */}
+                                                        <div className="flex-1 min-w-0">
+                                                            <div className={[
+                                                                "text-[13px] font-semibold truncate leading-tight",
+                                                                m.title === 'Processing...'
+                                                                    ? "text-blue-400 italic animate-pulse"
+                                                                    : "text-text-primary",
+                                                            ].join(" ")}>
+                                                                {m.title}
+                                                            </div>
+                                                            <div className="flex items-center gap-1.5 mt-0.5 text-[11px] text-text-tertiary">
+                                                                {(() => {
+                                                                    const org = (m as any).organizer || (m as any).attendees?.[0]?.displayName || null;
+                                                                    const count = (m as any).attendees?.length;
+                                                                    return (
+                                                                        <>
+                                                                            {org && <span className="truncate max-w-[160px]">{org}</span>}
+                                                                            {org && count && <span className="opacity-40">•</span>}
+                                                                            {count && <span>{count} Participant{count !== 1 ? 's' : ''}</span>}
+                                                                            {!org && !count && <span>{formatTime(m.date)}</span>}
+                                                                        </>
+                                                                    );
+                                                                })()}
+                                                            </div>
+                                                        </div>
+
+                                                        {/* Right: Date + duration + chevron */}
+                                                        <div className="flex items-center gap-4 shrink-0">
+                                                            {m.title === 'Processing...' ? (
+                                                                <span className="text-[11px] text-blue-400 font-medium">Finalizing...</span>
+                                                            ) : (
+                                                                <>
+                                                                    <span className="text-[12px] font-medium min-w-[120px] text-right text-text-secondary">
+                                                                        {getGroupLabel(m.date) === 'Today'
+                                                                            ? `Today, ${formatTime(m.date)}`
+                                                                            : getGroupLabel(m.date) === 'Yesterday'
+                                                                                ? `Yesterday, ${formatTime(m.date)}`
+                                                                                : `${getGroupLabel(m.date)}, ${formatTime(m.date)}`
+                                                                        }
+                                                                    </span>
+                                                                    <span className="font-mono text-[12px] font-semibold px-2.5 py-0.5 rounded-md border border-border-muted bg-bg-item-surface text-text-secondary min-w-[46px] text-center tabular-nums">
+                                                                        {formatDurationPill(m.duration)}
+                                                                    </span>
+                                                                </>
+                                                            )}
+                                                            <ChevronRight size={15} className="transition-all duration-200 shrink-0 text-text-tertiary group-hover:text-text-secondary group-hover:translate-x-0.5" />
+                                                        </div>
+
+                                                        {/* Context menu trigger */}
+                                                        <div className="absolute right-5 top-1/2 -translate-y-1/2 opacity-0 group-hover:opacity-100 transition-all duration-200">
+                                                            <button
+                                                                className="p-1.5 rounded-md transition-colors text-text-tertiary hover:text-text-primary hover:bg-bg-item-surface"
+                                                                onClick={(e) => { e.stopPropagation(); setActiveMenuId(activeMenuId === m.id ? null : m.id); }}
+                                                            >
+                                                                <MoreHorizontal size={15} />
+                                                            </button>
+                                                        </div>
+
+                                                        {/* Dropdown — unchanged logic */}
+                                                        <AnimatePresence>
+                                                            {activeMenuId === m.id && (
+                                                                <motion.div
+                                                                    initial={{ opacity: 0, scale: 0.95, y: 6 }}
+                                                                    animate={{ opacity: 1, scale: 1, y: 0 }}
+                                                                    exit={{ opacity: 0, scale: 0.95, y: 4 }}
+                                                                    transition={{ duration: 0.1 }}
+                                                                    className={["absolute right-5 top-10 mt-1 w-[100px] backdrop-blur-xl rounded-lg shadow-2xl z-[200] overflow-hidden border", isLight ? "bg-bg-elevated border-border-muted shadow-[0_8px_24px_rgba(0,0,0,0.12)]" : "bg-bg-card/90 border-border-muted"].join(" ")}
+                                                                    onClick={(e) => e.stopPropagation()}
+                                                                    onMouseEnter={() => setMenuEntered(true)}
+                                                                    onMouseLeave={() => { if (menuEntered) setActiveMenuId(null); }}
+                                                                >
+                                                                    <div className="p-1 flex flex-col gap-0.5">
+                                                                        <button
+                                                                            className={["w-full flex items-center gap-2 px-3 py-1.5 text-[12px] rounded-lg transition-colors text-left text-text-primary", isLight ? "hover:bg-bg-item-surface" : "hover:bg-white/10"].join(" ")}
+                                                                            onClick={async () => {
+                                                                                setActiveMenuId(null);
+                                                                                analytics.trackPdfExported();
+                                                                                if (window.electronAPI?.getMeetingDetails) {
+                                                                                    try { generateMeetingPDF(await window.electronAPI.getMeetingDetails(m.id) ?? m); }
+                                                                                    catch { generateMeetingPDF(m); }
+                                                                                } else { generateMeetingPDF(m); }
+                                                                            }}
+                                                                        >
+                                                                            <Download size={12} /> Export
+                                                                        </button>
+                                                                        <button
+                                                                            className="w-full flex items-center gap-2 px-3 py-1.5 text-[12px] text-red-400 hover:bg-red-500/10 hover:text-red-300 rounded-lg transition-colors text-left"
+                                                                            onClick={async () => {
+                                                                                if (window.electronAPI?.deleteMeeting) {
+                                                                                    const ok = await window.electronAPI.deleteMeeting(m.id);
+                                                                                    if (ok) setMeetings(prev => prev.filter(x => x.id !== m.id));
+                                                                                }
+                                                                                setActiveMenuId(null);
+                                                                            }}
+                                                                        >
+                                                                            <Trash2 size={12} /> Delete
+                                                                        </button>
+                                                                    </div>
+                                                                </motion.div>
+                                                            )}
+                                                        </AnimatePresence>
+                                                    </motion.div>
+                                                ))}
+                                            </div>
                                         )}
-
                                     </div>
                                 </section>
-                            </main>
+                            </motion.main>
                         </motion.div>
                     )}
                 </AnimatePresence>
             </div>
-
-
 
             {/* Notification Toast - Liquid Glass (macOS 26 Tahoe Concept) */}
             <AnimatePresence>
@@ -1049,7 +1167,7 @@ const Launcher: React.FC<LauncherProps> = ({ onStartMeeting, onOpenSettings, onP
                         animate={{ x: 0, opacity: 1, scale: 1 }}
                         exit={{ x: 300, opacity: 0, scale: 0.95 }}
                         transition={{ type: "spring", stiffness: 350, damping: 30, mass: 1 }}
-                        className={`fixed bottom-10 right-10 z-[2000] flex items-center gap-4 pl-4 pr-6 py-3.5 rounded-[18px] backdrop-blur-xl saturate-[180%] ring-1 ring-black/10 ${isLight ? 'bg-bg-elevated/90 border border-border-muted shadow-[0_8px_32px_rgba(0,0,0,0.15),inset_0_1px_0_rgba(255,255,255,0.9)]' : 'bg-[#2A2A2E]/40 border border-white/10 shadow-[0_40px_80px_-20px_rgba(0,0,0,0.6),inset_0_1px_0_rgba(255,255,255,0.3),inset_0_-1px_0_rgba(255,255,255,0.05)]'}`}
+                        className={`fixed bottom-10 right-10 z-[2000] flex items-center gap-4 pl-4 pr-6 py-3.5 rounded-[18px] backdrop-blur-xl saturate-[180%] ring-1 ring-black/10 ${isLight ? 'bg-bg-elevated/90 border border-border-muted shadow-[0_8px_32px_rgba(0,0,0,0.15),inset_0_1px_0_rgba(255,255,255,0.9)]' : 'bg-bg-card/70 border border-border-subtle shadow-[0_40px_80px_-20px_rgba(0,0,0,0.6),inset_0_1px_0_rgba(255,255,255,0.06)]'}`}
                     >
                         {/* Liquid Icon Orb */}
                         <div className="relative flex items-center justify-center w-9 h-9 rounded-full bg-gradient-to-b from-blue-400/20 to-blue-600/20 shadow-[inset_0_1px_0_rgba(255,255,255,0.2)] border border-white/5">
@@ -1089,101 +1207,144 @@ const Launcher: React.FC<LauncherProps> = ({ onStartMeeting, onOpenSettings, onP
             </AnimatePresence>
 
             {/* DEV ONLY — Transcript Upload Modal */}
-            {isUploadOpen && (
-                <div className="fixed inset-0 z-[100] flex items-center justify-center p-4">
-                    {/* Backdrop */}
-                    <div
-                        className="absolute inset-0 bg-black/70 backdrop-blur-sm"
-                        onClick={() => setIsUploadOpen(false)}
-                    />
+            <AnimatePresence>
+                {isUploadOpen && (
+                    <>
+                        {/* Backdrop */}
+                        <motion.div
+                            initial={{ opacity: 0 }}
+                            animate={{ opacity: 1 }}
+                            exit={{ opacity: 0 }}
+                            transition={{ duration: 0.2 }}
+                            className={["fixed inset-0 z-[100] backdrop-blur-sm", isLight ? "bg-black/30" : "bg-black/60"].join(" ")}
+                            onClick={() => setIsUploadOpen(false)}
+                        />
 
-                    {/* Modal */}
-                    <div className="relative w-full max-w-2xl bg-[#121214] border border-white/[0.08] rounded-2xl shadow-2xl overflow-hidden">
+                        {/* Modal */}
+                        <motion.div
+                            initial={{ opacity: 0, scale: 0.96, y: 8 }}
+                            animate={{ opacity: 1, scale: 1, y: 0 }}
+                            exit={{ opacity: 0, scale: 0.96, y: 8 }}
+                            transition={{ duration: 0.22, type: "spring", damping: 26, stiffness: 320 }}
+                            className="fixed inset-0 z-[101] flex items-center justify-center p-4 pointer-events-none"
+                        >
+                            <div className={[
+                                "relative w-full max-w-2xl rounded-2xl shadow-2xl overflow-hidden pointer-events-auto",
+                                isLight
+                                    ? "bg-bg-elevated border border-border-muted shadow-[0_20px_60px_rgba(0,0,0,0.15)]"
+                                    : "bg-bg-secondary border border-border-muted shadow-[0_20px_60px_rgba(0,0,0,0.5)] ring-1 ring-white/[0.04]",
+                            ].join(" ")}>
 
-                        {/* Header */}
-                        <div className="flex items-center justify-between px-6 py-4 border-b border-white/[0.06]">
-                            <div>
-                                <p className="text-sm font-semibold text-white">Upload Transcript</p>
-                                <p className="text-[11px] text-white/30 mt-0.5">Dev only — paste a transcript to generate a full sales analysis</p>
+                                {/* Header */}
+                                <div className={["flex items-center justify-between px-6 py-4 border-b", isLight ? "border-border-subtle" : "border-border-muted"].join(" ")}>
+                                    <div className="flex items-center gap-3">
+                                        <div className={["flex h-7 w-7 items-center justify-center rounded-lg", isLight ? "bg-blue-400/20 text-accent-primary" : "bg-blue-400/20 text-blue-400"].join(" ")}>
+                                            <Upload size={13} strokeWidth={2.2} />
+                                        </div>
+                                        <div>
+                                            <p className="text-sm font-semibold text-text-primary">Upload Transcript</p>
+                                            <p className="text-[11px] text-text-tertiary mt-0.5">Dev only · paste a transcript to generate a full sales analysis</p>
+                                        </div>
+                                    </div>
+                                    <button
+                                        onClick={() => setIsUploadOpen(false)}
+                                        className={["p-1.5 rounded-full transition-colors", isLight ? "text-text-tertiary hover:text-text-primary hover:bg-bg-item-surface" : "text-text-tertiary hover:text-text-primary hover:bg-white/10"].join(" ")}
+                                    >
+                                        <X size={14} />
+                                    </button>
+                                </div>
+
+                                {/* Body */}
+                                <div className="px-6 py-5 space-y-4">
+
+                                    {/* Title field */}
+                                    <div>
+                                        <label className="text-[11px] font-medium text-text-tertiary uppercase tracking-wider mb-1.5 block">
+                                            Meeting Title <span className="normal-case tracking-normal font-normal opacity-60">(optional)</span>
+                                        </label>
+                                        <input
+                                            type="text"
+                                            value={uploadTitle}
+                                            onChange={e => setUploadTitle(e.target.value)}
+                                            placeholder="e.g. Q4 Discovery Call — TechFlow"
+                                            className={[
+                                                "w-full rounded-xl px-4 py-2.5 text-sm text-text-primary focus:outline-none transition-colors",
+                                                isLight
+                                                    ? "bg-bg-input border border-border-muted placeholder-text-tertiary focus:border-accent-primary/40 focus:ring-2 focus:ring-accent-primary/10"
+                                                    : "bg-bg-input border border-border-muted placeholder-text-tertiary focus:border-white/20 focus:ring-0",
+                                            ].join(" ")}
+                                        />
+                                    </div>
+
+                                    {/* Transcript textarea */}
+                                    <div>
+                                        <label className="text-[11px] font-medium text-text-tertiary uppercase tracking-wider mb-1.5 block">
+                                            Transcript
+                                        </label>
+                                        <textarea
+                                            value={uploadText}
+                                            onChange={e => setUploadText(e.target.value)}
+                                            placeholder={`Paste transcript here. Supported formats:\n\n[00:00:12] REP: Hello, thanks for joining...\nPROSPECT: Happy to be here...\n\nor plain text lines`}
+                                            rows={12}
+                                            className={[
+                                                "w-full rounded-xl px-4 py-3 text-sm text-text-primary focus:outline-none transition-colors resize-none font-mono leading-relaxed",
+                                                isLight
+                                                    ? "bg-bg-input border border-border-muted placeholder-text-tertiary focus:border-accent-primary/40 focus:ring-2 focus:ring-accent-primary/10"
+                                                    : "bg-bg-input border border-border-muted placeholder-text-tertiary/60 focus:border-white/20",
+                                            ].join(" ")}
+                                        />
+                                        <p className="text-[10px] text-text-tertiary mt-1.5">
+                                            {uploadText.split('\n').filter(l => l.trim()).length} lines · Supports [timestamp] SPEAKER: text format
+                                        </p>
+                                    </div>
+
+                                    {uploadError && (
+                                        <div className={["flex items-center gap-2 text-[12px] rounded-lg px-3 py-2.5 border", isLight ? "text-red-600 bg-red-50 border-red-200" : "text-red-400 bg-red-500/10 border-red-500/20"].join(" ")}>
+                                            <AlertCircle size={13} className="shrink-0" />
+                                            {uploadError}
+                                        </div>
+                                    )}
+                                </div>
+
+                                {/* Footer */}
+                                <div className={["flex items-center justify-between px-6 py-4 border-t", isLight ? "border-border-subtle bg-bg-primary/40" : "border-border-muted bg-bg-item-surface/50"].join(" ")}>
+                                    <p className="text-[11px] text-text-tertiary">
+                                        {uploadText.trim() ? `${uploadText.trim().length.toLocaleString()} characters` : 'No transcript pasted yet'}
+                                    </p>
+                                    <div className="flex items-center gap-2">
+                                        <button
+                                            onClick={() => { setIsUploadOpen(false); setUploadText(''); setUploadTitle(''); }}
+                                            className={["px-4 py-2 text-sm rounded-xl transition-colors font-medium", isLight ? "text-text-secondary hover:text-text-primary hover:bg-bg-component" : "text-text-tertiary hover:text-text-secondary hover:bg-white/[0.06]"].join(" ")}
+                                        >
+                                            Cancel
+                                        </button>
+                                        <button
+                                            onClick={handleUploadTranscript}
+                                            disabled={isUploading || !uploadText.trim()}
+                                            className={[
+                                                "flex items-center gap-2 px-5 py-2 rounded-xl text-sm font-semibold text-white transition-all disabled:opacity-40 disabled:cursor-not-allowed",
+                                                isLight ? "bg-accent-primary hover:bg-blue-700 shadow-sm" : "bg-accent-primary hover:bg-blue-500",
+                                            ].join(" ")}
+                                        >
+                                            {isUploading ? (
+                                                <>
+                                                    <RefreshCw size={13} className="animate-spin" />
+                                                    Processing...
+                                                </>
+                                            ) : (
+                                                <>
+                                                    <Upload size={13} />
+                                                    Upload & Analyse
+                                                </>
+                                            )}
+                                        </button>
+                                    </div>
+                                </div>
                             </div>
-                            <button
-                                onClick={() => setIsUploadOpen(false)}
-                                className="p-1.5 rounded-full hover:bg-white/10 text-white/40 hover:text-white transition-colors"
-                            >
-                                <X size={14} />
-                            </button>
-                        </div>
-
-                        {/* Body */}
-                        <div className="px-6 py-5 space-y-4">
-
-                            {/* Title field */}
-                            <div>
-                                <label className="text-[11px] font-medium text-white/40 uppercase tracking-wider mb-1.5 block">
-                                    Meeting Title (optional)
-                                </label>
-                                <input
-                                    type="text"
-                                    value={uploadTitle}
-                                    onChange={e => setUploadTitle(e.target.value)}
-                                    placeholder="e.g. Q4 Discovery Call — TechFlow"
-                                    className="w-full bg-white/[0.04] border border-white/[0.08] rounded-xl px-4 py-2.5 text-sm text-white placeholder-white/20 focus:outline-none focus:border-white/20 transition-colors"
-                                />
-                            </div>
-
-                            {/* Transcript textarea */}
-                            <div>
-                                <label className="text-[11px] font-medium text-white/40 uppercase tracking-wider mb-1.5 block">
-                                    Transcript
-                                </label>
-                                <textarea
-                                    value={uploadText}
-                                    onChange={e => setUploadText(e.target.value)}
-                                    placeholder={`Paste transcript here. Supported formats:\n\n[00:00:12] REP: Hello, thanks for joining...\nPROSPECT: Happy to be here...\n\nor plain text lines`}
-                                    rows={12}
-                                    className="w-full bg-white/[0.04] border border-white/[0.08] rounded-xl px-4 py-3 text-sm text-white/80 placeholder-white/15 focus:outline-none focus:border-white/20 transition-colors resize-none font-mono leading-relaxed"
-                                />
-                                <p className="text-[10px] text-white/20 mt-1.5">
-                                    {uploadText.split('\n').filter(l => l.trim()).length} lines · Supports [timestamp] SPEAKER: text format
-                                </p>
-                            </div>
-
-                            {uploadError && (
-                                <p className="text-[12px] text-red-400 bg-red-500/10 border border-red-500/20 rounded-lg px-3 py-2">
-                                    {uploadError}
-                                </p>
-                            )}
-                        </div>
-
-                        {/* Footer */}
-                        <div className="flex items-center justify-end gap-3 px-6 py-4 border-t border-white/[0.06] bg-white/[0.02]">
-                            <button
-                                onClick={() => { setIsUploadOpen(false); setUploadText(''); setUploadTitle(''); }}
-                                className="px-4 py-2 text-sm text-white/40 hover:text-white/70 transition-colors"
-                            >
-                                Cancel
-                            </button>
-                            <button
-                                onClick={handleUploadTranscript}
-                                disabled={isUploading || !uploadText.trim()}
-                                className="flex items-center gap-2 px-5 py-2 bg-blue-600 hover:bg-blue-500 disabled:opacity-40 disabled:cursor-not-allowed rounded-xl text-sm font-semibold text-white transition-all"
-                            >
-                                {isUploading ? (
-                                    <>
-                                        <RefreshCw size={13} className="animate-spin" />
-                                        Processing...
-                                    </>
-                                ) : (
-                                    <>
-                                        <Upload size={13} />
-                                        Upload & Analyse
-                                    </>
-                                )}
-                            </button>
-                        </div>
-                    </div>
-                </div>
-            )}
+                        </motion.div>
+                    </>
+                )}
+            </AnimatePresence>
         </div >
     );
 };

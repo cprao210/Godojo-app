@@ -2115,6 +2115,120 @@ export function initializeIpcHandlers(appState: AppState): void {
   });
 
   // ==========================================
+  // Company Intelligence (Sales Brief v2)
+  // ==========================================
+
+  safeHandle("fetch-company-intel", async (_, payload: { companyName: string; domain?: string }) => {
+    try {
+      const { CredentialsManager } = require('./services/CredentialsManager');
+      const cm = CredentialsManager.getInstance();
+      const tavilyApiKey = cm.getTavilyApiKey();
+
+      if (!tavilyApiKey) {
+        return { success: false, error: 'No Tavily API key configured. Add one in Settings → AI Providers.' };
+      }
+
+      const { companyName, domain } = payload;
+      const companyQuery = domain ? `${companyName} site:${domain}` : companyName;
+
+      // Run parallel Tavily searches for different intel categories
+      const tavilySearch = async (query: string, maxResults = 3): Promise<any[]> => {
+        const res = await fetch('https://api.tavily.com/search', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${tavilyApiKey}` },
+          body: JSON.stringify({ query, max_results: maxResults, search_depth: 'basic', include_answer: true }),
+        });
+        if (!res.ok) throw new Error(`Tavily error: ${res.status}`);
+        const data = await res.json() as any;
+        return data.results || [];
+      };
+
+      const [overviewResults, fundingResults, newsResults, leadershipResults, competitorResults] = await Promise.allSettled([
+        tavilySearch(`${companyName} company overview founded headquarters employees industry`),
+        tavilySearch(`${companyName} funding valuation investors series revenue`),
+        tavilySearch(`${companyName} latest news announcements 2024 2025`, 4),
+        tavilySearch(`${companyName} leadership CEO CRO CMO executive changes`),
+        tavilySearch(`${companyName} competitors products customers clients`),
+      ]);
+
+      const extract = (r: PromiseSettledResult<any[]>) => r.status === 'fulfilled' ? r.value : [];
+
+      // Aggregate all snippets and pass to LLM for structured extraction
+      const allSnippets = [
+        ...extract(overviewResults).map((r: any) => r.content || r.snippet || ''),
+        ...extract(fundingResults).map((r: any) => r.content || r.snippet || ''),
+        ...extract(newsResults).map((r: any) => r.content || r.snippet || ''),
+        ...extract(leadershipResults).map((r: any) => r.content || r.snippet || ''),
+        ...extract(competitorResults).map((r: any) => r.content || r.snippet || ''),
+      ].filter(Boolean).join('\n\n---\n\n');
+
+      const llmHelper = appState.processingHelper.getLLMHelper();
+
+      const extractionPrompt = `You are a company research analyst. Extract structured company intelligence from the web search snippets below and return ONLY a valid JSON object. No markdown, no explanation.
+
+Company: ${companyName}${domain ? `\nWebsite: ${domain}` : ''}
+
+Web search snippets:
+${allSnippets.slice(0, 8000)}
+
+Return this exact JSON structure (use null for unknown fields, never omit a key):
+{
+  "companyName": string,
+  "website": string | null,
+  "foundedYear": number | null,
+  "companyAge": number | null,
+  "founders": string[] | null,
+  "headquarters": string | null,
+  "employeeCount": string | null,
+  "industry": string | null,
+  "revenue": string | null,
+  "valuation": string | null,
+  "fundingStage": string | null,
+  "latestFundingNews": string | null,
+  "investors": string[] | null,
+  "keyProducts": string[] | null,
+  "competitors": string[] | null,
+  "recentNews": [{ "headline": string, "date": string | null }] | null,
+  "leadershipChanges": [{ "name": string, "role": string, "date": string | null }] | null,
+  "linkedinUrl": string | null,
+  "businessModel": string | null,
+  "geographicPresence": string[] | null,
+  "topCustomers": string[] | null
+}
+  
+RULES:
+- Make sure to return "," separated data in all string[] data types`;
+
+      const raw = await llmHelper.chatWithGemini(extractionPrompt, undefined, undefined, false);
+      if (!raw) return { success: false, error: 'LLM extraction failed' };
+
+      // Safely parse JSON — strip markdown fences if present
+      const clean = raw.replace(/```json|```/g, '').trim();
+      let intel: any;
+      try {
+        intel = JSON.parse(clean);
+      } catch {
+        // Try extracting first {...} block
+        const match = clean.match(/\{[\s\S]+\}/);
+        if (match) intel = JSON.parse(match[0]);
+        else return { success: false, error: 'Could not parse company intelligence' };
+      }
+
+      // Attach raw news snippets for the "Recent News" click-through
+      intel._newsSnippets = extract(newsResults).slice(0, 3).map((r: any) => ({
+        title: r.title,
+        url: r.url,
+        date: r.published_date || null,
+      }));
+
+      return { success: true, intel };
+    } catch (error: any) {
+      console.error('[IPC] fetch-company-intel error:', error);
+      return { success: false, error: error.message || 'Unknown error' };
+    }
+  });
+
+  // ==========================================
   // Follow-up Email Handlers
   // ==========================================
 
@@ -2807,4 +2921,3 @@ export function initializeIpcHandlers(appState: AppState): void {
     }
   });
 }
-

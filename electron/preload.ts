@@ -61,7 +61,7 @@ interface ElectronAPI {
   setGroqApiKey: (apiKey: string) => Promise<{ success: boolean; error?: string }>
   setOpenaiApiKey: (apiKey: string) => Promise<{ success: boolean; error?: string }>
   setClaudeApiKey: (apiKey: string) => Promise<{ success: boolean; error?: string }>
-  getStoredCredentials: () => Promise<{ hasGeminiKey: boolean; hasGroqKey: boolean; hasOpenaiKey: boolean; hasClaudeKey: boolean; googleServiceAccountPath: string | null; sttProvider: string; hasSttGroqKey: boolean; hasSttOpenaiKey: boolean; hasDeepgramKey: boolean; hasElevenLabsKey: boolean; hasAzureKey: boolean; azureRegion: string; hasIbmWatsonKey: boolean; ibmWatsonRegion: string; hasSonioxKey: boolean }>
+  getStoredCredentials: () => Promise<{ hasGeminiKey: boolean; hasGroqKey: boolean; hasOpenaiKey: boolean; hasClaudeKey: boolean; googleServiceAccountPath: string | null; sttProvider: string; hasSttGroqKey: boolean; hasSttOpenaiKey: boolean; hasDeepgramKey: boolean; hasElevenLabsKey: boolean; hasAzureKey: boolean; azureRegion: string; hasIbmWatsonKey: boolean; ibmWatsonRegion: string; hasSonioxKey: boolean; }>
 
   // STT Provider Management
   setSttProvider: (provider: 'google' | 'groq' | 'openai' | 'deepgram' | 'elevenlabs' | 'azure' | 'ibmwatson' | 'soniox') => Promise<{ success: boolean; error?: string }>
@@ -347,6 +347,9 @@ interface ElectronAPI {
     lastError?: string | null;
   }>;
   supabaseForceBackfill: () => Promise<{ success: boolean; error?: string }>;
+
+  // Company Intelligence
+  fetchCompanyIntel: (payload: { companyName: string; domain?: string }) => Promise<{ success: boolean; intel?: any; error?: string }>;
 
   // Platform
   platform: NodeJS.Platform;
@@ -1010,6 +1013,8 @@ contextBridge.exposeInMainWorld("electronAPI", {
     ipcRenderer.on('sales-brief-stream-error', sub);
     return () => { ipcRenderer.removeListener('sales-brief-stream-error', sub); };
   },
+  fetchCompanyIntel: (payload: { companyName: string; domain?: string }) =>
+    ipcRenderer.invoke('fetch-company-intel', payload),
 
   // Zoom Calendar
   zoomCalendarConnect: () => ipcRenderer.invoke('zoom-calendar-connect'),
