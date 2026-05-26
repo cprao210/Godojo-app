@@ -7,8 +7,6 @@ import { DatabaseManager } from "./db/DatabaseManager"; // Import Database Manag
 import * as path from "path";
 import * as fs from "fs";
 import { AudioDevices } from "./audio/AudioDevices";
-import { detectTavilyIntent, extractAllowedCompaniesFromAttendees } from "./services/TavilyIntentDetector";
-import { searchCompany, buildCompanyContextBlock, clearCompanyCache } from "./services/TavilyManager";
 
 
 import { RECOGNITION_LANGUAGES, AI_RESPONSE_LANGUAGES } from "./config/languages"
@@ -372,15 +370,6 @@ export function initializeIpcHandlers(appState: AppState): void {
   let _chatStreamId = 0;
   let _analysisStreamId = 0;
 
-  /**
-   * Per-session Tavily dedup cache for gemini-chat-stream.
-   * Key: lowercased entity name → in-flight or resolved Promise.
-   * Mirrors the tavilyCache on IntelligenceEngine so rapid duplicate chat
-   * messages never fire a second Tavily request for the same entity.
-   * Cleared when the intelligence session resets (see "reset-intelligence" handler).
-   */
-  let _tavilyAllowedCompanies: Set<string> = new Set();
-
   safeHandle("gemini-chat-stream", async (event, message: string, imagePaths?: string[], context?: string, options?: { skipSystemPrompt?: boolean }) => {
     try {
       console.log("[IPC] gemini-chat-stream started using LLMHelper.streamChat");
@@ -416,61 +405,6 @@ export function initializeIpcHandlers(appState: AppState): void {
       }
 
       try {
-        // ── Tavily enrichment ────────────────────────────────────────────────────
-        // Run intent detection synchronously (<1 ms). If the message is asking
-        // about an external company/product, fetch live data and append a compact
-        // context block BEFORE handing off to the LLM. Existing transcript context
-        // is preserved — Tavily data is only appended, never replacing it.
-        // Deduped per session: same entity within a session reuses the cached result.
-        try {
-          const intentResult = detectTavilyIntent(message, _tavilyAllowedCompanies);
-          if (intentResult.needsExternalSearch && intentResult.searchQuery && intentResult.entityName) {
-            event.sender.send('tavily-searching', { entity: intentResult.entityName });
-            const state = await searchCompany(intentResult.searchQuery, intentResult.entityName);
-            event.sender.send('tavily-search-done', { entity: intentResult.entityName, status: state.status, fromCache: state.data?.fromCache ?? false });
-            if ((state.status === 'success' || state.status === 'cached') && state.data) {
-              const companyBlock = buildCompanyContextBlock(state.data);
-              context = context ? `${context}\n\n${companyBlock}` : companyBlock;
-            } else {
-              console.warn(`[IPC] Tavily fallback for "${intentResult.entityName}": ${state.message}`);
-            }
-          } else {
-            console.log(`[IPC] Tavily skipped: ${intentResult.reason}`);
-          }
-        } catch (tavilyErr: any) {
-          // Never let Tavily failure block the response — log and continue
-          console.warn('[IPC] Tavily enrichment failed, proceeding without:', tavilyErr.message);
-        }
-        // ── End Tavily enrichment ────────────────────────────────────────────────
-
-        // ── Scope Guard ──────────────────────────────────────────────────────────
-        // Refuse questions unrelated to: meeting context, transcript, meeting brief,
-        // or inferred participant companies. If no meeting is active at all, block
-        // before the LLM is ever called.
-        const _scopeRefusal =
-          "I can only help with questions related to this meeting, the transcript, the meeting brief, or companies of the participants. This question is outside that scope.";
-
-        const _isInMeetingSession = _tavilyAllowedCompanies.size > 0 || (context && context.trim().length > 0);
-
-        if (!_isInMeetingSession) {
-          console.log("[IPC] Scope guard: no active meeting context, refusing general question.");
-          event.sender.send("gemini-stream-token", _scopeRefusal);
-          event.sender.send("gemini-stream-done");
-          return null;
-        }
-
-        // Inject inferred company names so the LLM knows the allowed scope
-        if (_tavilyAllowedCompanies.size > 0) {
-          const _companyList = [..._tavilyAllowedCompanies].join(", ");
-          const _participantNote =
-            "\n\n--- MEETING PARTICIPANTS (inferred companies from professional email domains) ---\n" +
-            `Companies represented in this meeting: ${_companyList}\n` +
-            "You may answer questions about these companies using any external context provided.\n" +
-            "--- END PARTICIPANT INFO ---";
-          context = context ? `${context}${_participantNote}` : _participantNote;
-        }
-        // ── End Scope Guard ──────────────────────────────────────────────────────
-
         // USE streamChat which handles routing
         const stream = llmHelper.streamChat(message, imagePaths, context, options?.skipSystemPrompt ? "" : undefined);
 
@@ -1626,12 +1560,6 @@ export function initializeIpcHandlers(appState: AppState): void {
   safeHandle("start-meeting", async (event, metadata?: any) => {
     try {
       await appState.startMeeting(metadata);
-      if (metadata?.attendees) {
-        const selfEmail = metadata.attendees.find((a: any) => a.self)?.email;
-        _tavilyAllowedCompanies = extractAllowedCompaniesFromAttendees(metadata.attendees, selfEmail);
-      } else {
-        _tavilyAllowedCompanies = new Set();
-      }
       return { success: true };
     } catch (error: any) {
       console.error("Error starting meeting:", error);
@@ -1984,9 +1912,6 @@ export function initializeIpcHandlers(appState: AppState): void {
     try {
       const intelligenceManager = appState.getIntelligenceManager();
       intelligenceManager.reset();
-      // Also clear the IPC-layer Tavily cache so a new session fetches fresh data
-      clearCompanyCache();
-      _tavilyAllowedCompanies = new Set();
       return { success: true };
     } catch (error: any) {
       return { success: false, error: error.message };
