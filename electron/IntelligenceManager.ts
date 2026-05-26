@@ -240,6 +240,23 @@ export class IntelligenceManager extends EventEmitter {
         return this.persistence.stopMeeting();
     }
 
+
+    /**
+     * Notify session tracker that the meeting is pausing.
+     * Starts accumulating paused time so it can be subtracted from total duration.
+     */
+    recordPauseStart(): void {
+        this.session.recordPauseStart();
+    }
+
+    /**
+     * Notify session tracker that the meeting is resuming.
+     * Closes the current paused interval.
+     */
+    recordPauseEnd(): void {
+        this.session.recordPauseEnd();
+    }
+
     async regenerateSummary(meetingId: string): Promise<boolean> {
         return this.persistence.regenerateSummary(meetingId);
     }

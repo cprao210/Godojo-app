@@ -165,7 +165,9 @@ export class MeetingPersistence {
         this.session.flushInterimTranscript();
 
         // 1. Snapshot valid data BEFORE resetting
-        const durationMs = Date.now() - this.session.getSessionStartTime();
+        // subtract accumulated pause time to get true active duration
+        const rawDurationMs = Date.now() - this.session.getSessionStartTime();
+        const durationMs = Math.max(0, rawDurationMs - this.session.getTotalPausedMs());
         if (durationMs < 1000) {
             console.log("Meeting too short, ignoring.");
             this.session.reset();

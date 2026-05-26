@@ -715,7 +715,7 @@ const MeetingDetails: React.FC<MeetingDetailsProps> = ({ meeting: initialMeeting
                                             transition={{ type: "spring", stiffness: 400, damping: 30 }}
                                         />
                                     )}
-                                    {tab === 'analysis' ? 'Call Analysis' : tab.charAt(0).toUpperCase() + tab.slice(1)}
+                                    {tab === 'analysis' ? 'Call Analysis' : tab === 'usage' ? 'Ask Dojo' : tab.charAt(0).toUpperCase() + tab.slice(1)}
                                 </button>
                             ))}
                         </div>
@@ -1306,8 +1306,41 @@ const MeetingDetails: React.FC<MeetingDetailsProps> = ({ meeting: initialMeeting
                                         </AnimatePresence>
                                     </div>
                                 )}
-                                <div className="overflow-hidden rounded-2xl border border-white/10 bg-white/5">
-                                    {/* Transcript Header */}
+
+                                <motion.section initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }}>
+                                    <div className="space-y-6">
+                                        {(() => {
+                                            const filteredTranscript = meeting.transcript?.filter(entry => {
+                                                const isHidden = ['system', 'ai', 'assistant', 'model'].includes(entry.speaker?.toLowerCase());
+                                                if (isHidden) console.log('Filtered out:', entry);
+                                                return !isHidden;
+                                            }) || [];
+
+                                            if (filteredTranscript.length === 0) {
+                                                return <p className="text-text-tertiary">No transcript available.</p>;
+                                            }
+
+                                            return filteredTranscript.map((entry, i) => (
+                                                <div key={i} className="group">
+                                                    <div className="flex items-center gap-2 mb-1">
+                                                        <span className={`text-xs font-semibold text-white ${entry.speaker === 'user'
+                                                            ? 'bg-blue-600'
+                                                            : 'bg-white/40'
+                                                            } px-2 py-1 rounded-full truncate max-w-[120px]`}>
+                                                            {getSpeakerDisplayName(
+                                                                entry.speaker,
+                                                                entry.displayName
+                                                            )}
+                                                        </span>
+                                                        <span className="text-xs text-text-tertiary font-mono">{entry.timestamp ? formatTime(entry.timestamp) : '0:00'}</span>
+                                                    </div>
+                                                    <p className="text-text-secondary text-[15px] leading-relaxed transition-colors select-text cursor-text">{entry.text}</p>
+                                                </div>
+                                            ));
+                                        })()}
+                                    </div>
+                                </motion.section>
+                                {/* <div className="overflow-hidden rounded-2xl border border-white/10 bg-white/5">
                                     <button
                                         onClick={() => setIsTranscriptOpen(prev => !prev)}
                                         className="flex w-full items-center justify-between px-4 py-3 transition-colors hover:bg-white/[0.03]"
@@ -1420,7 +1453,7 @@ const MeetingDetails: React.FC<MeetingDetailsProps> = ({ meeting: initialMeeting
                                             </motion.div>
                                         )}
                                     </AnimatePresence>
-                                </div>
+                                </div> */}
                             </motion.section>
                         )}
 
@@ -1509,7 +1542,7 @@ const MeetingDetails: React.FC<MeetingDetailsProps> = ({ meeting: initialMeeting
                                         )}
                                     </div>
                                 ))}
-                                {!meeting.usage?.length && <p className="text-text-tertiary">No usage history.</p>}
+                                {!meeting.usage?.length && <p className="text-text-tertiary">No history found.</p>}
                             </motion.section>
                         )}
 

@@ -252,7 +252,7 @@ const Launcher: React.FC<LauncherProps> = ({ onStartMeeting, onOpenSettings, onP
 
         return `Starts in ${hours}h ${minutes}m`;
     }
-    
+
     const extractNameFromEmail = (email: string): string => {
         if (!email) return 'Unknown';
         const prefix = email.split('@')[0];
@@ -607,7 +607,7 @@ const Launcher: React.FC<LauncherProps> = ({ onStartMeeting, onOpenSettings, onP
                                                     </svg>
                                                 )}
                                                 <span className="text-xs font-medium flex-1 transition-colors text-text-secondary">
-                                                    {isDetectable ? "Detectable" : "Undetectable"}
+                                                    {!isDetectable ? "Ghost Mode ON" : "Ghost Mode OFF"}
                                                 </span>
                                                 <div
                                                     className={`w-8 h-4 rounded-full relative transition-colors cursor-pointer ${!isDetectable ? 'bg-accent-primary' : 'bg-bg-toggle-switch'}`}
@@ -680,7 +680,7 @@ const Launcher: React.FC<LauncherProps> = ({ onStartMeeting, onOpenSettings, onP
                                                     ? 'inset 0 1px 1px rgba(255,255,255,0.7), inset 0 -1px 2px rgba(0,0,0,0.1), 0 2px 10px rgba(16,185,129,0.45), 0 0 0 1px rgba(255,255,255,0.15)'
                                                     : 'inset 0 1px 1px rgba(255,255,255,0.7), inset 0 -1px 2px rgba(0,0,0,0.1), 0 2px 10px rgba(14,165,233,0.4), 0 0 0 1px rgba(255,255,255,0.15)',
                                                 transition: 'box-shadow 0.5s ease-out',
-                                                    marginRight: "100px"
+                                                marginRight: "100px"
                                             }}
                                         >
                                             {/* Blue gradient layer (idle) */}
@@ -728,7 +728,7 @@ const Launcher: React.FC<LauncherProps> = ({ onStartMeeting, onOpenSettings, onP
                                                             className="flex items-center gap-3"
                                                         >
                                                             <img src={icon} alt="Logo" className="w-[18px] h-[18px] object-contain brightness-0 invert drop-shadow-[0_1px_2px_rgba(0,0,0,0.1)] opacity-90" />
-                                                            <span className="drop-shadow-[0_1px_1px_rgba(0,0,0,0.1)] text-[20px] leading-none">Start Natively</span>
+                                                            <span className="drop-shadow-[0_1px_1px_rgba(0,0,0,0.1)] text-[20px] leading-none">Start GoDojo</span>
                                                         </motion.div>
                                                     )}
                                                 </AnimatePresence>

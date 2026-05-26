@@ -63,6 +63,8 @@ export class SessionTracker {
     private fullTranscript: TranscriptSegment[] = [];
     private fullUsage: any[] = []; // UsageInteraction
     private sessionStartTime: number = Date.now();
+    private totalPausedMs: number = 0;       // cumulative ms spent paused this session
+    private pauseStartedAt: number | null = null;  // wall-clock time when current pause began
 
     // Rolling summarization: epoch summaries preserve early context when arrays are compacted
     private static readonly MAX_EPOCH_SUMMARIES = 5;
@@ -590,6 +592,35 @@ export class SessionTracker {
         return this.fullUsage;
     }
 
+    /**
+ * Called when the meeting is paused. Records the wall-clock start of the pause.
+ */
+    recordPauseStart(): void {
+        if (this.pauseStartedAt !== null) return; // already paused — ignore duplicate calls
+        this.pauseStartedAt = Date.now();
+    }
+
+    /**
+     * Called when the meeting resumes. Accumulates the paused interval into totalPausedMs.
+     */
+    recordPauseEnd(): void {
+        if (this.pauseStartedAt === null) return; // wasn't paused — ignore
+        this.totalPausedMs += Date.now() - this.pauseStartedAt;
+        this.pauseStartedAt = null;
+    }
+
+    /**
+     * Returns total ms spent paused during this session.
+     * Used by MeetingPersistence to compute actual active duration.
+     */
+    getTotalPausedMs(): number {
+        // If the meeting is being stopped while still paused, count that paused interval too.
+        if (this.pauseStartedAt !== null) {
+            return this.totalPausedMs + (Date.now() - this.pauseStartedAt);
+        }
+        return this.totalPausedMs;
+    }
+
     getSessionStartTime(): number {
         return this.sessionStartTime;
     }
@@ -650,6 +681,8 @@ export class SessionTracker {
         this.fullUsage = [];
         this.transcriptEpochSummaries = [];
         this.sessionStartTime = Date.now();
+        this.totalPausedMs = 0;
+        this.pauseStartedAt = null;
         this.lastAssistantMessage = null;
         this.assistantResponseHistory = [];
         this.lastInterimInterviewer = null;
@@ -658,6 +691,7 @@ export class SessionTracker {
         this.codingQuestionSetAt = null;
         this.recentInterviewerBuffer = [];
         this.speakerNameMap = { user: 'Me', interviewer: 'Them' };
+
     }
 
     // ============================================

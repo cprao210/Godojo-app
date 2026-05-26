@@ -1,9 +1,6 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
-import {
-    Brain, AlertCircle, Search, ShieldAlert, RefreshCw,
-    Lightbulb, ArrowRight, Zap, Copy, Check, RotateCcw
-} from 'lucide-react';
+import { Brain, ArrowRight, Copy, Check, RotateCcw } from 'lucide-react';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 
@@ -16,7 +13,7 @@ interface Message {
 }
 
 interface FloatingChatPanelProps {
-    transcriptRef: React.MutableRefObject<Array<{ speaker: string; displayName?: string; text: string; timestamp: number }>>;
+    transcriptRef?: React.MutableRefObject<Array<{ speaker: string; displayName?: string; text: string; timestamp: number }>>;
     rollingTranscript: string;
     isInterviewerSpeaking: boolean;
     showTranscript: boolean;
@@ -24,17 +21,10 @@ interface FloatingChatPanelProps {
     onSelectModel: (m: string) => void;
     speakerNames: { user: string; interviewer: string };
     // Lifted state — preserves history across panel switches
+    isMeetingPaused: boolean;
     messages: Message[];
     onMessagesChange: (updater: Message[] | ((prev: Message[]) => Message[])) => void;
 }
-
-const CHIP_ACTIONS = [
-    { id: 'missing', label: 'What am I missing?', icon: AlertCircle, intent: 'what_am_i_missing' },
-    { id: 'discovery', label: 'Discovery', icon: Search, intent: 'discovery' },
-    { id: 'objection', label: 'Objection', icon: ShieldAlert, intent: 'objection_handler' },
-    { id: 'recap', label: 'Recap', icon: RefreshCw, intent: 'recap' },
-    { id: 'brainstorm', label: 'Brainstorm', icon: Lightbulb, intent: 'brainstorm' },
-];
 
 const TypingDots: React.FC = () => (
     <div className="flex items-center gap-1 py-2">
@@ -149,9 +139,9 @@ const MessageBubble: React.FC<{ msg: Message }> = ({ msg }) => {
 };
 
 export const FloatingChatPanel: React.FC<FloatingChatPanelProps> = ({
-    transcriptRef,
     rollingTranscript,
     isInterviewerSpeaking,
+    isMeetingPaused,
     showTranscript,
     speakerNames,
     messages,
@@ -160,10 +150,8 @@ export const FloatingChatPanel: React.FC<FloatingChatPanelProps> = ({
     const setMessages = onMessagesChange;
     const [inputValue, setInputValue] = useState('');
     const [isProcessing, setIsProcessing] = useState(false);
-    const [isManualRecording, setIsManualRecording] = useState(false);
     const messagesEndRef = useRef<HTMLDivElement>(null);
     const inputRef = useRef<HTMLTextAreaElement>(null);
-    const isRecordingRef = useRef(false);
 
     // Auto-scroll
     useEffect(() => {
@@ -244,117 +232,8 @@ export const FloatingChatPanel: React.FC<FloatingChatPanelProps> = ({
             }));
         }
 
-        // ── Intelligence chip events (correct API names from electron.d.ts) ──
-
-        // What Am I Missing
-        if (window.electronAPI?.onWhatAmIMissingToken) {
-            cleanups.push(window.electronAPI.onWhatAmIMissingToken((data) => {
-                setMessages(prev => {
-                    const last = prev[prev.length - 1];
-                    if (last?.isStreaming && last.intent === 'what_am_i_missing') {
-                        const updated = [...prev];
-                        updated[prev.length - 1] = { ...last, text: last.text + data.token };
-                        return updated;
-                    }
-                    return [...prev, { id: Date.now().toString(), role: 'system', text: data.token, isStreaming: true, intent: 'what_am_i_missing' }];
-                });
-            }));
-        }
-        if (window.electronAPI?.onWhatAmIMissing) {
-            cleanups.push(window.electronAPI.onWhatAmIMissing((data) => {
-                setIsProcessing(false);
-                setMessages(prev => {
-                    const last = prev[prev.length - 1];
-                    if (last?.isStreaming && last.intent === 'what_am_i_missing') {
-                        return [...prev.slice(0, -1), { ...last, text: data.answer, isStreaming: false }];
-                    }
-                    return [...prev, { id: Date.now().toString(), role: 'system', text: data.answer, intent: 'what_am_i_missing' }];
-                });
-            }));
-        }
-
-        // Discovery
-        if (window.electronAPI?.onDiscoveryToken) {
-            cleanups.push(window.electronAPI.onDiscoveryToken((data) => {
-                setMessages(prev => {
-                    const last = prev[prev.length - 1];
-                    if (last?.isStreaming && last.intent === 'discovery') {
-                        const updated = [...prev];
-                        updated[prev.length - 1] = { ...last, text: last.text + data.token };
-                        return updated;
-                    }
-                    return [...prev, { id: Date.now().toString(), role: 'system', text: data.token, isStreaming: true, intent: 'discovery' }];
-                });
-            }));
-        }
-        if (window.electronAPI?.onDiscovery) {
-            cleanups.push(window.electronAPI.onDiscovery((data) => {
-                setIsProcessing(false);
-                setMessages(prev => {
-                    const last = prev[prev.length - 1];
-                    if (last?.isStreaming && last.intent === 'discovery') {
-                        return [...prev.slice(0, -1), { ...last, text: data.answer, isStreaming: false }];
-                    }
-                    return [...prev, { id: Date.now().toString(), role: 'system', text: data.answer, intent: 'discovery' }];
-                });
-            }));
-        }
-
-        // Objection Handler
-        if (window.electronAPI?.onObjectionHandlerToken) {
-            cleanups.push(window.electronAPI.onObjectionHandlerToken((data) => {
-                setMessages(prev => {
-                    const last = prev[prev.length - 1];
-                    if (last?.isStreaming && last.intent === 'objection_handler') {
-                        const updated = [...prev];
-                        updated[prev.length - 1] = { ...last, text: last.text + data.token };
-                        return updated;
-                    }
-                    return [...prev, { id: Date.now().toString(), role: 'system', text: data.token, isStreaming: true, intent: 'objection_handler' }];
-                });
-            }));
-        }
-        if (window.electronAPI?.onObjectionHandler) {
-            cleanups.push(window.electronAPI.onObjectionHandler((data) => {
-                setIsProcessing(false);
-                setMessages(prev => {
-                    const last = prev[prev.length - 1];
-                    if (last?.isStreaming && last.intent === 'objection_handler') {
-                        return [...prev.slice(0, -1), { ...last, text: data.answer, isStreaming: false }];
-                    }
-                    return [...prev, { id: Date.now().toString(), role: 'system', text: data.answer, intent: 'objection_handler' }];
-                });
-            }));
-        }
-
-        // Recap  (token: onIntelligenceRecapToken, final: onIntelligenceRecap)
-        if (window.electronAPI?.onIntelligenceRecapToken) {
-            cleanups.push(window.electronAPI.onIntelligenceRecapToken((data) => {
-                setMessages(prev => {
-                    const last = prev[prev.length - 1];
-                    if (last?.isStreaming && last.intent === 'recap') {
-                        const updated = [...prev];
-                        updated[prev.length - 1] = { ...last, text: last.text + data.token };
-                        return updated;
-                    }
-                    return [...prev, { id: Date.now().toString(), role: 'system', text: data.token, isStreaming: true, intent: 'recap' }];
-                });
-            }));
-        }
-        if (window.electronAPI?.onIntelligenceRecap) {
-            cleanups.push(window.electronAPI.onIntelligenceRecap((data) => {
-                setIsProcessing(false);
-                setMessages(prev => {
-                    const last = prev[prev.length - 1];
-                    if (last?.isStreaming && last.intent === 'recap') {
-                        return [...prev.slice(0, -1), { ...last, text: data.summary, isStreaming: false }];
-                    }
-                    return [...prev, { id: Date.now().toString(), role: 'system', text: data.summary, intent: 'recap' }];
-                });
-            }));
-        }
-
         return () => cleanups.forEach(fn => fn());
+
     }, []);
 
     const addUserMessage = (text: string) => {
@@ -389,55 +268,12 @@ export const FloatingChatPanel: React.FC<FloatingChatPanelProps> = ({
         }
     };
 
-    const handleChip = async (intent: string, label: string) => {
-        if (isProcessing) return;
-        setMessages(prev => [...prev, { id: Date.now().toString(), role: 'user', text: label }]);
-        // Placeholder streaming bubble
-        setMessages(prev => [...prev, { id: (Date.now() + 1).toString(), role: 'system', text: '', isStreaming: true, intent }]);
-        setIsProcessing(true);
-
-        try {
-            if (intent === 'what_am_i_missing') await window.electronAPI.generateWhatAmIMissing();
-            else if (intent === 'discovery') await window.electronAPI.generateDiscovery();
-            else if (intent === 'objection_handler') await window.electronAPI.generateObjectionHandler();
-            else if (intent === 'recap') await window.electronAPI.generateRecap();
-            else if (intent === 'brainstorm') await window.electronAPI.generateBrainstorm();
-        } catch (err) {
-            setIsProcessing(false);
-            setMessages(prev => {
-                const last = prev[prev.length - 1];
-                if (last?.isStreaming) {
-                    return [...prev.slice(0, -1), { id: Date.now().toString(), role: 'system', text: `❌ Error: ${err}` }];
-                }
-                return [...prev, { id: Date.now().toString(), role: 'system', text: `❌ Error: ${err}` }];
-            });
-        }
-    };
-
-    const handleAnswerNow = async () => {
-        if (isManualRecording) {
-            isRecordingRef.current = false;
-            setIsManualRecording(false);
-            try {
-                await window.electronAPI?.finalizeMicSTT?.();
-            } catch (err) {
-                console.error('[FloatingChatPanel] finalizeMicSTT error:', err);
-            }
-        } else {
-            isRecordingRef.current = true;
-            setIsManualRecording(true);
-            // Voice input is captured by the main STT pipeline; result streams back via Gemini events
-        }
-    };
-
     const handleKeyDown = (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
         if (e.key === 'Enter' && !e.shiftKey) {
             e.preventDefault();
             handleSend();
         }
     };
-
-    const recentTranscript = transcriptRef.current?.slice(-3) || [];
 
     return (
         <div
@@ -466,10 +302,10 @@ export const FloatingChatPanel: React.FC<FloatingChatPanelProps> = ({
                         <Brain size={17} className="text-violet-400" strokeWidth={1.8} />
                     </div>
                     <div>
-                        <div className="text-[13px] font-bold text-white tracking-wide uppercase">Live Chat Assistant</div>
+                        <div className="text-[13px] font-bold text-white tracking-wide uppercase">GoDojo Chat Assistant</div>
                         <div className="flex items-center gap-1.5 mt-0.5">
                             <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-pulse block" />
-                            <span className="text-[11px] text-emerald-400 font-medium">Listening and Analyzing...</span>
+                            <span className="text-[11px] text-emerald-400 font-medium">{isMeetingPaused ? "Paused" : "Listening and Analyzing..."}</span>
                         </div>
                     </div>
                 </div>
@@ -522,7 +358,7 @@ export const FloatingChatPanel: React.FC<FloatingChatPanelProps> = ({
                             <Brain size={22} className="text-violet-400/60" />
                         </div>
                         <p className="text-[12px] text-white/25 text-center max-w-[200px] leading-relaxed">
-                            Ask anything about the live call or use the action chips below
+                            Ask anything about the live call
                         </p>
                     </div>
                 ) : (
@@ -533,51 +369,6 @@ export const FloatingChatPanel: React.FC<FloatingChatPanelProps> = ({
                     </AnimatePresence>
                 )}
                 <div ref={messagesEndRef} />
-            </div>
-
-            {/* Quick Action Chips */}
-            <div
-                className="px-4 py-3 flex flex-wrap gap-1.5 shrink-0"
-                style={{ borderTop: '1px solid rgba(255,255,255,0.05)' }}
-            >
-                {CHIP_ACTIONS.map(chip => {
-                    const Icon = chip.icon;
-                    return (
-                        <motion.button
-                            key={chip.id}
-                            onClick={() => chip.id === 'answer' ? handleAnswerNow() : handleChip(chip.intent, chip.label)}
-                            whileHover={{ scale: 1.03 }}
-                            whileTap={{ scale: 0.95 }}
-                            disabled={isProcessing}
-                            className="flex items-center gap-1.5 px-3 py-1.5 rounded-full text-[11px] font-medium transition-colors"
-                            style={{
-                                background: 'rgba(255,255,255,0.05)',
-                                border: '1px solid rgba(255,255,255,0.08)',
-                                color: 'rgba(255,255,255,0.55)',
-                                opacity: isProcessing ? 0.5 : 1,
-                            }}
-                        >
-                            <Icon size={11} />
-                            {chip.label}
-                        </motion.button>
-                    );
-                })}
-                <motion.button
-                    onClick={handleAnswerNow}
-                    whileHover={{ scale: 1.03 }}
-                    whileTap={{ scale: 0.95 }}
-                    className="flex items-center gap-1.5 px-3 py-1.5 rounded-full text-[11px] font-medium transition-colors"
-                    style={{
-                        background: isManualRecording ? 'rgba(239,68,68,0.1)' : 'rgba(255,255,255,0.05)',
-                        border: isManualRecording ? '1px solid rgba(239,68,68,0.3)' : '1px solid rgba(255,255,255,0.08)',
-                        color: isManualRecording ? '#f87171' : 'rgba(255,255,255,0.55)',
-                    }}
-                >
-                    {isManualRecording
-                        ? <><div className="w-1.5 h-1.5 rounded-full bg-red-400 animate-pulse" /> Stop</>
-                        : <><Zap size={11} /> Answer</>
-                    }
-                </motion.button>
             </div>
 
             {/* Input Area */}
