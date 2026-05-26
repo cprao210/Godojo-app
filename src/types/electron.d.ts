@@ -296,6 +296,9 @@ export interface ElectronAPI {
   onRAGStreamComplete: (callback: (data: { meetingId?: string; global?: boolean }) => void) => () => void
   onRAGStreamError: (callback: (data: { meetingId?: string; global?: boolean; error: string }) => void) => () => void
 
+  onTavilySearching: (callback: (data: { entity: string }) => void) => () => void
+  onTavilySearchDone: (callback: (data: { entity: string | null; status: string; fromCache: boolean }) => void) => () => void
+
   // Donation API
   getDonationStatus: () => Promise<{ shouldShow: boolean; hasDonated: boolean; lifetimeShows: number }>;
   markDonationToastShown: () => Promise<{ success: boolean }>;

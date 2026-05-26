@@ -810,16 +810,16 @@ const Launcher: React.FC<LauncherProps> = ({ onStartMeeting, onOpenSettings, onP
 
                                                     {/* Actions */}
                                                     <div className="p-4 bg-bg-elevated/50 border-t border-border-subtle flex items-center gap-3">
-                                                        <button
+                                                        {/* <button
                                                             onClick={() => handlePrepare(nextMeeting)}
                                                             className={`flex-1 border px-4 py-2 rounded-lg text-xs font-medium transition-all flex items-center justify-center gap-2 ${isLight ? 'bg-bg-item-surface hover:bg-bg-item-active border-border-muted text-text-primary' : 'bg-white/10 hover:bg-white/20 border-white/10 text-white'}`}
                                                         >
                                                             <Zap size={13} className="text-yellow-400" />
                                                             Prepare
-                                                        </button>
+                                                        </button> */}
                                                         <button
                                                             onClick={() => setSalesBriefEvent(nextMeeting)}
-                                                            className={`px-4 py-2 rounded-lg text-xs font-medium transition-all flex items-center justify-center gap-2 border ${isLight ? 'bg-sky-50 hover:bg-sky-100 border-sky-200 text-sky-700' : 'bg-sky-500/10 hover:bg-sky-500/20 border-sky-500/20 text-sky-400'}`}
+                                                            className={`flex-1 px-4 py-2 rounded-lg text-xs font-medium transition-all flex items-center justify-center gap-2 border ${isLight ? 'bg-sky-50 hover:bg-sky-100 border-sky-200 text-sky-700' : 'bg-sky-500/10 hover:bg-sky-500/20 border-sky-500/20 text-sky-400'}`}
                                                             title="Generate AI Sales Brief"
                                                         >
                                                             <Briefcase size={13} />
