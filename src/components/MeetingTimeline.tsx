@@ -104,7 +104,6 @@ const MeetingTimeline: React.FC<MeetingTimelineProps> = ({
     events,
     selectedId,
     onSelect,
-    isLight,
 }) => {
     const scrollRef = useRef<HTMLDivElement>(null);
     const activeRef = useRef<HTMLButtonElement>(null);
