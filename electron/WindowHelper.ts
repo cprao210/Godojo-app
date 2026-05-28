@@ -44,6 +44,10 @@ export class WindowHelper {
     this.appState = appState
   }
 
+  public getContentProtection(): boolean {
+    return this.contentProtection;
+  }
+
   public setContentProtection(enable: boolean): void {
     this.contentProtection = enable
     this.applyContentProtection(enable)
@@ -207,6 +211,95 @@ export class WindowHelper {
 
     this.launcherWindow.webContents.on('did-fail-load', (event, errorCode, errorDescription) => {
       console.error(`[WindowHelper] did-fail-load: ${errorCode} ${errorDescription}`);
+    });
+
+    // Allow Firebase Google OAuth popup windows.
+    // signInWithPopup() asks Electron to open a new BrowserWindow for the
+    // accounts.google.com consent screen. Without this handler Electron
+    // silently blocks every new-window request, so the popup never appears
+    // and the sign-in call hangs / throws "popup-blocked".
+    this.launcherWindow.webContents.setWindowOpenHandler(({ url }) => {
+      // Parse the URL strictly — substring checks on raw strings can be
+      // bypassed by an attacker embedding the trusted hostname in a path or
+      // query string (e.g. `evil.com/accounts.google.com`).
+      let parsed: URL;
+      try {
+        parsed = new URL(url);
+      } catch {
+        // Unparseable URL — deny silently
+        return { action: 'deny' };
+      }
+
+      const { protocol, hostname, pathname } = parsed;
+
+      // Only https is ever allowed into an app-owned popup
+      const isHttps = protocol === 'https:';
+
+      const isGoogleAuth = isHttps && (
+        // Google's own consent screen
+        hostname === 'accounts.google.com' ||
+        // www.google.com only for the /accounts/... path family
+        (hostname === 'www.google.com' && pathname.startsWith('/accounts/')) ||
+        // Firebase auth relay — must be *.firebaseapp.com AND the /__/auth path
+        (hostname.endsWith('.firebaseapp.com') && pathname.startsWith('/__/auth')) ||
+        // Google OAuth2 token endpoint
+        (hostname === 'accounts.google.com' && pathname.startsWith('/o/oauth2'))
+      );
+
+      if (isGoogleAuth) {
+        // Center the popup on whichever display the launcher window is currently
+        // on. Without explicit x/y Electron defaults to the primary display
+        // (usually the laptop), so moving the app to an external monitor and
+        // clicking "Continue with Google" would open the popup on the wrong screen.
+        const popupWidth = 500;
+        const popupHeight = 650;
+
+        let popupX: number | undefined;
+        let popupY: number | undefined;
+
+        try {
+          const { screen } = require('electron');
+          const winBounds = this.launcherWindow?.getBounds();
+          if (winBounds) {
+            // Find the display that contains the centre of the launcher window
+            const winCenterX = winBounds.x + Math.floor(winBounds.width / 2);
+            const winCenterY = winBounds.y + Math.floor(winBounds.height / 2);
+            const currentDisplay = screen.getDisplayNearestPoint({ x: winCenterX, y: winCenterY });
+            const { workArea } = currentDisplay;
+            // Place popup in the centre of that display's work area
+            popupX = workArea.x + Math.floor((workArea.width - popupWidth) / 2);
+            popupY = workArea.y + Math.floor((workArea.height - popupHeight) / 2);
+          }
+        } catch (e) {
+          console.warn('[WindowHelper] Could not determine current display for auth popup:', e);
+        }
+
+        return {
+          action: 'allow',
+          overrideBrowserWindowOptions: {
+            width: popupWidth,
+            height: popupHeight,
+            ...(popupX !== undefined && popupY !== undefined ? { x: popupX, y: popupY } : {}),
+            webPreferences: {
+              nodeIntegration: false,
+              contextIsolation: true,
+              partition: 'persist:google-auth',
+            },
+            parent: this.launcherWindow ?? undefined,
+            modal: false,
+            autoHideMenuBar: true,
+          },
+        };
+      }
+
+      // For all other external links, open in the system browser.
+      // Only allow http/https — deny mailto, file, javascript, custom schemes etc.
+      if (isHttps || protocol === 'http:') {
+        require('electron').shell.openExternal(url);
+      } else {
+        console.warn('[WindowHelper] Blocked non-http(s) external URL:', url);
+      }
+      return { action: 'deny' };
     });
 
     // if (isDev) {

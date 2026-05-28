@@ -7,6 +7,8 @@ import { DatabaseManager } from "./db/DatabaseManager"; // Import Database Manag
 import * as path from "path";
 import * as fs from "fs";
 import { AudioDevices } from "./audio/AudioDevices";
+import { detectTavilyIntent, extractAllowedCompaniesFromAttendees } from "./services/TavilyIntentDetector";
+import { searchCompany, buildCompanyContextBlock, clearCompanyCache } from "./services/TavilyManager";
 
 
 import { RECOGNITION_LANGUAGES, AI_RESPONSE_LANGUAGES } from "./config/languages"
@@ -370,6 +372,15 @@ export function initializeIpcHandlers(appState: AppState): void {
   let _chatStreamId = 0;
   let _analysisStreamId = 0;
 
+  /**
+   * Per-session Tavily dedup cache for gemini-chat-stream.
+   * Key: lowercased entity name → in-flight or resolved Promise.
+   * Mirrors the tavilyCache on IntelligenceEngine so rapid duplicate chat
+   * messages never fire a second Tavily request for the same entity.
+   * Cleared when the intelligence session resets (see "reset-intelligence" handler).
+   */
+  let _tavilyAllowedCompanies: Set<string> = new Set();
+
   safeHandle("gemini-chat-stream", async (event, message: string, imagePaths?: string[], context?: string, options?: { skipSystemPrompt?: boolean }) => {
     try {
       console.log("[IPC] gemini-chat-stream started using LLMHelper.streamChat");
@@ -405,6 +416,61 @@ export function initializeIpcHandlers(appState: AppState): void {
       }
 
       try {
+        // ── Tavily enrichment ────────────────────────────────────────────────────
+        // Run intent detection synchronously (<1 ms). If the message is asking
+        // about an external company/product, fetch live data and append a compact
+        // context block BEFORE handing off to the LLM. Existing transcript context
+        // is preserved — Tavily data is only appended, never replacing it.
+        // Deduped per session: same entity within a session reuses the cached result.
+        try {
+          const intentResult = detectTavilyIntent(message, _tavilyAllowedCompanies);
+          if (intentResult.needsExternalSearch && intentResult.searchQuery && intentResult.entityName) {
+            event.sender.send('tavily-searching', { entity: intentResult.entityName });
+            const state = await searchCompany(intentResult.searchQuery, intentResult.entityName);
+            event.sender.send('tavily-search-done', { entity: intentResult.entityName, status: state.status, fromCache: state.data?.fromCache ?? false });
+            if ((state.status === 'success' || state.status === 'cached') && state.data) {
+              const companyBlock = buildCompanyContextBlock(state.data);
+              context = context ? `${context}\n\n${companyBlock}` : companyBlock;
+            } else {
+              console.warn(`[IPC] Tavily fallback for "${intentResult.entityName}": ${state.message}`);
+            }
+          } else {
+            console.log(`[IPC] Tavily skipped: ${intentResult.reason}`);
+          }
+        } catch (tavilyErr: any) {
+          // Never let Tavily failure block the response — log and continue
+          console.warn('[IPC] Tavily enrichment failed, proceeding without:', tavilyErr.message);
+        }
+        // ── End Tavily enrichment ────────────────────────────────────────────────
+
+        // ── Scope Guard ──────────────────────────────────────────────────────────
+        // Refuse questions unrelated to: meeting context, transcript, meeting brief,
+        // or inferred participant companies. If no meeting is active at all, block
+        // before the LLM is ever called.
+        const _scopeRefusal =
+          "I can only help with questions related to this meeting, the transcript, the meeting brief, or companies of the participants. This question is outside that scope.";
+
+        const _isInMeetingSession = _tavilyAllowedCompanies.size > 0 || (context && context.trim().length > 0);
+
+        if (!_isInMeetingSession) {
+          console.log("[IPC] Scope guard: no active meeting context, refusing general question.");
+          event.sender.send("gemini-stream-token", _scopeRefusal);
+          event.sender.send("gemini-stream-done");
+          return null;
+        }
+
+        // Inject inferred company names so the LLM knows the allowed scope
+        if (_tavilyAllowedCompanies.size > 0) {
+          const _companyList = [..._tavilyAllowedCompanies].join(", ");
+          const _participantNote =
+            "\n\n--- MEETING PARTICIPANTS (inferred companies from professional email domains) ---\n" +
+            `Companies represented in this meeting: ${_companyList}\n` +
+            "You may answer questions about these companies using any external context provided.\n" +
+            "--- END PARTICIPANT INFO ---";
+          context = context ? `${context}${_participantNote}` : _participantNote;
+        }
+        // ── End Scope Guard ──────────────────────────────────────────────────────
+
         // USE streamChat which handles routing
         const stream = llmHelper.streamChat(message, imagePaths, context, options?.skipSystemPrompt ? "" : undefined);
 
@@ -1560,6 +1626,12 @@ export function initializeIpcHandlers(appState: AppState): void {
   safeHandle("start-meeting", async (event, metadata?: any) => {
     try {
       await appState.startMeeting(metadata);
+      if (metadata?.attendees) {
+        const selfEmail = metadata.attendees.find((a: any) => a.self)?.email;
+        _tavilyAllowedCompanies = extractAllowedCompaniesFromAttendees(metadata.attendees, selfEmail);
+      } else {
+        _tavilyAllowedCompanies = new Set();
+      }
       return { success: true };
     } catch (error: any) {
       console.error("Error starting meeting:", error);
@@ -1912,6 +1984,9 @@ export function initializeIpcHandlers(appState: AppState): void {
     try {
       const intelligenceManager = appState.getIntelligenceManager();
       intelligenceManager.reset();
+      // Also clear the IPC-layer Tavily cache so a new session fetches fresh data
+      clearCompanyCache();
+      _tavilyAllowedCompanies = new Set();
       return { success: true };
     } catch (error: any) {
       return { success: false, error: error.message };
@@ -2111,6 +2186,163 @@ export function initializeIpcHandlers(appState: AppState): void {
       console.error('[IPC] Error streaming sales brief:', error);
       event.sender.send('sales-brief-stream-error', error.message || 'Unknown error');
       return { success: false, error: error.message };
+    }
+  });
+
+  // ==========================================
+  // Company Intelligence (Sales Brief v2)
+  // ==========================================
+
+  safeHandle("fetch-company-intel", async (_, payload: { companyName: string; domain?: string }) => {
+    try {
+      const { CredentialsManager } = require('./services/CredentialsManager');
+      const cm = CredentialsManager.getInstance();
+      const tavilyApiKey = cm.getTavilyApiKey();
+
+      if (!tavilyApiKey) {
+        return { success: false, error: 'No Tavily API key configured. Add one in Settings → AI Providers.' };
+      }
+
+      const { companyName, domain } = payload;
+      const companyQuery = domain ? `${companyName} site:${domain}` : companyName;
+
+      // Run parallel Tavily searches for different intel categories
+      const tavilySearch = async (query: string, maxResults = 3): Promise<any[]> => {
+        const res = await fetch('https://api.tavily.com/search', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${tavilyApiKey}` },
+          body: JSON.stringify({ query, max_results: maxResults, search_depth: 'basic', include_answer: true }),
+        });
+        if (!res.ok) throw new Error(`Tavily error: ${res.status}`);
+        const data = await res.json() as any;
+        return data.results || [];
+      };
+
+      const [overviewResults, fundingResults, newsResults, leadershipResults, competitorResults] = await Promise.allSettled([
+        tavilySearch(`${companyName} company overview founded headquarters employees industry`),
+        tavilySearch(`${companyName} funding valuation investors series revenue`),
+        tavilySearch(`${companyName} latest news announcements 2024 2025`, 4),
+        tavilySearch(`${companyName} leadership CEO CRO CMO executive changes`),
+        tavilySearch(`${companyName} competitors products customers clients`),
+      ]);
+
+      const extract = (r: PromiseSettledResult<any[]>) => r.status === 'fulfilled' ? r.value : [];
+
+      // Aggregate all snippets and pass to LLM for structured extraction
+      const allSnippets = [
+        ...extract(overviewResults).map((r: any) => r.content || r.snippet || ''),
+        ...extract(fundingResults).map((r: any) => r.content || r.snippet || ''),
+        ...extract(newsResults).map((r: any) => r.content || r.snippet || ''),
+        ...extract(leadershipResults).map((r: any) => r.content || r.snippet || ''),
+        ...extract(competitorResults).map((r: any) => r.content || r.snippet || ''),
+      ].filter(Boolean).join('\n\n---\n\n');
+
+      const llmHelper = appState.processingHelper.getLLMHelper();
+
+      const extractionPrompt = `You are a company research analyst. Extract structured company intelligence from the web search snippets below and return ONLY a valid JSON object. No markdown, no explanation.
+
+Company: ${companyName}${domain ? `\nWebsite: ${domain}` : ''}
+
+Web search snippets:
+${allSnippets.slice(0, 8000)}
+
+Return this exact JSON structure (use null for unknown fields, never omit a key):
+{
+  "companyName": string,
+  "website": string | null,
+  "foundedYear": number | null,
+  "companyAge": number | null,
+  "founders": string[] | null,
+  "headquarters": string | null,
+  "employeeCount": string | null,
+  "industry": string | null,
+  "revenue": string | null,
+  "valuation": string | null,
+  "fundingStage": string | null,
+  "latestFundingNews": string | null,
+  "investors": string[] | null,
+  "keyProducts": string[] | null,
+  "competitors": string[] | null,
+  "recentNews": [{ "headline": string, "date": string | null }] | null,
+  "leadershipChanges": [{ "name": string, "role": string, "date": string | null }] | null,
+  "linkedinUrl": string | null,
+  "businessModel": string | null,
+  "geographicPresence": string[] | null,
+  "topCustomers": string[] | null
+}
+
+RULES:
+- All string[] fields MUST be JSON arrays (e.g. ["Alice", "Bob"]), never comma-separated strings
+- Use null for any field you cannot determine from the snippets
+- Do not add keys beyond those listed above`;
+
+      const raw = await llmHelper.chatWithGemini(extractionPrompt, undefined, undefined, false);
+      if (!raw) return { success: false, error: 'LLM extraction failed' };
+
+      // Safely parse JSON — strip markdown fences if present
+      const clean = raw.replace(/```json|```/g, '').trim();
+      let intel: any;
+      try {
+        intel = JSON.parse(clean);
+      } catch {
+        // Try extracting first {...} block
+        const match = clean.match(/\{[\s\S]+\}/);
+        if (match) intel = JSON.parse(match[0]);
+        else return { success: false, error: 'Could not parse company intelligence' };
+      }
+
+      // Attach raw news snippets for the "Recent News" click-through
+      intel._newsSnippets = extract(newsResults).slice(0, 3).map((r: any) => ({
+        title: r.title,
+        url: r.url,
+        date: r.published_date || null,
+      }));
+
+      // Normalize string[] fields — the LLM occasionally returns a
+      // comma-separated string despite the prompt instruction.  Defensively
+      // coerce every known list field so the renderer never crashes on .map().
+      const LIST_FIELDS = [
+        'founders', 'investors', 'keyProducts', 'competitors',
+        'geographicPresence', 'topCustomers',
+      ] as const;
+
+      for (const field of LIST_FIELDS) {
+        const v = intel[field];
+        if (v === null || v === undefined) {
+          intel[field] = null;
+        } else if (Array.isArray(v)) {
+          // Filter nulls, trim whitespace
+          intel[field] = v
+            .filter((x: any) => typeof x === 'string' && x.trim())
+            .map((x: string) => x.trim());
+          if (intel[field].length === 0) intel[field] = null;
+        } else if (typeof v === 'string' && v.trim()) {
+          // Comma-separated fallback
+          intel[field] = v.split(',').map((s: string) => s.trim()).filter(Boolean);
+          if (intel[field].length === 0) intel[field] = null;
+        } else {
+          intel[field] = null;
+        }
+      }
+
+      // Validate object-array fields — ensure shape is correct or null them
+      if (intel.recentNews !== null && intel.recentNews !== undefined) {
+        if (!Array.isArray(intel.recentNews) ||
+          !intel.recentNews.every((n: any) => typeof n?.headline === 'string')) {
+          intel.recentNews = null;
+        }
+      }
+      if (intel.leadershipChanges !== null && intel.leadershipChanges !== undefined) {
+        if (!Array.isArray(intel.leadershipChanges) ||
+          !intel.leadershipChanges.every((n: any) => typeof n?.name === 'string' && typeof n?.role === 'string')) {
+          intel.leadershipChanges = null;
+        }
+      }
+
+      return { success: true, intel };
+    } catch (error: any) {
+      console.error('[IPC] fetch-company-intel error:', error);
+      return { success: false, error: error.message || 'Unknown error' };
     }
   });
 
@@ -2807,4 +3039,3 @@ export function initializeIpcHandlers(appState: AppState): void {
     }
   });
 }
-

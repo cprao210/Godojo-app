@@ -112,7 +112,20 @@ const App: React.FC = () => {
   // Overlay opacity — only meaningful when isOverlayWindow, but stored centrally
   // so it can be initialized once from localStorage and updated via IPC.
   const [overlayOpacity, setOverlayOpacity] = useState<number>(() => {
-    const stored = localStorage.getItem('natively_overlay_opacity');
+    const NEW_KEY = 'gd_dock_opacity';
+    const OLD_KEY = 'natively_overlay_opacity'; // key used before the rename
+
+    // Migration: if the new key is absent, try the old key and promote it.
+    let stored = localStorage.getItem(NEW_KEY);
+    if (stored === null) {
+      const legacy = localStorage.getItem(OLD_KEY);
+      if (legacy !== null) {
+        localStorage.setItem(NEW_KEY, legacy);
+        localStorage.removeItem(OLD_KEY); // clean up old key
+        stored = legacy;
+      }
+    }
+
     const parsed = stored ? parseFloat(stored) : NaN;
     // Treat missing value or the old default (0.65) as "not user-set"
     const isUserSet = Number.isFinite(parsed) && parsed !== OVERLAY_OPACITY_DEFAULT;
@@ -209,7 +222,7 @@ const App: React.FC = () => {
   useEffect(() => {
     if (!isOverlayWindow || !window.electronAPI?.onThemeChanged) return;
     return window.electronAPI.onThemeChanged(() => {
-      const stored = localStorage.getItem('natively_overlay_opacity');
+      const stored = localStorage.getItem('gd_dock_opacity');
       if (!stored) {
         setOverlayOpacity(getDefaultOverlayOpacity());
       }
@@ -375,176 +388,150 @@ const App: React.FC = () => {
           </QueryClientProvider>
         ) : (
           <>
-        <AnimatePresence>
-          {showStartup ? (
-            <motion.div
-              key="startup"
-              initial={{ opacity: 1 }}
-              exit={{ opacity: 0, scale: 1.1, pointerEvents: "none", transition: { duration: 0.6, ease: "easeInOut" } }}
-            >
-              <StartupSequence onComplete={() => setShowStartup(false)} />
-            </motion.div>
-          ) : (
-            <motion.div
-              key="main"
-              className="h-full w-full"
-              initial={{ opacity: 0, scale: 0.98, y: 15 }} // "Linear" style entry: slightly down and scaled down
-              animate={{ opacity: 1, scale: 1, y: 0 }}      // Slide up and snap to place
-              transition={{
-                duration: 0.8,
-                ease: [0.19, 1, 0.22, 1], // Expo-out: snappy start, smooth landing
-                delay: 0.1
-              }}
-            >
-              <QueryClientProvider client={queryClient}>
-                <ToastProvider>
-                  <div id="launcher-container" className="h-full w-full relative">
-                    <Launcher
-                      onStartMeeting={(event?: any) => handleStartMeeting(event)}
-                      onOpenSettings={(tab = 'general') => {
-                        setSettingsInitialTab(tab);
-                        setIsSettingsOpen(true);
-                      }}
-                      onPageChange={setIsLauncherMainView}
-                      ollamaPullStatus={ollamaPullStatus}
-                      ollamaPullPercent={ollamaPullPercent}
-                      ollamaPullMessage={ollamaPullMessage}
-                    />
+            <AnimatePresence>
+              {showStartup ? (
+                <motion.div
+                  key="startup"
+                  initial={{ opacity: 1 }}
+                  exit={{ opacity: 0, scale: 1.1, pointerEvents: "none", transition: { duration: 0.6, ease: "easeInOut" } }}
+                >
+                  <StartupSequence onComplete={() => setShowStartup(false)} />
+                </motion.div>
+              ) : (
+                <motion.div
+                  key="main"
+                  className="h-full w-full"
+                  initial={{ opacity: 0, scale: 0.98, y: 15 }} // "Linear" style entry: slightly down and scaled down
+                  animate={{ opacity: 1, scale: 1, y: 0 }}      // Slide up and snap to place
+                  transition={{
+                    duration: 0.8,
+                    ease: [0.19, 1, 0.22, 1], // Expo-out: snappy start, smooth landing
+                    delay: 0.1
+                  }}
+                >
+                  <QueryClientProvider client={queryClient}>
+                    <ToastProvider>
+                      <div id="launcher-container" className="h-full w-full relative">
+                        <Launcher
+                          onStartMeeting={(event?: any) => handleStartMeeting(event)}
+                          onOpenSettings={(tab = 'general') => {
+                            setSettingsInitialTab(tab);
+                            setIsSettingsOpen(true);
+                          }}
+                          onPageChange={setIsLauncherMainView}
+                          ollamaPullStatus={ollamaPullStatus}
+                          ollamaPullPercent={ollamaPullPercent}
+                          ollamaPullMessage={ollamaPullMessage}
+                          authUser={authUser}
+                          onSignOut={() => { void fbSignOut().catch((e) => console.warn('[App] sign-out failed:', e)); }}
+                        />
+                      </div>
+                      <SettingsOverlay
+                        isOpen={isSettingsOpen}
+                        onClose={() => {
+                          setIsSettingsOpen(false);
+                        }}
+                        initialTab={settingsInitialTab}
+                      />
+                      <ToastViewport />
+                    </ToastProvider>
+                  </QueryClientProvider>
+                </motion.div>
+              )}
+            </AnimatePresence>
+
+
+            <AnimatePresence>
+              {incompatibleWarning && isDefault && (
+                <motion.div
+                  initial={{ opacity: 0, y: 50, scale: 0.95 }}
+                  animate={{ opacity: 1, y: 0, scale: 1 }}
+                  exit={{ opacity: 0, scale: 0.95, y: 20 }}
+                  className="fixed bottom-6 right-6 z-50 pointer-events-auto"
+                >
+                  <div className="bg-[#1A1A1A] border border-[#ff3333]/30 shadow-2xl rounded-2xl p-5 max-w-[340px] flex flex-col gap-3">
+                    <div className="flex items-start gap-3">
+                      <AlertCircle className="w-5 h-5 text-[#ff3333] shrink-0 mt-0.5" />
+                      <div>
+                        <h3 className="text-[#E0E0E0] font-medium text-sm">Provider Changed</h3>
+                        <p className="text-[#A0A0A0] text-xs mt-1 leading-relaxed">
+                          ⚠ {incompatibleWarning.count} meetings used your previous AI provider ({incompatibleWarning.oldProvider}) and won't appear in search results under {incompatibleWarning.newProvider}.
+                        </p>
+                      </div>
+                    </div>
+                    <div className="flex gap-2 mt-1 justify-end">
+                      <button
+                        onClick={() => setIncompatibleWarning(null)}
+                        className="px-3 py-1.5 rounded-lg text-xs font-medium text-[#A0A0A0] hover:text-white hover:bg-white/5 transition-colors"
+                      >
+                        Dismiss
+                      </button>
+                      <button
+                        onClick={handleReindex}
+                        className="px-3 py-1.5 rounded-lg text-xs font-semibold bg-[#ff3333]/10 text-[#ff3333] hover:bg-[#ff3333]/20 transition-colors"
+                      >
+                        Re-index automatically
+                      </button>
+                    </div>
                   </div>
-                  <SettingsOverlay
-                    isOpen={isSettingsOpen}
-                    onClose={() => {
-                      setIsSettingsOpen(false);
-                    }}
-                    initialTab={settingsInitialTab}
-                  />
-                  <ToastViewport />
-                </ToastProvider>
-              </QueryClientProvider>
-            </motion.div>
-          )}
-        </AnimatePresence>
+                </motion.div>
+              )}
+            </AnimatePresence>
+
+            {/* <UpdateBanner /> */}
+            <SupportToaster />
 
 
-        <AnimatePresence>
-          {incompatibleWarning && isDefault && (
-            <motion.div
-              initial={{ opacity: 0, y: 50, scale: 0.95 }}
-              animate={{ opacity: 1, y: 0, scale: 1 }}
-              exit={{ opacity: 0, scale: 0.95, y: 20 }}
-              className="fixed bottom-6 right-6 z-50 pointer-events-auto"
-            >
-              <div className="bg-[#1A1A1A] border border-[#ff3333]/30 shadow-2xl rounded-2xl p-5 max-w-[340px] flex flex-col gap-3">
-                <div className="flex items-start gap-3">
-                  <AlertCircle className="w-5 h-5 text-[#ff3333] shrink-0 mt-0.5" />
-                  <div>
-                    <h3 className="text-[#E0E0E0] font-medium text-sm">Provider Changed</h3>
-                    <p className="text-[#A0A0A0] text-xs mt-1 leading-relaxed">
-                      ⚠ {incompatibleWarning.count} meetings used your previous AI provider ({incompatibleWarning.oldProvider}) and won't appear in search results under {incompatibleWarning.newProvider}.
-                    </p>
-                  </div>
-                </div>
-                <div className="flex gap-2 mt-1 justify-end">
-                  <button
-                    onClick={() => setIncompatibleWarning(null)}
-                    className="px-3 py-1.5 rounded-lg text-xs font-medium text-[#A0A0A0] hover:text-white hover:bg-white/5 transition-colors"
-                  >
-                    Dismiss
-                  </button>
-                  <button
-                    onClick={handleReindex}
-                    className="px-3 py-1.5 rounded-lg text-xs font-semibold bg-[#ff3333]/10 text-[#ff3333] hover:bg-[#ff3333]/20 transition-colors"
-                  >
-                    Re-index automatically
-                  </button>
-                </div>
-              </div>
-            </motion.div>
-          )}
-        </AnimatePresence>
+            {isLauncherMainView && !isSettingsOpen && (
+              <>
+                <ProfileFeatureToaster
+                  isOpen={activeAd === 'profile'}
+                  onDismiss={dismissAd}
+                  onSetupProfile={() => {
+                    setSettingsInitialTab('profile');
+                    setIsSettingsOpen(true);
+                  }}
+                />
+                <JDAwarenessToaster
+                  isOpen={activeAd === 'jd'}
+                  onDismiss={dismissAd}
+                  onSetupJD={() => {
+                    setSettingsInitialTab('profile');
+                    setIsSettingsOpen(true);
+                  }}
+                />
+                <PremiumPromoToaster
+                  isOpen={activeAd === 'promo'}
+                  onDismiss={dismissAd}
+                  onUpgrade={() => {
+                    setShowPremiumModal(true);
+                  }}
+                />
 
-        {/* <UpdateBanner /> */}
-        <SupportToaster />
+                {/* Remote Campaigns Render Logic */}
+                <RemoteCampaignToaster
+                  isOpen={typeof activeAd === 'object' && activeAd !== null}
+                  campaign={typeof activeAd === 'object' && activeAd !== null ? activeAd : undefined as any}
+                  onDismiss={dismissAd}
+                />
+              </>
+            )}
 
-        {/* Signed-in user pill — positioned just below the launcher's 40px
-            top header (z-[200]) so it isn't covered by the drag-region. Hidden
-            during startup / settings / non-main views so it doesn't clash with
-            overlays. The auth-state listener will null `authUser` after
-            signOut, automatically swapping the SignIn page back in. */}
-        {authUser && isLauncherMainView && !isSettingsOpen && !showStartup && (
-          <div className="fixed top-[48px] right-3 z-[300] pointer-events-auto">
-            <div className="flex items-center gap-2 rounded-full bg-[#1A1A1A]/90 backdrop-blur border border-white/10 px-3 py-1.5 shadow-lg">
-              <div className="flex flex-col leading-tight max-w-[180px]">
-                <span className="text-[11px] font-medium text-[#E0E0E0] truncate">
-                  {authUser.displayName || authUser.email?.split('@')[0] || 'Signed in'}
-                </span>
-                {authUser.email && (
-                  <span className="text-[10px] text-[#A0A0A0] truncate">{authUser.email}</span>
-                )}
-              </div>
-              <button
-                type="button"
-                onClick={() => {
-                  void fbSignOut().catch((e) => console.warn('[App] sign-out failed:', e));
-                }}
-                className="ml-1 rounded-full px-2.5 py-1 text-[10px] font-semibold uppercase tracking-wider text-[#A0A0A0] hover:text-white hover:bg-white/5 transition-colors"
-                title="Sign out"
-              >
-                Sign out
-              </button>
-            </div>
-          </div>
-        )}
-        {isLauncherMainView && !isSettingsOpen && (
-          <>
-            <ProfileFeatureToaster
-              isOpen={activeAd === 'profile'}
-              onDismiss={dismissAd}
-              onSetupProfile={() => {
-                setSettingsInitialTab('profile');
-                setIsSettingsOpen(true);
+            <PremiumUpgradeModal
+              isOpen={showPremiumModal}
+              onClose={() => setShowPremiumModal(false)}
+              isPremium={isPremiumActive}
+              onActivated={() => {
+                setIsPremiumActive(true);
+                setShowPremiumModal(false);
+                // After activation, open settings to Profile Intelligence
+                setTimeout(() => {
+                  setSettingsInitialTab('profile');
+                  setIsSettingsOpen(true);
+                }, 300);
               }}
+              onDeactivated={() => setIsPremiumActive(false)}
             />
-            <JDAwarenessToaster
-              isOpen={activeAd === 'jd'}
-              onDismiss={dismissAd}
-              onSetupJD={() => {
-                setSettingsInitialTab('profile');
-                setIsSettingsOpen(true);
-              }}
-            />
-            <PremiumPromoToaster
-              isOpen={activeAd === 'promo'}
-              onDismiss={dismissAd}
-              onUpgrade={() => {
-                setShowPremiumModal(true);
-              }}
-            />
-
-            {/* Remote Campaigns Render Logic */}
-            <RemoteCampaignToaster
-              isOpen={typeof activeAd === 'object' && activeAd !== null}
-              campaign={typeof activeAd === 'object' && activeAd !== null ? activeAd : undefined as any}
-              onDismiss={dismissAd}
-            />
-          </>
-        )}
-
-        <PremiumUpgradeModal
-          isOpen={showPremiumModal}
-          onClose={() => setShowPremiumModal(false)}
-          isPremium={isPremiumActive}
-          onActivated={() => {
-            setIsPremiumActive(true);
-            setShowPremiumModal(false);
-            // After activation, open settings to Profile Intelligence
-            setTimeout(() => {
-              setSettingsInitialTab('profile');
-              setIsSettingsOpen(true);
-            }, 300);
-          }}
-          onDeactivated={() => setIsPremiumActive(false)}
-        />
           </>
         )}
       </div>

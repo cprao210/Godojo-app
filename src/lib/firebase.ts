@@ -97,8 +97,28 @@ function installIdTokenBridge(auth: Auth): void {
 export async function signInWithGoogle(): Promise<User> {
     const auth = getFirebaseAuth();
     const provider = new GoogleAuthProvider();
-    const result = await signInWithPopup(auth, provider);
-    return result.user;
+
+    // Always show the account picker so users can switch accounts.
+    provider.setCustomParameters({ prompt: 'select_account' });
+
+    // Request profile + email scopes explicitly.
+    provider.addScope('profile');
+    provider.addScope('email');
+
+    try {
+        const result = await signInWithPopup(auth, provider);
+        return result.user;
+    } catch (err: any) {
+        // User closed the popup — not a real error.
+        if (err?.code === 'auth/popup-closed-by-user') {
+            throw new Error('Sign-in cancelled — the window was closed.');
+        }
+        // Popup was blocked by Electron (setWindowOpenHandler didn't allow it).
+        if (err?.code === 'auth/popup-blocked') {
+            throw new Error('Sign-in popup was blocked. Please try again.');
+        }
+        throw err;
+    }
 }
 
 export async function signInWithEmail(email: string, password: string): Promise<User> {

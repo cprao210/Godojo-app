@@ -1,236 +1,48 @@
-// import React, { useState, useEffect } from 'react';
-// import { ArrowRight, Loader, Check } from 'lucide-react';
-// import { motion } from 'framer-motion';
-
-// interface ConnectCalendarButtonProps extends React.ButtonHTMLAttributes<HTMLButtonElement> {
-//     variant?: 'default' | 'dark';
-//     onConnect?: () => void;
-// }
-
-// const ConnectCalendarButton: React.FC<ConnectCalendarButtonProps> = ({ className = '', variant = 'default', ...props }) => {
-//     const [loading, setLoading] = useState(false);
-//     const [connected, setConnected] = useState(false);
-
-//     useEffect(() => {
-//         if (window.electronAPI) {
-//             window.electronAPI.getCalendarStatus().then(status => {
-//                 setConnected(status.connected);
-//                 if (status.connected) {
-//                     props.onConnect?.();
-//                 }
-//             });
-//         }
-//     }, []);
-
-//     const handleClick = async (e: React.MouseEvent<HTMLButtonElement>) => {
-//         if (props.onClick) props.onClick(e);
-//         if (connected) return; // For now no disconnect here
-
-//         setLoading(true);
-//         try {
-//             const res = await window.electronAPI.calendarConnect();
-//             if (res.success) {
-//                 setConnected(true);
-//                 props.onConnect?.();
-//                 // Track calendar connection
-//                 import('../../lib/analytics/analytics.service').then(({ analytics }) => {
-//                     analytics.trackCalendarConnected();
-//                 });
-//             }
-//         } catch (err) {
-//             console.error(err);
-//         } finally {
-//             setLoading(false);
-//         }
-//     };
-
-//     if (connected) {
-//         return (
-//             <motion.div
-//                 initial={{ opacity: 0, scale: 0.95, y: 2 }}
-//                 animate={{ opacity: 1, scale: 1, y: 0 }}
-//                 transition={{ duration: 0.4, ease: "easeOut" }}
-//                 className={`
-//                     relative
-//                     flex items-center gap-2.5
-//                     pl-4 pr-5 py-2
-//                     rounded-full
-//                     text-[13px] font-medium
-//                     overflow-hidden
-//                     select-none
-//                     ${className}
-//                 `}
-//                 style={{
-//                     // Ultra Premium "Gemstone Glass"
-//                     background: 'linear-gradient(135deg, rgba(255, 255, 255, 0.12) 0%, rgba(255, 255, 255, 0.05) 50%, rgba(255, 255, 255, 0.02) 100%)',
-//                     backdropFilter: 'blur(16px)',
-//                     WebkitBackdropFilter: 'blur(16px)',
-//                     boxShadow: `
-//                         0 8px 32px -4px rgba(139, 92, 246, 0.25),   // Deep soft violet dispersion
-//                         0 2px 8px -1px rgba(124, 58, 237, 0.3),     // Closer intense glow
-//                         inset 0 1px 0 0 rgba(255, 255, 255, 0.4),   // Sharp top rim reflection
-//                         inset 0 -2px 1px 0 rgba(109, 40, 217, 0.15) // Deep bottom refractions
-//                     `,
-//                 }}
-//             >
-//                 {/* 1. Iridescent Aurora Border (Animated) */}
-//                 <motion.div
-//                     className="absolute inset-0 rounded-full opacity-60 pointer-events-none"
-//                     animate={{
-//                         background: [
-//                             'radial-gradient(circle at 0% 0%, rgba(216, 180, 254, 0.3), transparent 60%)',
-//                             'radial-gradient(circle at 100% 100%, rgba(216, 180, 254, 0.3), transparent 60%)',
-//                             'radial-gradient(circle at 0% 0%, rgba(216, 180, 254, 0.3), transparent 60%)',
-//                         ]
-//                     }}
-//                     transition={{
-//                         duration: 6,
-//                         repeat: Infinity,
-//                         ease: "linear"
-//                     }}
-//                 />
-
-//                 {/* 2. Crystalline Noise Texture (Subtle Grain for realism) */}
-//                 <div
-//                     className="absolute inset-0 rounded-full opacity-10 pointer-events-none"
-//                     style={{
-//                         backgroundImage: `url("data:image/svg+xml,%3Csvg viewBox='0 0 200 200' xmlns='http://www.w3.org/2000/svg'%3E%3Cfilter id='noiseFilter'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.8' numOctaves='3' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23noiseFilter)'/%3E%3C/svg%3E")`,
-//                         mixBlendMode: 'overlay',
-//                     }}
-//                 />
-
-//                 {/* 3. Slow Elegant Shimmer */}
-//                 <div className="absolute inset-0 overflow-hidden rounded-full pointer-events-none">
-//                     <motion.div
-//                         animate={{
-//                             x: ['-200%', '200%'],
-//                         }}
-//                         transition={{
-//                             duration: 4,
-//                             repeat: Infinity,
-//                             repeatDelay: 3,
-//                             ease: "easeInOut"
-//                         }}
-//                         className="absolute inset-y-0 w-1/2 bg-gradient-to-r from-transparent via-white/10 to-transparent skew-x-12 blur-md"
-//                     />
-//                 </div>
-
-//                 <span className="relative z-10 flex items-center gap-3 pl-0.5">
-//                     {/* Icon: Simple Polished Circle */}
-//                     <div className="
-//                         relative flex items-center justify-center w-[20px] h-[20px] rounded-full 
-//                         bg-violet-600 shadow-sm ring-1 ring-white/20
-//                     ">
-//                         <Check size={12} className="text-white" strokeWidth={4} />
-//                     </div>
-
-//                     {/* Text: High-End Typography */}
-//                     <span className="text-[13px] font-medium tracking-wide text-white flex flex-col leading-none gap-0.5" style={{ textShadow: '0 1px 2px rgba(0,0,0,0.1)' }}>
-//                         <span className="font-semibold text-white/95">Calendar Connected</span>
-//                     </span>
-//                 </span>
-//             </motion.div>
-//         );
-//     }
-
-//     return (
-//         <button
-//             onClick={handleClick}
-//             disabled={loading}
-//             className={`
-//                 group relative
-//                 flex items-center gap-2.5
-//                 pl-4 pr-5 py-2
-//                 rounded-full
-//                 text-[13px] font-medium
-//                 transition-all duration-300 ease-out
-//                 hover:brightness-125
-//                 active:scale-[0.98]
-//                 overflow-hidden
-//                 ${loading ? 'opacity-80 cursor-wait' : ''}
-//                 ${className}
-//             `}
-//             style={{
-//                 // Base Fill: Dark Purple
-//                 backgroundColor: 'rgba(60, 20, 80, 0.4)',
-//                 // Blur: Backdrop filter 12-16px
-//                 backdropFilter: 'blur(14px)',
-//                 WebkitBackdropFilter: 'blur(14px)',
-//                 // Text Color
-//                 color: '#F4F6FA',
-//             }}
-//             {...props}
-//         >
-//             {/* Gradient Border */}
-//             <div
-//                 className="absolute inset-0 rounded-full pointer-events-none transition-opacity duration-300 group-hover:opacity-80"
-//                 style={{
-//                     padding: '1px',
-//                     background: 'linear-gradient(to right, #6EA8FF, #8B7CFF)',
-//                     WebkitMask: 'linear-gradient(#fff 0 0) content-box, linear-gradient(#fff 0 0)',
-//                     WebkitMaskComposite: 'xor',
-//                     maskComposite: 'exclude',
-//                     opacity: 0.5, // 40-60% opacity
-//                 }}
-//             />
-
-//             {/* Inner Highlight (Top Edge) */}
-//             <div
-//                 className="absolute inset-0 rounded-full pointer-events-none"
-//                 style={{
-//                     boxShadow: 'inset 0 1px 0 0 rgba(255, 255, 255, 0.08)',
-//                 }}
-//             />
-
-//             {/* Content */}
-//             <span className="relative z-10 flex items-center gap-2.5 font-semibold">
-//                 {loading ? (
-//                     <Loader size={14} className="animate-spin" />
-//                 ) : (
-//                     <svg width="15" height="15" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg" className="opacity-90">
-//                         <path d="M23.52 12.212c0-.848-.076-1.654-.216-2.428H12v4.594h6.473c-.28 1.503-1.12 2.775-2.38 3.619v3.01h3.84c2.247-2.07 3.54-5.118 3.54-8.795z" fill="white" />
-//                         <path d="M12 24c3.24 0 5.957-1.074 7.942-2.906l-3.84-3.01c-1.078.722-2.454 1.15-4.102 1.15-3.124 0-5.77-2.112-6.72-4.954H1.322v3.106C3.38 21.442 7.378 24 12 24z" fill="white" />
-//                         <path d="M5.28 14.28A7.276 7.276 0 0 1 4.908 12c0-.8.14-1.57.387-2.28V6.613H1.322A11.968 11.968 0 0 0 0 12c0 1.943.468 3.774 1.322 5.387l3.96-3.107z" fill="white" />
-//                         <path d="M12 4.75c1.764 0 3.345.607 4.588 1.795l3.433-3.434C17.95 1.258 15.234 0 12 0 7.378 0 3.378 2.558 1.322 6.613l3.957 3.107c.95-2.842 3.595-4.97 6.72-4.97z" fill="white" />
-//                     </svg>
-//                 )}
-
-//                 {loading ? 'Connecting...' : 'Connect calendar'}
-
-//                 {!loading && (
-//                     <ArrowRight
-//                         size={13}
-//                         className="transition-transform group-hover:translate-x-0.5"
-//                         style={{ color: 'rgba(244, 246, 250, 0.9)' }} // Slightly brighter/matching text
-//                     />
-//                 )}
-//             </span>
-//         </button>
-//     );
-// };
-
-// export default ConnectCalendarButton;
-
-
 import React, { useState, useEffect, useRef } from 'react';
+import ReactDOM from 'react-dom';
 import { BiLogoZoom } from "react-icons/bi";
 import { SiGooglecalendar } from "react-icons/si";
-import { Loader, Check, ChevronDown, X } from 'lucide-react';
+import { Loader, Check, CalendarDays } from 'lucide-react';
+import { useResolvedTheme } from '../../hooks/useResolvedTheme';
 
 type Provider = 'google' | 'zoom';
 
-const PROVIDERS = [
-    { id: 'google' as Provider, label: 'Google Calendar', Icon: SiGooglecalendar },
-    { id: 'zoom' as Provider, label: 'Zoom', Icon: BiLogoZoom },
-];
+const PROVIDERS: {
+    id: Provider;
+    label: string;
+    subtitle: string;
+    Icon: React.ElementType;
+    iconBg: string;
+    iconColor: string;
+}[] = [
+        {
+            id: 'google',
+            label: 'Google Calendar',
+            subtitle: 'Connect your Google account',
+            Icon: SiGooglecalendar,
+            iconBg: 'bg-white',
+            iconColor: 'text-yellow-500',
+        },
+        {
+            id: 'zoom',
+            label: 'Zoom',
+            subtitle: 'Connect your Zoom account',
+            Icon: BiLogoZoom,
+            iconBg: 'bg-[#2D8CFF]',
+            iconColor: 'text-white',
+        },
+    ];
 
-const ConnectCalendarButton: React.FC<{ onConnect?: () => void; className?: string }> = ({
-    onConnect,
-    className = '',
-}) => {
+const ConnectCalendarButton: React.FC<{
+    onConnect?: () => void;
+    className?: string;
+}> = ({ onConnect, className = '' }) => {
+    const isLight = useResolvedTheme() === 'light';
+
     const [loading, setLoading] = useState<Provider | null>(null);
     const [connected, setConnected] = useState<Record<Provider, boolean>>({
-        google: false, zoom: false,
+        google: false,
+        zoom: false,
     });
     const [showPicker, setShowPicker] = useState(false);
     const [dropdownPos, setDropdownPos] = useState({ top: 0, left: 0, width: 0 });
@@ -277,7 +89,7 @@ const ConnectCalendarButton: React.FC<{ onConnect?: () => void; className?: stri
         };
     }, [showPicker]);
 
-    // ── Recalculate on scroll/resize while open ───────────────────────────────
+    // ── Recalculate position on scroll / resize while open ────────────────────
     useEffect(() => {
         if (!showPicker) return;
         const update = () => recalcPosition(mainButtonRef.current || addButtonRef.current);
@@ -295,7 +107,7 @@ const ConnectCalendarButton: React.FC<{ onConnect?: () => void; className?: stri
         setDropdownPos({
             top: rect.bottom + 8,
             left: rect.left,
-            width: Math.max(rect.width, 200),
+            width: Math.max(rect.width, 240),
         });
     };
 
@@ -313,9 +125,9 @@ const ConnectCalendarButton: React.FC<{ onConnect?: () => void; className?: stri
         setShowPicker(false);
         setLoading(provider);
         try {
-            let res;
-            if (provider === 'google') res = await window.electronAPI.calendarConnect();
-            else res = await window.electronAPI.zoomCalendarConnect();
+            const res = provider === 'google'
+                ? await window.electronAPI.calendarConnect()
+                : await window.electronAPI.zoomCalendarConnect();
 
             if (res?.success) {
                 setConnected(prev => ({ ...prev, [provider]: true }));
@@ -332,61 +144,134 @@ const ConnectCalendarButton: React.FC<{ onConnect?: () => void; className?: stri
     const connectedList = PROVIDERS.filter(p => connected[p.id]);
     const unconnectedList = PROVIDERS.filter(p => !connected[p.id]);
 
-    // ── Dropdown — uses fixed positioning to escape any parent overflow ───────
-    // This renders outside the card/container entirely, anchored to viewport coords
-    const Dropdown = ({ items }: { items: typeof PROVIDERS }) => (
-        <div
-            ref={dropdownRef}
-            style={{
-                position: 'fixed',
-                top: dropdownPos.top,
-                left: dropdownPos.left,
-                minWidth: dropdownPos.width,
-                zIndex: 99999,
-                animation: 'calDropdownIn 0.15s ease-out forwards',
-            }}
-            className="bg-neutral-900 border border-white/10 rounded-xl shadow-2xl p-1"
-        >
-            {items.map(p => (
-                <button
-                    key={p.id}
-                    onClick={() => handleConnect(p.id)}
-                    disabled={!!loading}
-                    className="flex items-center gap-3 w-full cursor-pointer px-3 py-2.5 text-sm text-white/80 hover:bg-white/10 rounded-lg transition-colors disabled:opacity-50 disabled:cursor-wait"
-                >
-                    <div><p.Icon /></div>
-                    <div>{p.label}</div>
-                    {loading === p.id && <Loader size={12} className="ml-auto animate-spin" />}
-                </button>
-            ))}
-        </div>
-    );
+    // ── Shared floating dropdown ──────────────────────────────────────────────
+    const Dropdown = ({ items }: { items: typeof PROVIDERS }) => {
+        const dropdownContent = (
+            <div
+                ref={dropdownRef}
+                style={{
+                    position: 'fixed',
+                    top: dropdownPos.top,
+                    left: dropdownPos.left,
+                    minWidth: dropdownPos.width,
+                    zIndex: 99999,
+                    // Light: clean white card with slate border
+                    // Dark: deep purple-tinted dark as before
+                    background: isLight
+                        ? 'var(--bg-elevated)'
+                        : 'linear-gradient(180deg, #14102a 0%, #0e0a1e 100%)',
+                    animation: 'calDropdownIn 0.18s cubic-bezier(0.22,1,0.36,1) forwards',
+                }}
+                className={[
+                    'overflow-hidden rounded-xl',
+                    isLight
+                        ? 'shadow-[0_8px_32px_-4px_rgba(0,0,0,0.12),0_0_0_1px_rgba(0,0,0,0.07)]'
+                        : 'shadow-[0_24px_48px_-8px_rgba(0,0,0,0.7),0_0_0_1px_rgba(99,60,255,0.25)]',
+                ].join(' ')}
+            >
+                {items.map((p, i) => (
+                    <React.Fragment key={p.id}>
+                        <button
+                            onClick={() => handleConnect(p.id)}
+                            disabled={!!loading}
+                            className={[
+                                'w-full flex items-center gap-3 px-4 py-3.5 transition-colors disabled:opacity-50 disabled:cursor-wait text-left',
+                                isLight ? 'hover:bg-bg-item-surface' : 'hover:bg-white/[0.06]',
+                            ].join(' ')}
+                        >
+                            {/* Provider icon */}
+                            <span className={[
+                                "flex h-9 w-9 shrink-0 items-center justify-center rounded-lg text-[18px]",
+                                p.iconBg,
+                                p.iconColor,
+                            ].join(" ")}>
+                                <p.Icon />
+                            </span>
+
+                            {/* Title + subtitle */}
+                            <span className="flex flex-col min-w-0">
+                                <span className={[
+                                    'text-[13px] font-semibold leading-tight',
+                                    isLight ? 'text-text-primary' : 'text-white',
+                                ].join(' ')}>
+                                    {p.label}
+                                </span>
+                                <span className={[
+                                    'text-[11px] mt-0.5',
+                                    isLight ? 'text-text-secondary' : 'text-text-tertiary',
+                                ].join(' ')}>
+                                    {p.subtitle}
+                                </span>
+                            </span>
+
+                            {/* Loading indicator */}
+                            {loading === p.id && (
+                                <Loader size={13} className="ml-auto shrink-0 animate-spin text-blue-500" />
+                            )}
+
+                            {/* Connected check */}
+                            {connected[p.id] && (
+                                <Check size={13} className="ml-auto shrink-0 text-emerald-500" strokeWidth={2.5} />
+                            )}
+                        </button>
+
+                        {/* Row divider */}
+                        {i < items.length - 1 && (
+                            <div className="mx-4 border-t border-border-subtle" />
+                        )}
+                    </React.Fragment>
+                ))}
+            </div>
+        );
+        return ReactDOM.createPortal(dropdownContent, document.body);
+    };
 
     // ── Connected state ───────────────────────────────────────────────────────
     if (anyConnected) {
         return (
             <>
-                <div className={`relative flex items-center gap-2 ${className}`}>
-                    {connectedList.map(p => (
-                        <span
-                            key={p.id}
-                            className="flex items-center gap-1.5 text-xs text-white/80 bg-white/10 rounded-full px-3 py-1.5"
-                        >
-                            <Check size={11} className="text-violet-400" strokeWidth={3} />
-                            {p.label}
-                        </span>
-                    ))}
+                <div className={`flex flex-col gap-2 ${className}`}>
+                    {/* Connected pills */}
+                    <div className="flex flex-wrap gap-2">
+                        {connectedList.map(p => (
+                            <span
+                                key={p.id}
+                                className={[
+                                    'flex items-center gap-1.5 text-[11px] font-medium rounded-full px-3 py-1 border',
+                                    isLight
+                                        ? 'text-emerald-700 bg-emerald-50 border-emerald-200'
+                                        : 'text-emerald-300 bg-emerald-500/10 border-emerald-500/20',
+                                ].join(' ')}
+                            >
+                                <Check size={10} strokeWidth={3} />
+                                {p.label}
+                            </span>
+                        ))}
+                    </div>
 
+                    {/* Add more button — only when some providers still unconnected */}
                     {unconnectedList.length > 0 && (
                         <button
                             ref={addButtonRef}
                             onClick={() => togglePicker(addButtonRef)}
-                            className={`text-xs transition-colors px-2 py-1 rounded-full ${showPicker
-                                ? 'text-white/90 bg-white/10'
-                                : 'text-white/50 hover:text-white/80 hover:bg-white/5'
-                                }`}
+                            className={[
+                                "w-full h-9 flex items-center justify-center gap-2 rounded-xl",
+                                "text-[12px] font-medium transition-all duration-200",
+                                isLight
+                                    ? [
+                                        'border border-border-muted text-text-secondary',
+                                        'hover:border-border-muted hover:text-text-primary hover:bg-bg-item-surface',
+                                        showPicker ? 'bg-bg-item-surface text-text-primary border-border-muted' : '',
+                                    ].join(' ')
+                                    : [
+                                        'border border-border-subtle text-text-tertiary',
+                                        'hover:border-border-muted hover:text-white hover:bg-bg-item-surface',
+                                        showPicker ? 'bg-bg-item-surface text-white border-border-muted' : '',
+                                    ].join(' '),
+                            ].join(" ")}
                         >
-                            {showPicker ? <X size={12} /> : '+ Add'}
+                            <CalendarDays size={13} strokeWidth={2} />
+                            Add another account
                         </button>
                     )}
                 </div>
@@ -395,8 +280,8 @@ const ConnectCalendarButton: React.FC<{ onConnect?: () => void; className?: stri
 
                 <style>{`
                     @keyframes calDropdownIn {
-                        from { opacity: 0; transform: translateY(-6px) scale(0.97); }
-                        to   { opacity: 1; transform: translateY(0px)  scale(1); }
+                        from { opacity: 0; transform: translateY(-8px) scale(0.96); }
+                        to   { opacity: 1; transform: translateY(0)     scale(1);    }
                     }
                 `}</style>
             </>
@@ -410,41 +295,44 @@ const ConnectCalendarButton: React.FC<{ onConnect?: () => void; className?: stri
                 ref={mainButtonRef}
                 onClick={() => togglePicker(mainButtonRef)}
                 disabled={!!loading}
-                className={`
-                    group relative flex items-center gap-2.5 pl-4 pr-5 py-2
-                    rounded-full text-[13px] font-medium
-                    transition-all duration-300 hover:brightness-125 active:scale-[0.98]
-                    overflow-hidden
-                    ${loading ? 'opacity-80 cursor-wait' : ''}
-                    ${className}
-                `}
-                style={{
-                    backgroundColor: 'rgba(60, 20, 80, 0.4)',
-                    backdropFilter: 'blur(14px)',
-                    color: '#F4F6FA',
-                }}
+                className={[
+                    "group relative w-full h-11 flex items-center justify-center gap-2 overflow-hidden",
+                    "rounded-xl text-[13px] font-semibold",
+                    "transition-all duration-200 active:scale-[0.98]",
+                    loading ? "opacity-70 cursor-wait" : "",
+                    isLight ? "text-white hover:brightness-105" : "text-white hover:brightness-110",
+                    className,
+                ].join(" ")}
+                style={
+                    isLight
+                        ? {
+                            // Light mode: cleaner, slightly less neon — confident blue-to-indigo
+                            background: 'linear-gradient(135deg, #3b82f6 0%, #6366f1 100%)',
+                            boxShadow: '0 4px 16px -4px rgba(99,102,241,0.45)',
+                        }
+                        : {
+                            background: 'linear-gradient(135deg, #3b5bfc 0%, #6d28d9 100%)',
+                            boxShadow: '0 8px 24px -6px rgba(99,60,255,0.55)',
+                        }
+                }
             >
-                {/* Gradient border */}
-                <div
-                    className="absolute inset-0 rounded-full pointer-events-none"
-                    style={{
-                        padding: '1px',
-                        background: 'linear-gradient(to right, #6EA8FF, #8B7CFF)',
-                        WebkitMask: 'linear-gradient(#fff 0 0) content-box, linear-gradient(#fff 0 0)',
-                        WebkitMaskComposite: 'xor',
-                        maskComposite: 'exclude',
-                        opacity: 0.5,
-                    }}
+                {/* Top gloss highlight — kept in both modes, softer in light */}
+                <span
+                    aria-hidden
+                    className={[
+                        'absolute inset-x-0 top-0 h-1/2 bg-gradient-to-b to-transparent pointer-events-none',
+                        isLight ? 'from-white/15' : 'from-white/20',
+                    ].join(' ')}
                 />
-                <span className="relative z-10 flex items-center gap-2.5 font-semibold">
-                    {loading && <Loader size={14} className="animate-spin" />}
-                    {loading ? 'Connecting...' : 'Connect calendar'}
-                    {!loading && (
-                        <ChevronDown
-                            size={13}
-                            className={`transition-transform duration-200 ${showPicker ? 'rotate-180' : ''}`}
-                        />
-                    )}
+
+                {loading ? (
+                    <Loader size={14} className="relative z-10 animate-spin" />
+                ) : (
+                    <CalendarDays size={14} strokeWidth={2.2} className="relative z-10" />
+                )}
+
+                <span className="relative z-10">
+                    {loading ? 'Connecting...' : 'Connect Calendar'}
                 </span>
             </button>
 
@@ -452,8 +340,8 @@ const ConnectCalendarButton: React.FC<{ onConnect?: () => void; className?: stri
 
             <style>{`
                 @keyframes calDropdownIn {
-                    from { opacity: 0; transform: translateY(-6px) scale(0.97); }
-                    to   { opacity: 1; transform: translateY(0px)  scale(1); }
+                    from { opacity: 0; transform: translateY(-8px) scale(0.96); }
+                    to   { opacity: 1; transform: translateY(0)     scale(1);    }
                 }
             `}</style>
         </>

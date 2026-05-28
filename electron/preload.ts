@@ -61,7 +61,7 @@ interface ElectronAPI {
   setGroqApiKey: (apiKey: string) => Promise<{ success: boolean; error?: string }>
   setOpenaiApiKey: (apiKey: string) => Promise<{ success: boolean; error?: string }>
   setClaudeApiKey: (apiKey: string) => Promise<{ success: boolean; error?: string }>
-  getStoredCredentials: () => Promise<{ hasGeminiKey: boolean; hasGroqKey: boolean; hasOpenaiKey: boolean; hasClaudeKey: boolean; googleServiceAccountPath: string | null; sttProvider: string; hasSttGroqKey: boolean; hasSttOpenaiKey: boolean; hasDeepgramKey: boolean; hasElevenLabsKey: boolean; hasAzureKey: boolean; azureRegion: string; hasIbmWatsonKey: boolean; ibmWatsonRegion: string; hasSonioxKey: boolean }>
+  getStoredCredentials: () => Promise<{ hasGeminiKey: boolean; hasGroqKey: boolean; hasOpenaiKey: boolean; hasClaudeKey: boolean; googleServiceAccountPath: string | null; sttProvider: string; hasSttGroqKey: boolean; hasSttOpenaiKey: boolean; hasDeepgramKey: boolean; hasElevenLabsKey: boolean; hasAzureKey: boolean; azureRegion: string; hasIbmWatsonKey: boolean; ibmWatsonRegion: string; hasSonioxKey: boolean; }>
 
   // STT Provider Management
   setSttProvider: (provider: 'google' | 'groq' | 'openai' | 'deepgram' | 'elevenlabs' | 'azure' | 'ibmwatson' | 'soniox') => Promise<{ success: boolean; error?: string }>
@@ -265,6 +265,9 @@ interface ElectronAPI {
   onRAGStreamComplete: (callback: (data: { meetingId?: string; global?: boolean }) => void) => () => void
   onRAGStreamError: (callback: (data: { meetingId?: string; global?: boolean; error: string }) => void) => () => void
 
+  onTavilySearching: (callback: (data: { entity: string }) => void) => () => void
+  onTavilySearchDone: (callback: (data: { entity: string | null; status: string; fromCache: boolean }) => void) => () => void
+
   // Keybind Management
   getKeybinds: () => Promise<Array<{ id: string; label: string; accelerator: string; isGlobal: boolean; defaultAccelerator: string }>>
   setKeybind: (id: string, accelerator: string) => Promise<boolean>
@@ -347,6 +350,9 @@ interface ElectronAPI {
     lastError?: string | null;
   }>;
   supabaseForceBackfill: () => Promise<{ success: boolean; error?: string }>;
+
+  // Company Intelligence
+  fetchCompanyIntel: (payload: { companyName: string; domain?: string }) => Promise<{ success: boolean; intel?: any; error?: string }>;
 
   // Platform
   platform: NodeJS.Platform;
@@ -1010,6 +1016,8 @@ contextBridge.exposeInMainWorld("electronAPI", {
     ipcRenderer.on('sales-brief-stream-error', sub);
     return () => { ipcRenderer.removeListener('sales-brief-stream-error', sub); };
   },
+  fetchCompanyIntel: (payload: { companyName: string; domain?: string }) =>
+    ipcRenderer.invoke('fetch-company-intel', payload),
 
   // Zoom Calendar
   zoomCalendarConnect: () => ipcRenderer.invoke('zoom-calendar-connect'),
@@ -1141,6 +1149,17 @@ contextBridge.exposeInMainWorld("electronAPI", {
     return () => {
       ipcRenderer.removeListener('rag:stream-error', subscription)
     }
+  },
+
+  onTavilySearching: (callback) => {
+    const subscription = (_: any, data: any) => callback(data);
+    ipcRenderer.on('tavily-searching', subscription);
+    return () => ipcRenderer.removeListener('tavily-searching', subscription);
+  },
+  onTavilySearchDone: (callback) => {
+    const subscription = (_: any, data: any) => callback(data);
+    ipcRenderer.on('tavily-search-done', subscription);
+    return () => ipcRenderer.removeListener('tavily-search-done', subscription);
   },
 
   // Keybind Management

@@ -1,6 +1,6 @@
 import React, { useState, useRef, useEffect } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
-import { Radio, Brain, Hand, EyeOff, Pause, Play, StopCircle, Settings, GripVertical, Ghost } from 'lucide-react';
+import { Radio, Brain, Hand, Pause, Play, StopCircle, Settings, GripVertical, Ghost } from 'lucide-react';
 import { FloatingIntelligencePanel } from './panels/FloatingIntelligencePanel';
 import { FloatingChatPanel } from './panels/FloatingChatPanel';
 import { FloatingSettingsPanel } from './panels/FloatingSettingsPanel';
@@ -31,13 +31,8 @@ interface FloatingDockProps {
     speakerNames: { user: string; interviewer: string };
 
     // Settings
-    isMousePassthrough: boolean;
-    onToggleMousePassthrough: () => void;
-    // shortcuts: ShortcutConfig{ screenshot?: string[]; toggleOverlay?: string[] };
     shortcuts: ShortcutConfig;
 
-    meetingTitle?: string;
-    appearance?: any;
     overlayPanelClass?: string;
 }
 
@@ -64,14 +59,39 @@ export const FloatingDock: React.FC<FloatingDockProps> = ({
     currentModel,
     onSelectModel,
     speakerNames,
-    isMousePassthrough,
-    onToggleMousePassthrough,
     shortcuts,
-    meetingTitle,
     overlayPanelClass
 }) => {
     const [activePanel, setActivePanel] = useState<ActivePanel>(null);
     const [isFrozen, setIsFrozen] = useState(false);
+    // Dock + panel transparency — persisted to localStorage
+    const OPACITY_KEY = 'gd_dock_opacity';
+    const clampOpacity = (v: number) => Math.min(1, Math.max(0.35, v));
+
+    const [dockOpacity, setDockOpacity] = useState<number>(() => {
+        const stored = localStorage.getItem(OPACITY_KEY);
+        const parsed = stored ? parseFloat(stored) : NaN;
+        return Number.isFinite(parsed) ? clampOpacity(parsed) : 0.88;
+    });
+
+    useEffect(() => {
+        const onStorage = (e: StorageEvent) => {
+            if (e.key === OPACITY_KEY && e.newValue) {
+                const parsed = parseFloat(e.newValue);
+                if (Number.isFinite(parsed)) setDockOpacity(clampOpacity(parsed));
+            }
+        };
+        window.addEventListener('storage', onStorage);
+        return () => window.removeEventListener('storage', onStorage);
+    }, []);
+
+    const handleDockOpacityChange = (val: number) => {
+        const clamped = clampOpacity(val);
+        setDockOpacity(clamped);
+        localStorage.setItem(OPACITY_KEY, String(clamped));
+        window.dispatchEvent(new StorageEvent('storage', { key: OPACITY_KEY, newValue: String(clamped) }));
+        window.electronAPI?.setOverlayOpacity?.(clamped);
+    };
     // const dragControls = useDragControls();
     const constraintsRef = useRef<HTMLDivElement>(null);
 
@@ -120,7 +140,7 @@ export const FloatingDock: React.FC<FloatingDockProps> = ({
             <motion.div
                 ref={constraintsRef}
                 className={`relative w-[480px] mx-auto h-fit bg-transparent max-w-full rounded-2xl items-center flex flex-col min-h-0 ${overlayPanelClass}`}
-                style={{ height: '640px' }}
+                style={{ height: '720px' }}
             >
 
                 {/* Overlay Panel (above dock) */}
@@ -129,7 +149,7 @@ export const FloatingDock: React.FC<FloatingDockProps> = ({
                         <motion.div
                             key={activePanel}
                             initial={{ opacity: 0, y: 20, scale: 0.96 }}
-                            animate={{ opacity: 1, y: 0, scale: 1 }}
+                            animate={{ opacity: dockOpacity, y: 0, scale: 1 }}
                             exit={{ opacity: 0, y: 12, scale: 0.97 }}
                             transition={{ type: 'spring', damping: 28, stiffness: 380, mass: 0.8 }}
                             className="fixed bottom-[90px] left-[65px]"
@@ -149,7 +169,6 @@ export const FloatingDock: React.FC<FloatingDockProps> = ({
                             {activePanel === 'intelligence' && (
                                 <FloatingIntelligencePanel
                                     transcriptRef={transcriptRef}
-                                    meetingTitle={meetingTitle}
                                     isMeetingPaused={isMeetingPaused}
                                     analysisData={analysisData}
                                     showTranscript={showTranscript}
@@ -178,13 +197,11 @@ export const FloatingDock: React.FC<FloatingDockProps> = ({
                                 <FloatingSettingsPanel
                                     showTranscript={showTranscript}
                                     onToggleTranscript={onToggleTranscript}
-                                    isMousePassthrough={isMousePassthrough}
-                                    onToggleMousePassthrough={onToggleMousePassthrough}
-                                    isUndetectable={isUndetectable}
-                                    onToggleGhost={onToggleGhost}
                                     shortcuts={shortcuts}
                                     currentModel={currentModel}
                                     onSelectModel={onSelectModel}
+                                    dockOpacity={dockOpacity}
+                                    onDockOpacityChange={handleDockOpacityChange}
                                 />
                             )}
                         </motion.div>
@@ -202,11 +219,11 @@ export const FloatingDock: React.FC<FloatingDockProps> = ({
                     <motion.div
                         className={`flex items-center gap-1 px-3 py-3 rounded-2xl relative select-none draggable-area`}
                         style={{
-                            background: 'rgba(18, 22, 34, 0.88)',
+                            background: `rgba(18, 22, 34, ${dockOpacity})`,
                             backdropFilter: 'blur(24px) saturate(180%)',
                             WebkitBackdropFilter: 'blur(24px) saturate(180%)',
                             border: '1px solid rgba(255,255,255,0.09)',
-                            boxShadow: '0 8px 40px rgba(0,0,0,0.55), 0 2px 8px rgba(0,0,0,0.3), inset 0 1px 0 rgba(255,255,255,0.06)',
+                            boxShadow: 'inset 0 1px 0 rgba(255,255,255,0.06)',
                             width: 420,
                         }}
                     >
