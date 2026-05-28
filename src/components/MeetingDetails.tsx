@@ -1,6 +1,6 @@
-import React, { act, useEffect, useMemo, useState } from 'react';
+import React, { useEffect, useMemo, useState } from 'react';
 import { useResolvedTheme } from '../hooks/useResolvedTheme';
-import { ArrowLeft, Search, Mail, Link, ChevronDown, BarChart3, Play, ArrowUp, Copy, Check, MoreHorizontal, Settings, ArrowRight, TrendingUp, TriangleAlert, MessageSquare, MessagesSquareIcon, ChartColumnIncreasing, CircleCheck, NotepadText, TableOfContents, RefreshCcw, Loader2, RefreshCw, Shield, NotebookPen, ClipboardList } from 'lucide-react';
+import { Mail, ChevronDown, BarChart3, ArrowUp, Copy, Check, TrendingUp, TriangleAlert, MessageSquare, MessagesSquareIcon, ChartColumnIncreasing, CircleCheck, NotepadText, RefreshCcw, RefreshCw, NotebookPen, ClipboardList } from 'lucide-react';
 import { motion, AnimatePresence } from 'framer-motion';
 import MeetingChatOverlay from './MeetingChatOverlay';
 import EditableTextBlock from './EditableTextBlock';
@@ -12,17 +12,10 @@ import { vscDarkPlus } from 'react-syntax-highlighter/dist/esm/styles/prism';
 import FollowUpEmailModal from './FollowUpEmailModal';
 import { LiveAnalysisContent } from './LiveAnalysisContent';
 import { LiveAnalysisData } from '../types/liveAnalysis';
-import { FaCircleHalfStroke } from "react-icons/fa6";
 
 const formatTime = (ms: number) => {
     const date = new Date(ms);
     return date.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }).toLowerCase();
-};
-
-const formatDuration = (ms: number) => {
-    const minutes = Math.floor(ms / 60000);
-    const seconds = ((ms % 60000) / 1000).toFixed(0);
-    return `${minutes}:${Number(seconds) < 10 ? '0' : ''}${seconds}`;
 };
 
 const cleanMarkdown = (content: string) => {
@@ -30,11 +23,6 @@ const cleanMarkdown = (content: string) => {
     // Ensure code blocks are on new lines to fix rendering issues
     return content.replace(/([^\n])```/g, '$1\n\n```');
 };
-
-// email: a.email,
-// name: a.displayName || a.email!.split('@')[0] || undefined,
-// organizer: a.organizer || false,
-// self: a.self || false,
 
 interface Meeting {
     id: string;
@@ -130,11 +118,7 @@ interface Message {
     isStreaming?: boolean;
 }
 
-interface MeetingDetailsProps {
-    meeting: Meeting;
-    onBack: () => void;
-    onOpenSettings: () => void;
-}
+interface MeetingDetailsProps { meeting: Meeting; }
 
 // Skeleton pulse component
 const Skeleton: React.FC<{ className?: string }> = ({ className = '' }) => (

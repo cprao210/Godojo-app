@@ -1,6 +1,6 @@
 import React, { useState, useRef, useEffect } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
-import { Radio, Brain, Hand, EyeOff, Pause, Play, StopCircle, Settings, GripVertical, Ghost } from 'lucide-react';
+import { Radio, Brain, Hand, Pause, Play, StopCircle, Settings, GripVertical, Ghost } from 'lucide-react';
 import { FloatingIntelligencePanel } from './panels/FloatingIntelligencePanel';
 import { FloatingChatPanel } from './panels/FloatingChatPanel';
 import { FloatingSettingsPanel } from './panels/FloatingSettingsPanel';
@@ -31,13 +31,8 @@ interface FloatingDockProps {
     speakerNames: { user: string; interviewer: string };
 
     // Settings
-    isMousePassthrough: boolean;
-    onToggleMousePassthrough: () => void;
-    // shortcuts: ShortcutConfig{ screenshot?: string[]; toggleOverlay?: string[] };
     shortcuts: ShortcutConfig;
 
-    meetingTitle?: string;
-    appearance?: any;
     overlayPanelClass?: string;
 }
 
@@ -64,10 +59,7 @@ export const FloatingDock: React.FC<FloatingDockProps> = ({
     currentModel,
     onSelectModel,
     speakerNames,
-    isMousePassthrough,
-    onToggleMousePassthrough,
     shortcuts,
-    meetingTitle,
     overlayPanelClass
 }) => {
     const [activePanel, setActivePanel] = useState<ActivePanel>(null);
@@ -177,7 +169,6 @@ export const FloatingDock: React.FC<FloatingDockProps> = ({
                             {activePanel === 'intelligence' && (
                                 <FloatingIntelligencePanel
                                     transcriptRef={transcriptRef}
-                                    meetingTitle={meetingTitle}
                                     isMeetingPaused={isMeetingPaused}
                                     analysisData={analysisData}
                                     showTranscript={showTranscript}
@@ -206,10 +197,6 @@ export const FloatingDock: React.FC<FloatingDockProps> = ({
                                 <FloatingSettingsPanel
                                     showTranscript={showTranscript}
                                     onToggleTranscript={onToggleTranscript}
-                                    isMousePassthrough={isMousePassthrough}
-                                    onToggleMousePassthrough={onToggleMousePassthrough}
-                                    isUndetectable={isUndetectable}
-                                    onToggleGhost={onToggleGhost}
                                     shortcuts={shortcuts}
                                     currentModel={currentModel}
                                     onSelectModel={onSelectModel}

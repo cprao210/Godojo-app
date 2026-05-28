@@ -123,10 +123,6 @@ if (typeof document !== 'undefined' && !document.getElementById(SLIDER_STYLE_ID)
 interface FloatingSettingsPanelProps {
     showTranscript: boolean;
     onToggleTranscript: (v: boolean) => void;
-    isMousePassthrough: boolean;
-    onToggleMousePassthrough: () => void;
-    isUndetectable: boolean;
-    onToggleGhost: () => void;
     shortcuts: ShortcutConfig;
     currentModel: string;
     onSelectModel: (m: string) => void;
@@ -209,7 +205,7 @@ export const FloatingSettingsPanel: React.FC<FloatingSettingsPanelProps> = ({
                             <Cpu size={18} strokeWidth={1.8} />
                         </span>
                         <span className="text-[13px] tracking-widest uppercase font-semibold" style={{ color: 'rgba(255,255,255,0.45)' }}>
-                            Chat AI Model
+                            Active Model
                         </span>
                     </div>
                     <div className="pl-[30px]">

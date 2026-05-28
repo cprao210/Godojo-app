@@ -52,7 +52,6 @@ interface NextMeetingCardProps {
     getMeetingStartText: (startTime: string) => string;
     onStart: (meeting?: any) => void;
     onSalesBrief: (meeting: any) => void;
-    onPrepare: (meeting: any) => void;
 }
 
 // ─────────────────────────────────────────────────────────────────
@@ -523,7 +522,6 @@ const NextMeetingCard: React.FC<NextMeetingCardProps> = ({
     getMeetingStartText,
     onStart,
     onSalesBrief,
-    // onPrepare,
 }) => {
     return (
         <AnimatePresence mode="wait">

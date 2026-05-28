@@ -37,7 +37,6 @@ const AUTO_REFRESH_OPTIONS = [
 
 interface FloatingIntelligencePanelProps {
     transcriptRef: React.MutableRefObject<Array<{ speaker: string; displayName?: string; text: string; timestamp: number }>>;
-    meetingTitle?: string;
     isMeetingPaused: boolean;
     // Analysis state is owned by FloatingDock and passed down — never lost on remount
     analysisData: LiveAnalysisData | null;

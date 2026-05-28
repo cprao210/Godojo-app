@@ -86,8 +86,6 @@ const Launcher: React.FC<LauncherProps> = ({ onStartMeeting, onOpenSettings, onP
     const [isMeetingActive, setIsMeetingActive] = useState(false);
     const [selectedMeeting, setSelectedMeeting] = useState<Meeting | null>(null);
     const [upcomingEvents, setUpcomingEvents] = useState<any[]>([]);
-    const [isPrepared, setIsPrepared] = useState(false);
-    const [preparedEvent, setPreparedEvent] = useState<any>(null);
     const [isCalendarConnected, setIsCalendarConnected] = useState(false);
     const [isRefreshing, setIsRefreshing] = useState(false);
     const [showNotification, setShowNotification] = useState(false);
@@ -254,57 +252,6 @@ const Launcher: React.FC<LauncherProps> = ({ onStartMeeting, onOpenSettings, onP
         return `Starts in ${hours}h ${minutes}m`;
     }
 
-    const extractNameFromEmail = (email: string): string => {
-        if (!email) return 'Unknown';
-        const prefix = email.split('@')[0];
-        const parts = prefix.split(/[._\-+]/);
-        return parts
-            .map(part => part.charAt(0).toUpperCase() + part.slice(1).toLowerCase())
-            .join(' ');
-    };
-
-    const handlePrepare = (event: any) => {
-        // Enrich event with better attendee information
-        const enrichedEvent = {
-            ...event,
-            attendees: (event.attendees || []).map((a: any) => ({
-                ...a,
-                // Ensure display name is properly set
-                displayName: a.displayName || a.name || extractNameFromEmail(a.email),
-                self: a.self || a.email === (window as any).currentUserEmail, // Need to track current user
-            }))
-        };
-        setPreparedEvent(enrichedEvent);
-        setIsPrepared(true);
-    };
-
-    const handleStartPreparedMeeting = async () => {
-        if (!preparedEvent) return;
-        analytics.trackCommandExecuted('start_prepared_meeting');
-        try {
-            const inputDeviceId = localStorage.getItem('preferredInputDeviceId');
-            const outputDeviceId = localStorage.getItem('preferredOutputDeviceId');
-
-            // Ensure attendees have proper names
-            const attendeesWithNames = (preparedEvent.attendees || []).map((a: any) => ({
-                ...a,
-                name: a.displayName || a.name || extractNameFromEmail(a.email),
-            }));
-
-            await window.electronAPI.startMeeting({
-                title: preparedEvent.title,
-                calendarEventId: preparedEvent.id,
-                source: 'calendar',
-                attendees: attendeesWithNames,
-                organizer: preparedEvent.organizer || '',
-                audio: { inputDeviceId, outputDeviceId }
-            });
-            setIsPrepared(false);
-        } catch (e) {
-            console.error("Failed to start prepared meeting", e);
-        }
-    };
-
     if (!window.electronAPI) {
         return <div className="text-white p-10">Error: Electron API not initialized. Check preload script.</div>;
     }
@@ -315,26 +262,6 @@ const Launcher: React.FC<LauncherProps> = ({ onStartMeeting, onOpenSettings, onP
         window.electronAPI?.setUndetectable(!newState); // Note: setUndetectable takes the *undetectable* state, which is inverse of *detectable*
         analytics.trackModeSelected(newState ? 'launcher' : 'undetectable'); // If visible (detectable), mode is normal/launcher. If not detectable, mode is undetectable.
     };
-
-    // Group meetings
-    const groupedMeetings = meetings.reduce((acc, meeting) => {
-        const label = getGroupLabel(meeting.date);
-        if (!acc[label]) acc[label] = [];
-        acc[label].push(meeting);
-        return acc;
-    }, {} as Record<string, Meeting[]>);
-
-    // Group order (Today, Yesterday, then others sorted new to old is implicit via API return order ideally, 
-    // but JS object key order isn't guaranteed. We can use a Map or just known keys.)
-    // Simple sort for keys:
-    const sortedGroups = Object.keys(groupedMeetings).sort((a, b) => {
-        if (a === 'Today') return -1;
-        if (b === 'Today') return 1;
-        if (a === 'Yesterday') return -1;
-        if (b === 'Yesterday') return 1;
-        // Approximation for others: parse date
-        return new Date(b).getTime() - new Date(a).getTime();
-    });
 
     const [forwardMeeting, setForwardMeeting] = useState<Meeting | null>(null);
     const [activeMenuId, setActiveMenuId] = useState<string | null>(null);
@@ -595,11 +522,7 @@ const Launcher: React.FC<LauncherProps> = ({ onStartMeeting, onOpenSettings, onP
                             exit={{ opacity: 0 }}
                             transition={{ duration: 0.15 }}
                         >
-                            <MeetingDetails
-                                meeting={selectedMeeting}
-                                onBack={handleBack}
-                                onOpenSettings={onOpenSettings}
-                            />
+                            <MeetingDetails meeting={selectedMeeting} />
                         </motion.div>
                     ) : (
                         <motion.div
@@ -811,126 +734,99 @@ const Launcher: React.FC<LauncherProps> = ({ onStartMeeting, onOpenSettings, onP
                                         )}
                                     </AnimatePresence>
 
-                                    {/* ── Hero cards ── */}
-                                    {isPrepared && preparedEvent ? (
+                                    {/* ── Hero card ── */}
 
-                                        /* PREPARED STATE — full-width, preserved exactly */
-                                        <div className={`relative rounded-xl overflow-hidden border border-emerald-500/30 ${isLight ? 'bg-bg-elevated' : 'bg-bg-secondary'} flex flex-col items-center justify-center p-6 min-h-[180px] bg-[radial-gradient(ellipse_at_top,_var(--tw-gradient-stops))] from-emerald-900/40 ${isLight ? 'via-bg-elevated to-bg-elevated' : 'via-bg-secondary to-bg-secondary'}`}>
-                                            <div className="absolute top-4 right-4"><Zap size={16} className="text-yellow-400" /></div>
-                                            <div className="text-center max-w-lg z-10">
-                                                <span className="inline-block px-3 py-1 rounded-full bg-emerald-500/10 text-emerald-400 text-[10px] font-bold tracking-wider mb-4 border border-emerald-500/20">READY TO JOIN</span>
-                                                <h2 className="text-2xl font-bold text-text-primary mb-2">{preparedEvent.title}</h2>
-                                                <p className="text-xs text-text-secondary mb-6 flex items-center justify-center gap-2">
-                                                    <Calendar size={12} />
-                                                    {new Date(preparedEvent.startTime).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' })} - {new Date(preparedEvent.endTime).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' })}
-                                                    {preparedEvent.link && " • Link Ready"}
-                                                </p>
-                                                <div className="flex items-center gap-3 justify-center">
-                                                    <button onClick={handleStartPreparedMeeting} className="bg-emerald-500 hover:bg-emerald-400 text-white px-8 py-3 rounded-xl text-sm font-semibold transition-all shadow-lg hover:shadow-emerald-500/25 active:scale-95 flex items-center gap-2">
-                                                        Start Meeting <ArrowRight size={16} />
-                                                    </button>
-                                                    <button onClick={() => setIsPrepared(false)} className="px-4 py-3 rounded-xl text-xs font-medium text-text-tertiary hover:text-white transition-colors">Cancel</button>
-                                                </div>
-                                            </div>
-                                            <div className="absolute top-0 left-1/2 -translate-x-1/2 w-[300px] h-[300px] bg-emerald-500/10 blur-[100px] pointer-events-none" />
-                                        </div>
+                                    {/* TWO-COLUMN LAYOUT: left = meeting/empty state, right = calendar card */}
+                                    <div className="flex gap-4 items-stretch min-h-0">
 
-                                    ) : (
+                                        {/* LEFT — Meeting card + timeline strip below */}
+                                        <div className="flex-1 min-w-0 flex flex-col gap-2">
 
-                                        /* TWO-COLUMN LAYOUT: left = meeting/empty state, right = calendar card */
-                                        <div className="flex gap-4 items-stretch min-h-0">
-
-                                            {/* LEFT — Meeting card + timeline strip below */}
-                                            <div className="flex-1 min-w-0 flex flex-col gap-2">
-
-                                                {/* Detail card — full width always */}
-                                                <div className="flex-1 min-w-0">
-                                                    <NextMeetingCard
-                                                        meeting={focusedMeeting}
-                                                        isLight={isLight}
-                                                        getMeetingStartText={getMeetingStartText}
-                                                        onStart={onStartMeeting}
-                                                        onSalesBrief={setSalesBriefEvent}
-                                                        onPrepare={handlePrepare}
-                                                    />
-                                                </div>
-
-                                                {/* Timeline strip — only when 2+ meetings */}
-                                                {upcomingEvents.length > 1 && (
-                                                    <MeetingTimeline
-                                                        events={upcomingEvents}
-                                                        selectedId={focusedMeetingId}
-                                                        onSelect={setFocusedMeetingId}
-                                                        isLight={isLight}
-                                                    />
-                                                )}
-
-                                            </div>
-
-                                            {/* RIGHT — Calendar connect card */}
-                                            <motion.div
-                                                initial={{ opacity: 0, y: 12 }}
-                                                animate={{ opacity: 1, y: 0 }}
-                                                transition={{ duration: 0.5, delay: 0.08, ease: [0.22, 1, 0.36, 1] }}
-                                                className={[
-                                                    "w-[300px] shrink-0 relative rounded-xl overflow-hidden border p-5 flex flex-col",
-                                                    isLight
-                                                        ? "border-border-muted bg-gradient-to-br from-white via-[#f5f3fb] to-[#ece9f7] shadow-[0_4px_24px_-8px_rgba(99,102,241,0.2)]"
-                                                        : "border-white/[0.08] bg-gradient-to-br from-[#12082e] via-[#0e0625] to-[#090418] shadow-[0_0_60px_-10px_rgba(99,60,255,0.3)]",
-                                                ].join(" ")}
-                                            >
-                                                {/* Ambient glows */}
-                                                <div aria-hidden className={["pointer-events-none absolute -top-20 -left-12 h-48 w-48 rounded-full blur-3xl", isLight ? "bg-blue-300/35" : "bg-indigo-600/20"].join(" ")} />
-                                                <div aria-hidden className={["pointer-events-none absolute -bottom-16 -right-10 h-48 w-48 rounded-full blur-3xl", isLight ? "bg-purple-300/35" : "bg-purple-600/20"].join(" ")} />
-
-                                                {/* Header row */}
-                                                <div className="relative flex items-center justify-between mb-4">
-                                                    <div className="flex items-center gap-2">
-                                                        <span className={["inline-flex h-8 w-8 items-center justify-center rounded-lg relative", isLight ? "bg-gradient-to-br from-purple-100 to-fuchsia-50 text-purple-600 ring-1 ring-inset ring-purple-200/60" : "bg-gradient-to-br from-purple-500/25 to-fuchsia-700/10 text-purple-300"].join(" ")}>
-                                                            <Calendar className="h-[15px] w-[15px]" strokeWidth={2.2} />
-                                                            <span className="absolute -right-1 -top-1 flex h-3 w-3 items-center justify-center rounded-full bg-gradient-to-br from-fuchsia-500 to-purple-600 text-[7px] font-bold text-white">+</span>
-                                                        </span>
-                                                        <span className="text-[13px] font-semibold tracking-tight">Calendar</span>
-                                                    </div>
-                                                    <span className={["inline-flex items-center rounded-full px-2 py-0.5 text-[10px] font-semibold", isLight ? isCalendarConnected ? "bg-green-50 text-green-500 ring-1 ring-inset ring-green-200" : "bg-rose-50 text-rose-500 ring-1 ring-inset ring-rose-200/70" : isCalendarConnected ? "bg-green-500/15 text-green-300" : "bg-rose-500/15 text-rose-300"].join(" ")}>
-                                                        {isCalendarConnected ? "Connected" : "Not Connected"}
-                                                    </span>
-                                                </div>
-
-                                                {/* Title */}
-                                                <h3 className="relative text-[15px] font-semibold leading-snug tracking-tight mb-4">
-                                                    {isCalendarConnected ? (
-                                                        <>Calendar linked<br /><span className="text-[13px] font-normal text-text-secondary">Events are syncing automatically.</span></>
-                                                    ) : (
-                                                        <>Connect your calendar<br />to unlock AI meeting<br />preparation</>
-                                                    )}
-                                                </h3>
-
-                                                {/* Features list */}
-                                                <div className="relative flex-1 space-y-3">
-                                                    {[
-                                                        { icon: Zap, label: "Auto-detect meetings", color: "text-yellow-400" },
-                                                        { icon: Briefcase, label: "AI sales brief per event", color: "text-blue-400" },
-                                                        { icon: Calendar, label: "One-click join", color: "text-purple-400" },
-                                                    ].map(({ icon: Icon, label, color }) => (
-                                                        <div key={label} className="flex items-center gap-2.5">
-                                                            <span className={["inline-flex h-7 w-7 shrink-0 items-center justify-center rounded-lg", isLight ? "bg-bg-elevated shadow-sm border border-border-subtle" : "bg-bg-item-surface"].join(" ")}>
-                                                                <Icon className={`h-3.5 w-3.5 ${color}`} strokeWidth={2.2} />
-                                                            </span>
-                                                            <span className="text-[12px] font-medium text-text-secondary">{label}</span>
-                                                        </div>
-                                                    ))}
-                                                </div>
-
-                                                {/* CTA */}
-                                                <ConnectCalendarButton
-                                                    className="relative mt-4 w-full"
-                                                    onConnect={() => setIsCalendarConnected(true)}
+                                            {/* Detail card — full width always */}
+                                            <div className="flex-1 min-w-0">
+                                                <NextMeetingCard
+                                                    meeting={focusedMeeting}
+                                                    isLight={isLight}
+                                                    getMeetingStartText={getMeetingStartText}
+                                                    onStart={onStartMeeting}
+                                                    onSalesBrief={setSalesBriefEvent}
                                                 />
-                                            </motion.div>
+                                            </div>
+
+                                            {/* Timeline strip — only when 2+ meetings */}
+                                            {upcomingEvents.length > 1 && (
+                                                <MeetingTimeline
+                                                    events={upcomingEvents}
+                                                    selectedId={focusedMeetingId}
+                                                    onSelect={setFocusedMeetingId}
+                                                />
+                                            )}
 
                                         </div>
-                                    )}
+
+                                        {/* RIGHT — Calendar connect card */}
+                                        <motion.div
+                                            initial={{ opacity: 0, y: 12 }}
+                                            animate={{ opacity: 1, y: 0 }}
+                                            transition={{ duration: 0.5, delay: 0.08, ease: [0.22, 1, 0.36, 1] }}
+                                            className={[
+                                                "w-[300px] shrink-0 relative rounded-xl overflow-hidden border p-5 flex flex-col",
+                                                isLight
+                                                    ? "border-border-muted bg-gradient-to-br from-white via-[#f5f3fb] to-[#ece9f7] shadow-[0_4px_24px_-8px_rgba(99,102,241,0.2)]"
+                                                    : "border-white/[0.08] bg-gradient-to-br from-[#12082e] via-[#0e0625] to-[#090418] shadow-[0_0_60px_-10px_rgba(99,60,255,0.3)]",
+                                            ].join(" ")}
+                                        >
+                                            {/* Ambient glows */}
+                                            <div aria-hidden className={["pointer-events-none absolute -top-20 -left-12 h-48 w-48 rounded-full blur-3xl", isLight ? "bg-blue-300/35" : "bg-indigo-600/20"].join(" ")} />
+                                            <div aria-hidden className={["pointer-events-none absolute -bottom-16 -right-10 h-48 w-48 rounded-full blur-3xl", isLight ? "bg-purple-300/35" : "bg-purple-600/20"].join(" ")} />
+
+                                            {/* Header row */}
+                                            <div className="relative flex items-center justify-between mb-4">
+                                                <div className="flex items-center gap-2">
+                                                    <span className={["inline-flex h-8 w-8 items-center justify-center rounded-lg relative", isLight ? "bg-gradient-to-br from-purple-100 to-fuchsia-50 text-purple-600 ring-1 ring-inset ring-purple-200/60" : "bg-gradient-to-br from-purple-500/25 to-fuchsia-700/10 text-purple-300"].join(" ")}>
+                                                        <Calendar className="h-[15px] w-[15px]" strokeWidth={2.2} />
+                                                        <span className="absolute -right-1 -top-1 flex h-3 w-3 items-center justify-center rounded-full bg-gradient-to-br from-fuchsia-500 to-purple-600 text-[7px] font-bold text-white">+</span>
+                                                    </span>
+                                                    <span className="text-[13px] font-semibold tracking-tight">Calendar</span>
+                                                </div>
+                                                <span className={["inline-flex items-center rounded-full px-2 py-0.5 text-[10px] font-semibold", isLight ? isCalendarConnected ? "bg-green-50 text-green-500 ring-1 ring-inset ring-green-200" : "bg-rose-50 text-rose-500 ring-1 ring-inset ring-rose-200/70" : isCalendarConnected ? "bg-green-500/15 text-green-300" : "bg-rose-500/15 text-rose-300"].join(" ")}>
+                                                    {isCalendarConnected ? "Connected" : "Not Connected"}
+                                                </span>
+                                            </div>
+
+                                            {/* Title */}
+                                            <h3 className="relative text-[15px] font-semibold leading-snug tracking-tight mb-4">
+                                                {isCalendarConnected ? (
+                                                    <>Calendar linked<br /><span className="text-[13px] font-normal text-text-secondary">Events are syncing automatically.</span></>
+                                                ) : (
+                                                    <>Connect your calendar<br />to unlock AI meeting<br />preparation</>
+                                                )}
+                                            </h3>
+
+                                            {/* Features list */}
+                                            <div className="relative flex-1 space-y-3">
+                                                {[
+                                                    { icon: Zap, label: "Auto-detect meetings", color: "text-yellow-400" },
+                                                    { icon: Briefcase, label: "AI sales brief per event", color: "text-blue-400" },
+                                                    { icon: Calendar, label: "One-click join", color: "text-purple-400" },
+                                                ].map(({ icon: Icon, label, color }) => (
+                                                    <div key={label} className="flex items-center gap-2.5">
+                                                        <span className={["inline-flex h-7 w-7 shrink-0 items-center justify-center rounded-lg", isLight ? "bg-bg-elevated shadow-sm border border-border-subtle" : "bg-bg-item-surface"].join(" ")}>
+                                                            <Icon className={`h-3.5 w-3.5 ${color}`} strokeWidth={2.2} />
+                                                        </span>
+                                                        <span className="text-[12px] font-medium text-text-secondary">{label}</span>
+                                                    </div>
+                                                ))}
+                                            </div>
+
+                                            {/* CTA */}
+                                            <ConnectCalendarButton
+                                                className="relative mt-4 w-full"
+                                                onConnect={() => setIsCalendarConnected(true)}
+                                            />
+                                        </motion.div>
+
+                                    </div>
 
                                 </div>
                             </motion.section>

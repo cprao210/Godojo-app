@@ -1,42 +1,8 @@
 import React, { useState, useEffect, useRef, useLayoutEffect, useMemo } from 'react';
-import {
-    Sparkles,
-    Pencil,
-    MessageSquare,
-    RefreshCw,
-    Settings,
-    ArrowUp,
-    ArrowRight,
-    HelpCircle,
-    ChevronUp,
-    ChevronDown,
-    Lightbulb,
-    CornerDownLeft,
-    Mic,
-    MicOff,
-    Image,
-    Camera,
-    X,
-    LogOut,
-    Zap,
-    Edit3,
-    SlidersHorizontal,
-    Ghost,
-    Link,
-    Code,
-    Copy,
-    Check,
-    PointerOff,
-    AlertCircle,
-    Search,
-    ShieldAlert
-} from 'lucide-react';
+import { MessageSquare, RefreshCw, HelpCircle, Code, AlertCircle, Search, ShieldAlert } from 'lucide-react';
 import { motion, AnimatePresence } from 'framer-motion';
 import { Prism as SyntaxHighlighter } from 'react-syntax-highlighter';
 import { oneLight, vscDarkPlus } from 'react-syntax-highlighter/dist/esm/styles/prism';
-// import { ModelSelector } from './ui/ModelSelector'; // REMOVED
-import TopPill from './ui/TopPill';
-import RollingTranscript from './ui/RollingTranscript';
 import { NegotiationCoachingCard } from '../premium';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
@@ -47,16 +13,7 @@ import { analytics, detectProviderType } from '../lib/analytics/analytics.servic
 import { useShortcuts } from '../hooks/useShortcuts';
 import { useResolvedTheme } from '../hooks/useResolvedTheme';
 import { getOverlayAppearance, OVERLAY_OPACITY_DEFAULT } from '../lib/overlayAppearance';
-import { log } from 'three/src/utils.js';
-import LiveAnalysisButton from './ui/LiveAnalysisButton';
-import LiveAnalysisOverlay from './LiveAnalysisOverlay';
 import { FloatingDock } from './FloatingDock';
-import {
-    Toast,
-    ToastTitle,
-    ToastDescription,
-    ToastViewport,
-} from './ui/toast';
 
 interface Message {
     id: string;
@@ -98,19 +55,11 @@ const NativelyInterface: React.FC<NativelyInterfaceProps> = ({ onEndMeeting, ove
     const isRecordingRef = useRef(false);  // Ref to track recording state (avoids stale closure)
     const [manualTranscript, setManualTranscript] = useState('');
     const manualTranscriptRef = useRef<string>('');
-    const [pauseToastOpen, setPauseToastOpen] = useState(false);
-    const [pauseToastMessage, setPauseToastMessage] = useState<{
-        title: string;
-        description: string;
-        variant: 'neutral' | 'success' | 'error';
-    }>({ title: '', description: '', variant: 'neutral' });
     const [showTranscript, setShowTranscript] = useState(() => {
         const stored = localStorage.getItem('natively_interviewer_transcript');
         return stored !== 'false';
     });
-    const [isLiveAnalysisOpen, setIsLiveAnalysisOpen] = useState(false);
     const [isMeetingPaused, setIsMeetingPaused] = useState(false);
-    const [isLiveAnalysisLoading, setIsLiveAnalysisLoading] = useState(false);
     const liveTranscriptRef = useRef<Array<{ speaker: string; displayName?: string; text: string; timestamp: number }>>([]);
 
     const speakerNamesRef = useRef<{ user: string; interviewer: string }>({ user: 'Me', interviewer: 'Them' });
@@ -146,14 +95,6 @@ const NativelyInterface: React.FC<NativelyInterfaceProps> = ({ onEndMeeting, ove
         // Subscribe to live pause state changes pushed from main process
         const unsubscribe = window.electronAPI?.onMeetingPauseStateChanged?.((data) => {
             setIsMeetingPaused(data.isPaused);
-
-            // ── NEW: show a toast notification ──
-            setPauseToastMessage(
-                data.isPaused
-                    ? { title: 'Meeting Paused', description: 'Audio capture & transcription stopped.', variant: 'neutral' }
-                    : { title: 'Meeting Resumed', description: 'Audio capture & transcription restarted.', variant: 'success' }
-            );
-            setPauseToastOpen(true);
         });
         return () => unsubscribe?.();
     }, []);
@@ -175,12 +116,10 @@ const NativelyInterface: React.FC<NativelyInterfaceProps> = ({ onEndMeeting, ove
     const [isInterviewerSpeaking, setIsInterviewerSpeaking] = useState(false);  // Track if actively speaking
     const [voiceInput, setVoiceInput] = useState('');  // Accumulated user voice input
     const voiceInputRef = useRef<string>('');  // Ref for capturing in async handlers
-    const textInputRef = useRef<HTMLInputElement>(null); // Ref for input focus
     const isStealthRef = useRef<boolean>(false); // Tracks if the next expansion should be stealthy
     const messagesEndRef = useRef<HTMLDivElement>(null);
     const contentRef = useRef<HTMLDivElement>(null);
     const scrollContainerRef = useRef<HTMLDivElement>(null);
-    // const settingsButtonRef = useRef<HTMLButtonElement>(null);
 
     // Latent Context State (Screenshots attached but not sent)
     const [attachedContext, setAttachedContext] = useState<Array<{ path: string, preview: string }>>([]);
@@ -222,9 +161,6 @@ const NativelyInterface: React.FC<NativelyInterfaceProps> = ({ onEndMeeting, ove
     const codeBlockClass = 'overlay-code-block-surface';
     const codeHeaderClass = 'overlay-code-header-surface';
     const codeHeaderTextClass = 'overlay-text-muted';
-    const quickActionClass = 'overlay-chip-surface overlay-text-interactive';
-    const inputClass = `${isLightTheme ? 'focus:ring-black/10' : 'focus:ring-white/10'} overlay-input-surface overlay-input-text`;
-    const controlSurfaceClass = 'overlay-control-surface overlay-text-interactive';
 
     useEffect(() => {
         // Load the persisted default model (not the runtime model)
@@ -416,9 +352,6 @@ const NativelyInterface: React.FC<NativelyInterfaceProps> = ({ onEndMeeting, ove
 
             // Also reset rolling transcript
             setRollingTranscript('');
-
-            // Close Live Analysis overlay if open
-            setIsLiveAnalysisOpen(false);
 
             // Track new conversation
             analytics.trackConversationStarted();
@@ -2270,28 +2203,12 @@ Provide only the answer, nothing else.`;
                             currentModel={currentModel}
                             onSelectModel={setCurrentModel}
                             speakerNames={speakerNames}
-                            isMousePassthrough={isMousePassthrough}
-                            onToggleMousePassthrough={() => window.electronAPI?.toggleOverlayMousePassthrough?.()}
                             shortcuts={shortcuts}
-                            appearance={appearance}
                             overlayPanelClass={overlayPanelClass}
                         />
                     </motion.div>
                 </AnimatePresence>
             </motion.div>
-            {/* ── NEW: Pause/Resume Toast Notification ── */}
-            {/* {pauseToastOpen && (
-                <Toast
-                    className='left-[160px]'
-                    open={pauseToastOpen}
-                    onOpenChange={setPauseToastOpen}
-                    variant={pauseToastMessage.variant}
-                    duration={3000}
-                >
-                    <ToastTitle>{pauseToastMessage.title}</ToastTitle>
-                    <ToastDescription>{pauseToastMessage.description}</ToastDescription>
-                </Toast>
-            )} */}
         </div>
     )
 
