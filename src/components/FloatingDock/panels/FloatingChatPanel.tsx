@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
-import { Brain, ArrowRight, Copy, Check, RotateCcw, Search } from 'lucide-react';
+import { Brain, ArrowRight, Copy, Check, RotateCcw, Search, Send } from 'lucide-react';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 
@@ -249,6 +249,14 @@ export const FloatingChatPanel: React.FC<FloatingChatPanelProps> = ({
 
     }, []);
 
+    // Auto-resize textarea
+    useEffect(() => {
+        const el = inputRef.current;
+        if (!el) return;
+        el.style.height = 'auto';
+        el.style.height = `${Math.min(el.scrollHeight, 96)}px`; // max ~4 lines
+    }, [inputValue]);
+
     const addUserMessage = (text: string) => {
         setMessages(prev => [...prev, { id: Date.now().toString(), role: 'user', text }]);
         setMessages(prev => [...prev, { id: (Date.now() + 1).toString(), role: 'system', text: '', isStreaming: true }]);
@@ -298,7 +306,6 @@ export const FloatingChatPanel: React.FC<FloatingChatPanelProps> = ({
                 backdropFilter: 'blur(28px) saturate(180%)',
                 WebkitBackdropFilter: 'blur(28px) saturate(180%)',
                 border: '1px solid rgba(255,255,255,0.08)',
-                boxShadow: '0 24px 80px rgba(0,0,0,0.6), 0 4px 24px rgba(0,0,0,0.4)',
             }}
         >
 
@@ -399,38 +406,61 @@ export const FloatingChatPanel: React.FC<FloatingChatPanelProps> = ({
 
             {/* Input Area */}
             <div
-                className="px-4 pb-4 pt-2 shrink-0 flex flex-col gap-2"
+                className="px-3 pb-3 pt-2 shrink-0"
                 style={{ borderTop: '1px solid rgba(255,255,255,0.05)' }}
             >
-                <textarea
-                    ref={inputRef}
-                    value={inputValue}
-                    onChange={e => setInputValue(e.target.value)}
-                    onKeyDown={handleKeyDown}
-                    placeholder="Ask anything about the live call..."
-                    rows={2}
-                    className="w-full bg-transparent resize-none outline-none text-[13px] leading-relaxed placeholder:text-white/20"
-                    style={{ color: 'rgba(255,255,255,0.85)' }}
-                />
-                <div className="flex justify-end">
-                    {/* <ModelSelector currentModel={currentModel} onSelectModel={onSelectModel} /> */}
+                <div
+                    className="flex items-end gap-2 rounded-2xl px-3 py-2 transition-all"
+                    style={{
+                        background: 'rgba(255,255,255,0.05)',
+                        border: '1px solid rgba(255,255,255,0.08)',
+                    }}
+                >
+                    <textarea
+                        ref={inputRef}
+                        value={inputValue}
+                        onChange={e => setInputValue(e.target.value)}
+                        onKeyDown={handleKeyDown}
+                        placeholder="Ask anything about the live call..."
+                        rows={1}
+                        className="flex-1 bg-transparent resize-none outline-none text-[13px] leading-relaxed placeholder:text-white/20 py-1.5"
+                        style={{
+                            color: 'rgba(255,255,255,0.85)',
+                            maxHeight: 96,
+                            overflowY: 'auto',
+                            scrollbarWidth: 'none',
+                        }}
+                    />
                     <motion.button
                         onClick={handleSend}
-                        whileHover={{ scale: 1.05 }}
-                        whileTap={{ scale: 0.93 }}
+                        whileTap={{ scale: 0.88 }}
                         disabled={!inputValue.trim() || isProcessing}
-                        className="w-9 h-9 rounded-xl flex items-center justify-center transition-all"
+                        className="shrink-0 w-8 h-8 rounded-xl flex items-center justify-center transition-all mb-0.5"
                         style={{
-                            background: inputValue.trim() && !isProcessing ? 'rgba(255,255,255,0.9)' : 'rgba(255,255,255,0.08)',
+                            background: inputValue.trim() && !isProcessing
+                                ? 'rgba(139,92,246,0.85)'
+                                : 'rgba(255,255,255,0.06)',
                             opacity: isProcessing ? 0.5 : 1,
                         }}
                     >
-                        <ArrowRight
-                            size={16}
-                            style={{ color: inputValue.trim() ? '#0f172a' : 'rgba(255,255,255,0.3)' }}
-                        />
+                        {isProcessing ? (
+                            <motion.div
+                                className="w-3.5 h-3.5 rounded-full border-2 border-t-transparent"
+                                style={{ borderColor: 'rgba(255,255,255,0.4)', borderTopColor: 'transparent' }}
+                                animate={{ rotate: 360 }}
+                                transition={{ duration: 0.8, repeat: Infinity, ease: 'linear' }}
+                            />
+                        ) : (
+                            <Send
+                                size={14}
+                                style={{ color: inputValue.trim() ? '#fff' : 'rgba(255,255,255,0.2)' }}
+                            />
+                        )}
                     </motion.button>
                 </div>
+                <p className="text-[10px] text-white/15 text-center mt-1.5 leading-none">
+                    Enter to send · Shift+Enter for new line
+                </p>
             </div>
         </div>
     );

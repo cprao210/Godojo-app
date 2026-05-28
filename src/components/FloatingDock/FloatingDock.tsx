@@ -236,7 +236,7 @@ export const FloatingDock: React.FC<FloatingDockProps> = ({
                             backdropFilter: 'blur(24px) saturate(180%)',
                             WebkitBackdropFilter: 'blur(24px) saturate(180%)',
                             border: '1px solid rgba(255,255,255,0.09)',
-                            boxShadow: '0 8px 40px rgba(0,0,0,0.55), 0 2px 8px rgba(0,0,0,0.3), inset 0 1px 0 rgba(255,255,255,0.06)',
+                            boxShadow: 'inset 0 1px 0 rgba(255,255,255,0.06)',
                             width: 420,
                         }}
                     >

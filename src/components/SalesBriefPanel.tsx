@@ -181,6 +181,58 @@ const LOADING_STAGES = [
     { icon: '🧠', text: 'Structuring insights...' },
 ];
 
+// ─── Check if fetched intel has no meaningful data ─────────────────────────────
+function isIntelEmpty(intel: CompanyIntel): boolean {
+    const v = (x: any) => x && x !== 'null' && x !== 'N/A';
+    return (
+        !v(intel.industry) &&
+        !v(intel.revenue) &&
+        !v(intel.valuation) &&
+        !v(intel.fundingStage) &&
+        !v(intel.businessModel) &&
+        !v(intel.employeeCount) &&
+        !v(intel.headquarters) &&
+        !(intel.keyProducts?.length) &&
+        !(intel.competitors?.length) &&
+        !(intel.recentNews?.length)
+    );
+}
+
+// ─── No-data placeholder ───────────────────────────────────────────────────────
+const NoDataPlaceholder: React.FC<{ companyName: string | null; onRetry: () => void; isLight: boolean }> = ({
+    companyName, onRetry, isLight,
+}) => (
+    <div className="flex flex-col items-center justify-center py-16 px-8 gap-5 text-center">
+        <div className={[
+            'w-14 h-14 rounded-2xl flex items-center justify-center',
+            isLight ? 'bg-slate-100' : 'bg-white/[0.05]',
+        ].join(' ')}>
+            <Building2 size={24} className={isLight ? 'text-slate-300' : 'text-slate-600'} />
+        </div>
+        <div className="flex flex-col gap-1.5">
+            <p className="text-[14px] font-semibold text-text-primary">
+                No data found{companyName ? ` for ${companyName}` : ''}
+            </p>
+            <p className={['text-[12px] leading-relaxed max-w-[260px]',
+                isLight ? 'text-slate-400' : 'text-slate-500'].join(' ')}>
+                We couldn't find any company intelligence at this time. This may be a new, private, or
+                lesser-known company.
+            </p>
+        </div>
+        <button
+            onClick={onRetry}
+            className={[
+                'flex items-center gap-2 px-4 py-2 rounded-xl text-[12px] font-semibold transition-colors',
+                isLight
+                    ? 'bg-slate-100 text-slate-700 hover:bg-slate-200'
+                    : 'bg-white/[0.07] text-slate-200 hover:bg-white/[0.12]',
+            ].join(' ')}
+        >
+            <RefreshCw size={12} /> Try again
+        </button>
+    </div>
+);
+
 // ─── Main component ────────────────────────────────────────────────────────────
 const SalesBriefPanel: React.FC<SalesBriefPanelProps> = ({ eventData, onClose }) => {
     const isLight = useResolvedTheme() === 'light';
@@ -491,8 +543,19 @@ const SalesBriefPanel: React.FC<SalesBriefPanelProps> = ({ eventData, onClose })
                             </motion.div>
                         )}
 
+                        {/* ── Intel returned but completely empty ── */}
+                        {!loading && !error && intel && isIntelEmpty(intel) && (
+                            <motion.div key="no-data" initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }}>
+                                <NoDataPlaceholder
+                                    companyName={val(intel.companyName) || companyName}
+                                    onRetry={fetchIntel}
+                                    isLight={isLight}
+                                />
+                            </motion.div>
+                        )}
+
                         {/* ── Intel loaded ── */}
-                        {!loading && !error && intel && (
+                        {!loading && !error && intel && !isIntelEmpty(intel) && (
                             <motion.div
                                 key="intel"
                                 initial={{ opacity: 0, y: 8 }}

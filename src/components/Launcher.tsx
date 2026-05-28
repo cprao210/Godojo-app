@@ -617,7 +617,7 @@ const Launcher: React.FC<LauncherProps> = ({ onStartMeeting, onOpenSettings, onP
                             {/* TOP SECTION */}
                             <motion.section
                                 className={[
-                                    "shrink-0 border-b border-border-subtle px-8 pt-5 pb-6 origin-top bg-bg-main",
+                                    "shrink-0 border-b border-border-subtle px-8 pt-3 pb-3 origin-top bg-bg-main",
                                 ].join(" ")}
                                 style={{
                                     backgroundImage: isLight
@@ -632,10 +632,10 @@ const Launcher: React.FC<LauncherProps> = ({ onStartMeeting, onOpenSettings, onP
                                 }}
                                 transition={{ duration: 0.42, ease: [0.32, 0.72, 0, 1] }}
                             >
-                                <div className="max-w-4xl mx-auto space-y-5">
+                                <div className="max-w-4xl mx-auto space-y-3">
 
                                     {/* Welcome row */}
-                                    <div className="flex items-center justify-between gap-4 py-1">
+                                    <div className="flex items-center justify-between gap-4">
                                         <div className="flex items-center gap-3">
                                             <IoSparklesSharp className="text-blue-500 shrink-0" size={22} />
                                             <div>
@@ -892,7 +892,7 @@ const Launcher: React.FC<LauncherProps> = ({ onStartMeeting, onOpenSettings, onP
                                                         </span>
                                                         <span className="text-[13px] font-semibold tracking-tight">Calendar</span>
                                                     </div>
-                                                    <span className={["inline-flex items-center rounded-full px-2 py-0.5 text-[10px] font-semibold", isLight ? "bg-rose-50 text-rose-500 ring-1 ring-inset ring-rose-200/70" : "bg-rose-500/15 text-rose-300"].join(" ")}>
+                                                    <span className={["inline-flex items-center rounded-full px-2 py-0.5 text-[10px] font-semibold", isLight ? isCalendarConnected ? "bg-green-50 text-green-500 ring-1 ring-inset ring-green-200" : "bg-rose-50 text-rose-500 ring-1 ring-inset ring-rose-200/70" : isCalendarConnected ? "bg-green-500/15 text-green-300" : "bg-rose-500/15 text-rose-300"].join(" ")}>
                                                         {isCalendarConnected ? "Connected" : "Not Connected"}
                                                     </span>
                                                 </div>

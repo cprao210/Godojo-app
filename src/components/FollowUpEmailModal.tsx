@@ -40,9 +40,10 @@ interface FollowUpEmailModalProps {
     isOpen: boolean;
     onClose: () => void;
     meeting: Meeting;
+    isLight?: boolean;
 }
 
-const FollowUpEmailModal: React.FC<FollowUpEmailModalProps> = ({ isOpen, onClose, meeting }) => {
+const FollowUpEmailModal: React.FC<FollowUpEmailModalProps> = ({ isOpen, onClose, meeting, isLight = false }) => {
     const [recipientEmail, setRecipientEmail] = useState('');
     const [senderName, setSenderName] = useState('');
     const [recipientName, setRecipientName] = useState('');
@@ -185,14 +186,14 @@ const FollowUpEmailModal: React.FC<FollowUpEmailModalProps> = ({ isOpen, onClose
                         transition={{ duration: 0.25, type: 'spring', damping: 25, stiffness: 300 }}
                         className="fixed inset-0 z-50 flex items-center justify-center p-4 pointer-events-none"
                     >
-                        <div className="w-full max-w-[640px] rounded-2xl flex flex-col pointer-events-auto overflow-hidden bg-gray-900 border border-border-muted shadow-[var(--shadow-card)]">
+                        <div className={`w-full max-w-[640px] rounded-2xl flex flex-col pointer-events-auto overflow-hidden border shadow-[var(--shadow-card)] ${isLight ? 'bg-white border-slate-200' : 'bg-gray-900 border-border-muted'}`}>
 
                             {/* ── Header ─────────────────────────────────────────────── */}
-                            <div className="flex px-6 py-4 justify-between items-center border-b border-border-subtle">
+                            <div className={`flex px-6 py-4 justify-between items-center border-b ${isLight ? 'border-slate-200' : 'border-border-subtle'}`}>
                                 <h2 className="text-sm font-semibold tracking-wide text-text-primary">Draft Follow-up</h2>
                                 <button
                                     onClick={onClose}
-                                    className="p-1.5 rounded-full transition-colors text-text-tertiary hover:text-text-primary bg-bg-item-surface hover:bg-bg-item-active"
+                                    className={`p-1.5 rounded-full transition-colors ${isLight ? 'text-slate-400 hover:text-slate-700 bg-slate-100 hover:bg-slate-200' : 'text-text-tertiary hover:text-text-primary bg-bg-item-surface hover:bg-bg-item-active'}`}
                                 >
                                     <X size={14} />
                                 </button>
@@ -248,7 +249,7 @@ const FollowUpEmailModal: React.FC<FollowUpEmailModalProps> = ({ isOpen, onClose
                             {/* ── Body ────────────────────────────────────────────────── */}
                             <div className="flex-1 px-8 py-6 min-h-[320px] relative">
                                 {isGenerating ? (
-                                    <div className="absolute inset-0 flex items-center justify-center z-10 backdrop-blur-[2px] bg-bg-elevated/50">
+                                    <div className={`absolute inset-0 flex items-center justify-center z-10 backdrop-blur-[2px] ${isLight ? 'bg-white/70' : 'bg-bg-elevated/50'}`}>
                                         <div className="flex flex-col items-center gap-4">
                                             <div className="relative">
                                                 {/* Spinner uses accent-primary via Tailwind — intentional */}
@@ -274,7 +275,7 @@ const FollowUpEmailModal: React.FC<FollowUpEmailModalProps> = ({ isOpen, onClose
                             </div>
 
                             {/* ── Footer ──────────────────────────────────────────────── */}
-                            <div className="flex items-center justify-between px-6 py-5 border-t border-border-subtle bg-bg-secondary/50">
+                            <div className={`flex items-center justify-between px-6 py-5 border-t ${isLight ? 'border-slate-200 bg-slate-50/70' : 'border-border-subtle bg-bg-secondary/50'}`}>
                                 {/* Left */}
                                 <div className="flex items-center gap-3">
                                     <button

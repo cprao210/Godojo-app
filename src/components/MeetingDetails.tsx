@@ -141,6 +141,23 @@ const Skeleton: React.FC<{ className?: string }> = ({ className = '' }) => (
     <div className={`animate-pulse rounded-lg ${className}`} style={{ background: 'rgba(128,128,128,0.12)' }} />
 );
 
+// ─── Check if a detailedSummary exists but has no meaningful data ──────────────
+function isSummaryEmpty(ds: NonNullable<Meeting['detailedSummary']>): boolean {
+    const hasContent = (arr?: string[]) => Array.isArray(arr) && arr.some(s => s?.trim());
+    return (
+        !ds.overview?.trim() &&
+        !hasContent(ds.keyPoints) &&
+        !hasContent(ds.actionItems) &&
+        !ds.dealStatus?.stage?.trim() &&
+        !ds.dealStatus?.summary?.trim() &&
+        !ds.salesCoachReview?.whatIDidRight?.some(s => s?.trim()) &&
+        !ds.salesCoachReview?.whatICouldHaveDoneBetter?.some(s => s?.trim()) &&
+        !ds.salesCoachReview?.whatIMissedCompletely?.some(s => s?.trim()) &&
+        !ds.nextCallPlaybook?.openingRecap?.trim() &&
+        !ds.nextCallPlaybook?.questionsToAsk?.some(s => s?.trim())
+    );
+}
+
 const MeetingDetails: React.FC<MeetingDetailsProps> = ({ meeting: initialMeeting }) => {
 
     const isLight = useResolvedTheme() === 'light';
@@ -682,6 +699,7 @@ const MeetingDetails: React.FC<MeetingDetailsProps> = ({ meeting: initialMeeting
                             isOpen={isFollowUpEmailOpen}
                             onClose={() => setIsFollowUpEmailOpen(false)}
                             meeting={meeting}
+                            isLight={isLight}
                         />
                     </div>
 
@@ -805,6 +823,7 @@ const MeetingDetails: React.FC<MeetingDetailsProps> = ({ meeting: initialMeeting
                                     :
                                     <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }}>
 
+                                        {/* ── No summary at all ── */}
                                         {!meeting.detailedSummary && (
                                             <div className={`flex flex-col items-center justify-center py-20 gap-4 rounded-2xl border border-dashed ${isLight ? 'border-slate-200 bg-slate-50/50' : 'border-white/[0.07] bg-white/[0.02]'}`}>
                                                 <div className={`w-12 h-12 rounded-2xl flex items-center justify-center ${isLight ? 'bg-slate-100' : 'bg-white/[0.05]'}`}>
@@ -824,7 +843,37 @@ const MeetingDetails: React.FC<MeetingDetailsProps> = ({ meeting: initialMeeting
                                             </div>
                                         )}
 
-                                        {meeting.detailedSummary?.keyPoints?.length !== 0 && <section className="mb-10">
+                                        {/* ── Summary object exists but all fields are empty ── */}
+                                        {meeting.detailedSummary && isSummaryEmpty(meeting.detailedSummary) && (
+                                            <motion.div
+                                                initial={{ opacity: 0, y: 6 }}
+                                                animate={{ opacity: 1, y: 0 }}
+                                                className={`flex flex-col items-center justify-center py-20 gap-5 rounded-2xl border border-dashed ${isLight ? 'border-slate-200 bg-slate-50/50' : 'border-white/[0.07] bg-white/[0.02]'}`}
+                                            >
+                                                <div className={`w-14 h-14 rounded-2xl flex items-center justify-center ${isLight ? 'bg-slate-100' : 'bg-white/[0.05]'}`}>
+                                                    <ClipboardList size={24} strokeWidth={1.5} className={isLight ? 'text-slate-300' : 'text-white/20'} />
+                                                </div>
+                                                <div className="text-center flex flex-col gap-1.5 max-w-[280px]">
+                                                    <p className={`text-[14px] font-semibold ${isLight ? 'text-slate-600' : 'text-white/50'}`}>
+                                                        Summary data is empty
+                                                    </p>
+                                                    <p className={`text-[12px] leading-relaxed ${isLight ? 'text-slate-400' : 'text-white/25'}`}>
+                                                        The summary was generated but no content could be extracted.
+                                                        This can happen with very short or silent meetings.
+                                                    </p>
+                                                </div>
+                                                <button
+                                                    onClick={handleRegenerateSummary}
+                                                    disabled={isRegenerating}
+                                                    className={`mt-1 flex items-center gap-2 px-4 py-2 rounded-lg text-[12px] font-medium transition-all ${isLight ? 'bg-white border border-slate-200 text-slate-600 hover:bg-slate-50 shadow-sm' : 'bg-white/[0.05] border border-white/[0.1] text-white/60 hover:bg-white/[0.08]'} disabled:opacity-40 disabled:cursor-not-allowed`}
+                                                >
+                                                    <RefreshCcw size={12} strokeWidth={1.8} className={isRegenerating ? 'animate-spin' : ''} />
+                                                    {isRegenerating ? 'Regenerating…' : 'Regenerate summary'}
+                                                </button>
+                                            </motion.div>
+                                        )}
+
+                                        {meeting.detailedSummary && !isSummaryEmpty(meeting.detailedSummary) && meeting.detailedSummary?.keyPoints?.length !== 0 && <section className="mb-10">
 
                                             {/* Card — matches the CallSummary component design */}
                                             <div
@@ -923,7 +972,7 @@ const MeetingDetails: React.FC<MeetingDetailsProps> = ({ meeting: initialMeeting
                                             </div>
                                         </section>}
 
-                                        {meeting.detailedSummary?.salesCoachReview !== undefined ?
+                                        {meeting.detailedSummary && !isSummaryEmpty(meeting.detailedSummary) && meeting.detailedSummary?.salesCoachReview !== undefined ?
                                             <>
                                                 <section className="mb-10">
                                                     <h2 className={`text-lg font-semibold mb-4 ${isLight ? 'text-slate-800' : 'text-white'}`}>

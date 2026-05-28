@@ -506,7 +506,7 @@ function NextMeetingDetails({
                     ].join(" ")}
                 >
                     <Briefcase size={13} strokeWidth={2} />
-                    Sales Brief
+                    Company Insights
                 </button>
             </div>
         </motion.div>

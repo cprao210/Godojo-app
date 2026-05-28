@@ -149,6 +149,42 @@ const IntelligenceSkeleton: React.FC = () => (
     </div>
 );
 
+// ─── Waiting / No Data Placeholder ──────────────────────────────────────────
+const WaitingPlaceholder: React.FC = () => (
+    <div className="flex flex-col items-center justify-center h-full px-6 py-12 gap-5">
+        <div
+            className="w-14 h-14 rounded-2xl flex items-center justify-center"
+            style={{ background: 'rgba(59,130,246,0.10)', border: '1px solid rgba(59,130,246,0.18)' }}
+        >
+            <Radio size={26} className="text-blue-400/70" strokeWidth={1.5} />
+        </div>
+
+        <div className="text-center flex flex-col gap-2">
+            <p className="text-[13px] font-semibold text-white/60 tracking-wide">No Analysis Yet</p>
+            <p className="text-[11px] text-white/30 leading-relaxed max-w-[220px]">
+                Hit <span className="text-blue-400/70 font-semibold">Refresh</span> to analyse the live call,
+                or enable <span className="text-blue-400/70 font-semibold">Auto</span> for scheduled updates.
+            </p>
+        </div>
+
+        {/* Decorative idle waveform */}
+        <div className="flex gap-1 items-end h-5">
+            {[0.3, 0.5, 0.4, 0.6, 0.35, 0.55, 0.4].map((h, i) => (
+                <motion.div
+                    key={i}
+                    className="w-0.5 rounded-full"
+                    style={{
+                        height: `${h * 100}%`,
+                        background: 'rgba(59,130,246,0.25)',
+                    }}
+                    animate={{ scaleY: [1, h * 0.5 + 0.1, 1] }}
+                    transition={{ duration: 2.4, repeat: Infinity, delay: i * 0.18, ease: 'easeInOut' }}
+                />
+            ))}
+        </div>
+    </div>
+);
+
 export const FloatingIntelligencePanel: React.FC<FloatingIntelligencePanelProps> = ({
     transcriptRef,
     isMeetingPaused,
@@ -164,7 +200,7 @@ export const FloatingIntelligencePanel: React.FC<FloatingIntelligencePanelProps>
     const autoRefreshTimerRef = useRef<ReturnType<typeof setInterval> | null>(null);
     const refreshPickerRef = useRef<HTMLDivElement>(null);
 
-    const displayData = analysisData || EMPTY_ANALYSIS;
+    const displayData = analysisData;
 
     // Cleanup auto-refresh timer on unmount
     useEffect(() => {
@@ -218,7 +254,6 @@ export const FloatingIntelligencePanel: React.FC<FloatingIntelligencePanelProps>
                 backdropFilter: 'blur(28px) saturate(180%)',
                 WebkitBackdropFilter: 'blur(28px) saturate(180%)',
                 border: '1px solid rgba(255,255,255,0.08)',
-                boxShadow: '0 24px 80px rgba(0,0,0,0.6), 0 4px 24px rgba(0,0,0,0.4)',
             }}
         >
             {/* Header */}
@@ -337,6 +372,8 @@ export const FloatingIntelligencePanel: React.FC<FloatingIntelligencePanelProps>
             <div className="overflow-y-auto flex-1" style={{ scrollbarWidth: 'thin', scrollbarColor: 'rgba(255,255,255,0.1) transparent' }}>
                 {isLoading ? (
                     <IntelligenceSkeleton />
+                ) : displayData === null ? (
+                    <WaitingPlaceholder />
                 ) : (
                     <LiveAnalysisContent analysisData={displayData} hideBar="Missing Details" />
                 )}

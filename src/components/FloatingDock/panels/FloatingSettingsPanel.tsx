@@ -173,7 +173,6 @@ export const FloatingSettingsPanel: React.FC<FloatingSettingsPanelProps> = ({
                 backdropFilter: 'blur(28px) saturate(180%)',
                 WebkitBackdropFilter: 'blur(28px) saturate(180%)',
                 border: '1px solid rgba(255,255,255,0.08)',
-                boxShadow: '0 24px 80px rgba(0,0,0,0.6), 0 4px 24px rgba(0,0,0,0.4)',
             }}
         >
             {/* Header */}
