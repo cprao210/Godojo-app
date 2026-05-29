@@ -40,10 +40,10 @@ interface FloatingIntelligencePanelProps {
     isMeetingPaused: boolean;
     // Analysis state is owned by FloatingDock and passed down — never lost on remount
     analysisData: LiveAnalysisData | null;
+    analysisError: string | null;
     isLoading: boolean;
     showTranscript: boolean;
-    onRegenerate: () => void;      // Manual / forced refresh
-    onAutoRefresh?: () => void;    // Scheduled auto-refresh (respects pause state)
+    onRegenerate: () => void;      // Manual / forced refresh — timer is managed by FloatingDock
     autoRefreshInterval: number | null;
     onAutoRefreshIntervalChange: (interval: number | null) => void;
 }
@@ -188,25 +188,17 @@ export const FloatingIntelligencePanel: React.FC<FloatingIntelligencePanelProps>
     transcriptRef,
     isMeetingPaused,
     analysisData,
+    analysisError,
     showTranscript,
     isLoading,
     onRegenerate,
-    onAutoRefresh,
     autoRefreshInterval,
     onAutoRefreshIntervalChange,
 }) => {
     const [showRefreshPicker, setShowRefreshPicker] = useState(false);
-    const autoRefreshTimerRef = useRef<ReturnType<typeof setInterval> | null>(null);
     const refreshPickerRef = useRef<HTMLDivElement>(null);
 
     const displayData = analysisData;
-
-    // Cleanup auto-refresh timer on unmount
-    useEffect(() => {
-        return () => {
-            if (autoRefreshTimerRef.current) clearInterval(autoRefreshTimerRef.current);
-        };
-    }, []);
 
     // Close dropdown when clicking outside
     useEffect(() => {
@@ -220,25 +212,11 @@ export const FloatingIntelligencePanel: React.FC<FloatingIntelligencePanelProps>
         return () => document.removeEventListener('mousedown', handleClickOutside);
     }, [showRefreshPicker]);
 
-    useEffect(() => {
-        if (autoRefreshInterval !== null) {
-            handleAutoRefresh(autoRefreshInterval);
-        }
-    }, []);
-
+    // Timer is owned by FloatingDock — this handler only updates the interval value
+    // and closes the picker. The actual setInterval lives one level up.
     const handleAutoRefresh = (minutes: number | null) => {
-        if (autoRefreshTimerRef.current) clearInterval(autoRefreshTimerRef.current);
         onAutoRefreshIntervalChange(minutes);
         setShowRefreshPicker(false);
-
-        if (minutes !== null) {
-            // Auto-refresh uses onAutoRefresh (force=false, respects pause state).
-            // Falls back to onRegenerate if not provided.
-            const refreshFn = onAutoRefresh || onRegenerate;
-            autoRefreshTimerRef.current = setInterval(() => {
-                refreshFn();
-            }, minutes * 60 * 1000);
-        }
     };
 
     const recentTranscript = transcriptRef.current?.slice(-3) || [];
@@ -371,6 +349,26 @@ export const FloatingIntelligencePanel: React.FC<FloatingIntelligencePanelProps>
             <div className="overflow-y-auto flex-1" style={{ scrollbarWidth: 'thin', scrollbarColor: 'rgba(255,255,255,0.1) transparent' }}>
                 {isLoading ? (
                     <IntelligenceSkeleton />
+                ) : analysisError && displayData === null ? (
+                    <div className="flex flex-col items-center justify-center h-full px-6 py-10 gap-4">
+                        <div
+                            className="w-12 h-12 rounded-xl flex items-center justify-center"
+                            style={{ background: 'rgba(239,68,68,0.10)', border: '1px solid rgba(239,68,68,0.20)' }}
+                        >
+                            <span style={{ fontSize: 20, color: '#f87171' }}>!</span>
+                        </div>
+                        <div className="text-center flex flex-col gap-1.5">
+                            <p className="text-[13px] font-semibold text-white/60">Analysis failed</p>
+                            <p className="text-[11px] text-white/30 leading-relaxed max-w-[220px]">{analysisError}</p>
+                        </div>
+                        <button
+                            onClick={onRegenerate}
+                            className="flex items-center gap-2 px-4 py-2 rounded-xl text-[12px] font-semibold"
+                            style={{ background: 'rgba(59,130,246,0.15)', border: '1px solid rgba(59,130,246,0.3)', color: '#3b82f6' }}
+                        >
+                            <RefreshCw size={12} /> Retry
+                        </button>
+                    </div>
                 ) : displayData === null ? (
                     <WaitingPlaceholder />
                 ) : (

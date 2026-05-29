@@ -5,6 +5,7 @@ import { app } from 'electron';
 import fs from 'fs';
 import * as sqliteVec from 'sqlite-vec';
 import { SupabaseMirrorService } from './SupabaseMirrorService';
+import { LiveAnalysisData } from '../../src/types/liveAnalysis';
 
 /**
  * Allow-list of app_state keys that are safe to mirror to the cloud.
@@ -48,6 +49,8 @@ export interface Meeting {
         actionItems: string[];
         keyPoints: string[];
         speakerNames?: { user: string; client: string };
+        liveAnalysis?: LiveAnalysisData
+
     };
     transcript?: Array<{
         speaker: string;
@@ -789,6 +792,19 @@ export class DatabaseManager {
         } catch (err) {
             console.error(`[DatabaseManager] Failed to save meeting ${meeting.id}`, err);
             throw err;
+        }
+    }
+
+    public updateMeeting(id: string, updates: Partial<Pick<Meeting, 'detailedSummary'>>): boolean {
+        try {
+            if (updates.detailedSummary !== undefined) {
+                const stmt = this.db!.prepare(`UPDATE meetings SET detailed_summary = ? WHERE id = ?`);
+                stmt.run(JSON.stringify(updates.detailedSummary), id);
+            }
+            return true;
+        } catch (e) {
+            console.error('[DatabaseManager] updateMeeting failed:', e);
+            return false;
         }
     }
 

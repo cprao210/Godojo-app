@@ -97,15 +97,38 @@ export const FloatingDock: React.FC<FloatingDockProps> = ({
 
     // ── Lifted state: survives panel switches ──────────────────────────────────
     // Analysis state is owned here so FloatingIntelligencePanel never loses it on remount.
-    const { analysisData, isLoading: analysisLoading, runAnalysis, resetAnalysis } = useLiveAnalysis(transcriptRef, isMeetingPaused);
+    const { analysisData, isLoading: analysisLoading, error: analysisError, runAnalysis, resetAnalysis } = useLiveAnalysis(transcriptRef, isMeetingPaused);
     // Track whether the first analysis has been triggered so we don't re-run on every remount.
     const analysisInitiatedRef = useRef(false);
 
     // Chat messages lifted here so history survives panel switches.
     const [chatMessages, setChatMessages] = useState<ChatMessage[]>([]);
 
-    // Auto-refresh interval lifted here so it survives panel switches.
+    // Auto-refresh interval owned here (not in the panel) so the timer survives
+    // panel close/open cycles and responds correctly to isMeetingPaused changes.
     const [autoRefreshInterval, setAutoRefreshInterval] = useState<number | null>(5);
+    const autoRefreshTimerRef = useRef<ReturnType<typeof setInterval> | null>(null);
+
+    // Manage the auto-refresh timer in FloatingDock so it lives independent of
+    // FloatingIntelligencePanel mount/unmount cycles.
+    useEffect(() => {
+        if (autoRefreshTimerRef.current) {
+            clearInterval(autoRefreshTimerRef.current);
+            autoRefreshTimerRef.current = null;
+        }
+        if (autoRefreshInterval !== null) {
+            autoRefreshTimerRef.current = setInterval(() => {
+                // force=false: auto-refresh respects the pause guard inside runAnalysis
+                runAnalysis(false);
+            }, autoRefreshInterval * 60 * 1000);
+        }
+        return () => {
+            if (autoRefreshTimerRef.current) {
+                clearInterval(autoRefreshTimerRef.current);
+                autoRefreshTimerRef.current = null;
+            }
+        };
+    }, [autoRefreshInterval, runAnalysis]);
 
     // Reset all state when a new meeting starts (IPC session-reset event)
     useEffect(() => {
@@ -171,10 +194,10 @@ export const FloatingDock: React.FC<FloatingDockProps> = ({
                                     transcriptRef={transcriptRef}
                                     isMeetingPaused={isMeetingPaused}
                                     analysisData={analysisData}
+                                    analysisError={analysisError}
                                     showTranscript={showTranscript}
                                     isLoading={analysisLoading}
                                     onRegenerate={() => runAnalysis(true)}
-                                    onAutoRefresh={() => runAnalysis(false)}
                                     autoRefreshInterval={autoRefreshInterval}
                                     onAutoRefreshIntervalChange={setAutoRefreshInterval}
                                 />

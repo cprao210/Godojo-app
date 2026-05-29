@@ -128,6 +128,8 @@ const Skeleton: React.FC<{ className?: string }> = ({ className = '' }) => (
 // ─── Check if a detailedSummary exists but has no meaningful data ──────────────
 function isSummaryEmpty(ds: NonNullable<Meeting['detailedSummary']>): boolean {
     const hasContent = (arr?: string[]) => Array.isArray(arr) && arr.some(s => s?.trim());
+    // A meeting with live analysis data is never considered "empty" — the Analysis tab has content
+    if ((ds as any).liveAnalysis) return false;
     return (
         !ds.overview?.trim() &&
         !hasContent(ds.keyPoints) &&
@@ -224,13 +226,17 @@ const MeetingDetails: React.FC<MeetingDetailsProps> = ({ meeting: initialMeeting
             const formatList = (arr?: string[]) =>
                 arr && arr.length ? arr.map(i => `  • ${i}`).join('\n') : '  None';
 
+            const toStatusIcon = (s: string) =>
+                (s === 'Clear' || s === 'confirmed') ? '✅'
+                    : (s === 'Partial' || s === 'partial') ? '⚠️' : '❌';
+
             const formatBANT = () => {
                 if (!ds.bant) return '  None';
                 return (['budget', 'authority', 'need', 'timeline'] as const)
                     .map(key => {
                         const item = ds.bant?.[key];
                         if (!item) return null;
-                        const statusIcon = item.status === 'Clear' ? '✅' : item.status === 'Partial' ? '⚠️' : '❌';
+                        const statusIcon = toStatusIcon(item.status);
                         return `  ${statusIcon} ${key.toUpperCase()} (${item.status}): ${item.detail}`;
                     })
                     .filter(Boolean)
@@ -245,7 +251,7 @@ const MeetingDetails: React.FC<MeetingDetailsProps> = ({ meeting: initialMeeting
                         const item = ds.meddicc?.[key];
                         if (!item) return null;
                         const label = key.replace(/([A-Z])/g, ' $1').trim();
-                        const statusIcon = item.status === 'Clear' ? '✅' : item.status === 'Partial' ? '⚠️' : '❌';
+                        const statusIcon = toStatusIcon(item.status);
                         return `  ${statusIcon} ${label.toUpperCase()} (${item.status}): ${item.detail}`;
                     })
                     .filter(Boolean)

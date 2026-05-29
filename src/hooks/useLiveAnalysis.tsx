@@ -1,25 +1,47 @@
 import { useState, useCallback, useRef } from 'react';
 import { LiveAnalysisData } from '../types/liveAnalysis';
 
-const getLiveAnalysisPrompt = (context: string) => `You are an expert real-time sales intelligence engine analyzing a live sales call transcript. Your job is to extract structured insights across four areas: BANT, MEDDIC, Objections, and Buying Signals. Return ONLY valid JSON. No explanation, no markdown, no text outside the JSON object. 
+// Serialise prior analysis state into a compact JSON block for the prompt.
+const serializePriorState = (prior: LiveAnalysisData): string =>
+  JSON.stringify({
+    bant: prior.bant,
+    meddic: prior.meddic,
+    objections: prior.objections,
+    signals: prior.signals,
+  }, null, 2);
+
+const getLiveAnalysisPrompt = (
+  fullContext: string,
+  deltaContext: string,
+  priorState: LiveAnalysisData | null
+) => `You are an expert real-time sales intelligence engine analyzing a live sales call transcript. Your job is to extract structured insights across four areas: BANT, MEDDIC, Objections, and Buying Signals. Return ONLY valid JSON. No explanation, no markdown, no text outside the JSON object.
 
     ═══════════════════════════════════════
     RULES
     ═══════════════════════════════════════
 
-    OVERWRITE on every call:
+    OVERWRITE on every call (re-derive from the FULL TRANSCRIPT):
     → bant
     → meddic
 
-    APPEND ONLY (never remove prior entries) on every call:
+    APPEND ONLY — never remove prior entries. Add new ones found in NEW TRANSCRIPT only:
     → objections
     → signals
 
+${priorState ? `    ═══════════════════════════════════════
+    PRIOR STATE (from previous analysis run)
     ═══════════════════════════════════════
+    The fields below represent what was already captured. For objections and signals,
+    copy them into your response EXACTLY AS-IS, then append any new ones found in the
+    NEW TRANSCRIPT section. Do not modify, deduplicate, or remove prior entries.
+
+${serializePriorState(priorState)}
+
+` : ''}    ═══════════════════════════════════════
     SECTION 1: BANT
     ═══════════════════════════════════════
 
-    Scan the transcript for Budget, Authority, Need, and Timeline signals.
+    Scan the FULL TRANSCRIPT for Budget, Authority, Need, and Timeline signals.
 
     For each field return:
     - emoji:    "✅" if clearly confirmed, "⚠️" if implied or partial, "❌" if not mentioned
@@ -36,7 +58,7 @@ const getLiveAnalysisPrompt = (context: string) => `You are an expert real-time 
     SECTION 2: MEDDIC
     ═══════════════════════════════════════
 
-    Scan the transcript for MEDDIC signals.
+    Scan the FULL TRANSCRIPT for MEDDIC signals.
 
     Same structure as BANT: emoji + status + evidence + suggested_question per field.
 
@@ -52,7 +74,7 @@ const getLiveAnalysisPrompt = (context: string) => `You are an expert real-time 
     SECTION 3: OBJECTIONS
     ═══════════════════════════════════════
 
-    Capture two types. APPEND new entries — never remove existing ones.
+    Capture two types. APPEND new entries from NEW TRANSCRIPT — never remove existing ones.
 
     TYPE A — Customer Questions (open or unanswered)
     TYPE B — AE Deferrals (follow-up commitments made by the AE)
@@ -70,7 +92,7 @@ const getLiveAnalysisPrompt = (context: string) => `You are an expert real-time 
     You are detecting EVERY meaningful signal in the conversation — positive buying signals,
     negative risk signals, and neutral informational signals that affect deal outcome.
     Cast a wide net. It is better to capture more signals than to miss important ones.
-    APPEND new signals only — never remove prior ones.
+    APPEND new signals only from the NEW TRANSCRIPT section — never remove prior ones.
 
     ── SIGNAL TYPES (use ALL that apply per signal, can be multiple) ──────────────────
 
@@ -129,13 +151,11 @@ const getLiveAnalysisPrompt = (context: string) => `You are an expert real-time 
       security/compliance requirements, expressing concern about switching costs,
       data migration complexity, or organisational change management.
 
-    urgency (negative pressure)
+    urgency
     → External deadlines or pressure creating urgency that could stall or accelerate.
     → Triggers: "our contract with [vendor] expires", "we have a board deadline",
       "our team is blocked until we solve this", "we're already behind",
       "we need this yesterday", "leadership is asking about this weekly".
-      NOTE: capture both positive urgency (accelerates deal) and negative urgency
-      (pressure that may cause hasty objections or budget freezes).
 
     competitor_signal
     → Prospect mentions alternative vendors, current tools, or is running a parallel evaluation.
@@ -155,44 +175,26 @@ const getLiveAnalysisPrompt = (context: string) => `You are an expert real-time 
 
     cost
     → Any discussion of price, budget, ROI, cost comparison, or financial justification.
-    → Triggers: asking about pricing tiers, asking about ROI calculations,
-      referencing a specific budget number, asking about cost vs. competitors,
-      mentioning TCO (total cost of ownership), asking about implementation costs,
-      payment terms, discounts, or multi-year deals. Neutral — needs context to determine
-      if it's a positive (budget confirmed) or friction (price too high) signal.
 
     process_signal
     → Prospect reveals internal decision-making process, stakeholders, or evaluation criteria.
-    → Triggers: "we have a security review", "procurement will need to sign off",
-      "we do a 30-day POC", "legal reviews all contracts", "our IT team will need to test",
-      describing an internal committee or approval chain, mentioning a specific
-      evaluation scorecard or criteria they're using.
 
     timeline
     → Any statement revealing when the prospect wants or needs to be live.
-    → Triggers: mentioning a specific date, quarter, or milestone for go-live,
-      tying the purchase to a business event (launch, fiscal year, hiring cycle),
-      asking about implementation time, mentioning internal deadlines or commitments.
 
     ── INTENSITY ─────────────────────────────────────────────────────────────────────
 
-    Score each signal:
-    "high"   → Explicit, direct, clear statement. Quote is verbatim or near-verbatim.
-               Requires immediate AE response or action.
-    "medium" → Implied or indirect. Requires some interpretation. Worth tracking.
-    "low"    → Subtle, background context. May be relevant later but not urgent now.
+    "high"   → Explicit, direct, clear statement. Requires immediate AE response.
+    "medium" → Implied or indirect. Worth tracking.
+    "low"    → Subtle background context.
 
     ── DETECTION RULES ───────────────────────────────────────────────────────────────
 
-    1. Capture signals from BOTH speakers — what the PROSPECT says AND how the AE responds
-       (AE responses can reveal competitor mentions, risk acknowledgements, or stalls).
-    2. Do NOT require the signal to be explicit — implied signals count.
-       "We've been on our current tool for 5 years" → implied stall_signal + competitor_signal.
-    3. One quote can carry MULTIPLE signal types — use all that apply.
-    4. Short quotes are better than long ones — tightest excerpt that captures the signal.
-    5. The ask_now must be a precise, natural follow-up question the AE should ask
-       immediately in response to THIS specific signal. Under 20 words.
-       NOT generic ("Can you tell me more?") — specific to what was said.
+    1. Capture signals from BOTH speakers.
+    2. Implied signals count — "We've been on our current tool for 5 years" → stall_signal + competitor_signal.
+    3. One quote can carry MULTIPLE signal types.
+    4. Short quotes are better than long ones.
+    5. ask_now must be under 20 words, specific to THIS signal. Not generic.
     6. Prioritise high-intensity signals at the top of the array.
     7. APPEND ONLY — never remove or overwrite prior signals between analysis runs.
 
@@ -224,8 +226,15 @@ const getLiveAnalysisPrompt = (context: string) => `You are an expert real-time 
         ]
     }
 
-    TRANSCRIPT:
-    ${context}
+    ═══════════════════════════════════════
+    FULL TRANSCRIPT (use for BANT + MEDDIC re-derivation):
+    ═══════════════════════════════════════
+${fullContext}
+${deltaContext && deltaContext !== fullContext ? `
+    ═══════════════════════════════════════
+    NEW TRANSCRIPT (since last analysis — use for new objections + signals only):
+    ═══════════════════════════════════════
+${deltaContext}` : ''}
 `;
 
 // ─── Anthropic API fallback (used when electronAPI is not available) ─────────
@@ -257,6 +266,48 @@ const runAnalysisViaAnthropicAPI = async (livePrompt: string): Promise<LiveAnaly
   return JSON.parse(jsonStr) as LiveAnalysisData;
 };
 
+// ─── Client-side merge guard ──────────────────────────────────────────────────
+// Even with the prior-state prompt, a model switch or truncation could drop
+// previously captured entries. This ensures we never lose objections or signals
+// that were already in state, regardless of what the LLM returns.
+const isSimilar = (a: string, b: string): boolean => {
+  const clean = (s: string) => s.toLowerCase().replace(/[^a-z0-9 ]/g, '').trim();
+  const ca = clean(a);
+  const cb = clean(b);
+  if (ca === cb) return true;
+  // One is a substring of the other (covers paraphrasing)
+  if (ca.length > 10 && (ca.includes(cb.substring(0, 20)) || cb.includes(ca.substring(0, 20)))) return true;
+  return false;
+};
+
+const mergeWithPrior = (
+  incoming: LiveAnalysisData,
+  prior: LiveAnalysisData | null
+): LiveAnalysisData => {
+  if (!prior) return incoming;
+
+  // Merge objections: keep all prior, add any new ones not already present
+  const mergedObjections = [...prior.objections];
+  for (const obj of incoming.objections) {
+    const alreadyPresent = mergedObjections.some(p => isSimilar(p.quote, obj.quote));
+    if (!alreadyPresent) mergedObjections.push(obj);
+  }
+
+  // Merge signals: keep all prior, add any new ones not already present
+  const mergedSignals = [...prior.signals];
+  for (const sig of incoming.signals) {
+    const alreadyPresent = mergedSignals.some(p => isSimilar(p.quote, sig.quote));
+    if (!alreadyPresent) mergedSignals.push(sig);
+  }
+
+  return {
+    bant: incoming.bant,       // always overwrite — re-derived from full transcript
+    meddic: incoming.meddic,   // always overwrite — re-derived from full transcript
+    objections: mergedObjections,
+    signals: mergedSignals,
+  };
+};
+
 export const useLiveAnalysis = (
   transcriptRef: React.MutableRefObject<Array<{ speaker: string; displayName?: string; text: string; timestamp: number }>>,
   isMeetingPaused: boolean
@@ -266,36 +317,65 @@ export const useLiveAnalysis = (
   const [error, setError] = useState<string | null>(null);
   // Ref-based in-flight guard — avoids stale closure issues that a state-based check would have.
   const isLoadingRef = useRef(false);
+  // Cursor: index of the last transcript entry that was part of the FULL context sent on
+  // the previous run. On refresh runs we send only the delta (new turns since then),
+  // paired with the previous analysis as prior state. First run always sends everything.
+  const lastAnalyzedIndexRef = useRef<number>(0);
+  // Mirror of analysisData in a ref so the merge helper inside runAnalysis can read it
+  // without a stale closure (useCallback deps would force re-creating on every render).
+  const analysisDataRef = useRef<LiveAnalysisData | null>(null);
+
+  // Keep ref in sync with state so the runAnalysis closure always sees the latest value.
+  const setAnalysisDataAndRef = useCallback((data: LiveAnalysisData | null) => {
+    analysisDataRef.current = data;
+    setAnalysisData(data);
+  }, []);
 
   const runAnalysis = useCallback(async (force = false) => {
     const transcript = transcriptRef.current;
-    // Allow forced runs (manual button clicks, end-of-meeting analysis) to bypass
-    // the pause guard. Only automatic/scheduled refreshes should be blocked when paused.
     if (!transcript?.length || (!force && isMeetingPaused)) return;
 
-    // Prevent concurrent runs: a second call while one is in-flight would register
-    // duplicate IPC listeners on the shared 'live-analysis-result' channel, causing
-    // both promises to resolve with the same result.
     if (isLoadingRef.current) {
       console.warn('[useLiveAnalysis] Analysis already in-flight, skipping duplicate call.');
       return;
     }
 
     isLoadingRef.current = true;
-
     setIsLoading(true);
     setError(null);
 
     let resultCleanup: (() => void) | undefined;
     let errorCleanup: (() => void) | undefined;
 
-    try {
-      const context = transcript
-        .filter(t => !['system', 'ai', 'assistant', 'model'].includes(t.speaker?.toLowerCase()))
-        .map(t => `${t.speaker === 'user' ? 'REP' : 'PROSPECT'}: ${t.text}`)
-        .join('\n');
+    // Snapshot cursor and prior state at call time to avoid stale closures
+    const priorState = analysisDataRef.current;
+    const deltaStartIndex = priorState ? lastAnalyzedIndexRef.current : 0;
+    const currentEndIndex = transcript.length;
 
-      const livePrompt = getLiveAnalysisPrompt(context);
+    try {
+      // ── Build transcript strings ─────────────────────────────────────
+      // Each turn is formatted as: "SPEAKER_LABEL (DisplayName): text"
+      // Using displayName gives the LLM real speaker identity for accurate
+      // attribution of objections, champion detection, and authority signals.
+      const formatTurn = (t: { speaker: string; displayName?: string; text: string }) => {
+        const role = t.speaker === 'user' ? 'REP' : 'PROSPECT';
+        const name = t.displayName ? ` (${t.displayName})` : '';
+        return `${role}${name}: ${t.text}`;
+      };
+
+      const humanTurns = transcript.filter(
+        t => !['system', 'ai', 'assistant', 'model'].includes(t.speaker?.toLowerCase())
+      );
+
+      // Full transcript — always sent, used for BANT + MEDDIC re-derivation
+      const fullContext = humanTurns.map(formatTurn).join('\n');
+
+      // Delta transcript — only turns since the last analysis run
+      // Used for new objections + signals detection only
+      const deltaTurns = humanTurns.slice(deltaStartIndex);
+      const deltaContext = deltaTurns.length > 0 ? deltaTurns.map(formatTurn).join('\n') : fullContext;
+
+      const livePrompt = getLiveAnalysisPrompt(fullContext, deltaContext, priorState);
 
       // ── Electron path ────────────────────────────────────────────────
       if (window.electronAPI?.startLiveAnalysis) {
@@ -310,7 +390,7 @@ export const useLiveAnalysis = (
               if (jsonMatch) jsonStr = jsonMatch[1];
               resolve(JSON.parse(jsonStr));
             } catch {
-              reject(new Error('Failed to parse analysis'));
+              reject(new Error('Failed to parse analysis result'));
             }
           });
 
@@ -322,17 +402,25 @@ export const useLiveAnalysis = (
 
         await window.electronAPI.startLiveAnalysis(livePrompt);
         const parsed = await analysisPromise;
-        setAnalysisData(parsed);
-        // Persist to meeting record so Post-Call → Live Analysis tab shows the data
-        window.electronAPI?.updateLiveAnalysis?.(parsed).catch((err: any) =>
+
+        // Client-side merge: ensures prior objections/signals are never lost even if
+        // the LLM dropped them (model switch, context truncation, etc.)
+        const merged = mergeWithPrior(parsed, priorState);
+
+        // Advance cursor so next delta run only processes new turns
+        lastAnalyzedIndexRef.current = currentEndIndex;
+
+        setAnalysisDataAndRef(merged);
+        window.electronAPI?.updateLiveAnalysis?.(merged).catch((err: any) =>
           console.error('[useLiveAnalysis] Failed to persist analysis:', err)
         );
       } else {
         // ── Anthropic API fallback (web / dev environment) ────────────
         const parsed = await runAnalysisViaAnthropicAPI(livePrompt);
-        setAnalysisData(parsed);
-        // Persist to meeting record so Post-Call → Live Analysis tab shows the data
-        window.electronAPI?.updateLiveAnalysis?.(parsed).catch((err: any) =>
+        const merged = mergeWithPrior(parsed, priorState);
+        lastAnalyzedIndexRef.current = currentEndIndex;
+        setAnalysisDataAndRef(merged);
+        window.electronAPI?.updateLiveAnalysis?.(merged).catch((err: any) =>
           console.error('[useLiveAnalysis] Failed to persist analysis:', err)
         );
       }
@@ -344,9 +432,11 @@ export const useLiveAnalysis = (
       resultCleanup?.();
       errorCleanup?.();
     }
-  }, [transcriptRef, isMeetingPaused]);
+  }, [transcriptRef, isMeetingPaused, setAnalysisDataAndRef]);
 
   const resetAnalysis = useCallback(() => {
+    analysisDataRef.current = null;
+    lastAnalyzedIndexRef.current = 0;
     setAnalysisData(null);
     setError(null);
   }, []);

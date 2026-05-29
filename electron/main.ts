@@ -191,6 +191,10 @@ export class AppState {
   private updateAvailable: boolean = false
   private disguiseMode: 'terminal' | 'settings' | 'activity' | 'none' = 'none'
   private _currentLiveAnalysis: LiveAnalysisData | null = null;
+  // When setCurrentLiveAnalysis is called after endMeeting has already run, we
+  // need to know which meetingId to patch. This is set by endMeeting() and cleared
+  // after the late-arriving result is saved.
+  private _pendingLiveAnalysisMeetingId: string | null = null;
   private speakerNameMap: { user: string, client: string };
 
   // View management
@@ -1293,6 +1297,11 @@ export class AppState {
     // rather than getRecentMeetings(1) which could return a different meeting if the
     // user starts a new session before background processing finishes.
     const meetingId = await this.intelligenceManager.stopMeeting();
+    // If an analysis call is currently in-flight, record the meetingId so
+    // setCurrentLiveAnalysis() can patch the DB when the result arrives.
+    if (!this._currentLiveAnalysis) {
+      this._pendingLiveAnalysisMeetingId = meetingId;
+    }
 
     // Revert to Default Model — synchronous, no blocking I/O
     try {
@@ -1603,6 +1612,26 @@ export class AppState {
 
   public setCurrentLiveAnalysis(data: LiveAnalysisData | null): void {
     this._currentLiveAnalysis = data;
+
+    // If endMeeting() already ran and left a pending meetingId, this is a late-arriving
+    // analysis result. Patch it directly into the saved meeting record in the DB.
+    if (data && this._pendingLiveAnalysisMeetingId) {
+      const meetingId = this._pendingLiveAnalysisMeetingId;
+      this._pendingLiveAnalysisMeetingId = null;
+      try {
+        const db = DatabaseManager.getInstance();
+        const meeting = db.getMeetingDetails(meetingId);
+        if (meeting) {
+          const existing = meeting.detailedSummary || { actionItems: [], keyPoints: [] };
+          db.updateMeeting(meetingId, {
+            detailedSummary: { ...existing, liveAnalysis: data }
+          });
+          console.log(`[AppState] Late-arriving live analysis patched into meeting ${meetingId}`);
+        }
+      } catch (err) {
+        console.error('[AppState] Failed to patch late live analysis:', err);
+      }
+    }
   }
 
   public clearCurrentLiveAnalysis(): void {

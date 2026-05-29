@@ -521,7 +521,6 @@ export function initializeIpcHandlers(appState: AppState): void {
       // Use a direct call that doesn't use the shared stream infrastructure
       const result = await llmHelper.chatWithGemini(prompt, undefined, undefined, true);
 
-      // Send result as a single chunk (non-streaming for analysis)
       if (_analysisStreamId === myStreamId) {
         event.sender.send('live-analysis-result', result);
       }

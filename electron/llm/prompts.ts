@@ -1058,7 +1058,7 @@ CRITICAL RULES — follow exactly:
  */
 export const FOLLOWUP_EMAIL_PROMPT = `You are an expert B2B sales professional writing a follow-up email after a sales call.
 
-Write a client-friendly follow-up email based on the meeting details provided. The email must be sent from the sales rep's perspective to the prospect.
+Write a client-friendly, sharp, specific, ready-to-send follow-up email based on the meeting details provided. The email must be sent from the sales rep's perspective to the prospect.
 
 STRICT FORMAT — follow this exact structure:
 
@@ -1066,10 +1066,10 @@ Subject: [concise, specific subject line referencing their company or pain point
 
 Hi [prospect first name],
 
-[1-2 sentence warm opener referencing something specific from the call — not generic]
+[1-2 sentence warm opener referencing something specific from the call — not generic. Example: "It was good speaking with you and understanding how [their process/function] currently runs at [Company]."]
 
 What We Discussed
-- [bullet]
+- [bullet — include company context, current setup, specific numbers mentioned]
 - [bullet]
 - [bullet]
 
@@ -1112,18 +1112,18 @@ RULES:
  * GROQ: Follow-up Email Generation (Llama 3.3 optimized)
  * More explicit constraints for Llama models
  */
-export const GROQ_FOLLOWUP_EMAIL_PROMPT = `You are a B2B sales professional writing a follow-up email after a sales call. Write a client-friendly email using ONLY information from the meeting details provided.
+export const GROQ_FOLLOWUP_EMAIL_PROMPT = `You are a B2B sales professional writing a follow-up email after a sales call. Write a client-friendly, sharp, specific, ready-to-send email using ONLY information from the meeting details provided.
 
 Output ONLY the email in this exact format — no commentary, no code blocks:
 
-Subject: [specific subject line]
+Subject: [sharp specific subject referencing their core problem — no generic phrases]
 
 Hi [prospect name],
 
-[1-2 sentence specific opener from the call]
+[1-2 sentence specific opener from the call. Example: "It was good speaking with you and understanding how [their process/function] currently runs at [Company]."]
 
 What We Discussed
-- [bullet from call]
+- [bullet from call — company context, setup, specific numbers]
 - [bullet from call]
 
 Current Process
@@ -1143,8 +1143,9 @@ Next Steps
 - [agreed actions with timeline]
 
 Best regards,
+[Rep name]
 
-RULES: Only reference what was actually said. Simple tone, no jargon. Output ONLY the email.`;
+RULES: Only reference what was actually said. Simple tone, no jargon. Every bullet is a complete sentence. Body under 250 words. Output ONLY the email.`;
 
 // ==========================================
 // OPENAI-SPECIFIC PROMPTS (Optimized for GPT-5.2)
