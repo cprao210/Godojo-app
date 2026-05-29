@@ -23,12 +23,12 @@ interface FloatingDockProps {
     // Chat panel props
     transcriptRef: React.MutableRefObject<Array<{ speaker: string; displayName?: string; text: string; timestamp: number }>>;
     rollingTranscript: string;
-    isInterviewerSpeaking: boolean;
+    isClientSpeaking: boolean;
     showTranscript: boolean;
     onToggleTranscript: (v: boolean) => void;
     currentModel: string;
     onSelectModel: (m: string) => void;
-    speakerNames: { user: string; interviewer: string };
+    speakerNames: { user: string; client: string };
 
     // Settings
     shortcuts: ShortcutConfig;
@@ -39,7 +39,7 @@ interface FloatingDockProps {
 // ─── Chat message type (mirrors FloatingChatPanel) ──────────────────────────
 interface ChatMessage {
     id: string;
-    role: 'user' | 'system' | 'interviewer';
+    role: 'user' | 'system' | 'client';
     text: string;
     isStreaming?: boolean;
     intent?: string;
@@ -53,7 +53,7 @@ export const FloatingDock: React.FC<FloatingDockProps> = ({
     onToggleGhost,
     transcriptRef,
     rollingTranscript,
-    isInterviewerSpeaking,
+    isClientSpeaking,
     showTranscript,
     onToggleTranscript,
     currentModel,
@@ -184,7 +184,7 @@ export const FloatingDock: React.FC<FloatingDockProps> = ({
                                     transcriptRef={transcriptRef}
                                     isMeetingPaused={isMeetingPaused}
                                     rollingTranscript={rollingTranscript}
-                                    isInterviewerSpeaking={isInterviewerSpeaking}
+                                    isClientSpeaking={isClientSpeaking}
                                     showTranscript={showTranscript}
                                     currentModel={currentModel}
                                     onSelectModel={onSelectModel}

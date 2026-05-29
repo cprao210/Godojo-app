@@ -89,18 +89,18 @@ export class IntelligenceManager extends EventEmitter {
     // Context Management (delegates to session)
     // ============================================
 
-    public getSpeakerNameMap(): { user: string; interviewer: string } {
+    public getSpeakerNameMap(): { user: string; client: string } {
         return this.session.getSpeakerNameMap();
     }
 
     /**
      * Get display name for a speaker role
      */
-    public getDisplayNameForSpeaker(role: 'user' | 'interviewer' | 'assistant'): string {
+    public getDisplayNameForSpeaker(role: 'user' | 'client' | 'assistant'): string {
         return this.session.getDisplayNameForSpeaker(role);
     }
 
-    public updateSpeakerNames(names: { user: string; interviewer: string }): void {
+    public updateSpeakerNames(names: { user: string; client: string }): void {
         this.session.updateSpeakerNames(names);
     }
 
@@ -135,8 +135,8 @@ export class IntelligenceManager extends EventEmitter {
         return this.session.getFormattedContext(lastSeconds);
     }
 
-    getLastInterviewerTurn(): string | null {
-        return this.session.getLastInterviewerTurn();
+    getLastClientTurn(): string | null {
+        return this.session.getLastClientTurn();
     }
 
     logUsage(type: string, question: string, answer: string): void {

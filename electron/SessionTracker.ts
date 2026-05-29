@@ -22,7 +22,7 @@ export interface SuggestionTrigger {
 
 // Context item matching Swift ContextManager structure
 export interface ContextItem {
-    role: 'interviewer' | 'user' | 'assistant';
+    role: 'client' | 'user' | 'assistant';
     text: string;
     timestamp: number;
 }
@@ -54,9 +54,9 @@ export class SessionTracker {
         organizer?: string;
     } | null = null;
 
-    private speakerNameMap: { user: string; interviewer: string } = {
+    private speakerNameMap: { user: string; client: string } = {
         user: 'Me',
-        interviewer: 'Them'
+        client: 'Them'
     };
 
     // Full Session Tracking (Persisted)
@@ -71,16 +71,16 @@ export class SessionTracker {
     private transcriptEpochSummaries: string[] = [];
     private isCompacting: boolean = false;
 
-    // Track interim interviewer segment
-    private lastInterimInterviewer: TranscriptSegment | null = null;
+    // Track interim client segment
+    private lastInterimClient: TranscriptSegment | null = null;
 
     // Detected coding question from transcript or screenshot extraction
     private detectedCodingQuestion: string | null = null;
     private codingQuestionSource: 'screenshot' | 'transcript' | null = null;
     private codingQuestionSetAt: number | null = null;
 
-    // Rolling buffer for multi-segment interviewer question detection
-    private recentInterviewerBuffer: { text: string; timestamp: number }[] = [];
+    // Rolling buffer for multi-segment client question detection
+    private recentClientBuffer: { text: string; timestamp: number }[] = [];
     private static readonly INTERVIEWER_BUFFER_WINDOW_MS = 5 * 60 * 1000; // 5 minutes
     // Screenshot-detected question stays sticky for 3 min before transcript can override
     private static readonly SCREENSHOT_STALE_MS = 3 * 60 * 1000;
@@ -100,12 +100,12 @@ export class SessionTracker {
      * Get display name for a speaker role
      * Used by UI to show real names instead of 'Me'/'Them'
      */
-    public getDisplayNameForSpeaker(role: 'user' | 'interviewer' | 'assistant'): string {
+    public getDisplayNameForSpeaker(role: 'user' | 'client' | 'assistant'): string {
         if (role === 'user') {
             return this.speakerNameMap.user;
         }
-        if (role === 'interviewer') {
-            return this.speakerNameMap.interviewer;
+        if (role === 'client') {
+            return this.speakerNameMap.client;
         }
         return 'Assistant';
     }
@@ -114,7 +114,7 @@ export class SessionTracker {
         this.currentMeetingMetadata = metadata;
 
         // Reset to defaults first so a re-used session never bleeds names from a previous meeting.
-        this.speakerNameMap = { user: 'Me', interviewer: 'Them' };
+        this.speakerNameMap = { user: 'Me', client: 'Them' };
 
         const attendees: any[] = metadata?.attendees || [];
 
@@ -122,7 +122,7 @@ export class SessionTracker {
             // No attendee list — try to extract the opposite party's name from the meeting title.
             if (metadata?.title) {
                 const fromTitle = this.extractNameFromTitle(metadata.title);
-                if (fromTitle) this.speakerNameMap.interviewer = fromTitle;
+                if (fromTitle) this.speakerNameMap.client = fromTitle;
             }
             console.log('[SessionTracker] Speaker name map resolved (no attendees):', this.speakerNameMap);
             return;
@@ -181,7 +181,7 @@ export class SessionTracker {
             this.speakerNameMap.user = selfName;
         }
 
-        // The remaining non-self attendees are the remote participants (system audio = 'interviewer').
+        // The remaining non-self attendees are the remote participants (system audio = 'client').
         const others = attendees.filter(a => !a.self);
 
         if (others.length >= 1) {
@@ -204,24 +204,24 @@ export class SessionTracker {
 
             if (companyLabels.length > 0 && !hasPersonalDomain) {
                 // All professional domains → e.g. "Salesforce" or "Instagram, Facebook"
-                this.speakerNameMap.interviewer = companyLabels.join(', ');
+                this.speakerNameMap.client = companyLabels.join(', ');
             } else if (companyLabels.length > 0 && hasPersonalDomain) {
                 // Mix of professional and personal → e.g. "Salesforce + Other Party"
-                this.speakerNameMap.interviewer = companyLabels.join(', ') + ' + Other Party';
+                this.speakerNameMap.client = companyLabels.join(', ') + ' + Other Party';
             } else {
                 // All personal/unknown domains → use display name (single attendee) or generic fallback.
                 if (others.length === 1) {
                     const name = resolveName(others[0]);
-                    if (name) this.speakerNameMap.interviewer = name;
+                    if (name) this.speakerNameMap.client = name;
                 } else {
-                    this.speakerNameMap.interviewer = 'Other Party';
+                    this.speakerNameMap.client = 'Other Party';
                 }
             }
         } else {
             // No non-self attendees at all — try meeting title as last resort.
             if (metadata?.title) {
                 const fromTitle = this.extractNameFromTitle(metadata.title);
-                if (fromTitle) this.speakerNameMap.interviewer = fromTitle;
+                if (fromTitle) this.speakerNameMap.client = fromTitle;
             }
         }
         console.log('[SessionTracker] Speaker name map resolved:', this.speakerNameMap);
@@ -245,16 +245,16 @@ export class SessionTracker {
     }
 
     // Expose for IPC / display layer:
-    public getSpeakerNameMap(): { user: string; interviewer: string } {
+    public getSpeakerNameMap(): { user: string; client: string } {
         return { ...this.speakerNameMap };
     }
 
-    public updateSpeakerNames(names: { user: string; interviewer: string }): void {
+    public updateSpeakerNames(names: { user: string; client: string }): void {
         if (names.user && names.user.trim()) {
             this.speakerNameMap.user = names.user.trim();
         }
-        if (names.interviewer && names.interviewer.trim()) {
-            this.speakerNameMap.interviewer = names.interviewer.trim();
+        if (names.client && names.client.trim()) {
+            this.speakerNameMap.client = names.client.trim();
         }
         console.log('[SessionTracker] Speaker names updated manually:', this.speakerNameMap);
     }
@@ -325,11 +325,11 @@ export class SessionTracker {
         this.detectedCodingQuestion = null;
         this.codingQuestionSource = null;
         this.codingQuestionSetAt = null;
-        this.recentInterviewerBuffer = [];
+        this.recentClientBuffer = [];
     }
 
     /**
-     * Heuristic to decide if an interviewer statement looks like a coding question.
+     * Heuristic to decide if an client statement looks like a coding question.
      * Requires ≥2 of the signal patterns and minimum length to avoid false positives
      * on casual conversation ("can you implement X?" → yes, "sounds good!" → no).
      */
@@ -356,7 +356,7 @@ export class SessionTracker {
      * Only stores FINAL transcripts.
      * Returns { role, isRefinementCandidate } so the engine can decide whether to trigger follow-up.
      */
-    addTranscript(segment: TranscriptSegment): { role: 'interviewer' | 'user' | 'assistant' } | null {
+    addTranscript(segment: TranscriptSegment): { role: 'client' | 'user' | 'assistant' } | null {
         if (!segment.final) return null;
 
         const role = this.mapSpeakerToRole(segment.speaker);
@@ -446,7 +446,7 @@ export class SessionTracker {
         this.assistantResponseHistory.push({
             text: cleanText,
             timestamp: Date.now(),
-            questionContext: this.getLastInterviewerTurn() || 'unknown'
+            questionContext: this.getLastClientTurn() || 'unknown'
         });
 
         // Keep history bounded (last 10 responses)
@@ -461,34 +461,34 @@ export class SessionTracker {
     /**
      * Handle incoming transcript from native audio service
      */
-    handleTranscript(segment: TranscriptSegment): { role: 'interviewer' | 'user' | 'assistant' } | null {
-        // Track interim segments for interviewer to prevent data loss on stop
+    handleTranscript(segment: TranscriptSegment): { role: 'client' | 'user' | 'assistant' } | null {
+        // Track interim segments for client to prevent data loss on stop
         if (segment.speaker === 'user') {
             if (isVerboseLogging() && (Math.random() < 0.05 || segment.final)) {
                 console.log(`[SessionTracker] RX User Segment: Final=${segment.final} Text="${segment.text.substring(0, 50)}..."`);
             }
         }
-        if (segment.speaker === 'interviewer') {
+        if (segment.speaker === 'client') {
             if (isVerboseLogging() && (Math.random() < 0.05 || segment.final)) {
-                console.log(`[SessionTracker] RX Interviewer Segment: Final=${segment.final} Text="${segment.text.substring(0, 50)}..."`);
+                console.log(`[SessionTracker] RX Client Segment: Final=${segment.final} Text="${segment.text.substring(0, 50)}..."`);
             }
 
             if (!segment.final) {
-                this.lastInterimInterviewer = segment;
+                this.lastInterimClient = segment;
             } else {
-                this.lastInterimInterviewer = null;
+                this.lastInterimClient = null;
 
                 // Add segment to rolling buffer and evict old entries
-                this.recentInterviewerBuffer.push({ text: segment.text, timestamp: segment.timestamp });
+                this.recentClientBuffer.push({ text: segment.text, timestamp: segment.timestamp });
                 const bufferCutoff = Date.now() - SessionTracker.INTERVIEWER_BUFFER_WINDOW_MS;
-                this.recentInterviewerBuffer = this.recentInterviewerBuffer.filter(e => e.timestamp >= bufferCutoff);
+                this.recentClientBuffer = this.recentClientBuffer.filter(e => e.timestamp >= bufferCutoff);
 
                 // Test single segment first; if no match, test accumulated recent turns
-                // (interviewer may state a problem across multiple speech segments)
+                // (client may state a problem across multiple speech segments)
                 if (this.looksLikeCodingQuestion(segment.text)) {
                     this.setCodingQuestion(segment.text, 'transcript');
-                } else if (this.recentInterviewerBuffer.length > 1) {
-                    const combinedText = this.recentInterviewerBuffer.map(e => e.text).join(' ');
+                } else if (this.recentClientBuffer.length > 1) {
+                    const combinedText = this.recentClientBuffer.map(e => e.text).join(' ');
                     if (this.looksLikeCodingQuestion(combinedText)) {
                         this.setCodingQuestion(combinedText, 'transcript');
                     }
@@ -504,8 +504,8 @@ export class SessionTracker {
             ...seg,
             speaker: seg.speaker === 'user'
                 ? (this.speakerNameMap.user || 'Me')
-                : seg.speaker === 'interviewer'
-                    ? (this.speakerNameMap.interviewer || 'Them')
+                : seg.speaker === 'client'
+                    ? (this.speakerNameMap.client || 'Them')
                     : seg.speaker,
         }));
     }
@@ -530,8 +530,8 @@ export class SessionTracker {
         return this.assistantResponseHistory;
     }
 
-    getLastInterimInterviewer(): TranscriptSegment | null {
-        return this.lastInterimInterviewer;
+    getLastInterimClient(): TranscriptSegment | null {
+        return this.lastInterimClient;
     }
 
     /**
@@ -540,7 +540,7 @@ export class SessionTracker {
     getFormattedContext(lastSeconds: number = 120): string {
         const items = this.getContext(lastSeconds);
         return items.map(item => {
-            const label = item.role === 'interviewer' ? (this.speakerNameMap.interviewer || 'INTERVIEWER').toUpperCase() :
+            const label = item.role === 'client' ? (this.speakerNameMap.client || 'CLIENT').toUpperCase() :
                 item.role === 'user' ? (this.speakerNameMap.user || 'ME').toUpperCase() :
                     'ASSISTANT';
             return `[${label}]: ${item.text}`;
@@ -548,11 +548,11 @@ export class SessionTracker {
     }
 
     /**
-     * Get the last interviewer turn
+     * Get the last client turn
      */
-    getLastInterviewerTurn(): string | null {
+    getLastClientTurn(): string | null {
         for (let i = this.contextItems.length - 1; i >= 0; i--) {
-            if (this.contextItems[i].role === 'interviewer') {
+            if (this.contextItems[i].role === 'client') {
                 return this.contextItems[i].text;
             }
         }
@@ -560,12 +560,12 @@ export class SessionTracker {
     }
 
     /**
-     * Get full session context from accumulated transcript (User + Interviewer + Assistant)
+     * Get full session context from accumulated transcript (User + Client + Assistant)
      */
     getFullSessionContext(): string {
         const recentTranscript = this.fullTranscript.map(segment => {
             const role = this.mapSpeakerToRole(segment.speaker);
-            const label = role === 'interviewer' ? (this.speakerNameMap.interviewer || 'INTERVIEWER').toUpperCase() :
+            const label = role === 'client' ? (this.speakerNameMap.client || 'CLIENT').toUpperCase() :
                 role === 'user' ? (this.speakerNameMap.user || 'ME').toUpperCase() :
                     'ASSISTANT';
             return `[${label}]: ${segment.text}`;
@@ -663,11 +663,11 @@ export class SessionTracker {
      * Force-save any pending interim transcript (called on meeting stop)
      */
     flushInterimTranscript(): void {
-        if (this.lastInterimInterviewer) {
-            console.log('[SessionTracker] Force-saving pending interim transcript:', this.lastInterimInterviewer.text);
-            const finalSegment = { ...this.lastInterimInterviewer, final: true };
+        if (this.lastInterimClient) {
+            console.log('[SessionTracker] Force-saving pending interim transcript:', this.lastInterimClient.text);
+            const finalSegment = { ...this.lastInterimClient, final: true };
             this.addTranscript(finalSegment);
-            this.lastInterimInterviewer = null;
+            this.lastInterimClient = null;
         }
     }
 
@@ -685,12 +685,12 @@ export class SessionTracker {
         this.pauseStartedAt = null;
         this.lastAssistantMessage = null;
         this.assistantResponseHistory = [];
-        this.lastInterimInterviewer = null;
+        this.lastInterimClient = null;
         this.detectedCodingQuestion = null;
         this.codingQuestionSource = null;
         this.codingQuestionSetAt = null;
-        this.recentInterviewerBuffer = [];
-        this.speakerNameMap = { user: 'Me', interviewer: 'Them' };
+        this.recentClientBuffer = [];
+        this.speakerNameMap = { user: 'Me', client: 'Them' };
 
     }
 
@@ -698,10 +698,10 @@ export class SessionTracker {
     // Private Helpers
     // ============================================
 
-    mapSpeakerToRole(speaker: string): 'interviewer' | 'user' | 'assistant' {
+    mapSpeakerToRole(speaker: string): 'client' | 'user' | 'assistant' {
         if (speaker === 'user') return 'user';
         if (speaker === 'assistant') return 'assistant';
-        return 'interviewer'; // system audio = interviewer
+        return 'client'; // system audio = client
     }
 
     private evictOldEntries(): void {
@@ -728,7 +728,7 @@ export class SessionTracker {
             const oldEntries = this.fullTranscript.slice(0, summarizeCount);
             const summaryInput = oldEntries.map(seg => {
                 const role = this.mapSpeakerToRole(seg.speaker);
-                const label = role === 'interviewer' ? (this.speakerNameMap.interviewer || 'INTERVIEWER').toUpperCase() :
+                const label = role === 'client' ? (this.speakerNameMap.client || 'CLIENT').toUpperCase() :
                     role === 'user' ? (this.speakerNameMap.user || 'ME').toUpperCase() : 'ASSISTANT';
                 return `[${label}]: ${seg.text}`;
             }).join('\n');

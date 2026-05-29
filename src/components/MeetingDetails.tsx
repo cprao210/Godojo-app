@@ -162,7 +162,7 @@ const MeetingDetails: React.FC<MeetingDetailsProps> = ({ meeting: initialMeeting
     const [isTalktimeOpen, setIsTalktimeOpen] = useState(false);
 
     const speakerNames = (meeting.detailedSummary as any)?.speakerNames as
-        { user: string; interviewer: string } | undefined;
+        { user: string; client: string } | undefined;
 
     const getSpeakerDisplayName = (speaker: string, displayName?: string): string => {
         // 1. Live transcription supplies displayName directly — always prefer it.
@@ -171,7 +171,7 @@ const MeetingDetails: React.FC<MeetingDetailsProps> = ({ meeting: initialMeeting
         //    These are set by SessionTracker (e.g. "Nikhilbarot", "Salesforce").
         //    Fall back to "You" / "Other Party" only when no calendar data was resolved.
         if (speaker === 'user') return speakerNames?.user || 'You';
-        if (speaker === 'interviewer') return speakerNames?.interviewer || 'Other Party';
+        if (speaker === 'client' || speaker === "interviewer") return speakerNames?.client || 'Other Party';
         if (speaker === 'assistant') return 'Assistant';
         return speaker;
     };
@@ -607,22 +607,22 @@ const MeetingDetails: React.FC<MeetingDetailsProps> = ({ meeting: initialMeeting
     };
 
     const computeTalkTime = (transcript: { speaker: string; text: string; timestamp: number; }[] | undefined) => {
-        if (!transcript || transcript.length === 0) return { user: 0, interviewer: 0, userWords: 0, interviewerWords: 0 };
-        let userWords = 0, interviewerWords = 0;
+        if (!transcript || transcript.length === 0) return { user: 0, client: 0, userWords: 0, clientWords: 0 };
+        let userWords = 0, clientWords = 0;
         for (const seg of transcript) {
             if (!seg.text?.trim()) continue; // Ignore empty/system messages
             const wordCount = seg.text.trim().split(/\s+/).filter(Boolean).length; // Count words
             if (seg.speaker === 'user') { userWords += wordCount; }
-            else if (seg.speaker === 'interviewer') { interviewerWords += wordCount };
+            else if (seg.speaker === 'client') { clientWords += wordCount };
         }
-        const totalWords = userWords + interviewerWords;
-        if (totalWords === 0) return { user: 0, interviewer: 0, userWords, interviewerWords };
+        const totalWords = userWords + clientWords;
+        if (totalWords === 0) return { user: 0, client: 0, userWords, clientWords };
         return {
             user: Math.round((userWords / totalWords) * 100),
-            interviewer: Math.round((interviewerWords / totalWords) * 100),
+            client: Math.round((clientWords / totalWords) * 100),
             // Optional raw counts
             userWords,
-            interviewerWords,
+            clientWords,
         };
     };
 
@@ -1516,24 +1516,24 @@ const MeetingDetails: React.FC<MeetingDetailsProps> = ({ meeting: initialMeeting
                                                                     <div className="flex items-center gap-2">
 
                                                                         <span className={`text-sm ${isLight ? 'text-slate-700' : 'text-white/80'}`}>
-                                                                            {getSpeakerDisplayName('interviewer')}
+                                                                            {getSpeakerDisplayName('client')}
                                                                         </span>
                                                                     </div>
 
                                                                     <div className={`text-xs ${isLight ? 'text-slate-400' : 'text-white/40'}`}>
-                                                                        • {talkTime.interviewerWords.toLocaleString()} words spoken
+                                                                        • {talkTime.clientWords.toLocaleString()} words spoken
                                                                     </div>
 
                                                                 </div>
                                                                 <span className={`text-sm font-medium ${isLight ? 'text-slate-800' : 'text-white'}`}>
-                                                                    {talkTime.interviewer}%
+                                                                    {talkTime.client}%
                                                                 </span>
                                                             </div>
 
                                                             <div className={`h-1 overflow-hidden rounded-full ${isLight ? 'bg-slate-200' : 'bg-white/10'}`}>
                                                                 <div
                                                                     className={`h-full rounded-full transition-all duration-500 ${isLight ? 'bg-slate-400' : 'bg-blue-500/30'}`}
-                                                                    style={{ width: `${talkTime.interviewer}%` }}
+                                                                    style={{ width: `${talkTime.client}%` }}
                                                                 />
                                                             </div>
                                                         </div>

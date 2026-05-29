@@ -1679,7 +1679,7 @@ export function initializeIpcHandlers(appState: AppState): void {
   });
 
   // Add this handler
-  safeHandle("get-display-name", async (_, role: 'user' | 'interviewer' | 'assistant') => {
+  safeHandle("get-display-name", async (_, role: 'user' | 'client' | 'assistant') => {
     const intelligenceManager = appState.getIntelligenceManager();
     return intelligenceManager.getDisplayNameForSpeaker(role);
   });
@@ -1718,7 +1718,7 @@ export function initializeIpcHandlers(appState: AppState): void {
 
   });
 
-  safeHandle("update-speaker-names", async (_, names: { user: string; interviewer: string }) => {
+  safeHandle("update-speaker-names", async (_, names: { user: string; client: string }) => {
     const intelligenceManager = appState.getIntelligenceManager();
     // Need to add method to update speaker names in SessionTracker
     (intelligenceManager as any).updateSpeakerNames?.(names);
@@ -1745,7 +1745,7 @@ export function initializeIpcHandlers(appState: AppState): void {
 
   safeHandle("get-speaker-names", async () => {
     return appState.getIntelligenceManager().getSpeakerNameMap?.()
-      ?? { user: 'Me', interviewer: 'Them' };
+      ?? { user: 'Me', client: 'Them' };
   });
 
   safeHandle("seed-demo", async () => {

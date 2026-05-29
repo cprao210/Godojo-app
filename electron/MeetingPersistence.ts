@@ -238,11 +238,11 @@ export class MeetingPersistence {
         // BUG-04 fix: accept metadata snapshot so calendar info is not lost after session.reset()
         metadata?: { title?: string; calendarEventId?: string; source?: 'manual' | 'calendar' } | null,
         liveAnalysisData?: LiveAnalysisData | null,
-        speakerNames?: { user: string; interviewer: string }
+        speakerNames?: { user: string; client: string }
 
     ): Promise<void> {
         let title = "Untitled Session";
-        let summaryData: { actionItems: string[], keyPoints: string[], liveAnalysis?: LiveAnalysisData, speakerNames?: { user: string, interviewer: string } } = { actionItems: [], keyPoints: [] };
+        let summaryData: { actionItems: string[], keyPoints: string[], liveAnalysis?: LiveAnalysisData, speakerNames?: { user: string, client: string } } = { actionItems: [], keyPoints: [] };
 
         // Use passed-in metadata snapshot (NOT this.session.getMeetingMetadata() which is already cleared)
         let calendarEventId: string | undefined;
@@ -294,11 +294,11 @@ export class MeetingPersistence {
 
             // Use the speaker names snapshot captured BEFORE session.reset() was called.
             // Do NOT call this.session.getSpeakerNameMap() here — the session is already
-            // reset at this point and would return the defaults { user: 'Me', interviewer: 'Them' }.
+            // reset at this point and would return the defaults { user: 'Me', client: 'Them' }.
             const resolvedSpeakerNames = speakerNames ?? this.session.getSpeakerNameMap();
 
             // Persist whenever at least one name differs from the generic default.
-            if (resolvedSpeakerNames.user !== 'Me' || resolvedSpeakerNames.interviewer !== 'Them') {
+            if (resolvedSpeakerNames.user !== 'Me' || resolvedSpeakerNames.client !== 'Them') {
                 detailedSummary = {
                     ...detailedSummary,
                     speakerNames: resolvedSpeakerNames
@@ -399,15 +399,15 @@ export class MeetingPersistence {
                     const speakerRaw = match[1].trim().toUpperCase();
                     const text = match[2].trim();
                     // Map common speaker names to user/other
-                    const speaker = ['REP', 'ME', 'USER', 'SALES', 'SELLER'].includes(speakerRaw) ? 'user' : 'interviewer';
+                    const speaker = ['REP', 'ME', 'USER', 'SALES', 'SELLER'].includes(speakerRaw) ? 'user' : 'client';
                     transcript.push({
                         speaker, text, timestamp: i * 5000,
                         final: true
                     });
                 } else if (line.trim()) {
-                    // Plain line — treat as interviewer (remote/other party)
+                    // Plain line — treat as client (remote/other party)
                     transcript.push({
-                        speaker: 'interviewer', text: line.trim(), timestamp: i * 5000,
+                        speaker: 'client', text: line.trim(), timestamp: i * 5000,
                         final: true
                     });
                 }
@@ -479,7 +479,7 @@ export class MeetingPersistence {
                 console.log(`[MeetingPersistence] Recovering meeting ${m.id}...`);
 
                 const context = details.transcript?.map(t => {
-                    const label = t.speaker === 'interviewer' ? 'INTERVIEWER' :
+                    const label = t.speaker === 'client' ? 'CLIENT' :
                         t.speaker === 'user' ? 'ME' : 'ASSISTANT';
                     return `[${label}]: ${t.text}`;
                 }).join('\n') || "";

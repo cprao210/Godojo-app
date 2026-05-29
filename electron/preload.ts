@@ -130,8 +130,8 @@ interface ElectronAPI {
   uploadTranscript: (text: string, title?: string) => Promise<{ success: boolean; meetingId?: string; error?: string }>
   updateMeetingSummary: (id: string, updates: { overview?: string, actionItems?: string[], keyPoints?: string[], actionItemsTitle?: string, keyPointsTitle?: string }) => Promise<boolean>
   onMeetingsUpdated: (callback: () => void) => () => void
-  getDisplayName: (role: 'user' | 'interviewer' | 'assistant') => Promise<string>;
-  getSpeakerNames: () => Promise<{ user: string; interviewer: string }>;
+  getDisplayName: (role: 'user' | 'client' | 'assistant') => Promise<string>;
+  getSpeakerNames: () => Promise<{ user: string; client: string }>;
 
   // Intelligence Mode Events
   onIntelligenceAssistUpdate: (callback: (data: { insight: string }) => void) => () => void
@@ -151,8 +151,8 @@ interface ElectronAPI {
   setDefaultModel: (modelId: string) => Promise<{ success: boolean; error?: string }>
   toggleModelSelector: (coords: { x: number; y: number }) => Promise<void>
   forceRestartOllama: () => Promise<void>
-  onSpeakerNamesResolved: (callback: (names: { user: string; interviewer: string }) => void) => () => void;
-  updateSpeakerNames: (names: { user: string; interviewer: string }) => Promise<{ success: boolean }>,
+  onSpeakerNamesResolved: (callback: (names: { user: string; client: string }) => void) => () => void;
+  updateSpeakerNames: (names: { user: string; client: string }) => Promise<{ success: boolean }>,
 
   // Settings Window
   toggleSettingsWindow: (coords?: { x: number; y: number }) => Promise<void>
@@ -513,7 +513,7 @@ contextBridge.exposeInMainWorld("electronAPI", {
   windowMaximize: () => ipcRenderer.invoke("window-maximize"),
   windowClose: () => ipcRenderer.invoke("window-close"),
   windowIsMaximized: () => ipcRenderer.invoke("window-is-maximized"),
-  updateSpeakerNames: (names: { user: string; interviewer: string }) =>
+  updateSpeakerNames: (names: { user: string; client: string }) =>
     ipcRenderer.invoke("update-speaker-names", names),
 
   analyzeImageFile: (path: string) => ipcRenderer.invoke("analyze-image-file", path),
@@ -570,7 +570,7 @@ contextBridge.exposeInMainWorld("electronAPI", {
       ipcRenderer.removeListener('disguise-changed', subscription)
     }
   },
-  getDisplayName: (role: 'user' | 'interviewer' | 'assistant') => ipcRenderer.invoke("get-display-name", role),
+  getDisplayName: (role: 'user' | 'client' | 'assistant') => ipcRenderer.invoke("get-display-name", role),
   getSpeakerNames: () => ipcRenderer.invoke("get-speaker-names"),
 
   onSettingsVisibilityChange: (callback: (isVisible: boolean) => void) => {

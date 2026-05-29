@@ -47,7 +47,7 @@ export interface Meeting {
         overview?: string;
         actionItems: string[];
         keyPoints: string[];
-        speakerNames?: { user: string; interviewer: string };
+        speakerNames?: { user: string; client: string };
     };
     transcript?: Array<{
         speaker: string;

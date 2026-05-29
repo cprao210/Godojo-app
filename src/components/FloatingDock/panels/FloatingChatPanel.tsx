@@ -6,7 +6,7 @@ import remarkGfm from 'remark-gfm';
 
 interface Message {
     id: string;
-    role: 'user' | 'system' | 'interviewer';
+    role: 'user' | 'system' | 'client';
     text: string;
     isStreaming?: boolean;
     intent?: string;
@@ -15,11 +15,11 @@ interface Message {
 interface FloatingChatPanelProps {
     transcriptRef?: React.MutableRefObject<Array<{ speaker: string; displayName?: string; text: string; timestamp: number }>>;
     rollingTranscript: string;
-    isInterviewerSpeaking: boolean;
+    isClientSpeaking: boolean;
     showTranscript: boolean;
     currentModel: string;
     onSelectModel: (m: string) => void;
-    speakerNames: { user: string; interviewer: string };
+    speakerNames: { user: string; client: string };
     // Lifted state — preserves history across panel switches
     isMeetingPaused: boolean;
     messages: Message[];
@@ -66,7 +66,7 @@ const MessageBubble: React.FC<{ msg: Message }> = ({ msg }) => {
         );
     }
 
-    if (msg.role === 'interviewer') {
+    if (msg.role === 'client') {
         return (
             <motion.div
                 initial={{ opacity: 0, y: 6 }}
@@ -140,7 +140,7 @@ const MessageBubble: React.FC<{ msg: Message }> = ({ msg }) => {
 
 export const FloatingChatPanel: React.FC<FloatingChatPanelProps> = ({
     rollingTranscript,
-    isInterviewerSpeaking,
+    isClientSpeaking,
     isMeetingPaused,
     showTranscript,
     speakerNames,
@@ -347,7 +347,7 @@ export const FloatingChatPanel: React.FC<FloatingChatPanelProps> = ({
             </div>
 
             {/* Rolling transcript strip */}
-            {showTranscript && (rollingTranscript || isInterviewerSpeaking) && (
+            {showTranscript && (rollingTranscript || isClientSpeaking) && (
                 <div
                     className="px-5 py-2.5 shrink-0"
                     style={{ borderBottom: '1px solid rgba(255,255,255,0.05)', background: 'rgba(255,255,255,0.02)' }}
@@ -355,9 +355,9 @@ export const FloatingChatPanel: React.FC<FloatingChatPanelProps> = ({
                     <div className="flex items-start gap-2">
                         <span className="w-1.5 h-1.5 rounded-full bg-red-400 animate-pulse mt-1 shrink-0" />
                         <p className="text-[11px] text-white/40 leading-relaxed line-clamp-2">
-                            <span className="text-white/55 font-medium mr-1">{speakerNames.interviewer}:</span>
+                            <span className="text-white/55 font-medium mr-1">{speakerNames.client}:</span>
                             {rollingTranscript}
-                            {isInterviewerSpeaking && <span className="ml-1 text-white/25 animate-pulse">...</span>}
+                            {isClientSpeaking && <span className="ml-1 text-white/25 animate-pulse">...</span>}
                         </p>
                         <span className="text-[10px] text-red-400 font-bold shrink-0 ml-auto">LIVE</span>
                     </div>

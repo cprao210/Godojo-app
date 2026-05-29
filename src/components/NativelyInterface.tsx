@@ -17,7 +17,7 @@ import { FloatingDock } from './FloatingDock';
 
 interface Message {
     id: string;
-    role: 'user' | 'system' | 'interviewer';
+    role: 'user' | 'system' | 'client';
     text: string;
     isStreaming?: boolean;
     hasScreenshot?: boolean;
@@ -62,18 +62,18 @@ const NativelyInterface: React.FC<NativelyInterfaceProps> = ({ onEndMeeting, ove
     const [isMeetingPaused, setIsMeetingPaused] = useState(false);
     const liveTranscriptRef = useRef<Array<{ speaker: string; displayName?: string; text: string; timestamp: number }>>([]);
 
-    const speakerNamesRef = useRef<{ user: string; interviewer: string }>({ user: 'Me', interviewer: 'Them' });
-    const [speakerNames, setSpeakerNames] = useState<{ user: string; interviewer: string }>({
+    const speakerNamesRef = useRef<{ user: string; client: string }>({ user: 'Me', client: 'Them' });
+    const [speakerNames, setSpeakerNames] = useState<{ user: string; client: string }>({
         user: 'Me',
-        interviewer: 'Them'
+        client: 'Them'
     });
 
     useEffect(() => {
         const loadSpeakerNames = async () => {
             if (window.electronAPI?.getDisplayName) {
                 const user = await window.electronAPI.getDisplayName('user');
-                const interviewer = await window.electronAPI.getDisplayName('interviewer');
-                setSpeakerNames({ user, interviewer });
+                const client = await window.electronAPI.getDisplayName('client');
+                setSpeakerNames({ user, client });
             }
         };
 
@@ -112,8 +112,8 @@ const NativelyInterface: React.FC<NativelyInterfaceProps> = ({ onEndMeeting, ove
         return () => window.removeEventListener('storage', handleStorage);
     }, []);
 
-    const [rollingTranscript, setRollingTranscript] = useState('');  // For interviewer rolling text bar
-    const [isInterviewerSpeaking, setIsInterviewerSpeaking] = useState(false);  // Track if actively speaking
+    const [rollingTranscript, setRollingTranscript] = useState('');  // For client rolling text bar
+    const [isClientSpeaking, setIsClientSpeaking] = useState(false);  // Track if actively speaking
     const [voiceInput, setVoiceInput] = useState('');  // Accumulated user voice input
     const voiceInputRef = useRef<string>('');  // Ref for capturing in async handlers
     const isStealthRef = useRef<boolean>(false); // Tracks if the next expansion should be stealthy
@@ -285,7 +285,7 @@ const NativelyInterface: React.FC<NativelyInterfaceProps> = ({ onEndMeeting, ove
     useEffect(() => {
         const context = messages
             .filter(m => m.role !== 'user' || !m.hasScreenshot)
-            .map(m => `${m.role === 'interviewer' ? 'Interviewer' : m.role === 'user' ? 'User' : 'Assistant'}: ${m.text}`)
+            .map(m => `${m.role === 'client' ? 'Client' : m.role === 'user' ? 'User' : 'Assistant'}: ${m.text}`)
             .slice(-20)
             .join('\n');
         setConversationContext(context);
@@ -363,12 +363,12 @@ const NativelyInterface: React.FC<NativelyInterfaceProps> = ({ onEndMeeting, ove
                     speakerNamesRef.current = names;
                     setSpeakerNames(names);
                 } else {
-                    speakerNamesRef.current = { user: 'Me', interviewer: 'Them' };
-                    setSpeakerNames({ user: 'Me', interviewer: 'Them' });
+                    speakerNamesRef.current = { user: 'Me', client: 'Them' };
+                    setSpeakerNames({ user: 'Me', client: 'Them' });
                 }
             }).catch(() => {
-                speakerNamesRef.current = { user: 'Me', interviewer: 'Them' };
-                setSpeakerNames({ user: 'Me', interviewer: 'Them' });
+                speakerNamesRef.current = { user: 'Me', client: 'Them' };
+                setSpeakerNames({ user: 'Me', client: 'Them' });
             });
         });
         return () => unsubscribe();
@@ -438,23 +438,23 @@ const NativelyInterface: React.FC<NativelyInterfaceProps> = ({ onEndMeeting, ove
                 });
             }
 
-            // Route both user and interviewer transcripts to the rolling bar.
+            // Route both user and client transcripts to the rolling bar.
             // Skip any unknown speaker types for safety.
-            if (transcript.speaker !== 'user' && transcript.speaker !== 'interviewer') {
+            if (transcript.speaker !== 'user' && transcript.speaker !== 'client') {
                 return;
             }
 
             // Track speaking state (used for the animated "..." indicator in the chat bar).
-            // We only animate for the interviewer/system audio since user mic is near-instant.
-            if (transcript.speaker === 'interviewer') {
-                setIsInterviewerSpeaking(!transcript.final);
+            // We only animate for the client/system audio since user mic is near-instant.
+            if (transcript.speaker === 'client') {
+                setIsClientSpeaking(!transcript.final);
             }
 
             if (transcript.final) {
                 // Use displayName from payload (resolved in main process) for accurate attribution.
                 // Fall back to speakerNamesRef for older payloads without displayName.
                 const resolvedDisplayName = (transcript as any).displayName
-                    || (transcript.speaker === 'interviewer' ? speakerNamesRef.current.interviewer : speakerNamesRef.current.user)
+                    || (transcript.speaker === 'client' ? speakerNamesRef.current.client : speakerNamesRef.current.user)
                     || undefined;
 
                 // Append finalized text to accumulated rolling transcript
@@ -471,9 +471,9 @@ const NativelyInterface: React.FC<NativelyInterfaceProps> = ({ onEndMeeting, ove
                 });
 
                 // Clear speaking indicator after pause
-                if (transcript.speaker === 'interviewer') {
+                if (transcript.speaker === 'client') {
                     setTimeout(() => {
-                        setIsInterviewerSpeaking(false);
+                        setIsClientSpeaking(false);
                     }, 3000);
                 }
             } else {
@@ -1892,7 +1892,7 @@ Provide only the answer, nothing else.`;
             );
         }
 
-        // Standard Text Messages (e.g. from User or Interviewer)
+        // Standard Text Messages (e.g. from User or Client)
         // We still want basic markdown support here too
         return (
             <div className="markdown-content">
@@ -2194,7 +2194,7 @@ Provide only the answer, nothing else.`;
                             }}
                             transcriptRef={liveTranscriptRef}
                             rollingTranscript={rollingTranscript}
-                            isInterviewerSpeaking={isInterviewerSpeaking}
+                            isClientSpeaking={isClientSpeaking}
                             showTranscript={showTranscript}
                             onToggleTranscript={(v) => {
                                 setShowTranscript(v);

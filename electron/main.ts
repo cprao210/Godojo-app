@@ -191,7 +191,7 @@ export class AppState {
   private updateAvailable: boolean = false
   private disguiseMode: 'terminal' | 'settings' | 'activity' | 'none' = 'none'
   private _currentLiveAnalysis: LiveAnalysisData | null = null;
-  private speakerNameMap: { user: string, interviewer: string };
+  private speakerNameMap: { user: string, client: string };
 
   // View management
   private view: "queue" | "solutions" = "queue"
@@ -758,10 +758,10 @@ export class AppState {
   private microphoneCapture: MicrophoneCapture | null = null;
   private audioTestCapture: MicrophoneCapture | null = null; // For audio settings test
   private _audioTestStarting = false;               // P2-12: in-flight guard against concurrent calls
-  private googleSTT: STTProvider | null = null; // Interviewer
+  private googleSTT: STTProvider | null = null; // Client
   private googleSTT_User: STTProvider | null = null; // User
 
-  private createSTTProvider(speaker: 'interviewer' | 'user'): STTProvider {
+  private createSTTProvider(speaker: 'client' | 'user'): STTProvider {
     const { CredentialsManager } = require('./services/CredentialsManager');
     const sttProvider = CredentialsManager.getInstance().getSttProvider();
     const sttLanguage = CredentialsManager.getInstance().getSttLanguage();
@@ -867,7 +867,7 @@ export class AppState {
       const speakerNameMap = this.intelligenceManager.getSpeakerNameMap();
       const displayName = speaker === 'user'
         ? (speakerNameMap.user || 'Me')
-        : (speakerNameMap.interviewer || 'Them');
+        : (speakerNameMap.client || 'Them');
       const payload = {
         speaker: speaker,          // internal role — kept for renderer routing logic
         displayName: displayName,  // resolved human name for UI display
@@ -880,7 +880,7 @@ export class AppState {
       helper.getOverlayWindow()?.webContents.send('native-audio-transcript', payload);
 
       // Feed final recruiter (system audio) transcripts to negotiation tracker
-      if (segment.isFinal && speaker === 'interviewer') {
+      if (segment.isFinal && speaker === 'client') {
         this.knowledgeOrchestrator?.feedInterviewerUtterance?.(segment.text);
       }
     });
@@ -927,7 +927,7 @@ export class AppState {
 
       // 2. Initialize STT Services if missing
       if (!this.googleSTT) {
-        this.googleSTT = this.createSTTProvider('interviewer');
+        this.googleSTT = this.createSTTProvider('client');
       }
 
       if (!this.googleSTT_User) {
@@ -939,7 +939,7 @@ export class AppState {
 
       // 1. Sync System Audio Rate
       const sysRate = this.systemAudioCapture?.getSampleRate() || 48000;
-      if (this._verboseLogging) console.log(`[Main] Configuring Interviewer STT to ${sysRate}Hz`);
+      if (this._verboseLogging) console.log(`[Main] Configuring Client STT to ${sysRate}Hz`);
       this.googleSTT?.setSampleRate(sysRate);
       this.googleSTT?.setAudioChannelCount?.(1);
 
@@ -1777,7 +1777,7 @@ export class AppState {
       }
     })
 
-    this.intelligenceManager.on('speaker-names-resolved', (names: { user: string; interviewer: string }) => {
+    this.intelligenceManager.on('speaker-names-resolved', (names: { user: string; client: string }) => {
       console.log('[AppState] Speaker names resolved, broadcasting to all windows:', names);
       BrowserWindow.getAllWindows().forEach(win => {
         if (!win.isDestroyed()) {
@@ -1887,7 +1887,7 @@ export class AppState {
     return this.screenshotHelper.getExtraScreenshotQueue()
   }
 
-  public getSpeakerNameMap(): { user: string; interviewer: string } {
+  public getSpeakerNameMap(): { user: string; client: string } {
     return { ...this.speakerNameMap };
   }
 

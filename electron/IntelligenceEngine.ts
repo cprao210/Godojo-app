@@ -269,17 +269,17 @@ export class IntelligenceEngine extends EventEmitter {
             const contextItems = this.session.getContext(180);
 
             // Inject latest interim transcript if available
-            const lastInterim = this.session.getLastInterimInterviewer();
+            const lastInterim = this.session.getLastInterimClient();
             if (lastInterim && lastInterim.text.trim().length > 0) {
                 const lastItem = contextItems[contextItems.length - 1];
                 const isDuplicate = lastItem &&
-                    lastItem.role === 'interviewer' &&
+                    lastItem.role === 'client' &&
                     (lastItem.text === lastInterim.text || Math.abs(lastItem.timestamp - lastInterim.timestamp) < 1000);
 
                 if (!isDuplicate) {
                     console.log(`[IntelligenceEngine] Injecting interim transcript: "${lastInterim.text.substring(0, 50)}..."`);
                     contextItems.push({
-                        role: 'interviewer',
+                        role: 'client',
                         text: lastInterim.text,
                         timestamp: lastInterim.timestamp
                     });
@@ -300,9 +300,9 @@ export class IntelligenceEngine extends EventEmitter {
                 180
             );
 
-            const lastInterviewerTurn = this.session.getLastInterviewerTurn();
+            const lastClientTurn = this.session.getLastClientTurn();
             const intentResult = await classifyIntent(
-                lastInterviewerTurn,
+                lastClientTurn,
                 preparedTranscript,
                 this.session.getAssistantResponseHistory().length
             );
@@ -393,17 +393,17 @@ export class IntelligenceEngine extends EventEmitter {
             const contextItems = this.session.getContext(180);
 
             // Inject latest interim transcript if available
-            const lastInterim = this.session.getLastInterimInterviewer();
+            const lastInterim = this.session.getLastInterimClient();
             if (lastInterim && lastInterim.text.trim().length > 0) {
                 const lastItem = contextItems[contextItems.length - 1];
                 const isDuplicate = lastItem &&
-                    lastItem.role === 'interviewer' &&
+                    lastItem.role === 'client' &&
                     (lastItem.text === lastInterim.text ||
                         Math.abs(lastItem.timestamp - lastInterim.timestamp) < 1000);
 
                 if (!isDuplicate) {
                     contextItems.push({
-                        role: 'interviewer',
+                        role: 'client',
                         text: lastInterim.text,
                         timestamp: lastInterim.timestamp
                     });
@@ -412,7 +412,7 @@ export class IntelligenceEngine extends EventEmitter {
 
             // Format transcript — same pattern as WhatToAnswerLLM
             const transcript = contextItems
-                .map(item => `${item.role === 'interviewer' ? 'Customer' : 'Sales Rep'}: ${item.text}`)
+                .map(item => `${item.role === 'client' ? 'Customer' : 'Sales Rep'}: ${item.text}`)
                 .join('\n');
 
             console.log(`[IntelligenceEngine] runWhatAmIMissing: ${contextItems.length} turns`);
@@ -493,18 +493,18 @@ export class IntelligenceEngine extends EventEmitter {
             const contextItems = this.session.getContext(180);
 
             // Inject latest interim transcript if available
-            const lastInterim = this.session.getLastInterimInterviewer();
+            const lastInterim = this.session.getLastInterimClient();
             if (lastInterim && lastInterim.text.trim().length > 0) {
                 const lastItem = contextItems[contextItems.length - 1];
                 const isDuplicate = lastItem &&
-                    lastItem.role === 'interviewer' &&
+                    lastItem.role === 'client' &&
                     (lastItem.text === lastInterim.text ||
                         Math.abs(lastItem.timestamp - lastInterim.timestamp) < 1000);
 
                 if (!isDuplicate) {
                     console.log(`[IntelligenceEngine] Injecting interim for Discovery: "${lastInterim.text.substring(0, 50)}..."`);
                     contextItems.push({
-                        role: 'interviewer',
+                        role: 'client',
                         text: lastInterim.text,
                         timestamp: lastInterim.timestamp
                     });
@@ -513,7 +513,7 @@ export class IntelligenceEngine extends EventEmitter {
 
             // Format transcript
             const transcript = contextItems
-                .map(item => `${item.role === 'interviewer' ? 'Customer' : 'Sales Rep'}: ${item.text}`)
+                .map(item => `${item.role === 'client' ? 'Customer' : 'Sales Rep'}: ${item.text}`)
                 .join('\n');
 
             console.log(`[IntelligenceEngine] runDiscovery: ${contextItems.length} turns analyzed`);
@@ -593,18 +593,18 @@ export class IntelligenceEngine extends EventEmitter {
             const contextItems = this.session.getContext(180);
 
             // Inject latest interim transcript if available
-            const lastInterim = this.session.getLastInterimInterviewer();
+            const lastInterim = this.session.getLastInterimClient();
             if (lastInterim && lastInterim.text.trim().length > 0) {
                 const lastItem = contextItems[contextItems.length - 1];
                 const isDuplicate = lastItem &&
-                    lastItem.role === 'interviewer' &&
+                    lastItem.role === 'client' &&
                     (lastItem.text === lastInterim.text ||
                         Math.abs(lastItem.timestamp - lastInterim.timestamp) < 1000);
 
                 if (!isDuplicate) {
                     console.log(`[IntelligenceEngine] Injecting interim for ObjectionHandler: "${lastInterim.text.substring(0, 50)}..."`);
                     contextItems.push({
-                        role: 'interviewer',
+                        role: 'client',
                         text: lastInterim.text,
                         timestamp: lastInterim.timestamp
                     });
@@ -613,7 +613,7 @@ export class IntelligenceEngine extends EventEmitter {
 
             // Format transcript
             const transcript = contextItems
-                .map(item => `${item.role === 'interviewer' ? 'Customer' : 'Sales Rep'}: ${item.text}`)
+                .map(item => `${item.role === 'client' ? 'Customer' : 'Sales Rep'}: ${item.text}`)
                 .join('\n');
 
             console.log(`[IntelligenceEngine] runObjectionHandler: ${contextItems.length} turns analyzed`);
@@ -804,7 +804,7 @@ export class IntelligenceEngine extends EventEmitter {
 
     /**
      * MODE: Clarify
-     * Ask a clarifying question to the interviewer
+     * Ask a clarifying question to the client
      */
     async runClarify(): Promise<string | null> {
         console.log('[IntelligenceEngine] runClarify called');
@@ -1025,7 +1025,7 @@ export class IntelligenceEngine extends EventEmitter {
      * Analyzes a screenshot of partially written code against the detected/provided question
      * and returns a short targeted hint. Question comes from (priority order):
      *   1. problemStatement passed in from ipcHandler (screenshot extraction — highest confidence)
-     *   2. session.detectedCodingQuestion (detected from interviewer transcript)
+     *   2. session.detectedCodingQuestion (detected from client transcript)
      *   3. transcriptContext (last N seconds of conversation — fallback for inference)
      */
     async runCodeHint(imagePaths?: string[], problemStatement?: string): Promise<string | null> {
