@@ -94,16 +94,18 @@ export class SystemAudioCapture extends EventEmitter {
                 // Poll until the background thread has published a non-default rate,
                 // or fall back after a short delay. Use a one-shot timer so we don't
                 // block the main thread.
-                const pollRate = () => {
+                const pollRate = (label: string) => {
                     const rate = this.monitor?.get_sample_rate?.();
                     if (rate && rate !== this.detectedSampleRate) {
                         this.detectedSampleRate = rate;
-                        console.log(`[SystemAudioCapture] Detected sample rate: ${rate}Hz`);
+                        console.log(`[SystemAudioCapture] Detected sample rate (${label}): ${rate}Hz`);
+                        // Notify main.ts so it can re-sync the STT provider
+                        this.emit('sample-rate-detected', rate);
                     }
                 };
                 // Poll at 1s and 8s — covers both fast (CoreAudio) and slow (SCK) init.
-                setTimeout(pollRate, 1000);
-                setTimeout(pollRate, 8000);
+                setTimeout(() => pollRate('1s'), 1000);
+                setTimeout(() => pollRate('8s'), 8000);
             }
 
             this.emit('start');

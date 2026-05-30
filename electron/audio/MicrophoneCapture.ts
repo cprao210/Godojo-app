@@ -39,7 +39,7 @@ export class MicrophoneCapture extends EventEmitter {
             console.log(`[MicrophoneCapture] Real native rate: ${nativeRate}`);
             return nativeRate;
         }
-        return 48000; // Safe default for most modern mics before native initialization
+        return 16000; // Safe default for most modern mics before native initialization
     }
 
     /**
