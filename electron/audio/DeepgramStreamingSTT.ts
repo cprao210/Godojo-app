@@ -12,6 +12,7 @@
 import { EventEmitter } from 'events';
 import { DeepgramClient } from '@deepgram/sdk';
 import { RECOGNITION_LANGUAGES } from '../config/languages';
+import { V1Socket } from '@deepgram/sdk/dist/cjs/api/resources/listen/resources/v1/client/Socket';
 
 const RECONNECT_BASE_DELAY_MS = 1000;
 const RECONNECT_MAX_DELAY_MS = 30000;
@@ -20,7 +21,7 @@ const KEEPALIVE_INTERVAL_MS = 5000;
 export class DeepgramStreamingSTT extends EventEmitter {
     private apiKey: string;
     private client: DeepgramClient;
-    private socket: any = null;
+    private socket: V1Socket | null = null;
     private isActive = false;
     private shouldReconnect = false;
 
@@ -211,10 +212,19 @@ export class DeepgramStreamingSTT extends EventEmitter {
                 if (!transcript || transcript.trim() === '') return;
 
 
-                // speech_final = utterance boundary (true sentence end)
-                // is_final     = audio window is stable
-                // Emit both so the UI gets live interim updates AND final segments
-                const isFinal = data.speech_final === true || data.is_final === true;
+                // speech_final = true utterance boundary — the speaker finished a sentence.
+                //                Only this should be stored as a final segment in SessionTracker
+                //                to avoid duplicate transcript entries.
+                //
+                // is_final     = Deepgram's audio-window is "stable" (no more changes for
+                //                that chunk), but the utterance may continue. Treating this
+                //                as isFinal caused every stable window to be committed to the
+                //                transcript AND then committed again when speech_final fired,
+                //                producing duplicate console/context entries.
+                //
+                // interim (is_final=false, speech_final=false) — live word-by-word updates;
+                //                always non-final so the UI can show them without storing them.
+                const isFinal = data.speech_final === true;
 
                 this.emit('transcript', {
                     text: transcript,

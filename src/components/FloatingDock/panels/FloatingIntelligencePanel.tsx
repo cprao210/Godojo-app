@@ -4,30 +4,6 @@ import { Radio, RefreshCw, Clock, ChevronDown } from 'lucide-react';
 import { LiveAnalysisContent } from '../../LiveAnalysisContent';
 import { LiveAnalysisData } from '../../../types/liveAnalysis';
 
-const EMPTY_ANALYSIS: LiveAnalysisData = {
-    bant: {
-        budget: { emoji: '', status: 'missing', evidence: '', suggested_question: '' },
-        authority: { emoji: '', status: 'missing', evidence: '', suggested_question: '' },
-        need: { emoji: '', status: 'missing', evidence: '', suggested_question: '' },
-        timeline: { emoji: '', status: 'missing', evidence: '', suggested_question: '' },
-    },
-    meddic: {
-        metrics: { emoji: '', status: 'missing', evidence: '', suggested_question: '' },
-        economic_buyer: { emoji: '', status: 'missing', evidence: '', suggested_question: '' },
-        decision_criteria: { emoji: '', status: 'missing', evidence: '', suggested_question: '' },
-        decision_process: { emoji: '', status: 'missing', evidence: '', suggested_question: '' },
-        identify_pain: { emoji: '', status: 'missing', evidence: '', suggested_question: '' },
-        champion: { emoji: '', status: 'missing', evidence: '', suggested_question: '' },
-        competition: { emoji: '', status: 'missing', evidence: '', suggested_question: '' },
-    },
-    objections: [
-        { type: "customer_question", quote: "Missing Objection", owner: "customer", status: "open" }
-    ],
-    signals: [
-        { quote: "Not mentioned", signal_type: ["No Detection"], ask_now: "What's next?", intensity: "low", category: "neutral" }
-    ],
-};
-
 const AUTO_REFRESH_OPTIONS = [
     { label: '5-min', value: 5 },
     { label: '10-min', value: 10 },
@@ -36,7 +12,6 @@ const AUTO_REFRESH_OPTIONS = [
 ];
 
 interface FloatingIntelligencePanelProps {
-    transcriptRef: React.MutableRefObject<Array<{ speaker: string; displayName?: string; text: string; timestamp: number }>>;
     isMeetingPaused: boolean;
     // Analysis state is owned by FloatingDock and passed down — never lost on remount
     analysisData: LiveAnalysisData | null;
@@ -47,6 +22,9 @@ interface FloatingIntelligencePanelProps {
     autoRefreshInterval: number | null;
     onAutoRefreshIntervalChange: (interval: number | null) => void;
     isRefreshRun?: boolean;        // true = incremental refresh, false/undefined = first run
+    rollingTranscript: string;
+    isClientSpeaking: boolean;
+    speakerNames: { user: string; client: string };
 }
 
 // ─── AI Skeleton Loader ──────────────────────────────────────────────────────
@@ -186,7 +164,6 @@ const WaitingPlaceholder: React.FC = () => (
 );
 
 export const FloatingIntelligencePanel: React.FC<FloatingIntelligencePanelProps> = ({
-    transcriptRef,
     isMeetingPaused,
     analysisData,
     analysisError,
@@ -196,6 +173,9 @@ export const FloatingIntelligencePanel: React.FC<FloatingIntelligencePanelProps>
     autoRefreshInterval,
     onAutoRefreshIntervalChange,
     isRefreshRun,
+    rollingTranscript,
+    isClientSpeaking,
+    speakerNames
 }) => {
     const [showRefreshPicker, setShowRefreshPicker] = useState(false);
     const refreshPickerRef = useRef<HTMLDivElement>(null);
@@ -226,7 +206,6 @@ export const FloatingIntelligencePanel: React.FC<FloatingIntelligencePanelProps>
         setShowRefreshPicker(false);
     };
 
-    const recentTranscript = transcriptRef.current?.slice(-3) || [];
 
     return (
         <div
@@ -336,19 +315,20 @@ export const FloatingIntelligencePanel: React.FC<FloatingIntelligencePanelProps>
             </div>
 
             {/* Rolling transcript strip */}
-            {showTranscript && recentTranscript.length > 0 && (
+            {showTranscript && (rollingTranscript || isClientSpeaking) && (
                 <div
                     className="px-5 py-3 shrink-0"
                     style={{ borderBottom: '1px solid rgba(255,255,255,0.05)', background: 'rgba(255,255,255,0.02)' }}
                 >
-                    {recentTranscript.slice(-2).map((seg, i) => (
-                        <div key={i} className="text-[11px] leading-relaxed truncate">
-                            <span className="text-blue-400/70 font-semibold mr-1.5">
-                                {seg.displayName || (seg.speaker === 'user' ? 'You' : 'Other Party')}:
-                            </span>
-                            <span className="text-white/40">{seg.text}</span>
-                        </div>
-                    ))}
+                    <div className="flex items-start gap-2">
+                        <span className="w-1.5 h-1.5 rounded-full bg-blue-400 animate-pulse mt-1 shrink-0" />
+                        <p className="text-[11px] text-white/40 leading-relaxed line-clamp-2">
+                            <span className="text-white/55 font-medium mr-1">{speakerNames.client}:</span>
+                            {rollingTranscript}
+                            {isClientSpeaking && <span className="ml-1 text-white/25 animate-pulse">...</span>}
+                        </p>
+                        <span className="text-[10px] text-red-400 font-bold shrink-0 ml-auto">LIVE</span>
+                    </div>
                 </div>
             )}
 

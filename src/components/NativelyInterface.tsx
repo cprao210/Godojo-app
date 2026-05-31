@@ -448,6 +448,7 @@ const NativelyInterface: React.FC<NativelyInterfaceProps> = ({ onEndMeeting, ove
                     text: transcript.text,
                     timestamp: Date.now(),
                 });
+                return;
             }
 
             // Route both user and client transcripts to the rolling bar.
@@ -469,18 +470,27 @@ const NativelyInterface: React.FC<NativelyInterfaceProps> = ({ onEndMeeting, ove
                     || (transcript.speaker === 'client' ? speakerNamesRef.current.client : speakerNamesRef.current.user)
                     || undefined;
 
-                // Append finalized text to accumulated rolling transcript
+                // Append finalized text to accumulated rolling transcript.
+                // Guard against duplicate finals (e.g. both is_final and speech_final
+                // from Deepgram arriving as final before the STT fix takes effect).
                 setRollingTranscript(prev => {
+                    const lastSeparator = prev.lastIndexOf('  ·  ');
+                    const lastSegment = lastSeparator >= 0 ? prev.substring(lastSeparator + 5) : prev;
+                    if (lastSegment.trim() === transcript.text.trim()) return prev;  // ← ADD: skip exact duplicate
                     const separator = prev ? '  ·  ' : '';
                     return prev + separator + transcript.text;
                 });
 
-                liveTranscriptRef.current.push({
-                    speaker: transcript.speaker,
-                    displayName: resolvedDisplayName,
-                    text: transcript.text,
-                    timestamp: Date.now(),
-                });
+                // Guard liveTranscriptRef against exact-text duplicates from rapid final events
+                const lastLive = liveTranscriptRef.current[liveTranscriptRef.current.length - 1];
+                if (!lastLive || lastLive.speaker !== transcript.speaker || lastLive.text !== transcript.text) {  // ← ADD guard
+                    liveTranscriptRef.current.push({
+                        speaker: transcript.speaker,
+                        displayName: resolvedDisplayName,
+                        text: transcript.text,
+                        timestamp: Date.now(),
+                    });
+                }
 
                 // Clear speaking indicator after pause
                 if (transcript.speaker === 'client') {
@@ -1569,7 +1579,7 @@ Provide only the answer, nothing else.`;
                 currentAttachments.length > 0 ? currentAttachments.map(s => s.path) : undefined,
                 conversationContext // Pass context so "answer this" works
             );
-        } catch (err) {
+        } catch (err: any) {
             setIsProcessing(false);
             setMessages(prev => {
                 const last = prev[prev.length - 1];
@@ -1578,13 +1588,13 @@ Provide only the answer, nothing else.`;
                     return prev.slice(0, -1).concat({
                         id: Date.now().toString(),
                         role: 'system',
-                        text: `❌ Error starting stream: ${err}`
+                        text: `❌ Error starting stream: ${err?.message}`
                     });
                 }
                 return [...prev, {
                     id: Date.now().toString(),
                     role: 'system',
-                    text: `❌ Error: ${err}`
+                    text: `❌ Error: ${err?.message}`
                 }];
             });
         }

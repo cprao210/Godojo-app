@@ -196,10 +196,12 @@ export const FloatingDock: React.FC<FloatingDockProps> = ({
                             )}
                             {activePanel === 'intelligence' && (
                                 <FloatingIntelligencePanel
-                                    transcriptRef={transcriptRef}
                                     isMeetingPaused={isMeetingPaused}
                                     analysisData={analysisData}
                                     analysisError={analysisError}
+                                    rollingTranscript={rollingTranscript}
+                                    isClientSpeaking={isClientSpeaking}
+                                    speakerNames={speakerNames}
                                     showTranscript={showTranscript}
                                     isLoading={analysisLoading}
                                     onRegenerate={() => runAnalysis(true)}

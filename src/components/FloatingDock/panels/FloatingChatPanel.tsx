@@ -277,14 +277,14 @@ export const FloatingChatPanel: React.FC<FloatingChatPanelProps> = ({
             }
             // Fallback to direct Gemini chat
             await window.electronAPI?.streamGeminiChat(text, undefined, undefined, undefined);
-        } catch (err) {
+        } catch (err: any) {
             setIsProcessing(false);
             setMessages(prev => {
                 const last = prev[prev.length - 1];
                 if (last?.isStreaming) {
-                    return [...prev.slice(0, -1), { id: Date.now().toString(), role: 'system', text: `❌ Error: ${err}` }];
+                    return [...prev.slice(0, -1), { id: Date.now().toString(), role: 'system', text: `❌ Error: ${err?.message}` }];
                 }
-                return [...prev, { id: Date.now().toString(), role: 'system', text: `❌ Error: ${err}` }];
+                return [...prev, { id: Date.now().toString(), role: 'system', text: `❌ Error: ${err?.message}` }];
             });
         }
     };

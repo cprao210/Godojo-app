@@ -502,8 +502,8 @@ export const useLiveAnalysis = (
       // Format a prospect turn for the prompt.
       // displayName gives the LLM real speaker identity for accurate signal attribution.
       const formatProspectTurn = (t: { speaker: string; displayName?: string; text: string }) => {
-        const name = t.displayName ? ` (${t.displayName})` : '';
-        return `PROSPECT${name}: ${t.text}`;
+        const name = t.displayName && t.displayName !== "Them" ? ` (${t.displayName})` : '';
+        return `CLIENT${name}: ${t.text}`;
       };
 
       // Exclude internal system/AI turns from all paths.
@@ -520,8 +520,8 @@ export const useLiveAnalysis = (
         // for objection/AE-deferral detection, but BANT/MEDDIC signal extraction
         // is scoped to prospect lines via the prompt instruction.
         const firstRunContext = humanTurns.map(t => {
-          const role = t.speaker === 'user' ? 'REP' : 'PROSPECT';
-          const name = t.displayName ? ` (${t.displayName})` : '';
+          const role = t.speaker === 'user' ? 'SALES PERSON' : 'CLIENT';
+          const name = t.displayName && t.displayName !== "Them" && t.displayName !== "Me" ? ` (${t.displayName})` : '';
           return `${role}${name}: ${t.text}`;
         }).join('\n');
 
