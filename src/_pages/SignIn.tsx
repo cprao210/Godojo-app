@@ -3,6 +3,7 @@ import { motion, type Variants } from "framer-motion";
 import { User, Phone, Mail, Lock, Eye, EyeOff, Sparkles, LucideProps, LoaderCircle } from "lucide-react";
 import { signInWithGoogle, signInWithEmail, signUpWithEmailExtended, resetPassword } from '../lib/firebase';
 import { useResolvedTheme } from '../hooks/useResolvedTheme';
+import godojoLogo from '../assets/logo-variant-3.svg';
 
 interface SignInProps {
     onSignedIn?: () => void;
@@ -223,12 +224,13 @@ export const SignIn: React.FC<SignInProps> = ({ onSignedIn }) => {
                         transition={{ duration: 0.5 }}
                         className="mb-6 flex items-center justify-center gap-2"
                     >
-                        <div className="relative flex h-8 w-8 items-center justify-center rounded-lg bg-gradient-to-br from-blue-400 to-blue-600 shadow-[0_0_20px_rgba(59,130,246,0.6)]">
+                        {/* <div className="relative flex h-8 w-8 items-center justify-center rounded-lg bg-gradient-to-br from-blue-400 to-blue-600 shadow-[0_0_20px_rgba(59,130,246,0.6)]">
                             <Sparkles size={16} className="text-white" />
                         </div>
                         <span className={`text-xl font-semibold tracking-tight ${isLight ? "text-slate-900" : "text-white"}`}>
                             GoDojo AI
-                        </span>
+                        </span> */}
+                        <img src={godojoLogo} alt="GoDojo AI" className="h-10 object-contain" />
                     </motion.div>
 
                     {/* Card */}

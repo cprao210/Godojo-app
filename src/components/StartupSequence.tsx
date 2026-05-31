@@ -1,6 +1,6 @@
 import React, { useEffect } from 'react';
 import { motion } from 'framer-motion';
-import appIcon from './icon.png';
+import appIcon from '../assets/logo-variant-1.svg';
 
 interface StartupSequenceProps {
     onComplete: () => void;
@@ -18,7 +18,7 @@ const StartupSequence: React.FC<StartupSequenceProps> = ({ onComplete }) => {
         <div className="fixed inset-0 z-[100] bg-[#000000] flex items-center justify-center overflow-hidden">
             {/* Volumetric Backlight - Adds depth/atmosphere */}
             <motion.div
-                className="absolute w-96 h-96 bg-white/10 rounded-full blur-[120px]"
+                className="absolute w-[30rem] h-[30rem] bg-white/10 rounded-full blur-[120px]"
                 initial={{ opacity: 0, scale: 0.8 }}
                 animate={{ opacity: 1, scale: 1.2 }}
                 transition={{ duration: 3, ease: "easeOut" }}

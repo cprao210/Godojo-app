@@ -16,6 +16,7 @@ import UserProfileButton from './ui/UserProfileButton';
 import { IoSparklesSharp } from 'react-icons/io5';
 import NextMeetingCard from './NextMeetingCard';
 import MeetingTimeline from './MeetingTimeline';
+import godojoLogo from '../assets/logo-variant-3.svg';
 
 interface Meeting {
     id: string;
@@ -439,14 +440,15 @@ const Launcher: React.FC<LauncherProps> = ({ onStartMeeting, onOpenSettings, onP
                 </div>
 
                 {/* Logo */}
-                <div className="flex items-center gap-2 no-drag ml-1">
+                {/* <div className="flex items-center gap-2 no-drag ml-1">
                     <div className="relative flex h-5 w-5 items-center justify-center rounded-md bg-gradient-to-br from-blue-500 to-blue-700 shadow-[0_2px_8px_rgba(59,130,246,0.35)]">
                         <Sparkles className="h-2.5 w-2.5 fill-white text-white" />
                     </div>
                     <span className={["text-sm font-semibold tracking-tight", isLight ? "text-text-primary" : "text-white"].join(" ")}>
                         GoDojo AI
                     </span>
-                </div>
+                </div> */}
+                <img src={godojoLogo} alt="GoDojo AI" className="h-5 object-contain" />
 
                 {/* Center: Search pill */}
                 <div className="mx-2 flex-1 no-drag">
