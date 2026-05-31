@@ -523,7 +523,13 @@ export function initializeIpcHandlers(appState: AppState): void {
       const llmHelper = appState.processingHelper.getLLMHelper();
       const myStreamId = ++_analysisStreamId;
 
-      const result = await llmHelper.chatWithGemini(prompt, undefined, undefined, true);
+      appState.setLiveAnalysisInFlight(true);
+      let result: any;
+      try {
+        result = await llmHelper.chatWithGemini(prompt, undefined, undefined, true);
+      } finally {
+        appState.setLiveAnalysisInFlight(false);
+      }
 
       if (_analysisStreamId === myStreamId) {
         event.sender.send('live-analysis-result', result);
@@ -2398,17 +2404,6 @@ RULES:
     } catch (error: any) {
       console.error('[IPC] fetch-company-intel error:', error);
       return { success: false, error: error.message || 'Unknown error' };
-    }
-  });
-
-  // ── Store company intel for use in LLM prompts ──────────────────────────────
-  safeHandle("set-company-intel", async (_, intel: Record<string, any> | null) => {
-    try {
-      appState.setCompanyIntel(intel);
-      return { success: true };
-    } catch (error: any) {
-      console.error('[IPC] set-company-intel error:', error);
-      return { success: false, error: error.message };
     }
   });
 

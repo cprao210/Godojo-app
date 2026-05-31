@@ -12,7 +12,6 @@
 import { EventEmitter } from 'events';
 import { DeepgramClient } from '@deepgram/sdk';
 import { RECOGNITION_LANGUAGES } from '../config/languages';
-import { V1Socket } from '@deepgram/sdk/dist/cjs/api/resources/listen/resources/v1/client/Socket';
 
 const RECONNECT_BASE_DELAY_MS = 1000;
 const RECONNECT_MAX_DELAY_MS = 30000;
@@ -21,7 +20,7 @@ const KEEPALIVE_INTERVAL_MS = 5000;
 export class DeepgramStreamingSTT extends EventEmitter {
     private apiKey: string;
     private client: DeepgramClient;
-    private socket: V1Socket | null = null;
+    private socket: any = null;
     private isActive = false;
     private shouldReconnect = false;
 

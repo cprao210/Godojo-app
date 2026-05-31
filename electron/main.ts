@@ -196,6 +196,7 @@ export class AppState {
   // need to know which meetingId to patch. This is set by endMeeting() and cleared
   // after the late-arriving result is saved.
   private _pendingLiveAnalysisMeetingId: string | null = null;
+  private _liveAnalysisInFlight: boolean = false;
   private speakerNameMap: { user: string, client: string };
 
   // View management
@@ -1222,6 +1223,9 @@ export class AppState {
     }
 
     this.isMeetingActive = true;
+
+    this._pendingLiveAnalysisMeetingId = null;
+    this._liveAnalysisInFlight = false;
     this.broadcastMeetingState();
 
     // Pass metadata directly to SessionTracker, which owns all name-resolution logic:
@@ -1349,7 +1353,7 @@ export class AppState {
     const meetingId = await this.intelligenceManager.stopMeeting();
     // If an analysis call is currently in-flight, record the meetingId so
     // setCurrentLiveAnalysis() can patch the DB when the result arrives.
-    if (!this._currentLiveAnalysis) {
+    if (this._liveAnalysisInFlight) {
       this._pendingLiveAnalysisMeetingId = meetingId;
     }
 
@@ -1666,12 +1670,20 @@ export class AppState {
     return this._currentLiveAnalysis;
   }
 
+  public setLiveAnalysisInFlight(inFlight: boolean): void {
+    this._liveAnalysisInFlight = inFlight;
+  }
+
+  public getLiveAnalysisInFlight(): boolean {
+    return this._liveAnalysisInFlight;
+  }
+
   public setCurrentLiveAnalysis(data: LiveAnalysisData | null): void {
     this._currentLiveAnalysis = data;
 
     // If endMeeting() already ran and left a pending meetingId, this is a late-arriving
     // analysis result. Patch it directly into the saved meeting record in the DB.
-    if (data && this._pendingLiveAnalysisMeetingId) {
+    if (data && this._pendingLiveAnalysisMeetingId && !this.isMeetingActive) {
       const meetingId = this._pendingLiveAnalysisMeetingId;
       this._pendingLiveAnalysisMeetingId = null;
       try {

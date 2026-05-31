@@ -1,4 +1,4 @@
-import { useState, useCallback, useRef } from 'react';
+import { useState, useCallback, useRef, useEffect } from 'react';
 import { LiveAnalysisData } from '../types/liveAnalysis';
 
 // ─── Prompt builders ─────────────────────────────────────────────────────────
@@ -443,6 +443,11 @@ export const useLiveAnalysis = (
   // Mirror of analysisData in a ref so the merge helper inside runAnalysis can read it
   // without a stale closure (useCallback deps would force re-creating on every render).
   const analysisDataRef = useRef<LiveAnalysisData | null>(null);
+
+  const companyIntelRef = useRef<Record<string, any> | null | undefined>(companyIntel);
+  useEffect(() => {
+    companyIntelRef.current = companyIntel;
+  }, [companyIntel]);
 
   // Keep ref in sync with state so the runAnalysis closure always sees the latest value.
   const setAnalysisDataAndRef = useCallback((data: LiveAnalysisData | null) => {
