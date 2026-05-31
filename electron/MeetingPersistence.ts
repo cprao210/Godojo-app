@@ -8,43 +8,200 @@ import { DatabaseManager, Meeting, formatDuration } from './db/DatabaseManager';
 import { GROQ_TITLE_PROMPT, GROQ_SUMMARY_JSON_PROMPT } from './llm';
 import { LiveAnalysisData } from '../src/types/liveAnalysis';
 import { AppState } from './main';
+import { buildCompanyContextBlock } from '../electron/utils/salesBriefUtils';
 const crypto = require('crypto');
 
-const buildSummaryPrompt = (liveAnalysis?: LiveAnalysisData | null): string => {
-    const liveAnalysisBlock = liveAnalysis ? `
-═══════════════════════════════════════
-LIVE ANALYSIS (captured during the call — use as grounding reference)
-═══════════════════════════════════════
-The following BANT and MEDDIC assessments were captured in real-time during the call.
-Use them as a starting point. You may update statuses based on the full transcript,
-but do NOT contradict this data without evidence from the transcript.
+const buildSummaryPrompt = (liveAnalysis?: LiveAnalysisData | null, companyIntel?: Record<string, any> | null): string => {
 
-BANT (live):
-- Budget:    ${liveAnalysis.bant.budget.status}    | ${liveAnalysis.bant.budget.evidence || 'No evidence'}
-- Authority: ${liveAnalysis.bant.authority.status}  | ${liveAnalysis.bant.authority.evidence || 'No evidence'}
-- Need:      ${liveAnalysis.bant.need.status}       | ${liveAnalysis.bant.need.evidence || 'No evidence'}
-- Timeline:  ${liveAnalysis.bant.timeline.status}   | ${liveAnalysis.bant.timeline.evidence || 'No evidence'}
+    // ── With live analysis: structured data is the authoritative BANT/MEDDIC source ──
+    // The live analysis is the already-distilled output of the entire call, built
+    // incrementally from every prospect turn. Re-deriving BANT/MEDDIC from the raw
+    // transcript is redundant and wastes tokens. Instead:
+    //   • BANT/MEDDIC  → copy directly from live analysis; only override with clear
+    //                    transcript evidence that contradicts or upgrades a field.
+    //   • Overview, dealStatus, followUpEmail, salesCoachReview, nextCallPlaybook
+    //     → derive from the full transcript as normal.
+    if (liveAnalysis) {
+        const objectionsBlock = liveAnalysis.objections.length > 0
+            ? liveAnalysis.objections.map(o => `  - [${o.type}] ${o.quote} (${o.status})`).join('\n')
+            : '  None captured';
 
-MEDDIC (live):
-- Metrics:           ${liveAnalysis.meddic.metrics.status}           | ${liveAnalysis.meddic.metrics.evidence || 'No evidence'}
-- Economic Buyer:    ${liveAnalysis.meddic.economic_buyer.status}    | ${liveAnalysis.meddic.economic_buyer.evidence || 'No evidence'}
+        const signalsBlock = liveAnalysis.signals.length > 0
+            ? liveAnalysis.signals.slice(0, 8).map(s => `  - [${s.category}/${s.intensity}] ${s.quote}`).join('\n')
+            : '  None captured';
+
+        const companySection = buildCompanyContextBlock(companyIntel ?? null);
+        return `You are an expert B2B sales analyst. A sales call just ended. Generate a structured post-call summary. Return ONLY valid JSON (no markdown code blocks, no commentary).
+${companySection ? `\n${companySection}\nUse the company intelligence above to enrich your analysis — recognise their known products, competitors, and business model in the transcript.\n` : ''} Generate a structured post-call summary. Return ONLY valid JSON (no markdown code blocks, no commentary).
+
+═══════════════════════════════════════
+LIVE ANALYSIS — AUTHORITATIVE BANT + MEDDIC DATA
+═══════════════════════════════════════
+The following was captured in real-time across the full call. It is the primary source
+of truth for BANT and MEDDIC fields. Copy these values directly into your output.
+Only upgrade a status (e.g. partial → confirmed) if the transcript contains explicit,
+unambiguous new evidence. Never downgrade without a clear contradiction in the transcript.
+
+BANT:
+- Budget:    ${liveAnalysis.bant.budget.status} | ${liveAnalysis.bant.budget.evidence || 'No evidence'}
+- Authority: ${liveAnalysis.bant.authority.status} | ${liveAnalysis.bant.authority.evidence || 'No evidence'}
+- Need:      ${liveAnalysis.bant.need.status} | ${liveAnalysis.bant.need.evidence || 'No evidence'}
+- Timeline:  ${liveAnalysis.bant.timeline.status} | ${liveAnalysis.bant.timeline.evidence || 'No evidence'}
+
+MEDDIC:
+- Metrics:           ${liveAnalysis.meddic.metrics.status} | ${liveAnalysis.meddic.metrics.evidence || 'No evidence'}
+- Economic Buyer:    ${liveAnalysis.meddic.economic_buyer.status} | ${liveAnalysis.meddic.economic_buyer.evidence || 'No evidence'}
 - Decision Criteria: ${liveAnalysis.meddic.decision_criteria.status} | ${liveAnalysis.meddic.decision_criteria.evidence || 'No evidence'}
-- Decision Process:  ${liveAnalysis.meddic.decision_process.status}  | ${liveAnalysis.meddic.decision_process.evidence || 'No evidence'}
-- Identify Pain:     ${liveAnalysis.meddic.identify_pain.status}     | ${liveAnalysis.meddic.identify_pain.evidence || 'No evidence'}
-- Champion:          ${liveAnalysis.meddic.champion.status}          | ${liveAnalysis.meddic.champion.evidence || 'No evidence'}
-- Competition:       ${liveAnalysis.meddic.competition.status}       | ${liveAnalysis.meddic.competition.evidence || 'No evidence'}
+- Decision Process:  ${liveAnalysis.meddic.decision_process.status} | ${liveAnalysis.meddic.decision_process.evidence || 'No evidence'}
+- Identify Pain:     ${liveAnalysis.meddic.identify_pain.status} | ${liveAnalysis.meddic.identify_pain.evidence || 'No evidence'}
+- Champion:          ${liveAnalysis.meddic.champion.status} | ${liveAnalysis.meddic.champion.evidence || 'No evidence'}
+- Competition:       ${liveAnalysis.meddic.competition.status} | ${liveAnalysis.meddic.competition.evidence || 'No evidence'}
 
-Objections captured (${liveAnalysis.objections.length}):
-${liveAnalysis.objections.map(o => `- [${o.type}] ${o.quote} (${o.status})`).join('\n') || '  None'}
+Status mapping for the output fields below: confirmed → Clear | partial → Partial | missing → Missing
+Evidence strings above map verbatim to the "detail" fields in the output.
 
-Top signals (${Math.min(liveAnalysis.signals.length, 5)} shown):
-${liveAnalysis.signals.slice(0, 5).map(s => `- [${s.category}/${s.intensity}] ${s.quote}`).join('\n') || '  None'}
+Objections captured during the call (${liveAnalysis.objections.length}):
+${objectionsBlock}
+
+Key signals captured during the call (${liveAnalysis.signals.length} total, top 8 shown):
+${signalsBlock}
 
 ═══════════════════════════════════════
-` : '';
+YOUR TASK (use the FULL TRANSCRIPT for these sections only):
+═══════════════════════════════════════
+Use the full transcript to write:
+  • overview        — 2-3 sentence summary of what was covered and deal status
+  • dealStatus      — current deal stage + one-line summary
+  • followUpEmail   — grounded in specific names, numbers, moments from the call
+  • leadName/company — extract from the transcript
+  • salesCoachReview — reference actual call moments, not generic advice
+  • nextCallPlaybook — questions that target the weakest BANT/MEDDIC areas above
+  • keyPoints / actionItems
 
+For BANT and MEDDIC in the output: use the live analysis values above as-is.
+Map status: confirmed→Clear, partial→Partial, missing→Missing.
+Use the evidence string verbatim as the "detail" field.
+
+{
+    "overview": "2-3 sentence summary of what the call covered and the current deal status",
+
+    "dealStatus": {
+        "stage": "one of: Discovery / Qualification / Demo / Proposal / Negotiation / Closed Won / Closed Lost / Unknown",
+        "summary": "1 sentence on where the deal stands right now"
+    },
+
+    "bant": {
+        "budget":    { "status": "Clear | Partial | Missing", "detail": "copy from live analysis evidence above — only override if transcript shows a clear change" },
+        "authority": { "status": "Clear | Partial | Missing", "detail": "copy from live analysis evidence above — only override if transcript shows a clear change" },
+        "need":      { "status": "Clear | Partial | Missing", "detail": "copy from live analysis evidence above — only override if transcript shows a clear change" },
+        "timeline":  { "status": "Clear | Partial | Missing", "detail": "copy from live analysis evidence above — only override if transcript shows a clear change" }
+    },
+
+    "meddicc": {
+        "metrics":          { "status": "Clear | Partial | Missing", "detail": "copy from live analysis evidence above" },
+        "economicBuyer":    { "status": "Clear | Partial | Missing", "detail": "copy from live analysis evidence above" },
+        "decisionCriteria": { "status": "Clear | Partial | Missing", "detail": "copy from live analysis evidence above" },
+        "decisionProcess":  { "status": "Clear | Partial | Missing", "detail": "copy from live analysis evidence above" },
+        "identifyPain":     { "status": "Clear | Partial | Missing", "detail": "copy from live analysis evidence above" },
+        "champion":         { "status": "Clear | Partial | Missing", "detail": "copy from live analysis evidence above" },
+        "competition":      { "status": "Clear | Partial | Missing", "detail": "copy from live analysis evidence above" },
+        "gaps": ["list of MEDDICC components that are Missing or Partial — these need follow-up"]
+    },
+
+    "followUpEmail": {
+        "subject": "sharp, specific subject line — reference their company name, pain point, or goal. Max 10 words.",
+
+        "sections": {
+            "whatWeDiscussed": [
+                "2-3 tight bullets — only the most important discussion points",
+                "Reference specific names, numbers, tools, or workflows mentioned",
+                "Each bullet one sentence max"
+            ],
+            "whatIsTheNeed": [
+                "2-3 bullets on the core business problem they described",
+                "Use their exact language where possible"
+            ],
+            "scopeOfImprovement": [
+                "2-3 bullets on the gaps or pain points identified",
+                "Quantify where numbers were mentioned"
+            ],
+            "whatYouWillAchieveAfterTransformation": [
+                "2-3 bullets on the outcomes they want",
+                "Tie to KPIs, timelines, or goals they mentioned"
+            ],
+            "nextSteps": [
+                "2-3 bullets — agreed actions with owners and dates if mentioned",
+                "If nothing agreed, state the single most logical next step"
+            ]
+        },
+
+        "fullEmail": "Write a complete, ready-to-send follow-up email. RULES: (1) Under 180 words total. (2) No section headers. (3) Open with one specific sentence referencing something real from the call. (4) Summarise in 2-3 tight bullets. (5) State agreed next steps. (6) Close with one warm sentence. (7) No: 'As per our discussion', 'I hope this finds you well', 'synergy', 'leverage'. (8) Use concrete names, numbers, timelines from the call. (9) Sign off with rep's name if known."
+    },
+
+    "leadName": "extract prospect full name from transcript — first name + last name if mentioned, else null",
+    "company": "extract company/organization name from transcript, else null",
+
+    "salesCoachReview": {
+        "whatIDidRight": [
+            "MEDDICC [ComponentName]: [what the rep did well]",
+            "BANT [ComponentName]: [BANT win]"
+        ],
+        "whatICouldHaveDoneBetter": [
+            "Should have pushed harder on [specific topic from call] — ask: [exact question]",
+            "Missed opportunity to [specific action] when prospect said [trigger phrase from transcript]"
+        ],
+        "whatIMissedCompletely": [
+            "Identify Champion: [specific gap]",
+            "Metrics: [specific metric never asked about]",
+            "Authority: [specific authority gap]",
+            "Process: [specific process skipped]",
+            "Pain: [specific pain never addressed]"
+        ]
+    },
+
+    "nextCallPlaybook": {
+        "openingRecap": "2-3 sentences to open the next call recapping where things stand",
+        "questionsToAsk": ["5 high-value questions to fill the biggest BANT/MEDDIC gaps identified above"],
+        "valueAndROI": {
+            "quantitative": ["2-3 measurable ROI points to reinforce"],
+            "qualitative": ["2-3 strategic or emotional value points to reinforce"]
+        }
+    },
+
+    "keyPoints": ["4-6 bullets — top things to know about this deal right now"],
+    "actionItems": ["specific next steps with owners if mentioned, or implied follow-ups"]
+}
+
+RULES:
+- Do NOT invent information not in the transcript
+- BANT/MEDDIC: use live analysis values verbatim unless the transcript clearly contradicts them
+- Follow-up email tone: simple, clear, no jargon, client-friendly
+- Sales coach review must reference actual call moments — not generic advice
+- Next call questions must target the weakest BANT/MEDDIC areas from the live analysis above
+- Return ONLY valid JSON — no markdown, no code blocks, no explanation
+- leadName and company: extract from transcript introductions. Return null if not found.
+- salesCoachReview.whatIMissedCompletely: EVERY item MUST start with a gap category: Identify Champion: | Metrics: | Authority: | Process: | Pain: | Timeline: | Budget:
+- salesCoachReview.whatIDidRight: EVERY item MUST start with a framework label: "MEDDICC Metrics:", "BANT Budget:", etc. Return ONLY items where something genuinely happened. Min 2, max 6.
+- salesCoachReview.whatIDidRight: group MEDDICC items first, then BANT items.
+- salesCoachReview.whatIMissedCompletely: items MUST follow this strict label sequence: Identify Champion, Metrics, Authority, Process, Pain.
+- Reference specific moments, names, numbers from the transcript — never be generic
+
+FOLLOW-UP EMAIL RULES:
+- No emojis under any circumstance
+- No generic openers like "Hope you're doing well"
+- Write like a senior AE or consultant, not a template
+- Use concrete numbers, timelines, percentages, stakeholders, and operational details from the call
+- Do NOT invent anything not present in transcript
+- Every section must contain 3-4 standalone bullet points
+- Email body must remain under 250 words total
+- Tone should be direct, professional, and client-friendly
+- Subject line must reference the prospect's actual pain, KPI, urgency, or initiative
+`;
+    }
+
+    // ── Without live analysis: derive everything from the full transcript ─────────
     return `You are an expert B2B sales analyst. A sales call just ended. Analyze the full transcript and generate a structured post-call summary. Return ONLY valid JSON (no markdown code blocks, no commentary).
-${liveAnalysisBlock}
+
 {
     "overview": "2-3 sentence summary of what the call covered and the current deal status",
 
@@ -80,22 +237,18 @@ ${liveAnalysisBlock}
                 "Reference specific names, numbers, tools, or workflows mentioned",
                 "Each bullet one sentence max"
             ],
-
             "whatIsTheNeed": [
                 "2-3 bullets on the core business problem they described",
                 "Use their exact language where possible"
             ],
-
             "scopeOfImprovement": [
                 "2-3 bullets on the gaps or pain points identified",
                 "Quantify where numbers were mentioned"
             ],
-
             "whatYouWillAchieveAfterTransformation": [
                 "2-3 bullets on the outcomes they want",
                 "Tie to KPIs, timelines, or goals they mentioned"
             ],
-
             "nextSteps": [
                 "2-3 bullets — agreed actions with owners and dates if mentioned",
                 "If nothing agreed, state the single most logical next step"
@@ -126,17 +279,17 @@ ${liveAnalysisBlock}
         ]
     },
 
-  "nextCallPlaybook": {
-    "openingRecap": "2-3 sentences to open the next call recapping where things stand",
-    "questionsToAsk": ["5 high-value questions to fill the biggest gaps from this call — focus on Missing MEDDICC/BANT components"],
-    "valueAndROI": {
-      "quantitative": ["2-3 measurable ROI points to reinforce"],
-      "qualitative": ["2-3 strategic or emotional value points to reinforce"]
-    }
-  },
+    "nextCallPlaybook": {
+        "openingRecap": "2-3 sentences to open the next call recapping where things stand",
+        "questionsToAsk": ["5 high-value questions to fill the biggest gaps from this call — focus on Missing MEDDICC/BANT components"],
+        "valueAndROI": {
+            "quantitative": ["2-3 measurable ROI points to reinforce"],
+            "qualitative": ["2-3 strategic or emotional value points to reinforce"]
+        }
+    },
 
-  "keyPoints": ["4-6 bullets — top things to know about this deal right now"],
-  "actionItems": ["specific next steps with owners if mentioned, or implied follow-ups"]
+    "keyPoints": ["4-6 bullets — top things to know about this deal right now"],
+    "actionItems": ["specific next steps with owners if mentioned, or implied follow-ups"]
 }
 
 RULES:
@@ -144,7 +297,6 @@ RULES:
 - Use "Missing" for any BANT/MEDDICC field with no evidence at all
 - Use "Partial" if mentioned but incomplete or vague
 - Use "Clear" only if explicitly confirmed with specifics
-- If a LIVE ANALYSIS block is provided above, use its evidence strings verbatim in the "detail" fields wherever they match — only override if the transcript clearly shows a different picture
 - The follow-up email tone must be: simple, clear, no jargon, client-friendly
 - Sales coach review must reference actual call moments — not generic advice
 - Next call questions must target the weakest BANT/MEDDICC areas from this call
@@ -260,11 +412,10 @@ export class MeetingPersistence {
     private async processAndSaveMeeting(
         data: { transcript: TranscriptSegment[], usage: any[], startTime: number, durationMs: number, context: string },
         meetingId: string,
-        // BUG-04 fix: accept metadata snapshot so calendar info is not lost after session.reset()
         metadata?: { title?: string; calendarEventId?: string; source?: 'manual' | 'calendar' } | null,
         liveAnalysisData?: LiveAnalysisData | null,
-        speakerNames?: { user: string; client: string }
-
+        speakerNames?: { user: string; client: string },
+        companyIntel?: Record<string, any> | null   // ← new param
     ): Promise<void> {
         let title = "Untitled Session";
         let summaryData: { actionItems: string[], keyPoints: string[], liveAnalysis?: LiveAnalysisData, speakerNames?: { user: string, client: string } } = { actionItems: [], keyPoints: [] };
@@ -326,7 +477,7 @@ Use this as your grounding anchor. Map statuses: confirmed→Clear, partial→Pa
                     })
                     .join('\n');
 
-                const generatedSummary = await this.llmHelper.generateMeetingSummary(buildSummaryPrompt(liveAnalysisData), fullTranscriptText, groqSummaryPrompt);
+                const generatedSummary = await this.llmHelper.generateMeetingSummary(buildSummaryPrompt(liveAnalysisData, companyIntel), fullTranscriptText, groqSummaryPrompt);
 
                 if (generatedSummary) {
                     const jsonMatch = generatedSummary.match(/```json\n([\s\S]*?)\n```/) || [null, generatedSummary];

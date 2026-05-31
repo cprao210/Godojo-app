@@ -1,99 +1,31 @@
 import { useState, useCallback, useRef } from 'react';
 import { LiveAnalysisData } from '../types/liveAnalysis';
 
-// Serialise prior analysis state into a compact JSON block for the prompt.
-const serializePriorState = (prior: LiveAnalysisData): string =>
-  JSON.stringify({
-    bant: prior.bant,
-    meddic: prior.meddic,
-    objections: prior.objections,
-    signals: prior.signals,
-  }, null, 2);
+// ─── Prompt builders ─────────────────────────────────────────────────────────
+//
+// Two distinct prompts:
+//   1. getFirstRunPrompt  — used on the FIRST analysis only.
+//      Receives the full prospect-only transcript and derives everything from scratch.
+//
+//   2. getRefreshPrompt   — used on every SUBSEQUENT analysis.
+//      Receives:
+//        • priorState  — the structured JSON output of the last run (~300 tokens).
+//                        BANT/MEDDIC are updated incrementally from this base.
+//        • deltaContext — only the NEW prospect turns since the last cursor position.
+//                        REP turns are excluded — they are scaffolding, not signal sources.
+//      This keeps the prompt ~80% smaller than re-sending the full growing transcript,
+//      preventing context-length failures on Groq and reducing latency/cost on all models.
 
-const getLiveAnalysisPrompt = (
-  fullContext: string,
-  deltaContext: string,
-  priorState: LiveAnalysisData | null
-) => `You are an expert real-time sales intelligence engine analyzing a live sales call transcript. Your job is to extract structured insights across four areas: BANT, MEDDIC, Objections, and Buying Signals. Return ONLY valid JSON. No explanation, no markdown, no text outside the JSON object.
+// Serialise the BANT/MEDDIC state only — compact anchor for refresh runs.
+const serializeBANTMEDDIC = (prior: LiveAnalysisData): string =>
+  JSON.stringify({ bant: prior.bant, meddic: prior.meddic }, null, 2);
 
-    ═══════════════════════════════════════
-    RULES
-    ═══════════════════════════════════════
+// Serialise objections + signals for the refresh preserve-and-append block.
+const serializeObjectionsSignals = (prior: LiveAnalysisData): string =>
+  JSON.stringify({ objections: prior.objections, signals: prior.signals }, null, 2);
 
-    OVERWRITE on every call (re-derive from the FULL TRANSCRIPT):
-    → bant
-    → meddic
-
-    APPEND ONLY — never remove prior entries. Add new ones found in NEW TRANSCRIPT only:
-    → objections
-    → signals
-
-${priorState ? `    ═══════════════════════════════════════
-    PRIOR STATE (from previous analysis run)
-    ═══════════════════════════════════════
-    The fields below represent what was already captured. For objections and signals,
-    copy them into your response EXACTLY AS-IS, then append any new ones found in the
-    NEW TRANSCRIPT section. Do not modify, deduplicate, or remove prior entries.
-
-${serializePriorState(priorState)}
-
-` : ''}    ═══════════════════════════════════════
-    SECTION 1: BANT
-    ═══════════════════════════════════════
-
-    Scan the FULL TRANSCRIPT for Budget, Authority, Need, and Timeline signals.
-
-    For each field return:
-    - emoji:    "✅" if clearly confirmed, "⚠️" if implied or partial, "❌" if not mentioned
-    - status:   "confirmed" | "partial" | "missing"
-    - evidence: One line — exact quote or closest paraphrase from the customer. If missing, return ""
-    - suggested_question: ONLY when status is "missing" — one short, natural question the sales rep should ask RIGHT NOW to uncover this field (under 15 words, no filler). If status is confirmed or partial, return ""
-
-    Budget    → Money mentioned, approval thresholds, "we have budget", "we're looking at X"
-    Authority → Decision-maker named, approval chain mentioned, "I need sign-off from", "our CFO decides"
-    Need      → Problem stated, current pain, why they're looking, "we need", "we're trying to"
-    Timeline  → Deadlines, urgency, "we need this by", "our Q3 goal", "we're hoping to launch"
-
-    ═══════════════════════════════════════
-    SECTION 2: MEDDIC
-    ═══════════════════════════════════════
-
-    Scan the FULL TRANSCRIPT for MEDDIC signals.
-
-    Same structure as BANT: emoji + status + evidence + suggested_question per field.
-
-    Metrics          → Quantified outcomes, ROI, KPIs, "reduce by X%", "save X hours", "increase revenue"
-    Economic Buyer   → Who owns the budget/final yes, "our CFO", "VP of Finance signs off"
-    Decision Criteria→ What they're evaluating on, "we need it to integrate with", "most important to us is"
-    Decision Process → How they decide, "we do a POC", "we need legal review", "committee votes"
-    Identify Pain    → Core problem driving the search, inefficiency, risk, or cost they're trying to fix
-    Champion         → Internal sponsor, "I've been pushing for this", "I'm going to present this to"
-    Competition      → Other vendors mentioned, "we're also looking at", "our current tool", "compared to"
-
-    ═══════════════════════════════════════
-    SECTION 3: OBJECTIONS
-    ═══════════════════════════════════════
-
-    Capture two types. APPEND new entries from NEW TRANSCRIPT — never remove existing ones.
-
-    TYPE A — Customer Questions (open or unanswered)
-    TYPE B — AE Deferrals (follow-up commitments made by the AE)
-
-    For each objection return:
-    - type:   "customer_question" | "ae_deferral"
-    - quote:  Exact quote or tight one-line paraphrase
-    - owner:  "customer" | "ae"
-    - status: "open" | "deferred"
-
-    ═══════════════════════════════════════
-    SECTION 4: SIGNALS
-    ═══════════════════════════════════════
-
-    You are detecting EVERY meaningful signal in the conversation — positive buying signals,
-    negative risk signals, and neutral informational signals that affect deal outcome.
-    Cast a wide net. It is better to capture more signals than to miss important ones.
-    APPEND new signals only from the NEW TRANSCRIPT section — never remove prior ones.
-
+// ── Shared output format + signal catalogue (reused verbatim in both prompts) ──
+const SHARED_SIGNAL_CATALOGUE = `
     ── SIGNAL TYPES (use ALL that apply per signal, can be multiple) ──────────────────
 
     POSITIVE SIGNALS (category: "positive"):
@@ -190,14 +122,15 @@ ${serializePriorState(priorState)}
 
     ── DETECTION RULES ───────────────────────────────────────────────────────────────
 
-    1. Capture signals from BOTH speakers.
+    1. Capture signals from the prospect only (REP lines are context, not signal sources).
     2. Implied signals count — "We've been on our current tool for 5 years" → stall_signal + competitor_signal.
     3. One quote can carry MULTIPLE signal types.
     4. Short quotes are better than long ones.
     5. ask_now must be under 20 words, specific to THIS signal. Not generic.
     6. Prioritise high-intensity signals at the top of the array.
-    7. APPEND ONLY — never remove or overwrite prior signals between analysis runs.
+    7. APPEND ONLY — never remove or overwrite prior signals between analysis runs.`;
 
+const SHARED_OUTPUT_FORMAT = `
     ═══════════════════════════════════════
     OUTPUT FORMAT
     ═══════════════════════════════════════
@@ -224,18 +157,152 @@ ${serializePriorState(priorState)}
         "signals": [
             { "quote": "", "signal_type": [], "ask_now": "", "intensity": "", "category": "" }
         ]
-    }
+    }`;
+
+// ── PROMPT 1: First run — full transcript, derive everything from scratch ──────
+const getFirstRunPrompt = (fullProspectContext: string): string =>
+  `You are an expert real-time sales intelligence engine analyzing a live sales call transcript. Your job is to extract structured insights across four areas: BANT, MEDDIC, Objections, and Buying Signals. Return ONLY valid JSON. No explanation, no markdown, no text outside the JSON object.
 
     ═══════════════════════════════════════
-    FULL TRANSCRIPT (use for BANT + MEDDIC re-derivation):
+    RULES
     ═══════════════════════════════════════
-${fullContext}
-${deltaContext && deltaContext !== fullContext ? `
+
+    Derive ALL fields from the PROSPECT TRANSCRIPT below:
+    → bant        — scan every prospect turn for Budget, Authority, Need, Timeline signals
+    → meddic      — scan every prospect turn for MEDDIC signals
+    → objections  — capture customer questions and AE deferrals
+    → signals     — cast a wide net; better to over-capture than miss
+
     ═══════════════════════════════════════
-    NEW TRANSCRIPT (since last analysis — use for new objections + signals only):
+    SECTION 1: BANT
     ═══════════════════════════════════════
-${deltaContext}` : ''}
+
+    For each field return:
+    - emoji:    "✅" if clearly confirmed, "⚠️" if implied or partial, "❌" if not mentioned
+    - status:   "confirmed" | "partial" | "missing"
+    - evidence: One line — exact quote or closest paraphrase from the prospect. If missing, return ""
+    - suggested_question: ONLY when status is "missing" — one short, natural question the sales rep should ask RIGHT NOW to uncover this field (under 15 words, no filler). If status is confirmed or partial, return ""
+
+    Budget    → Money mentioned, approval thresholds, "we have budget", "we're looking at X"
+    Authority → Decision-maker named, approval chain mentioned, "I need sign-off from", "our CFO decides"
+    Need      → Problem stated, current pain, why they're looking, "we need", "we're trying to"
+    Timeline  → Deadlines, urgency, "we need this by", "our Q3 goal", "we're hoping to launch"
+
+    ═══════════════════════════════════════
+    SECTION 2: MEDDIC
+    ═══════════════════════════════════════
+
+    Same structure as BANT: emoji + status + evidence + suggested_question per field.
+
+    Metrics          → Quantified outcomes, ROI, KPIs, "reduce by X%", "save X hours", "increase revenue"
+    Economic Buyer   → Who owns the budget/final yes, "our CFO", "VP of Finance signs off"
+    Decision Criteria→ What they're evaluating on, "we need it to integrate with", "most important to us is"
+    Decision Process → How they decide, "we do a POC", "we need legal review", "committee votes"
+    Identify Pain    → Core problem driving the search, inefficiency, risk, or cost they're trying to fix
+    Champion         → Internal sponsor, "I've been pushing for this", "I'm going to present this to"
+    Competition      → Other vendors mentioned, "we're also looking at", "our current tool", "compared to"
+
+    ═══════════════════════════════════════
+    SECTION 3: OBJECTIONS
+    ═══════════════════════════════════════
+
+    Capture two types from the full transcript:
+
+    TYPE A — Customer Questions (open or unanswered)
+    TYPE B — AE Deferrals (follow-up commitments made by the AE)
+
+    For each objection return:
+    - type:   "customer_question" | "ae_deferral"
+    - quote:  Exact quote or tight one-line paraphrase
+    - owner:  "customer" | "ae"
+    - status: "open" | "deferred"
+
+    ═══════════════════════════════════════
+    SECTION 4: SIGNALS
+    ═══════════════════════════════════════
+
+    You are detecting EVERY meaningful signal in the conversation — positive buying signals,
+    negative risk signals, and neutral informational signals that affect deal outcome.
+    Cast a wide net. It is better to capture more signals than to miss important ones.
+${SHARED_SIGNAL_CATALOGUE}
+${SHARED_OUTPUT_FORMAT}
+
+    ═══════════════════════════════════════
+    PROSPECT TRANSCRIPT (prospect turns only — full call so far):
+    ═══════════════════════════════════════
+${fullProspectContext}
 `;
+
+// ── PROMPT 2: Refresh run — prior state + new prospect delta only ─────────────
+const getRefreshPrompt = (
+  priorState: LiveAnalysisData,
+  newProspectDelta: string
+): string =>
+  `You are an expert real-time sales intelligence engine updating a live analysis mid-call. Return ONLY valid JSON. No explanation, no markdown, no text outside the JSON object.
+
+    ═══════════════════════════════════════
+    RULES FOR THIS REFRESH RUN
+    ═══════════════════════════════════════
+
+    You are given:
+      (A) PRIOR ANALYSIS — the structured output from the previous analysis run.
+          This already reflects everything said up to this point.
+      (B) NEW PROSPECT TURNS — only the prospect's words since the last analysis.
+          REP turns are omitted — they are scaffolding, not signal sources.
+
+    What to do with each section:
+
+    BANT + MEDDIC — UPDATE INCREMENTALLY:
+    → Start from the PRIOR ANALYSIS values below as your baseline.
+    → Scan NEW PROSPECT TURNS only for any evidence that changes a field.
+    → Upgrade status if new evidence confirms or extends a partial/missing field.
+    → Update evidence string if the new turns contain a better or more specific quote.
+    → Do NOT downgrade a confirmed field unless the prospect explicitly retracts it.
+    → If no new evidence for a field, copy it EXACTLY from PRIOR ANALYSIS unchanged.
+
+    OBJECTIONS — PRESERVE + APPEND:
+    → Copy ALL prior objections EXACTLY AS-IS into your output.
+    → Then append any NEW objections found only in NEW PROSPECT TURNS.
+    → Never remove, modify, or deduplicate prior objections.
+
+    SIGNALS — PRESERVE + APPEND:
+    → Copy ALL prior signals EXACTLY AS-IS into your output.
+    → Then append any NEW signals found only in NEW PROSPECT TURNS.
+    → Never remove, modify, or deduplicate prior signals.
+
+    ═══════════════════════════════════════
+    (A) PRIOR ANALYSIS — BANT + MEDDIC BASELINE
+    ═══════════════════════════════════════
+${serializeBANTMEDDIC(priorState)}
+
+    ═══════════════════════════════════════
+    (A) PRIOR ANALYSIS — OBJECTIONS + SIGNALS (copy verbatim, then append new)
+    ═══════════════════════════════════════
+${serializeObjectionsSignals(priorState)}
+
+    ═══════════════════════════════════════
+    BANT field reference:
+    ═══════════════════════════════════════
+
+    For each BANT/MEDDIC field:
+    - emoji:    "✅" confirmed | "⚠️" partial | "❌" missing
+    - status:   "confirmed" | "partial" | "missing"
+    - evidence: Best single-line quote or paraphrase from the prospect. Prefer specific over vague.
+    - suggested_question: Only when status is "missing". Under 15 words. Empty string otherwise.
+
+    ═══════════════════════════════════════
+    SECTION: SIGNALS reference
+    ═══════════════════════════════════════
+${SHARED_SIGNAL_CATALOGUE}
+${SHARED_OUTPUT_FORMAT}
+
+    ═══════════════════════════════════════
+    (B) NEW PROSPECT TURNS (since last analysis — prospect speech only):
+    ═══════════════════════════════════════
+${newProspectDelta || '(no new prospect turns since last analysis)'}
+`;
+
+
 
 // ─── Anthropic API fallback (used when electronAPI is not available) ─────────
 const runAnalysisViaAnthropicAPI = async (livePrompt: string): Promise<LiveAnalysisData> => {
@@ -267,9 +334,10 @@ const runAnalysisViaAnthropicAPI = async (livePrompt: string): Promise<LiveAnaly
 };
 
 // ─── Client-side merge guard ──────────────────────────────────────────────────
-// Even with the prior-state prompt, a model switch or truncation could drop
-// previously captured entries. This ensures we never lose objections or signals
-// that were already in state, regardless of what the LLM returns.
+// Protects against two failure modes regardless of which prompt was used:
+//   1. Objections/signals dropped by the LLM under token pressure (append guard).
+//   2. BANT/MEDDIC status regressed to "missing" when the LLM had no new evidence
+//      and hallucinated a downgrade instead of copying from prior state (status guard).
 const isSimilar = (a: string, b: string): boolean => {
   const clean = (s: string) => s.toLowerCase().replace(/[^a-z0-9 ]/g, '').trim();
   const ca = clean(a);
@@ -280,20 +348,67 @@ const isSimilar = (a: string, b: string): boolean => {
   return false;
 };
 
+// Status rank: higher index = stronger confirmation. Never allow a merge to move left.
+const STATUS_RANK: Record<string, number> = { missing: 0, partial: 1, confirmed: 2 };
+
+const guardBANTField = (
+  incoming: import('../types/liveAnalysis').BANTField,
+  prior: import('../types/liveAnalysis').BANTField
+): import('../types/liveAnalysis').BANTField => {
+  const incomingRank = STATUS_RANK[incoming.status] ?? 0;
+  const priorRank = STATUS_RANK[prior.status] ?? 0;
+  // If the new result regressed (e.g. confirmed → missing), restore prior
+  if (incomingRank < priorRank) return prior;
+  return incoming;
+};
+
+const guardMEDDICField = (
+  incoming: import('../types/liveAnalysis').MEDDICField,
+  prior: import('../types/liveAnalysis').MEDDICField
+): import('../types/liveAnalysis').MEDDICField => {
+  const incomingRank = STATUS_RANK[incoming.status] ?? 0;
+  const priorRank = STATUS_RANK[prior.status] ?? 0;
+  if (incomingRank < priorRank) return prior;
+  return incoming;
+};
+
 const mergeWithPrior = (
   incoming: LiveAnalysisData,
   prior: LiveAnalysisData | null
 ): LiveAnalysisData => {
   if (!prior) return incoming;
 
-  // Merge objections: keep all prior, add any new ones not already present
+  // ── BANT/MEDDIC: apply status regression guard ────────────────────────────
+  // On a refresh run the LLM was asked to copy unchanged fields from priorState.
+  // If it regressed a field (confirmed → missing) due to low confidence or
+  // truncation, restore the prior value. This is a safety net — the prompt
+  // should handle this in the vast majority of cases.
+  const bant = {
+    budget: guardBANTField(incoming.bant.budget, prior.bant.budget),
+    authority: guardBANTField(incoming.bant.authority, prior.bant.authority),
+    need: guardBANTField(incoming.bant.need, prior.bant.need),
+    timeline: guardBANTField(incoming.bant.timeline, prior.bant.timeline),
+  };
+
+  const meddic = {
+    metrics: guardMEDDICField(incoming.meddic.metrics, prior.meddic.metrics),
+    economic_buyer: guardMEDDICField(incoming.meddic.economic_buyer, prior.meddic.economic_buyer),
+    decision_criteria: guardMEDDICField(incoming.meddic.decision_criteria, prior.meddic.decision_criteria),
+    decision_process: guardMEDDICField(incoming.meddic.decision_process, prior.meddic.decision_process),
+    identify_pain: guardMEDDICField(incoming.meddic.identify_pain, prior.meddic.identify_pain),
+    champion: guardMEDDICField(incoming.meddic.champion, prior.meddic.champion),
+    competition: guardMEDDICField(incoming.meddic.competition, prior.meddic.competition),
+  };
+
+  // ── Objections/Signals: preserve-and-append guard ─────────────────────────
+  // Even with explicit prompt instructions, a model switch or token pressure
+  // can cause prior entries to be dropped. This is the final safety net.
   const mergedObjections = [...prior.objections];
   for (const obj of incoming.objections) {
     const alreadyPresent = mergedObjections.some(p => isSimilar(p.quote, obj.quote));
     if (!alreadyPresent) mergedObjections.push(obj);
   }
 
-  // Merge signals: keep all prior, add any new ones not already present
   const mergedSignals = [...prior.signals];
   for (const sig of incoming.signals) {
     const alreadyPresent = mergedSignals.some(p => isSimilar(p.quote, sig.quote));
@@ -301,8 +416,8 @@ const mergeWithPrior = (
   }
 
   return {
-    bant: incoming.bant,       // always overwrite — re-derived from full transcript
-    meddic: incoming.meddic,   // always overwrite — re-derived from full transcript
+    bant,
+    meddic,
     objections: mergedObjections,
     signals: mergedSignals,
   };
@@ -310,11 +425,15 @@ const mergeWithPrior = (
 
 export const useLiveAnalysis = (
   transcriptRef: React.MutableRefObject<Array<{ speaker: string; displayName?: string; text: string; timestamp: number }>>,
-  isMeetingPaused: boolean
+  isMeetingPaused: boolean,
+  companyIntel?: Record<string, any> | null
 ) => {
   const [analysisData, setAnalysisData] = useState<LiveAnalysisData | null>(null);
   const [isLoading, setIsLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  // Tracks whether the currently in-flight (or most recent) run was a refresh run.
+  // Used by the UI to show "Refreshing…" vs "Analysing…" in the header.
+  const [isRefreshRun, setIsRefreshRun] = useState(false);
   // Ref-based in-flight guard — avoids stale closure issues that a state-based check would have.
   const isLoadingRef = useRef(false);
   // Cursor: index of the last transcript entry that was part of the FULL context sent on
@@ -330,6 +449,27 @@ export const useLiveAnalysis = (
     analysisDataRef.current = data;
     setAnalysisData(data);
   }, []);
+
+  const buildCompanyBlock = (intel: Record<string, any> | null | undefined): string => {
+    if (!intel) return '';
+    const v = (x: any) => x && x !== 'null' && x !== 'N/A' ? x : null;
+    const lines = [
+      '═══════════════════════════════════════',
+      'PROSPECT COMPANY CONTEXT (from pre-call research)',
+      '═══════════════════════════════════════',
+    ];
+    if (v(intel.companyName)) lines.push(`Company: ${intel.companyName}`);
+    if (v(intel.industry)) lines.push(`Industry: ${intel.industry}`);
+    if (v(intel.businessModel)) lines.push(`Business Model: ${intel.businessModel}`);
+    if (v(intel.employeeCount)) lines.push(`Employees: ${intel.employeeCount}`);
+    if (intel.keyProducts?.length) lines.push(`Products: ${intel.keyProducts.slice(0, 4).join(', ')}`);
+    if (intel.competitors?.length) lines.push(`Competitors (known): ${intel.competitors.slice(0, 4).join(', ')}`);
+    if (intel.topCustomers?.length) lines.push(`Top Customers: ${intel.topCustomers.slice(0, 3).join(', ')}`);
+    if (intel.recentNews?.length) lines.push(`Recent News: ${intel.recentNews[0].headline}`);
+    lines.push('Use this context to enrich signal detection — e.g. recognise known competitors, validate product fit, identify relevant pain points.');
+    lines.push('═══════════════════════════════════════');
+    return lines.join('\n');
+  };
 
   const runAnalysis = useCallback(async (force = false) => {
     const transcript = transcriptRef.current;
@@ -354,28 +494,55 @@ export const useLiveAnalysis = (
 
     try {
       // ── Build transcript strings ─────────────────────────────────────
-      // Each turn is formatted as: "SPEAKER_LABEL (DisplayName): text"
-      // Using displayName gives the LLM real speaker identity for accurate
-      // attribution of objections, champion detection, and authority signals.
-      const formatTurn = (t: { speaker: string; displayName?: string; text: string }) => {
-        const role = t.speaker === 'user' ? 'REP' : 'PROSPECT';
+      // Format a prospect turn for the prompt.
+      // displayName gives the LLM real speaker identity for accurate signal attribution.
+      const formatProspectTurn = (t: { speaker: string; displayName?: string; text: string }) => {
         const name = t.displayName ? ` (${t.displayName})` : '';
-        return `${role}${name}: ${t.text}`;
+        return `PROSPECT${name}: ${t.text}`;
       };
 
+      // Exclude internal system/AI turns from all paths.
       const humanTurns = transcript.filter(
         t => !['system', 'ai', 'assistant', 'model'].includes(t.speaker?.toLowerCase())
       );
 
-      // Full transcript — always sent, used for BANT + MEDDIC re-derivation
-      const fullContext = humanTurns.map(formatTurn).join('\n');
+      let livePrompt: string;
 
-      // Delta transcript — only turns since the last analysis run
-      // Used for new objections + signals detection only
-      const deltaTurns = humanTurns.slice(deltaStartIndex);
-      const deltaContext = deltaTurns.length > 0 ? deltaTurns.map(formatTurn).join('\n') : fullContext;
+      if (!priorState) {
+        setIsRefreshRun(false);
+        // ── FIRST RUN: full prospect-only transcript, derive everything from scratch ──
+        // We still include REP turns as labelled lines so the LLM has call context
+        // for objection/AE-deferral detection, but BANT/MEDDIC signal extraction
+        // is scoped to prospect lines via the prompt instruction.
+        const firstRunContext = humanTurns.map(t => {
+          const role = t.speaker === 'user' ? 'REP' : 'PROSPECT';
+          const name = t.displayName ? ` (${t.displayName})` : '';
+          return `${role}${name}: ${t.text}`;
+        }).join('\n');
 
-      const livePrompt = getLiveAnalysisPrompt(fullContext, deltaContext, priorState);
+        const companyBlock = buildCompanyBlock(companyIntel);
+        livePrompt = companyBlock
+          ? `${companyBlock}\n\n${getFirstRunPrompt(firstRunContext)}`
+          : getFirstRunPrompt(firstRunContext);
+        console.log(`[useLiveAnalysis] First run — sending ${humanTurns.length} turns (${firstRunContext.length} chars)`);
+      } else {
+        setIsRefreshRun(true);
+        // ── REFRESH RUN: prior state + new PROSPECT turns only ────────────────────
+        // REP turns are excluded from the delta — they are scaffolding context,
+        // not signal sources. BANT/MEDDIC are updated incrementally from priorState.
+        // This keeps the prompt ~80% smaller than re-sending the full transcript.
+        const newTurns = humanTurns.slice(deltaStartIndex);
+        const prospectDelta = newTurns
+          .filter(t => t.speaker !== 'user')   // prospect turns only
+          .map(formatProspectTurn)
+          .join('\n');
+
+        const companyBlock = buildCompanyBlock(companyIntel);
+        livePrompt = companyBlock
+          ? `${companyBlock}\n\n${getRefreshPrompt(priorState, prospectDelta)}`
+          : getRefreshPrompt(priorState, prospectDelta);
+        console.log(`[useLiveAnalysis] Refresh run — ${newTurns.length} new turns, ${prospectDelta.length} chars of prospect delta`);
+      }
 
       // ── Electron path ────────────────────────────────────────────────
       if (window.electronAPI?.startLiveAnalysis) {
@@ -441,5 +608,5 @@ export const useLiveAnalysis = (
     setError(null);
   }, []);
 
-  return { analysisData, isLoading, error, runAnalysis, resetAnalysis };
+  return { analysisData, isLoading, error, runAnalysis, resetAnalysis, isRefreshRun };
 };

@@ -244,14 +244,14 @@ export function detectTavilyIntent(message: string, allowedCompanies: Set<string
         };
     }
 
-    if (allowedCompanies.size === 0) {
-        return {
-            needsExternalSearch: false,
-            searchQuery: null,
-            entityName: null,
-            reason: 'no allowed companies in meeting context — Tavily disabled',
-        };
-    }
+    // if (allowedCompanies.size === 0) {
+    //     return {
+    //         needsExternalSearch: false,
+    //         searchQuery: null,
+    //         entityName: null,
+    //         reason: 'no allowed companies in meeting context — Tavily disabled',
+    //     };
+    // }
 
     // ── Pass 1: Meeting-context negation guard ──
     // If the user is clearly asking about THIS meeting, skip web search.
@@ -270,23 +270,20 @@ export function detectTavilyIntent(message: string, allowedCompanies: Set<string
     for (const pattern of FACT_SEEKING_PATTERNS) {
         if (pattern.test(text)) {
             const entityName = extractEntityName(text);
-            if (!entityName || !isAllowedEntity(entityName, allowedCompanies)) {
+            if (!entityName) {
                 return {
                     needsExternalSearch: false,
                     searchQuery: null,
-                    entityName: entityName ?? null,
-                    reason: entityName
-                        ? `entity "${entityName}" not in allowed companies: [${[...allowedCompanies].join(', ')}]`
-                        : 'no recognisable company entity found',
+                    entityName: null,
+                    reason: 'no recognisable entity found in message',
                 };
             }
             const searchQuery = buildSearchQuery(entityName, text);
-
             return {
                 needsExternalSearch: true,
                 searchQuery,
                 entityName,
-                reason: `external signal matched for allowed entity "${entityName}"`,
+                reason: `external signal matched for entity "${entityName}"`,
             };
         }
     }

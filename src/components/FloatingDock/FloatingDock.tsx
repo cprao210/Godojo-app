@@ -34,6 +34,10 @@ interface FloatingDockProps {
     shortcuts: ShortcutConfig;
 
     overlayPanelClass?: string;
+
+    // Company intelligence from pre-call sales brief
+    companyIntel?: Record<string, any> | null;
+
 }
 
 // ─── Chat message type (mirrors FloatingChatPanel) ──────────────────────────
@@ -60,7 +64,8 @@ export const FloatingDock: React.FC<FloatingDockProps> = ({
     onSelectModel,
     speakerNames,
     shortcuts,
-    overlayPanelClass
+    overlayPanelClass,
+    companyIntel,
 }) => {
     const [activePanel, setActivePanel] = useState<ActivePanel>(null);
     const [isFrozen, setIsFrozen] = useState(false);
@@ -97,7 +102,7 @@ export const FloatingDock: React.FC<FloatingDockProps> = ({
 
     // ── Lifted state: survives panel switches ──────────────────────────────────
     // Analysis state is owned here so FloatingIntelligencePanel never loses it on remount.
-    const { analysisData, isLoading: analysisLoading, error: analysisError, runAnalysis, resetAnalysis } = useLiveAnalysis(transcriptRef, isMeetingPaused);
+    const { analysisData, isLoading: analysisLoading, error: analysisError, runAnalysis, resetAnalysis, isRefreshRun } = useLiveAnalysis(transcriptRef, isMeetingPaused, companyIntel);
     // Track whether the first analysis has been triggered so we don't re-run on every remount.
     const analysisInitiatedRef = useRef(false);
 
@@ -200,6 +205,7 @@ export const FloatingDock: React.FC<FloatingDockProps> = ({
                                     onRegenerate={() => runAnalysis(true)}
                                     autoRefreshInterval={autoRefreshInterval}
                                     onAutoRefreshIntervalChange={setAutoRefreshInterval}
+                                    isRefreshRun={isRefreshRun}
                                 />
                             )}
                             {activePanel === 'chat' && (

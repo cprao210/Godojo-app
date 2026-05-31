@@ -135,6 +135,10 @@ export class IntelligenceManager extends EventEmitter {
         return this.session.getFormattedContext(lastSeconds);
     }
 
+    getFullSessionContext(): string {
+        return this.session.getFullSessionContext();
+    }
+
     getLastClientTurn(): string | null {
         return this.session.getLastClientTurn();
     }

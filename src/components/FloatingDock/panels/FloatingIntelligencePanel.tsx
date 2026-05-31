@@ -46,6 +46,7 @@ interface FloatingIntelligencePanelProps {
     onRegenerate: () => void;      // Manual / forced refresh — timer is managed by FloatingDock
     autoRefreshInterval: number | null;
     onAutoRefreshIntervalChange: (interval: number | null) => void;
+    isRefreshRun?: boolean;        // true = incremental refresh, false/undefined = first run
 }
 
 // ─── AI Skeleton Loader ──────────────────────────────────────────────────────
@@ -194,11 +195,17 @@ export const FloatingIntelligencePanel: React.FC<FloatingIntelligencePanelProps>
     onRegenerate,
     autoRefreshInterval,
     onAutoRefreshIntervalChange,
+    isRefreshRun,
 }) => {
     const [showRefreshPicker, setShowRefreshPicker] = useState(false);
     const refreshPickerRef = useRef<HTMLDivElement>(null);
 
-    const displayData = analysisData;
+    // Treat an all-missing analysis the same as no data (show WaitingPlaceholder)
+    const isAllMissing = (data: LiveAnalysisData) =>
+        Object.values(data.bant).every(f => f.status === 'missing') &&
+        Object.values(data.meddic).every(f => f.status === 'missing');
+
+    const displayData = analysisData && !isAllMissing(analysisData) ? analysisData : null;
 
     // Close dropdown when clicking outside
     useEffect(() => {
@@ -250,7 +257,7 @@ export const FloatingIntelligencePanel: React.FC<FloatingIntelligencePanelProps>
                         <div className="flex items-center gap-1.5 mt-0.5">
                             <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-pulse block" />
                             <span className="text-[11px] text-emerald-400 font-medium">
-                                {isMeetingPaused ? 'Paused' : 'Active'}
+                                {isMeetingPaused ? 'Paused' : isLoading ? (isRefreshRun ? 'Refreshing…' : 'Analysing…') : 'Active'}
                             </span>
                         </div>
                     </div>

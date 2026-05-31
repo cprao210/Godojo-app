@@ -272,7 +272,7 @@ export interface ElectronAPI {
   onSalesBriefStreamToken: (callback: (token: string) => void) => () => void
   onSalesBriefStreamDone: (callback: () => void) => () => void
   onSalesBriefStreamError: (callback: (error: string) => void) => () => void
-  fetchCompanyIntel: (payload: { companyName: string; domain?: string }) => Promise<{ success: boolean; intel?: any; error?: string }>
+  fetchCompanyIntel: (payload: { companyName: string; domain?: string; forceRefresh?: boolean }) => Promise<{ success: boolean; intel?: any; fromCache?: boolean; error?: string }>;
 
   // Auto-Update
   onUpdateAvailable: (callback: (info: any) => void) => () => void
@@ -300,6 +300,8 @@ export interface ElectronAPI {
 
   onTavilySearching: (callback: (data: { entity: string }) => void) => () => void
   onTavilySearchDone: (callback: (data: { entity: string | null; status: string; fromCache: boolean }) => void) => () => void
+  setCompanyIntel: (intel: Record<string, any> | null) => Promise<{ success: boolean; error?: string }>
+  onCompanyIntelUpdated: (callback: (intel: Record<string, any> | null) => void) => (() => void)
 
   // Donation API
   getDonationStatus: () => Promise<{ shouldShow: boolean; hasDonated: boolean; lifetimeShows: number }>;

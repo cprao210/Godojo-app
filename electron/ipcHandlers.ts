@@ -8,9 +8,9 @@ import * as path from "path";
 import * as fs from "fs";
 import { AudioDevices } from "./audio/AudioDevices";
 import { detectTavilyIntent, extractAllowedCompaniesFromAttendees } from "./services/TavilyIntentDetector";
-import { searchCompany, buildCompanyContextBlock, clearCompanyCache } from "./services/TavilyManager";
+import { searchCompany, clearCompanyCache } from "./services/TavilyManager";
 
-
+import { buildCompanyContextBlock } from './utils/salesBriefUtils';
 import { RECOGNITION_LANGUAGES, AI_RESPONSE_LANGUAGES } from "./config/languages"
 import { LiveAnalysisData } from "../src/types/liveAnalysis";
 
@@ -321,7 +321,11 @@ export function initializeIpcHandlers(appState: AppState): void {
 
   safeHandle("gemini-chat", async (event, message: string, imagePaths?: string[], context?: string, options?: { skipSystemPrompt?: boolean }) => {
     try {
-      const result = await appState.processingHelper.getLLMHelper().chatWithGemini(message, imagePaths, context, options?.skipSystemPrompt);
+      const companyBlock = buildCompanyContextBlock(appState.getCompanyIntel());
+      const enrichedContext = companyBlock
+        ? (context ? `${companyBlock}\n\n${context}` : companyBlock)
+        : context;
+      const result = await appState.processingHelper.getLLMHelper().chatWithGemini(message, imagePaths, enrichedContext, options?.skipSystemPrompt);
 
       console.log(`[IPC] gemini - chat response: `, result ? result.substring(0, 50) : "(empty)");
 
@@ -347,7 +351,8 @@ export function initializeIpcHandlers(appState: AppState): void {
         text: message,
         speaker: 'user',
         timestamp: Date.now(),
-        final: true
+        final: true,
+        source: 'chat'
       }, true);
 
       // 2. Add assistant response and set as last message
@@ -395,7 +400,8 @@ export function initializeIpcHandlers(appState: AppState): void {
         text: message,
         speaker: 'user',
         timestamp: Date.now(),
-        final: true
+        final: true,
+        source: 'chat'
       }, true);
 
       let fullResponse = "";
@@ -405,10 +411,23 @@ export function initializeIpcHandlers(appState: AppState): void {
         // User requested 100 seconds of context for the answer button
         // Logic: If no explicit context provided (like from manual override), auto-inject from IntelligenceManager
         try {
-          const autoContext = intelligenceManager.getFormattedContext(100);
-          if (autoContext && autoContext.trim().length > 0) {
-            context = autoContext;
-            console.log(`[IPC] Auto - injected 100s context for gemini - chat - stream(${context.length} chars)`);
+          // Use full session transcript so chat can answer questions about anything said in the meeting
+          const fullSessionContext = intelligenceManager.getFullSessionContext();
+          if (fullSessionContext && fullSessionContext.trim().length > 0) {
+            context = fullSessionContext;
+            console.log(`[IPC] Auto-injected full session transcript for chat (${context.length} chars)`);
+          } else {
+            // Fallback to recent window if session hasn't started
+            const autoContext = intelligenceManager.getFormattedContext(300);
+            if (autoContext && autoContext.trim().length > 0) {
+              context = autoContext;
+              console.log(`[IPC] Auto-injected 300s context fallback for chat (${context.length} chars)`);
+            }
+          }
+          // Company intel block always prepended so it has highest priority
+          const companyBlock = buildCompanyContextBlock(appState.getCompanyIntel());
+          if (companyBlock) {
+            context = context ? `${companyBlock}\n\n${context}` : companyBlock;
           }
         } catch (ctxErr) {
           console.warn("[IPC] Failed to auto-inject context:", ctxErr);
@@ -443,22 +462,6 @@ export function initializeIpcHandlers(appState: AppState): void {
         }
         // ── End Tavily enrichment ────────────────────────────────────────────────
 
-        // ── Scope Guard ──────────────────────────────────────────────────────────
-        // Refuse questions unrelated to: meeting context, transcript, meeting brief,
-        // or inferred participant companies. If no meeting is active at all, block
-        // before the LLM is ever called.
-        const _scopeRefusal =
-          "I can only help with questions related to this meeting, the transcript, the meeting brief, or companies of the participants. This question is outside that scope.";
-
-        const _isInMeetingSession = _tavilyAllowedCompanies.size > 0 || (context && context.trim().length > 0);
-
-        if (!_isInMeetingSession) {
-          console.log("[IPC] Scope guard: no active meeting context, refusing general question.");
-          event.sender.send("gemini-stream-token", _scopeRefusal);
-          event.sender.send("gemini-stream-done");
-          return null;
-        }
-
         // Inject inferred company names so the LLM knows the allowed scope
         if (_tavilyAllowedCompanies.size > 0) {
           const _companyList = [..._tavilyAllowedCompanies].join(", ");
@@ -469,7 +472,6 @@ export function initializeIpcHandlers(appState: AppState): void {
             "--- END PARTICIPANT INFO ---";
           context = context ? `${context}${_participantNote}` : _participantNote;
         }
-        // ── End Scope Guard ──────────────────────────────────────────────────────
 
         // USE streamChat which handles routing
         const stream = llmHelper.streamChat(message, imagePaths, context, options?.skipSystemPrompt ? "" : undefined);
@@ -512,13 +514,15 @@ export function initializeIpcHandlers(appState: AppState): void {
   });
 
   safeHandle("live-analysis-stream", async (event, prompt: string) => {
+
     try {
-      console.log('[IPC] live-analysis-stream called, prompt length:', prompt.length);
+
+      const promptKb = (prompt.length / 1024).toFixed(1);
+      console.log(`[IPC] live-analysis-stream called — prompt: ${prompt.length} chars (${promptKb} KB)`);
 
       const llmHelper = appState.processingHelper.getLLMHelper();
       const myStreamId = ++_analysisStreamId;
 
-      // Use a direct call that doesn't use the shared stream infrastructure
       const result = await llmHelper.chatWithGemini(prompt, undefined, undefined, true);
 
       if (_analysisStreamId === myStreamId) {
@@ -2192,7 +2196,7 @@ export function initializeIpcHandlers(appState: AppState): void {
   // Company Intelligence (Sales Brief v2)
   // ==========================================
 
-  safeHandle("fetch-company-intel", async (_, payload: { companyName: string; domain?: string }) => {
+  safeHandle("fetch-company-intel", async (_, payload: { companyName: string; domain?: string; forceRefresh?: boolean }) => {
     try {
       const { CredentialsManager } = require('./services/CredentialsManager');
       const cm = CredentialsManager.getInstance();
@@ -2202,8 +2206,24 @@ export function initializeIpcHandlers(appState: AppState): void {
         return { success: false, error: 'No Tavily API key configured. Add one in Settings → AI Providers.' };
       }
 
-      const { companyName, domain } = payload;
-      const companyQuery = domain ? `${companyName} site:${domain}` : companyName;
+      const { companyName, domain, forceRefresh = false } = payload;
+
+      // ── Persistence: return cached intel unless forceRefresh ─────────────
+      const cacheKey = `company_intel:${(domain || companyName).toLowerCase()}`;
+      const db = DatabaseManager.getInstance();
+      if (!forceRefresh) {
+        const cached = db.getAppState(cacheKey);
+        if (cached) {
+          try {
+            const parsed = JSON.parse(cached);
+            console.log(`[IPC] fetch-company-intel: returning cached intel for "${companyName}"`);
+            return { success: true, intel: parsed, fromCache: true };
+          } catch {
+            // corrupt cache — fall through to fresh fetch
+            db.deleteAppState(cacheKey);
+          }
+        }
+      }
 
       // Run parallel Tavily searches for different intel categories
       const tavilySearch = async (query: string, maxResults = 3): Promise<any[]> => {
@@ -2217,23 +2237,42 @@ export function initializeIpcHandlers(appState: AppState): void {
         return data.results || [];
       };
 
-      const [overviewResults, fundingResults, newsResults, leadershipResults, competitorResults] = await Promise.allSettled([
+      const linkedinQuery = domain
+        ? `site:linkedin.com/company ${companyName} OR site:linkedin.com/company ${domain.split('.')[0]}`
+        : `site:linkedin.com/company "${companyName}"`;
+
+      const [overviewResults, fundingResults, newsResults, leadershipResults, competitorResults, linkedinResults] = await Promise.allSettled([
         tavilySearch(`${companyName} company overview founded headquarters employees industry`),
         tavilySearch(`${companyName} funding valuation investors series revenue`),
         tavilySearch(`${companyName} latest news announcements 2024 2025`, 4),
         tavilySearch(`${companyName} leadership CEO CRO CMO executive changes`),
         tavilySearch(`${companyName} competitors products customers clients`),
+        tavilySearch(linkedinQuery, 2),  // LinkedIn-specific: headcount, about, specialties
       ]);
 
       const extract = (r: PromiseSettledResult<any[]>) => r.status === 'fulfilled' ? r.value : [];
 
+      // Extract the LinkedIn company URL from results if found
+      const linkedinHits = extract(linkedinResults);
+      const linkedinPageUrl = linkedinHits
+        .map((r: any) => r.url as string)
+        .find((u: string) => u?.includes('linkedin.com/company/')) || null;
+
       // Aggregate all snippets and pass to LLM for structured extraction
+      const linkedinSnippets = extract(linkedinResults).map((r: any) => r.content || r.snippet || '').filter(Boolean);
+
       const allSnippets = [
+        '=== GENERAL OVERVIEW ===',
         ...extract(overviewResults).map((r: any) => r.content || r.snippet || ''),
+        '=== FUNDING & FINANCIALS ===',
         ...extract(fundingResults).map((r: any) => r.content || r.snippet || ''),
+        '=== RECENT NEWS ===',
         ...extract(newsResults).map((r: any) => r.content || r.snippet || ''),
+        '=== LEADERSHIP ===',
         ...extract(leadershipResults).map((r: any) => r.content || r.snippet || ''),
+        '=== COMPETITORS & CUSTOMERS ===',
         ...extract(competitorResults).map((r: any) => r.content || r.snippet || ''),
+        ...(linkedinSnippets.length ? ['=== LINKEDIN COMPANY PROFILE (authoritative — prefer for headcount, description, specialties, founding year) ===', ...linkedinSnippets] : []),
       ].filter(Boolean).join('\n\n---\n\n');
 
       const llmHelper = appState.processingHelper.getLLMHelper();
@@ -2290,6 +2329,11 @@ RULES:
         else return { success: false, error: 'Could not parse company intelligence' };
       }
 
+      // Prefer the directly-found LinkedIn URL over whatever the LLM extracted
+      if (linkedinPageUrl && (!intel.linkedinUrl || !intel.linkedinUrl.includes('linkedin.com/company/'))) {
+        intel.linkedinUrl = linkedinPageUrl;
+      }
+
       // Attach raw news snippets for the "Recent News" click-through
       intel._newsSnippets = extract(newsResults).slice(0, 3).map((r: any) => ({
         title: r.title,
@@ -2338,10 +2382,33 @@ RULES:
         }
       }
 
+      // Persist intel so re-opening doesn't re-fetch
+      try {
+        db.setAppState(cacheKey, JSON.stringify(intel));
+        console.log(`[IPC] fetch-company-intel: cached intel for "${companyName}" (key: ${cacheKey})`);
+      } catch (e) {
+        console.warn('[IPC] fetch-company-intel: failed to cache intel:', e);
+      }
+
+      // Auto-store in appState so chat assistant can access it immediately without a separate set-company-intel call
+      appState.setCompanyIntel(intel);
+      console.log(`[IPC] fetch-company-intel: auto-stored intel in appState for "${companyName}"`);
+
       return { success: true, intel };
     } catch (error: any) {
       console.error('[IPC] fetch-company-intel error:', error);
       return { success: false, error: error.message || 'Unknown error' };
+    }
+  });
+
+  // ── Store company intel for use in LLM prompts ──────────────────────────────
+  safeHandle("set-company-intel", async (_, intel: Record<string, any> | null) => {
+    try {
+      appState.setCompanyIntel(intel);
+      return { success: true };
+    } catch (error: any) {
+      console.error('[IPC] set-company-intel error:', error);
+      return { success: false, error: error.message };
     }
   });
 
@@ -2361,8 +2428,10 @@ RULES:
       const contextString = buildFollowUpEmailPromptInput(input);
 
       // Build prompts
-      const geminiPrompt = `${FOLLOWUP_EMAIL_PROMPT}\n\nMEETING DETAILS:\n${contextString}`;
-      const groqPrompt = `${GROQ_FOLLOWUP_EMAIL_PROMPT}\n\nMEETING DETAILS:\n${contextString}`;
+      const companyBlock = buildCompanyContextBlock(appState.getCompanyIntel());
+      const enrichedContext = companyBlock ? `${companyBlock}\n\n${contextString}` : contextString;
+      const geminiPrompt = `${FOLLOWUP_EMAIL_PROMPT}\n\nMEETING DETAILS:\n${enrichedContext}`;
+      const groqPrompt = `${GROQ_FOLLOWUP_EMAIL_PROMPT}\n\nMEETING DETAILS:\n${enrichedContext}`;
 
       // Use chatWithGemini with alternateGroqMessage for fallback
       const emailBody = await llmHelper.chatWithGemini(geminiPrompt, undefined, undefined, true, groqPrompt);
@@ -2381,6 +2450,21 @@ RULES:
     } catch (error: any) {
       console.error("Error extracting emails:", error);
       return [];
+    }
+  });
+
+  safeHandle("set-company-intel", async (_, intel: Record<string, any> | null) => {
+    try {
+      appState.setCompanyIntel(intel);
+      // Broadcast to all renderer windows so NativelyInterface can update its state
+      const { BrowserWindow } = require('electron');
+      BrowserWindow.getAllWindows().forEach((win: any) => {
+        win.webContents.send('company-intel-updated', intel);
+      });
+      return { success: true };
+    } catch (error: any) {
+      console.error('[IPC] set-company-intel error:', error);
+      return { success: false, error: error.message };
     }
   });
 

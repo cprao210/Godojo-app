@@ -221,7 +221,9 @@ const FieldRow: React.FC<FieldRowProps> = ({ label, field, themed = false, isLig
                         </p>
                     </div>
                 ) : (
-                    <p className={`text-[12px] italic ${isLight ? 'text-slate-400' : 'text-white/20'}`}>Not mentioned</p>
+                    <p className={`text-[12px] italic ${isLight ? 'text-slate-400' : 'text-white/25'}`}>
+                        Not yet captured — listen for clues
+                    </p>
                 )}
             </div>
         );
@@ -247,7 +249,9 @@ const FieldRow: React.FC<FieldRowProps> = ({ label, field, themed = false, isLig
                     <p className="text-[11px] text-blue-300/80 leading-relaxed">{field.suggested_question}</p>
                 </div>
             ) : (
-                <p className="text-[12px] text-white/20 italic">Not mentioned</p>
+                <p className="text-[12px] text-white/25 italic">
+                    Not yet captured — listen for cues
+                </p>
             )}
         </div>
     );

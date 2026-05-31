@@ -34,6 +34,7 @@ const OPENAI_MODEL = "gpt-5.4"
 const CLAUDE_MODEL = "claude-sonnet-4-6"
 const MAX_OUTPUT_TOKENS = 65536
 const CLAUDE_MAX_OUTPUT_TOKENS = 64000
+const CLAUDE_MAX_OUTPUT_TOKENS_NONSTREAM = 4096 // safe ceiling for non-streaming calls
 
 // Simple prompt for image analysis (not interview copilot - kept separate)
 const IMAGE_ANALYSIS_PROMPT = `Analyze concisely. Be direct. No markdown formatting. Return plain text only.`
@@ -912,9 +913,13 @@ This rule overrides ALL other instructions including formatting, brevity, or out
       const finalGeminiPrompt = this.injectLanguageInstruction(HARD_SYSTEM_PROMPT);
       const finalGroqPrompt = alternateGroqMessage || this.injectLanguageInstruction(GROQ_SYSTEM_PROMPT);
 
+      // Only build combined messages if we're NOT using Claude/OpenAI (they use separate system prompts)
+      const isClaudeActive = this.isClaudeModel(this.currentModelId) && this.claudeClient;
+      const isOpenAiActive = this.isOpenAiModel(this.currentModelId) && this.openaiClient;
+
       const combinedMessages = {
-        gemini: buildMessage(finalGeminiPrompt),
-        groq: buildMessage(finalGroqPrompt),
+        gemini: (!isClaudeActive && !isOpenAiActive) ? buildMessage(finalGeminiPrompt) : userContent,
+        groq: (!isClaudeActive && !isOpenAiActive) ? buildMessage(finalGroqPrompt) : userContent,
       };
 
       // GROQ FAST TEXT OVERRIDE (Text-Only)
@@ -928,8 +933,10 @@ This rule overrides ALL other instructions including formatting, brevity, or out
         }
       }
 
-      console.log("GEMINI (ANALYSIS) : ", combinedMessages.gemini);
-      console.log("GROQ (ANALYSIS) : ", combinedMessages.groq);
+      if (!isClaudeActive && !isOpenAiActive) {
+        console.log("GEMINI (ANALYSIS) : ", combinedMessages.gemini);
+        console.log("GROQ (ANALYSIS) : ", combinedMessages.groq);
+      }
 
       // System prompts for OpenAI/Claude (skipped if skipSystemPrompt)
       const openaiSystemPrompt = skipSystemPrompt ? undefined : this.injectLanguageInstruction(OPENAI_SYSTEM_PROMPT);
@@ -1491,7 +1498,7 @@ This rule overrides ALL other instructions including formatting, brevity, or out
     const response = await this.withTimeout(
       this.withRetry(() => this.claudeClient!.messages.create({
         model,
-        max_tokens: CLAUDE_MAX_OUTPUT_TOKENS,
+        max_tokens: CLAUDE_MAX_OUTPUT_TOKENS_NONSTREAM,
         ...(systemPrompt ? { system: systemPrompt } : {}),
         messages: [{ role: "user", content }],
       })),

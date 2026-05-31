@@ -267,6 +267,7 @@ interface ElectronAPI {
 
   onTavilySearching: (callback: (data: { entity: string }) => void) => () => void
   onTavilySearchDone: (callback: (data: { entity: string | null; status: string; fromCache: boolean }) => void) => () => void
+  onCompanyIntelUpdated: (callback: (intel: Record<string, any> | null) => void) => (() => void);
 
   // Keybind Management
   getKeybinds: () => Promise<Array<{ id: string; label: string; accelerator: string; isGlobal: boolean; defaultAccelerator: string }>>
@@ -300,6 +301,7 @@ interface ElectronAPI {
 
   // Tavily Search API
   setTavilyApiKey: (apiKey: string) => Promise<{ success: boolean; error?: string }>;
+  setCompanyIntel: (intel: Record<string, any> | null) => Promise<{ success: boolean; error?: string }>;
 
   // Overlay Opacity (Stealth Mode)
   setOverlayOpacity: (opacity: number) => Promise<void>;
@@ -352,7 +354,7 @@ interface ElectronAPI {
   supabaseForceBackfill: () => Promise<{ success: boolean; error?: string }>;
 
   // Company Intelligence
-  fetchCompanyIntel: (payload: { companyName: string; domain?: string }) => Promise<{ success: boolean; intel?: any; error?: string }>;
+  fetchCompanyIntel: (payload: { companyName: string; domain?: string; forceRefresh?: boolean }) => Promise<{ success: boolean; intel?: any; fromCache?: boolean; error?: string }>;
 
   // Platform
   platform: NodeJS.Platform;
@@ -674,6 +676,8 @@ contextBridge.exposeInMainWorld("electronAPI", {
   getNativeAudioStatus: () => ipcRenderer.invoke("native-audio-status"),
   getInputDevices: () => ipcRenderer.invoke("get-input-devices"),
   getOutputDevices: () => ipcRenderer.invoke("get-output-devices"),
+  setCompanyIntel: (intel: Record<string, any> | null) =>
+    ipcRenderer.invoke('set-company-intel', intel),
   setRecognitionLanguage: (key: string) => ipcRenderer.invoke("set-recognition-language", key),
   getAiResponseLanguages: () => ipcRenderer.invoke("get-ai-response-languages"),
   setAiResponseLanguage: (language: string) => ipcRenderer.invoke("set-ai-response-language", language),
@@ -1016,7 +1020,7 @@ contextBridge.exposeInMainWorld("electronAPI", {
     ipcRenderer.on('sales-brief-stream-error', sub);
     return () => { ipcRenderer.removeListener('sales-brief-stream-error', sub); };
   },
-  fetchCompanyIntel: (payload: { companyName: string; domain?: string }) =>
+  fetchCompanyIntel: (payload: { companyName: string; domain?: string; forceRefresh?: boolean }) =>
     ipcRenderer.invoke('fetch-company-intel', payload),
 
   // Zoom Calendar
@@ -1160,6 +1164,13 @@ contextBridge.exposeInMainWorld("electronAPI", {
     const subscription = (_: any, data: any) => callback(data);
     ipcRenderer.on('tavily-search-done', subscription);
     return () => ipcRenderer.removeListener('tavily-search-done', subscription);
+  },
+
+  // Add alongside similar onXxx listeners:
+  onCompanyIntelUpdated: (callback: (intel: Record<string, any> | null) => void) => {
+    const handler = (_: any, intel: Record<string, any> | null) => callback(intel);
+    ipcRenderer.on('company-intel-updated', handler);
+    return () => ipcRenderer.removeListener('company-intel-updated', handler);
   },
 
   // Keybind Management

@@ -191,6 +191,7 @@ export class AppState {
   private updateAvailable: boolean = false
   private disguiseMode: 'terminal' | 'settings' | 'activity' | 'none' = 'none'
   private _currentLiveAnalysis: LiveAnalysisData | null = null;
+  private _companyIntel: Record<string, any> | null = null;
   // When setCurrentLiveAnalysis is called after endMeeting has already run, we
   // need to know which meetingId to patch. This is set by endMeeting() and cleared
   // after the late-arriving result is saved.
@@ -448,6 +449,15 @@ export class AppState {
 
   public setQuitting(value: boolean): void {
     this._isQuitting = value;
+  }
+
+  public setCompanyIntel(intel: Record<string, any> | null): void {
+    this._companyIntel = intel;
+    console.log('[AppState] Company intel set:', intel?.companyName ?? 'cleared');
+  }
+
+  public getCompanyIntel(): Record<string, any> | null {
+    return this._companyIntel;
   }
 
   private broadcastMeetingState(): void {
@@ -1682,6 +1692,7 @@ export class AppState {
 
   public clearCurrentLiveAnalysis(): void {
     this._currentLiveAnalysis = null;
+    this._companyIntel = null;
   }
 
   private async processCompletedMeetingForRAG(meetingId: string): Promise<void> {

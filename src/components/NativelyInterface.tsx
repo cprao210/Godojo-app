@@ -61,12 +61,23 @@ const NativelyInterface: React.FC<NativelyInterfaceProps> = ({ onEndMeeting, ove
     });
     const [isMeetingPaused, setIsMeetingPaused] = useState(false);
     const liveTranscriptRef = useRef<Array<{ speaker: string; displayName?: string; text: string; timestamp: number }>>([]);
+    // Add near the other useState declarations at the top of NativelyInterface
+    const [companyIntel, setCompanyIntel] = useState<Record<string, any> | null>(null);
 
     const speakerNamesRef = useRef<{ user: string; client: string }>({ user: 'Me', client: 'Them' });
     const [speakerNames, setSpeakerNames] = useState<{ user: string; client: string }>({
         user: 'Me',
         client: 'Them'
     });
+
+    // Add alongside the other IPC useEffect listeners
+    useEffect(() => {
+        if (!window.electronAPI?.onCompanyIntelUpdated) return;
+        const unsubscribe = window.electronAPI.onCompanyIntelUpdated((intel: Record<string, any> | null) => {
+            setCompanyIntel(intel);
+        });
+        return () => unsubscribe?.();
+    }, []);
 
     useEffect(() => {
         const loadSpeakerNames = async () => {
@@ -346,6 +357,7 @@ const NativelyInterface: React.FC<NativelyInterfaceProps> = ({ onEndMeeting, ove
             setManualTranscript('');
             setVoiceInput('');
             setIsProcessing(false);
+            setCompanyIntel(null)
 
             // CRITICAL FIX: Clear the live transcript ref when meeting resets
             liveTranscriptRef.current = [];
@@ -2205,6 +2217,7 @@ Provide only the answer, nothing else.`;
                             speakerNames={speakerNames}
                             shortcuts={shortcuts}
                             overlayPanelClass={overlayPanelClass}
+                            companyIntel={companyIntel}
                         />
                     </motion.div>
                 </AnimatePresence>

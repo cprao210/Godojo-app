@@ -12,6 +12,8 @@ export interface TranscriptSegment {
     timestamp: number;
     final: boolean;
     confidence?: number;
+    /** 'chat' segments come from the assistant chat panel — exclude from saved transcript */
+    source?: 'stt' | 'chat' | 'manual';
 }
 
 export interface SuggestionTrigger {
@@ -386,7 +388,7 @@ export class SessionTracker {
             text.startsWith("You are a helper") ||
             text.startsWith("CONTEXT:");
 
-        if (!isInternalPrompt) {
+        if (!isInternalPrompt && segment.source !== 'chat') {
             // Add to session transcript
             this.fullTranscript.push(segment);
             // Compact transcript with summarization instead of losing early context
