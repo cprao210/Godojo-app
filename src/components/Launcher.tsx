@@ -1182,7 +1182,7 @@ const Launcher: React.FC<LauncherProps> = ({ onStartMeeting, onOpenSettings, onP
                                         <textarea
                                             value={uploadText}
                                             onChange={e => setUploadText(e.target.value)}
-                                            placeholder={`Paste transcript here. Supported formats:\n\n[00:00:12] REP: Hello, thanks for joining...\nPROSPECT: Happy to be here...\n\nor plain text lines`}
+                                            placeholder={`Paste transcript here. Supported formats:\n\n[00:00:12] SALES PERSON: Hello, thanks for joining...\nCLIENT: Happy to be here...\n\nor plain text lines`}
                                             rows={12}
                                             className={[
                                                 "w-full rounded-xl px-4 py-3 text-sm text-text-primary focus:outline-none transition-colors resize-none font-mono leading-relaxed",

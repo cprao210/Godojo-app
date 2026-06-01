@@ -12,7 +12,7 @@ import { LiveAnalysisData } from '../types/liveAnalysis';
 //        • priorState  — the structured JSON output of the last run (~300 tokens).
 //                        BANT/MEDDIC are updated incrementally from this base.
 //        • deltaContext — only the NEW prospect turns since the last cursor position.
-//                        REP turns are excluded — they are scaffolding, not signal sources.
+//                        SALES PERSON turns are excluded — they are scaffolding, not signal sources.
 //      This keeps the prompt ~80% smaller than re-sending the full growing transcript,
 //      preventing context-length failures on Groq and reducing latency/cost on all models.
 
@@ -122,7 +122,7 @@ const SHARED_SIGNAL_CATALOGUE = `
 
     ── DETECTION RULES ───────────────────────────────────────────────────────────────
 
-    1. Capture signals from the prospect only (REP lines are context, not signal sources).
+    1. Capture signals from the prospect only (SALES PERSON lines are context, not signal sources).
     2. Implied signals count — "We've been on our current tool for 5 years" → stall_signal + competitor_signal.
     3. One quote can carry MULTIPLE signal types.
     4. Short quotes are better than long ones.
@@ -167,9 +167,9 @@ const getFirstRunPrompt = (fullProspectContext: string): string =>
     RULES
     ═══════════════════════════════════════
 
-    Derive ALL fields from the PROSPECT TRANSCRIPT below:
-    → bant        — scan every prospect turn for Budget, Authority, Need, Timeline signals
-    → meddic      — scan every prospect turn for MEDDIC signals
+    Derive ALL fields from the CLIENT TRANSCRIPT below:
+    → bant        — scan every client turn for Budget, Authority, Need, Timeline signals
+    → meddic      — scan every client turn for MEDDIC signals
     → objections  — capture customer questions and AE deferrals
     → signals     — cast a wide net; better to over-capture than miss
 
@@ -228,7 +228,7 @@ ${SHARED_SIGNAL_CATALOGUE}
 ${SHARED_OUTPUT_FORMAT}
 
     ═══════════════════════════════════════
-    PROSPECT TRANSCRIPT (prospect turns only — full call so far):
+    CLIENT TRANSCRIPT (client turns only — full call so far):
     ═══════════════════════════════════════
 ${fullProspectContext}
 `;
@@ -247,14 +247,14 @@ const getRefreshPrompt = (
     You are given:
       (A) PRIOR ANALYSIS — the structured output from the previous analysis run.
           This already reflects everything said up to this point.
-      (B) NEW PROSPECT TURNS — only the prospect's words since the last analysis.
-          REP turns are omitted — they are scaffolding, not signal sources.
+      (B) NEW CLIENT TURNS — only the prospect's words since the last analysis.
+          SALES PERSON turns are omitted — they are scaffolding, not signal sources.
 
     What to do with each section:
 
     BANT + MEDDIC — UPDATE INCREMENTALLY:
     → Start from the PRIOR ANALYSIS values below as your baseline.
-    → Scan NEW PROSPECT TURNS only for any evidence that changes a field.
+    → Scan NEW CLIENT TURNS only for any evidence that changes a field.
     → Upgrade status if new evidence confirms or extends a partial/missing field.
     → Update evidence string if the new turns contain a better or more specific quote.
     → Do NOT downgrade a confirmed field unless the prospect explicitly retracts it.
@@ -262,12 +262,12 @@ const getRefreshPrompt = (
 
     OBJECTIONS — PRESERVE + APPEND:
     → Copy ALL prior objections EXACTLY AS-IS into your output.
-    → Then append any NEW objections found only in NEW PROSPECT TURNS.
+    → Then append any NEW objections found only in NEW CLIENT TURNS.
     → Never remove, modify, or deduplicate prior objections.
 
     SIGNALS — PRESERVE + APPEND:
     → Copy ALL prior signals EXACTLY AS-IS into your output.
-    → Then append any NEW signals found only in NEW PROSPECT TURNS.
+    → Then append any NEW signals found only in NEW CLIENT TURNS.
     → Never remove, modify, or deduplicate prior signals.
 
     ═══════════════════════════════════════
@@ -297,7 +297,7 @@ ${SHARED_SIGNAL_CATALOGUE}
 ${SHARED_OUTPUT_FORMAT}
 
     ═══════════════════════════════════════
-    (B) NEW PROSPECT TURNS (since last analysis — prospect speech only):
+    (B) NEW CLIENT TURNS (since last analysis — prospect speech only):
     ═══════════════════════════════════════
 ${newProspectDelta || '(no new prospect turns since last analysis)'}
 `;
@@ -460,7 +460,7 @@ export const useLiveAnalysis = (
     const v = (x: any) => x && x !== 'null' && x !== 'N/A' ? x : null;
     const lines = [
       '═══════════════════════════════════════',
-      'PROSPECT COMPANY CONTEXT (from pre-call research)',
+      'CLIENT COMPANY CONTEXT (from pre-call research)',
       '═══════════════════════════════════════',
     ];
     if (v(intel.companyName)) lines.push(`Company: ${intel.companyName}`);
@@ -516,7 +516,7 @@ export const useLiveAnalysis = (
       if (!priorState) {
         setIsRefreshRun(false);
         // ── FIRST RUN: full prospect-only transcript, derive everything from scratch ──
-        // We still include REP turns as labelled lines so the LLM has call context
+        // We still include SALES PERSON turns as labelled lines so the LLM has call context
         // for objection/AE-deferral detection, but BANT/MEDDIC signal extraction
         // is scoped to prospect lines via the prompt instruction.
         const firstRunContext = humanTurns.map(t => {
@@ -532,8 +532,8 @@ export const useLiveAnalysis = (
         console.log(`[useLiveAnalysis] First run — sending ${humanTurns.length} turns (${firstRunContext.length} chars)`);
       } else {
         setIsRefreshRun(true);
-        // ── REFRESH RUN: prior state + new PROSPECT turns only ────────────────────
-        // REP turns are excluded from the delta — they are scaffolding context,
+        // ── REFRESH RUN: prior state + new CLIENT turns only ────────────────────
+        // SALES PERSON turns are excluded from the delta — they are scaffolding context,
         // not signal sources. BANT/MEDDIC are updated incrementally from priorState.
         // This keeps the prompt ~80% smaller than re-sending the full transcript.
         const newTurns = humanTurns.slice(deltaStartIndex);
