@@ -2,6 +2,7 @@ import React, { useState, useEffect, useRef } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
 import { Brain, ArrowRight, Copy, Check, RotateCcw, Search, Send } from 'lucide-react';
 import ReactMarkdown from 'react-markdown';
+import { guardSession } from '../../../lib/firebase';
 import remarkGfm from 'remark-gfm';
 
 interface Message {
@@ -269,6 +270,13 @@ export const FloatingChatPanel: React.FC<FloatingChatPanelProps> = ({
         setInputValue('');
         addUserMessage(text);
         try {
+
+            const sessionActive = await guardSession();
+            if (!sessionActive) {
+                setIsProcessing(false);
+                return;
+            }
+
             // Try RAG first (context-aware live query)
             const ragResult = await window.electronAPI?.ragQueryLive?.(text);
             if (ragResult?.success) {

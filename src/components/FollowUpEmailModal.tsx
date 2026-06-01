@@ -1,6 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import { X, RotateCcw, Check, Copy } from 'lucide-react';
 import { motion, AnimatePresence } from 'framer-motion';
+import { guardSession } from '../lib/firebase';
 
 interface Meeting {
     id: string;
@@ -296,8 +297,10 @@ const FollowUpEmailModal: React.FC<FollowUpEmailModalProps> = ({ isOpen, onClose
                 tone: 'neutral' as const,
             };
 
-            // @ts-ignore
+            const sessionActive = await guardSession();
+            if (!sessionActive) return; // fbSignOut already called inside guardSession → subscribeAuthState will return null → UI redirects to login
             const generatedBody = await window.electronAPI?.generateFollowupEmail(input);
+
             if (generatedBody) {
                 // Strip the Subject: line if the LLM prefixed it
                 let body = generatedBody;

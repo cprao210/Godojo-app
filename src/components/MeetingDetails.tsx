@@ -12,6 +12,7 @@ import { vscDarkPlus } from 'react-syntax-highlighter/dist/esm/styles/prism';
 import FollowUpEmailModal from './FollowUpEmailModal';
 import { LiveAnalysisContent } from './LiveAnalysisContent';
 import { LiveAnalysisData } from '../types/liveAnalysis';
+import { guardSession } from '../lib/firebase';
 
 const formatTime = (ms: number) => {
     const date = new Date(ms);
@@ -585,6 +586,8 @@ const MeetingDetails: React.FC<MeetingDetailsProps> = ({ meeting: initialMeeting
 
         try {
 
+            const sessionActive = await guardSession();
+            if (!sessionActive) return;
             const result = await window.electronAPI.regenerateMeetingSummary(meeting.id);
 
             if (result?.success && result.meeting) {

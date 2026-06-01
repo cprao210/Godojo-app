@@ -23,7 +23,8 @@ import {
 import { analytics } from "./lib/analytics/analytics.service"
 import { ErrorBoundary } from "./components/ErrorBoundary"
 import { SignIn } from "./_pages/SignIn"
-import { subscribeAuthState, signOut as fbSignOut } from "./lib/firebase"
+import { subscribeAuthState, signOut as fbSignOut, verifySessionIsActive, installSessionGuard } from "./lib/firebase";
+import { EmailVerification } from "./_pages/EmailVerification";
 import type { User } from "firebase/auth"
 
 const queryClient = new QueryClient()
@@ -88,26 +89,73 @@ const App: React.FC = () => {
   const [showPremiumModal, setShowPremiumModal] = useState(false);
   const [isPremiumActive, setIsPremiumActive] = useState(false);
 
-  // Auth gate — only relevant for the launcher window. We start in a "checking"
-  // state so we don't briefly flash the SignIn page before silent-restore /
-  // onAuthStateChanged resolves on first render.
   const [authUser, setAuthUser] = useState<User | null>(null);
   const [authChecked, setAuthChecked] = useState(false);
+  // Set when a user signs up via email/password but hasn't verified yet.
+  // Keeps authUser null so the main app never renders for unverified users.
+  const [pendingVerificationUser, setPendingVerificationUser] = useState<User | null>(null);
+  const [sessionExpiredMessage, setSessionExpiredMessage] = useState<string | null>(null);
 
   useEffect(() => {
-    // Only the launcher / default window enforces auth UI. Child windows
-    // (overlay, settings, model-selector, cropper) inherit the signed-in
-    // session via the main process.
     if (!(isLauncherWindow || isDefault)) {
       setAuthChecked(true);
       return;
     }
     const unsub = subscribeAuthState((user) => {
+      if (!user) {
+        // Signed out, or session was revoked/account deleted server-side.
+        // Clear both gates — returns user to SignIn screen.
+        setAuthUser(null);
+        setPendingVerificationUser(null);
+        setAuthChecked(true);
+        return;
+      }
+
+      if (!user.emailVerified) {
+        // Email/password sign-up: user exists but hasn't clicked the link yet.
+        // Show the verification screen; keep authUser=null so the app never opens.
+        setPendingVerificationUser(user);
+        setAuthUser(null);
+        setAuthChecked(true);
+        return;
+      }
+
+      // Verified user — open the app.
+      setPendingVerificationUser(null);
       setAuthUser(user);
       setAuthChecked(true);
     });
     return () => unsub();
   }, [isLauncherWindow, isDefault]);
+
+  // Global session guard — runs continuously while the app is open.
+  // Catches account disabled/deleted/revoked anywhere in the app, not just
+  // on meeting start. onIdTokenChanged fires every ~hour on token refresh,
+  // so a disabled account will be caught at the next refresh cycle at the
+  // latest — or immediately if the token has already expired.
+  useEffect(() => {
+    if (!(isLauncherWindow || isDefault || isOverlayWindow)) return;
+    const unsub = installSessionGuard(async (errorCode?: string) => {
+      const { getAuthErrorMessage } = await import('./lib/firebase');
+      const msg = errorCode
+        ? getAuthErrorMessage({ code: errorCode })
+        : 'Your session has expired or the account was disabled. Please sign in again.';
+      setSessionExpiredMessage(msg || 'Your session has ended. Please sign in again.');
+      await fbSignOut().catch(() => { });
+    });
+    return () => unsub();
+  }, [isLauncherWindow, isDefault]);
+
+  useEffect(() => {
+    if (!window.electronAPI?.onAuthStateChanged) return;
+    const unsub = window.electronAPI.onAuthStateChanged(async (state: { signedIn: boolean }) => {
+      if (!state.signedIn) {
+        // Main process cleared the session (account disabled/deleted).
+        await fbSignOut().catch(() => { });
+      }
+    });
+    return () => unsub?.();
+  }, []);
 
   // Overlay opacity — only meaningful when isOverlayWindow, but stored centrally
   // so it can be initialized once from localStorage and updated via IPC.
@@ -240,6 +288,18 @@ const App: React.FC = () => {
 
   const handleStartMeeting = async (calendarEvent?: any) => {
     try {
+
+      // Always verify the session is live against Firebase servers before
+      // starting GoDojo. getIdToken(forceRefresh=true) throws if the account
+      // has been deleted, disabled, or the token revoked — the local Firebase
+      // cache can still show a user object even after server-side deletion.
+      const sessionActive = await verifySessionIsActive();
+      if (!sessionActive) {
+        console.warn('[App] startMeeting blocked — session invalid or account deleted.');
+        await fbSignOut().catch(() => { });
+        return;
+      }
+
       localStorage.setItem('natively_last_meeting_start', Date.now().toString());
       const inputDeviceId = localStorage.getItem('preferredInputDeviceId');
       let outputDeviceId = localStorage.getItem('preferredOutputDeviceId');
@@ -266,7 +326,6 @@ const App: React.FC = () => {
         })
       };
 
-      console.log("-------------------------------> meetingMetadata [App.tsx - 232]: ", meetingMetadata);
       const result = await window.electronAPI.startMeeting(meetingMetadata);
       if (result.success) {
         analytics.trackMeetingStarted();
@@ -379,10 +438,28 @@ const App: React.FC = () => {
             updates `authUser` below and unmounts itself. */}
         {!authChecked ? (
           <div className="h-full w-full" />
+        ) : pendingVerificationUser ? (
+          <QueryClientProvider client={queryClient}>
+            <ToastProvider>
+              <EmailVerification
+                user={pendingVerificationUser}
+                onVerified={() => {
+                  // subscribeAuthState will re-fire with emailVerified=true
+                  // and move the user into authUser automatically.
+                  // reload() does not trigger onAuthStateChanged, so we must
+                  // manually transition: clear the pending gate and set authUser.
+                  const verifiedUser = pendingVerificationUser;
+                  setPendingVerificationUser(null);
+                  setAuthUser(verifiedUser);
+                }}
+              />
+              <ToastViewport />
+            </ToastProvider>
+          </QueryClientProvider>
         ) : !authUser ? (
           <QueryClientProvider client={queryClient}>
             <ToastProvider>
-              <SignIn onSignedIn={() => { /* auth state listener will flip the gate */ }} />
+              <SignIn onSignedIn={() => { /* auth state listener will flip the gate */ }} bannerMessage={sessionExpiredMessage} onBannerDismiss={() => setSessionExpiredMessage(null)} />
               <ToastViewport />
             </ToastProvider>
           </QueryClientProvider>

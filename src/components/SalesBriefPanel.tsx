@@ -8,6 +8,7 @@ import {
     GitBranch, Briefcase
 } from 'lucide-react';
 import { useResolvedTheme } from '../hooks/useResolvedTheme';
+import { guardSession } from '../lib/firebase';
 
 const GENERIC_DOMAINS = new Set([
     'gmail.com', 'yahoo.com', 'outlook.com', 'hotmail.com', 'icloud.com',
@@ -349,6 +350,9 @@ const SalesBriefPanel: React.FC<SalesBriefPanelProps> = ({ eventData, onClose })
     }, [loading]);
 
     const fetchIntel = useCallback(async (forceRefresh = false) => {
+        const sessionActive = await guardSession();
+        if (!sessionActive) return;
+
         if (!companyName) {
             setError('Could not identify the prospect company from this meeting\'s attendees.');
             setLoading(false);
