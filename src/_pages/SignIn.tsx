@@ -38,7 +38,7 @@ type FieldValuesType = {
     placeholder: string;
 }
 
-export const SignIn: React.FC<SignInProps> = ({ onSignedIn, bannerMessage, onBannerDismiss }) => {
+export const SignIn: React.FC<SignInProps> = ({ bannerMessage, onBannerDismiss }) => {
 
     const [mode, setMode] = useState<'sign-in' | 'sign-up' | 'reset'>('sign-in');
     const [userData, setUserData] = useState({ email: "", password: "", displayName: "", phoneNumber: "" });
