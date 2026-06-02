@@ -22,9 +22,10 @@ interface FloatingIntelligencePanelProps {
     autoRefreshInterval: number | null;
     onAutoRefreshIntervalChange: (interval: number | null) => void;
     isRefreshRun?: boolean;        // true = incremental refresh, false/undefined = first run
-    rollingTranscript: string;
+    rollingTranscriptUser: string;
+    rollingTranscriptClient: string;
     isClientSpeaking: boolean;
-    rollingTranscriptSpeaker: 'client' | 'user';
+    isUserSpeaking: boolean;
     speakerNames: { user: string; client: string };
 }
 
@@ -172,11 +173,12 @@ export const FloatingIntelligencePanel: React.FC<FloatingIntelligencePanelProps>
     isLoading,
     onRegenerate,
     autoRefreshInterval,
-    rollingTranscriptSpeaker,
     onAutoRefreshIntervalChange,
     isRefreshRun,
-    rollingTranscript,
+    rollingTranscriptUser,
+    rollingTranscriptClient,
     isClientSpeaking,
+    isUserSpeaking,
     speakerNames
 }) => {
     const [showRefreshPicker, setShowRefreshPicker] = useState(false);
@@ -316,23 +318,35 @@ export const FloatingIntelligencePanel: React.FC<FloatingIntelligencePanelProps>
                 </div>
             </div>
 
-            {/* Rolling transcript strip */}
-            {showTranscript && (rollingTranscript || isClientSpeaking) && (
+            {/* Rolling transcript strip — two rows, one per speaker, never mixed */}
+            {showTranscript && (rollingTranscriptClient || rollingTranscriptUser || isClientSpeaking || isUserSpeaking) && (
                 <div
-                    className="px-5 py-3 shrink-0"
+                    className="px-5 py-2 shrink-0 flex flex-col gap-1"
                     style={{ borderBottom: '1px solid rgba(255,255,255,0.05)', background: 'rgba(255,255,255,0.02)' }}
                 >
-                    <div className="flex items-start gap-2">
-                        <span className="w-1.5 h-1.5 rounded-full bg-blue-400 animate-pulse mt-1 shrink-0" />
-                        <p className="text-[11px] text-white/40 leading-relaxed line-clamp-2">
-                            <span className="text-white/55 font-medium mr-1">
-                                {rollingTranscriptSpeaker === 'user' ? speakerNames.user : speakerNames.client}:
-                            </span>
-                            {rollingTranscript}
-                            {isClientSpeaking && <span className="ml-1 text-white/25 animate-pulse">...</span>}
-                        </p>
-                        <span className="text-[10px] text-red-400 font-bold shrink-0 ml-auto">LIVE</span>
-                    </div>
+                    {/* "Them" row — system audio / client */}
+                    {(rollingTranscriptClient || isClientSpeaking) && (
+                        <div className="flex items-start gap-2">
+                            <span className="w-1.5 h-1.5 rounded-full bg-blue-400 animate-pulse mt-1 shrink-0" />
+                            <p className="text-[11px] text-white/40 leading-relaxed line-clamp-1 flex-1 min-w-0">
+                                <span className="text-white/55 font-medium mr-1">{speakerNames.client === "Them" ? "Client" : speakerNames.client}:</span>
+                                {rollingTranscriptClient}
+                                {isClientSpeaking && <span className="ml-1 text-white/25 animate-pulse">...</span>}
+                            </p>
+                            <span className="text-[10px] text-red-400 font-bold shrink-0 ml-auto">LIVE</span>
+                        </div>
+                    )}
+                    {/* "Me" row — microphone / user */}
+                    {(rollingTranscriptUser || isUserSpeaking) && (
+                        <div className="flex items-start gap-2">
+                            <span className="w-1.5 h-1.5 rounded-full bg-green-400 animate-pulse mt-1 shrink-0" />
+                            <p className="text-[11px] text-white/40 leading-relaxed line-clamp-1 flex-1 min-w-0">
+                                <span className="text-white/55 font-medium mr-1">{speakerNames.user === "Me" ? "User" : speakerNames.user}:</span>
+                                {rollingTranscriptUser}
+                                {isUserSpeaking && <span className="ml-1 text-white/25 animate-pulse">...</span>}
+                            </p>
+                        </div>
+                    )}
                 </div>
             )}
 

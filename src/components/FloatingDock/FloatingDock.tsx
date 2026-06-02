@@ -22,14 +22,15 @@ interface FloatingDockProps {
 
     // Chat panel props
     transcriptRef: React.MutableRefObject<Array<{ speaker: string; displayName?: string; text: string; timestamp: number }>>;
-    rollingTranscript: string;
+    rollingTranscriptUser: string;
+    rollingTranscriptClient: string;
     isClientSpeaking: boolean;
+    isUserSpeaking: boolean;
     showTranscript: boolean;
     onToggleTranscript: (v: boolean) => void;
     currentModel: string;
     onSelectModel: (m: string) => void;
     speakerNames: { user: string; client: string };
-    rollingTranscriptSpeaker: 'client' | 'user';
 
     // Settings
     shortcuts: ShortcutConfig;
@@ -57,9 +58,10 @@ export const FloatingDock: React.FC<FloatingDockProps> = ({
     isUndetectable,
     onToggleGhost,
     transcriptRef,
-    rollingTranscript,
+    rollingTranscriptUser,
+    rollingTranscriptClient,
     isClientSpeaking,
-    rollingTranscriptSpeaker,
+    isUserSpeaking,
     showTranscript,
     onToggleTranscript,
     currentModel,
@@ -201,12 +203,13 @@ export const FloatingDock: React.FC<FloatingDockProps> = ({
                                     isMeetingPaused={isMeetingPaused}
                                     analysisData={analysisData}
                                     analysisError={analysisError}
-                                    rollingTranscript={rollingTranscript}
+                                    rollingTranscriptUser={rollingTranscriptUser}
+                                    rollingTranscriptClient={rollingTranscriptClient}
                                     isClientSpeaking={isClientSpeaking}
+                                    isUserSpeaking={isUserSpeaking}
                                     speakerNames={speakerNames}
                                     showTranscript={showTranscript}
                                     isLoading={analysisLoading}
-                                    rollingTranscriptSpeaker={rollingTranscriptSpeaker}
                                     onRegenerate={() => runAnalysis(true)}
                                     autoRefreshInterval={autoRefreshInterval}
                                     onAutoRefreshIntervalChange={setAutoRefreshInterval}
@@ -217,9 +220,10 @@ export const FloatingDock: React.FC<FloatingDockProps> = ({
                                 <FloatingChatPanel
                                     transcriptRef={transcriptRef}
                                     isMeetingPaused={isMeetingPaused}
-                                    rollingTranscript={rollingTranscript}
-                                    rollingTranscriptSpeaker={rollingTranscriptSpeaker}
+                                    rollingTranscriptUser={rollingTranscriptUser}
+                                    rollingTranscriptClient={rollingTranscriptClient}
                                     isClientSpeaking={isClientSpeaking}
+                                    isUserSpeaking={isUserSpeaking}
                                     showTranscript={showTranscript}
                                     currentModel={currentModel}
                                     onSelectModel={onSelectModel}

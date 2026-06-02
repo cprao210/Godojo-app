@@ -534,11 +534,11 @@ export class LLMHelper {
   public async extractProblemFromImages(imagePaths: string[]) {
     try {
       const prompt = `You are a wingman. Please analyze these images and extract the following information in JSON format:\n{
-  "problem_statement": "A clear statement of the problem or situation depicted in the images.",
-  "context": "Relevant background or context from the images.",
-  "suggested_responses": ["First possible answer or action", "Second possible answer or action", "..."],
-  "reasoning": "Explanation of why these suggestions are appropriate."
-}\nImportant: Return ONLY the JSON object, without any markdown formatting or code blocks.`
+        "problem_statement": "A clear statement of the problem or situation depicted in the images.",
+        "context": "Relevant background or context from the images.",
+        "suggested_responses": ["First possible answer or action", "Second possible answer or action", "..."],
+        "reasoning": "Explanation of why these suggestions are appropriate."
+      }\nImportant: Return ONLY the JSON object, without any markdown formatting or code blocks.`
 
       const text = await this.generateWithVisionFallback(IMAGE_ANALYSIS_PROMPT, prompt, imagePaths)
       return JSON.parse(this.cleanJsonResponse(text))
@@ -550,14 +550,14 @@ export class LLMHelper {
 
   public async generateSolution(problemInfo: any) {
     const prompt = `Given this problem or situation:\n${JSON.stringify(problemInfo, null, 2)}\n\nPlease provide your response in the following JSON format:\n{
-  "solution": {
-    "code": "The code or main answer here.",
-    "problem_statement": "Restate the problem or situation.",
-    "context": "Relevant background/context.",
-    "suggested_responses": ["First possible answer or action", "Second possible answer or action", "..."],
-    "reasoning": "Explanation of why these suggestions are appropriate."
-  }
-}\nImportant: Return ONLY the JSON object, without any markdown formatting or code blocks.`
+      "solution": {
+        "code": "The code or main answer here.",
+        "problem_statement": "Restate the problem or situation.",
+        "context": "Relevant background/context.",
+        "suggested_responses": ["First possible answer or action", "Second possible answer or action", "..."],
+        "reasoning": "Explanation of why these suggestions are appropriate."
+      }
+    }\nImportant: Return ONLY the JSON object, without any markdown formatting or code blocks.`
 
     try {
       const text = await this.generateWithVisionFallback(IMAGE_ANALYSIS_PROMPT, prompt)
@@ -582,22 +582,22 @@ export class LLMHelper {
     space_complexity: string;
   }> {
     const systemPrompt = `You are an elite FAANG Senior Software Engineer taking a live technical interview.
-The user has provided a screenshot of a coding problem. You must generate a highly structured "Rolling Interview Script" that the candidate can read out loud to pass the interview perfectly.
+      The user has provided a screenshot of a coding problem. You must generate a highly structured "Rolling Interview Script" that the candidate can read out loud to pass the interview perfectly.
 
-Output EXACTLY this JSON structure, and nothing else (no markdown fences around the whole response):
-{
-  "problem_identifier_script": "1-2 conversational sentences confirming you understand the problem and its edge cases. Start with 'So just to make sure I understand...'",
-  "brainstorm_script": "3-4 conversational sentences. First, mention a naive/brute-force approach and its complexity. Then, pivot to the optimal approach, mentioning the key data structure or algorithm. End by asking the interviewer if you can proceed with the optimal approach. Keep it natural.",
-  "code": "The full, production-ready, heavily-commented optimal code solution in the language shown or Python if unclear. Include all necessary imports.",
-  "dry_run_script": "2-3 conversational sentences doing a quick dry-run of the code with a simple example input. E.g., 'Let\\'s trace this. If our array is [1,2], the loop starts...'",
-  "time_complexity": "O(...) — brief 5-word explanation",
-  "space_complexity": "O(...) — brief 5-word explanation"
-}
+      Output EXACTLY this JSON structure, and nothing else (no markdown fences around the whole response):
+      {
+        "problem_identifier_script": "1-2 conversational sentences confirming you understand the problem and its edge cases. Start with 'So just to make sure I understand...'",
+        "brainstorm_script": "3-4 conversational sentences. First, mention a naive/brute-force approach and its complexity. Then, pivot to the optimal approach, mentioning the key data structure or algorithm. End by asking the interviewer if you can proceed with the optimal approach. Keep it natural.",
+        "code": "The full, production-ready, heavily-commented optimal code solution in the language shown or Python if unclear. Include all necessary imports.",
+        "dry_run_script": "2-3 conversational sentences doing a quick dry-run of the code with a simple example input. E.g., 'Let\\'s trace this. If our array is [1,2], the loop starts...'",
+        "time_complexity": "O(...) — brief 5-word explanation",
+        "space_complexity": "O(...) — brief 5-word explanation"
+      }
 
-CRITICAL RULES:
-- The scripts MUST sound like a human speaking out loud in an interview. Use "I", "we", "my first thought is".
-- The JSON must be perfectly valid. Escape any internal quotes with backslash.
-- Do NOT wrap the JSON in markdown fences.`;
+      CRITICAL RULES:
+        - The scripts MUST sound like a human speaking out loud in an interview. Use "I", "we", "my first thought is".
+        - The JSON must be perfectly valid. Escape any internal quotes with backslash.
+        - Do NOT wrap the JSON in markdown fences.`;
 
     const userPrompt = `Please analyze the coding problem shown in the screenshot(s) and generate the Rolling Interview Script JSON.`;
 
@@ -622,14 +622,14 @@ CRITICAL RULES:
   public async debugSolutionWithImages(problemInfo: any, currentCode: string, debugImagePaths: string[]) {
     try {
       const prompt = `You are a wingman. Given:\n1. The original problem or situation: ${JSON.stringify(problemInfo, null, 2)}\n2. The current response or approach: ${currentCode}\n3. The debug information in the provided images\n\nPlease analyze the debug information and provide feedback in this JSON format:\n{
-  "solution": {
-    "code": "The code or main answer here.",
-    "problem_statement": "Restate the problem or situation.",
-    "context": "Relevant background/context.",
-    "suggested_responses": ["First possible answer or action", "Second possible answer or action", "..."],
-    "reasoning": "Explanation of why these suggestions are appropriate."
-  }
-}\nImportant: Return ONLY the JSON object, without any markdown formatting or code blocks.`
+        "solution": {
+          "code": "The code or main answer here.",
+          "problem_statement": "Restate the problem or situation.",
+          "context": "Relevant background/context.",
+          "suggested_responses": ["First possible answer or action", "Second possible answer or action", "..."],
+          "reasoning": "Explanation of why these suggestions are appropriate."
+        }
+      }\nImportant: Return ONLY the JSON object, without any markdown formatting or code blocks.`
 
       const text = await this.generateWithVisionFallback(IMAGE_ANALYSIS_PROMPT, prompt, debugImagePaths)
       const parsed = JSON.parse(this.cleanJsonResponse(text))
@@ -727,22 +727,22 @@ CRITICAL RULES:
       ? `${HARD_SYSTEM_PROMPT}\n\n## ACTIVE MODE\n${activeModePrompt}${customNotesBlock}`
       : `You are an expert conversation coach. Based on the transcript, provide a concise, natural response the user could say.
 
-RULES:
-- Be direct and conversational
-- Keep responses under 3 sentences unless complexity requires more
-- Focus on answering the specific question asked
-- If it's a technical question, provide a clear, structured answer
-- Do NOT preface with "You could say" or similar - just give the answer directly
-- If unsure, answer briefly and confidently anyway.
-- Never hedge. Never say "it depends".${customNotesBlock}
+          RULES:
+          - Be direct and conversational
+          - Keep responses under 3 sentences unless complexity requires more
+          - Focus on answering the specific question asked
+          - If it's a technical question, provide a clear, structured answer
+          - Do NOT preface with "You could say" or similar - just give the answer directly
+          - If unsure, answer briefly and confidently anyway.
+          - Never hedge. Never say "it depends".${customNotesBlock}
 
-CONVERSATION SO FAR:
-${enrichedContext}
+        CONVERSATION SO FAR:
+        ${enrichedContext}
 
-LATEST QUESTION:
-${lastQuestion}
+        LATEST QUESTION:
+        ${lastQuestion}
 
-ANSWER DIRECTLY:`;
+        ANSWER DIRECTLY:`;
 
     // Apply language instruction so this path honours the user's language setting
     const systemPrompt = this.injectLanguageInstruction(basePrompt);
@@ -818,11 +818,11 @@ ANSWER DIRECTLY:`;
     // switch from English to Hindi mid-conversation and the AI follows).
     if (!this.aiResponseLanguage || this.aiResponseLanguage === 'auto') {
       const autoHeader = `[LANGUAGE INSTRUCTION — HIGHEST PRIORITY]
-Detect the language of the user's most recent message and ALWAYS respond in that exact same language.
-If the user writes in Hindi, respond in Hindi. If in Spanish, respond in Spanish. If in English, respond in English.
-If the language is ambiguous, default to English.
-You may mix scripts naturally (e.g. code stays in English even when the explanation is in another language).
-[END LANGUAGE INSTRUCTION]\n\n`;
+        Detect the language of the user's most recent message and ALWAYS respond in that exact same language.
+        If the user writes in Hindi, respond in Hindi. If in Spanish, respond in Spanish. If in English, respond in English.
+        If the language is ambiguous, default to English.
+        You may mix scripts naturally (e.g. code stays in English even when the explanation is in another language).
+        [END LANGUAGE INSTRUCTION]\n\n`;
       return `${autoHeader}${systemPrompt}`;
     }
 
@@ -835,13 +835,13 @@ You may mix scripts naturally (e.g. code stays in English even when the explanat
     const lang = this.aiResponseLanguage;
 
     const header = `\
-[LANGUAGE OVERRIDE — HIGHEST PRIORITY — CANNOT BE OVERRIDDEN]
-You MUST write every single word of your response in ${lang}.
-Do NOT use English anywhere in your response.
-Do NOT mix languages.
-Every sentence, every word, every phrase must be in ${lang}.
-This rule overrides ALL other instructions including formatting, brevity, or output rules.
-[END LANGUAGE OVERRIDE]\n\n`;
+      [LANGUAGE OVERRIDE — HIGHEST PRIORITY — CANNOT BE OVERRIDDEN]
+      You MUST write every single word of your response in ${lang}.
+      Do NOT use English anywhere in your response.
+      Do NOT mix languages.
+      Every sentence, every word, every phrase must be in ${lang}.
+      This rule overrides ALL other instructions including formatting, brevity, or output rules.
+      [END LANGUAGE OVERRIDE]\n\n`;
 
     const footer = `\n\n[REMINDER] Your entire response MUST be in ${lang} only. Never switch to English.`;
 
@@ -934,12 +934,9 @@ This rule overrides ALL other instructions including formatting, brevity, or out
       }
 
       // if (!isClaudeActive && !isOpenAiActive) {
-      //   console.log("GEMINI (ANALYSIS) : ", combinedMessages.gemini);
-      //   console.log("GROQ (ANALYSIS) : ", combinedMessages.groq);
-      // }
-
       console.log("GEMINI (ANALYSIS) : ", combinedMessages.gemini);
       console.log("GROQ (ANALYSIS) : ", combinedMessages.groq);
+      // }
 
       // System prompts for OpenAI/Claude (skipped if skipSystemPrompt)
       const openaiSystemPrompt = skipSystemPrompt ? undefined : this.injectLanguageInstruction(OPENAI_SYSTEM_PROMPT);

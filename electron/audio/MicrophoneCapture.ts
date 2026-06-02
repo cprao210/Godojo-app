@@ -11,6 +11,7 @@ export class MicrophoneCapture extends EventEmitter {
     private monitor: any = null;
     private isRecording: boolean = false;
     private deviceId: string | null = null;
+    private _sampleRateEmitted: boolean = false;
 
     constructor(deviceId?: string | null) {
         super();
@@ -34,12 +35,21 @@ export class MicrophoneCapture extends EventEmitter {
     }
 
     public getSampleRate(): number {
-        if (this.monitor && typeof this.monitor.get_sample_rate === 'function') {
-            const nativeRate = this.monitor.get_sample_rate();
+        if (this.monitor && typeof this.monitor.getSampleRate === 'function') {
+            const nativeRate = this.monitor.getSampleRate();
             console.log(`[MicrophoneCapture] Real native rate: ${nativeRate}`);
             return nativeRate;
         }
-        return 16000; // Safe default for most modern mics before native initialization
+        return 48000; // Safe default for most modern mics before native initialization
+    }
+
+    public getOutputSampleRate(): number {
+        const native = this.getSampleRate();
+        if (this.monitor && typeof this.monitor.get_output_sample_rate === 'function') {
+            return this.monitor.get_output_sample_rate();
+        }
+        if (!this.monitor) return 0;
+        return native === 48000 ? 16000 : native;
     }
 
     /**
@@ -97,6 +107,26 @@ export class MicrophoneCapture extends EventEmitter {
                 this.emit('speech_ended');
             });
 
+            // FIX-5: Emit sample-rate-detected so main.ts can sync the User STT
+            // sample rate after the native device has fully initialized.
+            // Mirrors the SystemAudioCapture poll-at-1s/3s pattern.
+            if (typeof this.monitor?.getSampleRate === 'function') {
+                const pollMicRate = (label: string) => {
+                    if (!this.isRecording) return; // Guard: don't fire after stop()
+                    const rate = this.monitor?.getSampleRate?.();
+                    if (rate) {
+                        const outputRate = rate === 48000 ? 16000 : rate;
+                        console.log(`[MicrophoneCapture] Native: ${rate}Hz → Output: ${outputRate}Hz (${label})`);
+                        if (!this._sampleRateEmitted) {
+                            this._sampleRateEmitted = true;
+                            this.emit('sample-rate-detected', outputRate);
+                        }
+                    }
+                };
+                setTimeout(() => pollMicRate('1s'), 1000);
+                setTimeout(() => pollMicRate('3s'), 3000);
+            }
+
             this.emit('start');
         } catch (error) {
             console.error('[MicrophoneCapture] Failed to start:', error);
@@ -119,13 +149,14 @@ export class MicrophoneCapture extends EventEmitter {
         }
 
         // DO NOT destroy monitor here. Keep it alive for seamless restart.
-        // this.monitor = null; 
+        // this.monitor = null;
 
         this.isRecording = false;
         this.emit('stop');
     }
 
     public destroy(): void {
+        this._sampleRateEmitted = false;
         this.stop();
         // Remove all listeners BEFORE nulling monitor.
         // In-flight Rust callbacks may still arrive (via napi's scheduler)

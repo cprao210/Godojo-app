@@ -17,6 +17,8 @@ pub mod license;
 pub mod microphone;
 pub mod silence_suppression;
 pub mod speaker;
+pub mod resampler;
+use crate::resampler::Resampler;
 
 use crate::audio_config::DSP_POLL_MS;
 use crate::silence_suppression::{FrameAction, SilenceSuppressionConfig, SilenceSuppressor};
@@ -69,6 +71,11 @@ impl SystemAudioCapture {
     #[napi]
     pub fn get_sample_rate(&self) -> u32 {
         self.sample_rate.load(Ordering::Acquire)
+    }
+
+    #[napi]
+    pub fn get_output_sample_rate(&self) -> u32 {
+        16000
     }
 
     #[napi]
@@ -130,6 +137,23 @@ impl SystemAudioCapture {
                 ..SilenceSuppressionConfig::for_system_audio()
             });
 
+            // Create resampler only if the native rate differs from 16kHz
+            let mut resampler = if native_rate != 16000 {
+                match Resampler::new(native_rate as f64) {
+                    Ok(r) => {
+                        println!("[SystemAudioCapture] Resampler: {}Hz → 16000Hz", native_rate);
+                        Some(r)
+                    }
+                    Err(e) => {
+                        eprintln!("[SystemAudioCapture] Resampler creation failed: {} — sending at native rate", e);
+                        None
+                    }
+                }
+            } else {
+                println!("[SystemAudioCapture] Native rate is 16kHz — no resampling needed");
+                None
+            };
+
             // 20ms chunks at native rate (e.g. 960 samples at 48kHz)
             let chunk_size = (native_rate as usize / 1000) * 20;
             let mut frame_buffer: Vec<i16> = Vec::with_capacity(chunk_size * 4);
@@ -162,15 +186,32 @@ impl SystemAudioCapture {
 
                     match action {
                         FrameAction::Send(data) => {
-                            let bytes = i16_slice_to_le_bytes(&data);
-                            tsfn.call(
-                                Ok(Buffer::from(bytes)),
-                                ThreadsafeFunctionCallMode::NonBlocking,
-                            );
+                            // Resample to 16kHz before sending to JS
+                            let output_bytes = if let Some(ref mut rs) = resampler {
+                                // Convert i16 back to f32 for the resampler
+                                let f32_data: Vec<f32> = data.iter().map(|&s| s as f32 / 32767.0).collect();
+                                match rs.resample(&f32_data) {
+                                    Ok(resampled) => i16_slice_to_le_bytes(&resampled),
+                                    Err(e) => {
+                                        eprintln!("[SystemAudioCapture] Resample error: {} — using original", e);
+                                        i16_slice_to_le_bytes(&data)
+                                    }
+                                }
+                            } else {
+                                i16_slice_to_le_bytes(&data)
+                            };
+            
+                            if !output_bytes.is_empty() {
+                                tsfn.call(
+                                    Ok(Buffer::from(output_bytes)),
+                                    ThreadsafeFunctionCallMode::NonBlocking,
+                                );
+                            }
                         }
                         FrameAction::SendSilence => {
-                            // Send zero-filled buffer to keep streaming APIs alive
-                            let silence = vec![0u8; chunk_size * 2];
+                            // Silence frames: output at 16kHz size (320 samples = 640 bytes per 20ms)
+                            let silence_samples = if resampler.is_some() { 320usize } else { chunk_size };
+                            let silence = vec![0u8; silence_samples * 2];
                             tsfn.call(
                                 Ok(Buffer::from(silence)),
                                 ThreadsafeFunctionCallMode::NonBlocking,
@@ -258,6 +299,11 @@ impl MicrophoneCapture {
     #[napi]
     pub fn get_sample_rate(&self) -> u32 {
         self.sample_rate.load(Ordering::Acquire)
+    }
+
+    #[napi]
+    pub fn get_output_sample_rate(&self) -> u32 {
+        16000  // Resampler always outputs 16kHz (or mic is natively 16kHz)
     }
 
     #[napi]

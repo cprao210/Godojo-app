@@ -3,6 +3,7 @@
 export declare class MicrophoneCapture {
   constructor(deviceId?: string | undefined | null)
   getSampleRate(): number
+  getOutputSampleRate(): number
   start(callback: ((err: Error | null, arg: Buffer) => any), onSpeechEnded?: (((err: Error | null, arg: boolean) => any)) | undefined | null): void
   stop(): void
 }
@@ -10,6 +11,7 @@ export declare class MicrophoneCapture {
 export declare class SystemAudioCapture {
   constructor(deviceId?: string | undefined | null)
   getSampleRate(): number
+  getOutputSampleRate(): number
   start(callback: ((err: Error | null, arg: Buffer) => any), onSpeechEnded?: (((err: Error | null, arg: boolean) => any)) | undefined | null): void
   stop(): void
 }

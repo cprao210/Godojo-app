@@ -75,6 +75,8 @@ export class SessionTracker {
 
     // Track interim client segment
     private lastInterimClient: TranscriptSegment | null = null;
+    // Track interim user (microphone) segment — flushed on meeting stop just like client
+    private lastInterimUser: TranscriptSegment | null = null;
 
     // Detected coding question from transcript or screenshot extraction
     private detectedCodingQuestion: string | null = null;
@@ -469,6 +471,12 @@ export class SessionTracker {
             if (isVerboseLogging() && (Math.random() < 0.05 || segment.final)) {
                 console.log(`[SessionTracker] RX User Segment: Final=${segment.final} Text="${segment.text.substring(0, 50)}..."`);
             }
+            // Mirror client pattern: keep last interim so flushInterimTranscript can save it
+            if (!segment.final) {
+                this.lastInterimUser = segment;
+            } else {
+                this.lastInterimUser = null;
+            }
         }
         if (segment.speaker === 'client') {
             if (isVerboseLogging() && (Math.random() < 0.05 || segment.final)) {
@@ -662,14 +670,23 @@ export class SessionTracker {
     // ============================================
 
     /**
-     * Force-save any pending interim transcript (called on meeting stop)
+     * Force-save any pending interim transcript (called on meeting stop).
+     * Covers both speakers — client (system audio) and user (microphone).
+     * Without this, any in-flight interim segment spoken right as the meeting
+     * ends is silently discarded from the post-meeting transcript.
      */
     flushInterimTranscript(): void {
         if (this.lastInterimClient) {
-            console.log('[SessionTracker] Force-saving pending interim transcript:', this.lastInterimClient.text);
+            console.log('[SessionTracker] Force-saving pending interim CLIENT transcript:', this.lastInterimClient.text);
             const finalSegment = { ...this.lastInterimClient, final: true };
             this.addTranscript(finalSegment);
             this.lastInterimClient = null;
+        }
+        if (this.lastInterimUser) {
+            console.log('[SessionTracker] Force-saving pending interim USER transcript:', this.lastInterimUser.text);
+            const finalSegment = { ...this.lastInterimUser, final: true };
+            this.addTranscript(finalSegment);
+            this.lastInterimUser = null;
         }
     }
 
@@ -688,6 +705,7 @@ export class SessionTracker {
         this.lastAssistantMessage = null;
         this.assistantResponseHistory = [];
         this.lastInterimClient = null;
+        this.lastInterimUser = null;
         this.detectedCodingQuestion = null;
         this.codingQuestionSource = null;
         this.codingQuestionSetAt = null;

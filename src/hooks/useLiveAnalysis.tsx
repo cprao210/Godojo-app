@@ -436,9 +436,12 @@ export const useLiveAnalysis = (
   const [isRefreshRun, setIsRefreshRun] = useState(false);
   // Ref-based in-flight guard — avoids stale closure issues that a state-based check would have.
   const isLoadingRef = useRef(false);
-  // Cursor: index of the last transcript entry that was part of the FULL context sent on
-  // the previous run. On refresh runs we send only the delta (new turns since then),
-  // paired with the previous analysis as prior state. First run always sends everything.
+  // Cursor: index into the FILTERED humanTurns array (system/ai/assistant/model excluded)
+  // of the last entry included in the previous analysis run.
+  // IMPORTANT: this must track humanTurns indices, NOT raw transcript.length, because
+  // humanTurns is a filtered subset and slicing it with a raw-transcript cursor skips
+  // all new turns (deltaStartIndex >= humanTurns.length), producing an empty delta and
+  // stale live analysis on every refresh run.
   const lastAnalyzedIndexRef = useRef<number>(0);
   // Mirror of analysisData in a ref so the merge helper inside runAnalysis can read it
   // without a stale closure (useCallback deps would force re-creating on every render).
@@ -494,8 +497,6 @@ export const useLiveAnalysis = (
 
     // Snapshot cursor and prior state at call time to avoid stale closures
     const priorState = analysisDataRef.current;
-    const deltaStartIndex = priorState ? lastAnalyzedIndexRef.current : 0;
-    const currentEndIndex = transcript.length;
 
     try {
       // ── Build transcript strings ─────────────────────────────────────
@@ -507,9 +508,24 @@ export const useLiveAnalysis = (
       };
 
       // Exclude internal system/AI turns from all paths.
+      // NOTE: deltaStartIndex and currentEndIndex are computed AFTER humanTurns is built so
+      // both the cursor and the slice operate on the same filtered array — using transcript.length
+      // as the cursor end-index would cause humanTurns.slice(deltaStartIndex) to return an
+      // empty array on every refresh run (cursor ≥ humanTurns.length).
       const humanTurns = transcript.filter(
         t => !['system', 'ai', 'assistant', 'model'].includes(t.speaker?.toLowerCase())
       );
+
+      const deltaStartIndex = priorState ? lastAnalyzedIndexRef.current : 0;
+      const currentEndIndex = humanTurns.length;
+
+      // Guard: if the cursor is ahead of the current transcript length,
+      // the transcript was reset mid-session — treat this as a first run.
+      if (priorState && lastAnalyzedIndexRef.current > humanTurns.length) {
+        console.warn('[useLiveAnalysis] Cursor ahead of transcript length — resetting to first-run mode.');
+        lastAnalyzedIndexRef.current = 0;
+      }
+      const adjustedDeltaStartIndex = priorState ? lastAnalyzedIndexRef.current : 0;
 
       let livePrompt: string;
 
@@ -536,7 +552,7 @@ export const useLiveAnalysis = (
         // SALES PERSON turns are excluded from the delta — they are scaffolding context,
         // not signal sources. BANT/MEDDIC are updated incrementally from priorState.
         // This keeps the prompt ~80% smaller than re-sending the full transcript.
-        const newTurns = humanTurns.slice(deltaStartIndex);
+        const newTurns = humanTurns.slice(adjustedDeltaStartIndex);
         const prospectDelta = newTurns
           .filter(t => t.speaker !== 'user')   // prospect turns only
           .map(formatProspectTurn)

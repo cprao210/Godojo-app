@@ -1585,6 +1585,7 @@ const MeetingDetails: React.FC<MeetingDetailsProps> = ({ meeting: initialMeeting
 
                                             return filteredTranscript.map((entry, i) => (
                                                 <div key={i} className="group">
+
                                                     <div className="flex items-center gap-2 mb-1">
                                                         <span className={`text-xs font-semibold text-white ${entry.speaker === 'user'
                                                             ? 'bg-blue-600'
@@ -1598,6 +1599,8 @@ const MeetingDetails: React.FC<MeetingDetailsProps> = ({ meeting: initialMeeting
                                                         <span className="text-xs text-text-tertiary font-mono">{entry.timestamp ? formatTime(entry.timestamp) : '0:00'}</span>
                                                     </div>
                                                     <p className="text-text-secondary text-[15px] leading-relaxed transition-colors select-text cursor-text">{entry.text}</p>
+
+
                                                 </div>
                                             ));
 

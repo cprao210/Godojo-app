@@ -787,7 +787,7 @@ export class AppState {
       const apiKey = CredentialsManager.getInstance().getDeepgramApiKey();
       if (apiKey) {
         console.log(`[Main] Using DeepgramStreamingSTT for ${speaker}`);
-        stt = new DeepgramStreamingSTT(apiKey);
+        stt = new DeepgramStreamingSTT(apiKey, speaker);
       } else {
         console.warn(`[Main] No API key for Deepgram STT, falling back to GoogleSTT`);
         stt = new GoogleSTT();
@@ -851,7 +851,9 @@ export class AppState {
 
     // Wire Transcript Events
     stt.on('transcript', (segment: { text: string, isFinal: boolean, confidence: number }) => {
+      console.log(`[Main] STT transcript (${speaker}, final=${segment.isFinal}): "${segment.text}"`);
       if (!this.isMeetingActive) {
+        console.warn(`[Main] Dropping transcript — meeting not active (speaker=${speaker})`);
         return;
       }
 
@@ -943,6 +945,13 @@ export class AppState {
         this.microphoneCapture.on('error', (err: Error) => {
           console.error('[Main] MicrophoneCapture Error:', err);
         });
+        // FIX-5: Sync User STT sample rate when the native mic rate is detected
+        // post-start. MicrophoneCapture now emits 'sample-rate-detected' at 1s/3s
+        // after start(), matching the SystemAudioCapture pattern.
+        this.microphoneCapture.on('sample-rate-detected', (rate: number) => {
+          console.log(`[Main] Mic true rate detected: ${rate}Hz — resyncing User STT`);
+          this.googleSTT_User?.setSampleRate(rate);
+        });
       }
 
       // 2. Initialize STT Services if missing
@@ -958,13 +967,13 @@ export class AppState {
       // Always sync rates, even if just initialized, to ensure consistency
 
       // 1. Sync System Audio Rate
-      const sysRate = this.systemAudioCapture?.getSampleRate() || 16000;
+      const sysRate = this.systemAudioCapture?.getOutputSampleRate() || 16000;
       if (this._verboseLogging) console.log(`[Main] Configuring Client STT to ${sysRate}Hz`);
       this.googleSTT?.setSampleRate(sysRate);
       this.googleSTT?.setAudioChannelCount?.(1);
 
       // 2. Sync Mic Rate
-      const micRate = this.microphoneCapture?.getSampleRate() || 16000;
+      const micRate = this.microphoneCapture?.getOutputSampleRate() || 16000;
       if (this._verboseLogging) console.log(`[Main] Configuring User STT to ${micRate}Hz`);
       this.googleSTT_User?.setSampleRate(micRate);
       this.googleSTT_User?.setAudioChannelCount?.(1);
@@ -988,9 +997,9 @@ export class AppState {
     try {
       console.log('[Main] Initializing SystemAudioCapture...');
       this.systemAudioCapture = new SystemAudioCapture(outputDeviceId || undefined);
-      const rate = this.systemAudioCapture.getSampleRate();
-      console.log(`[Main] SystemAudioCapture rate: ${rate}Hz`);
-      this.googleSTT?.setSampleRate(rate);
+      // Do NOT read rate here — monitor hasn't started yet (lazy init).
+      // Rate will be set correctly by the settle poll in startMeeting().
+      console.log(`[Main] SystemAudioCapture initialized.`);
 
       this.systemAudioCapture.on('data', (chunk: Buffer) => {
         this.googleSTT?.write(chunk);
@@ -1010,9 +1019,6 @@ export class AppState {
       console.warn('[Main] Failed to initialize SystemAudioCapture with preferred ID. Falling back to default.', err);
       try {
         this.systemAudioCapture = new SystemAudioCapture(); // Default
-        const rate = this.systemAudioCapture.getSampleRate();
-        console.log(`[Main] SystemAudioCapture (Default) rate: ${rate}Hz`);
-        this.googleSTT?.setSampleRate(rate);
 
         this.systemAudioCapture.on('data', (chunk: Buffer) => {
           this.googleSTT?.write(chunk);
@@ -1041,9 +1047,8 @@ export class AppState {
     try {
       console.log('[Main] Initializing MicrophoneCapture...');
       this.microphoneCapture = new MicrophoneCapture(inputDeviceId || undefined);
-      const rate = this.microphoneCapture.getSampleRate();
-      console.log(`[Main] MicrophoneCapture rate: ${rate}Hz`);
-      this.googleSTT_User?.setSampleRate(rate);
+      // Same — don't read rate before start().
+      console.log(`[Main] MicrophoneCapture initialized.`);
 
       this.microphoneCapture.on('data', (chunk: Buffer) => {
         // console.log('[Main] Mic chunk', chunk.length);
@@ -1055,14 +1060,16 @@ export class AppState {
       this.microphoneCapture.on('error', (err: Error) => {
         console.error('[Main] MicrophoneCapture Error:', err);
       });
+      // FIX-5: Sync User STT when hardware rate is discovered post-start
+      this.microphoneCapture.on('sample-rate-detected', (rate: number) => {
+        console.log(`[Main] Mic true rate detected: ${rate}Hz — resyncing User STT`);
+        this.googleSTT_User?.setSampleRate(rate);
+      });
       console.log('[Main] MicrophoneCapture initialized.');
     } catch (err) {
       console.warn('[Main] Failed to initialize MicrophoneCapture with preferred ID. Falling back to default.', err);
       try {
         this.microphoneCapture = new MicrophoneCapture(); // Default
-        const rate = this.microphoneCapture.getSampleRate() || 16000;
-        console.log(`[Main] MicrophoneCapture (Default) rate: ${rate}Hz`);
-        this.googleSTT_User?.setSampleRate(rate);
 
         this.microphoneCapture.on('data', (chunk: Buffer) => {
           this.googleSTT_User?.write(chunk);
@@ -1072,6 +1079,11 @@ export class AppState {
         });
         this.microphoneCapture.on('error', (err: Error) => {
           console.error('[Main] MicrophoneCapture (Default) Error:', err);
+        });
+        // FIX-5: Sync User STT when hardware rate is discovered post-start (fallback path)
+        this.microphoneCapture.on('sample-rate-detected', (rate: number) => {
+          console.log(`[Main] Mic (Default) true rate detected: ${rate}Hz — resyncing User STT`);
+          this.googleSTT_User?.setSampleRate(rate);
         });
       } catch (err2) {
         console.error('[Main] Failed to initialize MicrophoneCapture (Default):', err2);
@@ -1274,36 +1286,53 @@ export class AppState {
         this.systemAudioCapture?.start();
         this.microphoneCapture?.start();
 
-        // Small delay before opening Deepgram WebSocket connections. This gives
-        // the native WASAPI/CoreAudio devices ~200ms to report their actual
-        // sample rate via getSampleRate(), avoiding Deepgram connecting with a
-        // stale default (48000) when the hardware is actually running at 16000
-        // or vice versa. The 'sample-rate-detected' listener above handles the
-        // longer 1s/8s correction if the rate changes after this window.
-        await new Promise<void>(resolve => setTimeout(resolve, 200));
+        // FIX-5: Replace the fixed 200ms settle window with an adaptive poll that
+        // waits until both capture devices report a non-default sample rate (or 2s
+        // timeout). On macOS with SCK the background init thread can take 1-5s —
+        // the old 200ms window always read the stale 48000 default, causing Deepgram
+        // to open a connection that received 3x slow-motion audio when the DSP was
+        // actually decimating to 16000Hz.
+        // Start with 0 so the poll doesn't exit immediately thinking rates are settled.
+        let settledSysRate = 0;
+        let settledMicRate = 0;
 
-        // Re-read rates after the short settle window before starting STT
-        const settledSysRate = this.systemAudioCapture?.getSampleRate() || 16000;
-        const settledMicRate = this.microphoneCapture?.getSampleRate() || 16000;
+        await new Promise<void>(resolve => {
+          let elapsed = 0;
+          const POLL_INTERVAL_MS = 100;
+          const POLL_TIMEOUT_MS = 2000;
+          // Use 0 as sentinel — getOutputSampleRate() never returns 0, so the poll
+          // won't exit early before the native hardware reports a real rate.
+          // Previously DEFAULT_RATE=16000 caused immediate exit because getOutputSampleRate()
+          // returns 16000 before start() (48000 native → 16000 via fallback math), making
+          // sysReady always true at elapsed=0.
+          const DEFAULT_RATE = 0;
+
+          const poll = setInterval(() => {
+            elapsed += POLL_INTERVAL_MS;
+            const sysRate = this.systemAudioCapture?.getOutputSampleRate() ?? DEFAULT_RATE;
+            const micRate = this.microphoneCapture?.getOutputSampleRate() ?? DEFAULT_RATE;
+            // Ready when rate is non-zero (hardware reported) OR timeout elapsed
+            const sysReady = sysRate > 0 || elapsed >= POLL_TIMEOUT_MS;
+            const micReady = micRate > 0 || elapsed >= POLL_TIMEOUT_MS;
+            if (sysReady && micReady) {
+              settledSysRate = sysRate;
+              settledMicRate = micRate;
+              clearInterval(poll);
+              resolve();
+            }
+          }, POLL_INTERVAL_MS);
+        });
+
+        // Re-read rates after the settle window before starting STT
         console.log(`[Main] Settled rates before STT start — sys: ${settledSysRate}Hz, mic: ${settledMicRate}Hz`);
-        this.googleSTT?.setSampleRate(settledSysRate);
+        this.googleSTT?.setSampleRate(settledSysRate || 16000);
         this.googleSTT?.setAudioChannelCount?.(1);
-        this.googleSTT_User?.setSampleRate(settledMicRate);
+        this.googleSTT_User?.setSampleRate(settledMicRate || 16000);
         this.googleSTT_User?.setAudioChannelCount?.(1);
 
         // Now open Deepgram WebSocket connections with correct rates
         this.googleSTT?.start();
         this.googleSTT_User?.start();
-
-        // Re-sync mic sample rate after a short delay — the native Rust module may
-        // report its true hardware rate only after the audio device is fully opened.
-        // This mirrors the poll-at-1s pattern used by SystemAudioCapture for client STT.
-        setTimeout(() => {
-          if (!this.isMeetingActive) return;
-          const actualMicRate = this.microphoneCapture?.getSampleRate() || 16000;
-          console.log(`[Main] Late mic rate sync: setting User STT to ${actualMicRate}Hz`);
-          this.googleSTT_User?.setSampleRate(actualMicRate);
-        }, 1500);
 
         // Start JIT RAG live indexing
         if (this.ragManager) {
@@ -1314,8 +1343,8 @@ export class AppState {
           const requestedInput = metadata?.audio?.inputDeviceId || 'default';
           const requestedOutput = metadata?.audio?.outputDeviceId || 'default';
           const backend = requestedOutput === 'sck' ? 'sck' : 'coreaudio';
-          const sysRate = this.systemAudioCapture?.getSampleRate() || 16000;
-          const micRate = this.microphoneCapture?.getSampleRate() || 16000;
+          const sysRate = this.systemAudioCapture?.getOutputSampleRate() || 16000;
+          const micRate = this.microphoneCapture?.getOutputSampleRate() || 16000;
           console.log(`[Main][debug] Audio pipeline: input=${requestedInput} output=${requestedOutput} backend=${backend} sysRate=${sysRate}Hz micRate=${micRate}Hz`);
         }
         console.log('[Main] Audio pipeline started successfully.');
@@ -1617,19 +1646,34 @@ export class AppState {
     console.log('[Main] Resuming Meeting...');
 
     try {
-      // 1. Restart audio capture first (same ordering fix as startMeeting)
-      this.systemAudioCapture?.start();
-      this.microphoneCapture?.start();
+      // FIX-3: Start STT FIRST so isActive=true and WebSocket is open before
+      // the native Rust capture threads begin emitting data events.
+      //
+      // The previous order (audio start → STT start) had a race window where
+      // the Rust DSP threads woke up and pushed chunks into the STT ring buffer
+      // while both STT instances still had isActive=false.  When googleSTT.start()
+      // and googleSTT_User.start() then fired, they each flushed their buffers —
+      // but the system-audio chunks that arrived during the gap were non-deterministically
+      // held in whichever STT instance connected first, causing speaker mismatch after
+      // every pause/resume cycle.
+      //
+      // Correct order: STT open (isActive=true, WebSocket connecting) → audio start.
+      // Chunks that arrive before the WebSocket handshake completes go into the STT
+      // ring buffer which is flushed on 'open', still assigned to the correct instance.
 
-      // 2. Re-sync rates in case device changed while paused, then start STT.
-      const resumeSysRate = this.systemAudioCapture?.getSampleRate() || 16000;
-      const resumeMicRate = this.microphoneCapture?.getSampleRate() || 16000;
+      // 1. Re-sync rates in case the device changed while paused.
+      const resumeSysRate = this.systemAudioCapture?.getOutputSampleRate() || 16000;
+      const resumeMicRate = this.microphoneCapture?.getOutputSampleRate() || 16000;
       this.googleSTT?.setSampleRate(resumeSysRate);
       this.googleSTT?.setAudioChannelCount?.(1);
       this.googleSTT_User?.setSampleRate(resumeMicRate);
       this.googleSTT_User?.setAudioChannelCount?.(1);
       this.googleSTT?.start();
       this.googleSTT_User?.start();
+
+      // 2. NOW start audio — data events go to already-active STT instances.
+      this.systemAudioCapture?.start();
+      this.microphoneCapture?.start();
 
       // 3. Resume live RAG indexing using the SAME session key 'live-meeting-current'
       //    so all new transcript segments are appended to the existing session,

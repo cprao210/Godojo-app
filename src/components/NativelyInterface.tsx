@@ -123,9 +123,16 @@ const NativelyInterface: React.FC<NativelyInterfaceProps> = ({ onEndMeeting, ove
         return () => window.removeEventListener('storage', handleStorage);
     }, []);
 
-    const [rollingTranscript, setRollingTranscript] = useState('');  // For client rolling text bar
-    const [rollingTranscriptSpeaker, setRollingTranscriptSpeaker] = useState<'client' | 'user'>('client');
+    // Per-speaker rolling transcript state — keeps "Me" and "Them" text strictly isolated
+    const [rollingTranscriptUser, setRollingTranscriptUser] = useState('');   // "Me" track
+    const [rollingTranscriptClient, setRollingTranscriptClient] = useState(''); // "Them" track
     const [isClientSpeaking, setIsClientSpeaking] = useState(false);  // Track if actively speaking
+    const [isUserSpeaking, setIsUserSpeaking] = useState(false);      // Track if user is speaking
+
+    // Legacy combined props kept for any callers that still expect them;
+    // derived from per-speaker state so they stay in sync automatically.
+    const rollingTranscript = rollingTranscriptClient; // kept for commented-out legacy code
+    const rollingTranscriptSpeaker: 'client' | 'user' = 'client'; // unused after refactor
     const [voiceInput, setVoiceInput] = useState('');  // Accumulated user voice input
     const voiceInputRef = useRef<string>('');  // Ref for capturing in async handlers
     const isStealthRef = useRef<boolean>(false); // Tracks if the next expansion should be stealthy
@@ -363,8 +370,9 @@ const NativelyInterface: React.FC<NativelyInterfaceProps> = ({ onEndMeeting, ove
             // CRITICAL FIX: Clear the live transcript ref when meeting resets
             liveTranscriptRef.current = [];
 
-            // Also reset rolling transcript
-            setRollingTranscript('');
+            // Also reset rolling transcripts (both speakers)
+            setRollingTranscriptUser('');
+            setRollingTranscriptClient('');
 
             // Track new conversation
             analytics.trackConversationStarted();
@@ -430,6 +438,21 @@ const NativelyInterface: React.FC<NativelyInterfaceProps> = ({ onEndMeeting, ove
                     });
                     setManualTranscript('');  // Clear partial preview
                     manualTranscriptRef.current = '';
+
+                    // Still push to liveTranscriptRef so the full transcript
+                    // is available for live analysis and post-meeting use.
+                    const resolvedDisplayName = (transcript as any).displayName
+                        || speakerNamesRef.current.user
+                        || undefined;
+                    const lastLive = liveTranscriptRef.current[liveTranscriptRef.current.length - 1];
+                    if (!lastLive || lastLive.speaker !== transcript.speaker || lastLive.text !== transcript.text) {
+                        liveTranscriptRef.current.push({
+                            speaker: transcript.speaker,
+                            displayName: resolvedDisplayName,
+                            text: transcript.text,
+                            timestamp: Date.now(),
+                        });
+                    }
                 } else {
                     // Show live partial transcript
                     setManualTranscript(transcript.text);
@@ -439,53 +462,44 @@ const NativelyInterface: React.FC<NativelyInterfaceProps> = ({ onEndMeeting, ove
                 return;  // Don't add to messages while recording
             }
 
-            if (transcript.speaker === 'user' && transcript.final) {
-                const userDisplayName = (transcript as any).displayName
-                    || speakerNamesRef.current.user
-                    || undefined;
-                liveTranscriptRef.current.push({
-                    speaker: 'user',
-                    displayName: userDisplayName,
-                    text: transcript.text,
-                    timestamp: Date.now(),
-                });
-                return;
-            }
-
             // Route both user and client transcripts to the rolling bar.
             // Skip any unknown speaker types for safety.
             if (transcript.speaker !== 'user' && transcript.speaker !== 'client') {
                 return;
             }
 
-            // Track speaking state (used for the animated "..." indicator in the chat bar).
-            // We only animate for the client/system audio since user mic is near-instant.
-            if (transcript.speaker === 'client') {
+            const isClient = transcript.speaker === 'client';
+
+            // Track per-speaker speaking state for animated indicators
+            if (isClient) {
                 setIsClientSpeaking(!transcript.final);
+            } else {
+                setIsUserSpeaking(!transcript.final);
             }
+
+            const setRollingForSpeaker = isClient ? setRollingTranscriptClient : setRollingTranscriptUser;
 
             if (transcript.final) {
                 // Use displayName from payload (resolved in main process) for accurate attribution.
                 // Fall back to speakerNamesRef for older payloads without displayName.
                 const resolvedDisplayName = (transcript as any).displayName
-                    || (transcript.speaker === 'client' ? speakerNamesRef.current.client : speakerNamesRef.current.user)
+                    || (isClient ? speakerNamesRef.current.client : speakerNamesRef.current.user)
                     || undefined;
 
-                // Append finalized text to accumulated rolling transcript.
+                // Append finalized text to this speaker's own rolling transcript.
                 // Guard against duplicate finals (e.g. both is_final and speech_final
                 // from Deepgram arriving as final before the STT fix takes effect).
-                setRollingTranscript(prev => {
+                setRollingForSpeaker(prev => {
                     const lastSeparator = prev.lastIndexOf('  ·  ');
                     const lastSegment = lastSeparator >= 0 ? prev.substring(lastSeparator + 5) : prev;
-                    if (lastSegment.trim() === transcript.text.trim()) return prev;  // ← ADD: skip exact duplicate
+                    if (lastSegment.trim() === transcript.text.trim()) return prev; // skip exact duplicate
                     const separator = prev ? '  ·  ' : '';
                     return prev + separator + transcript.text;
                 });
-                setRollingTranscriptSpeaker(transcript.speaker as 'client' | 'user');
 
                 // Guard liveTranscriptRef against exact-text duplicates from rapid final events
                 const lastLive = liveTranscriptRef.current[liveTranscriptRef.current.length - 1];
-                if (!lastLive || lastLive.speaker !== transcript.speaker || lastLive.text !== transcript.text) {  // ← ADD guard
+                if (!lastLive || lastLive.speaker !== transcript.speaker || lastLive.text !== transcript.text) {
                     liveTranscriptRef.current.push({
                         speaker: transcript.speaker,
                         displayName: resolvedDisplayName,
@@ -494,17 +508,17 @@ const NativelyInterface: React.FC<NativelyInterfaceProps> = ({ onEndMeeting, ove
                     });
                 }
 
-                // Clear speaking indicator after pause
-                if (transcript.speaker === 'client') {
-                    setTimeout(() => {
-                        setIsClientSpeaking(false);
-                    }, 3000);
+                // Clear speaking indicator after a pause
+                if (isClient) {
+                    setTimeout(() => setIsClientSpeaking(false), 3000);
+                } else {
+                    setTimeout(() => setIsUserSpeaking(false), 2000);
                 }
             } else {
-                setRollingTranscriptSpeaker(transcript.speaker as 'client' | 'user');
-                // For partial transcripts, show current segment appended to accumulated
-                setRollingTranscript(prev => {
-                    // Find where previous finalized content ends (look for last separator)
+                // Partial (interim) transcript — update only this speaker's track.
+                // Previous finalized text from the same speaker is preserved;
+                // the other speaker's track is never touched.
+                setRollingForSpeaker(prev => {
                     const lastSeparator = prev.lastIndexOf('  ·  ');
                     const accumulated = lastSeparator >= 0 ? prev.substring(0, lastSeparator + 5) : '';
                     return accumulated + transcript.text;
@@ -2218,9 +2232,10 @@ Provide only the answer, nothing else.`;
                                 window.electronAPI?.setUndetectable(next);
                             }}
                             transcriptRef={liveTranscriptRef}
-                            rollingTranscript={rollingTranscript}
-                            rollingTranscriptSpeaker={rollingTranscriptSpeaker}
+                            rollingTranscriptUser={rollingTranscriptUser}
+                            rollingTranscriptClient={rollingTranscriptClient}
                             isClientSpeaking={isClientSpeaking}
+                            isUserSpeaking={isUserSpeaking}
                             showTranscript={showTranscript}
                             onToggleTranscript={(v) => {
                                 setShowTranscript(v);

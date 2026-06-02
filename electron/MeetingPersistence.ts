@@ -353,6 +353,7 @@ export class MeetingPersistence {
 
         const appState = AppState.getInstance();
         const liveAnalysisData = appState?.getCurrentLiveAnalysis?.() || null;
+        // const companyIntel = appState?.getCurrentCompanyIntel?.() || null;
         console.log('[MeetingPersistence] Retrieved liveAnalysisData:', !!liveAnalysisData);
         if (liveAnalysisData) {
             console.log('[MeetingPersistence] Live analysis keys:', Object.keys(liveAnalysisData));
