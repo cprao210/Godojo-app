@@ -18,6 +18,7 @@ interface FloatingChatPanelProps {
     rollingTranscript: string;
     isClientSpeaking: boolean;
     showTranscript: boolean;
+    rollingTranscriptSpeaker: 'client' | 'user';
     currentModel: string;
     onSelectModel: (m: string) => void;
     speakerNames: { user: string; client: string };
@@ -145,6 +146,7 @@ export const FloatingChatPanel: React.FC<FloatingChatPanelProps> = ({
     isMeetingPaused,
     showTranscript,
     speakerNames,
+    rollingTranscriptSpeaker,
     messages,
     onMessagesChange,
 }) => {
@@ -363,7 +365,9 @@ export const FloatingChatPanel: React.FC<FloatingChatPanelProps> = ({
                     <div className="flex items-start gap-2">
                         <span className="w-1.5 h-1.5 rounded-full bg-red-400 animate-pulse mt-1 shrink-0" />
                         <p className="text-[11px] text-white/40 leading-relaxed line-clamp-2">
-                            <span className="text-white/55 font-medium mr-1">{speakerNames.client}:</span>
+                            <span className="text-white/55 font-medium mr-1">
+                                {rollingTranscriptSpeaker === 'user' ? speakerNames.user : speakerNames.client}:
+                            </span>
                             {rollingTranscript}
                             {isClientSpeaking && <span className="ml-1 text-white/25 animate-pulse">...</span>}
                         </p>

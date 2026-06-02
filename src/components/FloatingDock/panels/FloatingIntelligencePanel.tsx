@@ -24,6 +24,7 @@ interface FloatingIntelligencePanelProps {
     isRefreshRun?: boolean;        // true = incremental refresh, false/undefined = first run
     rollingTranscript: string;
     isClientSpeaking: boolean;
+    rollingTranscriptSpeaker: 'client' | 'user';
     speakerNames: { user: string; client: string };
 }
 
@@ -171,6 +172,7 @@ export const FloatingIntelligencePanel: React.FC<FloatingIntelligencePanelProps>
     isLoading,
     onRegenerate,
     autoRefreshInterval,
+    rollingTranscriptSpeaker,
     onAutoRefreshIntervalChange,
     isRefreshRun,
     rollingTranscript,
@@ -323,7 +325,9 @@ export const FloatingIntelligencePanel: React.FC<FloatingIntelligencePanelProps>
                     <div className="flex items-start gap-2">
                         <span className="w-1.5 h-1.5 rounded-full bg-blue-400 animate-pulse mt-1 shrink-0" />
                         <p className="text-[11px] text-white/40 leading-relaxed line-clamp-2">
-                            <span className="text-white/55 font-medium mr-1">{speakerNames.client}:</span>
+                            <span className="text-white/55 font-medium mr-1">
+                                {rollingTranscriptSpeaker === 'user' ? speakerNames.user : speakerNames.client}:
+                            </span>
                             {rollingTranscript}
                             {isClientSpeaking && <span className="ml-1 text-white/25 animate-pulse">...</span>}
                         </p>

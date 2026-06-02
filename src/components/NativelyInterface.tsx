@@ -124,6 +124,7 @@ const NativelyInterface: React.FC<NativelyInterfaceProps> = ({ onEndMeeting, ove
     }, []);
 
     const [rollingTranscript, setRollingTranscript] = useState('');  // For client rolling text bar
+    const [rollingTranscriptSpeaker, setRollingTranscriptSpeaker] = useState<'client' | 'user'>('client');
     const [isClientSpeaking, setIsClientSpeaking] = useState(false);  // Track if actively speaking
     const [voiceInput, setVoiceInput] = useState('');  // Accumulated user voice input
     const voiceInputRef = useRef<string>('');  // Ref for capturing in async handlers
@@ -480,6 +481,7 @@ const NativelyInterface: React.FC<NativelyInterfaceProps> = ({ onEndMeeting, ove
                     const separator = prev ? '  ·  ' : '';
                     return prev + separator + transcript.text;
                 });
+                setRollingTranscriptSpeaker(transcript.speaker as 'client' | 'user');
 
                 // Guard liveTranscriptRef against exact-text duplicates from rapid final events
                 const lastLive = liveTranscriptRef.current[liveTranscriptRef.current.length - 1];
@@ -499,6 +501,7 @@ const NativelyInterface: React.FC<NativelyInterfaceProps> = ({ onEndMeeting, ove
                     }, 3000);
                 }
             } else {
+                setRollingTranscriptSpeaker(transcript.speaker as 'client' | 'user');
                 // For partial transcripts, show current segment appended to accumulated
                 setRollingTranscript(prev => {
                     // Find where previous finalized content ends (look for last separator)
@@ -2216,6 +2219,7 @@ Provide only the answer, nothing else.`;
                             }}
                             transcriptRef={liveTranscriptRef}
                             rollingTranscript={rollingTranscript}
+                            rollingTranscriptSpeaker={rollingTranscriptSpeaker}
                             isClientSpeaking={isClientSpeaking}
                             showTranscript={showTranscript}
                             onToggleTranscript={(v) => {

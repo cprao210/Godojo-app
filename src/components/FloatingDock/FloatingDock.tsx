@@ -29,6 +29,7 @@ interface FloatingDockProps {
     currentModel: string;
     onSelectModel: (m: string) => void;
     speakerNames: { user: string; client: string };
+    rollingTranscriptSpeaker: 'client' | 'user';
 
     // Settings
     shortcuts: ShortcutConfig;
@@ -58,6 +59,7 @@ export const FloatingDock: React.FC<FloatingDockProps> = ({
     transcriptRef,
     rollingTranscript,
     isClientSpeaking,
+    rollingTranscriptSpeaker,
     showTranscript,
     onToggleTranscript,
     currentModel,
@@ -204,6 +206,7 @@ export const FloatingDock: React.FC<FloatingDockProps> = ({
                                     speakerNames={speakerNames}
                                     showTranscript={showTranscript}
                                     isLoading={analysisLoading}
+                                    rollingTranscriptSpeaker={rollingTranscriptSpeaker}
                                     onRegenerate={() => runAnalysis(true)}
                                     autoRefreshInterval={autoRefreshInterval}
                                     onAutoRefreshIntervalChange={setAutoRefreshInterval}
@@ -215,6 +218,7 @@ export const FloatingDock: React.FC<FloatingDockProps> = ({
                                     transcriptRef={transcriptRef}
                                     isMeetingPaused={isMeetingPaused}
                                     rollingTranscript={rollingTranscript}
+                                    rollingTranscriptSpeaker={rollingTranscriptSpeaker}
                                     isClientSpeaking={isClientSpeaking}
                                     showTranscript={showTranscript}
                                     currentModel={currentModel}
