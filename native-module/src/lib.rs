@@ -200,7 +200,7 @@ impl SystemAudioCapture {
                             } else {
                                 i16_slice_to_le_bytes(&data)
                             };
-            
+        
                             if !output_bytes.is_empty() {
                                 tsfn.call(
                                     Ok(Buffer::from(output_bytes)),
@@ -256,6 +256,22 @@ impl SystemAudioCapture {
 // Design: The MicrophoneStream (CPAL handle) is recreated on every start()
 // call. This guarantees the ring buffer consumer is always fresh, allowing
 // seamless stop→start restart cycles (e.g. between meetings).
+//
+// FIX: Added `vad_disabled` option. When the user has NO external audio
+// device (built-in mic + built-in speakers), macOS Acoustic Echo Cancellation
+// (AEC) already attenuates the microphone signal. The two-stage gate in
+// SilenceSuppressor then interprets this reduced-amplitude speech as silence
+// and suppresses it entirely — the user's voice never reaches Deepgram.
+//
+// With `vad_disabled: true`, the SilenceSuppressor bypasses both the RMS gate
+// AND the WebRTC VAD. Every captured frame is forwarded raw to JS/Deepgram,
+// which runs its own cloud-side VAD. This matches exactly what SystemAudio
+// already does (`for_system_audio()` has a very permissive threshold + the
+// caller in macos.rs passes `vadDisabled: true`).
+//
+// When an external device IS connected, macOS AEC is inactive, signal levels
+// are normal, and the local VAD provides useful noise suppression — so
+// `vad_disabled` should be false in that case (the TypeScript layer decides).
 // ============================================================================
 
 #[napi]
@@ -268,12 +284,21 @@ pub struct MicrophoneCapture {
     device_id: Option<String>,
     /// Holds the live CPAL stream. Recreated on each start().
     input: Option<microphone::MicrophoneStream>,
+    /// When true, bypass local VAD/RMS gating and forward all audio to JS.
+    /// Use this when built-in mic + built-in speakers are in use (macOS AEC
+    /// already attenuates the signal; local VAD causes full suppression).
+    vad_disabled: bool,
 }
 
 #[napi]
 impl MicrophoneCapture {
+    /// `device_id`   — CPAL device name or `None` for system default.
+    /// `vad_disabled` — set `true` when no external audio device is present
+    ///                  (built-in mic scenario) to bypass local silence gating.
     #[napi(constructor)]
-    pub fn new(device_id: Option<String>) -> napi::Result<Self> {
+    pub fn new(device_id: Option<String>, vad_disabled: Option<bool>) -> napi::Result<Self> {
+        let vad_disabled = vad_disabled.unwrap_or(false);
+
         // Eagerly create the stream to detect device errors early and read the
         // native sample rate.
         let input = match microphone::MicrophoneStream::new(device_id.clone()) {
@@ -283,8 +308,8 @@ impl MicrophoneCapture {
 
         let native_rate = input.sample_rate();
         println!(
-            "[MicrophoneCapture] Initialized. Device: {:?}, Rate: {}Hz",
-            device_id, native_rate
+            "[MicrophoneCapture] Initialized. Device: {:?}, Rate: {}Hz, vad_disabled: {}",
+            device_id, native_rate, vad_disabled
         );
 
         Ok(MicrophoneCapture {
@@ -293,6 +318,7 @@ impl MicrophoneCapture {
             sample_rate: Arc::new(AtomicU32::new(native_rate)),
             device_id,
             input: Some(input),
+            vad_disabled,
         })
     }
 
@@ -314,6 +340,7 @@ impl MicrophoneCapture {
     ) -> napi::Result<()> {
         let tsfn = callback;
         let speech_ended_tsfn = on_speech_ended;
+        let vad_disabled = self.vad_disabled;
 
         self.stop_signal.store(false, Ordering::SeqCst);
         let stop_signal = self.stop_signal.clone();
@@ -353,8 +380,28 @@ impl MicrophoneCapture {
             .take_consumer()
             .ok_or_else(|| napi::Error::from_reason("Failed to get consumer"))?;
 
-        // DSP thread with silence suppression + WebRTC VAD
+        // Create resampler for mic (same as SystemAudio path — always output 16kHz)
+        let mut resampler = if native_rate != 16000 {
+            match Resampler::new(native_rate as f64) {
+                Ok(r) => {
+                    println!("[MicrophoneCapture] Resampler: {}Hz → 16000Hz", native_rate);
+                    Some(r)
+                }
+                Err(e) => {
+                    eprintln!("[MicrophoneCapture] Resampler creation failed: {} — sending at native rate", e);
+                    None
+                }
+            }
+        } else {
+            println!("[MicrophoneCapture] Native rate is 16kHz — no resampling needed");
+            None
+        };
+
+        // DSP thread: conditionally applies silence suppression + WebRTC VAD.
+        // When vad_disabled=true, all frames are forwarded immediately (passthrough).
         self.capture_thread = Some(thread::spawn(move || {
+            // Build suppressor regardless — used only when vad_disabled=false.
+            // When vad_disabled=true, we skip suppressor.process() entirely.
             let mut suppressor = SilenceSuppressor::new(SilenceSuppressionConfig {
                 native_sample_rate: native_rate,
                 ..SilenceSuppressionConfig::for_microphone()
@@ -365,7 +412,10 @@ impl MicrophoneCapture {
             let mut frame_buffer: Vec<i16> = Vec::with_capacity(chunk_size * 4);
             let mut raw_batch: Vec<f32> = Vec::with_capacity(4096);
 
-            println!("[MicrophoneCapture] DSP thread started (VAD + suppression active, rate={}Hz, chunk={})", native_rate, chunk_size);
+            println!(
+                "[MicrophoneCapture] DSP thread started (vad_disabled={}, rate={}Hz, chunk={})",
+                vad_disabled, native_rate, chunk_size
+            );
 
             loop {
                 if stop_signal.load(Ordering::Relaxed) {
@@ -386,35 +436,84 @@ impl MicrophoneCapture {
                     raw_batch.clear();
                 }
 
-                // 3. Process in 20ms chunks through the two-stage gate
+                // 3. Process in 20ms chunks
                 while frame_buffer.len() >= chunk_size {
                     let frame: Vec<i16> = frame_buffer.drain(0..chunk_size).collect();
 
-                    let (action, speech_ended) = suppressor.process(&frame);
+                    if vad_disabled {
+                        // ── PASSTHROUGH MODE ─────────────────────────────────
+                        // Built-in mic + built-in speakers: macOS AEC has already
+                        // attenuated the mic signal. Passing through all frames
+                        // directly lets Deepgram's cloud VAD handle silence.
+                        // Resample to 16kHz if needed, then emit.
+                        let output_bytes = if let Some(ref mut rs) = resampler {
+                            let f32_data: Vec<f32> = frame.iter().map(|&s| s as f32 / 32767.0).collect();
+                            match rs.resample(&f32_data) {
+                                Ok(resampled) if !resampled.is_empty() => i16_slice_to_le_bytes(&resampled),
+                                Ok(_) => continue, // Resampler needs more data
+                                Err(e) => {
+                                    eprintln!("[MicrophoneCapture] Resample error: {} — using original", e);
+                                    i16_slice_to_le_bytes(&frame)
+                                }
+                            }
+                        } else {
+                            i16_slice_to_le_bytes(&frame)
+                        };
 
-                    match action {
-                        FrameAction::Send(data) => {
-                            let bytes = i16_slice_to_le_bytes(&data);
+                        if !output_bytes.is_empty() {
                             tsfn.call(
-                                Ok(Buffer::from(bytes)),
+                                Ok(Buffer::from(output_bytes)),
                                 ThreadsafeFunctionCallMode::NonBlocking,
                             );
                         }
-                        FrameAction::SendSilence => {
-                            let silence = vec![0u8; chunk_size * 2];
-                            tsfn.call(
-                                Ok(Buffer::from(silence)),
-                                ThreadsafeFunctionCallMode::NonBlocking,
-                            );
-                        }
-                        FrameAction::Suppress => {
-                            // Do nothing
-                        }
-                    }
+                    } else {
+                        // ── VAD-GATED MODE ────────────────────────────────────
+                        // External device (earbuds/headphones): signal level is
+                        // normal. Apply two-stage RMS + WebRTC VAD gate, then
+                        // resample to 16kHz before emitting.
+                        let (action, speech_ended) = suppressor.process(&frame);
 
-                    if speech_ended {
-                        if let Some(ref se_tsfn) = speech_ended_tsfn {
-                            se_tsfn.call(Ok(true), ThreadsafeFunctionCallMode::NonBlocking);
+                        match action {
+                            FrameAction::Send(data) => {
+                                let output_bytes = if let Some(ref mut rs) = resampler {
+                                    let f32_data: Vec<f32> = data.iter().map(|&s| s as f32 / 32767.0).collect();
+                                    match rs.resample(&f32_data) {
+                                        Ok(resampled) if !resampled.is_empty() => i16_slice_to_le_bytes(&resampled),
+                                        Ok(_) => continue,
+                                        Err(e) => {
+                                            eprintln!("[MicrophoneCapture] Resample error: {} — using original", e);
+                                            i16_slice_to_le_bytes(&data)
+                                        }
+                                    }
+                                } else {
+                                    i16_slice_to_le_bytes(&data)
+                                };
+
+                                if !output_bytes.is_empty() {
+                                    tsfn.call(
+                                        Ok(Buffer::from(output_bytes)),
+                                        ThreadsafeFunctionCallMode::NonBlocking,
+                                    );
+                                }
+                            }
+                            FrameAction::SendSilence => {
+                                // Keepalive: send zeros at 16kHz size
+                                let silence_samples = if resampler.is_some() { 320usize } else { chunk_size };
+                                let silence = vec![0u8; silence_samples * 2];
+                                tsfn.call(
+                                    Ok(Buffer::from(silence)),
+                                    ThreadsafeFunctionCallMode::NonBlocking,
+                                );
+                            }
+                            FrameAction::Suppress => {
+                                // Do nothing — local VAD filtered this frame
+                            }
+                        }
+
+                        if speech_ended {
+                            if let Some(ref se_tsfn) = speech_ended_tsfn {
+                                se_tsfn.call(Ok(true), ThreadsafeFunctionCallMode::NonBlocking);
+                            }
                         }
                     }
                 }

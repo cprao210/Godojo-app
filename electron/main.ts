@@ -134,6 +134,7 @@ import { ThemeManager } from "./ThemeManager"
 import { RAGManager } from "./rag/RAGManager"
 import { DatabaseManager } from "./db/DatabaseManager"
 import { warmupIntentClassifier } from "./llm"
+import { AudioDevices } from "./audio/AudioDevices";
 
 /** Unified type for all STT providers with optional extended capabilities */
 type STTProvider = (GoogleSTT | RestSTT | DeepgramStreamingSTT | SonioxStreamingSTT | ElevenLabsStreamingSTT | OpenAIStreamingSTT) & {
@@ -576,6 +577,21 @@ export class AppState {
     }
   }
 
+  private _shouldDisableMicVad(inputDeviceId?: string, outputDeviceId?: string): boolean {
+    const builtinOnly = AudioDevices.isBuiltinOnly(inputDeviceId, outputDeviceId);
+    if (builtinOnly) {
+      console.log(
+        '[Main] Built-in mic + speakers detected: disabling local VAD on MicrophoneCapture ' +
+        '(macOS AEC attenuates signal — Deepgram cloud VAD will handle silence detection)'
+      );
+    } else {
+      console.log(
+        '[Main] External audio device detected: local VAD remains active on MicrophoneCapture'
+      );
+    }
+    return builtinOnly;
+  }
+
   private setupAutoUpdater(): void {
     autoUpdater.autoDownload = false
     autoUpdater.autoInstallOnAppQuit = false  // Manual install only via button
@@ -909,15 +925,14 @@ export class AppState {
     return stt;
   }
 
-  private setupSystemAudioPipeline(): void {
-    // REMOVED EARLY RETURN: if (this.systemAudioCapture && this.microphoneCapture) return; // Already initialized
-
+  private setupSystemAudioPipeline(inputDeviceId?: string, outputDeviceId?: string): void {
     try {
-      // 1. Initialize Captures if missing
-      // If they already exist (e.g. from reconfigureAudio), they are already wired to write to this.googleSTT/User
+      // 1. Initialize Captures if missing.
+      // If they already exist (e.g. from reconfigureAudio) they are already
+      // wired to write to this.googleSTT / googleSTT_User.
+
       if (!this.systemAudioCapture) {
         this.systemAudioCapture = new SystemAudioCapture();
-        // Wire Capture -> STT
         this.systemAudioCapture.on('data', (chunk: Buffer) => {
           this.googleSTT?.write(chunk);
         });
@@ -927,7 +942,6 @@ export class AppState {
         this.systemAudioCapture.on('error', (err: Error) => {
           console.error('[Main] SystemAudioCapture Error:', err);
         });
-        // Re-sync STT sample rate when the native hardware rate is discovered post-start
         this.systemAudioCapture.on('sample-rate-detected', (rate: number) => {
           console.log(`[Main] System audio true rate detected: ${rate}Hz — resyncing STT`);
           this.googleSTT?.setSampleRate(rate);
@@ -935,7 +949,10 @@ export class AppState {
       }
 
       if (!this.microphoneCapture) {
-        this.microphoneCapture = new MicrophoneCapture();
+        // Determine whether to disable local VAD based on device selection.
+        const disableMicVad = this._shouldDisableMicVad(inputDeviceId, outputDeviceId);
+
+        this.microphoneCapture = new MicrophoneCapture(undefined, { vadDisabled: disableMicVad });
         this.microphoneCapture.on('data', (chunk: Buffer) => {
           this.googleSTT_User?.write(chunk);
         });
@@ -945,41 +962,33 @@ export class AppState {
         this.microphoneCapture.on('error', (err: Error) => {
           console.error('[Main] MicrophoneCapture Error:', err);
         });
-        // FIX-5: Sync User STT sample rate when the native mic rate is detected
-        // post-start. MicrophoneCapture now emits 'sample-rate-detected' at 1s/3s
-        // after start(), matching the SystemAudioCapture pattern.
         this.microphoneCapture.on('sample-rate-detected', (rate: number) => {
           console.log(`[Main] Mic true rate detected: ${rate}Hz — resyncing User STT`);
           this.googleSTT_User?.setSampleRate(rate);
         });
       }
 
-      // 2. Initialize STT Services if missing
+      // 2. Initialize STT Services if missing.
       if (!this.googleSTT) {
         this.googleSTT = this.createSTTProvider('client');
       }
-
       if (!this.googleSTT_User) {
         this.googleSTT_User = this.createSTTProvider('user');
       }
 
-      // --- CRITICAL FIX: SYNC SAMPLE RATES ---
-      // Always sync rates, even if just initialized, to ensure consistency
-
-      // 1. Sync System Audio Rate
+      // 3. Sync sample rates (pre-start best-effort; settle poll in startMeeting
+      //    will override these once the hardware reports real values).
       const sysRate = this.systemAudioCapture?.getOutputSampleRate() || 16000;
       if (this._verboseLogging) console.log(`[Main] Configuring Client STT to ${sysRate}Hz`);
       this.googleSTT?.setSampleRate(sysRate);
       this.googleSTT?.setAudioChannelCount?.(1);
 
-      // 2. Sync Mic Rate
       const micRate = this.microphoneCapture?.getOutputSampleRate() || 16000;
       if (this._verboseLogging) console.log(`[Main] Configuring User STT to ${micRate}Hz`);
       this.googleSTT_User?.setSampleRate(micRate);
       this.googleSTT_User?.setAudioChannelCount?.(1);
 
       if (this._verboseLogging) console.log('[Main] Full Audio Pipeline (System + Mic) Initialized (Ready)');
-
     } catch (err) {
       console.error('[Main] Failed to setup System Audio Pipeline:', err);
     }
@@ -988,103 +997,88 @@ export class AppState {
   private async reconfigureAudio(inputDeviceId?: string, outputDeviceId?: string): Promise<void> {
     console.log(`[Main] Reconfiguring Audio: Input=${inputDeviceId}, Output=${outputDeviceId}`);
 
-    // 1. System Audio (Output Capture)
+    // Determine VAD mode once upfront for this device combination.
+    const disableMicVad = this._shouldDisableMicVad(inputDeviceId, outputDeviceId);
+
+    // ── 1. System Audio (Output Capture) ──────────────────────────────────────
     if (this.systemAudioCapture) {
       this.systemAudioCapture.stop();
       this.systemAudioCapture = null;
     }
 
-    try {
-      console.log('[Main] Initializing SystemAudioCapture...');
-      this.systemAudioCapture = new SystemAudioCapture(outputDeviceId || undefined);
-      // Do NOT read rate here — monitor hasn't started yet (lazy init).
-      // Rate will be set correctly by the settle poll in startMeeting().
-      console.log(`[Main] SystemAudioCapture initialized.`);
-
-      this.systemAudioCapture.on('data', (chunk: Buffer) => {
+    const wireSystemAudio = (capture: typeof this.systemAudioCapture) => {
+      if (!capture) return;
+      capture.on('data', (chunk: Buffer) => {
         this.googleSTT?.write(chunk);
       });
-      this.systemAudioCapture.on('speech_ended', () => {
+      capture.on('speech_ended', () => {
         this.googleSTT?.notifySpeechEnded?.();
       });
-      this.systemAudioCapture.on('error', (err: Error) => {
+      capture.on('error', (err: Error) => {
         console.error('[Main] SystemAudioCapture Error:', err);
       });
-      this.systemAudioCapture.on('sample-rate-detected', (rate: number) => {
+      capture.on('sample-rate-detected', (rate: number) => {
         console.log(`[Main] System audio true rate detected: ${rate}Hz — resyncing STT`);
         this.googleSTT?.setSampleRate(rate);
       });
+    };
+
+    try {
+      console.log('[Main] Initializing SystemAudioCapture...');
+      this.systemAudioCapture = new SystemAudioCapture(outputDeviceId || undefined);
+      wireSystemAudio(this.systemAudioCapture);
       console.log('[Main] SystemAudioCapture initialized.');
     } catch (err) {
-      console.warn('[Main] Failed to initialize SystemAudioCapture with preferred ID. Falling back to default.', err);
+      console.warn('[Main] Failed to initialize SystemAudioCapture with preferred device. Falling back to default.', err);
       try {
-        this.systemAudioCapture = new SystemAudioCapture(); // Default
-
-        this.systemAudioCapture.on('data', (chunk: Buffer) => {
-          this.googleSTT?.write(chunk);
-        });
-        this.systemAudioCapture.on('speech_ended', () => {
-          this.googleSTT?.notifySpeechEnded?.();
-        });
-        this.systemAudioCapture.on('error', (err: Error) => {
-          console.error('[Main] SystemAudioCapture (Default) Error:', err);
-        });
-        this.systemAudioCapture.on('sample-rate-detected', (rate: number) => {
-          console.log(`[Main] System audio true rate detected: ${rate}Hz — resyncing STT`);
-          this.googleSTT?.setSampleRate(rate);
-        });
+        this.systemAudioCapture = new SystemAudioCapture();
+        wireSystemAudio(this.systemAudioCapture);
+        console.log('[Main] SystemAudioCapture (Default) initialized.');
       } catch (err2) {
         console.error('[Main] Failed to initialize SystemAudioCapture (Default):', err2);
       }
     }
 
-    // 2. Microphone (Input Capture)
+    // ── 2. Microphone (Input Capture) ─────────────────────────────────────────
     if (this.microphoneCapture) {
       this.microphoneCapture.stop();
       this.microphoneCapture = null;
     }
 
-    try {
-      console.log('[Main] Initializing MicrophoneCapture...');
-      this.microphoneCapture = new MicrophoneCapture(inputDeviceId || undefined);
-      // Same — don't read rate before start().
-      console.log(`[Main] MicrophoneCapture initialized.`);
-
-      this.microphoneCapture.on('data', (chunk: Buffer) => {
-        // console.log('[Main] Mic chunk', chunk.length);
+    const wireMicrophone = (capture: typeof this.microphoneCapture) => {
+      if (!capture) return;
+      capture.on('data', (chunk: Buffer) => {
         this.googleSTT_User?.write(chunk);
       });
-      this.microphoneCapture.on('speech_ended', () => {
+      capture.on('speech_ended', () => {
         this.googleSTT_User?.notifySpeechEnded?.();
       });
-      this.microphoneCapture.on('error', (err: Error) => {
+      capture.on('error', (err: Error) => {
         console.error('[Main] MicrophoneCapture Error:', err);
       });
-      // FIX-5: Sync User STT when hardware rate is discovered post-start
-      this.microphoneCapture.on('sample-rate-detected', (rate: number) => {
+      capture.on('sample-rate-detected', (rate: number) => {
         console.log(`[Main] Mic true rate detected: ${rate}Hz — resyncing User STT`);
         this.googleSTT_User?.setSampleRate(rate);
       });
+    };
+
+    try {
+      console.log('[Main] Initializing MicrophoneCapture...');
+      this.microphoneCapture = new MicrophoneCapture(
+        inputDeviceId || undefined,
+        { vadDisabled: disableMicVad }
+      );
+      wireMicrophone(this.microphoneCapture);
       console.log('[Main] MicrophoneCapture initialized.');
     } catch (err) {
-      console.warn('[Main] Failed to initialize MicrophoneCapture with preferred ID. Falling back to default.', err);
+      console.warn('[Main] Failed to initialize MicrophoneCapture with preferred device. Falling back to default.', err);
       try {
-        this.microphoneCapture = new MicrophoneCapture(); // Default
-
-        this.microphoneCapture.on('data', (chunk: Buffer) => {
-          this.googleSTT_User?.write(chunk);
-        });
-        this.microphoneCapture.on('speech_ended', () => {
-          this.googleSTT_User?.notifySpeechEnded?.();
-        });
-        this.microphoneCapture.on('error', (err: Error) => {
-          console.error('[Main] MicrophoneCapture (Default) Error:', err);
-        });
-        // FIX-5: Sync User STT when hardware rate is discovered post-start (fallback path)
-        this.microphoneCapture.on('sample-rate-detected', (rate: number) => {
-          console.log(`[Main] Mic (Default) true rate detected: ${rate}Hz — resyncing User STT`);
-          this.googleSTT_User?.setSampleRate(rate);
-        });
+        this.microphoneCapture = new MicrophoneCapture(
+          undefined,
+          { vadDisabled: disableMicVad }  // preserve VAD mode even on fallback
+        );
+        wireMicrophone(this.microphoneCapture);
+        console.log('[Main] MicrophoneCapture (Default) initialized.');
       } catch (err2) {
         console.error('[Main] Failed to initialize MicrophoneCapture (Default):', err2);
       }
@@ -1188,7 +1182,8 @@ export class AppState {
     };
 
     try {
-      this.audioTestCapture = new MicrophoneCapture(deviceId || undefined);
+      const testVadDisabled = this._shouldDisableMicVad(deviceId, undefined);
+      this.audioTestCapture = new MicrophoneCapture(deviceId || undefined, { vadDisabled: testVadDisabled });
       attachAudioTestListeners(this.audioTestCapture);
       this.audioTestCapture.start();
     } catch (err) {
@@ -1198,7 +1193,7 @@ export class AppState {
       try { this.audioTestCapture?.stop(); } catch { /* ignore errors on already-failed capture */ }
       this.audioTestCapture = null;
       try {
-        this.audioTestCapture = new MicrophoneCapture();
+        this.audioTestCapture = new MicrophoneCapture(undefined, { vadDisabled: false }); // fallback — unknown device, keep VAD
         attachAudioTestListeners(this.audioTestCapture);
         this.audioTestCapture.start();
       } catch (fallbackErr) {
