@@ -40,22 +40,82 @@ export function formatDuration(ms: number): string {
 export interface Meeting {
     id: string;
     title: string;
-    date: string; // ISO string
+    date: string;
     duration: string;
     durationMs?: number; // raw ms — available when loaded from DB, used for accurate recovery
     summary: string;
+    isProcessed?: boolean;
     detailedSummary?: {
+        // Old fields (keep for backward compat with existing meetings)
         overview?: string;
         actionItems: string[];
         keyPoints: string[];
-        speakerNames?: { user: string; client: string };
-        liveAnalysis?: LiveAnalysisData
+        actionItemsTitle?: string;
+        keyPointsTitle?: string;
 
+        leadName?: string;
+        company?: string;
+
+        speakerNames?: { user: string; client: string };
+        liveAnalysis?: LiveAnalysisData;
+
+        // New sales fields
+        dealStatus?: {
+            stage?: string;
+            summary?: string;
+        };
+        bant?: {
+            budget?: { status: string; detail: string };
+            authority?: { status: string; detail: string };
+            need?: { status: string; detail: string };
+            timeline?: { status: string; detail: string };
+        };
+        meddicc?: {
+            metrics?: { status: string; detail: string };
+            economicBuyer?: { status: string; detail: string };
+            decisionCriteria?: { status: string; detail: string };
+            decisionProcess?: { status: string; detail: string };
+            identifyPain?: { status: string; detail: string };
+            champion?: { status: string; detail: string };
+            competition?: { status: string; detail: string };
+            gaps?: string[];
+        };
+        followUpEmail?: {
+            subject?: string;
+            sections?: {
+                whatYouWillAchieveAfterTransformation?: string[];
+                whatWeDiscussed?: string[];
+                whatIsTheNeed?: string[];
+                currentProcess?: string;
+                scopeOfImprovement?: string[];
+                howOurSolutionHelps?: string[];
+                expectedBusinessImpact?: string[];
+                nextSteps?: string[];
+            };
+            fullEmail?: string;
+        };
+        salesCoachReview?: {
+            whatIDidRight?: string[];
+            whatICouldHaveDoneBetter?: string[];
+            whatIMissedCompletely?: string[];
+        };
+        nextCallPlaybook?: {
+            openingRecap?: string;
+            questionsToAsk?: string[];
+            valueAndROI?: {
+                quantitative?: string[];
+                qualitative?: string[];
+            };
+        };
     };
+    participants?: { email: string | null, name: string | null, oraganizer: boolean, self: boolean }[];
     transcript?: Array<{
         speaker: string;
+        displayName?: string;
         text: string;
         timestamp: number;
+        final?: boolean;
+        confidence?: number;
     }>;
     usage?: Array<{
         type: 'assist' | 'followup' | 'chat' | 'followup_questions';
@@ -66,7 +126,6 @@ export interface Meeting {
     }>;
     calendarEventId?: string;
     source?: 'manual' | 'calendar';
-    isProcessed?: boolean;
 }
 
 export class DatabaseManager {
@@ -1085,162 +1144,383 @@ export class DatabaseManager {
         const today = new Date();
         today.setHours(9, 30, 0, 0);
 
-        const durationMs = 300000; // 5 min
+        const durationMs = 2520000; // 42 min
 
-        const summaryMarkdown = `# Overview
+        const summaryMarkdown = `# Meeting Overview
+ 
+            Discovery and demo call with **Alex Rivera** (VP of Sales, Vertex Solutions) exploring whether GoDojo's live AI coaching platform fits their 35-rep enterprise sales org. Alex has a Q3 deadline to cut rep ramp time after a difficult H1.
+            
+            ---
+            
+            # Key Points
+            
+            - 35-rep enterprise sales team, avg ramp 9–11 months, target under 6
+            - Budget confirmed (~$85K sales enablement line); sign-off above $75K requires CFO approval
+            - Previously evaluated two post-call analytics tools — both rejected for being too slow to change rep behavior
+            - GoDojo's live coaching overlay was the standout moment — "exactly what we've been missing"
+            - 3-week pilot with 5 reps agreed before full expansion decision
+            - Open items: CFO engagement, CRM integration scoping, data residency for international reps
+            
+            ---
+            
+            # Action Items
+            
+            - [ ] **AE**: Send pilot agreement and onboarding checklist by EOD Friday
+            - [ ] **AE**: Prepare ROI model for CFO review before pilot ends
+            - [ ] **Alex**: Nominate 5 pilot reps and share team Slack channel
+            - [ ] **AE**: Book technical setup call with Alex and RevOps lead next week
+            - [ ] **AE**: Send security overview and data processing agreement`;
 
-Natively is a real-time AI meeting assistant designed to help you stay focused, informed, and fast-moving during calls. Get live insights while you speak, instant answers to questions, and structured notes after every meeting.
-
-# Getting Started
-
-### Start a Session
-Click **Start Session** from the dashboard.
-Join a scheduled meeting and start directly from the meeting notification.
-
-### During a Meeting
-- Use the **five quick action buttons** for real-time assistance
-- Show or hide Natively at any time:
-  - **Mac**: Cmd + B
-  - **Windows**: Ctrl + B
-- Move the widget anywhere on your screen by hovering over the top pill and dragging
-
-# Main Features
-
-## Five Quick Action Buttons
-- **What to answer**: Instantly generates a context-aware response to the current topic.
-- **Clarify**: Asks a targeted, senior-level clarifying question to establish constraints.
-- **Recap**: Generates a comprehensive summary of the conversation so far.
-- **Follow Up Question**: Suggests strategic questions you can ask to drive the conversation.
-- **Answer**: Manually trigger a response or use voice input to ask specific questions.
-
-## Meeting Insights (Launcher)
-- **Smart Note Taking**: Automatically captures key points, action items, and structured summaries.
-- **Summary**: A concise high-level brief of the entire meeting.
-- **Transcript**: Full real-time speech-to-text transcript, available during and after the call.
-- **Usage**: Track your interaction history and see how Natively assisted you.
-
-## Live Insights
-Click **Live Insights** during a call to view:
-- Real-time questions and prompts
-- Detected keywords and topics
-- Context-aware suggestions based on the conversation
-- Click any insight to get an instant response.
-
-## AI Chat
-- Type your question and press **Enter** or click **Submit**
-- Enable **Smart Mode** for advanced reasoning and coding assistance
-
-## Screenshots
-- **Full Screen Screenshot**: Cmd + H
-- **Selective Screenshot**: Cmd + Shift + H
-
-# Making the Most of Natively
-
-### Custom Context
-Upload resumes, project briefs, sales scripts, or other documents to tailor responses to your workflow. (coming soon).
-
-### Language Preferences
-Go to **Settings → Language Preferences** to:
-- Change input and output language
-- Enable real-time translation during calls
-
-### Undetectability
-Unlock the **Undetectability** add-on to keep Natively invisible during screen sharing.
-
-# Interface Basics
-
-- **Dashboard**: Start meetings and view recent activity
-- **Start Session**: Begin a new meeting instantly
-- **Settings**: Configure API keys, language, and visibility
-- **History**: Review past meetings, notes, and transcripts
-
-# API Setup
-
-1. Open **Settings**
-2. Scroll to **Credentials**
-3. Add your API keys:
-   - **Gemini**
-   - **Groq**
-4. To enable real-time transcription, select the location of your **Google Cloud service account JSON file**.
-
-If you don’t already have one, follow the steps below to create it.
-
-# Creating a Google Speech-to-Text Service Account
-
-## 1. Create or Select a Project
-- Open **Google Cloud Console**
-- Create a new project or select an existing one
-- Ensure billing is enabled
-
-## 2. Enable Speech-to-Text API
-- Go to **APIs & Services → Library**
-- Enable **Speech-to-Text API**
-
-## 3. Create a Service Account
-- Navigate to **IAM & Admin → Service Accounts**
-- Click **Create Service Account**
-- **Name**: natively-stt
-- **Description**: optional
-
-## 4. Assign Permissions
-- Grant the following role: **Speech-to-Text User** (\`roles/speech.client\`)
-
-## 5. Create a JSON Key
-- Open the service account
-- Go to **Keys → Add Key → Create new key**
-- Select **JSON**
-- Download the file
-
-**Once downloaded, return to Settings → Credentials in Natively and select this file to complete setup.**
-
-# Free Google Cloud Credit (New Users)
-
-New Google Cloud accounts receive **$300 in free credits**, valid for 90 days.
-
-To activate:
-1. Visit [cloud.google.com](https://cloud.google.com)
-2. Click **Get started for free**
-3. Sign in with a Google account
-4. Add billing details (card required)
-5. Activate the free trial
-
-The credit can be used for Speech-to-Text and is sufficient for extended testing and regular usage.
-
-# Support
-
-If you need help with setup or usage, contact us anytime at:
-natively.contact@gmail.com`;
+        const demoLiveAnalysis: LiveAnalysisData = {
+            bant: {
+                budget: {
+                    emoji: '✅',
+                    status: 'confirmed',
+                    evidence: 'Alex confirmed ~$85K allocated under sales enablement. Sign-off above $75K needs CFO approval.',
+                    suggested_question: 'Is the $85K approved for annual recurring spend, or a one-time budget line?'
+                },
+                authority: {
+                    emoji: '⚠️',
+                    status: 'partial',
+                    evidence: 'Alex (VP Sales) is the champion, but CFO holds final sign-off above $75K and was not on this call.',
+                    suggested_question: 'What does the CFO typically need to approve a new vendor at this level?'
+                },
+                need: {
+                    emoji: '✅',
+                    status: 'confirmed',
+                    evidence: 'Rep ramp of 9–11 months is the core pain. Two reps lost in H1 who never hit quota.',
+                    suggested_question: ''
+                },
+                timeline: {
+                    emoji: '✅',
+                    status: 'confirmed',
+                    evidence: 'Hard Q3 deadline to show enablement progress to the CRO.',
+                    suggested_question: 'What needs to happen internally to get a PO approved before Q3 close?'
+                }
+            },
+            meddic: {
+                metrics: {
+                    emoji: '✅',
+                    status: 'confirmed',
+                    evidence: 'Reduce ramp from 9–11 months to under 6. Improve new-rep close rate by 15% within 90 days.',
+                    suggested_question: ''
+                },
+                economic_buyer: {
+                    emoji: '⚠️',
+                    status: 'partial',
+                    evidence: `CFO holds final approval above $75K. Alex has not yet briefed them. Described as data-driven and skeptical.`,
+                    suggested_question: `Would it help to include the CFO in a brief intro before the pilot, so they're not reviewing results cold?`
+                },
+                decision_criteria: {
+                    emoji: '✅',
+                    status: 'confirmed',
+                    evidence: 'Must-haves: live in-call coaching, CRM integration, measurable ramp improvement, SOC 2 compliance.',
+                    suggested_question: ''
+                },
+                decision_process: {
+                    emoji: '⚠️',
+                    status: 'partial',
+                    evidence: 'Alex runs the pilot and presents results to CFO. Legal/InfoSec review required. Internal timeline unclear.',
+                    suggested_question: 'How long does InfoSec review take, and what can we prepare in advance?'
+                },
+                identify_pain: {
+                    emoji: '✅',
+                    status: 'confirmed',
+                    evidence: 'Three pains: slow ramp, inconsistent discovery quality, deal slippage from missed objections.',
+                    suggested_question: ''
+                },
+                champion: {
+                    emoji: '⚠️',
+                    status: 'partial',
+                    evidence: `Alex is engaged but said "I'll let the pilot results speak for themselves" — not yet committed to selling internally.`,
+                    suggested_question: `Beyond the pilot data, what would you need to feel confident recommending this to the CFO?`
+                },
+                competition: {
+                    emoji: '✅',
+                    status: 'confirmed',
+                    evidence: 'Two post-call analytics tools evaluated and rejected last year for being too slow. GoDojo is the only live tool in consideration.',
+                    suggested_question: ''
+                }
+            },
+            objections: [
+                {
+                    type: 'customer_question',
+                    quote: "How do we know reps will actually use it and not ignore it like other tools?",
+                    owner: 'customer',
+                    status: 'open'
+                },
+                {
+                    type: 'ae_deferral',
+                    quote: "Does it integrate with our CRM? We have a heavily customized setup.",
+                    owner: 'customer',
+                    status: 'deferred'
+                },
+                {
+                    type: 'customer_question',
+                    quote: "What happens to call recordings for our international reps — we have data residency requirements.",
+                    owner: 'customer',
+                    status: 'open'
+                }
+            ],
+            signals: [
+                {
+                    quote: "That live overlay — that's exactly what we've been missing. Post-call feedback is too late.",
+                    signal_type: ['buying_signal', 'pain_confirmation'],
+                    ask_now: "What would the ideal outcome look like for your reps in the first month?",
+                    intensity: 'high',
+                    category: 'positive'
+                },
+                {
+                    quote: "I'd want to see it handle a complex deal with multiple stakeholders before I take this to the CFO.",
+                    signal_type: ['pilot_interest', 'champion_building'],
+                    ask_now: "What does a complex deal look like for your team — multi-threaded, long cycle?",
+                    intensity: 'high',
+                    category: 'positive'
+                },
+                {
+                    quote: "We've been burned before by tools that looked great in a demo and fell apart in production.",
+                    signal_type: ['risk_concern', 'objection'],
+                    ask_now: "Can I share a few case studies from similar teams so you can hear it directly from them?",
+                    intensity: 'medium',
+                    category: 'negative'
+                },
+                {
+                    quote: "The CFO will want an ROI number — they don't approve anything without it.",
+                    signal_type: ['economic_buyer_signal', 'next_step_hint'],
+                    ask_now: "Let's build that together — if we reduce ramp by 3 months, what's the revenue impact per rep?",
+                    intensity: 'high',
+                    category: 'neutral'
+                }
+            ]
+        };
 
         const demoMeeting: Meeting = {
             id: demoId,
-            title: "Natively Demo & Guide",
+            title: "Vertex Solutions — GoDojo Discovery & Demo",
             date: today.toISOString(),
-            duration: "5:00",
-            summary: "Complete guide to using Natively - your real-time AI meeting assistant.",
+            duration: "42:00",
+            summary: "Discovery call with Alex Rivera (VP Sales, Vertex Solutions). Strong signals on live coaching need and rep ramp pain. Budget confirmed, but CFO sign-off required above $75K. 3-week pilot with 5 reps agreed. Key gap: Alex not yet championing internally.",
             detailedSummary: {
                 overview: summaryMarkdown,
-                actionItems: [],
-                keyPoints: []
+
+                dealStatus: {
+                    stage: "Demo",
+                    summary: "Pilot agreed with 5 reps over 3 weeks; expansion decision pending CFO review of pilot results."
+                },
+
+                bant: {
+                    budget: { status: "Clear", detail: "~$85K confirmed under sales enablement. CFO approval required above $75K." },
+                    authority: { status: "Partial", detail: "Alex (VP Sales) is champion but CFO holds final sign-off. CFO was not on this call." },
+                    need: { status: "Clear", detail: "Rep ramp 9–11 months is critical pain. Two reps lost in H1 who never hit quota." },
+                    timeline: { status: "Clear", detail: "Q3 hard deadline to show CRO enablement progress. Pilot must close before Q3 end." }
+                },
+
+                meddicc: {
+                    metrics: { status: "Clear", detail: "Reduce ramp to under 6 months. 15% close rate improvement within 90 days. ~$270K/rep in recoverable revenue per 3 months of ramp saved." },
+                    economicBuyer: { status: "Partial", detail: "CFO holds approval above $75K. Not yet briefed. Needs ROI data, security docs, peer reference." },
+                    decisionCriteria: { status: "Clear", detail: "Live in-call coaching, CRM integration, measurable ramp improvement within pilot, SOC 2 compliance." },
+                    decisionProcess: { status: "Partial", detail: "Alex runs pilot, presents to CFO. Legal/InfoSec review before contract. Internal timeline not yet mapped." },
+                    identifyPain: { status: "Clear", detail: "Slow ramp, inconsistent discovery quality, deal slippage from objections reps miss in real time." },
+                    champion: { status: "Partial", detail: "Alex engaged but not yet committed to selling internally. 'I'll let the pilot results speak for themselves.'" },
+                    competition: { status: "Clear", detail: "Two post-call analytics tools rejected last year — too slow. GoDojo is the only live coaching tool in consideration." },
+                    gaps: [
+                        "Economic Buyer: CFO not engaged — their approval criteria and process unknown",
+                        "Decision Process: InfoSec/Legal timeline not mapped",
+                        "Champion: Alex has not committed to internally advocating for GoDojo"
+                    ]
+                },
+
+                followUpEmail: {
+                    subject: "Vertex Solutions Pilot — Next Steps & ROI Model",
+                    sections: {
+                        whatWeDiscussed: [
+                            "35-rep enterprise team averaging 9–11 months to ramp — two reps lost in H1 who never hit quota",
+                            "Previous tools evaluated but rejected for being post-call only; need is live, in-call coaching",
+                            "Agreed on a 3-week pilot with 5 reps before CFO expansion review"
+                        ],
+                        whatIsTheNeed: [
+                            "Rep ramp must drop from 9–11 months to under 6 — Q3 CRO priority",
+                            "Coaching bandwidth is the constraint — managers can't review calls fast enough to change behavior"
+                        ],
+                        currentProcess: "Managers review recorded calls 2–3 days post-meeting and flag coaching gaps. By then reps have already repeated the same mistakes across multiple live deals.",
+                        scopeOfImprovement: [
+                            "~$270K in recoverable revenue per rep across 3 months of ramp saved (at ~$810K annual quota)",
+                            "Inconsistent discovery quality — no real-time floor on what gets asked or captured"
+                        ],
+                        howOurSolutionHelps: [
+                            "GoDojo surfaces coaching cues, BANT/MEDDIC gaps, and suggested questions to reps live during the call",
+                            "Scales the playbook of top reps to the entire team without extra manager time"
+                        ],
+                        expectedBusinessImpact: [
+                            "Ramp reduction from 9–11 months to under 6 within the first quarter of full deployment",
+                            "Estimated $2.7M annual revenue impact across 10 new hires per year"
+                        ],
+                        nextSteps: [
+                            "AE to send pilot agreement and onboarding checklist by EOD Friday",
+                            "Alex to nominate 5 pilot reps and share a Slack channel for the pilot",
+                            "Technical setup call with Alex and RevOps lead scheduled for early next week"
+                        ]
+                    },
+                    fullEmail: `Hi Alex,
+ 
+                        Good speaking with you today. Quick recap of where things stand:
+                        
+                        - Vertex is averaging 9–11 months to ramp — at current quota that's roughly $270K in recoverable revenue per rep if we close that gap by 3 months
+                        - The previous tools didn't move the needle because feedback came days after the call; GoDojo coaches reps live, in the moment
+                        - We agreed on a 3-week pilot with 5 reps before bringing the CFO into the expansion conversation
+                        
+                        Next steps:
+                        - I'll send the pilot agreement and onboarding checklist today
+                        - Can you nominate the 5 reps and share a Slack channel for the pilot team?
+                        - Let's book a 30-min setup call with your RevOps contact early next week
+                        
+                        I'll have an ROI model to you by Thursday so you're ready when the CFO asks for numbers.
+                        
+                        Looking forward to it.`
+                },
+
+                leadName: "Alex Rivera",
+                company: "Vertex Solutions",
+
+                salesCoachReview: {
+                    whatIDidRight: [
+                        "MEDDICC Identify Pain: Pushed past the surface — when Alex said ramp was too long, probed to find coaching bandwidth as the root cause and tied it to two lost reps in H1",
+                        "MEDDICC Competition: Surfaced previous tool evaluations early; used the rejection to anchor GoDojo's live-first differentiation",
+                        "MEDDICC Metrics: Built the ROI model live on the call — gave Alex a concrete number for the CFO without being prompted",
+                        "BANT Budget: Got the allocation amount and the $75K approval threshold on record, which shaped the pilot-first structure",
+                        "BANT Timeline: Anchored to the Q3 CRO deadline early — gave the pilot natural urgency"
+                    ],
+                    whatICouldHaveDoneBetter: [
+                        "Should have pushed on CFO involvement earlier — when Alex mentioned them at the $75K threshold, ask: 'Would it help to include the CFO in a brief intro call before the pilot, so they're not reviewing results cold?'",
+                        "Missed the chance to lock the decision process — when Alex said 'I'll let results speak for themselves,' ask: 'What does the internal approval process look like after the pilot readout?'"
+                    ],
+                    whatIMissedCompletely: [
+                        "Identify Champion: Alex never committed to selling this internally — never asked what they'd personally need to feel confident recommending it",
+                        "Metrics: Never asked what the CFO's success metrics are — Alex's and the CFO's definition of ROI may differ",
+                        "Authority: Never mapped who else is in the decision beyond Alex and the CFO — Legal, InfoSec, Procurement unknown",
+                        "Process: InfoSec/Legal review steps never scoped — no clarity on timeline or what they need upfront",
+                        "Pain: Never asked about international rep pain specifically — data residency concern was raised by Alex, not proactively explored"
+                    ]
+                },
+
+                nextCallPlaybook: {
+                    openingRecap: "Alex, we agreed on a 3-week pilot with 5 reps. Before we get into setup — let's make sure the pilot is designed to answer exactly what the CFO will ask, so the readout lands.",
+                    questionsToAsk: [
+                        "When you present pilot results to the CFO, what do they need to see to say yes?",
+                        "What would you personally need to feel confident recommending this internally?",
+                        "What does the approval process look like after the pilot — who else is in the room, and how long does InfoSec review take?",
+                        "For your international reps — are ramp challenges the same, or are there different dynamics to account for?",
+                        "What does the CFO track as leading indicators that sales enablement is working?"
+                    ],
+                    valueAndROI: {
+                        quantitative: [
+                            "~$270K recoverable revenue per rep across 3 months of ramp saved — ~$2.7M/year across 10 hires",
+                            "15% new-rep close rate improvement within 90 days is the stated pilot success threshold"
+                        ],
+                        qualitative: [
+                            "GoDojo scales top-rep playbooks to every call without adding manager overhead",
+                            "Pilot is designed to produce exactly the data the CFO needs — results, not promises"
+                        ]
+                    }
+                },
+
+                keyPoints: [
+                    "Vertex Solutions: 35-rep enterprise team, avg ramp 9–11 months, Q3 CRO pressure",
+                    "Budget ~$85K confirmed; CFO sign-off required above $75K — not on this call",
+                    "Post-call analytics tools rejected previously — live coaching is the gap",
+                    "3-week pilot with 5 reps agreed; pilot results gate CFO expansion conversation",
+                    "Open: CFO engagement, CRM integration scoping, InfoSec/Legal timeline, international data residency"
+                ],
+
+                actionItems: [
+                    "AE: Send pilot agreement and onboarding checklist by EOD Friday",
+                    "AE: Send ROI model to Alex by Thursday",
+                    "AE: Book technical setup call with Alex and RevOps lead early next week",
+                    "Alex: Nominate 5 pilot reps and share Slack channel",
+                    "AE: Send security overview and data processing agreement",
+                    "AE: Loop in Solutions Engineer for CRM integration scoping"
+                ],
+
+                speakerNames: {
+                    user: 'AE (You)',
+                    client: 'Alex Rivera'
+                },
+                liveAnalysis: demoLiveAnalysis
             },
             transcript: [
-                { speaker: 'interviewer', text: "Welcome to Natively! Let me show you how it works.", timestamp: 0 },
-                { speaker: 'user', text: "Thanks! I'm excited to try it out.", timestamp: 5000 },
-                { speaker: 'interviewer', text: "You have 5 quick action buttons. 'What to answer' listens to the conversation and suggests what you should say.", timestamp: 10000 },
-                { speaker: 'user', text: "That sounds helpful for interviews.", timestamp: 18000 },
-                { speaker: 'interviewer', text: "Check out the 'How to Use' section in the notes for API setup instructions.", timestamp: 20000 },
-                { speaker: 'interviewer', text: "'Clarify' asks a targeted question to get missing constraints. 'Recap' summarizes the entire conversation so far.", timestamp: 22000 },
-                { speaker: 'user', text: "What about the other buttons?", timestamp: 30000 },
-                { speaker: 'interviewer', text: "'Follow Up Questions' suggests questions you can ask. 'Answer' lets you speak a question and get an instant response.", timestamp: 35000 },
-                { speaker: 'user', text: "Can I take screenshots during calls?", timestamp: 45000 },
-                { speaker: 'interviewer', text: "Yes! Press Cmd+H for full screen or Cmd+Shift+H to select an area. The AI will analyze it and help you.", timestamp: 50000 },
-                { speaker: 'user', text: "How do I hide Natively during screen share?", timestamp: 60000 },
-                { speaker: 'interviewer', text: "Press Cmd+B to toggle visibility anytime. You can also enable undetectable mode in settings.", timestamp: 65000 },
-                { speaker: 'user', text: "This is amazing. What happens after the call?", timestamp: 75000 },
-                { speaker: 'interviewer', text: "You get detailed meeting notes with action items, key points, full transcript, and a log of all AI interactions.", timestamp: 80000 }
+                { speaker: 'user', text: "Alex, thanks for the time. Plan for today — first half understanding your team's situation, second half a live demo. Sound good?", timestamp: 0 },
+                { speaker: 'client', text: "Works for me. I'll be upfront — we've been on a lot of vendor calls lately. What caught my attention was the live coaching angle, not another post-call dashboard.", timestamp: 8000 },
+                { speaker: 'user', text: "Good, let's start there. Can you give me a quick picture of your sales team — size, structure, how H1 went?", timestamp: 20000 },
+                { speaker: 'client', text: "35 AEs total. Classic enterprise motion, deal cycles of 4 to 6 months, ACV in the $75K to $200K range. H1 was rough — missed plan by around 10%. The CRO is on me to fix ramp time and tighten up discovery quality.", timestamp: 30000 },
+                { speaker: 'user', text: "What does ramp look like for a new hire right now?", timestamp: 62000 },
+                { speaker: 'client', text: "Too long. Nine to eleven months before a rep consistently hits quota. We lost two in H1 who never got there. The cost of a failed ramp is real money.", timestamp: 70000 },
+                { speaker: 'user', text: "Is that a training problem, a coaching problem, or something else?", timestamp: 96000 },
+                { speaker: 'client', text: "Coaching bandwidth. My top reps are excellent but I can't clone them. Managers are stretched. We do call reviews but it's reactive — by the time we catch a bad habit, a rep has already blown three discovery calls.", timestamp: 104000 },
+                { speaker: 'user', text: "You mentioned you've evaluated tools before. What happened?", timestamp: 130000 },
+                { speaker: 'client', text: "Two full evals last year. Both strong on post-call analytics — managers loved the dashboards. But reps didn't change behavior. Insight came too late. A rep gets feedback three days after a call, it doesn't stick. We need something in the moment.", timestamp: 138000 },
+                { speaker: 'user', text: "That's exactly the gap we built around. Let me show you the live overlay.", timestamp: 170000 },
+                { speaker: 'client', text: "Let's see it.", timestamp: 178000 },
+                { speaker: 'user', text: "As the prospect speaks, the rep sees coaching cues, live BANT and MEDDIC tracking, and flagged signals — all in real time. If the prospect says 'we need to check with finance,' GoDojo surfaces a coaching note and a suggested question immediately. The rep doesn't have to remember the playbook.", timestamp: 184000 },
+                { speaker: 'client', text: "That live overlay — that's exactly what we've been missing. Post-call feedback is too late by the time a rep blows a discovery call. How does it know what's relevant — is it keyword matching?", timestamp: 236000 },
+                { speaker: 'user', text: "No — full conversation understanding. The model tracks the entire call context, your sales methodology, and the rep's profile. It's contextual reasoning, not pattern matching.", timestamp: 252000 },
+                { speaker: 'client', text: "Does it integrate with our CRM? We have a heavily customized setup — custom stages, custom fields.", timestamp: 270000 },
+                { speaker: 'user', text: "Yes, native CRM integration. Custom objects are supported. I'd bring in our solutions engineer to scope your specific instance during pilot setup.", timestamp: 282000 },
+                { speaker: 'client', text: "We also have international reps. What happens to call recordings — we have data residency requirements.", timestamp: 300000 },
+                { speaker: 'user', text: "We're SOC 2 Type II certified and offer regional data residency. I'll send our security overview and data processing agreement — that covers what your legal team will need.", timestamp: 314000 },
+                { speaker: 'client', text: "Good. Our CFO — they'll want to see that. They sign off on anything above $75K.", timestamp: 332000 },
+                { speaker: 'user', text: "Makes sense. What does the CFO typically need to get comfortable with a new vendor at this level?", timestamp: 348000 },
+                { speaker: 'client', text: "ROI data, security docs, and a peer reference. They don't move without numbers. I want to show them pilot results before I bring them in.", timestamp: 356000 },
+                { speaker: 'user', text: "Smart approach. Let's design the pilot to produce exactly what you need for that conversation. What would meaningful results look like in a 3-week window?", timestamp: 372000 },
+                { speaker: 'client', text: "Reps doing better discovery — asking the right questions, catching buying signals — and ideally a couple of deals moving faster through the funnel.", timestamp: 384000 },
+                { speaker: 'user', text: "I'd suggest 5 reps — mix of newer hires and experienced ones for a natural comparison. Three weeks, live coaching enabled, and I'll put together a rep-level readout you can take directly to the CFO.", timestamp: 408000 },
+                { speaker: 'client', text: "I'd want to see it handle a complex deal with 6 or 7 stakeholders before I take this to the CFO.", timestamp: 432000 },
+                { speaker: 'user', text: "Exactly where live coaching adds the most value — tracking each stakeholder's role, surfacing the right talk track per conversation. We can make sure at least one pilot rep is working a complex active deal.", timestamp: 442000 },
+                { speaker: 'client', text: "Alright. I think a pilot makes sense. How quickly can we be live?", timestamp: 476000 },
+                { speaker: 'user', text: "Five business days from signed agreement. I'll send the paperwork today and let's book a technical setup call with your RevOps contact early next week.", timestamp: 486000 },
+                { speaker: 'client', text: "The CFO is going to want an ROI number. They don't approve anything without it.", timestamp: 510000 },
+                { speaker: 'user', text: "Let's build it together. If ramp drops from 10 months to 6 and your reps are at $810K quota, what's the revenue impact per rep per year?", timestamp: 520000 },
+                { speaker: 'client', text: "Meaningful. Four months of lost ramp at that quota is around $270K per rep. Across 10 hires a year, that's significant.", timestamp: 534000 },
+                { speaker: 'user', text: "Exactly. I'll model that out and have a draft to you by Thursday so you're ready when the CFO asks.", timestamp: 550000 },
+                { speaker: 'client', text: "We've been burned by tools before. Looked great in a demo, fell apart in production.", timestamp: 566000 },
+                { speaker: 'user', text: "Fair concern. That's why the pilot exists — we earn the right to full deployment through results. Let's define the success criteria in writing before we start, so you have a scorecard, not just our word.", timestamp: 576000 },
+                { speaker: 'client', text: "Good. Send me the pilot agreement and I'll get back to you by end of week.", timestamp: 600000 },
+                { speaker: 'user', text: "Will do. Everything in your inbox within the hour. Looking forward to it, Alex.", timestamp: 610000 }
             ],
             usage: [
-                { type: 'assist', timestamp: 15000, question: 'What features does Natively have?', answer: 'Natively offers 5 quick action buttons, screenshot analysis, real-time transcription, and comprehensive meeting notes.' },
-                { type: 'followup', timestamp: 40000, question: 'How do the action buttons work?', answer: 'Each button serves a specific purpose: suggest answers, clarify questions, recap conversations, generate follow-up questions, or get instant voice-to-answer responses.' }
+                {
+                    type: 'assist',
+                    timestamp: 104000,
+                    question: 'Prospect described a coaching bandwidth problem — what should I say?',
+                    answer: `Validate and bridge: "That's the core gap we hear from enterprise sales leaders — post-call coaching is reactive by design. What if the coaching happened live, so reps course-correct before the call ends?" This sets up the overlay demo naturally.`
+                },
+                {
+                    type: 'followup_questions',
+                    timestamp: 178000,
+                    items: [
+                        'When you picture your best rep on a discovery call, what do they do differently that you wish all your reps did?',
+                        'If we cut ramp time in half, how does that change your H2 forecast?',
+                        'Is the CFO involved in the evaluation, or do they only review at the end?',
+                        'Where in the ramp process do new reps tend to stall most often?'
+                    ]
+                },
+                {
+                    type: 'assist',
+                    timestamp: 332000,
+                    question: 'CFO needs to sign off above $75K — how do I handle this?',
+                    answer: `Don't work around the CFO — align on how to bring them in well. Ask: "What does the CFO need to see to get comfortable with a new vendor at this level?" Then offer to co-build the business case. Positions you as a partner, not a vendor avoiding the economic buyer.`
+                },
+                {
+                    type: 'chat',
+                    timestamp: 432000,
+                    question: 'Prospect is asking about multi-stakeholder deals — what are our strongest points here?',
+                    answer: `GoDojo tracks each stakeholder's role, concerns, and engagement across the deal thread. In multi-threaded deals it surfaces who hasn't been engaged recently and suggests targeted outreach angles. Leads to faster deal velocity on complex enterprise cycles.`
+                },
+                {
+                    type: 'assist',
+                    timestamp: 566000,
+                    question: `Prospect said they've been burned by tools before — how do I handle this?`,
+                    answer: `Acknowledge directly: "That's fair — the pilot exists exactly for this reason. We earn full deployment through results, not promises. Let's define success criteria in writing before we start so you have a clear scorecard — yours, not ours." Builds confidence and reduces perceived risk.`
+                }
             ],
             isProcessed: true
         };
