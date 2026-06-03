@@ -221,6 +221,12 @@ export class DeepgramStreamingSTT extends EventEmitter {
 
                     if (data.type === 'UtteranceEnd') {
                         console.log(`[DeepgramStreaming:${this.role}] UtteranceEnd`);
+                        // UtteranceEnd is a belt-and-suspenders flush. In practice it only
+                        // fires reliably on the user (mic) socket. On the client (system
+                        // audio) socket, VAD lockout restarts interrupt the stream before
+                        // Deepgram can send it. Since is_final windows already emit
+                        // isFinal:true directly (see below), _lastIsFinalText should normally
+                        // be empty here. This guard handles any edge case where it isn't.
                         if (this._lastIsFinalText) {
                             this.emit('transcript', {
                                 text: this._lastIsFinalText,
@@ -240,21 +246,43 @@ export class DeepgramStreamingSTT extends EventEmitter {
                     const transcript = data?.channel?.alternatives?.[0]?.transcript;
                     if (!transcript || transcript.trim() === '') return;
 
-                    const isSpeechFinal: boolean = data.speech_final === true;
                     const isWindowFinal: boolean = data.is_final === true;
 
-                    if (isSpeechFinal) {
+                    // Deepgram field semantics:
+                    //
+                    //   is_final=true    → Deepgram has committed this window's transcript;
+                    //                      it will not revise it. Arrives mid-utterance for
+                    //                      long speech, and always together with speech_final.
+                    //
+                    //   speech_final=true → Deepgram detected an endpoint (VAD/silence).
+                    //                       Always arrives together with is_final=true; never
+                    //                       arrives alone.
+                    //
+                    // Key insight from logs: on the CLIENT (system audio) socket, VAD lockout
+                    // restarts kill the audio stream mid-utterance, so Deepgram never sees the
+                    // closing silence → UtteranceEnd and speech_final never fire for client.
+                    // is_final=true DOES arrive (Deepgram commits the window regardless), so
+                    // it must be treated as the authoritative final signal for both sockets.
+                    //
+                    // Strategy:
+                    //   is_final=true  → emit isFinal:true immediately (stable, won't revise).
+                    //                    Also clear _lastIsFinalText since we've already emitted.
+                    //   interim only   → emit isFinal:false for live rolling display.
+                    //   UtteranceEnd   → flush _lastIsFinalText if somehow still set (safety net).
+
+                    if (isWindowFinal) {
+                        // Covers both speech_final+is_final and is_final-only cases.
+                        // The transcript is committed — emit as final immediately.
                         this._lastIsFinalText = '';
                         this._lastIsFinalConfidence = 1.0;
-                    } else if (isWindowFinal) {
-                        this._lastIsFinalText = transcript;
-                        this._lastIsFinalConfidence = data?.channel?.alternatives?.[0]?.confidence ?? 1.0;
+                        const confidence = data?.channel?.alternatives?.[0]?.confidence ?? 1.0;
                         this.emit('transcript', {
                             text: transcript,
-                            isFinal: false,
-                            confidence: this._lastIsFinalConfidence,
+                            isFinal: true,
+                            confidence,
                         });
                     } else {
+                        // Interim result — live display only, will be revised.
                         this.emit('transcript', {
                             text: transcript,
                             isFinal: false,

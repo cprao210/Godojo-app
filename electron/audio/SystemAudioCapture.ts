@@ -45,16 +45,21 @@ export class SystemAudioCapture extends EventEmitter {
     // Returns the actual PCM output rate after DSP decimation.
     // The Rust SilenceSuppressor decimates by 3x (48000 → 16000).
     // Deepgram must be configured with THIS rate, not the native hardware rate.
+    //
+    // IMPORTANT: returns 0 when the native rate is not yet known (monitor not started,
+    // or hardware hasn't reported a real value yet). The settle-poll in startMeeting()
+    // uses 0 as a sentinel to know the rate hasn't settled — do NOT fall back to 16000
+    // here, as that causes the poll to exit immediately at elapsed=0 before the hardware
+    // reports its real rate, resulting in a mis-configured Deepgram connection.
     public getOutputSampleRate(): number {
-        const native = this.getSampleRate();
-        if (this.monitor && typeof this.monitor.get_output_sample_rate === 'function') {
+        if (!this.monitor) return 0;
+        if (typeof this.monitor.get_output_sample_rate === 'function') {
             return this.monitor.get_output_sample_rate();
         }
-        // Fallback: infer from the known 3x decimation the Rust DSP applies at 48000Hz.
-        // If native is 16000Hz (some devices) no decimation is needed.
-        // Return 0 if monitor hasn't started yet so callers (poll in startMeeting)
-        // know the rate is not settled. Once started, native will be non-zero.
-        if (!this.monitor) return 0;
+        // Fallback: infer from the known 3x decimation at 48000 Hz.
+        // getSampleRate() returns 0 until CoreAudio/SCK reports the real rate — propagate that 0.
+        const native = this.monitor.getSampleRate?.() ?? 0;
+        if (native === 0) return 0;
         return native === 48000 ? 16000 : native;
     }
 
@@ -119,37 +124,39 @@ export class SystemAudioCapture extends EventEmitter {
 
             // VAD reset watchdog: if chunks stop flowing for >2s after DSP started,
             // the SilenceSuppressor has locked into suppression. Restart to reset VAD state.
-            const scheduleVadCheck = () => {
-                this._vadResetTimer = setTimeout(() => {
-                    this._vadResetTimer = null;
-                    if (!this.isRecording) return;
-                    const countSnapshot = this._chunkCount;
-                    this._vadInnerTimer = setTimeout(() => {
-                        this._vadInnerTimer = null;
-                        if (!this.isRecording) return; // BUG FIX: guard stale callback after stop()
-                        if (this._chunkCount === countSnapshot) {
-                            // No new chunks in 2s — VAD is suppressing. Restart capture.
-                            console.warn('[SystemAudioCapture] VAD lockout detected — restarting capture to reset state');
-                            try { this.monitor?.stop(); } catch { }
-                            this.isRecording = false;
-                            this._chunkCount = 0;
-                            setTimeout(() => {
-                                if (this._shouldBeRecording) {
-                                    this.start();
-                                }
-                            }, 150);
-                        } else {
-                            // VAD watchdog is only needed when WebRTC VAD is active.
-                            // With vad_disabled:true, lockout is impossible — skip the watchdog
-                            // entirely to prevent spurious restarts that break the Deepgram connection.
-                            if (!this._vadDisabled) {
+            // Only arm when VAD is active — with vadDisabled=true the Rust DSP is in
+            // passthrough mode and lockout is impossible. Running the watchdog anyway
+            // causes spurious restarts on an SCK stream that is intentionally silent
+            // (e.g. Screen Recording permission denied → zero-buffer PCM), which breaks
+            // the Deepgram WebSocket connection unnecessarily.
+            if (!this._vadDisabled) {
+                const scheduleVadCheck = () => {
+                    this._vadResetTimer = setTimeout(() => {
+                        this._vadResetTimer = null;
+                        if (!this.isRecording) return;
+                        const countSnapshot = this._chunkCount;
+                        this._vadInnerTimer = setTimeout(() => {
+                            this._vadInnerTimer = null;
+                            if (!this.isRecording) return; // BUG FIX: guard stale callback after stop()
+                            if (this._chunkCount === countSnapshot) {
+                                // No new chunks in 2s — VAD is suppressing. Restart capture.
+                                console.warn('[SystemAudioCapture] VAD lockout detected — restarting capture to reset state');
+                                try { this.monitor?.stop(); } catch { }
+                                this.isRecording = false;
+                                this._chunkCount = 0;
+                                setTimeout(() => {
+                                    if (this._shouldBeRecording) {
+                                        this.start();
+                                    }
+                                }, 150);
+                            } else {
                                 scheduleVadCheck();
                             }
-                        }
-                    }, 2000);
-                }, 3000); // First check at 3s after DSP init
-            };
-            scheduleVadCheck();
+                        }, 2000);
+                    }, 3000); // First check at 3s after DSP init
+                };
+                scheduleVadCheck();
+            }
 
             // getSampleRate MUST be called AFTER start() — background init updates
             // the atomic once SCK/CoreAudio initialises (~5-7s). Reading before start()

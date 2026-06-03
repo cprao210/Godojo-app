@@ -88,6 +88,46 @@ async function ensureMacMicrophoneAccess(context: string): Promise<boolean> {
   }
 }
 
+/**
+ * Checks whether Screen Recording access has been granted on macOS.
+ *
+ * ScreenCaptureKit (used by the Rust SystemAudioCapture for system audio) requires
+ * the Screen Recording entitlement. Unlike the microphone, macOS does NOT provide an
+ * API to programmatically prompt for screen-recording access — the user must grant it
+ * manually in System Settings → Privacy & Security → Screen Recording.
+ *
+ * If this permission is missing, SCK silently delivers all-zero PCM buffers with no
+ * error callback. This is indistinguishable from AEC suppression in the logs, making
+ * it a difficult silent failure to diagnose. This check surfaces it explicitly.
+ *
+ * Returns true if granted (or on non-macOS). Returns false and opens System Settings
+ * if not granted, so the user can act immediately.
+ */
+async function ensureMacScreenRecordingAccess(context: string): Promise<boolean> {
+  if (process.platform !== 'darwin') return true;
+
+  try {
+    const status = systemPreferences.getMediaAccessStatus('screen');
+    console.log(`[Main] macOS screen recording permission before ${context}: ${status}`);
+
+    if (status === 'granted') return true;
+
+    // Cannot programmatically request screen recording — open System Settings directly.
+    console.warn(
+      `[Main] Screen Recording permission is "${status}". ` +
+      'Opening System Settings so the user can grant access.'
+    );
+    shell.openExternal(
+      'x-apple.systempreferences:com.apple.preference.security?Privacy_ScreenCapture'
+    );
+    return false;
+  } catch (error) {
+    console.error(`[Main] Failed to check macOS screen recording permission during ${context}:`, error);
+    // Fail open — don't block the meeting if we can't determine the permission state.
+    return true;
+  }
+}
+
 console.log = (...args: any[]) => {
   const msg = args.map(a => (a instanceof Error) ? a.stack || a.message : (typeof a === 'object' ? JSON.stringify(a) : String(a))).join(' ');
   logToFile('[LOG] ' + msg);
@@ -926,6 +966,8 @@ export class AppState {
   }
 
   private setupSystemAudioPipeline(inputDeviceId?: string, outputDeviceId?: string): void {
+    // REMOVED EARLY RETURN: if (this.systemAudioCapture && this.microphoneCapture) return; // Already initialized
+
     try {
       // 1. Initialize Captures if missing.
       // If they already exist (e.g. from reconfigureAudio) they are already
@@ -933,6 +975,7 @@ export class AppState {
 
       if (!this.systemAudioCapture) {
         this.systemAudioCapture = new SystemAudioCapture();
+        // Wire Capture -> STT
         this.systemAudioCapture.on('data', (chunk: Buffer) => {
           this.googleSTT?.write(chunk);
         });
@@ -942,6 +985,7 @@ export class AppState {
         this.systemAudioCapture.on('error', (err: Error) => {
           console.error('[Main] SystemAudioCapture Error:', err);
         });
+        // Re-sync STT sample rate when the native hardware rate is discovered post-start
         this.systemAudioCapture.on('sample-rate-detected', (rate: number) => {
           console.log(`[Main] System audio true rate detected: ${rate}Hz — resyncing STT`);
           this.googleSTT?.setSampleRate(rate);
@@ -950,8 +994,13 @@ export class AppState {
 
       if (!this.microphoneCapture) {
         // Determine whether to disable local VAD based on device selection.
+        // MUST be computed BEFORE the constructor — MicrophoneCapture uses eager init,
+        // meaning the Rust monitor (and its CoreAudio input session) is opened inside
+        // new MicrophoneCapture(). Creating a throwaway instance first and overwriting it
+        // leaks the first Rust monitor, leaving two concurrent CoreAudio input sessions
+        // open. macOS responds by escalating AEC on the built-in device, which cancels
+        // the ScreenCaptureKit system-audio stream before it reaches Deepgram.
         const disableMicVad = this._shouldDisableMicVad(inputDeviceId, outputDeviceId);
-
         this.microphoneCapture = new MicrophoneCapture(undefined, { vadDisabled: disableMicVad });
         this.microphoneCapture.on('data', (chunk: Buffer) => {
           this.googleSTT_User?.write(chunk);
@@ -968,10 +1017,11 @@ export class AppState {
         });
       }
 
-      // 2. Initialize STT Services if missing.
+      // 2. Initialize STT Services if missing
       if (!this.googleSTT) {
         this.googleSTT = this.createSTTProvider('client');
       }
+
       if (!this.googleSTT_User) {
         this.googleSTT_User = this.createSTTProvider('user');
       }
@@ -989,6 +1039,7 @@ export class AppState {
       this.googleSTT_User?.setAudioChannelCount?.(1);
 
       if (this._verboseLogging) console.log('[Main] Full Audio Pipeline (System + Mic) Initialized (Ready)');
+
     } catch (err) {
       console.error('[Main] Failed to setup System Audio Pipeline:', err);
     }
@@ -1227,6 +1278,20 @@ export class AppState {
       const message = 'Microphone access denied. Please allow microphone access in System Settings.';
       this.broadcast('meeting-audio-error', message);
       throw new Error(message);
+    }
+
+    // Screen Recording is required for ScreenCaptureKit (system audio capture).
+    // Without it, SCK silently delivers zero-buffer PCM — system audio will be missing
+    // from the transcript. This does NOT block the meeting; the user can still join
+    // with microphone-only audio, but we surface the issue immediately so they can fix it.
+    if (!(await ensureMacScreenRecordingAccess('meeting start'))) {
+      const message =
+        'Screen Recording access is required to capture system audio (remote participant voice). ' +
+        'System Settings has been opened — please enable Screen Recording for this app, ' +
+        'then restart the meeting.';
+      this.broadcast('meeting-audio-warning', message);
+      console.warn('[Main] Screen Recording denied — system audio will be silent this meeting.');
+      // Intentionally not throwing — meeting proceeds with microphone-only capture.
     }
 
     this.isMeetingActive = true;

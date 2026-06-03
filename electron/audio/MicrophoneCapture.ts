@@ -86,15 +86,21 @@ export class MicrophoneCapture extends EventEmitter {
             console.log(`[MicrophoneCapture] Real native rate: ${nativeRate}`);
             return nativeRate;
         }
-        return 48000; // Safe default for most modern mics before native initialization
+        // Return 0 (not 48000) when the monitor hasn't reported a real rate yet.
+        // Callers that use the result as a sentinel (settle-poll in startMeeting) need 0
+        // to know the rate is unsettled. Returning 48000 here caused the poll to compute
+        // 16000 via fallback math and exit immediately before the hardware was ready.
+        return 0;
     }
 
     public getOutputSampleRate(): number {
-        const native = this.getSampleRate();
-        if (this.monitor && typeof this.monitor.get_output_sample_rate === 'function') {
+        if (!this.monitor) return 0;
+        if (typeof this.monitor.get_output_sample_rate === 'function') {
             return this.monitor.get_output_sample_rate();
         }
-        if (!this.monitor) return 0;
+        // getSampleRate() now returns 0 when unsettled — propagate that sentinel.
+        const native = this.monitor.getSampleRate?.() ?? 0;
+        if (native === 0) return 0;
         return native === 48000 ? 16000 : native;
     }
 
