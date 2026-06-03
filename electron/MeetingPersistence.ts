@@ -353,7 +353,6 @@ export class MeetingPersistence {
 
         const appState = AppState.getInstance();
         const liveAnalysisData = appState?.getCurrentLiveAnalysis?.() || null;
-        // const companyIntel = appState?.getCurrentCompanyIntel?.() || null;
         console.log('[MeetingPersistence] Retrieved liveAnalysisData:', !!liveAnalysisData);
         if (liveAnalysisData) {
             console.log('[MeetingPersistence] Live analysis keys:', Object.keys(liveAnalysisData));
@@ -367,6 +366,9 @@ export class MeetingPersistence {
             durationMs: durationMs,
             context: this.session.getFullSessionContext()
         };
+
+        // console.log("==> this.session.getFullSessionContext(): ", this.session.getFullSessionContext());
+        // console.log("==> this.session.getFullTranscript(): ", this.session.getFullTranscript());
 
         // BUG-04 fix: snapshot metadata BEFORE reset() clears it so the
         // background processAndSaveMeeting worker receives the calendar info.

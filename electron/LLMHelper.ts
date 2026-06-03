@@ -934,8 +934,8 @@ export class LLMHelper {
       }
 
       // if (!isClaudeActive && !isOpenAiActive) {
-      console.log("GEMINI (ANALYSIS) : ", combinedMessages.gemini);
-      console.log("GROQ (ANALYSIS) : ", combinedMessages.groq);
+      // console.log("GEMINI (ANALYSIS) : ", combinedMessages.gemini);
+      // console.log("GROQ (ANALYSIS) : ", combinedMessages.groq);
       // }
 
       // System prompts for OpenAI/Claude (skipped if skipSystemPrompt)
