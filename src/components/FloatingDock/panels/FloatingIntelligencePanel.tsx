@@ -3,6 +3,7 @@ import { motion, AnimatePresence } from 'framer-motion';
 import { Radio, RefreshCw, Clock, ChevronDown } from 'lucide-react';
 import { LiveAnalysisContent } from '../../LiveAnalysisContent';
 import { LiveAnalysisData } from '../../../types/liveAnalysis';
+import { DealHealthScore } from '../../DealHealthScore';
 
 const AUTO_REFRESH_OPTIONS = [
     { label: '5-min', value: 5 },
@@ -348,6 +349,11 @@ export const FloatingIntelligencePanel: React.FC<FloatingIntelligencePanelProps>
                         </div>
                     )}
                 </div>
+            )}
+
+            {/* Deal Health Score — visible when live analysis data is present */}
+            {displayData && !isLoading && (
+                <DealHealthScore analysisData={displayData} isRefreshRun={isRefreshRun} />
             )}
 
             {/* Content */}
