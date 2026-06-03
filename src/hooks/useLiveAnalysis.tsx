@@ -531,11 +531,11 @@ export const useLiveAnalysis = (
 
       if (!priorState) {
         setIsRefreshRun(false);
-        // ── FIRST RUN: full prospect-only transcript, derive everything from scratch ──
+        // ── FIRST RUN: full CLIENT-only transcript, derive everything from scratch ──
         // We still include SALES PERSON turns as labelled lines so the LLM has call context
         // for objection/AE-deferral detection, but BANT/MEDDIC signal extraction
         // is scoped to prospect lines via the prompt instruction.
-        const firstRunContext = humanTurns.map(t => {
+        const firstRunContext = humanTurns.filter(t => t.speaker !== 'user').map(t => {
           const role = t.speaker === 'user' ? 'SALES PERSON' : 'CLIENT';
           const name = t.displayName && t.displayName !== "Them" && t.displayName !== "Me" ? ` (${t.displayName})` : '';
           return `${role}${name}: ${t.text}`;
