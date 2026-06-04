@@ -1,3 +1,4 @@
+import { LogEntry } from "../lib/logger/types"
 import { LiveAnalysisData } from "./liveAnalysis"
 
 export interface ElectronAPI {
@@ -28,6 +29,11 @@ export interface ElectronAPI {
   onDebugStart: (callback: () => void) => () => void
   onDebugSuccess: (callback: (data: any) => void) => () => void
   onSolutionError: (callback: (error: string) => void) => () => void
+  debugGetBackendLogs: () => Promise<LogEntry[]>;
+  debugClearBackendLogs: () => Promise<void>;
+  onBackendLogsPush: (
+    callback: (entries: LogEntry[]) => void
+  ) => () => void;
   onProcessingNoScreenshots: (callback: () => void) => () => void
   onProblemExtracted: (callback: (data: any) => void) => () => void
   onSolutionSuccess: (callback: (data: any) => void) => () => void

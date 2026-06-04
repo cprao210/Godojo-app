@@ -13,8 +13,14 @@ import { searchCompany, buildCompanyContextBlock, clearCompanyCache } from "./se
 
 import { RECOGNITION_LANGUAGES, AI_RESPONSE_LANGUAGES } from "./config/languages"
 import { LiveAnalysisData } from "../src/types/liveAnalysis";
+import { backendLogger } from './logger/backend.logger';
 
 export function initializeIpcHandlers(appState: AppState): void {
+
+  if (process.env.NODE_ENV === 'development') {
+    backendLogger.registerIpcHandlers();
+  }
+
   const safeHandle = (channel: string, listener: (event: any, ...args: any[]) => Promise<any> | any) => {
     ipcMain.removeHandler(channel);
     ipcMain.handle(channel, listener);

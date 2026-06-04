@@ -1,10 +1,13 @@
 import React, { useState } from 'react';
 import { motion } from 'framer-motion';
-import { Settings, AlignLeft, Camera, Eye, Cpu, MousePointerClick, Layers } from 'lucide-react';
+import { Settings, AlignLeft, Camera, Eye, Cpu, MousePointerClick, Layers, Bug } from 'lucide-react';
 import { ShortcutConfig } from '../../../hooks/useShortcuts';
 import { ModelSelector } from '../../ui/ModelSelector';
 import { OVERLAY_OPACITY_MIN } from '../../../lib/overlayAppearance';
 import { isMac } from '../../../utils/platformUtils';
+
+// ── Shared debug open/close state (same singleton used by DebugToggleFAB) ────
+const IS_DEV = import.meta.env.DEV;
 
 interface AnimatedToggleProps {
     value: boolean;
@@ -145,6 +148,9 @@ export const FloatingSettingsPanel: React.FC<FloatingSettingsPanelProps> = ({
     const screenshotKeys = shortcuts.takeScreenshot?.length ? shortcuts.takeScreenshot : buildSettingsFallback('takeScreenshot');
     const showHideKeys = shortcuts.toggleVisibility?.length ? shortcuts.toggleVisibility : buildSettingsFallback('toggleVisibility');
     const showClickThroughKeys = shortcuts.toggleMousePassthrough?.length ? shortcuts.toggleMousePassthrough : buildSettingsFallback('toggleMousePassthrough');
+    const showDebugKeys = isMac ? ['⌘', '⇧', 'D'] : ['Ctrl', 'Shift', 'D']
+
+    // const DEBUG_SHORTCUT = isMac ? '⌘ + ⇧ + D' : 'Ctrl + Shift + D';
 
     React.useEffect(() => {
         setLocalOpacity(dockOpacity);
@@ -274,6 +280,15 @@ export const FloatingSettingsPanel: React.FC<FloatingSettingsPanelProps> = ({
                 <SettingRow icon={<MousePointerClick size={18} strokeWidth={1.8} />} label="Click-Through">
                     <KeyBadge keys={showClickThroughKeys} />
                 </SettingRow>
+
+                {IS_DEV &&
+                    <>
+                        <div style={{ height: 1, background: 'rgba(255,255,255,0.05)', margin: '0 20px' }} />
+                        <SettingRow icon={<Bug size={18} strokeWidth={1.8} />} label="Debug Console" divider>
+                            <KeyBadge keys={showDebugKeys} />
+                        </SettingRow>
+
+                    </>}
 
             </div>
         </div>

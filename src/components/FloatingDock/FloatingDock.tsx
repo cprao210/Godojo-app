@@ -60,7 +60,7 @@ export const FloatingDock: React.FC<FloatingDockProps> = ({
     onSelectModel,
     speakerNames,
     shortcuts,
-    overlayPanelClass
+    overlayPanelClass,
 }) => {
     const [activePanel, setActivePanel] = useState<ActivePanel>(null);
     const [isFrozen, setIsFrozen] = useState(false);
@@ -133,13 +133,12 @@ export const FloatingDock: React.FC<FloatingDockProps> = ({
         setIsFrozen(prev => !prev);
     };
 
-
     return (
         <>
 
             <motion.div
                 ref={constraintsRef}
-                className={`relative w-[480px] mx-auto h-fit bg-transparent max-w-full rounded-2xl items-center flex flex-col min-h-0 ${overlayPanelClass}`}
+                className={`relative w-[880px] mx-auto h-fit bg-transparent max-w-full rounded-2xl items-center flex flex-col min-h-0 ${overlayPanelClass}`}
                 style={{ height: '720px' }}
             >
 
@@ -152,7 +151,7 @@ export const FloatingDock: React.FC<FloatingDockProps> = ({
                             animate={{ opacity: dockOpacity, y: 0, scale: 1 }}
                             exit={{ opacity: 0, y: 12, scale: 0.97 }}
                             transition={{ type: 'spring', damping: 28, stiffness: 380, mass: 0.8 }}
-                            className="fixed bottom-[90px] left-[65px]"
+                            className="fixed bottom-[90px] left-[35px]"
                             style={{ position: 'fixed' }}
                         >
                             {/* Freeze overlay — keeps panel visible but blocks all interaction */}
@@ -204,16 +203,18 @@ export const FloatingDock: React.FC<FloatingDockProps> = ({
                                     onDockOpacityChange={handleDockOpacityChange}
                                 />
                             )}
+
                         </motion.div>
                     )}
                 </AnimatePresence>
+
 
                 <motion.div
                     initial={{ opacity: 0, y: 30 }}
                     animate={{ opacity: 1, y: 0 }}
                     transition={{ type: 'spring', damping: 26, stiffness: 300 }}
                     className="fixed pointer-events-auto"
-                    style={{ bottom: 10 }}
+                    style={{ left: 35, bottom: 10 }}
                 >
                     {/* The Dock */}
                     <motion.div
@@ -336,6 +337,7 @@ export const FloatingDock: React.FC<FloatingDockProps> = ({
                         </motion.div>
                     </motion.div>
                 </motion.div>
+
 
             </motion.div>
         </>

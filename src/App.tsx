@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from "react" // forcing refresh
+import React, { useState, useEffect, useCallback } from "react" // forcing refresh
 import { QueryClient, QueryClientProvider } from "react-query"
 import { ToastProvider, ToastViewport } from "./components/ui/toast"
 import NativelyInterface from "./components/NativelyInterface"
@@ -25,6 +25,8 @@ import { ErrorBoundary } from "./components/ErrorBoundary"
 import { SignIn } from "./_pages/SignIn"
 import { subscribeAuthState, signOut as fbSignOut } from "./lib/firebase"
 import type { User } from "firebase/auth"
+import { logger } from './lib/logger/frontend.logger';
+import { DebugConsole, DebugToggleFAB } from './components/DebugConsole';
 
 const queryClient = new QueryClient()
 
@@ -54,6 +56,10 @@ const App: React.FC = () => {
     // Let's protect initialization to ensure single run per window.
     // The service handles single-init, but let's be thoughtful about WHICH window tracks "App Open".
     // Launcher is the main entry. Overlay is the "Assistant".
+
+    if (import.meta.env.DEV) {
+      logger.interceptConsole();
+    }
 
     analytics.initAnalytics();
 
@@ -135,6 +141,61 @@ const App: React.FC = () => {
   // Profile state for ad targeting
   const [hasProfile, setHasProfile] = useState(false);
   const [isLauncherMainView, setIsLauncherMainView] = useState(true);
+
+  // Sync debug open state with the window-level singleton (used by FloatingDock settings toggle)
+  const [isDebugOpen, setIsDebugOpen] = useState(() => {
+    const w = window as any;
+    return w.__debugStore?.isOpen ?? false;
+  });
+
+  // Always mutate the store AND notify all listeners (including this component).
+  // Never call setIsDebugOpen directly — that diverges the store from React state
+  // and causes the keyboard shortcut to mis-toggle on the very next press.
+  const setDebugOpen = useCallback((next: boolean) => {
+    const w = window as any;
+    if (!w.__debugStore) w.__debugStore = { isOpen: false, listeners: new Set() };
+    const store = w.__debugStore;
+    store.isOpen = next;
+    store.listeners.forEach((fn: (v: boolean) => void) => fn(next));
+  }, []);
+
+  useEffect(() => {
+    const w = window as any;
+    if (!w.__debugStore) w.__debugStore = { isOpen: false, listeners: new Set() };
+    const store = w.__debugStore;
+    store.listeners.add(setIsDebugOpen);
+
+    // Shortcut is dev-only and scoped to this window's debug panel.
+    // - Overlay window  → toggles the inline 'panel' variant (isDebugOpen).
+    // - Launcher window → toggles the drawer via DebugToggleFAB/__debugStore.
+    // Keeping a single handler per window (no handler in DebugToggleFAB)
+    // prevents the double-fire that previously caused the shortcut to
+    // appear broken on the main screen.
+
+    const handler = (e: KeyboardEvent) => {
+      if (!import.meta.env.DEV) return;
+      const isMac = navigator.platform.toUpperCase().includes('MAC');
+      const mod = isMac ? e.metaKey : e.ctrlKey;
+      if (mod && e.shiftKey && e.key.toLowerCase() === 'd') {
+        e.preventDefault();
+        if (isOverlayWindow) {
+          // Overlay: toggle the panel variant (local React state).
+          // Do NOT also toggle the drawer — both panels must not open at once.
+          setDebugOpen(!store.isOpen);
+        } else {
+          // Launcher / main screen: toggle the drawer via the shared store.
+          // DebugToggleFAB reads from this store and renders the drawer.
+          setDebugOpen(!store.isOpen);
+        }
+      }
+    };
+    window.addEventListener('keydown', handler);
+
+    return () => {
+      store.listeners.delete(setIsDebugOpen);
+      window.removeEventListener('keydown', handler);
+    };
+  }, [setDebugOpen, isOverlayWindow]);
 
   // Initialize Ads Campaign Manager
   const [appStartTime] = useState<number>(Date.now());
@@ -322,6 +383,8 @@ const App: React.FC = () => {
               <ToastViewport />
             </ToastProvider>
           </QueryClientProvider>
+          {/* DEV ONLY — always-on-top debug FAB, works on every screen */}
+          <DebugToggleFAB />
         </div>
       </ErrorBoundary>
     );
@@ -346,23 +409,53 @@ const App: React.FC = () => {
   if (isOverlayWindow) {
     return (
       <ErrorBoundary context="Overlay">
-        <div className="w-[550px] relative bg-transparent">
-          <QueryClientProvider client={queryClient}>
-            <ToastProvider>
-              <div
+        <div className="flex items-end gap-2" style={{ pointerEvents: 'none', width: isDebugOpen ? 990 : 650 }}>
+
+          {/* ── Left column: dock + panels ── */}
+          <div className={`w-full relative bg-transparent`} style={{ pointerEvents: 'auto' }}>
+            <QueryClientProvider client={queryClient}>
+              <ToastProvider>
+                <div
+                  className="w-full h-full"
+                  style={{
+                    ['--overlay-opacity' as '--overlay-opacity']: String(overlayOpacity),
+                    transition: 'background-color 75ms ease, border-color 75ms ease, box-shadow 75ms ease'
+                  } as React.CSSProperties}
+                >
+                  <NativelyInterface
+                    onEndMeeting={handleEndMeeting}
+                    overlayOpacity={overlayOpacity}
+                  />
+                </div>
+                <ToastViewport />
+              </ToastProvider>
+            </QueryClientProvider>
+          </div>
+
+          {/* ── Debug panel — always rendered so the keyboard shortcut works in
+               production. The panel itself is a developer tool accessible via
+               Cmd/Ctrl+Shift+D regardless of build mode. ── */}
+          <AnimatePresence>
+            {isDebugOpen && (
+              <motion.div
+                key="debug-panel"
+                initial={{ opacity: 0, y: 20, scale: 0.96 }}
+                animate={{ opacity: 1, y: 0, scale: 1 }}
+                exit={{ opacity: 0, y: 20, scale: 0.96 }}
+                transition={{ type: 'spring', damping: 28, stiffness: 380, mass: 0.8 }}
                 style={{
-                  ['--overlay-opacity' as '--overlay-opacity']: String(overlayOpacity),
-                  transition: 'background-color 75ms ease, border-color 75ms ease, box-shadow 75ms ease'
-                } as React.CSSProperties}
+                  position: 'fixed',
+                  bottom: 0,
+                  left: 465,
+                  pointerEvents: 'auto',
+                  zIndex: 901,
+                }}
               >
-                <NativelyInterface
-                  onEndMeeting={handleEndMeeting}
-                  overlayOpacity={overlayOpacity}
-                />
-              </div>
-              <ToastViewport />
-            </ToastProvider>
-          </QueryClientProvider>
+                <DebugConsole variant="panel" opacity={overlayOpacity} />
+              </motion.div>
+            )}
+          </AnimatePresence>
+
         </div>
       </ErrorBoundary>
     );
@@ -424,6 +517,7 @@ const App: React.FC = () => {
                           ollamaPullMessage={ollamaPullMessage}
                           authUser={authUser}
                           onSignOut={() => { void fbSignOut().catch((e) => console.warn('[App] sign-out failed:', e)); }}
+                          onDebugOpen={() => setDebugOpen(true)}
                         />
                       </div>
                       <SettingsOverlay
@@ -481,6 +575,8 @@ const App: React.FC = () => {
             {/* <UpdateBanner /> */}
             <SupportToaster />
 
+            {/* DEV ONLY — always-on-top debug FAB, works on every screen */}
+            <DebugToggleFAB />
 
             {isLauncherMainView && !isSettingsOpen && (
               <>
