@@ -855,10 +855,42 @@ export class DatabaseManager {
     }
 
     public updateMeeting(id: string, updates: Partial<Pick<Meeting, 'detailedSummary'>>): boolean {
+        if (!this.db) return false;
         try {
             if (updates.detailedSummary !== undefined) {
-                const stmt = this.db!.prepare(`UPDATE meetings SET detailed_summary = ? WHERE id = ?`);
-                stmt.run(JSON.stringify(updates.detailedSummary), id);
+                // The schema stores all summary data in the `summary_json` column as a JSON
+                // object with shape { legacySummary, detailedSummary }. There is no separate
+                // `detailed_summary` column — writing to that name would silently fail.
+                // Follow the same read-merge-write pattern used by updateMeetingSummary.
+
+                // 1. Read current value
+                const row = this.db.prepare('SELECT summary_json FROM meetings WHERE id = ?').get(id) as any;
+                if (!row) return false;
+
+                const existingData = JSON.parse(row.summary_json || '{}');
+
+                // 2. Merge: replace detailedSummary wholesale, preserve legacySummary and any
+                //    other top-level keys that callers may have stored (e.g. liveAnalysis).
+                const newData = {
+                    ...existingData,
+                    detailedSummary: updates.detailedSummary
+                };
+
+                const jsonStr = JSON.stringify(newData);
+
+                // 3. Write back to the correct column
+                const stmt = this.db.prepare('UPDATE meetings SET summary_json = ? WHERE id = ?');
+                const info = stmt.run(jsonStr, id);
+
+                if (info.changes > 0) {
+                    try {
+                        SupabaseMirrorService.getInstance().upsertRow('meetings', { id, summary_json: jsonStr });
+                    } catch (e) {
+                        console.warn(`[DatabaseManager] Mirror enqueue failed for updateMeeting ${id}:`, e);
+                    }
+                }
+
+                return info.changes > 0;
             }
             return true;
         } catch (e) {
@@ -1095,9 +1127,29 @@ export class DatabaseManager {
                 meetingIds = (this.db.prepare('SELECT id FROM meetings').all() as any[]).map(r => r.id);
             } catch (_) { /* table may not exist on first run */ }
 
+            // Discover all vec0 virtual tables BEFORE opening the transaction.
+            // sqlite_master is read-only metadata and safe to query outside a
+            // write transaction. We match any table whose name starts with "vec_"
+            // (covers vec_chunks_768, vec_summaries_1536, etc.) and whose type is
+            // "table" — virtual tables appear as "table" in sqlite_master.
+            // This is intentionally dynamic so new dimension tiers added by future
+            // migrations are wiped automatically without touching this method.
+            let vecTableNames: string[] = [];
+            try {
+                const vecRows = this.db.prepare(
+                    `SELECT name FROM sqlite_master WHERE type = 'table' AND name LIKE 'vec_%'`
+                ).all() as { name: string }[];
+                vecTableNames = vecRows.map(r => r.name);
+            } catch (_) {
+                // sqlite_master is always present; this catch is a pure safety net.
+                console.warn('[DatabaseManager] Could not enumerate vec_ tables — skipping vec wipe');
+            }
+
             // Clear all tables atomically (order matters due to foreign keys,
             // but SQLite handles cascades). Using a transaction ensures we never
             // end up in a half-cleared state if one statement fails.
+            // Vec0 virtual tables are wiped inside the same transaction so the
+            // relational tables and their embedding references are always in sync.
             this.db.transaction(() => {
                 this.db!.exec('DELETE FROM embedding_queue');
                 this.db!.exec('DELETE FROM chunk_summaries');
@@ -1105,6 +1157,19 @@ export class DatabaseManager {
                 this.db!.exec('DELETE FROM ai_interactions');
                 this.db!.exec('DELETE FROM transcripts');
                 this.db!.exec('DELETE FROM meetings');
+
+                // Wipe orphan embeddings from every per-dimension vec0 virtual table.
+                // Must run after the relational deletes so that any FK-like invariants
+                // the application maintains are not violated mid-transaction.
+                for (const tbl of vecTableNames) {
+                    try {
+                        this.db!.exec(`DELETE FROM "${tbl}"`);
+                    } catch (vecErr) {
+                        // A missing or corrupt vec0 table must not abort the whole
+                        // transaction — log and continue so user data is still wiped.
+                        console.warn(`[DatabaseManager] Could not clear vec table "${tbl}":`, vecErr);
+                    }
+                }
             })();
 
             console.log('[DatabaseManager] All data cleared from database.');

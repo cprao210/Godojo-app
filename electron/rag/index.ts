@@ -27,3 +27,9 @@ export {
 
 export { RAGManager } from './RAGManager';
 export type { RAGManagerConfig } from './RAGManager';
+
+export {
+    buildLiveAdvisorRAGBlock,
+    retrieveLiveAdvisorContext,
+    LIVE_ADVISOR_RAG_BUDGET,
+} from './liveAdvisorRAG';

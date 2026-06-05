@@ -5,6 +5,7 @@ import Anthropic from "@anthropic-ai/sdk"
 import fs from "fs"
 import sharp from "sharp"
 import { ModelVersionManager, ModelFamily, TextModelFamily } from './services/ModelVersionManager'
+import { MODE_TOKEN_LIMITS } from './llm/types'
 import {
   HARD_SYSTEM_PROMPT, GROQ_SYSTEM_PROMPT, OPENAI_SYSTEM_PROMPT, CLAUDE_SYSTEM_PROMPT,
   UNIVERSAL_SYSTEM_PROMPT, UNIVERSAL_ANSWER_PROMPT, UNIVERSAL_WHAT_TO_ANSWER_PROMPT,
@@ -32,7 +33,17 @@ const GEMINI_PRO_MODEL = "gemini-3.1-pro-preview"
 const GROQ_MODEL = "llama-3.3-70b-versatile"
 const OPENAI_MODEL = "gpt-5.4"
 const CLAUDE_MODEL = "claude-sonnet-4-6"
+
+// MAX_OUTPUT_TOKENS: ceiling for vision/image-analysis and open-ended generic generation.
+// Do NOT use this for mode-specific calls — use MODE_TOKEN_LIMITS instead.
+// Vision tasks (screenshot analysis, rolling script) legitimately need large outputs.
 const MAX_OUTPUT_TOKENS = 65536
+
+// Per-use-case caps sourced from MODE_TOKEN_LIMITS in types.ts.
+// Using named aliases here makes call-sites self-documenting.
+const MAX_TOKENS_STRUCTURED = MODE_TOKEN_LIMITS.structured  // 4096 — JSON generation
+const MAX_TOKENS_SUMMARY    = MODE_TOKEN_LIMITS.summary     // 2048 — recap/summary/email
+
 const CLAUDE_MAX_OUTPUT_TOKENS = 64000
 const CLAUDE_MAX_OUTPUT_TOKENS_NONSTREAM = 4096 // safe ceiling for non-streaming calls
 
@@ -1144,7 +1155,7 @@ export class LLMHelper {
             const res = await this.client!.models.generateContent({
               model: GEMINI_PRO_MODEL,
               contents: [{ role: 'user', parts: [{ text: message }] }],
-              config: { maxOutputTokens: MAX_OUTPUT_TOKENS, temperature: 0.4 }
+              config: { maxOutputTokens: MAX_TOKENS_STRUCTURED, temperature: 0.4 }
             });
             const candidate = res.candidates?.[0];
             if (!candidate) return '';
@@ -1165,7 +1176,7 @@ export class LLMHelper {
             const res = await this.client!.models.generateContent({
               model: GEMINI_FLASH_MODEL,
               contents: [{ role: 'user', parts: [{ text: message }] }],
-              config: { maxOutputTokens: MAX_OUTPUT_TOKENS, temperature: 0.4 }
+              config: { maxOutputTokens: MAX_TOKENS_STRUCTURED, temperature: 0.4 }
             });
             const candidate = res.candidates?.[0];
             if (!candidate) return '';
@@ -3418,7 +3429,7 @@ export class LLMHelper {
               model: GEMINI_PRO_MODEL,
               contents: contents,
               config: {
-                maxOutputTokens: MAX_OUTPUT_TOKENS,
+                maxOutputTokens: MAX_TOKENS_SUMMARY,
                 temperature: 0.3,
               }
             }),

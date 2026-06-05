@@ -422,6 +422,18 @@ const NativelyInterface: React.FC<NativelyInterfaceProps> = ({ onEndMeeting, ove
             setIsConnected(false);
         }));
 
+        // System audio capture errors (e.g. macOS Screen Recording permission denied)
+        if (window.electronAPI.onMeetingAudioWarning) {
+            cleanups.push(window.electronAPI.onMeetingAudioWarning((message) => {
+                console.warn('[NativelyInterface] Audio warning:', message);
+                setMessages(prev => [...prev, {
+                    id: Date.now().toString(),
+                    role: 'system' as const,
+                    text: `⚠️ ${message}`,
+                }]);
+            }));
+        }
+
         // Real-time Transcripts
         cleanups.push(window.electronAPI.onNativeAudioTranscript((transcript) => {
             // When Answer button is active, capture USER transcripts for voice input

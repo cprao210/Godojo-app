@@ -82,6 +82,7 @@ interface ElectronAPI {
   onNativeAudioSuggestion: (callback: (suggestion: { context: string; lastQuestion: string; confidence: number }) => void) => () => void
   onNativeAudioConnected: (callback: () => void) => () => void
   onNativeAudioDisconnected: (callback: () => void) => () => void
+  onMeetingAudioWarning: (callback: (message: string) => void) => () => void
   onSuggestionGenerated: (callback: (data: { question: string; suggestion: string; confidence: number }) => void) => () => void
   onSuggestionProcessingStart: (callback: () => void) => () => void
   onSuggestionError: (callback: (error: { error: string }) => void) => () => void
@@ -647,6 +648,13 @@ contextBridge.exposeInMainWorld("electronAPI", {
     ipcRenderer.on("native-audio-disconnected", subscription)
     return () => {
       ipcRenderer.removeListener("native-audio-disconnected", subscription)
+    }
+  },
+  onMeetingAudioWarning: (callback: (message: string) => void) => {
+    const subscription = (_: any, message: string) => callback(message)
+    ipcRenderer.on("meeting-audio-warning", subscription)
+    return () => {
+      ipcRenderer.removeListener("meeting-audio-warning", subscription)
     }
   },
   onSuggestionGenerated: (callback: (data: { question: string; suggestion: string; confidence: number }) => void) => {

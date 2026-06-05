@@ -577,8 +577,14 @@ export class AppState {
     }
   }
 
+  // Pure computation — does NOT set _builtinOnlyMode.
+  // Use this in contexts that should not affect the meeting-mode flag (e.g. audio test).
+  private _isBuiltinOnly(inputDeviceId?: string, outputDeviceId?: string): boolean {
+    return AudioDevices.isBuiltinOnly(inputDeviceId, outputDeviceId);
+  }
+
   private _shouldDisableMicVad(inputDeviceId?: string, outputDeviceId?: string): boolean {
-    const builtinOnly = AudioDevices.isBuiltinOnly(inputDeviceId, outputDeviceId);
+    const builtinOnly = this._isBuiltinOnly(inputDeviceId, outputDeviceId);
     if (builtinOnly) {
       console.log(
         '[Main] Built-in mic + speakers detected: disabling local VAD on MicrophoneCapture ' +
@@ -589,6 +595,7 @@ export class AppState {
         '[Main] External audio device detected: local VAD remains active on MicrophoneCapture'
       );
     }
+    this._builtinOnlyMode = builtinOnly;
     return builtinOnly;
   }
 
@@ -792,6 +799,68 @@ export class AppState {
   private googleSTT: STTProvider | null = null; // Client
   private googleSTT_User: STTProvider | null = null; // User
 
+  // Rolling window of recent final client (system audio) transcripts for macOS echo detection.
+  // Echo suppression only runs on macOS (Windows WASAPI has no acoustic bleed).
+  // Only FINAL transcripts are suppressed — partials still flow so live suggestions work.
+  // False-positive guard: short mic segments (< 4 words) are never suppressed because a
+  // natural reply ("yes", "exactly", "got it") overlapping with client text isn't echo.
+  private _recentClientTranscripts: Array<{ text: string; ts: number }> = [];
+  private static readonly _ECHO_WINDOW_MS = 6000;  // extended to cover STT latency + AEC convergence window
+  private static readonly _ECHO_SIMILARITY_THRESHOLD = 0.75; // base trigram overlap threshold
+
+  // _builtinOnlyMode: true when built-in speakers + mic are in use (no external device).
+  // Used by _isMicEcho to apply a lower similarity threshold and by audio init to
+  // set vadDisabled=true on MicrophoneCapture. AEC in the Rust DSP layer handles the
+  // physical echo; no JS-side RMS gate is needed.
+  private _builtinOnlyMode: boolean = false;
+
+  private _isMicEcho(micText: string): boolean {
+    // Only applies on macOS — Windows handles echo at the OS/WASAPI level
+    if (process.platform !== 'darwin') return false;
+    if (!micText || this._recentClientTranscripts.length === 0) return false;
+
+    const words = micText.trim().split(/\s+/);
+    // Single-word responses ("yes", "no", "okay") are almost always genuine replies.
+    // 2–3 word phrases can echo acoustically during the AEC convergence window.
+    if (words.length < 2) return false;
+
+    const now = Date.now();
+    this._recentClientTranscripts = this._recentClientTranscripts.filter(
+      e => now - e.ts < AppState._ECHO_WINDOW_MS
+    );
+    const normalise = (s: string) => s.toLowerCase().replace(/[^a-z0-9 ]/g, '').trim();
+
+    // For 2–3 word segments trigrams don't exist — use bigrams instead.
+    // For 4+ word segments use trigrams (lower false-positive rate).
+    const ngrams = (s: string, n: number): Set<string> => {
+      const ws = normalise(s).split(/\s+/);
+      const tg = new Set<string>();
+      for (let i = 0; i + n - 1 < ws.length; i++) tg.add(ws.slice(i, i + n).join(' '));
+      return tg;
+    };
+    const gramSize = words.length <= 3 ? 2 : 3;
+    const micTg = ngrams(micText, gramSize);
+    if (micTg.size === 0) return false;
+
+    for (const entry of this._recentClientTranscripts) {
+      const clientTg = ngrams(entry.text, gramSize);
+      if (clientTg.size === 0) continue;
+      const intersection = [...micTg].filter(t => clientTg.has(t)).length;
+      // Mic-side precision: fraction of mic's n-grams that appeared in client transcript.
+      // Partial echoes (mic heard first half of a long sentence) still score high here.
+      const precision = intersection / micTg.size;
+      // Bigram matching is inherently noisier — use a higher threshold for short segments
+      // to avoid false-positive suppression of genuine short replies.
+      const baseThreshold = this._builtinOnlyMode ? 0.60 : AppState._ECHO_SIMILARITY_THRESHOLD;
+      const threshold = gramSize === 2 ? Math.max(baseThreshold, 0.80) : baseThreshold;
+      if (precision >= threshold) {
+        console.log(`[Main] Echo detected (${gramSize}-gram precision=${precision.toFixed(2)}, threshold=${threshold}): dropping mic segment`);
+        return true;
+      }
+    }
+    return false;
+  }
+
   private createSTTProvider(speaker: 'client' | 'user'): STTProvider {
     const { CredentialsManager } = require('./services/CredentialsManager');
     const sttProvider = CredentialsManager.getInstance().getSttProvider();
@@ -877,6 +946,19 @@ export class AppState {
         return; // Drop transcript segments received during pause (rare, in-flight audio)
       }
 
+      // On macOS with external speakers the mic physically hears the speakers,
+      // causing the other party's speech to appear in both channels. Suppress
+      // mic (user) segments that are highly similar to a recent client transcript.
+      if (speaker === 'user' && segment.isFinal && this._isMicEcho(segment.text)) {
+        console.log(`[Main] Suppressing mic echo: "${segment.text}"`);
+        return;
+      }
+
+      // Record final client transcripts so mic echo detection has a reference window.
+      if (speaker === 'client' && segment.isFinal) {
+        this._recentClientTranscripts.push({ text: segment.text, ts: Date.now() });
+      }
+
       this.intelligenceManager.handleTranscript({
         speaker: speaker,
         text: segment.text,
@@ -944,6 +1026,9 @@ export class AppState {
         });
         this.systemAudioCapture.on('error', (err: Error) => {
           console.error('[Main] SystemAudioCapture Error:', err);
+          // Surface SCK permission failures (macOS) to the user so they know to grant
+          // Screen Recording access in System Settings > Privacy & Security.
+          this.broadcast('meeting-audio-warning', err.message || 'System audio capture failed');
         });
         // Re-sync STT sample rate when the native hardware rate is discovered post-start
         this.systemAudioCapture.on('sample-rate-detected', (rate: number) => {
@@ -953,10 +1038,7 @@ export class AppState {
       }
 
       if (!this.microphoneCapture) {
-        this.microphoneCapture = new MicrophoneCapture();
-        // Determine whether to disable local VAD based on device selection.
         const disableMicVad = this._shouldDisableMicVad(inputDeviceId, outputDeviceId);
-
         this.microphoneCapture = new MicrophoneCapture(undefined, { vadDisabled: disableMicVad });
         this.microphoneCapture.on('data', (chunk: Buffer) => {
           this.googleSTT_User?.write(chunk);
@@ -1122,12 +1204,13 @@ export class AppState {
     // Reinitialize the pipeline (will pick up the new provider from CredentialsManager)
     this.setupSystemAudioPipeline();
 
-    // Restart audio captures and new STT instances if a meeting is active
+    // Restart STT first, then audio — same order as startMeeting to ensure
+    // write() calls are not dropped while isActive=false.
     if (this.isMeetingActive) {
-      this.systemAudioCapture?.start();
-      this.microphoneCapture?.start();
       this.googleSTT?.start();
       this.googleSTT_User?.start();
+      this.systemAudioCapture?.start();
+      this.microphoneCapture?.start();
     }
 
     console.log('[Main] STT Provider reconfigured');
@@ -1189,7 +1272,7 @@ export class AppState {
     };
 
     try {
-      const testVadDisabled = this._shouldDisableMicVad(deviceId, undefined);
+      const testVadDisabled = this._isBuiltinOnly(deviceId, undefined);
       this.audioTestCapture = new MicrophoneCapture(deviceId || undefined, { vadDisabled: testVadDisabled });
       attachAudioTestListeners(this.audioTestCapture);
       this.audioTestCapture.start();
@@ -1283,18 +1366,27 @@ export class AppState {
         // LAZY INIT: Ensure pipeline is ready (if not reconfigured above)
         this.setupSystemAudioPipeline();
 
-        // Start audio captures first — this triggers native device open and
-        // begins the sample-rate detection polling inside SystemAudioCapture.
+        // Start STT BEFORE audio captures.
+        // DeepgramStreamingSTT.write() silently drops chunks when isActive=false,
+        // so if STT starts after the captures, all audio during the settle window
+        // is lost and no client transcript is generated for early speech.
+        // Starting with the 16000 fallback rate is safe: setSampleRate() after the
+        // settle poll triggers _reconnectWithNewConfig() which reconnects with the
+        // correct rate while preserving any buffered audio from the first connection.
+        this.googleSTT?.setSampleRate(16000);
+        this.googleSTT?.setAudioChannelCount?.(1);
+        this.googleSTT_User?.setSampleRate(16000);
+        this.googleSTT_User?.setAudioChannelCount?.(1);
+        this.googleSTT?.start();
+        this.googleSTT_User?.start();
+
+        // Start audio captures — data events now reach active STT connections immediately.
         this.systemAudioCapture?.start();
         this.microphoneCapture?.start();
 
-        // FIX-5: Replace the fixed 200ms settle window with an adaptive poll that
-        // waits until both capture devices report a non-default sample rate (or 2s
-        // timeout). On macOS with SCK the background init thread can take 1-5s —
-        // the old 200ms window always read the stale 48000 default, causing Deepgram
-        // to open a connection that received 3x slow-motion audio when the DSP was
-        // actually decimating to 16000Hz.
-        // Start with 0 so the poll doesn't exit immediately thinking rates are settled.
+        // Adaptive poll: wait until hardware reports real sample rates (or 2s timeout).
+        // On macOS with SCK the background init thread can take 1-5s — the old fixed
+        // 200ms window always read the stale 48000 default.
         let settledSysRate = 0;
         let settledMicRate = 0;
 
@@ -1302,18 +1394,12 @@ export class AppState {
           let elapsed = 0;
           const POLL_INTERVAL_MS = 100;
           const POLL_TIMEOUT_MS = 2000;
-          // Use 0 as sentinel — getOutputSampleRate() never returns 0, so the poll
-          // won't exit early before the native hardware reports a real rate.
-          // Previously DEFAULT_RATE=16000 caused immediate exit because getOutputSampleRate()
-          // returns 16000 before start() (48000 native → 16000 via fallback math), making
-          // sysReady always true at elapsed=0.
           const DEFAULT_RATE = 0;
 
           const poll = setInterval(() => {
             elapsed += POLL_INTERVAL_MS;
             const sysRate = this.systemAudioCapture?.getOutputSampleRate() ?? DEFAULT_RATE;
             const micRate = this.microphoneCapture?.getOutputSampleRate() ?? DEFAULT_RATE;
-            // Ready when rate is non-zero (hardware reported) OR timeout elapsed
             const sysReady = sysRate > 0 || elapsed >= POLL_TIMEOUT_MS;
             const micReady = micRate > 0 || elapsed >= POLL_TIMEOUT_MS;
             if (sysReady && micReady) {
@@ -1325,16 +1411,15 @@ export class AppState {
           }, POLL_INTERVAL_MS);
         });
 
-        // Re-read rates after the settle window before starting STT
-        console.log(`[Main] Settled rates before STT start — sys: ${settledSysRate}Hz, mic: ${settledMicRate}Hz`);
+        // Update rates now that hardware has reported them.
+        // If different from the 16000 fallback used at start(), setSampleRate triggers
+        // _reconnectWithNewConfig() which reconnects with the correct rate while
+        // preserving buffered audio — no transcripts are lost.
+        console.log(`[Main] Settled rates — sys: ${settledSysRate}Hz, mic: ${settledMicRate}Hz`);
         this.googleSTT?.setSampleRate(settledSysRate || 16000);
         this.googleSTT?.setAudioChannelCount?.(1);
         this.googleSTT_User?.setSampleRate(settledMicRate || 16000);
         this.googleSTT_User?.setAudioChannelCount?.(1);
-
-        // Now open Deepgram WebSocket connections with correct rates
-        this.googleSTT?.start();
-        this.googleSTT_User?.start();
 
         // Start JIT RAG live indexing
         if (this.ragManager) {
