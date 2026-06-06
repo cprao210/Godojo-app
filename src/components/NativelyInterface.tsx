@@ -242,55 +242,21 @@ const NativelyInterface: React.FC<NativelyInterfaceProps> = ({ onEndMeeting, ove
         return () => unsub?.();
     }, []);
 
-    // Auto-resize Window
+    // Resize the Electron window to exactly fit rendered content.
+    // Panel is now BELOW the dock, so the window grows downward — dock never moves.
     useLayoutEffect(() => {
         if (!contentRef.current) return;
-
         const observer = new ResizeObserver((entries) => {
             for (const entry of entries) {
-                // Use getBoundingClientRect to get the exact rendered size including padding
                 const rect = entry.target.getBoundingClientRect();
-
-                // Send exact dimensions to Electron
-                // Removed buffer to ensure tight fit
-                console.log('[NativelyInterface] ResizeObserver:', Math.ceil(rect.width), Math.ceil(rect.height));
                 window.electronAPI?.updateContentDimensions({
                     width: Math.ceil(rect.width),
-                    height: Math.ceil(rect.height)
+                    height: Math.ceil(rect.height),
                 });
             }
         });
-
         observer.observe(contentRef.current);
         return () => observer.disconnect();
-    }, []);
-
-    // Force resize when attachedContext changes (screenshots added/removed)
-    useEffect(() => {
-        if (!contentRef.current) return;
-        // Let the DOM settle, then measure and push new dimensions
-        requestAnimationFrame(() => {
-            if (!contentRef.current) return;
-            const rect = contentRef.current.getBoundingClientRect();
-            window.electronAPI?.updateContentDimensions({
-                width: Math.ceil(rect.width),
-                height: Math.ceil(rect.height)
-            });
-        });
-    }, [attachedContext]);
-
-    // Force initial sizing safety check
-    useEffect(() => {
-        const timer = setTimeout(() => {
-            if (contentRef.current) {
-                const rect = contentRef.current.getBoundingClientRect();
-                window.electronAPI?.updateContentDimensions({
-                    width: Math.ceil(rect.width),
-                    height: Math.ceil(rect.height)
-                });
-            }
-        }, 600);
-        return () => clearTimeout(timer);
     }, []);
 
     // Auto-scroll
@@ -2222,8 +2188,7 @@ Provide only the answer, nothing else.`;
 
 
     return (
-        <div ref={contentRef} className="flex flex-col items-center w-full mx-auto h-full min-h-0 bg-transparent p-0 rounded-[24px] font-sans gap-2 overlay-text-primary">
-            {/* AI Sales Coach */}
+        <div ref={contentRef} className="flex flex-col items-center w-fit mx-auto h-fit min-h-0 bg-transparent p-0 rounded-[24px] font-sans gap-2 overlay-text-primary">
             <motion.div initial={{ opacity: 0, y: 20, scale: 0.95 }} animate={{ opacity: 1, y: 0, scale: 1 }} exit={{ opacity: 0, y: 20, scale: 0.95 }} transition={{ duration: 0.3, ease: "easeInOut" }} className='flex gap-2'>
                 <AnimatePresence>
                     <motion.div
@@ -2232,7 +2197,6 @@ Provide only the answer, nothing else.`;
                         exit={{ opacity: 0, x: -10 }}
                         transition={{ duration: 0.25, ease: [0.16, 1, 0.3, 1] }}
                     >
-
                         <FloatingDock
                             isMeetingPaused={isMeetingPaused}
                             onPauseResume={handlePauseMeeting}

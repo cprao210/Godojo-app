@@ -1,8 +1,8 @@
 {
-  "name": "natively",
-  "version": "2.0.8",
+  "name": "godojo-ai",
+  "version": "1.0.0",
   "main": "dist-electron/electron/main.js",
-  "description": "Natively is a meeting notes app that uses AI to generate notes from your meetings.",
+  "description": "Godojo.ai is a meeting notes app that uses AI to generate notes from your meetings.",
   "scripts": {
     "clean": "rimraf dist dist-electron",
     "dev": "vite",

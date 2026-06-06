@@ -217,7 +217,7 @@ export const FloatingIntelligencePanel: React.FC<FloatingIntelligencePanelProps>
             className="rounded-2xl overflow-hidden flex flex-col"
             style={{
                 width: 420,
-                height: 550,
+                maxHeight: '75vh',
                 background: 'rgba(14, 18, 30, 0.93)',
                 backdropFilter: 'blur(28px) saturate(180%)',
                 WebkitBackdropFilter: 'blur(28px) saturate(180%)',

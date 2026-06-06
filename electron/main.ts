@@ -2398,7 +2398,7 @@ export class AppState {
     trayIcon.setTemplateImage(iconToUse.endsWith('Template.png'));
 
     this.tray = new Tray(trayIcon)
-    this.tray.setToolTip('Natively') // This tooltip might also need update if we change global shortcut, but global shortcut is removed.
+    this.tray.setToolTip('Godojo.ai') // This tooltip might also need update if we change global shortcut, but global shortcut is removed.
     this.updateTrayMenu();
 
     // Double-click to show window
@@ -2420,7 +2420,7 @@ export class AppState {
     console.log('[Main] updateTrayMenu called. Screenshot Accelerator:', screenshotAccel);
 
     // Update tooltip for verification
-    this.tray.setToolTip('Natively');
+    this.tray.setToolTip('Godojo.ai');
 
     // Helper to format accelerator for display (e.g. CommandOrControl+H -> Cmd+H)
     const formatAccel = (accel: string) => {
@@ -2447,7 +2447,7 @@ export class AppState {
         type: 'separator' as const,
       }] : []),
       {
-        label: 'Show Natively',
+        label: 'Show Godojo.ai',
         click: () => {
           this.centerAndShowWindow()
         }
@@ -2665,7 +2665,7 @@ export class AppState {
   }
 
   private _applyDisguise(mode: 'terminal' | 'settings' | 'activity' | 'none'): void {
-    let appName = "Natively";
+    let appName = "Godojo.ai";
     let iconPath = "";
 
     const isWin = process.platform === 'win32';
@@ -2709,7 +2709,7 @@ export class AppState {
         }
         break;
       case 'none':
-        appName = "Natively";
+        appName = "Godojo.ai";
         if (isMac) {
           iconPath = app.isPackaged
             ? path.join(process.resourcesPath, "natively.icns")

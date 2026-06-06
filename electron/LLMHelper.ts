@@ -908,17 +908,17 @@ export class LLMHelper {
       const buildMessage = (systemPrompt: string) => {
         if (skipSystemPrompt) {
           return context
-            ? `CONTEXT:\n${context}\n\nUSER QUESTION:\n${message}`
+            ? `CONTEXT:\n${context}\n\nCHAT MESSAGE:\n${message}`
             : message;
         }
         return context
-          ? `${systemPrompt}\n\nCONTEXT:\n${context}\n\nUSER QUESTION:\n${message}`
+          ? `${systemPrompt}\n\nCONTEXT:\n${context}\n\nCHAT MESSAGE:\n${message}`
           : `${systemPrompt}\n\n${message}`;
       };
 
       // For OpenAI/Claude: separate system prompt + user message
       const userContent = context
-        ? `CONTEXT:\n${context}\n\nUSER QUESTION:\n${message}`
+        ? `CONTEXT:\n${context}\n\nCHAT MESSAGE:\n${message}`
         : message;
 
       const finalGeminiPrompt = this.injectLanguageInstruction(HARD_SYSTEM_PROMPT);
@@ -1267,21 +1267,129 @@ export class LLMHelper {
     throw new Error('All reasoning models failed for structured generation after 3 attempts');
   }
 
+  /**
+   * Dedicated method for live call analysis (BANT/MEDDIC/Signals/Objections extraction).
+   *
+   * Uses a FIXED provider order regardless of the user's selected model:
+   *   1. Gemini Flash — fast, large context, handles the full output schema well
+   *   2. Claude Sonnet — best structured JSON adherence, 200k context
+   *   3. GPT-4o        — reliable fallback, strong instruction following
+   *
+   * Groq is intentionally excluded: its 32k context ceiling, aggressive rate limits,
+   * and inferior schema compliance make it unsuitable for the live analysis JSON contract.
+   *
+   * Temperature is set to 0.1 (vs. 0.4 elsewhere) because the task is extraction
+   * and classification, not generation — lower temperature reduces hallucinated status
+   * upgrades and spurious signal captures.
+   */
+  public async generateLiveAnalysis(prompt: string): Promise<string> {
+    const LIVE_ANALYSIS_MAX_TOKENS = 4096; // full BANT+MEDDIC+signals+objections JSON fits in ~1500-2500 tokens
+    const LIVE_ANALYSIS_TEMPERATURE = 0.1;
+
+    type ProviderAttempt = { name: string; execute: () => Promise<string> };
+    const providers: ProviderAttempt[] = [];
+
+    // Priority 1: Gemini Flash — primary for live analysis
+    if (this.client) {
+      providers.push({
+        name: `Gemini Flash (${GEMINI_FLASH_MODEL})`,
+        execute: async () => {
+          const response = await this.withRetry(async () => {
+            // @ts-ignore
+            const res = await this.client!.models.generateContent({
+              model: GEMINI_FLASH_MODEL,
+              contents: [{ role: 'user', parts: [{ text: prompt }] }],
+              config: { maxOutputTokens: LIVE_ANALYSIS_MAX_TOKENS, temperature: LIVE_ANALYSIS_TEMPERATURE }
+            });
+            const candidate = res.candidates?.[0];
+            if (!candidate) return '';
+            if (res.text) return res.text;
+            const parts = candidate.content?.parts ?? [];
+            return (Array.isArray(parts) ? parts : [parts]).map((p: any) => p?.text ?? '').join('');
+          });
+          return response;
+        }
+      });
+    }
+
+    // Priority 2: Claude Sonnet — best structured output compliance
+    if (this.claudeClient) {
+      providers.push({
+        name: `Claude (${CLAUDE_MODEL})`,
+        execute: async () => {
+          const response = await this.claudeClient!.messages.create({
+            model: CLAUDE_MODEL,
+            max_tokens: LIVE_ANALYSIS_MAX_TOKENS,
+            messages: [{ role: 'user', content: prompt }],
+          });
+          const block = response.content.find((b: any) => b.type === 'text') as any;
+          return block?.text ?? '';
+        }
+      });
+    }
+
+    // Priority 3: OpenAI GPT — reliable tertiary fallback
+    if (this.openaiClient) {
+      providers.push({
+        name: `OpenAI (${OPENAI_MODEL})`,
+        execute: async () => {
+          const response = await this.openaiClient!.chat.completions.create({
+            model: OPENAI_MODEL,
+            messages: [{ role: 'user', content: prompt }],
+            max_completion_tokens: LIVE_ANALYSIS_MAX_TOKENS,
+          });
+          return response.choices[0]?.message?.content ?? '';
+        }
+      });
+    }
+
+    if (providers.length === 0) {
+      throw new Error('No provider available for live analysis. Configure a Gemini, Claude, or OpenAI API key.');
+    }
+
+    for (const provider of providers) {
+      try {
+        console.log(`[LLMHelper] 🔍 Live analysis: trying ${provider.name}...`);
+        const result = await provider.execute();
+        if (result && result.trim().length > 0) {
+          console.log(`[LLMHelper] ✅ Live analysis succeeded with ${provider.name}`);
+          return result;
+        }
+        console.warn(`[LLMHelper] ⚠️ ${provider.name} returned empty response for live analysis`);
+      } catch (error: any) {
+        console.warn(`[LLMHelper] ⚠️ Live analysis: ${provider.name} failed: ${error.message}`);
+      }
+    }
+
+    throw new Error('All providers failed for live analysis');
+  }
+
   private async generateWithGroq(fullMessage: string, modelId: string = GROQ_MODEL): Promise<string> {
     if (!this.groqClient) throw new Error("Groq client not initialized");
 
+    if (this.rateLimiters.groq.isCircuitOpen()) {
+      throw new Error("Groq circuit breaker OPEN — provider is cooling down after repeated 429 errors");
+    }
+
     await this.rateLimiters.groq.acquire();
 
-    // Non-streaming Groq call
-    const response = await this.groqClient.chat.completions.create({
-      model: modelId,
-      messages: [{ role: "user", content: fullMessage }],
-      temperature: 0.4,
-      max_tokens: 8192,
-      stream: false
-    });
-
-    return response.choices[0]?.message?.content || "";
+    try {
+      // Non-streaming Groq call
+      const response = await this.groqClient.chat.completions.create({
+        model: modelId,
+        messages: [{ role: "user", content: fullMessage }],
+        temperature: 0.4,
+        max_tokens: 8192,
+        stream: false
+      });
+      this.rateLimiters.groq.markSuccess();
+      return response.choices[0]?.message?.content || "";
+    } catch (error: any) {
+      if (error?.status === 429 || error?.message?.includes('rate limit') || error?.message?.includes('429')) {
+        this.rateLimiters.groq.markRateLimitError();
+      }
+      throw error;
+    }
   }
 
   /**
@@ -1377,6 +1485,10 @@ export class LLMHelper {
   private async generateWithOpenai(userMessage: string, systemPrompt?: string, imagePaths?: string[], modelId?: string): Promise<string> {
     if (!this.openaiClient) throw new Error("OpenAI client not initialized");
 
+    if (this.rateLimiters.openai.isCircuitOpen()) {
+      throw new Error("OpenAI circuit breaker OPEN — provider is cooling down after repeated 429 errors");
+    }
+
     await this.rateLimiters.openai.acquire();
 
     // Use explicit override, then current model if it's OpenAI, else baseline constant
@@ -1400,17 +1512,24 @@ export class LLMHelper {
       messages.push({ role: "user", content: userMessage });
     }
 
-    const response = await this.withTimeout(
-      this.withRetry(() => this.openaiClient!.chat.completions.create({
-        model,
-        messages,
-        max_completion_tokens: model.toLowerCase().includes('claude') ? CLAUDE_MAX_OUTPUT_TOKENS : MAX_OUTPUT_TOKENS,
-      })),
-      60000,
-      `OpenAI (${model})`
-    );
-
-    return response.choices[0]?.message?.content || "";
+    try {
+      const response = await this.withTimeout(
+        this.withRetry(() => this.openaiClient!.chat.completions.create({
+          model,
+          messages,
+          max_completion_tokens: model.toLowerCase().includes('claude') ? CLAUDE_MAX_OUTPUT_TOKENS : MAX_OUTPUT_TOKENS,
+        })),
+        60000,
+        `OpenAI (${model})`
+      );
+      this.rateLimiters.openai.markSuccess();
+      return response.choices[0]?.message?.content || "";
+    } catch (error: any) {
+      if (error?.status === 429 || error?.message?.includes('rate limit') || error?.message?.includes('429')) {
+        this.rateLimiters.openai.markRateLimitError();
+      }
+      throw error;
+    }
   }
 
   // The handler for cURL requests
@@ -1483,6 +1602,10 @@ export class LLMHelper {
   private async generateWithClaude(userMessage: string, systemPrompt?: string, imagePaths?: string[], modelId?: string): Promise<string> {
     if (!this.claudeClient) throw new Error("Claude client not initialized");
 
+    if (this.rateLimiters.claude.isCircuitOpen()) {
+      throw new Error("Claude circuit breaker OPEN — provider is cooling down after repeated 429 errors");
+    }
+
     await this.rateLimiters.claude.acquire();
 
     // Use explicit override, then current model if it's Claude, else stable fallback
@@ -1506,19 +1629,26 @@ export class LLMHelper {
     }
     content.push({ type: "text", text: userMessage });
 
-    const response = await this.withTimeout(
-      this.withRetry(() => this.claudeClient!.messages.create({
-        model,
-        max_tokens: CLAUDE_MAX_OUTPUT_TOKENS_NONSTREAM,
-        ...(systemPrompt ? { system: systemPrompt } : {}),
-        messages: [{ role: "user", content }],
-      })),
-      90000,
-      `Claude (${model})`
-    );
-
-    const textBlock = response.content.find((block: any) => block.type === 'text') as any;
-    return textBlock?.text || "";
+    try {
+      const response = await this.withTimeout(
+        this.withRetry(() => this.claudeClient!.messages.create({
+          model,
+          max_tokens: CLAUDE_MAX_OUTPUT_TOKENS_NONSTREAM,
+          ...(systemPrompt ? { system: systemPrompt } : {}),
+          messages: [{ role: "user", content }],
+        })),
+        90000,
+        `Claude (${model})`
+      );
+      this.rateLimiters.claude.markSuccess();
+      const textBlock = response.content.find((block: any) => block.type === 'text') as any;
+      return textBlock?.text || "";
+    } catch (error: any) {
+      if (error?.status === 429 || error?.message?.includes('rate limit') || error?.message?.includes('429')) {
+        this.rateLimiters.claude.markRateLimitError();
+      }
+      throw error;
+    }
   }
 
   /**
@@ -1983,17 +2113,17 @@ export class LLMHelper {
       const finalPrompt = skipSystemPrompt ? systemPrompt : this.injectLanguageInstruction(systemPrompt);
       if (skipSystemPrompt) {
         return context
-          ? `CONTEXT:\n${context}\n\nUSER QUESTION:\n${message}`
+          ? `CONTEXT:\n${context}\n\nCHAT MESSAGE:\n${message}`
           : message;
       }
       return context
-        ? `${finalPrompt}\n\nCONTEXT:\n${context}\n\nUSER QUESTION:\n${message}`
+        ? `${finalPrompt}\n\nCONTEXT:\n${context}\n\nCHAT MESSAGE:\n${message}`
         : `${finalPrompt}\n\n${message}`;
     };
 
     // For OpenAI/Claude: separate system prompt + user message (proper API pattern)
     const userContent = context
-      ? `CONTEXT:\n${context}\n\nUSER QUESTION:\n${message}`
+      ? `CONTEXT:\n${context}\n\nCHAT MESSAGE:\n${message}`
       : message;
 
     const combinedMessages = {
@@ -2226,7 +2356,7 @@ export class LLMHelper {
 
     // Helper to build combined user message
     const userContent = context
-      ? `CONTEXT:\n${context}\n\nUSER QUESTION:\n${message}`
+      ? `CONTEXT:\n${context}\n\nCHAT MESSAGE:\n${message}`
       : message;
 
     // GROQ FAST TEXT OVERRIDE (Text-Only)
