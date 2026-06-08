@@ -84,10 +84,21 @@ export function buildFollowUpEmailPromptInput(input: any): string {
 
     if (input.title) parts.push(`Meeting Title: ${input.title}`);
     if (input.date) parts.push(`Date: ${new Date(input.date).toLocaleDateString()}`);
-    if (input.leadName) parts.push(`Prospect Name: ${input.leadName}`);
+
+    // Prospect name: prefer structured leadName, fall back to recipient_name passed by the modal
+    const prospectName = input.leadName || input.recipient_name;
+    if (prospectName) parts.push(`Prospect Name: ${prospectName}`);
+
     if (input.company) parts.push(`Company: ${input.company}`);
 
+    // Rep/sender name: surface it explicitly so the model can use it in the signature.
+    // Fall back to user profile fields when the modal doesn't pass sender_name directly.
+    const repName = input.sender_name || input.userName || input.userDisplayName;
+    if (repName) parts.push(`Sales Rep Name: ${repName}`);
+
+    // summary is the field name used by Path B (modal LLM path); overview is used by the post-call path
     if (input.overview) parts.push(`\nCall Overview:\n${input.overview}`);
+    else if (input.summary) parts.push(`\nCall Overview:\n${input.summary}`);
 
     if (input.keyPoints?.length) {
         parts.push(`\nKey Discussion Points:\n${input.keyPoints.map((p: string) => `- ${p}`).join('\n')}`);

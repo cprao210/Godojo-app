@@ -525,7 +525,13 @@ export function initializeIpcHandlers(appState: AppState): void {
       appState.setLiveAnalysisInFlight(true);
       let result: any;
       try {
-        result = await llmHelper.chatWithGemini(prompt, undefined, undefined, true);
+        // Use the dedicated live analysis method (Gemini Flash → Claude → OpenAI, Groq excluded).
+        // This bypasses the general-purpose fallback waterfall and enforces temperature=0.1
+        // for schema-accurate extraction. Falls back to chatWithGemini if the method is absent
+        // (older LLMHelper version during hot-reload).
+        result = typeof llmHelper.generateLiveAnalysis === 'function'
+          ? await llmHelper.generateLiveAnalysis(prompt)
+          : await llmHelper.chatWithGemini(prompt, undefined, undefined, true);
       } finally {
         appState.setLiveAnalysisInFlight(false);
       }

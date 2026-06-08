@@ -464,6 +464,15 @@ body,
   -moz-osx-font-smoothing: grayscale;
 }
 
+/* Overlay window: root must hug content so the Electron window can size to it */
+html[data-window='overlay'],
+html[data-window='overlay'] body,
+html[data-window='overlay'] #root {
+  width: fit-content !important;
+  height: fit-content !important;
+  overflow: visible !important;
+}
+
 /* Allow selection in specific areas */
 .selectable {
   user-select: text;

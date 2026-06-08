@@ -1,8 +1,8 @@
 {
-  "name": "natively",
-  "version": "2.0.8",
+  "name": "godojo-ai",
+  "version": "1.0.0",
   "main": "dist-electron/electron/main.js",
-  "description": "Natively is a meeting notes app that uses AI to generate notes from your meetings.",
+  "description": "Godojo.ai is a meeting notes app that uses AI to generate notes from your meetings.",
   "scripts": {
     "clean": "rimraf dist dist-electron",
     "dev": "vite",
@@ -17,13 +17,15 @@
     "watch": "tsc -p electron/tsconfig.json --watch",
     "start": "npm run app:dev",
     "dist": "npm run app:build",
-    "build:native": "node scripts/build-native.js"
+    "build:native": "node scripts/build-native.js",
+    "test": "vitest run",
+    "test:watch": "vitest"
   },
   "build": {
     "generateUpdatesFilesForAllChannels": true,
-    "appId": "com.electron.meeting-notes",
+    "appId": "com.geoserves.sales-ai",
     "afterPack": "./scripts/ad-hoc-sign.js",
-    "productName": "Natively",
+    "productName": "Sales AI",
     "files": [
       "dist",
       "dist-electron",
@@ -167,6 +169,7 @@
     "vite": "^5.4.11",
     "vite-plugin-electron": "^0.28.8",
     "vite-plugin-electron-renderer": "^0.14.6",
+    "vitest": "^2.1.9",
     "wait-on": "^8.0.1"
   },
   "dependencies": {

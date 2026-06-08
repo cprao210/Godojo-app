@@ -119,11 +119,12 @@ export class CredentialsManager {
     }
 
     public getSttProvider(): 'google' | 'groq' | 'openai' | 'deepgram' | 'elevenlabs' | 'azure' | 'ibmwatson' | 'soniox' {
-        return this.credentials.sttProvider || 'azure';
+        const envProvider = process.env.STT_PROVIDER as StoredCredentials['sttProvider'];
+        return this.credentials.sttProvider || envProvider || 'azure';
     }
 
     public getDeepgramApiKey(): string | undefined {
-        return this.credentials.deepgramApiKey;
+        return this.credentials.deepgramApiKey || process.env.DEEPGRAM_API_KEY;
     }
 
     public getGroqSttApiKey(): string | undefined {
@@ -143,7 +144,7 @@ export class CredentialsManager {
     }
 
     public getAzureApiKey(): string | undefined {
-        return this.credentials.azureApiKey || process.env.AZURE_SPEECH_API_KEY;
+        return this.credentials.azureApiKey || process.env.AZURE_SPEECH_API_KEY || process.env.AZURE_SPEECH_KEY;
     }
 
     public getAzureRegion(): string {

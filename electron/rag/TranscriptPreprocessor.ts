@@ -85,7 +85,7 @@ function normalizeSpeaker(speaker: string): string {
         return 'You';
     }
     if (lower === 'assistant' || lower === 'natively') {
-        return 'Natively';
+        return 'Godojo.ai';
     }
     // Keep original if it looks like a name
     return speaker;

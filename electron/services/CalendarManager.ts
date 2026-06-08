@@ -76,7 +76,7 @@ export class CalendarManager extends EventEmitter {
                         }
 
                         if (code) {
-                            res.end('Authentication successful! You can close this window and return to Natively.');
+                            res.end('Authentication successful! You can close this window and return to Godojo.ai.');
                             server.close();
 
                             // 2. Exchange code for tokens
@@ -298,7 +298,7 @@ export class CalendarManager extends EventEmitter {
         const { Notification } = require('electron');
         const notif = new Notification({
             title: 'Meeting starting soon',
-            body: `"${event.title}" starts in 2 minutes. Start Natively?`,
+            body: `"${event.title}" starts in 2 minutes. Start Godojo.ai?`,
             actions: [
                 { type: 'button', text: 'Start Meeting' },
                 { type: 'button', text: 'Dismiss' }
