@@ -485,7 +485,7 @@ const FollowUpEmailModal: React.FC<FollowUpEmailModalProps> = ({ isOpen, onClose
                                             size={15}
                                             className={`group-hover:rotate-180 transition-transform duration-500 ${isGenerating ? 'animate-spin' : ''}`}
                                         />
-                                        <span className="text-[13px] font-medium">Reset</span>
+                                        <span className="text-[13px] font-medium">Re-generate</span>
                                     </button>
                                 </div>
                             </div>
