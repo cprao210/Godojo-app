@@ -315,6 +315,16 @@ export interface ElectronAPI {
   onKeybindsUpdate: (callback: (keybinds: Array<any>) => void) => () => void
   onGlobalShortcut: (callback: (data: { action: string }) => void) => () => void
 
+  // Company Context API
+  companyGetContext: () => Promise<any>;
+  companySaveContext: (data: any) => Promise<{ success: boolean; error?: string }>;
+  companyUploadAsset: (type: string, filePath: string) => Promise<{ success: boolean; asset?: any; error?: string }>;
+  companyDeleteAsset: (assetId: string) => Promise<{ success: boolean; error?: string }>;
+  companySyncAsset: (assetId: string) => Promise<{ success: boolean; status?: string; error?: string }>;
+  companySetPersonaEngine: (enabled: boolean) => Promise<{ success: boolean; error?: string }>;
+  companySelectFile: () => Promise<{ filePath?: string; fileName?: string; fileSize?: number; cancelled?: boolean; success?: boolean; error?: string }>;
+  companyGetCompleteness: () => Promise<number>;
+
   // Profile Engine API
   profileUploadResume: (filePath: string) => Promise<{ success: boolean; error?: string }>
   profileGetStatus: () => Promise<{ hasProfile: boolean; profileMode: boolean; name?: string; role?: string; totalExperienceYears?: number }>

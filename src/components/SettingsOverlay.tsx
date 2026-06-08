@@ -31,6 +31,8 @@ import {
 } from '../lib/overlayAppearance';
 import { KeyRecorder } from './ui/KeyRecorder';
 import { ProfileVisualizer, PremiumUpgradeModal } from '../premium';
+import { CompanyContextTab } from './settings/CompanyContextTab';
+import { UserProfileTab } from './settings/UserProfileTab';
 import icon from './icon.png';
 
 // ---------------------------------------------------------------------------
@@ -386,6 +388,10 @@ const SettingsOverlay: React.FC<SettingsOverlayProps> = ({ isOpen, onClose, init
                     if (data?.negotiationScript) setNegotiationScript(data.negotiationScript);
                 }).catch(() => { });
             }
+
+            if (initialTab === 'company-context') {
+                window.electronAPI?.companyGetContext?.().then(setCompanyContext).catch(() => { });
+            }
         }
     }, [isOpen, initialTab]);
 
@@ -426,6 +432,13 @@ const SettingsOverlay: React.FC<SettingsOverlayProps> = ({ isOpen, onClose, init
     const [negotiationGenerating, setNegotiationGenerating] = useState(false);
     const [negotiationError, setNegotiationError] = useState('');
     const [verboseLogging, setVerboseLogging] = useState(false);
+
+    // Company Context State
+    const [companyContext, setCompanyContext] = useState<any>(null);
+    const [companyLoading, setCompanyLoading] = useState(false);
+    const [companySaving, setCompanySaving] = useState(false);
+    const [companyError, setCompanyError] = useState('');
+    const [assetUploading, setAssetUploading] = useState<string | null>(null);
 
     // Close dropdown when clicking outside
     // Sync with global state changes
@@ -520,7 +533,6 @@ const SettingsOverlay: React.FC<SettingsOverlayProps> = ({ isOpen, onClose, init
             setOverlayOpacity(getDefaultOverlayOpacity());
         }
     }, [resolvedTheme]);
-
 
     // Live preview state — true while the user is holding down the slider
     const [isPreviewingOpacity, setIsPreviewingOpacity] = useState(false);
@@ -1079,17 +1091,10 @@ const SettingsOverlay: React.FC<SettingsOverlayProps> = ({ isOpen, onClose, init
         }
     };
 
-
     const [calendarStatus, setCalendarStatus] = useState<{ connected: boolean; email?: string }>({ connected: false });
     const [zoomCalendarStatus, setZoomCalendarStatus] = useState<{ connected: boolean; email?: string }>({ connected: false });
     const [isGoogleCalendarLoading, setIsGoogleCalendarLoading] = useState(false);
     const [isZoomCalendarLoading, setIsZoomCalendarLoading] = useState(false);
-
-
-    // Load stored credentials on mount
-
-
-
 
     const handleCheckForUpdates = async () => {
         if (updateStatus === 'checking') return;
@@ -1127,8 +1132,6 @@ const SettingsOverlay: React.FC<SettingsOverlayProps> = ({ isOpen, onClose, init
 
         return () => unsubs.forEach(unsub => unsub());
     }, [isOpen, onClose]);
-
-
 
     useEffect(() => {
         if (isOpen) {
@@ -1262,36 +1265,49 @@ const SettingsOverlay: React.FC<SettingsOverlayProps> = ({ isOpen, onClose, init
                                 <div className="p-6">
                                     <h2 className="font-semibold text-text-tertiary text-xs uppercase tracking-wider mb-2">Settings</h2>
                                     <nav className="space-y-1">
+
                                         <button
                                             onClick={() => setActiveTab('general')}
                                             className={`w-full text-left px-3 py-2 rounded-lg text-sm font-medium transition-colors flex items-center gap-3 ${activeTab === 'general' ? 'bg-bg-item-active text-text-primary' : 'text-text-secondary hover:text-text-primary hover:bg-bg-item-active/50'}`}
                                         >
                                             <Monitor size={16} /> General
                                         </button>
+
+                                        <button
+                                            onClick={() => setActiveTab('user-profile')}
+                                            className={`w-full text-left px-3 py-2 rounded-lg text-sm font-medium transition-colors flex items-center gap-3 ${activeTab === 'user-profile' ? 'bg-bg-item-active text-text-primary' : 'text-text-secondary hover:text-text-primary hover:bg-bg-item-active/50'}`}
+                                        >
+                                            <User size={16} /> User Profile
+                                        </button>
+
                                         <button
                                             onClick={() => setActiveTab('ai-providers')}
                                             className={`w-full text-left px-3 py-2 rounded-lg text-sm font-medium transition-colors flex items-center gap-3 ${activeTab === 'ai-providers' ? 'bg-bg-item-active text-text-primary' : 'text-text-secondary hover:text-text-primary hover:bg-bg-item-active/50'}`}
                                         >
                                             <FlaskConical size={16} /> AI Providers
                                         </button>
+
                                         <button
                                             onClick={() => setActiveTab('calendar')}
                                             className={`w-full text-left px-3 py-2 rounded-lg text-sm font-medium transition-colors flex items-center gap-3 ${activeTab === 'calendar' ? 'bg-bg-item-active text-text-primary' : 'text-text-secondary hover:text-text-primary hover:bg-bg-item-active/50'}`}
                                         >
                                             <Calendar size={16} /> Calendar
                                         </button>
+
                                         <button
                                             onClick={() => setActiveTab('audio')}
                                             className={`w-full text-left px-3 py-2 rounded-lg text-sm font-medium transition-colors flex items-center gap-3 ${activeTab === 'audio' ? 'bg-bg-item-active text-text-primary' : 'text-text-secondary hover:text-text-primary hover:bg-bg-item-active/50'}`}
                                         >
                                             <Mic size={16} /> Audio
                                         </button>
+
                                         <button
                                             onClick={() => setActiveTab('keybinds')}
                                             className={`w-full text-left px-3 py-2 rounded-lg text-sm font-medium transition-colors flex items-center gap-3 ${activeTab === 'keybinds' ? 'bg-bg-item-active text-text-primary' : 'text-text-secondary hover:text-text-primary hover:bg-bg-item-active/50'}`}
                                         >
                                             <Keyboard size={16} /> Keybinds
                                         </button>
+
                                         {/* <button
                                             onClick={() => {
                                                 setActiveTab('profile');
@@ -1306,6 +1322,16 @@ const SettingsOverlay: React.FC<SettingsOverlayProps> = ({ isOpen, onClose, init
                                         >
                                             <User size={16} /> Profile Intelligence
                                         </button> */}
+
+                                        <button
+                                            onClick={() => {
+                                                setActiveTab('company-context');
+                                                window.electronAPI?.companyGetContext?.().then(setCompanyContext).catch(() => { });
+                                            }}
+                                            className={`w-full text-left px-3 py-2 rounded-lg text-sm font-medium transition-colors flex items-center gap-3 ${activeTab === 'company-context' ? 'bg-bg-item-active text-text-primary' : 'text-text-secondary hover:text-text-primary hover:bg-bg-item-active/50'}`}
+                                        >
+                                            <Building2 size={16} /> Company Context
+                                        </button>
 
                                         <button
                                             onClick={() => setActiveTab('about')}
@@ -1357,7 +1383,7 @@ const SettingsOverlay: React.FC<SettingsOverlayProps> = ({ isOpen, onClose, init
                                                         ) : (
                                                             <Ghost size={18} className="text-text-primary" />
                                                         )}
-                                                        <h3 className="text-lg font-bold text-text-primary">{isUndetectable ? 'Undetectable' : 'Detectable'}</h3>
+                                                        <h3 className="text-lg font-bold text-text-primary">{isUndetectable ? 'Ghost Mode ON' : 'Ghost Mode OFF'}</h3>
                                                     </div>
                                                     <p className="text-xs text-text-secondary">
                                                         GoDojo is currently {isUndetectable ? 'undetectable' : 'detectable'} by screen-sharing. <button className="text-blue-400 hover:underline">Supported apps here</button>
@@ -1574,7 +1600,7 @@ const SettingsOverlay: React.FC<SettingsOverlayProps> = ({ isOpen, onClose, init
                                                         </div>
 
                                                         {/* Version */}
-                                                        <div className="flex items-start justify-between gap-4 px-4 py-3">
+                                                        {/* <div className="flex items-start justify-between gap-4 px-4 py-3">
                                                             <div className="flex items-start gap-4">
                                                                 <div className="w-10 h-10 bg-bg-item-surface rounded-lg border border-border-subtle flex items-center justify-center text-text-tertiary shrink-0">
                                                                     <BadgeCheck size={20} />
@@ -1635,7 +1661,7 @@ const SettingsOverlay: React.FC<SettingsOverlayProps> = ({ isOpen, onClose, init
                                                                     </>
                                                                 )}
                                                             </button>
-                                                        </div>
+                                                        </div> */}
                                                     </div>
                                                 </div>
 
@@ -1741,6 +1767,11 @@ const SettingsOverlay: React.FC<SettingsOverlayProps> = ({ isOpen, onClose, init
 
                                     </div>
                                 )}
+
+                                {activeTab === 'user-profile' && (
+                                    <UserProfileTab isLight={isLight} />
+                                )}
+
                                 {/* {activeTab === 'profile' && (
                                     <div className="space-y-6 animated fadeIn">
                                         <div className="mb-5">
@@ -2468,6 +2499,7 @@ const SettingsOverlay: React.FC<SettingsOverlayProps> = ({ isOpen, onClose, init
 
                                     </div>
                                 )} */}
+
                                 {activeTab === 'ai-providers' && (
                                     <AIProvidersSettings
                                         tavilyApiKey={tavilyApiKey}
@@ -2479,6 +2511,7 @@ const SettingsOverlay: React.FC<SettingsOverlayProps> = ({ isOpen, onClose, init
                                         tavilyError={tavilyError}
                                     />
                                 )}
+
                                 {activeTab === 'keybinds' && (
                                     <div className="space-y-5 animated fadeIn select-text pb-4">
                                         <div className="flex items-start justify-between">
@@ -3055,7 +3088,6 @@ const SettingsOverlay: React.FC<SettingsOverlayProps> = ({ isOpen, onClose, init
                                     </div>
                                 )}
 
-
                                 {activeTab === 'calendar' && (
                                     <div className="space-y-6 animated fadeIn h-full">
                                         <div>
@@ -3232,6 +3264,24 @@ const SettingsOverlay: React.FC<SettingsOverlayProps> = ({ isOpen, onClose, init
                                     </div>
                                 )}
 
+                                {activeTab === 'company-context' && (
+                                    <CompanyContextTab
+                                        companyContext={companyContext}
+                                        setCompanyContext={setCompanyContext}
+                                        companyLoading={companyLoading}
+                                        setCompanyLoading={setCompanyLoading}
+                                        companySaving={companySaving}
+                                        setCompanySaving={setCompanySaving}
+                                        companyError={companyError}
+                                        setCompanyError={setCompanyError}
+                                        assetUploading={assetUploading}
+                                        setAssetUploading={setAssetUploading}
+                                        isPremium={isPremium}
+                                        setIsPremiumModalOpen={setIsPremiumModalOpen}
+                                        isLight={isLight}
+                                    />
+                                )}
+
                                 {activeTab === 'about' && (
                                     <AboutSection />
                                 )}
@@ -3241,6 +3291,7 @@ const SettingsOverlay: React.FC<SettingsOverlayProps> = ({ isOpen, onClose, init
                 </motion.div>
             )
             }
+
             <PremiumUpgradeModal
                 isOpen={isPremiumModalOpen}
                 onClose={() => setIsPremiumModalOpen(false)}
@@ -3257,20 +3308,6 @@ const SettingsOverlay: React.FC<SettingsOverlayProps> = ({ isOpen, onClose, init
                 }}
             />
 
-            {/* ------------------------------------------------------------------ */}
-            {/* Live Preview — mockup sits below the z-50 modal                    */}
-            {/* ------------------------------------------------------------------ */}
-            {/* ------------------------------------------------------------------ */}
-            {/* Live Preview — mockup sits below the z-50 modal                    */}
-            {/* ALWAYS MOUNTED to prevent React AnimatePresence lag spikes         */}
-            {/* ------------------------------------------------------------------ */}
-            {/* <div
-                id="settings-mockup-wrapper"
-                className="fixed inset-0 z-[49] pointer-events-none transition-opacity duration-150"
-                style={{ opacity: isPreviewingOpacity ? 1 : 0 }}
-            >
-                <MockupDock opacity={previewOverlayOpacity} />
-            </div> */}
         </AnimatePresence >
     );
 };

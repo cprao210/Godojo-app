@@ -291,6 +291,16 @@ interface ElectronAPI {
   profileGetProfile: () => Promise<any>;
   profileSelectFile: () => Promise<{ success?: boolean; cancelled?: boolean; filePath?: string; error?: string }>;
 
+  // Company Context API
+  companyGetContext: () => Promise<any>;
+  companySaveContext: (data: any) => Promise<{ success: boolean; error?: string }>;
+  companyUploadAsset: (type: string, filePath: string) => Promise<{ success: boolean; asset?: any; error?: string }>;
+  companyDeleteAsset: (assetId: string) => Promise<{ success: boolean; error?: string }>;
+  companySyncAsset: (assetId: string) => Promise<{ success: boolean; status?: string; error?: string }>;
+  companySetPersonaEngine: (enabled: boolean) => Promise<{ success: boolean; error?: string }>;
+  companySelectFile: () => Promise<{ filePath?: string; fileName?: string; fileSize?: number; cancelled?: boolean; success?: boolean; error?: string }>;
+  companyGetCompleteness: () => Promise<number>;
+
   // JD & Research API
   profileUploadJD: (filePath: string) => Promise<{ success: boolean; error?: string }>;
   profileDeleteJD: () => Promise<{ success: boolean; error?: string }>;
@@ -1214,6 +1224,16 @@ contextBridge.exposeInMainWorld("electronAPI", {
   profileGenerateNegotiation: (force?: boolean) => ipcRenderer.invoke('profile:generate-negotiation', force),
   profileGetNegotiationState: () => ipcRenderer.invoke('profile:get-negotiation-state'),
   profileResetNegotiation: () => ipcRenderer.invoke('profile:reset-negotiation'),
+
+  // Company Context API
+  companyGetContext: () => ipcRenderer.invoke('company:getContext'),
+  companySaveContext: (data: any) => ipcRenderer.invoke('company:saveContext', data),
+  companyUploadAsset: (type: string, filePath: string) => ipcRenderer.invoke('company:uploadAsset', type, filePath),
+  companyDeleteAsset: (assetId: string) => ipcRenderer.invoke('company:deleteAsset', assetId),
+  companySyncAsset: (assetId: string) => ipcRenderer.invoke('company:syncAsset', assetId),
+  companySetPersonaEngine: (enabled: boolean) => ipcRenderer.invoke('company:setPersonaEngine', enabled),
+  companySelectFile: () => ipcRenderer.invoke('company:selectFile'),
+  companyGetCompleteness: () => ipcRenderer.invoke('company:getCompleteness'),
 
   // Tavily Search API
   setTavilyApiKey: (apiKey: string) => ipcRenderer.invoke('set-tavily-api-key', apiKey),

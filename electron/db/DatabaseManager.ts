@@ -1,4 +1,3 @@
-
 import Database from 'better-sqlite3';
 import path from 'path';
 import { app } from 'electron';
@@ -524,6 +523,67 @@ export class DatabaseManager {
             this.db.pragma('user_version = 10');
         }
 
+        // Version 10 → 11: Add company_context, company_assets, company_personas, company_competitors
+        if (version < 11) {
+            console.log('[DatabaseManager] Applying migration v10 → v11: Add company_context tables');
+            this.db.exec(`
+                CREATE TABLE IF NOT EXISTS company_context (
+                    id INTEGER PRIMARY KEY,
+                    name TEXT DEFAULT '',
+                    website TEXT DEFAULT '',
+                    industry TEXT DEFAULT '',
+                    persona_engine_enabled INTEGER DEFAULT 0,
+                    core_value_proposition TEXT DEFAULT '',
+                    data_completeness INTEGER DEFAULT 0,
+                    updated_at TEXT DEFAULT CURRENT_TIMESTAMP
+                );
+                CREATE TABLE IF NOT EXISTS company_assets (
+                    id TEXT PRIMARY KEY,
+                    type TEXT NOT NULL,
+                    label TEXT,
+                    status TEXT DEFAULT 'processing',
+                    file_path TEXT,
+                    last_updated TEXT DEFAULT CURRENT_TIMESTAMP
+                );
+                CREATE TABLE IF NOT EXISTS company_personas (
+                    id TEXT PRIMARY KEY,
+                    role TEXT NOT NULL,
+                    description TEXT DEFAULT '',
+                    sort_order INTEGER DEFAULT 0
+                );
+                CREATE TABLE IF NOT EXISTS company_competitors (
+                    id TEXT PRIMARY KEY,
+                    name TEXT NOT NULL,
+                    moat TEXT DEFAULT '',
+                    win_rate REAL DEFAULT 0,
+                    sort_order INTEGER DEFAULT 0
+                );
+            `);
+            this.db.pragma('user_version = 11');
+        }
+
+        // Version 11 → 12: Add company_personas and company_competitors tables
+        // (v11 was shipped without these tables; this migration adds them to existing installs)
+        if (version < 12) {
+            console.log('[DatabaseManager] Applying migration v11 → v12: Add company_personas and company_competitors tables');
+            this.db.exec(`
+                CREATE TABLE IF NOT EXISTS company_personas (
+                    id TEXT PRIMARY KEY,
+                    role TEXT NOT NULL,
+                    description TEXT DEFAULT '',
+                    sort_order INTEGER DEFAULT 0
+                );
+                CREATE TABLE IF NOT EXISTS company_competitors (
+                    id TEXT PRIMARY KEY,
+                    name TEXT NOT NULL,
+                    moat TEXT DEFAULT '',
+                    win_rate REAL DEFAULT 0,
+                    sort_order INTEGER DEFAULT 0
+                );
+            `);
+            this.db.pragma('user_version = 12');
+        }
+
         console.log('[DatabaseManager] Migrations completed.');
     }
 
@@ -574,6 +634,161 @@ export class DatabaseManager {
             }
         } catch (error) {
             console.error(`[DatabaseManager] Failed to delete app_state for key: ${key}`, error);
+        }
+    }
+
+    // ============================================
+    // Company Context
+    // ============================================
+
+    public getCompanyContext(): any | null {
+        if (!this.db) return null;
+        try {
+            const identity = this.db.prepare('SELECT * FROM company_context WHERE id = 1').get() as any;
+            if (!identity) return null;
+
+            const assets = (() => {
+                try { return this.db!.prepare('SELECT * FROM company_assets ORDER BY last_updated DESC').all() as any[]; }
+                catch { return []; }
+            })();
+            const personas = (() => {
+                try { return this.db!.prepare('SELECT * FROM company_personas ORDER BY sort_order ASC').all() as any[]; }
+                catch { return []; }
+            })();
+            const competitors = (() => {
+                try { return this.db!.prepare('SELECT * FROM company_competitors ORDER BY sort_order ASC').all() as any[]; }
+                catch { return []; }
+            })();
+
+            return {
+                identity: {
+                    name: identity.name ?? '',
+                    website: identity.website ?? '',
+                    industry: identity.industry ?? '',
+                    personaEngineEnabled: !!identity.persona_engine_enabled,
+                },
+                coreValueProposition: identity.core_value_proposition ?? '',
+                assets: assets.map((a: any) => ({
+                    id: a.id,
+                    type: a.type,
+                    label: a.label,
+                    status: a.status,
+                    filePath: a.file_path,
+                    lastUpdated: a.last_updated,
+                })),
+                targetPersonas: personas.map((p: any) => ({
+                    id: p.id,
+                    role: p.role,
+                    description: p.description ?? '',
+                })),
+                competitors: competitors.map((c: any) => ({
+                    id: c.id,
+                    name: c.name,
+                    moat: c.moat ?? '',
+                    winRate: c.win_rate ?? 0,
+                })),
+                dataCompleteness: identity.data_completeness ?? 0,
+                completenessBreakdown: {
+                    hasIdentity: !!(identity.name && identity.industry),
+                    hasValueProp: (identity.core_value_proposition ?? '').trim().length > 20,
+                    hasAssets: assets.some((a: any) => a.status === 'mapped'),
+                    hasPersonaEngine: !!identity.persona_engine_enabled,
+                },
+            };
+        } catch (e) {
+            console.error('[DatabaseManager] getCompanyContext failed:', e);
+            return null;
+        }
+    }
+
+    public saveCompanyContext(data: any): void {
+        if (!this.db) return;
+        try {
+            const identity = data.identity ?? {};
+            const checks = [
+                !!(identity.name && identity.industry),
+                (data.coreValueProposition ?? '').trim().length > 20,
+                (data.assets ?? []).some((a: any) => a.status === 'mapped'),
+                !!identity.personaEngineEnabled,
+            ];
+            const completeness = Math.round((checks.filter(Boolean).length / 4) * 100);
+            this.db.prepare(`
+                INSERT OR REPLACE INTO company_context
+                    (id, name, website, industry, persona_engine_enabled, core_value_proposition, data_completeness, updated_at)
+                VALUES (1, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+            `).run(
+                identity.name ?? '',
+                identity.website ?? '',
+                identity.industry ?? '',
+                identity.personaEngineEnabled ? 1 : 0,
+                data.coreValueProposition ?? '',
+                completeness,
+            );
+        } catch (e) {
+            console.error('[DatabaseManager] saveCompanyContext failed:', e);
+        }
+    }
+
+    public upsertCompanyAsset(asset: { id: string; type: string; label: string; status: string; filePath?: string }): void {
+        if (!this.db) return;
+        try {
+            this.db.prepare(`
+                INSERT OR REPLACE INTO company_assets (id, type, label, status, file_path, last_updated)
+                VALUES (?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+            `).run(asset.id, asset.type, asset.label, asset.status, asset.filePath ?? null);
+        } catch (e) {
+            console.error('[DatabaseManager] upsertCompanyAsset failed:', e);
+        }
+    }
+
+    public deleteCompanyAsset(assetId: string): void {
+        if (!this.db) return;
+        try {
+            this.db.prepare('DELETE FROM company_assets WHERE id = ?').run(assetId);
+        } catch (e) {
+            console.error('[DatabaseManager] deleteCompanyAsset failed:', e);
+        }
+    }
+
+    public upsertCompanyPersona(persona: { id: string; role: string; description: string }, sortOrder: number = 0): void {
+        if (!this.db) return;
+        try {
+            this.db.prepare(`
+                INSERT OR REPLACE INTO company_personas (id, role, description, sort_order)
+                VALUES (?, ?, ?, ?)
+            `).run(persona.id, persona.role, persona.description ?? '', sortOrder);
+        } catch (e) {
+            console.error('[DatabaseManager] upsertCompanyPersona failed:', e);
+        }
+    }
+
+    public deleteCompanyPersona(personaId: string): void {
+        if (!this.db) return;
+        try {
+            this.db.prepare('DELETE FROM company_personas WHERE id = ?').run(personaId);
+        } catch (e) {
+            console.error('[DatabaseManager] deleteCompanyPersona failed:', e);
+        }
+    }
+
+    public upsertCompanyCompetitor(competitor: { id: string; name: string; moat: string; winRate: number }, sortOrder: number = 0): void {
+        if (!this.db) return;
+        try {
+            this.db.prepare(`
+                INSERT OR REPLACE INTO company_competitors (id, name, moat, win_rate, sort_order)
+                VALUES (?, ?, ?, ?, ?)
+            `).run(competitor.id, competitor.name, competitor.moat ?? '', competitor.winRate ?? 0, sortOrder);
+        } catch (e) {
+            console.error('[DatabaseManager] upsertCompanyCompetitor failed:', e);
+        }
+    }
+
+    public deleteCompanyCompetitor(competitorId: string): void {
+        if (!this.db) return;
+        try {
+            this.db.prepare('DELETE FROM company_competitors WHERE id = ?').run(competitorId);
+        } catch (e) {
+            console.error('[DatabaseManager] deleteCompanyCompetitor failed:', e);
         }
     }
 

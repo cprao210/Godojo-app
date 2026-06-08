@@ -17,6 +17,7 @@ import { IoSparklesSharp } from 'react-icons/io5';
 import NextMeetingCard from './NextMeetingCard';
 import MeetingTimeline from './MeetingTimeline';
 import godojoLogo from '../assets/logo-variant-3.svg';
+import { loadUserProfile } from './settings/UserProfileTab';
 
 interface Meeting {
     id: string;
@@ -94,6 +95,17 @@ const Launcher: React.FC<LauncherProps> = ({ onStartMeeting, onOpenSettings, onP
     // Global search state (for AI chat overlay)
     const [isGlobalChatOpen, setIsGlobalChatOpen] = useState(false);
     const [submittedGlobalQuery, setSubmittedGlobalQuery] = useState('');
+
+    const [localProfile, setLocalProfile] = useState(() => loadUserProfile());
+    useEffect(() => {
+        const handler = (e: StorageEvent) => {
+            if (e.key === 'gd_user_profile') setLocalProfile(loadUserProfile());
+        };
+        window.addEventListener('storage', handler);
+        return () => window.removeEventListener('storage', handler);
+    }, []);
+
+    const effectiveName = localProfile.displayName || authUser?.displayName || authUser?.email?.split('@')[0] || '';
 
     const fetchMeetings = () => {
         if (window.electronAPI && window.electronAPI.getRecentMeetings) {
@@ -565,7 +577,7 @@ const Launcher: React.FC<LauncherProps> = ({ onStartMeeting, onOpenSettings, onP
                                             <IoSparklesSharp className="text-blue-500 shrink-0" size={22} />
                                             <div>
                                                 <h1 className="text-xl font-semibold tracking-tight text-text-primary">
-                                                    Welcome back{authUser?.displayName ? `, ${authUser.displayName.split(' ')[0]}` : ''}
+                                                    Welcome back{effectiveName ? `, ${effectiveName.split(' ')[0]}` : ''}
                                                 </h1>
                                                 <p className="text-xs mt-0.5 text-text-secondary">
                                                     Your meetings, transcripts and AI insights — all in one place.
@@ -809,7 +821,7 @@ const Launcher: React.FC<LauncherProps> = ({ onStartMeeting, onOpenSettings, onP
                                             <div className="relative flex-1 space-y-3">
                                                 {[
                                                     { icon: Zap, label: "Auto-detect meetings", color: "text-yellow-400" },
-                                                    { icon: Briefcase, label: "AI sales brief per event", color: "text-blue-400" },
+                                                    { icon: Briefcase, label: "Company insights per event", color: "text-blue-400" },
                                                     { icon: Calendar, label: "One-click join", color: "text-purple-400" },
                                                 ].map(({ icon: Icon, label, color }) => (
                                                     <div key={label} className="flex items-center gap-2.5">

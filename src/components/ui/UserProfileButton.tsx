@@ -2,6 +2,7 @@ import React, { useState, useRef, useEffect } from 'react';
 import { LogOut, ChevronDown } from 'lucide-react';
 import { useResolvedTheme } from '../../hooks/useResolvedTheme';
 import { isMac } from '../../utils/platformUtils';
+import { loadUserProfile } from '../settings/UserProfileTab';
 
 interface UserProfileButtonProps {
     displayName?: string | null;
@@ -50,7 +51,24 @@ const UserProfileButton: React.FC<UserProfileButtonProps> = ({
         return () => document.removeEventListener('keydown', handleKey);
     }, [isOpen]);
 
-    const shortName = displayName || email?.split('@')[0] || 'Account';
+    const [localProfile, setLocalProfile] = useState(() => loadUserProfile());
+
+    // Re-read when another tab saves the profile
+    useEffect(() => {
+        const handler = (e: StorageEvent) => {
+            if (e.key === 'gd_user_profile') {
+                setLocalProfile(loadUserProfile());
+            }
+        };
+        window.addEventListener('storage', handler);
+        return () => window.removeEventListener('storage', handler);
+    }, []);
+
+    // Merge: local profile name/photo takes priority over Firebase auth data
+    const effectiveName = localProfile.displayName || displayName || email?.split('@')[0] || 'Account';
+    const effectivePhoto = localProfile.photoDataUrl || photoURL || null;
+    const shortName = effectiveName;
+    const initials = effectiveName.split(' ').map((w: string) => w[0]).join('').slice(0, 2).toUpperCase() || 'U';
 
     // Menu items — easily extendable in the future
     const menuItems: MenuItem[] = [
@@ -87,10 +105,15 @@ const UserProfileButton: React.FC<UserProfileButtonProps> = ({
                 ].join(" ")}
             >
                 <div className={[
-                    "rounded-full bg-gradient-to-br from-blue-500 to-blue-700 flex items-center justify-center text-white font-bold ring-2 ring-blue-500/30",
-                    isMac ? "h-7 w-7 text-xs" : "h-5 w-5 text-[10px]",   // ← shrink on Windows
-                ].join(" ")}>
-                    {displayName?.[0]?.toUpperCase() ?? email?.[0]?.toUpperCase() ?? 'U'}
+                    "rounded-full flex items-center justify-center overflow-hidden ring-2 ring-blue-500/30",
+                    isMac ? "h-7 w-7 text-xs" : "h-5 w-5 text-[10px]",
+                ].join(" ")}
+                    style={!effectivePhoto ? { background: 'linear-gradient(135deg, #3b82f6, #1d4ed8)' } : undefined}
+                >
+                    {effectivePhoto
+                        ? <img src={effectivePhoto} alt={shortName} className="w-full h-full object-cover" referrerPolicy="no-referrer" />
+                        : <span className="text-white font-bold">{initials}</span>
+                    }
                 </div>
                 <span className={["text-xs font-medium", isLight ? "text-text-primary" : "text-white"].join(" ")}>
                     {displayName?.split(' ')[0] ?? email?.split('@')[0] ?? 'Account'}
@@ -112,29 +135,29 @@ const UserProfileButton: React.FC<UserProfileButtonProps> = ({
                     <div className="px-3 py-2.5 border-b border-border-subtle">
                         <div className="flex items-center gap-2.5">
                             <div className="w-8 h-8 rounded-full overflow-hidden flex items-center justify-center bg-[var(--bg-item-surface)] shrink-0 ring-1 ring-white/10">
-                                {photoURL ? (
+                                {effectivePhoto ? (
                                     <img
-                                        src={photoURL}
+                                        src={effectivePhoto}
                                         alt={shortName}
                                         className="w-full h-full object-cover"
                                         referrerPolicy="no-referrer"
                                     />
                                 ) : (
-                                    <>
-                                        <div className={[
-                                            "rounded-full bg-gradient-to-br from-blue-500 to-blue-700 flex items-center justify-center text-white font-bold ring-2 ring-blue-500/30",
-                                            "h-7 w-7 text-xs",
-                                        ].join(" ")}>
-                                            {displayName?.[0]?.toUpperCase() ?? email?.[0]?.toUpperCase() ?? 'U'}
-                                        </div>
-                                    </>
+                                    <div className="w-full h-full bg-gradient-to-br from-blue-500 to-blue-700 flex items-center justify-center text-white font-bold text-xs">
+                                        {initials}
+                                    </div>
                                 )}
                             </div>
                             <div className="flex flex-col min-w-0">
                                 <span className="text-[12px] font-semibold truncate text-text-primary">
-                                    {displayName || shortName}
+                                    {effectiveName}
                                 </span>
-                                {email && (
+                                {(localProfile.role || localProfile.organization) && (
+                                    <span className="text-[10px] text-text-secondary truncate">
+                                        {localProfile.role}{localProfile.organization ? ` · ${localProfile.organization}` : ''}
+                                    </span>
+                                )}
+                                {email && !localProfile.role && (
                                     <span className="text-[10px] text-text-secondary truncate">{email}</span>
                                 )}
                             </div>

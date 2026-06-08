@@ -286,7 +286,6 @@ export function initializeIpcHandlers(appState: AppState): void {
     return { success: true };
   });
 
-
   // Generate suggestion from transcript - Natively-style text-only reasoning
   safeHandle("generate-suggestion", async (event, context: string, lastQuestion: string) => {
     try {
@@ -2232,28 +2231,38 @@ export function initializeIpcHandlers(appState: AppState): void {
       }
 
       // Run parallel Tavily searches for different intel categories
-      const tavilySearch = async (query: string, maxResults = 3): Promise<any[]> => {
+      const tavilySearch = async (query: string, maxResults = 4): Promise<any[]> => {
         const res = await fetch('https://api.tavily.com/search', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${tavilyApiKey}` },
-          body: JSON.stringify({ query, max_results: maxResults, search_depth: 'basic', include_answer: true }),
+          body: JSON.stringify({
+            query,
+            max_results: maxResults,
+            search_depth: 'advanced',   // advanced depth gives higher-quality, more specific results
+            include_answer: true,
+            include_domains: domain ? [domain] : [],  // bias results toward the known domain when available
+          }),
         });
         if (!res.ok) throw new Error(`Tavily error: ${res.status}`);
         const data = await res.json() as any;
         return data.results || [];
       };
 
-      const linkedinQuery = domain
-        ? `site:linkedin.com/company ${companyName} OR site:linkedin.com/company ${domain.split('.')[0]}`
-        : `site:linkedin.com/company "${companyName}"`;
+      // When a domain is known, anchor every query to it so same-name companies
+      // from different industries cannot bleed into the results.
+      const domainAnchor = domain ? `"${domain}"` : `"${companyName}"`;
+      const nameAndDomain = domain ? `"${companyName}" ${domain}` : `"${companyName}"`;
+
+      const linkedinSlug = domain ? domain.split('.')[0] : companyName.toLowerCase().replace(/\s+/g, '-');
+      const linkedinQuery = `site:linkedin.com/company ${linkedinSlug} "${companyName}"`;
 
       const [overviewResults, fundingResults, newsResults, leadershipResults, competitorResults, linkedinResults] = await Promise.allSettled([
-        tavilySearch(`${companyName} company overview founded headquarters employees industry`),
-        tavilySearch(`${companyName} funding valuation investors series revenue`),
-        tavilySearch(`${companyName} latest news announcements 2024 2025`, 4),
-        tavilySearch(`${companyName} leadership CEO CRO CMO executive changes`),
-        tavilySearch(`${companyName} competitors products customers clients`),
-        tavilySearch(linkedinQuery, 2),  // LinkedIn-specific: headcount, about, specialties
+        tavilySearch(`${nameAndDomain} company overview founded headquarters employees industry`),
+        tavilySearch(`${nameAndDomain} funding valuation investors series revenue`),
+        tavilySearch(`${nameAndDomain} latest news announcements 2024 2025`, 5),
+        tavilySearch(`${nameAndDomain} leadership CEO CRO CMO executive team`),
+        tavilySearch(`${nameAndDomain} competitors alternative products market`, 5),
+        tavilySearch(linkedinQuery, 2),
       ]);
 
       const extract = (r: PromiseSettledResult<any[]>) => r.status === 'fulfilled' ? r.value : [];
@@ -2267,58 +2276,77 @@ export function initializeIpcHandlers(appState: AppState): void {
       // Aggregate all snippets and pass to LLM for structured extraction
       const linkedinSnippets = extract(linkedinResults).map((r: any) => r.content || r.snippet || '').filter(Boolean);
 
+      // Format each result as "[SOURCE: url]\ncontent" so the LLM can judge
+      // whether a snippet actually refers to the target company.
+      const formatResults = (results: any[]) =>
+        results
+          .filter((r: any) => (r.content || r.snippet || '').trim())
+          .map((r: any) => `[SOURCE: ${r.url || 'unknown'}]\n${(r.content || r.snippet || '').trim()}`)
+          .join('\n\n');
+
       const allSnippets = [
         '=== GENERAL OVERVIEW ===',
-        ...extract(overviewResults).map((r: any) => r.content || r.snippet || ''),
+        formatResults(extract(overviewResults)),
         '=== FUNDING & FINANCIALS ===',
-        ...extract(fundingResults).map((r: any) => r.content || r.snippet || ''),
+        formatResults(extract(fundingResults)),
         '=== RECENT NEWS ===',
-        ...extract(newsResults).map((r: any) => r.content || r.snippet || ''),
+        formatResults(extract(newsResults)),
         '=== LEADERSHIP ===',
-        ...extract(leadershipResults).map((r: any) => r.content || r.snippet || ''),
-        '=== COMPETITORS & CUSTOMERS ===',
-        ...extract(competitorResults).map((r: any) => r.content || r.snippet || ''),
-        ...(linkedinSnippets.length ? ['=== LINKEDIN COMPANY PROFILE (authoritative — prefer for headcount, description, specialties, founding year) ===', ...linkedinSnippets] : []),
+        formatResults(extract(leadershipResults)),
+        '=== COMPETITORS & MARKET ===',
+        formatResults(extract(competitorResults)),
+        ...(extract(linkedinResults).length
+          ? ['=== LINKEDIN (authoritative for headcount, description, founding year) ===',
+            formatResults(extract(linkedinResults))]
+          : []),
       ].filter(Boolean).join('\n\n---\n\n');
 
       const llmHelper = appState.processingHelper.getLLMHelper();
 
-      const extractionPrompt = `You are a company research analyst. Extract structured company intelligence from the web search snippets below and return ONLY a valid JSON object. No markdown, no explanation.
+      const extractionPrompt = `You are a company research analyst. Extract structured intelligence ONLY about the specific company identified below. Return ONLY a valid JSON object — no markdown, no explanation.
 
-Company: ${companyName}${domain ? `\nWebsite: ${domain}` : ''}
-
-Web search snippets:
-${allSnippets.slice(0, 8000)}
-
-Return this exact JSON structure (use null for unknown fields, never omit a key):
-{
-  "companyName": string,
-  "website": string | null,
-  "foundedYear": number | null,
-  "companyAge": number | null,
-  "founders": string[] | null,
-  "headquarters": string | null,
-  "employeeCount": string | null,
-  "industry": string | null,
-  "revenue": string | null,
-  "valuation": string | null,
-  "fundingStage": string | null,
-  "latestFundingNews": string | null,
-  "investors": string[] | null,
-  "keyProducts": string[] | null,
-  "competitors": string[] | null,
-  "recentNews": [{ "headline": string, "date": string | null }] | null,
-  "leadershipChanges": [{ "name": string, "role": string, "date": string | null }] | null,
-  "linkedinUrl": string | null,
-  "businessModel": string | null,
-  "geographicPresence": string[] | null,
-  "topCustomers": string[] | null
-}
-
-RULES:
-- All string[] fields MUST be JSON arrays (e.g. ["Alice", "Bob"]), never comma-separated strings
-- Use null for any field you cannot determine from the snippets
-- Do not add keys beyond those listed above`;
+      TARGET COMPANY: ${companyName}${domain ? `\nTARGET WEBSITE/DOMAIN: ${domain}` : ''}
+      
+      CRITICAL DISAMBIGUATION RULES (read before processing):
+      1. Many companies share similar names. Every data point you extract MUST be verifiable from a snippet whose [SOURCE] URL belongs to ${domain ? `"${domain}"` : `"${companyName}"`} or a known authority (LinkedIn, Crunchbase, Bloomberg, TechCrunch, Reuters, etc.) that explicitly mentions ${companyName}${domain ? ` or ${domain}` : ''}.
+      2. If a snippet's source domain does not match and does not clearly reference the TARGET company by full name, IGNORE that snippet entirely — do not extract from it.
+      3. For "competitors": list only companies that are described as direct competitors TO ${companyName} in the snippets. Do NOT list companies that merely appear in the same snippet by coincidence. If no competitors can be confirmed, return null.
+      4. For "recentNews": include only headlines that are explicitly about ${companyName}${domain ? ` (${domain})` : ''}. If the same company name could refer to multiple organizations, only include news where the snippet's source URL or content confirms it is about the target. If unsure, exclude it — null is better than wrong data.
+      5. Never infer or hallucinate. If a field cannot be directly confirmed from the provided snippets, set it to null.
+      
+      Web search snippets (each prefixed with its source URL):
+      ${allSnippets.slice(0, 10000)}
+      
+      Return this exact JSON structure (use null for unknown fields, never omit a key):
+      {
+        "companyName": string,
+        "website": string | null,
+        "foundedYear": number | null,
+        "companyAge": number | null,
+        "founders": string[] | null,
+        "headquarters": string | null,
+        "employeeCount": string | null,
+        "industry": string | null,
+        "revenue": string | null,
+        "valuation": string | null,
+        "fundingStage": string | null,
+        "latestFundingNews": string | null,
+        "investors": string[] | null,
+        "keyProducts": string[] | null,
+        "competitors": string[] | null,
+        "recentNews": [{ "headline": string, "date": string | null, "source": string | null }] | null,
+        "leadershipChanges": [{ "name": string, "role": string, "date": string | null }] | null,
+        "linkedinUrl": string | null,
+        "businessModel": string | null,
+        "geographicPresence": string[] | null,
+        "topCustomers": string[] | null
+      }
+      
+      ADDITIONAL RULES:
+      - All string[] fields MUST be JSON arrays, never comma-separated strings
+      - "recentNews[].source" should be the domain of the article URL (e.g. "techcrunch.com")
+      - Use null for any field you cannot confirm from the snippets
+      - Do not add keys beyond those listed above`;
 
       const raw = await llmHelper.chatWithGemini(extractionPrompt, undefined, undefined, false);
       if (!raw) return { success: false, error: 'LLM extraction failed' };
@@ -2404,6 +2432,165 @@ RULES:
     } catch (error: any) {
       console.error('[IPC] fetch-company-intel error:', error);
       return { success: false, error: error.message || 'Unknown error' };
+    }
+  });
+
+  // ==========================================
+  // Company Context IPC Handlers
+  // ==========================================
+
+  safeHandle('company:getContext', async () => {
+    try {
+      // Prefer DB (source of truth); fall back to SettingsManager for pre-migration data
+      const dbCtx = DatabaseManager.getInstance().getCompanyContext();
+      if (dbCtx) return dbCtx;
+      const { SettingsManager } = require('./services/SettingsManager');
+      return SettingsManager.getInstance().get('companyContext') ?? null;
+    } catch (error: any) {
+      return null;
+    }
+  });
+
+  safeHandle('company:saveContext', async (_, data: any) => {
+    try {
+      const db = DatabaseManager.getInstance();
+
+      // 1. Persist identity + value prop
+      db.saveCompanyContext(data);
+
+      // 2. Sync assets: upsert all in draft, delete removed
+      const existing = db.getCompanyContext();
+      const incomingAssetIds = new Set<string>((data.assets ?? []).map((a: any) => a.id));
+      for (const a of (existing?.assets ?? [])) {
+        if (!incomingAssetIds.has(a.id)) db.deleteCompanyAsset(a.id);
+      }
+      for (const asset of (data.assets ?? [])) {
+        db.upsertCompanyAsset(asset);
+      }
+
+      // 3. Sync targetPersonas
+      const incomingPersonaIds = new Set<string>((data.targetPersonas ?? []).map((p: any) => p.id));
+      for (const p of (existing?.targetPersonas ?? [])) {
+        if (!incomingPersonaIds.has(p.id)) db.deleteCompanyPersona(p.id);
+      }
+      (data.targetPersonas ?? []).forEach((p: any, i: number) => db.upsertCompanyPersona(p, i));
+
+      // 4. Sync competitors
+      const incomingCompetitorIds = new Set<string>((data.competitors ?? []).map((c: any) => c.id));
+      for (const c of (existing?.competitors ?? [])) {
+        if (!incomingCompetitorIds.has(c.id)) db.deleteCompanyCompetitor(c.id);
+      }
+      (data.competitors ?? []).forEach((c: any, i: number) => db.upsertCompanyCompetitor(c, i));
+
+      // 5. Mirror to SettingsManager for fast in-process reads
+      const { SettingsManager } = require('./services/SettingsManager');
+      SettingsManager.getInstance().set('companyContext', data);
+
+      return { success: true };
+    } catch (error: any) {
+      return { success: false, error: error.message };
+    }
+  });
+
+  safeHandle('company:selectFile', async () => {
+    try {
+      const result: any = await dialog.showOpenDialog({
+        properties: ['openFile'],
+        filters: [
+          { name: 'Documents', extensions: ['pdf', 'doc', 'docx', 'ppt', 'pptx'] }
+        ]
+      });
+      if (result.canceled || result.filePaths.length === 0) {
+        return { cancelled: true };
+      }
+      const fp: string = result.filePaths[0];
+      const { statSync } = require('fs');
+      const { basename } = require('path');
+      const stat = statSync(fp);
+      return { success: true, filePath: fp, fileName: basename(fp), fileSize: stat.size };
+    } catch (error: any) {
+      return { success: false, error: error.message };
+    }
+  });
+
+  safeHandle('company:uploadAsset', async (_, type: string, filePath: string) => {
+    try {
+      const fs = require('fs');
+      if (!fs.existsSync(filePath)) {
+        return { success: false, error: 'File not found. Please re-select the file.' };
+      }
+
+      // Try KnowledgeOrchestrator if available (premium) — non-fatal if missing
+      try {
+        const orchestrator = appState.getKnowledgeOrchestrator?.();
+        if (orchestrator) {
+          const { DocType } = require('../premium/electron/knowledge/types');
+          await orchestrator.ingestDocument(filePath, DocType.RESUME);
+        }
+      } catch (ingestionErr: any) {
+        console.warn('[IPC] company:uploadAsset — knowledge ingestion skipped:', ingestionErr.message);
+      }
+
+      const LABEL_MAP: Record<string, string> = {
+        sales_deck: 'Sales Deck',
+        product_specs: 'Product Specs',
+        case_studies: 'Case Studies',
+        custom: 'Custom Asset',
+      };
+
+      const asset = {
+        id: `${type}-${Date.now()}`,
+        type,
+        label: LABEL_MAP[type] ?? type,
+        status: 'mapped',
+        lastUpdated: new Date().toISOString(),
+        filePath,
+      };
+
+      // NOTE: No DB or SettingsManager write here.
+      // The asset lives in the frontend draft until the user clicks "Save Intelligence Base",
+      // at which point company:saveContext persists everything atomically.
+      return { success: true, asset };
+    } catch (error: any) {
+      console.error('[IPC] company:uploadAsset error:', error);
+      return { success: false, error: error.message };
+    }
+  });
+
+  safeHandle('company:deleteAsset', async (_assetId: string) => {
+    // NOTE: No DB write here. The frontend removes the asset from draft immediately.
+    // The deletion is committed to DB atomically when the user clicks "Save Intelligence Base"
+    // via company:saveContext, which diffs and deletes any assets no longer in the saved draft.
+    return { success: true };
+  });
+
+  safeHandle('company:syncAsset', async (_assetId: string) => {
+    // NOTE: No DB write here. The frontend updates the asset status in draft.
+    // The updated status is committed to DB when the user clicks "Save Intelligence Base".
+    return { success: true, status: 'mapped' };
+  });
+
+  safeHandle('company:setPersonaEngine', async (_enabled: boolean) => {
+    // NOTE: No DB write here. The toggle updates the frontend draft only.
+    // Committed to DB on "Save Intelligence Base" via company:saveContext.
+    return { success: true };
+  });
+
+  safeHandle('company:getCompleteness', async () => {
+    try {
+      const { SettingsManager } = require('./services/SettingsManager');
+      const sm = SettingsManager.getInstance();
+      const ctx = sm.get('companyContext');
+      if (!ctx) return 0;
+      const checks = [
+        !!(ctx.identity?.name && ctx.identity?.industry),
+        (ctx.coreValueProposition ?? '').trim().length > 20,
+        (ctx.assets ?? []).some((a: any) => a.status === 'mapped'),
+        !!ctx.identity?.personaEngineEnabled,
+      ];
+      return Math.round((checks.filter(Boolean).length / 4) * 100);
+    } catch {
+      return 0;
     }
   });
 
