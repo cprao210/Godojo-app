@@ -405,11 +405,10 @@ const App: React.FC = () => {
   if (isOverlayWindow) {
     return (
       <ErrorBoundary context="Overlay">
-        <div className="w-fit h-fit relative bg-transparent">
+        <div className="w-[550px] relative bg-transparent">
           <QueryClientProvider client={queryClient}>
             <ToastProvider>
               <div
-                className="w-fit h-fit"
                 style={{
                   ['--overlay-opacity' as '--overlay-opacity']: String(overlayOpacity),
                   transition: 'background-color 75ms ease, border-color 75ms ease, box-shadow 75ms ease'

@@ -171,15 +171,90 @@ export const FloatingDock: React.FC<FloatingDockProps> = ({
 
             <motion.div
                 ref={constraintsRef}
-                className={`relative w-fit mx-auto h-fit bg-transparent max-w-full rounded-2xl items-center flex flex-col min-h-0 ${overlayPanelClass}`}
+                className={`relative w-[480px] mx-auto h-fit bg-transparent max-w-full rounded-2xl items-center flex flex-col min-h-0 ${overlayPanelClass}`}
+                style={{ height: '750px' }}
             >
-                {/* Dock */}
+
+                {/* Overlay Panel (above dock) */}
+                <AnimatePresence mode="wait">
+                    {activePanel && (
+                        <motion.div
+                            key={activePanel}
+                            initial={{ opacity: 0, y: 20, scale: 0.96 }}
+                            animate={{ opacity: dockOpacity, y: 0, scale: 1 }}
+                            exit={{ opacity: 0, y: 12, scale: 0.97 }}
+                            transition={{ type: 'spring', damping: 28, stiffness: 380, mass: 0.8 }}
+                            className={`fixed ${activePanel === "settings" ? "top-[110px]" : rollingTranscriptClient.length > 0 ? "bottom-[90px]" : "bottom-[75px]"} left-[65px]`}
+                            style={{ position: 'fixed' }}
+                        >
+                            {/* Freeze overlay — keeps panel visible but blocks all interaction */}
+                            {isFrozen && (
+                                <div
+                                    className="absolute inset-0 rounded-2xl z-50"
+                                    style={{
+                                        pointerEvents: 'auto',
+                                        background: 'rgba(0,0,0,0.10)',
+                                        cursor: 'not-allowed',
+                                    }}
+                                />
+                            )}
+                            {activePanel === 'intelligence' && (
+                                <FloatingIntelligencePanel
+                                    isMeetingPaused={isMeetingPaused}
+                                    analysisData={analysisData}
+                                    analysisError={analysisError}
+                                    rollingTranscriptUser={rollingTranscriptUser}
+                                    rollingTranscriptClient={rollingTranscriptClient}
+                                    isClientSpeaking={isClientSpeaking}
+                                    isUserSpeaking={isUserSpeaking}
+                                    speakerNames={speakerNames}
+                                    showTranscript={showTranscript}
+                                    isLoading={analysisLoading}
+                                    onRegenerate={() => runAnalysis(true)}
+                                    autoRefreshInterval={autoRefreshInterval}
+                                    onAutoRefreshIntervalChange={setAutoRefreshInterval}
+                                    isRefreshRun={isRefreshRun}
+                                />
+                            )}
+                            {activePanel === 'chat' && (
+                                <FloatingChatPanel
+                                    transcriptRef={transcriptRef}
+                                    isMeetingPaused={isMeetingPaused}
+                                    rollingTranscriptUser={rollingTranscriptUser}
+                                    rollingTranscriptClient={rollingTranscriptClient}
+                                    isClientSpeaking={isClientSpeaking}
+                                    isUserSpeaking={isUserSpeaking}
+                                    showTranscript={showTranscript}
+                                    currentModel={currentModel}
+                                    onSelectModel={onSelectModel}
+                                    speakerNames={speakerNames}
+                                    messages={chatMessages}
+                                    onMessagesChange={setChatMessages}
+                                />
+                            )}
+                            {activePanel === 'settings' && (
+                                <FloatingSettingsPanel
+                                    showTranscript={showTranscript}
+                                    onToggleTranscript={onToggleTranscript}
+                                    shortcuts={shortcuts}
+                                    currentModel={currentModel}
+                                    onSelectModel={onSelectModel}
+                                    dockOpacity={dockOpacity}
+                                    onDockOpacityChange={handleDockOpacityChange}
+                                />
+                            )}
+                        </motion.div>
+                    )}
+                </AnimatePresence>
+
                 <motion.div
                     initial={{ opacity: 0, y: 30 }}
                     animate={{ opacity: 1, y: 0 }}
                     transition={{ type: 'spring', damping: 26, stiffness: 300 }}
-                    className="pointer-events-auto"
+                    className="fixed pointer-events-auto"
+                    style={{ top: 30 }}
                 >
+                    {/* The Dock */}
                     <motion.div
                         className={`flex items-center gap-1 px-3 py-3 rounded-2xl relative select-none draggable-area`}
                         style={{
@@ -197,6 +272,7 @@ export const FloatingDock: React.FC<FloatingDockProps> = ({
                                 className="absolute inset-0 rounded-2xl z-10"
                                 style={{ pointerEvents: 'auto' }}
                                 onClick={(e) => {
+                                    // Allow only freeze button click through
                                     e.stopPropagation();
                                 }}
                             />
@@ -258,6 +334,7 @@ export const FloatingDock: React.FC<FloatingDockProps> = ({
                             frozen={isFrozen}
                             onClick={onPauseResume}
                         />
+                        {/* ── NEW: amber dot indicator when paused ── */}
                         {isMeetingPaused && (
                             <span className="absolute top-0.5 right-0.5 w-2 h-2 rounded-full bg-amber-400 animate-pulse" />
                         )}
@@ -298,76 +375,6 @@ export const FloatingDock: React.FC<FloatingDockProps> = ({
                         </motion.div>
                     </motion.div>
                 </motion.div>
-
-                {/* Panel — below the dock, window grows downward so dock never moves */}
-                <AnimatePresence mode="wait">
-                    {activePanel && (
-                        <motion.div
-                            key={activePanel}
-                            initial={{ opacity: 0, y: -10, scale: 0.97 }}
-                            animate={{ opacity: dockOpacity, y: 0, scale: 1 }}
-                            exit={{ opacity: 0, y: -6, scale: 0.98 }}
-                            transition={{ type: 'spring', damping: 28, stiffness: 360, mass: 0.75 }}
-                            className="mt-2"
-                        >
-                                {isFrozen && (
-                                    <div
-                                        className="absolute inset-0 rounded-2xl z-50"
-                                        style={{
-                                            pointerEvents: 'auto',
-                                            background: 'rgba(0,0,0,0.10)',
-                                            cursor: 'not-allowed',
-                                        }}
-                                    />
-                                )}
-                                {activePanel === 'intelligence' && (
-                                    <FloatingIntelligencePanel
-                                        isMeetingPaused={isMeetingPaused}
-                                        analysisData={analysisData}
-                                        analysisError={analysisError}
-                                        rollingTranscriptUser={rollingTranscriptUser}
-                                        rollingTranscriptClient={rollingTranscriptClient}
-                                        isClientSpeaking={isClientSpeaking}
-                                        isUserSpeaking={isUserSpeaking}
-                                        speakerNames={speakerNames}
-                                        showTranscript={showTranscript}
-                                        isLoading={analysisLoading}
-                                        onRegenerate={() => runAnalysis(true)}
-                                        autoRefreshInterval={autoRefreshInterval}
-                                        onAutoRefreshIntervalChange={setAutoRefreshInterval}
-                                        isRefreshRun={isRefreshRun}
-                                    />
-                                )}
-                                {activePanel === 'chat' && (
-                                    <FloatingChatPanel
-                                        transcriptRef={transcriptRef}
-                                        isMeetingPaused={isMeetingPaused}
-                                        rollingTranscriptUser={rollingTranscriptUser}
-                                        rollingTranscriptClient={rollingTranscriptClient}
-                                        isClientSpeaking={isClientSpeaking}
-                                        isUserSpeaking={isUserSpeaking}
-                                        showTranscript={showTranscript}
-                                        currentModel={currentModel}
-                                        onSelectModel={onSelectModel}
-                                        speakerNames={speakerNames}
-                                        messages={chatMessages}
-                                        onMessagesChange={setChatMessages}
-                                    />
-                                )}
-                                {activePanel === 'settings' && (
-                                    <FloatingSettingsPanel
-                                        showTranscript={showTranscript}
-                                        onToggleTranscript={onToggleTranscript}
-                                        shortcuts={shortcuts}
-                                        currentModel={currentModel}
-                                        onSelectModel={onSelectModel}
-                                        dockOpacity={dockOpacity}
-                                        onDockOpacityChange={handleDockOpacityChange}
-                                    />
-                                )}
-                        </motion.div>
-                    )}
-                </AnimatePresence>
 
             </motion.div>
         </>

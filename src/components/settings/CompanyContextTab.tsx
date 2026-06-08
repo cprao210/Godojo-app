@@ -12,7 +12,6 @@ export interface CompanyIdentity {
     name: string;
     website: string;
     industry: string;
-    personaEngineEnabled: boolean;
 }
 
 export interface KnowledgeAsset {
@@ -451,11 +450,10 @@ export const CompanyContextTab: React.FC<CompanyContextTabProps> = ({
             name: ctx.identity?.name ?? '',
             website: ctx.identity?.website ?? '',
             industry: ctx.identity?.industry ?? '',
-            personaEngineEnabled: ctx.identity?.personaEngineEnabled ?? false,
         },
         completenessBreakdown: ctx.completenessBreakdown ?? { hasIdentity: false, hasValueProp: false, hasAssets: false, hasPersonaEngine: false },
     } : {
-        identity: { name: '', website: '', industry: '', personaEngineEnabled: false },
+        identity: { name: '', website: '', industry: '' },
         coreValueProposition: '',
         assets: [],
         targetPersonas: [],
@@ -489,11 +487,12 @@ export const CompanyContextTab: React.FC<CompanyContextTabProps> = ({
 
     // Derived completeness
     const completeness = React.useMemo(() => {
-        const { identity, coreValueProposition, assets, identity: { personaEngineEnabled } } = draft;
+        const { identity, coreValueProposition, assets, targetPersonas } = draft;
         const hasIdentity = !!(identity.name && identity.industry);
         const hasValueProp = coreValueProposition.trim().length > 20;
         const hasAssets = assets.some(a => a.status === 'mapped');
-        const score = [hasIdentity, hasValueProp, hasAssets, personaEngineEnabled].filter(Boolean).length;
+        const hasPersonas = targetPersonas.length > 0;
+        const score = [hasIdentity, hasValueProp, hasAssets, hasPersonas].filter(Boolean).length;
         return Math.round((score / 4) * 100);
     }, [draft]);
 
@@ -607,12 +606,6 @@ export const CompanyContextTab: React.FC<CompanyContextTabProps> = ({
         setIsDirty(true);
     };
 
-    // ── Persona Engine toggle ─────────────────────────────────────────────────
-    const handlePersonaToggle = () => {
-        // Draft-only: committed to DB on "Save Intelligence Base"
-        patchIdentity({ personaEngineEnabled: !draft.identity.personaEngineEnabled });
-    };
-
     // ── Persona CRUD ──────────────────────────────────────────────────────────
     const handlePersonaSave = (p: TargetPersona) => {
         const exists = draft.targetPersonas.some(x => x.id === p.id);
@@ -689,23 +682,7 @@ export const CompanyContextTab: React.FC<CompanyContextTabProps> = ({
                             </div>
 
                             {/* Right: completeness ring + persona toggle */}
-                            <div className="flex items-center gap-3">
-                                <CompletenessRing percentage={completeness} />
-                                <div
-                                    // className={`flex items-center gap-2 bg-bg-input px-3 py-1.5 rounded-full border border-border-subtle ${!isPremium ? 'opacity-40 cursor-not-allowed' : 'cursor-pointer'}`}
-                                    className={`flex items-center gap-2 bg-bg-input px-3 py-1.5 rounded-full border border-border-subtle cursor-pointer`}
-                                    // title={!isPremium ? 'Requires Pro license' : 'Persona Engine'}
-                                    title='Persona Engine'
-                                    onClick={handlePersonaToggle}
-                                >
-                                    <span className="text-xs font-medium text-text-secondary">Persona Engine</span>
-                                    {/* <div className={`w-9 h-5 rounded-full relative transition-colors ${draft.identity.personaEngineEnabled && isPremium ? 'bg-accent-primary' : 'bg-bg-toggle-switch border border-border-muted'}`}> */}
-                                    <div className={`w-9 h-5 rounded-full relative transition-colors ${draft.identity.personaEngineEnabled ? 'bg-accent-primary' : 'bg-bg-toggle-switch border border-border-muted'}`}>
-                                        {/* <div className={`absolute top-1 left-1 w-3 h-3 rounded-full bg-white transition-transform ${draft.identity.personaEngineEnabled && isPremium ? 'translate-x-4' : 'translate-x-0'}`} /> */}
-                                        <div className={`absolute top-1 left-1 w-3 h-3 rounded-full bg-white transition-transform ${draft.identity.personaEngineEnabled ? 'translate-x-4' : 'translate-x-0'}`} />
-                                    </div>
-                                </div>
-                            </div>
+                            <CompletenessRing percentage={completeness} />
                         </div>
                     </div>
 
@@ -757,7 +734,7 @@ export const CompanyContextTab: React.FC<CompanyContextTabProps> = ({
                                     { key: 'hasIdentity', label: 'Identity', check: !!(draft.identity.name && draft.identity.industry), color: 'bg-blue-500' },
                                     { key: 'hasValueProp', label: 'Value Prop', check: draft.coreValueProposition.trim().length > 20, color: 'bg-purple-500' },
                                     { key: 'hasAssets', label: 'Assets', check: draft.assets.some(a => a.status === 'mapped'), color: 'bg-emerald-500' },
-                                    { key: 'hasPersona', label: 'Persona', check: draft.identity.personaEngineEnabled, color: 'bg-amber-500' },
+                                    { key: 'hasPersona', label: 'Persona', check: draft.targetPersonas.length > 0, color: 'bg-amber-500' },
                                 ] as const).map(item => (
                                     <div key={item.key} className="flex-1 flex flex-col items-center gap-1">
                                         <div className={`w-full h-1.5 rounded-full ${item.check ? item.color : 'bg-bg-elevated'} transition-colors`} />

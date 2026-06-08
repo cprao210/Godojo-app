@@ -369,7 +369,7 @@ export const FloatingChatPanel: React.FC<FloatingChatPanelProps> = ({
             className="rounded-2xl overflow-hidden flex flex-col"
             style={{
                 width: 420,
-                maxHeight: '75vh',
+                height: 550,
                 background: 'rgba(14, 18, 30, 0.93)',
                 backdropFilter: 'blur(28px) saturate(180%)',
                 WebkitBackdropFilter: 'blur(28px) saturate(180%)',
