@@ -12,6 +12,62 @@ const AUTO_REFRESH_OPTIONS = [
     { label: '20-min', value: 20 },
 ];
 
+// ── Film-roll transcript — text streams right-to-left like a ticker ──────────
+const FilmRollTranscript: React.FC<{
+    text: string;
+    speakerLabel: string;
+    speakerColor?: string;
+    dotColor?: string;
+    liveColor?: string;
+}> = ({ text, speakerLabel, speakerColor = 'text-white/55', dotColor = 'bg-blue-400', liveColor = '#f87171' }) => {
+    const scrollRef = useRef<HTMLDivElement>(null);
+
+    // Auto-scroll to end whenever text grows
+    useEffect(() => {
+        const el = scrollRef.current;
+        if (!el) return;
+        el.scrollLeft = el.scrollWidth;
+    }, [text]);
+
+    return (
+        <div className="flex items-center gap-2 w-full min-w-0">
+            {/* Live dot */}
+            <span className={`w-1.5 h-1.5 rounded-full ${dotColor} animate-pulse shrink-0`} />
+
+            {/* Speaker label — fixed, never scrolls */}
+            <span className={`text-[11px] font-medium shrink-0 ${speakerColor}`}>
+                {speakerLabel === 'Them' ? "Client" : speakerLabel}:
+            </span>
+
+            {/* Scrolling film strip */}
+            <div
+                ref={scrollRef}
+                className="flex-1 -mt-[4px] min-w-0 overflow-hidden"
+                style={{
+                    maskImage: 'linear-gradient(to right, transparent 0%, black 8%, black 100%)',
+                    WebkitMaskImage: 'linear-gradient(to right, transparent 0%, black 8%, black 100%)',
+                }}
+            >
+                <motion.p
+                    className="text-[11px] text-white/40 leading-relaxed whitespace-nowrap"
+                    animate={{ x: 0 }}
+                    style={{ display: 'inline-block' }}
+                >
+                    {text}
+                </motion.p>
+            </div>
+
+            {/* LIVE badge */}
+            <span
+                className="text-[10px] font-bold shrink-0 ml-1"
+                style={{ color: liveColor }}
+            >
+                LIVE
+            </span>
+        </div>
+    );
+};
+
 interface FloatingIntelligencePanelProps {
     isMeetingPaused: boolean;
     // Analysis state is owned by FloatingDock and passed down — never lost on remount
@@ -325,20 +381,26 @@ export const FloatingIntelligencePanel: React.FC<FloatingIntelligencePanelProps>
                     className="px-5 py-2 shrink-0 flex flex-col gap-1"
                     style={{ borderBottom: '1px solid rgba(255,255,255,0.05)', background: 'rgba(255,255,255,0.02)' }}
                 >
+                    <FilmRollTranscript
+                        text={rollingTranscriptClient}
+                        speakerLabel={speakerNames.client}
+                        dotColor="bg-red-400"
+                        liveColor="#f87171"
+                    />
                     {/* "Them" row — system audio / client */}
-                    {(rollingTranscriptClient || isClientSpeaking) && (
+                    {/* {(rollingTranscriptClient || isClientSpeaking) && (
                         <div className="flex items-start gap-2">
                             <span className="w-1.5 h-1.5 rounded-full bg-blue-400 animate-pulse mt-1 shrink-0" />
                             <p className="text-[11px] text-white/40 leading-relaxed line-clamp-1 flex-1 min-w-0">
                                 <span className="text-white/55 font-medium mr-1">{speakerNames.client === "Them" ? "Client" : speakerNames.client}:</span>
-                                {rollingTranscriptClient}
+                                <AnimatedTranscriptText text={rollingTranscriptClient} />
                                 {isClientSpeaking && <span className="ml-1 text-white/25 animate-pulse">...</span>}
                             </p>
                             <span className="text-[10px] text-red-400 font-bold shrink-0 ml-auto">LIVE</span>
                         </div>
-                    )}
+                    )} */}
                     {/* "Me" row — microphone / user */}
-                    {(rollingTranscriptUser || isUserSpeaking) && (
+                    {/* {(rollingTranscriptUser || isUserSpeaking) && (
                         <div className="flex items-start gap-2">
                             <span className="w-1.5 h-1.5 rounded-full bg-green-400 animate-pulse mt-1 shrink-0" />
                             <p className="text-[11px] text-white/40 leading-relaxed line-clamp-1 flex-1 min-w-0">
@@ -347,7 +409,7 @@ export const FloatingIntelligencePanel: React.FC<FloatingIntelligencePanelProps>
                                 {isUserSpeaking && <span className="ml-1 text-white/25 animate-pulse">...</span>}
                             </p>
                         </div>
-                    )}
+                    )} */}
                 </div>
             )}
 
