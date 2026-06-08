@@ -384,25 +384,27 @@ const Launcher: React.FC<LauncherProps> = ({ onStartMeeting, onOpenSettings, onP
         }
     };
 
-    // Helper to format duration to mm:ss or mmm:ss
-    const formatDurationPill = (durationStr: string) => {
+    // Helper to format duration to mm:ss or hh:mm:ss
+    const formatDurationPill = (durationStr: string): string => {
         if (!durationStr) return "00:00";
 
-        // Check if it's already in colon format (e.g. "5:30", "105:20")
+        // Already in hh:mm:ss or mm:ss from DatabaseManager.formatDuration — pass through
+        // with zero-padding applied to each segment
         if (durationStr.includes(':')) {
             const parts = durationStr.split(':');
-            const mins = parts[0];
-            const secs = parts[1] || "00";
-
-            // Allow 3 digits for mins if >= 100, otherwise pad to 2
-            const formattedMins = mins.length >= 3 ? mins : mins.padStart(2, '0');
-            return `${formattedMins}:${secs}`;
+            if (parts.length === 3) {
+                // hh:mm:ss
+                const [h, m, s] = parts;
+                return `${h.padStart(2, '0')}:${m.padStart(2, '0')}:${s.padStart(2, '0')}`;
+            }
+            // mm:ss
+            const [m, s] = parts;
+            return `${m.padStart(2, '0')}:${s.padStart(2, '0')}`;
         }
 
-        // Fallback for "X min" format (legacy)
-        const minutes = parseInt(durationStr.replace('min', '').trim()) || 0;
-        const mm = minutes.toString().padStart(2, '0');
-        return `${mm}:00`;
+        // Legacy fallback: "X min" → convert to mm:ss
+        const minutes = parseInt(durationStr.replace(/[^0-9]/g, ''), 10) || 0;
+        return `${minutes.toString().padStart(2, '0')}:00`;
     };
 
     return (

@@ -549,7 +549,14 @@ Use this as your grounding anchor. Map statuses: confirmed→Clear, partial→Pa
 
             const meetingId = crypto.randomUUID();
             const now = Date.now();
-            const durationMs = transcript.length * 5000;
+            // Use actual first→last segment timestamps for real duration.
+            // Fall back to now - 60s minimum if timestamps are missing/zero.
+            const firstTs = transcript[0]?.timestamp ?? 0;
+            const lastTs = transcript[transcript.length - 1]?.timestamp ?? 0;
+            const durationMs = (firstTs > 0 && lastTs > firstTs)
+                ? (lastTs - firstTs)
+                : 60_000;
+            const startTimeMs = firstTs > 0 ? firstTs : now - durationMs;
             const context = transcript.map(t => `${t.speaker === 'user' ? 'Me' : 'Them'}: ${t.text}`).join('\n');
 
             // Save placeholder immediately so it appears in the list
@@ -566,14 +573,14 @@ Use this as your grounding anchor. Map statuses: confirmed→Clear, partial→Pa
                 isProcessed: false,
             };
 
-            DatabaseManager.getInstance().saveMeeting(placeholder, now, durationMs);
+            DatabaseManager.getInstance().saveMeeting(placeholder, startTimeMs, durationMs);
             const wins = require('electron').BrowserWindow.getAllWindows();
             wins.forEach((w: any) => w.webContents.send('meetings-updated'));
 
             // Pass the user's title as metadata so processAndSaveMeeting uses it
             // instead of generating a new one from the transcript
             this.processAndSaveMeeting(
-                { transcript, usage: [], startTime: now, durationMs, context },
+                { transcript, usage: [], startTime: startTimeMs, durationMs, context },
                 meetingId,
                 { title: title || undefined, source: 'manual' }
             ).catch(err => console.error('[MeetingPersistence] Upload processing failed:', err));
