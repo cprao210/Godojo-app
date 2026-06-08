@@ -265,34 +265,6 @@ const MeetingDetails: React.FC<MeetingDetailsProps> = ({ meeting: initialMeeting
                 return rows + gaps;
             };
 
-            const formatFollowUpEmail = () => {
-                if (!ds.followUpEmail) return '  None';
-                const sections = ds.followUpEmail.sections;
-                if (!sections) return '  None';
-
-                const sectionLabels: Record<string, string> = {
-                    whatWeDiscussed: 'What We Discussed',
-                    currentProcess: 'Current Process',
-                    scopeOfImprovement: 'Scope of Improvement',
-                    howOurSolutionHelps: 'How Our Solution Helps',
-                    expectedBusinessImpact: 'Expected Business Impact',
-                    nextSteps: 'Next Steps',
-                };
-
-                return (Object.keys(sectionLabels) as Array<keyof typeof sections>)
-                    .map(key => {
-                        const val = sections[key];
-                        if (!val || (Array.isArray(val) && val.length === 0)) return null;
-                        const label = sectionLabels[key as string];
-                        const content = Array.isArray(val)
-                            ? val.map(s => `    • ${s}`).join('\n')
-                            : `    ${val}`;
-                        return `  ${label}:\n${content}`;
-                    })
-                    .filter(Boolean)
-                    .join('\n\n');
-            };
-
             const formatSalesCoachReview = () => {
                 if (!ds.salesCoachReview) return '';
 
@@ -399,15 +371,6 @@ const MeetingDetails: React.FC<MeetingDetailsProps> = ({ meeting: initialMeeting
                     `MEDDICC QUALIFICATION`,
                     `${'━'.repeat(50)}`,
                     formatMEDDICC(),
-                    ``
-                ].join('\n') : null,
-
-                ds.followUpEmail ? [
-                    `${'━'.repeat(50)}`,
-                    `FOLLOW-UP EMAIL DRAFT`,
-                    `${'━'.repeat(50)}`,
-                    ds.followUpEmail.subject ? `  Subject: ${ds.followUpEmail.subject}\n` : '',
-                    formatFollowUpEmail(),
                     ``
                 ].join('\n') : null,
 
