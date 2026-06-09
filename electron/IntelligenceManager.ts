@@ -261,6 +261,10 @@ export class IntelligenceManager extends EventEmitter {
         this.session.recordPauseEnd();
     }
 
+    resetSessionTimer(): void {
+        this.session.resetSessionTimer();
+    }
+
     async regenerateSummary(meetingId: string): Promise<boolean> {
         return this.persistence.regenerateSummary(meetingId);
     }

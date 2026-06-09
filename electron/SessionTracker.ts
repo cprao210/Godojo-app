@@ -635,6 +635,16 @@ export class SessionTracker {
         return this.sessionStartTime;
     }
 
+    /**
+     * Resets only the session timer to now, without wiping transcript or context.
+     * Call this when recording actually begins so duration = stop − start = real audio length.
+     */
+    resetSessionTimer(): void {
+        this.sessionStartTime = Date.now();
+        this.totalPausedMs = 0;
+        this.pauseStartedAt = null;
+    }
+
     // ============================================
     // Usage Tracking
     // ============================================

@@ -711,7 +711,7 @@ export const CompanyContextTab: React.FC<CompanyContextTabProps> = ({
                             </div>
                         </div>
                         <div>
-                            <label className="text-[10px] font-bold text-text-tertiary uppercase tracking-wider mb-1 block flex items-center gap-1.5">
+                            <label className="text-[10px] font-bold text-text-tertiary uppercase tracking-wider mb-1 flex items-center gap-1.5">
                                 <Globe size={10} /> Website
                             </label>
                             <input

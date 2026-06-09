@@ -1377,6 +1377,12 @@ export class AppState {
         this.googleSTT?.setAudioChannelCount?.(1);
         this.googleSTT_User?.setSampleRate(16000);
         this.googleSTT_User?.setAudioChannelCount?.(1);
+
+        // Reset session timer here — not at the previous stopMeeting() — so that
+        // duration = (stopTime − startTime) equals actual recording length only,
+        // with no idle-between-meetings inflation.
+        this.intelligenceManager.resetSessionTimer();
+
         this.googleSTT?.start();
         this.googleSTT_User?.start();
 
