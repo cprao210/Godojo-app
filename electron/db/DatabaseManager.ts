@@ -173,6 +173,7 @@ export class DatabaseManager {
 
             this.db = new Database(this.dbPath);
             this.db.pragma('journal_mode = WAL');
+            this.db.pragma('foreign_keys = ON');
 
             // Load sqlite-vec extension for native vector search
             try {
