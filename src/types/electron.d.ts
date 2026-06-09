@@ -319,7 +319,20 @@ export interface ElectronAPI {
   // Company Context API
   companyGetContext: () => Promise<any>;
   companySaveContext: (data: any) => Promise<{ success: boolean; error?: string }>;
-  companyUploadAsset: (type: string, filePath: string) => Promise<{ success: boolean; asset?: any; error?: string }>;
+  companyUploadAsset: (type: string, filePath: string) => Promise<{
+    success: boolean;
+    asset?: {
+      id: string;
+      type: string;
+      label: string;
+      status: string;
+      lastUpdated: string;
+      fileData: string;       // base64 — held in frontend draft only
+      fileName: string;
+      mimeType: string;
+    };
+    error?: string;
+  }>;
   companyDeleteAsset: (assetId: string) => Promise<{ success: boolean; error?: string }>;
   companySyncAsset: (assetId: string) => Promise<{ success: boolean; status?: string; error?: string }>;
   companySetPersonaEngine: (enabled: boolean) => Promise<{ success: boolean; error?: string }>;

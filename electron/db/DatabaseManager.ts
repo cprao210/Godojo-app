@@ -584,6 +584,37 @@ export class DatabaseManager {
             this.db.pragma('user_version = 12');
         }
 
+        // Version 12 → 13: Add company asset file storage and vector chunks for RAG
+        if (version < 13) {
+            console.log('[DatabaseManager] Applying migration v12 → v13: Company asset file storage + RAG chunks');
+            this.db.exec(`
+        CREATE TABLE IF NOT EXISTS company_asset_files (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            asset_id TEXT NOT NULL UNIQUE,
+            file_name TEXT NOT NULL,
+            mime_type TEXT NOT NULL,
+            file_data BLOB NOT NULL,
+            file_size INTEGER NOT NULL,
+            created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+            FOREIGN KEY(asset_id) REFERENCES company_assets(id) ON DELETE CASCADE
+        );
+
+        CREATE TABLE IF NOT EXISTS company_asset_chunks (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            asset_id TEXT NOT NULL,
+            chunk_index INTEGER NOT NULL,
+            chunk_text TEXT NOT NULL,
+            token_count INTEGER NOT NULL,
+            embedding BLOB,
+            created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+            FOREIGN KEY(asset_id) REFERENCES company_assets(id) ON DELETE CASCADE
+        );
+
+        CREATE INDEX IF NOT EXISTS idx_asset_chunks_asset ON company_asset_chunks(asset_id);
+    `);
+            this.db.pragma('user_version = 13');
+        }
+
         console.log('[DatabaseManager] Migrations completed.');
     }
 
@@ -673,7 +704,6 @@ export class DatabaseManager {
                     type: a.type,
                     label: a.label,
                     status: a.status,
-                    filePath: a.file_path,
                     lastUpdated: a.last_updated,
                 })),
                 targetPersonas: personas.map((p: any) => ({
@@ -724,29 +754,165 @@ export class DatabaseManager {
                 data.coreValueProposition ?? '',
                 completeness,
             );
+            // Mirror to Supabase — no-op if unauthenticated, queued otherwise.
+            try {
+                SupabaseMirrorService.getInstance().upsertRow('company_context', {
+                    id: 1,
+                    name: identity.name ?? '',
+                    website: identity.website ?? '',
+                    industry: identity.industry ?? '',
+                    persona_engine_enabled: identity.personaEngineEnabled ? 1 : 0,
+                    core_value_proposition: data.coreValueProposition ?? '',
+                });
+            } catch (mirrorErr) {
+                console.warn('[DatabaseManager] Mirror enqueue failed for saveCompanyContext:', mirrorErr);
+            }
         } catch (e) {
             console.error('[DatabaseManager] saveCompanyContext failed:', e);
         }
     }
 
-    public upsertCompanyAsset(asset: { id: string; type: string; label: string; status: string; filePath?: string }): void {
+    public upsertCompanyAsset(asset: { id: string; type: string; label: string; status: string }): void {
+
         if (!this.db) return;
+
         try {
             this.db.prepare(`
-                INSERT OR REPLACE INTO company_assets (id, type, label, status, file_path, last_updated)
-                VALUES (?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
-            `).run(asset.id, asset.type, asset.label, asset.status, asset.filePath ?? null);
+                INSERT OR REPLACE INTO company_assets (id, type, label, status, last_updated)
+                VALUES (?, ?, ?, ?, CURRENT_TIMESTAMP)
+            `).run(asset.id, asset.type, asset.label, asset.status);
+            try {
+                SupabaseMirrorService.getInstance().upsertRow('company_assets', {
+                    id: asset.id,
+                    type: asset.type,
+                    label: asset.label,
+                    status: asset.status,
+                    last_updated: new Date().toISOString(),
+                });
+            } catch (mirrorErr) {
+                console.warn('[DatabaseManager] Mirror enqueue failed for upsertCompanyAsset:', mirrorErr);
+            }
         } catch (e) {
             console.error('[DatabaseManager] upsertCompanyAsset failed:', e);
         }
+
     }
 
     public deleteCompanyAsset(assetId: string): void {
         if (!this.db) return;
         try {
             this.db.prepare('DELETE FROM company_assets WHERE id = ?').run(assetId);
+            // Mirror to Supabase.
+            try {
+                SupabaseMirrorService.getInstance().deleteRow('company_assets', 'id', assetId);
+            } catch (mirrorErr) {
+                console.warn('[DatabaseManager] Mirror enqueue failed for deleteCompanyAsset:', mirrorErr);
+            }
         } catch (e) {
             console.error('[DatabaseManager] deleteCompanyAsset failed:', e);
+        }
+    }
+
+    public saveAssetFile(assetId: string, fileName: string, mimeType: string, fileData: Buffer): void {
+        if (!this.db) return;
+        try {
+            this.db.prepare(`
+                INSERT OR REPLACE INTO company_asset_files (asset_id, file_name, mime_type, file_data, file_size)
+                VALUES (?, ?, ?, ?, ?)
+            `).run(assetId, fileName, mimeType, fileData, fileData.byteLength);
+            try {
+                SupabaseMirrorService.getInstance().upsertRow('company_asset_files', {
+                    asset_id: assetId,
+                    file_name: fileName,
+                    mime_type: mimeType,
+                    file_data: fileData.toString('base64'), // BYTEA via base64
+                    file_size: fileData.byteLength,
+                });
+            } catch (mirrorErr) {
+                console.warn('[DatabaseManager] Mirror enqueue failed for saveAssetFile:', mirrorErr);
+            }
+        } catch (e) {
+            console.error('[DatabaseManager] saveAssetFile failed:', e);
+        }
+    }
+
+    public saveAssetChunks(assetId: string, chunks: Array<{ index: number; text: string; tokenCount: number }>): void {
+        if (!this.db) return;
+        try {
+            const insert = this.db.prepare(`
+                INSERT INTO company_asset_chunks (asset_id, chunk_index, chunk_text, token_count)
+                VALUES (?, ?, ?, ?)
+            `);
+            const mirrorRows: Array<Record<string, any>> = [];
+            const run = this.db.transaction(() => {
+                for (const c of chunks) {
+                    const info = insert.run(assetId, c.index, c.text, c.tokenCount);
+                    mirrorRows.push({
+                        id: Number(info.lastInsertRowid),
+                        asset_id: assetId,
+                        chunk_index: c.index,
+                        chunk_text: c.text,
+                        token_count: c.tokenCount,
+                    });
+                }
+            });
+            run();
+            try {
+                if (mirrorRows.length > 0) {
+                    SupabaseMirrorService.getInstance().upsertRows('company_asset_chunks', mirrorRows);
+                }
+            } catch (mirrorErr) {
+                console.warn('[DatabaseManager] Mirror enqueue failed for saveAssetChunks:', mirrorErr);
+            }
+        } catch (e) {
+            console.error('[DatabaseManager] saveAssetChunks failed:', e);
+        }
+    }
+
+    public getAssetChunksWithoutEmbeddings(assetId: string): Array<{ id: number; chunk_text: string }> {
+        if (!this.db) return [];
+        try {
+            return this.db.prepare(
+                'SELECT id, chunk_text FROM company_asset_chunks WHERE asset_id = ? AND embedding IS NULL'
+            ).all(assetId) as any[];
+        } catch {
+            return [];
+        }
+    }
+
+    public saveAssetChunkEmbedding(chunkId: number, embedding: Buffer): void {
+        if (!this.db) return;
+        try {
+            this.db.prepare(
+                'UPDATE company_asset_chunks SET embedding = ? WHERE id = ?'
+            ).run(embedding, chunkId);
+            try {
+                // Mirror as base64 — Supabase receives it as a vector via pgvector
+                SupabaseMirrorService.getInstance().upsertRow('company_asset_chunks', {
+                    id: chunkId,
+                    embedding: Array.from(new Float32Array(embedding.buffer)),
+                });
+            } catch (mirrorErr) {
+                console.warn('[DatabaseManager] Mirror enqueue failed for saveAssetChunkEmbedding:', mirrorErr);
+            }
+        } catch (e) {
+            console.error('[DatabaseManager] saveAssetChunkEmbedding failed:', e);
+        }
+    }
+
+    public deleteAssetFiles(assetId: string): void {
+        if (!this.db) return;
+        try {
+            this.db.prepare('DELETE FROM company_asset_files WHERE asset_id = ?').run(assetId);
+            this.db.prepare('DELETE FROM company_asset_chunks WHERE asset_id = ?').run(assetId);
+            try {
+                SupabaseMirrorService.getInstance().deleteRow('company_asset_files', 'asset_id', assetId);
+                SupabaseMirrorService.getInstance().deleteRow('company_asset_chunks', 'asset_id', assetId);
+            } catch (mirrorErr) {
+                console.warn('[DatabaseManager] Mirror enqueue failed for deleteAssetFiles:', mirrorErr);
+            }
+        } catch (e) {
+            console.error('[DatabaseManager] deleteAssetFiles failed:', e);
         }
     }
 
@@ -757,6 +923,17 @@ export class DatabaseManager {
                 INSERT OR REPLACE INTO company_personas (id, role, description, sort_order)
                 VALUES (?, ?, ?, ?)
             `).run(persona.id, persona.role, persona.description ?? '', sortOrder);
+            // Mirror to Supabase.
+            try {
+                SupabaseMirrorService.getInstance().upsertRow('company_personas', {
+                    id: persona.id,
+                    role: persona.role,
+                    description: persona.description ?? '',
+                    sort_order: sortOrder,
+                });
+            } catch (mirrorErr) {
+                console.warn('[DatabaseManager] Mirror enqueue failed for upsertCompanyPersona:', mirrorErr);
+            }
         } catch (e) {
             console.error('[DatabaseManager] upsertCompanyPersona failed:', e);
         }
@@ -766,6 +943,12 @@ export class DatabaseManager {
         if (!this.db) return;
         try {
             this.db.prepare('DELETE FROM company_personas WHERE id = ?').run(personaId);
+            // Mirror to Supabase.
+            try {
+                SupabaseMirrorService.getInstance().deleteRow('company_personas', 'id', personaId);
+            } catch (mirrorErr) {
+                console.warn('[DatabaseManager] Mirror enqueue failed for deleteCompanyPersona:', mirrorErr);
+            }
         } catch (e) {
             console.error('[DatabaseManager] deleteCompanyPersona failed:', e);
         }
@@ -778,6 +961,18 @@ export class DatabaseManager {
                 INSERT OR REPLACE INTO company_competitors (id, name, moat, win_rate, sort_order)
                 VALUES (?, ?, ?, ?, ?)
             `).run(competitor.id, competitor.name, competitor.moat ?? '', competitor.winRate ?? 0, sortOrder);
+            // Mirror to Supabase.
+            try {
+                SupabaseMirrorService.getInstance().upsertRow('company_competitors', {
+                    id: competitor.id,
+                    name: competitor.name,
+                    moat: competitor.moat ?? '',
+                    win_rate: competitor.winRate ?? 0,
+                    sort_order: sortOrder,
+                });
+            } catch (mirrorErr) {
+                console.warn('[DatabaseManager] Mirror enqueue failed for upsertCompanyCompetitor:', mirrorErr);
+            }
         } catch (e) {
             console.error('[DatabaseManager] upsertCompanyCompetitor failed:', e);
         }
@@ -787,6 +982,12 @@ export class DatabaseManager {
         if (!this.db) return;
         try {
             this.db.prepare('DELETE FROM company_competitors WHERE id = ?').run(competitorId);
+            // Mirror to Supabase.
+            try {
+                SupabaseMirrorService.getInstance().deleteRow('company_competitors', 'id', competitorId);
+            } catch (mirrorErr) {
+                console.warn('[DatabaseManager] Mirror enqueue failed for deleteCompanyCompetitor:', mirrorErr);
+            }
         } catch (e) {
             console.error('[DatabaseManager] deleteCompanyCompetitor failed:', e);
         }
@@ -1372,6 +1573,8 @@ export class DatabaseManager {
                 this.db!.exec('DELETE FROM ai_interactions');
                 this.db!.exec('DELETE FROM transcripts');
                 this.db!.exec('DELETE FROM meetings');
+                this.db!.exec('DELETE FROM company_asset_chunks');
+                this.db!.exec('DELETE FROM company_asset_files');
 
                 // Wipe orphan embeddings from every per-dimension vec0 virtual table.
                 // Must run after the relational deletes so that any FK-like invariants

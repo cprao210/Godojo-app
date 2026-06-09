@@ -2468,27 +2468,91 @@ export function initializeIpcHandlers(appState: AppState): void {
       const existing = db.getCompanyContext();
       const incomingAssetIds = new Set<string>((data.assets ?? []).map((a: any) => a.id));
       for (const a of (existing?.assets ?? [])) {
-        if (!incomingAssetIds.has(a.id)) db.deleteCompanyAsset(a.id);
+        if (!incomingAssetIds.has(a.id)) {
+          db.deleteAssetFiles(a.id);      // clean up files + chunks
+          db.deleteCompanyAsset(a.id);
+        }
       }
       for (const asset of (data.assets ?? [])) {
-        db.upsertCompanyAsset(asset);
+        db.upsertCompanyAsset({ id: asset.id, type: asset.type, label: asset.label, status: 'processing' });
+
+        // Only process file if this is a new upload (fileData present in draft)
+        if (asset.fileData && asset.fileName && asset.mimeType) {
+          const fileBuffer = Buffer.from(asset.fileData, 'base64');
+          db.saveAssetFile(asset.id, asset.fileName, asset.mimeType, fileBuffer);
+
+          // Kick off chunking + embedding in background
+          setImmediate(async () => {
+            try {
+              const { extractTextFromBuffer } = require('./utils/documentParser');
+              const { estimateTokens } = require('./rag');
+
+              const rawText: string = await extractTextFromBuffer(fileBuffer, asset.mimeType);
+
+              const MAX_TOKENS = 400;
+              const sentences = rawText.split(/(?<=[.!?])\s+/);
+              const chunks: Array<{ index: number; text: string; tokenCount: number }> = [];
+              let current = '';
+              let idx = 0;
+              for (const sentence of sentences) {
+                const combined = current ? `${current} ${sentence}` : sentence;
+                if (estimateTokens(combined) > MAX_TOKENS && current) {
+                  chunks.push({ index: idx++, text: current.trim(), tokenCount: estimateTokens(current) });
+                  current = sentence;
+                } else {
+                  current = combined;
+                }
+              }
+              if (current.trim()) {
+                chunks.push({ index: idx, text: current.trim(), tokenCount: estimateTokens(current) });
+              }
+
+              db.saveAssetChunks(asset.id, chunks);
+
+              const ragManager = appState.getRAGManager?.();
+              if (ragManager) {
+                const pipeline = ragManager.getEmbeddingPipeline();
+                const storedChunks = db.getAssetChunksWithoutEmbeddings(asset.id);
+                for (const c of storedChunks) {
+                  try {
+                    const vector = await pipeline.getEmbedding(c.chunk_text);
+                    const blob = Buffer.from(new Float32Array(vector).buffer);
+                    db.saveAssetChunkEmbedding(c.id, blob);
+                  } catch (embErr: any) {
+                    console.warn(`[IPC] company:saveContext — embedding failed for chunk ${c.id}:`, embErr.message);
+                  }
+                }
+              }
+
+              db.upsertCompanyAsset({ id: asset.id, type: asset.type, label: asset.label, status: 'mapped' });
+              console.log(`[IPC] company:saveContext — asset ${asset.id} fully indexed`);
+            } catch (indexErr: any) {
+              console.error(`[IPC] company:saveContext — indexing failed for asset ${asset.id}:`, indexErr.message);
+              db.upsertCompanyAsset({ id: asset.id, type: asset.type, label: asset.label, status: 'error' });
+            }
+          });
+        } else {
+          // Existing asset already in DB — just keep its current status
+          // Re-upsert with 'mapped' since it was already processed before
+          db.upsertCompanyAsset({ id: asset.id, type: asset.type, label: asset.label, status: 'mapped' });
+        }
       }
 
-      // 3. Sync targetPersonas
+      // 3. Sync targetPersonas (unchanged)
       const incomingPersonaIds = new Set<string>((data.targetPersonas ?? []).map((p: any) => p.id));
       for (const p of (existing?.targetPersonas ?? [])) {
         if (!incomingPersonaIds.has(p.id)) db.deleteCompanyPersona(p.id);
       }
       (data.targetPersonas ?? []).forEach((p: any, i: number) => db.upsertCompanyPersona(p, i));
 
-      // 4. Sync competitors
+      // 4. Sync competitors (unchanged)
       const incomingCompetitorIds = new Set<string>((data.competitors ?? []).map((c: any) => c.id));
       for (const c of (existing?.competitors ?? [])) {
         if (!incomingCompetitorIds.has(c.id)) db.deleteCompanyCompetitor(c.id);
       }
       (data.competitors ?? []).forEach((c: any, i: number) => db.upsertCompanyCompetitor(c, i));
 
-      // 5. Mirror to SettingsManager for fast in-process reads
+      // 5. Mirror to SettingsManager (unchanged)
       const { SettingsManager } = require('./services/SettingsManager');
       SettingsManager.getInstance().set('companyContext', data);
 
@@ -2522,20 +2586,23 @@ export function initializeIpcHandlers(appState: AppState): void {
   safeHandle('company:uploadAsset', async (_, type: string, filePath: string) => {
     try {
       const fs = require('fs');
+      const path = require('path');
+
       if (!fs.existsSync(filePath)) {
         return { success: false, error: 'File not found. Please re-select the file.' };
       }
 
-      // Try KnowledgeOrchestrator if available (premium) — non-fatal if missing
-      try {
-        const orchestrator = appState.getKnowledgeOrchestrator?.();
-        if (orchestrator) {
-          const { DocType } = require('../premium/electron/knowledge/types');
-          await orchestrator.ingestDocument(filePath, DocType.RESUME);
-        }
-      } catch (ingestionErr: any) {
-        console.warn('[IPC] company:uploadAsset — knowledge ingestion skipped:', ingestionErr.message);
-      }
+      const fileData: Buffer = fs.readFileSync(filePath);
+      const fileName: string = path.basename(filePath);
+      const ext = path.extname(fileName).toLowerCase().slice(1);
+      const MIME_MAP: Record<string, string> = {
+        pdf: 'application/pdf',
+        doc: 'application/msword',
+        docx: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+        ppt: 'application/vnd.ms-powerpoint',
+        pptx: 'application/vnd.openxmlformats-officedocument.presentationml.presentation',
+      };
+      const mimeType = MIME_MAP[ext] ?? 'application/octet-stream';
 
       const LABEL_MAP: Record<string, string> = {
         sales_deck: 'Sales Deck',
@@ -2548,14 +2615,16 @@ export function initializeIpcHandlers(appState: AppState): void {
         id: `${type}-${Date.now()}`,
         type,
         label: LABEL_MAP[type] ?? type,
-        status: 'mapped',
+        status: 'pending',           // not 'mapped' yet — saved on commit
         lastUpdated: new Date().toISOString(),
-        filePath,
+        // Hold file in draft as base64 — never touches DB here
+        fileData: fileData.toString('base64'),
+        fileName,
+        mimeType,
       };
 
-      // NOTE: No DB or SettingsManager write here.
-      // The asset lives in the frontend draft until the user clicks "Save Intelligence Base",
-      // at which point company:saveContext persists everything atomically.
+      // NOTE: No DB write here. File lives in frontend draft until
+      // user clicks "Save Intelligence Base" → company:saveContext.
       return { success: true, asset };
     } catch (error: any) {
       console.error('[IPC] company:uploadAsset error:', error);
@@ -2563,11 +2632,13 @@ export function initializeIpcHandlers(appState: AppState): void {
     }
   });
 
-  safeHandle('company:deleteAsset', async (_assetId: string) => {
-    // NOTE: No DB write here. The frontend removes the asset from draft immediately.
-    // The deletion is committed to DB atomically when the user clicks "Save Intelligence Base"
-    // via company:saveContext, which diffs and deletes any assets no longer in the saved draft.
-    return { success: true };
+  safeHandle('company:deleteAsset', async (_, assetId: string) => {
+    try {
+      DatabaseManager.getInstance().deleteAssetFiles(assetId);
+      return { success: true };
+    } catch (error: any) {
+      return { success: false, error: error.message };
+    }
   });
 
   safeHandle('company:syncAsset', async (_assetId: string) => {

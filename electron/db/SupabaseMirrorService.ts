@@ -40,7 +40,7 @@ export class SupabaseMirrorService {
     private enabled = false;
     private db: Database.Database | null = null;
 
-    private constructor() {}
+    private constructor() { }
 
     static getInstance(): SupabaseMirrorService {
         if (!this.instance) this.instance = new SupabaseMirrorService();
@@ -166,6 +166,18 @@ export class SupabaseMirrorService {
                 return row.user_id != null ? 'user_id' : (row.id != null ? 'id' : null);
             case 'resume_nodes':
                 return row.id != null && row.user_id != null ? 'user_id,id' : (row.id != null ? 'id' : null);
+            case 'company_context':
+                return row.user_id != null ? 'user_id,id' : 'id';
+            case 'company_assets':
+                return row.user_id != null ? 'user_id,id' : 'id';
+            case 'company_personas':
+                return row.user_id != null ? 'user_id,id' : 'id';
+            case 'company_competitors':
+                return row.user_id != null ? 'user_id,id' : 'id';
+            case 'company_asset_files':
+                return row.user_id != null ? 'user_id,asset_id' : 'asset_id';
+            case 'company_asset_chunks':
+                return row.user_id != null && row.id != null ? 'user_id,id' : (row.id != null ? 'id' : null);
             default:
                 if (table.startsWith('rag_chunk_vectors_')) {
                     return row.user_id != null ? 'user_id,chunk_id' : 'chunk_id';
@@ -368,14 +380,14 @@ export class SupabaseMirrorService {
                 `INSERT OR IGNORE INTO supabase_mirror_outbox (id, op, tbl, payload, retries)
                  VALUES (?, ?, ?, ?, ?)`
             ).run(item.id, item.op, item.table, JSON.stringify(item.payload), item.retries);
-        } catch (_) {}
+        } catch (_) { }
     }
 
     private _deleteOutboxItem(id: number): void {
         if (!this.db) return;
         try {
             this.db.prepare('DELETE FROM supabase_mirror_outbox WHERE id = ?').run(id);
-        } catch (_) {}
+        } catch (_) { }
     }
 
     private _loadOutboxFromDb(): void {
