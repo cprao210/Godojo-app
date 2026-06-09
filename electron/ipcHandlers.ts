@@ -4,6 +4,7 @@ import { app, ipcMain, shell, dialog, desktopCapturer, systemPreferences, Browse
 import { AppState } from "./main"
 import { GEMINI_FLASH_MODEL } from "./IntelligenceManager"
 import { DatabaseManager } from "./db/DatabaseManager"; // Import Database Manager
+import { SupabaseReadService } from "./db/SupabaseReadService";
 import * as path from "path";
 import * as fs from "fs";
 import { AudioDevices } from "./audio/AudioDevices";
@@ -1688,7 +1689,13 @@ export function initializeIpcHandlers(appState: AppState): void {
   });
 
   safeHandle("get-recent-meetings", async () => {
-    // Fetch from SQLite (limit 50)
+    if (SupabaseReadService.isAvailable()) {
+      try {
+        return await SupabaseReadService.getRecentMeetings(50);
+      } catch (e) {
+        console.warn('[ipc] get-recent-meetings: Supabase failed, falling back to SQLite:', e);
+      }
+    }
     return DatabaseManager.getInstance().getRecentMeetings(50);
   });
 
@@ -1699,7 +1706,13 @@ export function initializeIpcHandlers(appState: AppState): void {
   });
 
   safeHandle("get-meeting-details", async (event, id) => {
-    // Helper to fetch full details
+    if (SupabaseReadService.isAvailable()) {
+      try {
+        return await SupabaseReadService.getMeetingDetails(id);
+      } catch (e) {
+        console.warn('[ipc] get-meeting-details: Supabase failed, falling back to SQLite:', e);
+      }
+    }
     return DatabaseManager.getInstance().getMeetingDetails(id);
   });
 
@@ -3306,6 +3319,31 @@ export function initializeIpcHandlers(appState: AppState): void {
       return { success: true };
     } catch (error: any) {
       console.error('[ipc] supabase:force-backfill failed:', error);
+      return { success: false, error: error?.message ?? String(error) };
+    }
+  });
+
+  // Fire-and-forget reconciliation pass: compares local SQLite rows against
+  // their Supabase mirror and re-enqueues anything missing/divergent. Runs in
+  // the background; the UI polls supabase:get-mirror-status for progress.
+  safeHandle('supabase:sync-audit', async () => {
+    try {
+      const { SupabaseSyncAudit } = require('./db/SupabaseSyncAudit');
+      const { DatabaseManager } = require('./db/DatabaseManager');
+      const { SupabaseClientManager } = require('./db/SupabaseClient');
+      if (!SupabaseClientManager.isConfigured?.()) {
+        return { success: false, error: 'Supabase not configured or not signed in' };
+      }
+      const db = DatabaseManager.getInstance().getDb();
+      if (!db) return { success: false, error: 'SQLite not ready' };
+
+      // Fire-and-forget; UI can poll supabase:get-mirror-status.
+      SupabaseSyncAudit.run(db).catch((err: any) => {
+        console.warn('[ipc] supabase:sync-audit run error:', err);
+      });
+      return { success: true };
+    } catch (error: any) {
+      console.error('[ipc] supabase:sync-audit failed:', error);
       return { success: false, error: error?.message ?? String(error) };
     }
   });

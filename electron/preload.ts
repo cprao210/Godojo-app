@@ -363,6 +363,7 @@ interface ElectronAPI {
     lastError?: string | null;
   }>;
   supabaseForceBackfill: () => Promise<{ success: boolean; error?: string }>;
+  supabaseSyncAudit: () => Promise<{ success: boolean; error?: string }>;
 
   // Company Intelligence
   fetchCompanyIntel: (payload: { companyName: string; domain?: string; forceRefresh?: boolean }) => Promise<{ success: boolean; intel?: any; fromCache?: boolean; error?: string }>;
@@ -1303,6 +1304,7 @@ contextBridge.exposeInMainWorld("electronAPI", {
     ipcRenderer.invoke('supabase:set-credentials', { url, anonKey }),
   supabaseGetMirrorStatus: () => ipcRenderer.invoke('supabase:get-mirror-status'),
   supabaseForceBackfill: () => ipcRenderer.invoke('supabase:force-backfill'),
+  supabaseSyncAudit: () => ipcRenderer.invoke('supabase:sync-audit'),
 
   // Platform
   platform: process.platform,

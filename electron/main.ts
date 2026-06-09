@@ -2935,6 +2935,29 @@ async function initializeApp() {
       } catch (e) {
         console.warn('[Main] SupabaseBackfill wiring failed (non-fatal):', e);
       }
+
+      // Gap detection: compare local SQLite IDs against Supabase and re-queue
+      // any rows that never made it (silent outbox failures, pre-credentials
+      // writes, etc.). Runs concurrently with the backfill; fire-and-forget.
+      try {
+        const { SupabaseSyncAudit } = require('./db/SupabaseSyncAudit');
+        const { AuthManager } = require('./services/AuthManager');
+        const auth = AuthManager.getInstance();
+
+        const runAuditOnce = () => {
+          SupabaseSyncAudit.run(sqliteDb).catch((err: any) => {
+            console.warn('[Main] SupabaseSyncAudit.run failed (non-fatal):', err);
+          });
+        };
+
+        if (auth.isSignedIn()) {
+          runAuditOnce();
+        } else {
+          auth.once('signed-in', runAuditOnce);
+        }
+      } catch (e) {
+        console.warn('[Main] SupabaseSyncAudit wiring failed (non-fatal):', e);
+      }
     } else {
       console.warn('[Main] DatabaseManager has no DB handle yet — mirror service deferred');
     }

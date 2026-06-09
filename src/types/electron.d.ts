@@ -404,6 +404,7 @@ export interface ElectronAPI {
     lastError?: string | null;
   }>;
   supabaseForceBackfill: () => Promise<{ success: boolean; error?: string }>;
+  supabaseSyncAudit: () => Promise<{ success: boolean; error?: string }>;
 
   // Platform
   platform: NodeJS.Platform;
