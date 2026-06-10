@@ -616,10 +616,10 @@ export const useLiveAnalysis = (
           const olderTurns = prospectTurns.filter(t => (now - t.timestamp) > COMPRESSION_CUTOFF_MS);
           const olderBlock = olderTurns.length > 0
             ? `[EARLIER CALL CONTEXT — ${olderTurns.length} prospect turns]\n` +
-              olderTurns.map(t => {
-                const name = t.displayName && t.displayName !== "Them" ? ` (${t.displayName})` : '';
-                return `CLIENT${name}: ${t.text.substring(0, 80)}${t.text.length > 80 ? '…' : ''}`;
-              }).join('\n')
+            olderTurns.map(t => {
+              const name = t.displayName && t.displayName !== "Them" ? ` (${t.displayName})` : '';
+              return `CLIENT${name}: ${t.text.substring(0, 80)}${t.text.length > 80 ? '…' : ''}`;
+            }).join('\n')
             : '';
           const recentBlock = recentTurns.map(t => {
             const role = 'CLIENT';
@@ -629,7 +629,7 @@ export const useLiveAnalysis = (
           firstRunContext = olderBlock ? `${olderBlock}\n\n[RECENT TURNS — full fidelity]\n${recentBlock}` : recentBlock;
         } else {
           firstRunContext = humanTurns.filter(t => t.speaker !== 'user').map(t => {
-            const role = t.speaker === 'user' ? 'SALES PERSON' : 'CLIENT';
+            const role = t.speaker === 'user' ? 'SALES PERSON (Me)' : 'PROSPECT (Client)';
             const name = t.displayName && t.displayName !== "Them" && t.displayName !== "Me" ? ` (${t.displayName})` : '';
             return `${role}${name}: ${t.text}`;
           }).join('\n');

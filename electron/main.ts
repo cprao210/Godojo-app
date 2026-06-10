@@ -161,8 +161,8 @@ interface ScreenshotCaptureSession {
 let KnowledgeOrchestratorClass: any = null;
 let KnowledgeDatabaseManagerClass: any = null;
 try {
-  KnowledgeOrchestratorClass = require('../premium/electron/knowledge/KnowledgeOrchestrator').KnowledgeOrchestrator;
-  KnowledgeDatabaseManagerClass = require('../premium/electron/knowledge/KnowledgeDatabaseManager').KnowledgeDatabaseManager;
+  KnowledgeOrchestratorClass = require('./premium/knowledge/KnowledgeOrchestrator').KnowledgeOrchestrator;
+  KnowledgeDatabaseManagerClass = require('./premium/knowledge/KnowledgeDatabaseManager').KnowledgeDatabaseManager;
 } catch {
   console.log('[Main] Knowledge modules not available — profile intelligence disabled.');
 }
@@ -542,6 +542,7 @@ export class AppState {
 
         // generateContent function for LLM calls
         this.knowledgeOrchestrator.setGenerateContentFn(async (contents: any[]) => {
+          console.log("--> generateContent knowledgeOrchestrator: ", contents[0]?.text);
           return await llmHelper.generateContentStructured(
             contents[0]?.text || ''
           );
@@ -571,6 +572,36 @@ export class AppState {
         llmHelper.setKnowledgeOrchestrator(this.knowledgeOrchestrator);
 
         console.log('[AppState] KnowledgeOrchestrator initialized');
+
+        // ── Company context startup hydration ──────────────────────────────────────
+        // Load persisted company context from DB and hydrate the orchestrator so it
+        // becomes the single in-memory source of truth from the first request onward.
+        try {
+          const { hydrateOrchestratorFromContext } = require('./utils/companyKnowledge');
+          const companyCtx = DatabaseManager.getInstance().getCompanyContext();
+          if (companyCtx) {
+            hydrateOrchestratorFromContext(this.knowledgeOrchestrator, companyCtx);
+            console.log('[AppState] Orchestrator hydrated from DB on startup');
+          } else {
+            console.log('[AppState] No persisted company context found — orchestrator starts empty');
+          }
+        } catch (hydrateErr: any) {
+          console.warn('[AppState] Startup orchestrator hydration failed (non-fatal):', hydrateErr.message);
+        }
+
+        // ── Restore persisted knowledge mode toggle ─────────────────────────────────
+        try {
+          const { CredentialsManager } = require('./services/CredentialsManager');
+          const savedMode = CredentialsManager.getInstance().getKnowledgeModeActive();
+          if (savedMode) {
+            this.knowledgeOrchestrator.setKnowledgeMode(true);
+            console.log('[AppState] Knowledge mode restored from saved preferences: ON');
+          }
+        } catch (modeErr: any) {
+          console.warn('[AppState] Failed to restore knowledge mode (non-fatal):', modeErr.message);
+        }
+        // ── End startup hydration ───────────────────────────────────────────────────
+
       }
     } catch (error) {
       console.error('[AppState] Failed to initialize KnowledgeOrchestrator:', error);

@@ -64,6 +64,8 @@ export interface StoredCredentials {
     // but we keep both encrypted at rest to avoid casual exfiltration)
     supabaseUrl?: string;
     supabaseAnonKey?: string;
+    // Knowledge Base
+    knowledgeModeActive?: boolean;
 }
 
 export class CredentialsManager {
@@ -300,6 +302,17 @@ export class CredentialsManager {
         this.saveCredentials();
         console.log(`[CredentialsManager] AI Response Language set to: ${language}`);
     }
+
+    public getKnowledgeModeActive(): boolean {
+        return this.credentials.knowledgeModeActive ?? false;
+    }
+
+    public setKnowledgeModeActive(enabled: boolean): void {
+        this.credentials.knowledgeModeActive = enabled;
+        this.saveCredentials();
+        console.log(`[CredentialsManager] Knowledge mode persisted: ${enabled}`);
+    }
+
     public setDefaultModel(model: string): void {
         this.credentials.defaultModel = model;
         this.saveCredentials();

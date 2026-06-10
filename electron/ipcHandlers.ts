@@ -14,6 +14,10 @@ import { searchCompany, clearCompanyCache } from "./services/TavilyManager";
 import { buildCompanyContextBlock } from './utils/salesBriefUtils';
 import { RECOGNITION_LANGUAGES, AI_RESPONSE_LANGUAGES } from "./config/languages"
 import { LiveAnalysisData } from "../src/types/liveAnalysis";
+import {
+  buildOwnCompanyBlockFromOrchestrator,
+  hydrateOrchestratorFromContext,
+} from './utils/companyKnowledge';
 
 export function initializeIpcHandlers(appState: AppState): void {
   const safeHandle = (channel: string, listener: (event: any, ...args: any[]) => Promise<any> | any) => {
@@ -321,13 +325,19 @@ export function initializeIpcHandlers(appState: AppState): void {
 
   safeHandle("gemini-chat", async (event, message: string, imagePaths?: string[], context?: string, options?: { skipSystemPrompt?: boolean }) => {
     try {
-      const companyBlock = buildCompanyContextBlock(appState.getCompanyIntel());
-      const enrichedContext = companyBlock
-        ? (context ? `${companyBlock}\n\n${context}` : companyBlock)
-        : context;
+      // Own-company context from orchestrator (seller perspective)
+      const ownCompanyBlock = buildOwnCompanyBlockFromOrchestrator(appState.getKnowledgeOrchestrator());
+      // Prospect intelligence from Tavily (prospect perspective) — unchanged
+      const prospectBlock = buildCompanyContextBlock(appState.getCompanyIntel());
+      // Combine: own context first (highest priority), then prospect, then caller-supplied context
+      let enrichedContext = context ?? '';
+      if (prospectBlock) enrichedContext = prospectBlock + (enrichedContext ? '\n\n' + enrichedContext : '');
+      if (ownCompanyBlock) enrichedContext = ownCompanyBlock + (enrichedContext ? '\n\n' + enrichedContext : '');
       const result = await appState.processingHelper.getLLMHelper().chatWithGemini(message, imagePaths, enrichedContext, options?.skipSystemPrompt);
 
       console.log(`[IPC] gemini - chat response: `, result ? result.substring(0, 50) : "(empty)");
+      console.log("(gemini-chat) ownCompanyBlock: ", ownCompanyBlock);
+      console.log("(gemini-chat) prospectBlock: ", prospectBlock);
 
       // Don't process empty responses
       if (!result || result.trim().length === 0) {
@@ -406,31 +416,46 @@ export function initializeIpcHandlers(appState: AppState): void {
 
       let fullResponse = "";
 
+      // Own-company context (seller) — injected when knowledge mode is OFF.
+      // When knowledge mode is ON, LLMHelper.streamChat calls processQuestion()
+      // which builds a richer block (identity + retrieved asset chunks) internally.
+      // Injecting the metadata-only block here on top would duplicate identity info
+      // and push asset chunks further from the question in the context window.
+      try {
+        const orchestrator = appState.getKnowledgeOrchestrator();
+        const knowledgeModeOn = orchestrator?.isKnowledgeMode?.() ?? false;
+        if (!knowledgeModeOn) {
+          const ownCompanyBlock = buildOwnCompanyBlockFromOrchestrator(orchestrator);
+          if (ownCompanyBlock) {
+            context = context ? `${ownCompanyBlock}\n\n${context}` : ownCompanyBlock;
+          }
+        }
+        // Prospect intelligence (Tavily) — always injected regardless of knowledge mode
+        const prospectBlock = buildCompanyContextBlock(appState.getCompanyIntel());
+        if (prospectBlock) {
+          context = context ? `${prospectBlock}\n\n${context}` : prospectBlock;
+        }
+        console.log("gemini-chat-stream context block: ", context);
+      } catch (ctxErr) {
+        console.warn("[IPC] Failed to inject company context:", ctxErr);
+      }
+
       // Context Injection for "Answer" button (100s rolling window)
       if (!context) {
-        // User requested 100 seconds of context for the answer button
-        // Logic: If no explicit context provided (like from manual override), auto-inject from IntelligenceManager
         try {
-          // Use full session transcript so chat can answer questions about anything said in the meeting
           const fullSessionContext = intelligenceManager.getFullSessionContext();
           if (fullSessionContext && fullSessionContext.trim().length > 0) {
             context = fullSessionContext;
             console.log(`[IPC] Auto-injected full session transcript for chat (${context.length} chars)`);
           } else {
-            // Fallback to recent window if session hasn't started
             const autoContext = intelligenceManager.getFormattedContext(300);
             if (autoContext && autoContext.trim().length > 0) {
               context = autoContext;
               console.log(`[IPC] Auto-injected 300s context fallback for chat (${context.length} chars)`);
             }
           }
-          // Company intel block always prepended so it has highest priority
-          const companyBlock = buildCompanyContextBlock(appState.getCompanyIntel());
-          if (companyBlock) {
-            context = context ? `${companyBlock}\n\n${context}` : companyBlock;
-          }
         } catch (ctxErr) {
-          console.warn("[IPC] Failed to auto-inject context:", ctxErr);
+          console.warn("[IPC] Failed to auto-inject transcript context:", ctxErr);
         }
       }
 
@@ -2174,7 +2199,13 @@ export function initializeIpcHandlers(appState: AppState): void {
 
       // 2. Build prompt
       const contextString = buildSalesBriefContext(eventData);
-      const userMessage = `Generate a complete sales meeting brief for this meeting:\n\n${contextString}`;
+      const ownCompanyBlock = buildOwnCompanyBlockFromOrchestrator(appState.getKnowledgeOrchestrator());
+      const fullContext = ownCompanyBlock
+        ? `${ownCompanyBlock}\n\n${contextString}`
+        : contextString;
+      const userMessage = `Generate a complete sales meeting brief for this meeting:\n\n${fullContext}`;
+
+      console.log("Sales Brief PRMOPT: ", userMessage);
 
       const llmHelper = appState.processingHelper.getLLMHelper();
       const myStreamId = ++_salesBriefStreamId;
@@ -2523,21 +2554,80 @@ export function initializeIpcHandlers(appState: AppState): void {
               db.saveAssetChunks(asset.id, chunks);
 
               const ragManager = appState.getRAGManager?.();
-              if (ragManager) {
-                const pipeline = ragManager.getEmbeddingPipeline();
-                const storedChunks = db.getAssetChunksWithoutEmbeddings(asset.id);
-                for (const c of storedChunks) {
-                  try {
-                    const vector = await pipeline.getEmbedding(c.chunk_text);
-                    const blob = Buffer.from(new Float32Array(vector).buffer);
-                    db.saveAssetChunkEmbedding(c.id, blob);
-                  } catch (embErr: any) {
-                    console.warn(`[IPC] company:saveContext — embedding failed for chunk ${c.id}:`, embErr.message);
+              if (!ragManager) {
+                // RAG pipeline not available — mark error so the UI shows the real state
+                // instead of silently lying with 'mapped'
+                db.upsertCompanyAsset({ id: asset.id, type: asset.type, label: asset.label, status: 'error' });
+                console.warn(`[IPC] company:saveContext — ragManager not available, skipping embeddings for asset ${asset.id}`);
+                // Still link chunks (text-only, no embeddings) to the orchestrator
+                try {
+                  const orchestrator = appState.getKnowledgeOrchestrator();
+                  if (orchestrator && typeof orchestrator.ingestDocument === 'function') {
+                    await orchestrator.ingestDocument({ id: asset.id, type: asset.type, label: asset.label, mimeType: asset.mimeType });
                   }
+                } catch (_) { }
+                return;
+              }
+
+              const pipeline = ragManager.getEmbeddingPipeline();
+
+              // Bug 2 fix: wait for the pipeline to finish initializing before embedding
+              try {
+                await pipeline.waitForReady(20000);
+              } catch (readyErr: any) {
+                console.error(`[IPC] company:saveContext — embedding pipeline not ready for asset ${asset.id}:`, readyErr.message);
+                db.upsertCompanyAsset({ id: asset.id, type: asset.type, label: asset.label, status: 'error' });
+                try {
+                  const orchestrator = appState.getKnowledgeOrchestrator();
+                  if (orchestrator && typeof orchestrator.ingestDocument === 'function') {
+                    await orchestrator.ingestDocument({ id: asset.id, type: asset.type, label: asset.label, mimeType: asset.mimeType });
+                  }
+                } catch (_) { }
+                return;
+              }
+
+              let embeddingsFailed = 0;
+              const storedChunks = db.getAssetChunksWithoutEmbeddings(asset.id);
+              for (const c of storedChunks) {
+                try {
+                  const vector = await pipeline.getEmbedding(c.chunk_text);
+                  const blob = Buffer.from(new Float32Array(vector).buffer);
+                  db.saveAssetChunkEmbedding(c.id, blob);
+                } catch (embErr: any) {
+                  embeddingsFailed++;
+                  console.warn(`[IPC] company:saveContext — embedding failed for chunk ${c.id}:`, embErr.message);
                 }
               }
 
-              db.upsertCompanyAsset({ id: asset.id, type: asset.type, label: asset.label, status: 'mapped' });
+              // Only mark 'mapped' if all embeddings succeeded
+              const finalStatus = embeddingsFailed === 0 ? 'mapped' : 'error';
+              if (embeddingsFailed > 0) {
+                console.error(`[IPC] company:saveContext — ${embeddingsFailed}/${storedChunks.length} chunks failed to embed for asset ${asset.id}`);
+              }
+              db.upsertCompanyAsset({ id: asset.id, type: asset.type, label: asset.label, status: finalStatus });
+
+              // [NEW] Link the indexed document to the orchestrator
+              try {
+                const orchestrator = appState.getKnowledgeOrchestrator();
+                if (orchestrator && typeof orchestrator.ingestDocument === 'function') {
+                  // Do NOT pass extractedText here — chunks + embeddings are already
+                  // written to DB above. Passing extractedText triggers Mode A which
+                  // re-embeds inline and produces null embeddings if the pipeline is
+                  // momentarily busy, making all chunks invisible to semantic search.
+                  // Mode B (no extractedText) reads the already-embedded chunks from DB.
+                  await orchestrator.ingestDocument({
+                    id: asset.id,
+                    type: asset.type,        // 'sales_deck' | 'product_specs' | 'case_studies' | 'custom'
+                    label: asset.label,
+                    mimeType: asset.mimeType,
+                  });
+                  console.log(`[IPC] company:saveContext — orchestrator.ingestDocument linked for asset ${asset.id}`);
+                }
+              } catch (ingestErr: any) {
+                // Non-fatal: orchestrator link failure should not block the save flow
+                console.warn(`[IPC] company:saveContext — orchestrator.ingestDocument failed for ${asset.id}:`, ingestErr.message);
+              }
+
               console.log(`[IPC] company:saveContext — asset ${asset.id} fully indexed`);
             } catch (indexErr: any) {
               console.error(`[IPC] company:saveContext — indexing failed for asset ${asset.id}:`, indexErr.message);
@@ -2568,6 +2658,22 @@ export function initializeIpcHandlers(appState: AppState): void {
       // 5. Mirror to SettingsManager (unchanged)
       const { SettingsManager } = require('./services/SettingsManager');
       SettingsManager.getInstance().set('companyContext', data);
+
+      // 6. Synchronize the updated context into the KnowledgeOrchestrator.
+      //    We re-read from DB so the orchestrator always sees the canonical persisted state
+      //    (including any asset status changes written above).
+      //    hydrateOrchestratorFromContext skips re-ingesting asset documents — those
+      //    are linked separately via orchestrator.ingestDocument in company:uploadAsset.
+      try {
+        const orchestrator = appState.getKnowledgeOrchestrator();
+        if (orchestrator) {
+          const freshCtx = DatabaseManager.getInstance().getCompanyContext();
+          hydrateOrchestratorFromContext(orchestrator, freshCtx);
+          console.log('[IPC] company:saveContext — orchestrator synchronized');
+        }
+      } catch (orchErr: any) {
+        console.warn('[IPC] company:saveContext — orchestrator sync failed (non-fatal):', orchErr.message);
+      }
 
       return { success: true };
     } catch (error: any) {
@@ -2700,10 +2806,16 @@ export function initializeIpcHandlers(appState: AppState): void {
       const contextString = buildFollowUpEmailPromptInput(input);
 
       // Build prompts
-      const companyBlock = buildCompanyContextBlock(appState.getCompanyIntel());
-      const enrichedContext = companyBlock ? `${companyBlock}\n\n${contextString}` : contextString;
+      const ownCompanyBlock = buildOwnCompanyBlockFromOrchestrator(appState.getKnowledgeOrchestrator());
+      const prospectBlock = buildCompanyContextBlock(appState.getCompanyIntel());
+      let enrichedContext = contextString;
+      if (prospectBlock) enrichedContext = `${prospectBlock}\n\n${enrichedContext}`;
+      if (ownCompanyBlock) enrichedContext = `${ownCompanyBlock}\n\n${enrichedContext}`;
       const geminiPrompt = `${FOLLOWUP_EMAIL_PROMPT}\n\nMEETING DETAILS:\n${enrichedContext}`;
       const groqPrompt = `${GROQ_FOLLOWUP_EMAIL_PROMPT}\n\nMEETING DETAILS:\n${enrichedContext}`;
+
+      console.log("=> generate follow-up email (geminiPrompt): ", geminiPrompt);
+      console.log("=> generate follow-up email (groqPrompt): ", groqPrompt);
 
       // Use chatWithGemini with alternateGroqMessage for fallback
       const emailBody = await llmHelper.chatWithGemini(geminiPrompt, undefined, undefined, true, groqPrompt);
@@ -2980,7 +3092,7 @@ export function initializeIpcHandlers(appState: AppState): void {
       if (!orchestrator) {
         return { success: false, error: 'Knowledge engine not initialized. Please ensure API keys are configured.' };
       }
-      const { DocType } = require('../premium/electron/knowledge/types');
+      const { DocType } = require('./premium/knowledge/types');
       const result = await orchestrator.ingestDocument(filePath, DocType.RESUME);
       return result;
     } catch (error: any) {
@@ -3009,20 +3121,26 @@ export function initializeIpcHandlers(appState: AppState): void {
     }
   });
 
+  safeHandle("profile:get-mode", async () => {
+    try {
+      const orchestrator = appState.getKnowledgeOrchestrator();
+      if (!orchestrator) return { active: false };
+      return { active: orchestrator.isKnowledgeMode() };
+    } catch {
+      return { active: false };
+    }
+  });
+
   safeHandle("profile:set-mode", async (_, enabled: boolean) => {
     try {
-      // Premium gate: only allow enabling profile mode with active license
-      if (enabled) {
-        const { LicenseManager } = require('../premium/electron/services/LicenseManager');
-        if (!LicenseManager.getInstance().isPremium()) {
-          return { success: false, error: 'Pro license required. Please activate a license key to use Profile Intelligence features.' };
-        }
-      }
       const orchestrator = appState.getKnowledgeOrchestrator();
       if (!orchestrator) {
         return { success: false, error: 'Knowledge engine not initialized' };
       }
       orchestrator.setKnowledgeMode(enabled);
+      // Persist so the toggle survives app restarts
+      const { CredentialsManager } = require('./services/CredentialsManager');
+      CredentialsManager.getInstance().setKnowledgeModeActive(enabled);
       return { success: true };
     } catch (error: any) {
       return { success: false, error: error.message };
@@ -3035,7 +3153,7 @@ export function initializeIpcHandlers(appState: AppState): void {
       if (!orchestrator) {
         return { success: false, error: 'Knowledge engine not initialized' };
       }
-      const { DocType } = require('../premium/electron/knowledge/types');
+      const { DocType } = require('./premium/knowledge/types');
       orchestrator.deleteDocumentsByType(DocType.RESUME);
       return { success: true };
     } catch (error: any) {
@@ -3078,17 +3196,11 @@ export function initializeIpcHandlers(appState: AppState): void {
 
   safeHandle("profile:upload-jd", async (_, filePath: string) => {
     try {
-      // Premium gate
-      const { LicenseManager } = require('../premium/electron/services/LicenseManager');
-      if (!LicenseManager.getInstance().isPremium()) {
-        return { success: false, error: 'Pro license required. Please activate a license key to use Profile Intelligence features.' };
-      }
-      console.log(`[IPC] profile:upload-jd called with: ${filePath}`);
       const orchestrator = appState.getKnowledgeOrchestrator();
       if (!orchestrator) {
         return { success: false, error: 'Knowledge engine not initialized. Please ensure API keys are configured.' };
       }
-      const { DocType } = require('../premium/electron/knowledge/types');
+      const { DocType } = require('./premium/knowledge/types');
       const result = await orchestrator.ingestDocument(filePath, DocType.JD);
       return result;
     } catch (error: any) {
@@ -3103,7 +3215,7 @@ export function initializeIpcHandlers(appState: AppState): void {
       if (!orchestrator) {
         return { success: false, error: 'Knowledge engine not initialized' };
       }
-      const { DocType } = require('../premium/electron/knowledge/types');
+      const { DocType } = require('./premium/knowledge/types');
       orchestrator.deleteDocumentsByType(DocType.JD);
       return { success: true };
     } catch (error: any) {
@@ -3113,11 +3225,6 @@ export function initializeIpcHandlers(appState: AppState): void {
 
   safeHandle("profile:research-company", async (_, companyName: string) => {
     try {
-      // Premium gate
-      const { LicenseManager } = require('../premium/electron/services/LicenseManager');
-      if (!LicenseManager.getInstance().isPremium()) {
-        return { success: false, error: 'Pro license required. Please activate a license key to use Profile Intelligence features.' };
-      }
       const orchestrator = appState.getKnowledgeOrchestrator();
       if (!orchestrator) {
         return { success: false, error: 'Knowledge engine not initialized' };
@@ -3129,7 +3236,7 @@ export function initializeIpcHandlers(appState: AppState): void {
       const cm = CredentialsManager.getInstance();
       const tavilyApiKey = cm.getTavilyApiKey();
       if (tavilyApiKey) {
-        const { TavilySearchProvider } = require('../premium/electron/knowledge/TavilySearchProvider');
+        const { TavilySearchProvider } = require('./premium/knowledge/TavilySearchProvider');
         engine.setSearchProvider(new TavilySearchProvider(tavilyApiKey));
       }
 
@@ -3156,11 +3263,7 @@ export function initializeIpcHandlers(appState: AppState): void {
 
   safeHandle("profile:generate-negotiation", async (_, force: boolean = false) => {
     try {
-      // Premium gate
-      const { LicenseManager } = require('../premium/electron/services/LicenseManager');
-      if (!LicenseManager.getInstance().isPremium()) {
-        return { success: false, error: 'Pro license required. Please activate a license key to use Profile Intelligence features.' };
-      }
+
       const orchestrator = appState.getKnowledgeOrchestrator();
       if (!orchestrator) {
         return { success: false, error: 'Knowledge engine not initialized' };

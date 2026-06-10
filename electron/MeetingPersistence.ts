@@ -312,6 +312,9 @@ export class MeetingPersistence {
             isProcessed: false
         };
 
+        console.log("--> stopMeeting (snapshot): ", snapshot);
+        console.log("--> stopMeeting (placeholder): ", placeholder);
+
         try {
             DatabaseManager.getInstance().saveMeeting(placeholder, snapshot.startTime, durationMs);
             // Notify Frontend
@@ -446,6 +449,8 @@ Use this as your grounding anchor. Map statuses: confirmed→Clear, partial→Pa
                 isProcessed: true
             };
 
+            console.log("processAndSaveMeeting (meetingData): ", meetingData);
+
             DatabaseManager.getInstance().saveMeeting(meetingData, data.startTime, data.durationMs);
 
             // Metadata was already snapshotted before session.reset() — nothing to clear here.
@@ -475,13 +480,16 @@ Use this as your grounding anchor. Map statuses: confirmed→Clear, partial→Pa
             // Build the same context string as original processing
             const fullRegenerateContext = meeting.transcript
                 .filter(t => !['system', 'ai', 'assistant', 'model'].includes(t.speaker?.toLowerCase()))
-                .map(t => `${t.speaker === 'user' ? 'REP' : 'PROSPECT'}: ${t.text}`)
+                .map(t => `${t.speaker === 'user' ? 'SALES PERSON (Me)' : 'PROSPECT (Client)'}: ${t.text}`)
                 .join('\n');
 
             // Re-use live analysis from detailedSummary if present so the regen is also grounded
             const existingLiveAnalysis = (meeting.detailedSummary as any)?.liveAnalysis as LiveAnalysisData | undefined;
             const groqSummaryPrompt = GROQ_SUMMARY_JSON_PROMPT;
 
+            console.log("--> buildSummaryPrompt: ", buildSummaryPrompt(existingLiveAnalysis));
+            console.log("--> fullRegenerateContext: ", fullRegenerateContext);
+            console.log("--> groqSummaryPrompt: ", groqSummaryPrompt);
             const generatedSummary = await this.llmHelper.generateMeetingSummary(
                 buildSummaryPrompt(existingLiveAnalysis),
                 fullRegenerateContext,

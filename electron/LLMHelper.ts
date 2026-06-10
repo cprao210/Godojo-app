@@ -42,7 +42,7 @@ const MAX_OUTPUT_TOKENS = 65536
 // Per-use-case caps sourced from MODE_TOKEN_LIMITS in types.ts.
 // Using named aliases here makes call-sites self-documenting.
 const MAX_TOKENS_STRUCTURED = MODE_TOKEN_LIMITS.structured  // 4096 — JSON generation
-const MAX_TOKENS_SUMMARY    = MODE_TOKEN_LIMITS.summary     // 2048 — recap/summary/email
+const MAX_TOKENS_SUMMARY = MODE_TOKEN_LIMITS.summary     // 2048 — recap/summary/email
 
 const CLAUDE_MAX_OUTPUT_TOKENS = 64000
 const CLAUDE_MAX_OUTPUT_TOKENS_NONSTREAM = 4096 // safe ceiling for non-streaming calls
@@ -868,6 +868,12 @@ export class LLMHelper {
       // If knowledge mode is active, check for intro questions and
       // inject system prompt + relevant context
       // ============================================================
+
+      console.log(`[LLMHelper] knowledgeMode active: ${this.knowledgeOrchestrator?.isKnowledgeMode()}, hasOrchestrator: ${!!this.knowledgeOrchestrator}`);
+
+      // Will be set by knowledge mode intercept below if active
+      let knowledgeSystemPrompt: string | null = null;
+
       if (this.knowledgeOrchestrator?.isKnowledgeMode()) {
         try {
           // Feed only to the depth scorer — NOT feedInterviewerUtterance, which also routes to the
@@ -887,14 +893,13 @@ export class LLMHelper {
               return knowledgeResult.introResponse;
             }
             // Inject knowledge system prompt and context
-            if (!skipSystemPrompt && knowledgeResult.systemPromptInjection) {
-              skipSystemPrompt = false; // ensure we use the knowledge prompt
-              // Prepend knowledge context to existing context
-              if (knowledgeResult.contextBlock) {
-                context = context
-                  ? `${knowledgeResult.contextBlock}\n\n${context}`
-                  : knowledgeResult.contextBlock;
-              }
+            if (knowledgeResult.systemPromptInjection) {
+              knowledgeSystemPrompt = knowledgeResult.systemPromptInjection;
+            }
+            if (knowledgeResult.contextBlock) {
+              context = context
+                ? `${knowledgeResult.contextBlock}\n\n${context}`
+                : knowledgeResult.contextBlock;
             }
           }
         } catch (knowledgeError: any) {
@@ -921,8 +926,8 @@ export class LLMHelper {
         ? `CONTEXT:\n${context}\n\nCHAT MESSAGE:\n${message}`
         : message;
 
-      const finalGeminiPrompt = this.injectLanguageInstruction(HARD_SYSTEM_PROMPT);
-      const finalGroqPrompt = alternateGroqMessage || this.injectLanguageInstruction(GROQ_SYSTEM_PROMPT);
+      const finalGeminiPrompt = this.injectLanguageInstruction(knowledgeSystemPrompt ?? HARD_SYSTEM_PROMPT);
+      const finalGroqPrompt = alternateGroqMessage || this.injectLanguageInstruction(knowledgeSystemPrompt ?? GROQ_SYSTEM_PROMPT);
 
       // Only build combined messages if we're NOT using Claude/OpenAI (they use separate system prompts)
       const isClaudeActive = this.isClaudeModel(this.currentModelId) && this.claudeClient;
@@ -950,8 +955,9 @@ export class LLMHelper {
       // }
 
       // System prompts for OpenAI/Claude (skipped if skipSystemPrompt)
-      const openaiSystemPrompt = skipSystemPrompt ? undefined : this.injectLanguageInstruction(OPENAI_SYSTEM_PROMPT);
-      const claudeSystemPrompt = skipSystemPrompt ? undefined : this.injectLanguageInstruction(CLAUDE_SYSTEM_PROMPT);
+      // Use knowledgeSystemPrompt when knowledge mode injected one, so asset context is treated as authoritative
+      const openaiSystemPrompt = skipSystemPrompt ? undefined : this.injectLanguageInstruction(knowledgeSystemPrompt ?? OPENAI_SYSTEM_PROMPT);
+      const claudeSystemPrompt = skipSystemPrompt ? undefined : this.injectLanguageInstruction(knowledgeSystemPrompt ?? CLAUDE_SYSTEM_PROMPT);
 
       if (this.useOllama) {
         return await this.callOllama(combinedMessages.gemini, imagePaths?.[0]);
