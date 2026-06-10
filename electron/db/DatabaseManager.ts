@@ -888,11 +888,21 @@ export class DatabaseManager {
                 'UPDATE company_asset_chunks SET embedding = ? WHERE id = ?'
             ).run(embedding, chunkId);
             try {
-                // Mirror as base64 — Supabase receives it as a vector via pgvector
-                SupabaseMirrorService.getInstance().upsertRow('company_asset_chunks', {
-                    id: chunkId,
-                    embedding: Array.from(new Float32Array(embedding.buffer)),
-                });
+                // Fetch the full row so the mirror upsert has enough columns to
+                // satisfy NOT NULL constraints and the conflict target (user_id, id).
+                const row = this.db.prepare(
+                    'SELECT id, asset_id, chunk_index, chunk_text, token_count FROM company_asset_chunks WHERE id = ?'
+                ).get(chunkId) as { id: number; asset_id: string; chunk_index: number; chunk_text: string; token_count: number } | undefined;
+                if (row) {
+                    SupabaseMirrorService.getInstance().upsertRow('company_asset_chunks', {
+                        id: row.id,
+                        asset_id: row.asset_id,
+                        chunk_index: row.chunk_index,
+                        chunk_text: row.chunk_text,
+                        token_count: row.token_count,
+                        embedding: Array.from(new Float32Array(embedding.buffer)),
+                    });
+                }
             } catch (mirrorErr) {
                 console.warn('[DatabaseManager] Mirror enqueue failed for saveAssetChunkEmbedding:', mirrorErr);
             }

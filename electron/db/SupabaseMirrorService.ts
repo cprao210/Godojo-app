@@ -579,6 +579,19 @@ CREATE TABLE IF NOT EXISTS resume_nodes (
     PRIMARY KEY (user_id, id)
 );
 
+CREATE TABLE IF NOT EXISTS company_asset_chunks (
+    user_id     TEXT NOT NULL REFERENCES users(firebase_uid) ON DELETE CASCADE,
+    id          BIGINT NOT NULL,
+    asset_id    TEXT NOT NULL,
+    chunk_index INTEGER NOT NULL,
+    chunk_text  TEXT,
+    token_count INTEGER,
+    embedding   JSONB,
+    PRIMARY KEY (user_id, id)
+);
+CREATE INDEX IF NOT EXISTS idx_company_asset_chunks_asset
+    ON company_asset_chunks(user_id, asset_id);
+
 -- ============================================================
 -- PER-DIMENSION VECTOR TABLES (pgvector + HNSW cosine indexes)
 -- ============================================================
@@ -665,6 +678,7 @@ DECLARE
         'meetings', 'transcripts', 'ai_interactions',
         'chunks', 'chunk_summaries', 'embedding_queue',
         'app_state', 'user_profile', 'resume_nodes',
+        'company_asset_chunks',
         'rag_chunk_vectors_768',   'rag_summary_vectors_768',
         'rag_chunk_vectors_1536',  'rag_summary_vectors_1536',
         'rag_chunk_vectors_3072',  'rag_summary_vectors_3072'
