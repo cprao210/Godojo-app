@@ -840,12 +840,16 @@ export class DatabaseManager {
     public saveAssetChunks(assetId: string, chunks: Array<{ index: number; text: string; tokenCount: number }>): void {
         if (!this.db) return;
         try {
+            const deleteExisting = this.db.prepare(
+                'DELETE FROM company_asset_chunks WHERE asset_id = ?'
+            );
             const insert = this.db.prepare(`
-                INSERT INTO company_asset_chunks (asset_id, chunk_index, chunk_text, token_count)
-                VALUES (?, ?, ?, ?)
-            `);
+            INSERT INTO company_asset_chunks (asset_id, chunk_index, chunk_text, token_count)
+            VALUES (?, ?, ?, ?)
+        `);
             const mirrorRows: Array<Record<string, any>> = [];
             const run = this.db.transaction(() => {
+                deleteExisting.run(assetId);   // ← clear stale chunks atomically
                 for (const c of chunks) {
                     const info = insert.run(assetId, c.index, c.text, c.tokenCount);
                     mirrorRows.push({
@@ -859,6 +863,8 @@ export class DatabaseManager {
             });
             run();
             try {
+                // Clear stale chunks in Supabase before mirroring the fresh set
+                SupabaseMirrorService.getInstance().deleteRow('company_asset_chunks', 'asset_id', assetId);
                 if (mirrorRows.length > 0) {
                     SupabaseMirrorService.getInstance().upsertRows('company_asset_chunks', mirrorRows);
                 }
