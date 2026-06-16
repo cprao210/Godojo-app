@@ -147,7 +147,7 @@ const Launcher: React.FC<LauncherProps> = ({ onStartMeeting, onOpenSettings, onP
         }
     };
 
-        // Active polling — fires every 3 s while any meeting is still processing.
+    // Active polling — fires every 3 s while any meeting is still processing.
     // Stops automatically once all meetings have been fully processed.
     // This is a safety net for the race where onMeetingsUpdated fires before
     // the listener is registered, or is missed entirely.
@@ -157,7 +157,7 @@ const Launcher: React.FC<LauncherProps> = ({ onStartMeeting, onOpenSettings, onP
         return () => clearInterval(pollId);
         // eslint-disable-next-line react-hooks/exhaustive-deps
     }, [hasProcessingMeeting]);
-    
+
     // Keybinds
     const { isShortcutPressed } = useShortcuts();
     const isLight = useResolvedTheme() === 'light';
@@ -200,6 +200,33 @@ const Launcher: React.FC<LauncherProps> = ({ onStartMeeting, onOpenSettings, onP
         if (window.electronAPI?.onMeetingStateChanged) {
             removeMeetingStateListener = window.electronAPI.onMeetingStateChanged(({ isActive }) => {
                 setIsMeetingActive(isActive);
+
+                // When a meeting ends, optimistically prepend a Processing placeholder
+                // to the meetings list immediately — before fetchMeetings() round-trips
+                // to the backend. This makes the card appear with zero perceived delay.
+                // The real entry (with actual id/title) arrives via onMeetingsUpdated
+                // and replaces this placeholder naturally since setMeetings overwrites
+                // the whole list.
+                if (!isActive) {
+                    setMeetings(prev => {
+                        // Don't double-insert if one is already there from a previous
+                        // rapid end cycle
+                        const alreadyHasPlaceholder = prev.some(
+                            m => m.title === 'Processing...' && m.isProcessed === false
+                        );
+                        if (alreadyHasPlaceholder) return prev;
+
+                        const optimisticPlaceholder: Meeting = {
+                            id: `optimistic-${Date.now()}`,
+                            title: 'Processing...',
+                            date: new Date().toISOString(),
+                            duration: '—',
+                            summary: 'Generating summary...',
+                            isProcessed: false,
+                        };
+                        return [optimisticPlaceholder, ...prev];
+                    });
+                }
             });
         }
 

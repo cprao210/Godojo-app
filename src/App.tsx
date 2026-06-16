@@ -347,26 +347,32 @@ const App: React.FC = () => {
     console.log("[App.tsx] handleEndMeeting triggered");
     analytics.trackMeetingEnded();
     setIsProcessingMeeting(true);
-    try {
-      await window.electronAPI.endMeeting();
-      console.log("[App.tsx] endMeeting IPC completed");
 
-      const startStr = localStorage.getItem('natively_last_meeting_start');
-      if (startStr) {
-        const duration = Date.now() - parseInt(startStr, 10);
-        const threshold = import.meta.env.DEV ? 10000 : 180000;
-        if (duration >= threshold) {
-          localStorage.setItem('natively_show_profile_toaster', 'true');
-        }
-        localStorage.removeItem('natively_last_meeting_start');
+    // Check profile toaster threshold before firing endMeeting — we don't want
+    // to wait for the IPC to resolve before switching back to launcher.
+    const startStr = localStorage.getItem('natively_last_meeting_start');
+    if (startStr) {
+      const duration = Date.now() - parseInt(startStr, 10);
+      const threshold = import.meta.env.DEV ? 10000 : 180000;
+      if (duration >= threshold) {
+        localStorage.setItem('natively_show_profile_toaster', 'true');
       }
+      localStorage.removeItem('natively_last_meeting_start');
+    }
 
-      // Switch back to Native Launcher Mode
-      // (Ad delay tracking moved to onMeetingsUpdated listener so ads wait for note generation to finish)
+    // Fire endMeeting without awaiting — the backend saves the placeholder and
+    // broadcasts meetings-updated independently. Switching to launcher immediately
+    // means the placeholder card is visible as soon as Launcher mounts and
+    // receives the onMeetingsUpdated event, instead of only after the full IPC
+    // round-trip completes.
+    window.electronAPI.endMeeting().catch(err =>
+      console.error("Failed to end meeting:", err)
+    );
+
+    try {
       await window.electronAPI.setWindowMode('launcher');
     } catch (err) {
-      console.error("Failed to end meeting:", err);
-      window.electronAPI.setWindowMode('launcher');
+      console.error("Failed to switch window mode:", err);
     }
   };
 

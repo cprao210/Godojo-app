@@ -190,75 +190,115 @@ export const FloatingDock: React.FC<FloatingDockProps> = ({
                 style={{ height: '735px' }}
             >
 
-                {/* Overlay Panel (above dock) */}
-                <AnimatePresence mode="wait">
-                    {activePanel && (
+                {/* Overlay Panels — all three stay mounted so internal state (countdown
+                    timers, chat history, scroll position) is never lost on panel switch.
+                    Visibility + pointer-events are toggled via CSS only. */}
+
+                {/* Intelligence panel — always mounted once analysis has been initiated */}
+                {analysisInitiatedRef.current && (
+                    <motion.div
+                        animate={{
+                            opacity: activePanel === 'intelligence' ? dockOpacity : 0,
+                            y: activePanel === 'intelligence' ? 0 : 20,
+                            scale: activePanel === 'intelligence' ? 1 : 0.96,
+                        }}
+                        transition={{ type: 'spring', damping: 28, stiffness: 380, mass: 0.8 }}
+                        className="fixed bottom-[76px] left-[65px]"
+                        style={{
+                            position: 'fixed',
+                            pointerEvents: activePanel === 'intelligence' ? 'auto' : 'none',
+                        }}
+                    >
+                        {isFrozen && activePanel === 'intelligence' && (
+                            <div
+                                className="absolute inset-0 rounded-2xl z-50"
+                                style={{ pointerEvents: 'auto', background: 'rgba(0,0,0,0.10)', cursor: 'not-allowed' }}
+                            />
+                        )}
+                        <FloatingIntelligencePanel
+                            isMeetingPaused={isMeetingPaused}
+                            analysisData={analysisData}
+                            analysisError={analysisError}
+                            rollingTranscriptUser={rollingTranscriptUser}
+                            rollingTranscriptClient={rollingTranscriptClient}
+                            isClientSpeaking={isClientSpeaking}
+                            isUserSpeaking={isUserSpeaking}
+                            speakerNames={speakerNames}
+                            showTranscript={showTranscript}
+                            isLoading={analysisLoading}
+                            onRegenerate={() => runAnalysis(true)}
+                            autoRefreshInterval={autoRefreshInterval}
+                            onAutoRefreshIntervalChange={setAutoRefreshInterval}
+                            isRefreshRun={isRefreshRun}
+                            panelFirstOpenedAt={intelligencePanelFirstOpenedAt}
+                        />
+                    </motion.div>
+                )}
+
+                {/* Chat panel — always mounted once first opened */}
+                {chatMessages.length > 0 || activePanel === 'chat' ? (
+                    <motion.div
+                        animate={{
+                            opacity: activePanel === 'chat' ? dockOpacity : 0,
+                            y: activePanel === 'chat' ? 0 : 20,
+                            scale: activePanel === 'chat' ? 1 : 0.96,
+                        }}
+                        transition={{ type: 'spring', damping: 28, stiffness: 380, mass: 0.8 }}
+                        className="fixed bottom-[76px] left-[65px]"
+                        style={{
+                            position: 'fixed',
+                            pointerEvents: activePanel === 'chat' ? 'auto' : 'none',
+                        }}
+                    >
+                        {isFrozen && activePanel === 'chat' && (
+                            <div
+                                className="absolute inset-0 rounded-2xl z-50"
+                                style={{ pointerEvents: 'auto', background: 'rgba(0,0,0,0.10)', cursor: 'not-allowed' }}
+                            />
+                        )}
+                        <FloatingChatPanel
+                            transcriptRef={transcriptRef}
+                            isMeetingPaused={isMeetingPaused}
+                            rollingTranscriptUser={rollingTranscriptUser}
+                            rollingTranscriptClient={rollingTranscriptClient}
+                            isClientSpeaking={isClientSpeaking}
+                            isUserSpeaking={isUserSpeaking}
+                            showTranscript={showTranscript}
+                            currentModel={currentModel}
+                            onSelectModel={onSelectModel}
+                            speakerNames={speakerNames}
+                            messages={chatMessages}
+                            onMessagesChange={setChatMessages}
+                        />
+                    </motion.div>
+                ) : null}
+
+                {/* Settings panel — lightweight, can unmount freely (no timer state) */}
+                <AnimatePresence>
+                    {activePanel === 'settings' && (
                         <motion.div
-                            key={activePanel}
                             initial={{ opacity: 0, y: 20, scale: 0.96 }}
                             animate={{ opacity: dockOpacity, y: 0, scale: 1 }}
                             exit={{ opacity: 0, y: 12, scale: 0.97 }}
                             transition={{ type: 'spring', damping: 28, stiffness: 380, mass: 0.8 }}
-                            className={`fixed ${activePanel === "settings" ? "top-[110px]" : "bottom-[76px]"} left-[65px]`}
+                            className="fixed top-[110px] left-[65px]"
                             style={{ position: 'fixed' }}
                         >
-                            {/* Freeze overlay — keeps panel visible but blocks all interaction */}
                             {isFrozen && (
                                 <div
                                     className="absolute inset-0 rounded-2xl z-50"
-                                    style={{
-                                        pointerEvents: 'auto',
-                                        background: 'rgba(0,0,0,0.10)',
-                                        cursor: 'not-allowed',
-                                    }}
+                                    style={{ pointerEvents: 'auto', background: 'rgba(0,0,0,0.10)', cursor: 'not-allowed' }}
                                 />
                             )}
-                            {activePanel === 'intelligence' && (
-                                <FloatingIntelligencePanel
-                                    isMeetingPaused={isMeetingPaused}
-                                    analysisData={analysisData}
-                                    analysisError={analysisError}
-                                    rollingTranscriptUser={rollingTranscriptUser}
-                                    rollingTranscriptClient={rollingTranscriptClient}
-                                    isClientSpeaking={isClientSpeaking}
-                                    isUserSpeaking={isUserSpeaking}
-                                    speakerNames={speakerNames}
-                                    showTranscript={showTranscript}
-                                    isLoading={analysisLoading}
-                                    onRegenerate={() => runAnalysis(true)}
-                                    autoRefreshInterval={autoRefreshInterval}
-                                    onAutoRefreshIntervalChange={setAutoRefreshInterval}
-                                    isRefreshRun={isRefreshRun}
-                                    panelFirstOpenedAt={intelligencePanelFirstOpenedAt}
-                                />
-                            )}
-                            {activePanel === 'chat' && (
-                                <FloatingChatPanel
-                                    transcriptRef={transcriptRef}
-                                    isMeetingPaused={isMeetingPaused}
-                                    rollingTranscriptUser={rollingTranscriptUser}
-                                    rollingTranscriptClient={rollingTranscriptClient}
-                                    isClientSpeaking={isClientSpeaking}
-                                    isUserSpeaking={isUserSpeaking}
-                                    showTranscript={showTranscript}
-                                    currentModel={currentModel}
-                                    onSelectModel={onSelectModel}
-                                    speakerNames={speakerNames}
-                                    messages={chatMessages}
-                                    onMessagesChange={setChatMessages}
-                                />
-                            )}
-                            {activePanel === 'settings' && (
-                                <FloatingSettingsPanel
-                                    showTranscript={showTranscript}
-                                    onToggleTranscript={onToggleTranscript}
-                                    shortcuts={shortcuts}
-                                    currentModel={currentModel}
-                                    onSelectModel={onSelectModel}
-                                    dockOpacity={dockOpacity}
-                                    onDockOpacityChange={handleDockOpacityChange}
-                                />
-                            )}
+                            <FloatingSettingsPanel
+                                showTranscript={showTranscript}
+                                onToggleTranscript={onToggleTranscript}
+                                shortcuts={shortcuts}
+                                currentModel={currentModel}
+                                onSelectModel={onSelectModel}
+                                dockOpacity={dockOpacity}
+                                onDockOpacityChange={handleDockOpacityChange}
+                            />
                         </motion.div>
                     )}
                 </AnimatePresence>
