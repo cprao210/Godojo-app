@@ -107,6 +107,12 @@ export const FloatingDock: React.FC<FloatingDockProps> = ({
     // ── Lifted state: survives panel switches ──────────────────────────────────
     // Analysis state is owned here so FloatingIntelligencePanel never loses it on remount.
     const { analysisData, isLoading: analysisLoading, error: analysisError, runAnalysis, resetAnalysis, isRefreshRun } = useLiveAnalysis(transcriptRef, isMeetingPaused, companyIntel);
+
+    // Stable ref to runAnalysis — prevents the timer useEffect from re-running
+    // (and resetting the countdown) whenever runAnalysis identity changes.
+    const runAnalysisRef = useRef(runAnalysis);
+    useEffect(() => { runAnalysisRef.current = runAnalysis; }, [runAnalysis]);
+
     // Track whether the first analysis has been triggered so we don't re-run on every remount.
     const analysisInitiatedRef = useRef(false);
 
@@ -141,7 +147,7 @@ export const FloatingDock: React.FC<FloatingDockProps> = ({
         setIntelligencePanelFirstOpenedAt(Date.now());
 
         autoRefreshTimerRef.current = setInterval(() => {
-            runAnalysis(false);
+            runAnalysisRef.current(false);
             // Reset countdown origin after each fire so the next cycle is accurate
             setIntelligencePanelFirstOpenedAt(Date.now());
         }, autoRefreshInterval * 60 * 1000);
@@ -152,7 +158,7 @@ export const FloatingDock: React.FC<FloatingDockProps> = ({
                 autoRefreshTimerRef.current = null;
             }
         };
-    }, [autoRefreshInterval, isMeetingPaused, runAnalysis]);
+    }, [autoRefreshInterval, isMeetingPaused]);
 
     // Reset all state when a new meeting starts (IPC session-reset event)
     useEffect(() => {

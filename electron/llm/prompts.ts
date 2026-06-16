@@ -1001,7 +1001,8 @@ CRITICAL RULES — follow exactly:
 - followUpEmail tone: simple, clear, no jargon, client-friendly.
 - leadName and company: extract from transcript introductions. Return null if not found.
 - salesCoachReview.whatIDidRight: EVERY item MUST start with framework label + component name in this format: "MEDDICC ComponentName:" or "BANT ComponentName:" — e.g. "MEDDICC Metrics:", "MEDDICC EconomicBuyer:", "BANT Budget:", "BANT Timeline:". Group ALL MEDDICC items first, then BANT items. Return ONLY items grounded in actual transcript moments — minimum 2, maximum 6. Do NOT pad with generic items.
-- salesCoachReview.whatIMissedCompletely: MUST follow this EXACT label sequence in this order: "Identify Champion:", "Metrics:", "Authority:", "Process:", "Pain:". Never change the order. Never randomize.
+- salesCoachReview.whatIMissedCompletely: Only include components that were NEVER raised, asked about, or referenced at any point in the call — zero evidence in the transcript. Use labels: "Identify Champion:", "Metrics:", "Authority:", "Process:", "Pain:". Never change the order. If a component was touched (even briefly or poorly), it belongs in whatICouldHaveDoneBetter instead. Maximum 3 items — if fewer than 2 qualify as truly missed, return only those that do; do NOT pad.
+- salesCoachReview.whatICouldHaveDoneBetter: Include both (a) moments where execution was poor, AND (b) MEDDICC/BANT components that were touched but not explored deeply enough — reference the specific moment and add the missed follow-up question. Format these as: "Metrics: Asked about cost but never quantified ROI — should have asked: [exact question]".
 - salesCoachReview.whatICouldHaveDoneBetter: reference specific moments from the transcript — not generic coaching advice.
 - Return ONLY valid JSON — no markdown, no code blocks, no explanation.`;
 

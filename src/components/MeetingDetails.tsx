@@ -1092,9 +1092,17 @@ const MeetingDetails: React.FC<MeetingDetailsProps> = ({ meeting: initialMeeting
                                                     {/* Better Execution */}
                                                     {(() => {
                                                         const validBetterItems = meeting.detailedSummary?.salesCoachReview?.whatICouldHaveDoneBetter
-                                                            ?.filter(item => {
-                                                                const lower = item.toLowerCase().trim();
-                                                                return item.trim() &&
+                                                            ?.map(item => {
+                                                                const colonIndex = item.indexOf(':');
+                                                                const hasLabel = colonIndex > 0 && colonIndex < 30;
+                                                                const label = hasLabel ? item.substring(0, colonIndex).trim() : null;
+                                                                const content = hasLabel ? item.substring(colonIndex + 1).trim() : item.trim();
+                                                                return { label, content };
+                                                            })
+                                                            .filter(({ content }) => {
+                                                                if (!content || content.trim() === '' || content.trim() === '-' || content.trim() === '—') return false;
+                                                                const lower = content.toLowerCase().trim();
+                                                                return (
                                                                     !lower.startsWith('n/a') &&
                                                                     !lower.startsWith('not ') &&
                                                                     !lower.startsWith('none') &&
@@ -1103,7 +1111,8 @@ const MeetingDetails: React.FC<MeetingDetailsProps> = ({ meeting: initialMeeting
                                                                     !lower.startsWith('not discussed') &&
                                                                     !lower.startsWith('not mentioned') &&
                                                                     lower !== '-' &&
-                                                                    lower !== '—';
+                                                                    lower !== '—'
+                                                                );
                                                             });
 
                                                         if (!validBetterItems || validBetterItems.length === 0) return null;
@@ -1111,13 +1120,23 @@ const MeetingDetails: React.FC<MeetingDetailsProps> = ({ meeting: initialMeeting
                                                         return (
                                                             <div className={`p-4 rounded-xl border ${isLight ? 'bg-white border-slate-200' : 'bg-gray-800/30 border-white/10'}`}>
                                                                 <div className='flex gap-3 mb-3'>
-                                                                    <div><TrendingUp size={18} className={isLight ? 'text-slate-400' : 'text-white/50'} /></div>
-                                                                    <div className={`text-sm font-bold tracking-wider mb-3 ${isLight ? 'text-slate-400' : 'text-white/50'}`}>BETTER EXECUTION</div>
+                                                                    <div><TrendingUp size={18} className={isLight ? 'text-amber-400' : 'text-amber-400'} /></div>
+                                                                    <div className={`text-sm font-bold tracking-wider mb-3 ${isLight ? 'text-amber-600' : 'text-amber-400'}`}>BETTER EXECUTION</div>
                                                                 </div>
-                                                                {validBetterItems.map((item, i) => (
-                                                                    <p key={i} className={`text-sm italic mb-4 ${isLight ? 'text-slate-600' : 'text-white/70'}`}>
-                                                                        <span className={isLight ? 'text-slate-300' : 'text-gray-50/30'}>•</span> {item}
-                                                                    </p>
+                                                                {validBetterItems.map(({ label, content }, i) => (
+                                                                    label ? (
+                                                                        <div key={i} className="flex items-start gap-3 mb-4">
+                                                                            <span className={`text-[10px] font-bold px-2 py-0.5 rounded border shrink-0 mt-0.5 w-[130px] text-center ${isLight ? 'text-amber-700 bg-amber-50 border-amber-200' : 'text-amber-400 bg-amber-500/10 border-amber-500/20'}`}>
+                                                                                {label}
+                                                                            </span>
+                                                                            <div className={`w-px self-stretch shrink-0 ${isLight ? 'bg-amber-200' : 'bg-amber-500/20'}`} />
+                                                                            <p className={`text-sm leading-relaxed ${isLight ? 'text-slate-600' : 'text-white/70'}`}>{content}</p>
+                                                                        </div>
+                                                                    ) : (
+                                                                        <p key={i} className={`text-sm italic mb-4 ${isLight ? 'text-slate-600' : 'text-white/70'}`}>
+                                                                            <span className={isLight ? 'text-slate-300' : 'text-gray-50/30'}>•</span> {content}
+                                                                        </p>
+                                                                    )
                                                                 ))}
                                                             </div>
                                                         );
@@ -1682,8 +1701,8 @@ const MeetingDetails: React.FC<MeetingDetailsProps> = ({ meeting: initialMeeting
                             <motion.section initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }}>
                                 {meeting.detailedSummary?.liveAnalysis ? (
                                     <>
-                                        <div className={`rounded-2xl mb-4 overflow-hidden ${isLight ? 'bg-slate-900' : 'bg-[#0d0d0f]'}`}>
-                                            <DealHealthScore analysisData={meeting.detailedSummary.liveAnalysis} />
+                                        <div className={`rounded-2xl mb-4 overflow-hidden ${isLight ? 'transparent' : 'bg-[#0d0d0f]'}`}>
+                                            <DealHealthScore analysisData={meeting.detailedSummary.liveAnalysis} calledFromAnalysisTab={true} />
                                         </div>
                                         <LiveAnalysisContent
                                             hideBar="Missing Details"

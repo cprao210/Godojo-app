@@ -251,8 +251,10 @@ const FollowUpEmailModal: React.FC<FollowUpEmailModalProps> = ({ isOpen, onClose
                 // fullEmail exists — strip any greeting/sign-off the LLM may have
                 // included so we can re-wrap consistently with resolved names.
                 bodyContent = prebuilt.fullEmail
-                    .replace(/^(dear|hi|hello|hey)[^,\n]*[,\n]/i, '')   // strip existing greeting
-                    .replace(/(warm regards|sincerely|best regards|thank you)[^]*$/i, '') // strip existing sign-off
+                    .replace(/^(dear|hi|hello|hey)[^,\n]*[,\n]\s*/i, '')  // strip existing greeting
+                    // Sign-off: match from the last occurrence of a closing phrase to end,
+                    // using a non-greedy line-anchored pattern so body content is never eaten
+                    .replace(/\n(warm regards|sincerely|best regards|best|thank you|regards|cheers)[^\n]*(\n[\s\S]*)?$/i, '')
                     .trim();
             } else if (prebuilt.sections) {
                 // No fullEmail — build the body from structured sections.
@@ -283,22 +285,46 @@ const FollowUpEmailModal: React.FC<FollowUpEmailModalProps> = ({ isOpen, onClose
             return;
         }
 
-        // ── Path B: generate via LLM (no prebuilt data) ───────────────────────
+        // ── Path B: generate via LLM (no prebuilt data, or forced regeneration) ─
         setIsGenerating(true);
         try {
+            const ds = meeting.detailedSummary;
             const input = {
                 meeting_type: 'meeting' as const,
                 title: meeting.title,
-                summary: meeting.detailedSummary?.overview || meeting.summary,
-                action_items: meeting.detailedSummary?.actionItems || [],
-                key_points: meeting.detailedSummary?.keyPoints || [],
+                date: meeting.date,
+
+                // Both field names — buildFollowUpEmailPromptInput checks both
+                overview: ds?.overview || meeting.summary,
+                summary: ds?.overview || meeting.summary,
+
+                // Structured lists
+                keyPoints: ds?.keyPoints || [],
+                actionItems: ds?.actionItems || [],
+                key_points: ds?.keyPoints || [],    // legacy alias
+                action_items: ds?.actionItems || [],   // legacy alias
+
+                // People / company — used for prompt personalisation
+                leadName: ds?.leadName || '',
+                company: ds?.company || '',
                 recipient_name: resolvedRecipient,
                 sender_name: resolvedSender,
+
+                // BANT — budget/need often contain the metrics the rep wants in the email
+                bant: (ds as any)?.bant || null,
+
+                // Pre-structured email sections (impact bullets, next steps, etc.)
+                followUpEmail: ds?.followUpEmail || null,
+
+                // Full transcript — gives the LLM direct access to numbers & quotes
+                // Capped at 80 segments inside buildFollowUpEmailPromptInput already
+                transcript: meeting.transcript || [],
+
                 tone: 'neutral' as const,
             };
 
             const sessionActive = await guardSession();
-            if (!sessionActive) return; // fbSignOut already called inside guardSession → subscribeAuthState will return null → UI redirects to login
+            if (!sessionActive) return;
             const generatedBody = await window.electronAPI?.generateFollowupEmail(input);
 
             if (generatedBody) {
@@ -312,8 +338,8 @@ const FollowUpEmailModal: React.FC<FollowUpEmailModalProps> = ({ isOpen, onClose
 
                 // Strip any greeting/sign-off the LLM wrote so we control the format
                 body = body
-                    .replace(/^(dear|hi|hello|hey)[^,\n]*[,\n]/i, '')
-                    .replace(/(warm regards|sincerely|best regards|thank you)[^]*$/i, '')
+                    .replace(/^(dear|hi|hello|hey)[^,\n]*[,\n]\s*/i, '')
+                    .replace(/\n(warm regards|sincerely|best regards|best|thank you|regards|cheers)[^\n]*(\n[\s\S]*)?$/i, '')
                     .trim();
 
                 setEmailBody(wrapWithGreetingAndSignoff(body, resolvedRecipient, resolvedSender, true));

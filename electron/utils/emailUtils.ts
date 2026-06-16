@@ -100,8 +100,14 @@ export function buildFollowUpEmailPromptInput(input: any): string {
     if (input.overview) parts.push(`\nCall Overview:\n${input.overview}`);
     else if (input.summary) parts.push(`\nCall Overview:\n${input.summary}`);
 
-    if (input.keyPoints?.length) {
-        parts.push(`\nKey Discussion Points:\n${input.keyPoints.map((p: string) => `- ${p}`).join('\n')}`);
+    const keyPoints = input.keyPoints?.length ? input.keyPoints : (input.key_points || []);
+    if (keyPoints.length) {
+        parts.push(`\nKey Discussion Points:\n${keyPoints.map((p: string) => `- ${p}`).join('\n')}`);
+    }
+
+    const actionItems = input.actionItems?.length ? input.actionItems : (input.action_items || []);
+    if (actionItems.length) {
+        parts.push(`\nAction Items:\n${actionItems.map((a: string) => `- ${a}`).join('\n')}`);
     }
 
     if (input.bant) {
@@ -118,9 +124,9 @@ export function buildFollowUpEmailPromptInput(input: any): string {
         if (s.nextSteps?.length) parts.push(`\nAgreed Next Steps:\n${s.nextSteps.map((p: string) => `- ${p}`).join('\n')}`);
     }
 
-    if (input.actionItems?.length) {
-        parts.push(`\nAction Items:\n${input.actionItems.map((a: string) => `- ${a}`).join('\n')}`);
-    }
+    // if (input.actionItems?.length) {
+    //     parts.push(`\nAction Items:\n${input.actionItems.map((a: string) => `- ${a}`).join('\n')}`);
+    // }
 
     if (input.transcript?.length) {
         const transcriptText = input.transcript

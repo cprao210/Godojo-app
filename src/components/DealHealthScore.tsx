@@ -1,6 +1,7 @@
 import React, { useEffect, useRef, useState } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
 import { LiveAnalysisData } from '../types/liveAnalysis';
+import { useResolvedTheme } from '../hooks/useResolvedTheme';
 
 // ─── Scoring logic ────────────────────────────────────────────────────────────
 //
@@ -117,9 +118,10 @@ interface ArcGaugeProps {
     color: string;
     glow: string;
     trackColor: string;
+    subTextColor: string;
 }
 
-const ArcGauge: React.FC<ArcGaugeProps> = ({ score, color, glow, trackColor }) => {
+const ArcGauge: React.FC<ArcGaugeProps> = ({ score, color, glow, trackColor, subTextColor }) => {
     const pct = score / 100;
     const filledPath = arcPath(ARC_CX, ARC_CY, ARC_R, ARC_START_DEG, ARC_SWEEP_DEG, pct);
     const trackPathStr = trackPath(ARC_CX, ARC_CY, ARC_R, ARC_START_DEG, ARC_SWEEP_DEG);
@@ -193,7 +195,7 @@ const ArcGauge: React.FC<ArcGaugeProps> = ({ score, color, glow, trackColor }) =
                 >
                     {displayed}
                 </span>
-                <span className="text-[9px] font-semibold tracking-widest uppercase" style={{ color: 'rgba(255,255,255,0.3)', marginTop: 1 }}>
+                <span className="text-[9px] font-semibold tracking-widest uppercase" style={{ color: subTextColor, marginTop: 1 }}>
                     /100
                 </span>
             </div>
@@ -207,16 +209,19 @@ interface BreakdownBarProps {
     filled: number;
     total: number;
     color: string;
+    labelColor: string;
+    trackBg: string;
+    pctColor: string;
 }
 
-const BreakdownBar: React.FC<BreakdownBarProps> = ({ label, filled, total, color }) => {
+const BreakdownBar: React.FC<BreakdownBarProps> = ({ label, filled, total, color, labelColor, trackBg, pctColor }) => {
     const pct = total > 0 ? filled / total : 0;
     return (
         <div className="flex items-center gap-2">
-            <span className="text-[10px] font-semibold tracking-wide uppercase w-11 shrink-0" style={{ color: 'rgba(255,255,255,0.35)' }}>
+            <span className="text-[10px] font-semibold tracking-wide uppercase w-11 shrink-0" style={{ color: labelColor }}>
                 {label}
             </span>
-            <div className="flex-1 h-1 rounded-full overflow-hidden" style={{ background: 'rgba(255,255,255,0.06)' }}>
+            <div className="flex-1 h-1 rounded-full overflow-hidden" style={{ background: trackBg }}>
                 <motion.div
                     className="h-full rounded-full"
                     style={{ background: color }}
@@ -225,7 +230,7 @@ const BreakdownBar: React.FC<BreakdownBarProps> = ({ label, filled, total, color
                     transition={{ duration: 0.85, ease: [0.33, 1, 0.68, 1] }}
                 />
             </div>
-            <span className="text-[10px] tabular-nums w-5 text-right" style={{ color: 'rgba(255,255,255,0.3)' }}>
+            <span className="text-[10px] tabular-nums w-5 text-right" style={{ color: pctColor }}>
                 {Math.round(pct * 100)}%
             </span>
         </div>
@@ -246,11 +251,14 @@ function getTrend(prev: number | null, curr: number): Trend {
 interface DealHealthScoreProps {
     analysisData: LiveAnalysisData;
     isRefreshRun?: boolean;
+    calledFromAnalysisTab?: boolean;
 }
 
-export const DealHealthScore: React.FC<DealHealthScoreProps> = ({ analysisData, isRefreshRun }) => {
+export const DealHealthScore: React.FC<DealHealthScoreProps> = ({ analysisData, isRefreshRun, calledFromAnalysisTab = false, }) => {
     const score = computeDealScore(analysisData);
     const { label, color, glow, trackColor } = scoreLabel(score);
+
+    const isLight = useResolvedTheme() !== "dark";
 
     // Track previous score for trend
     const prevScoreRef = useRef<number | null>(null);
@@ -286,6 +294,16 @@ export const DealHealthScore: React.FC<DealHealthScoreProps> = ({ analysisData, 
     const trendIcon = trend === 'up' ? '↑' : trend === 'down' ? '↓' : null;
     const trendColor = trend === 'up' ? '#34d399' : '#f87171';
 
+    // ── Theme tokens ──────────────────────────────────────────────────────────
+    const cardBg = calledFromAnalysisTab ? isLight ? 'rgba(255,255,255,0.80)' : 'rgba(255,255,255,0.03)' : 'rgba(255,255,255,0.03)';
+    const cardBorder = calledFromAnalysisTab ? isLight ? `1px solid ${color}44` : `1px solid ${color}22` : `1px solid ${color}22`;
+    const cardShadow = calledFromAnalysisTab ? isLight ? `0 2px 16px ${glow}18` : `0 0 20px ${glow}22` : `0 0 20px ${glow}22`;
+    const dealHealthTextColor = calledFromAnalysisTab ? isLight ? 'rgba(30,30,40,0.45)' : 'rgba(255,255,255,0.25)' : 'rgba(255,255,255,0.25)';
+    const subTextColor = calledFromAnalysisTab ? isLight ? 'rgba(30,30,40,0.35)' : 'rgba(255,255,255,0.3)' : 'rgba(255,255,255,0.3)';
+    const barLabelColor = calledFromAnalysisTab ? isLight ? 'rgba(30,30,40,0.45)' : 'rgba(255,255,255,0.35)' : 'rgba(255,255,255,0.35)';
+    const barTrackBg = calledFromAnalysisTab ? isLight ? 'rgba(30,30,40,0.08)' : 'rgba(255,255,255,0.06)' : 'rgba(255,255,255,0.06)';
+    const barPctColor = calledFromAnalysisTab ? isLight ? 'rgba(30,30,40,0.40)' : 'rgba(255,255,255,0.3)' : 'rgba(255,255,255,0.3)';
+
     return (
         <motion.div
             initial={{ opacity: 0, y: -6 }}
@@ -293,13 +311,13 @@ export const DealHealthScore: React.FC<DealHealthScoreProps> = ({ analysisData, 
             transition={{ duration: 0.35, ease: 'easeOut' }}
             className="mx-4 mb-2 mt-2 rounded-xl flex items-center gap-4 px-4 py-3"
             style={{
-                background: 'rgba(255,255,255,0.03)',
-                border: `1px solid ${color}22`,
-                boxShadow: `0 0 20px ${glow}22`,
+                background: cardBg,
+                border: cardBorder,
+                boxShadow: cardShadow,
             }}
         >
             {/* Arc gauge */}
-            <ArcGauge score={score} color={color} glow={glow} trackColor={trackColor} />
+            <ArcGauge score={score} color={color} glow={glow} trackColor={trackColor} subTextColor={subTextColor} />
 
             {/* Right: label + trend + bars */}
             <div className="flex-1 min-w-0 flex flex-col gap-2.5">
@@ -307,7 +325,7 @@ export const DealHealthScore: React.FC<DealHealthScoreProps> = ({ analysisData, 
                     <span className="text-[13px] font-bold tracking-wide" style={{ color }}>
                         {label}
                     </span>
-                    <span className="text-[11px] font-medium" style={{ color: 'rgba(255,255,255,0.25)' }}>
+                    <span className="text-[11px] font-medium" style={{ color: dealHealthTextColor }}>
                         Deal Health
                     </span>
                     <AnimatePresence>
@@ -327,8 +345,8 @@ export const DealHealthScore: React.FC<DealHealthScoreProps> = ({ analysisData, 
                 </div>
 
                 <div className="flex flex-col gap-1.5">
-                    <BreakdownBar label="BANT" filled={bantEarned} total={4} color={color} />
-                    <BreakdownBar label="MEDDICC" filled={meddicEarned} total={7} color={color} />
+                    <BreakdownBar label="BANT" filled={bantEarned} total={4} color={color} labelColor={barLabelColor} trackBg={barTrackBg} pctColor={barPctColor} />
+                    <BreakdownBar label="MEDDICC" filled={meddicEarned} total={7} color={color} labelColor={barLabelColor} trackBg={barTrackBg} pctColor={barPctColor} />
                 </div>
             </div>
         </motion.div>
