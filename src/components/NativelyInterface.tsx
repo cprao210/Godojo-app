@@ -2210,48 +2210,45 @@ Provide only the answer, nothing else.`;
 
 
     return (
-        <div ref={contentRef} className="flex flex-col items-center w-full mx-auto h-full min-h-0 bg-transparent p-0 rounded-[24px] font-sans gap-2 overlay-text-primary">
-            {/* AI Sales Coach */}
-            <motion.div initial={{ opacity: 0, y: 20, scale: 0.95 }} animate={{ opacity: 1, y: 0, scale: 1 }} exit={{ opacity: 0, y: 20, scale: 0.95 }} transition={{ duration: 0.3, ease: "easeInOut" }} className='flex gap-2'>
-                <AnimatePresence>
-                    <motion.div
-                        initial={{ opacity: 0, x: -10 }}
-                        animate={{ opacity: 1, x: 0 }}
-                        exit={{ opacity: 0, x: -10 }}
-                        transition={{ duration: 0.25, ease: [0.16, 1, 0.3, 1] }}
-                    >
+        // <div ref={contentRef} className="flex flex-col items-center w-full mx-auto h-full min-h-0 bg-transparent p-0 rounded-[24px] font-sans gap-2 overlay-text-primary">
+        <motion.div
+            ref={contentRef}
+            initial={{ opacity: 0, x: -10 }}
+            animate={{ opacity: 1, x: 0 }}
+            exit={{ opacity: 0, x: -10 }}
+            className="flex flex-col items-center w-full mx-auto h-full min-h-0 bg-transparent p-0 rounded-[24px] font-sans gap-2 overlay-text-primary"
+            transition={{ duration: 0.25, ease: [0.16, 1, 0.3, 1] }}
+        >
 
-                        <FloatingDock
-                            isMeetingPaused={isMeetingPaused}
-                            onPauseResume={handlePauseMeeting}
-                            onEndCall={onEndMeeting ?? (() => { })}
-                            isUndetectable={isUndetectable}
-                            onToggleGhost={() => {
-                                const next = !isUndetectable;
-                                setIsUndetectable(next);
-                                window.electronAPI?.setUndetectable(next);
-                            }}
-                            transcriptRef={liveTranscriptRef}
-                            rollingTranscriptUser={rollingTranscriptUser}
-                            rollingTranscriptClient={rollingTranscriptClient}
-                            isClientSpeaking={isClientSpeaking}
-                            isUserSpeaking={isUserSpeaking}
-                            showTranscript={showTranscript}
-                            onToggleTranscript={(v) => {
-                                setShowTranscript(v);
-                                localStorage.setItem('natively_interviewer_transcript', String(v));
-                            }}
-                            currentModel={currentModel}
-                            onSelectModel={setCurrentModel}
-                            speakerNames={speakerNames}
-                            shortcuts={shortcuts}
-                            overlayPanelClass={overlayPanelClass}
-                            companyIntel={companyIntel}
-                        />
-                    </motion.div>
-                </AnimatePresence>
-            </motion.div>
-        </div>
+            <FloatingDock
+                isMeetingPaused={isMeetingPaused}
+                onPauseResume={handlePauseMeeting}
+                onEndCall={onEndMeeting ?? (() => { })}
+                isUndetectable={isUndetectable}
+                onToggleGhost={() => {
+                    const next = !isUndetectable;
+                    setIsUndetectable(next);
+                    window.electronAPI?.setUndetectable(next);
+                }}
+                transcriptRef={liveTranscriptRef}
+                rollingTranscriptUser={rollingTranscriptUser}
+                rollingTranscriptClient={rollingTranscriptClient}
+                isClientSpeaking={isClientSpeaking}
+                isUserSpeaking={isUserSpeaking}
+                showTranscript={showTranscript}
+                onToggleTranscript={(v) => {
+                    setShowTranscript(v);
+                    localStorage.setItem('natively_interviewer_transcript', String(v));
+                }}
+                currentModel={currentModel}
+                onSelectModel={setCurrentModel}
+                speakerNames={speakerNames}
+                shortcuts={shortcuts}
+                overlayPanelClass={overlayPanelClass}
+                companyIntel={companyIntel}
+            />
+        </motion.div>
+        // </div>
     )
 
     // return (

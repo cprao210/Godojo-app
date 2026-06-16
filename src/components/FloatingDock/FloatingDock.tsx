@@ -115,29 +115,44 @@ export const FloatingDock: React.FC<FloatingDockProps> = ({
 
     // Auto-refresh interval owned here (not in the panel) so the timer survives
     // panel close/open cycles and responds correctly to isMeetingPaused changes.
-    const [autoRefreshInterval, setAutoRefreshInterval] = useState<number | null>(5);
+    const [autoRefreshInterval, setAutoRefreshInterval] = useState<number | null>(2);
     const autoRefreshTimerRef = useRef<ReturnType<typeof setInterval> | null>(null);
+
+    // Timestamp of when the intelligence panel was first opened — used to
+    // synchronise the countdown display with the actual auto-refresh timer.
+    const [intelligencePanelFirstOpenedAt, setIntelligencePanelFirstOpenedAt] = useState<number | null>(null);
 
     // Manage the auto-refresh timer in FloatingDock so it lives independent of
     // FloatingIntelligencePanel mount/unmount cycles.
+    // Re-runs whenever: interval changes, meeting is paused/resumed.
+    // When paused — timer is cleared and NOT restarted until resumed.
+    // When interval changes mid-countdown — timer resets from NOW, and
+    // intelligencePanelFirstOpenedAt is updated so the countdown display realigns.
     useEffect(() => {
         if (autoRefreshTimerRef.current) {
             clearInterval(autoRefreshTimerRef.current);
             autoRefreshTimerRef.current = null;
         }
-        if (autoRefreshInterval !== null) {
-            autoRefreshTimerRef.current = setInterval(() => {
-                // force=false: auto-refresh respects the pause guard inside runAnalysis
-                runAnalysis(false);
-            }, autoRefreshInterval * 60 * 1000);
-        }
+        // Don't run timer while paused or when auto-refresh is off
+        if (autoRefreshInterval === null || isMeetingPaused) return;
+
+        // Align the countdown origin to NOW so the countdown display
+        // always matches how long until the next real refresh fires.
+        setIntelligencePanelFirstOpenedAt(Date.now());
+
+        autoRefreshTimerRef.current = setInterval(() => {
+            runAnalysis(false);
+            // Reset countdown origin after each fire so the next cycle is accurate
+            setIntelligencePanelFirstOpenedAt(Date.now());
+        }, autoRefreshInterval * 60 * 1000);
+
         return () => {
             if (autoRefreshTimerRef.current) {
                 clearInterval(autoRefreshTimerRef.current);
                 autoRefreshTimerRef.current = null;
             }
         };
-    }, [autoRefreshInterval, runAnalysis]);
+    }, [autoRefreshInterval, isMeetingPaused, runAnalysis]);
 
     // Reset all state when a new meeting starts (IPC session-reset event)
     useEffect(() => {
@@ -172,7 +187,7 @@ export const FloatingDock: React.FC<FloatingDockProps> = ({
             <motion.div
                 ref={constraintsRef}
                 className={`relative w-[480px] mx-auto h-fit bg-transparent max-w-full rounded-2xl items-center flex flex-col min-h-0 ${overlayPanelClass}`}
-                style={{ height: '750px' }}
+                style={{ height: '735px' }}
             >
 
                 {/* Overlay Panel (above dock) */}
@@ -184,7 +199,7 @@ export const FloatingDock: React.FC<FloatingDockProps> = ({
                             animate={{ opacity: dockOpacity, y: 0, scale: 1 }}
                             exit={{ opacity: 0, y: 12, scale: 0.97 }}
                             transition={{ type: 'spring', damping: 28, stiffness: 380, mass: 0.8 }}
-                            className={`fixed ${activePanel === "settings" ? "top-[110px]" : rollingTranscriptClient.length > 0 ? "bottom-[90px]" : "bottom-[75px]"} left-[65px]`}
+                            className={`fixed ${activePanel === "settings" ? "top-[110px]" : "bottom-[76px]"} left-[65px]`}
                             style={{ position: 'fixed' }}
                         >
                             {/* Freeze overlay — keeps panel visible but blocks all interaction */}
@@ -214,6 +229,7 @@ export const FloatingDock: React.FC<FloatingDockProps> = ({
                                     autoRefreshInterval={autoRefreshInterval}
                                     onAutoRefreshIntervalChange={setAutoRefreshInterval}
                                     isRefreshRun={isRefreshRun}
+                                    panelFirstOpenedAt={intelligencePanelFirstOpenedAt}
                                 />
                             )}
                             {activePanel === 'chat' && (
@@ -256,7 +272,7 @@ export const FloatingDock: React.FC<FloatingDockProps> = ({
                 >
                     {/* The Dock */}
                     <motion.div
-                        className={`flex items-center gap-1 px-3 py-3 rounded-2xl relative select-none draggable-area`}
+                        className={`flex items-center gap-2.5 px-3 py-3 rounded-2xl relative select-none draggable-area`}
                         style={{
                             background: `rgba(18, 22, 34, ${dockOpacity})`,
                             backdropFilter: 'blur(24px) saturate(180%)',
@@ -301,7 +317,7 @@ export const FloatingDock: React.FC<FloatingDockProps> = ({
                         />
 
                         {/* Freeze Mode */}
-                        <DockButton
+                        {/* <DockButton
                             icon={<Hand size={22} strokeWidth={1.6} />}
                             tooltip={isFrozen ? 'Unfreeze' : 'Freeze Mode'}
                             isActive={isFrozen}
@@ -310,7 +326,7 @@ export const FloatingDock: React.FC<FloatingDockProps> = ({
                             frozen={false}
                             onClick={handleFreezeMode}
                             zIndex={isFrozen ? 20 : undefined}
-                        />
+                        /> */}
 
                         {/* Ghost Mode */}
                         <DockButton

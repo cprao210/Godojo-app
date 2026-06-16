@@ -45,7 +45,7 @@ export class SupabaseReadService {
 
         const { data, error } = await client
             .from('meetings')
-            .select('id, title, created_at, duration_ms, summary_json, calendar_event_id, source')
+            .select('id, title, created_at, duration_ms, summary_json, calendar_event_id, source, is_processed')
             .order('created_at', { ascending: false })
             .limit(limit);
 
@@ -64,6 +64,7 @@ export class SupabaseReadService {
                 detailedSummary: summaryData.detailedSummary,
                 calendarEventId: row.calendar_event_id,
                 source: row.source as any,
+                isProcessed: row.is_processed === true || row.is_processed === 1,
                 // List view stays light — no transcript/usage.
                 transcript: [] as any[],
                 usage: [] as any[]

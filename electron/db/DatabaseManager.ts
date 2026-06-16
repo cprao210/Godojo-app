@@ -1425,6 +1425,7 @@ export class DatabaseManager {
                 detailedSummary: summaryData.detailedSummary,
                 calendarEventId: row.calendar_event_id,
                 source: row.source as any,
+                isProcessed: row.is_processed === 1 || row.is_processed === true,
                 // We don't load full transcript/usage for list view to keep it light
                 transcript: [] as any[],
                 usage: [] as any[]

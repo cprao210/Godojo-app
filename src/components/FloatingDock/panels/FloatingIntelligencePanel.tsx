@@ -6,6 +6,7 @@ import { LiveAnalysisData } from '../../../types/liveAnalysis';
 import { DealHealthScore } from '../../DealHealthScore';
 
 const AUTO_REFRESH_OPTIONS = [
+    { label: '2-min', value: 2 },
     { label: '5-min', value: 5 },
     { label: '10-min', value: 10 },
     { label: '15-min', value: 15 },
@@ -84,6 +85,7 @@ interface FloatingIntelligencePanelProps {
     isClientSpeaking: boolean;
     isUserSpeaking: boolean;
     speakerNames: { user: string; client: string };
+    panelFirstOpenedAt: number | null; // timestamp when intelligence panel was first opened
 }
 
 // ─── AI Skeleton Loader ──────────────────────────────────────────────────────
@@ -222,6 +224,131 @@ const WaitingPlaceholder: React.FC = () => (
     </div>
 );
 
+// ─── Countdown Placeholder ────────────────────────────────────────────────────
+// Shows a live ring-countdown that matches the auto-refresh interval exactly.
+// `openedAt`      — timestamp when the current timer cycle started (from FloatingDock)
+// `intervalMins`  — the selected auto-refresh interval in minutes
+// `isPaused`      — when true the countdown ring freezes
+const CountdownPlaceholder: React.FC<{
+    openedAt: number;
+    intervalMins: number;
+    isPaused: boolean;
+}> = ({ openedAt, intervalMins, isPaused }) => {
+    const totalMs = intervalMins * 60 * 1000;
+
+    // `frozenAt` captures the elapsed time when the meeting is paused so the
+    // countdown ring doesn't move while paused.
+    const frozenElapsedRef = useRef<number>(0);
+    const pauseStartRef = useRef<number | null>(null);
+
+    const [remaining, setRemaining] = useState(() => totalMs);
+
+    useEffect(() => {
+        // When pausing: snapshot elapsed so far
+        if (isPaused) {
+            pauseStartRef.current = Date.now();
+            // Compute elapsed up to this moment
+            frozenElapsedRef.current = Date.now() - openedAt;
+            return;
+        }
+
+        // When resuming (or on first mount): adjust openedAt equivalent so elapsed
+        // picks up from where it left off.
+        // We recalculate a virtual `startedAt` = now - frozenElapsed
+        const startedAt = Date.now() - frozenElapsedRef.current;
+        pauseStartRef.current = null;
+
+        const tick = () => {
+            const elapsed = Date.now() - startedAt;
+            setRemaining(Math.max(0, totalMs - elapsed));
+        };
+
+        tick(); // immediate paint
+        const id = setInterval(tick, 500);
+        return () => clearInterval(id);
+    }, [isPaused, openedAt, totalMs]);
+
+    const totalSecs = Math.ceil(remaining / 1000);
+    const mins = Math.floor(totalSecs / 60);
+    const secs = totalSecs % 60;
+    const progress = remaining / totalMs; // 1 → 0 as time elapses (full → empty)
+
+    const R = 45, CX = 48, CY = 48;
+    const circumference = 2 * Math.PI * R;
+    const dashOffset = circumference * (1 - progress);
+
+    return (
+        <div className="flex flex-col items-center justify-center h-full px-6 py-12 gap-5">
+            {/* Circular progress ring */}
+            <div className="relative" style={{ width: 96, height: 96 }}>
+                <svg width="96" height="96" viewBox="0 0 96 96">
+                    {/* Track */}
+                    <circle
+                        cx={CX} cy={CY} r={R}
+                        fill="none"
+                        stroke="rgba(59,130,246,0.10)"
+                        strokeWidth="5"
+                    />
+                    {/* Progress arc */}
+                    <motion.circle
+                        cx={CX} cy={CY} r={R}
+                        fill="none"
+                        stroke={isPaused ? 'rgba(245,158,11,0.6)' : '#3b82f6'}
+                        strokeWidth="5"
+                        strokeLinecap="round"
+                        strokeDasharray={circumference}
+                        strokeDashoffset={dashOffset}
+                        transform={`rotate(-90 ${CX} ${CY})`}
+                        style={{
+                            filter: isPaused
+                                ? 'drop-shadow(0 0 6px rgba(245,158,11,0.4))'
+                                : 'drop-shadow(0 0 6px rgba(59,130,246,0.5))',
+                        }}
+                        transition={{ duration: 0.5, ease: 'linear' }}
+                    />
+                </svg>
+                {/* Countdown digits */}
+                <div className="absolute inset-0 flex flex-col items-center justify-center">
+                    <span
+                        className="text-[20px] font-bold tabular-nums"
+                        style={{ color: isPaused ? 'rgb(251,191,36)' : '#60a5fa', lineHeight: 1 }}
+                    >
+                        {String(mins).padStart(2, '0')}:{String(secs).padStart(2, '0')}
+                    </span>
+                    <span className="text-[9px] font-semibold tracking-widest uppercase text-white/25 mt-0.5">
+                        {isPaused ? 'paused' : 'left'}
+                    </span>
+                </div>
+            </div>
+
+            <div className="text-center flex flex-col gap-2">
+                <p className="text-[13px] font-semibold text-white/60 tracking-wide">
+                    {isPaused ? 'Meeting Paused' : 'Recording Transcript'}
+                </p>
+                <p className="text-[11px] text-white/30 leading-relaxed max-w-[220px]">
+                    {isPaused
+                        ? 'Countdown is paused. Resume the meeting to continue.'
+                        : <>GoDojo Intelligence will analyse in <span className="text-blue-400/70 font-semibold">{intervalMins} min{intervalMins !== 1 ? 's' : ''}</span>.</>
+                    }
+                </p>
+            </div>
+
+            {/* Waveform — stills when paused */}
+            <div className="flex gap-1 items-end h-5">
+                {[0.3, 0.6, 0.4, 0.8, 0.35, 0.65, 0.45].map((h, i) => (
+                    <motion.div
+                        key={i}
+                        className="w-0.5 rounded-full"
+                        style={{ height: `${h * 100}%`, background: isPaused ? 'rgba(245,158,11,0.25)' : 'rgba(59,130,246,0.30)' }}
+                        animate={isPaused ? { scaleY: 1 } : { scaleY: [1, h * 0.4 + 0.15, 1] }}
+                        transition={{ duration: 1.8, repeat: isPaused ? 0 : Infinity, delay: i * 0.15, ease: 'easeInOut' }}
+                    />
+                ))}
+            </div>
+        </div>
+    );
+};
+
 export const FloatingIntelligencePanel: React.FC<FloatingIntelligencePanelProps> = ({
     isMeetingPaused,
     analysisData,
@@ -236,7 +363,8 @@ export const FloatingIntelligencePanel: React.FC<FloatingIntelligencePanelProps>
     rollingTranscriptClient,
     isClientSpeaking,
     isUserSpeaking,
-    speakerNames
+    speakerNames,
+    panelFirstOpenedAt,
 }) => {
     const [showRefreshPicker, setShowRefreshPicker] = useState(false);
     const refreshPickerRef = useRef<HTMLDivElement>(null);
@@ -313,23 +441,22 @@ export const FloatingIntelligencePanel: React.FC<FloatingIntelligencePanelProps>
                                     initial={{ opacity: 0, y: 6, scale: 0.96 }}
                                     animate={{ opacity: 1, y: 0, scale: 1 }}
                                     exit={{ opacity: 0, y: 4, scale: 0.97 }}
-                                    className="absolute right-0 rounded-xl overflow-hidden z-20"
+                                    className="absolute -right-2.5 rounded-xl overflow-hidden z-20"
                                     style={{
-                                        bottom: 'calc(100% - 200px)',
+                                        bottom: 'calc(100% - 230px)',
                                         background: 'rgba(18,22,34,0.98)',
                                         border: '1px solid rgba(255,255,255,0.1)',
                                         boxShadow: '0 8px 32px rgba(0,0,0,0.5)',
                                         minWidth: 100,
                                     }}
                                 >
-                                    {autoRefreshInterval !== null && (
-                                        <button
-                                            onClick={() => handleAutoRefresh(null)}
-                                            className="w-full px-4 py-2.5 text-left text-[12px] text-red-400 hover:bg-white/5 transition-colors"
-                                        >
-                                            Off
-                                        </button>
-                                    )}
+                                    <button
+                                        onClick={() => handleAutoRefresh(null)}
+                                        disabled={autoRefreshInterval === null}
+                                        className={`w-full px-4 py-2.5 text-left text-[12px] text-red-400 ${autoRefreshInterval !== null ? "hover:bg-white/5" : "opacity-60 cursor-not-allowed"} transition-colors`}
+                                    >
+                                        Off
+                                    </button>
                                     {AUTO_REFRESH_OPTIONS.map(opt => (
                                         <button
                                             key={opt.value}
@@ -359,19 +486,35 @@ export const FloatingIntelligencePanel: React.FC<FloatingIntelligencePanelProps>
                         </button>
                     </div>
 
-                    <button
-                        onClick={onRegenerate}
-                        disabled={isLoading}
-                        className="flex items-center gap-2 p-2 rounded-xl text-[12px] font-bold tracking-wide uppercase transition-all active:scale-95"
-                        style={{
-                            background: 'rgba(59,130,246,0.15)',
-                            border: '1px solid rgba(59,130,246,0.3)',
-                            color: '#3b82f6',
-                            opacity: isLoading ? 0.6 : 1,
-                        }}
-                    >
-                        <RefreshCw size={12} className={isLoading ? 'animate-spin' : ''} />
-                    </button>
+                    <div className="relative group">
+                        <button
+                            onClick={onRegenerate}
+                            disabled={isLoading}
+                            className="flex items-center gap-2 p-2 rounded-xl text-[12px] font-bold tracking-wide uppercase transition-all active:scale-95"
+                            style={{
+                                background: 'rgba(59,130,246,0.15)',
+                                border: '1px solid rgba(59,130,246,0.3)',
+                                color: '#3b82f6',
+                                opacity: isLoading && !isRefreshRun ? 0.6 : 1,
+                            }}
+                        >
+                            <RefreshCw size={12} className={isLoading ? 'animate-spin' : ''} />
+                        </button>
+                        {/* Tooltip — only shown while a refresh run is in progress */}
+                        {isLoading && isRefreshRun && (
+                            <div
+                                className="absolute right-0 top-full mt-1.5 px-2 py-1 rounded-lg text-[10px] font-semibold whitespace-nowrap pointer-events-none z-30"
+                                style={{
+                                    background: 'rgba(18,22,34,0.97)',
+                                    border: '1px solid rgba(59,130,246,0.25)',
+                                    color: 'rgba(255,255,255,0.6)',
+                                    boxShadow: '0 4px 12px rgba(0,0,0,0.4)',
+                                }}
+                            >
+                                Refreshing...
+                            </div>
+                        )}
+                    </div>
                 </div>
             </div>
 
@@ -414,13 +557,13 @@ export const FloatingIntelligencePanel: React.FC<FloatingIntelligencePanelProps>
             )}
 
             {/* Deal Health Score — visible when live analysis data is present */}
-            {displayData && !isLoading && (
+            {/* {displayData && !isLoading && (
                 <DealHealthScore analysisData={displayData} isRefreshRun={isRefreshRun} />
-            )}
+            )} */}
 
             {/* Content */}
             <div className="overflow-y-auto flex-1" style={{ scrollbarWidth: 'thin', scrollbarColor: 'rgba(255,255,255,0.1) transparent' }}>
-                {isLoading ? (
+                {isLoading && !isRefreshRun ? (
                     <IntelligenceSkeleton />
                 ) : analysisError && displayData === null ? (
                     <div className="flex flex-col items-center justify-center h-full px-6 py-10 gap-4">
@@ -443,7 +586,11 @@ export const FloatingIntelligencePanel: React.FC<FloatingIntelligencePanelProps>
                         </button>
                     </div>
                 ) : displayData === null ? (
-                    <WaitingPlaceholder />
+                    panelFirstOpenedAt && autoRefreshInterval ? (
+                        <CountdownPlaceholder openedAt={panelFirstOpenedAt} intervalMins={autoRefreshInterval} isPaused={isMeetingPaused} />
+                    ) : (
+                        <WaitingPlaceholder />
+                    )
                 ) : (
                     <LiveAnalysisContent analysisData={displayData} hideBar="Missing Details" />
                 )}

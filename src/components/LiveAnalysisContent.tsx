@@ -1,5 +1,5 @@
 import React, { useState } from 'react';
-import { Shield, BarChart2, AlertTriangle, Zap, CheckSquare, ChevronDown, ChevronUp } from 'lucide-react';
+import { Shield, BarChart2, AlertTriangle, Zap, CheckSquare, ChevronDown, ChevronUp, Calculator, TrendingUp, TrendingDown } from 'lucide-react';
 import { AnimatePresence, motion } from 'framer-motion';
 import { LiveAnalysisData } from '../types/liveAnalysis';
 import { useResolvedTheme } from '../hooks/useResolvedTheme';
@@ -86,6 +86,183 @@ const signalTypeColorThemed = (type: string, isLight: boolean) => {
     const pair = map[type];
     if (!pair) return isLight ? 'bg-slate-100 text-slate-500 border-slate-200' : 'bg-white/10 text-white/50 border-white/10';
     return isLight ? pair[0] : pair[1];
+};
+
+// ─── ROI / COI Calculator ──────────────────────────────────────────────────
+
+interface RoiCoiCalculatorProps {
+    isLight: boolean;
+}
+
+const RoiCoiCalculator: React.FC<RoiCoiCalculatorProps> = ({ isLight }) => {
+
+    // ROI inputs
+    const [dealValue, setDealValue] = useState('');
+    const [timeSavedHrs, setTimeSavedHrs] = useState('');
+    const [hourlyRate, setHourlyRate] = useState('');
+    const [revenueUpliftPct, setRevenueUpliftPct] = useState('');
+    const [currentRevenue, setCurrentRevenue] = useState('');
+    // COI inputs
+    const [costOfInaction, setCostOfInaction] = useState('');
+    const [monthsDelayed, setMonthsDelayed] = useState('');
+    const [churnRiskPct, setChurnRiskPct] = useState('');
+
+    const [activeTab, setActiveTab] = useState<'roi' | 'coi'>('roi');
+
+    // ── ROI calculations ──
+    const laborSaving = (parseFloat(timeSavedHrs) || 0) * (parseFloat(hourlyRate) || 0) * 12;
+    const revenueUplift = ((parseFloat(revenueUpliftPct) || 0) / 100) * (parseFloat(currentRevenue) || 0);
+    const totalBenefit = laborSaving + revenueUplift;
+    const deal = parseFloat(dealValue) || 0;
+    const roiPct = deal > 0 ? Math.round(((totalBenefit - deal) / deal) * 100) : 0;
+    const paybackMonths = totalBenefit > 0 ? Math.round((deal / (totalBenefit / 12)) * 10) / 10 : 0;
+
+    // ── COI calculations ──
+    const monthlyLoss = parseFloat(costOfInaction) || 0;
+    const months = parseFloat(monthsDelayed) || 0;
+    const totalLoss = monthlyLoss * months;
+    const churnLoss = ((parseFloat(churnRiskPct) || 0) / 100) * (parseFloat(currentRevenue) || 0);
+    const totalCoi = totalLoss + churnLoss;
+
+    const label = isLight ? 'text-slate-500' : 'text-white/40';
+    const inputCls = `w-full text-[11px] rounded-md px-2 py-1.5 outline-none transition-colors ${isLight
+        ? 'bg-slate-100 text-slate-700 border border-slate-200 focus:border-blue-400 placeholder-slate-300'
+        : 'bg-white/[0.05] text-white/80 border border-white/[0.08] focus:border-blue-500/50 placeholder-white/20'
+        }`;
+    const resultCard = (color: 'green' | 'red' | 'blue') => {
+        const map = {
+            green: isLight ? 'bg-emerald-50 border-emerald-200' : 'bg-emerald-500/[0.07] border-emerald-500/20',
+            red: isLight ? 'bg-red-50 border-red-200' : 'bg-red-500/[0.07] border-red-500/20',
+            blue: isLight ? 'bg-blue-50 border-blue-200' : 'bg-blue-500/[0.07] border-blue-500/20',
+        };
+        return `rounded-lg border px-3 py-2 ${map[color]}`;
+    };
+    const resultLabel = isLight ? 'text-slate-400' : 'text-white/30';
+    const resultValue = (color: 'green' | 'red' | 'blue') => {
+        const map = { green: 'text-emerald-500', red: 'text-red-400', blue: 'text-blue-400' };
+        return `text-[15px] font-bold tabular-nums ${map[color]}`;
+    };
+    const tabBtn = (active: boolean) =>
+        `flex-1 py-1.5 text-[10px] font-bold uppercase tracking-wider rounded-md transition-all ${active
+            ? isLight ? 'bg-white text-slate-700 shadow-sm' : 'bg-white/10 text-white/80'
+            : isLight ? 'text-slate-400' : 'text-white/30'
+        }`;
+
+    const fmt = (n: number) =>
+        n >= 1_000_000
+            ? `$${(n / 1_000_000).toFixed(1)}M`
+            : n >= 1_000
+                ? `$${Math.round(n / 1_000)}K`
+                : `$${Math.round(n)}`;
+
+    return (
+        <div className="mt-1">
+            {/* Tab switcher */}
+            <div className={`flex gap-1 p-1 rounded-lg mb-3 ${isLight ? 'bg-slate-100' : 'bg-white/[0.04]'}`}>
+                <button className={tabBtn(activeTab === 'roi')} onClick={() => setActiveTab('roi')}>
+                    ROI
+                </button>
+                <button className={tabBtn(activeTab === 'coi')} onClick={() => setActiveTab('coi')}>
+                    Cost of Inaction
+                </button>
+            </div>
+
+            {activeTab === 'roi' ? (
+                <div className="flex flex-col gap-2">
+                    {/* Inputs */}
+                    <div className="grid grid-cols-2 gap-2">
+                        <div>
+                            <p className={`text-[9px] font-semibold uppercase tracking-wider mb-1 ${label}`}>Deal Value ($)</p>
+                            <input className={inputCls} placeholder="e.g. 25000" value={dealValue}
+                                onChange={e => setDealValue(e.target.value)} type="number" min="0" />
+                        </div>
+                        <div>
+                            <p className={`text-[9px] font-semibold uppercase tracking-wider mb-1 ${label}`}>Hrs Saved / Week</p>
+                            <input className={inputCls} placeholder="e.g. 8" value={timeSavedHrs}
+                                onChange={e => setTimeSavedHrs(e.target.value)} type="number" min="0" />
+                        </div>
+                        <div>
+                            <p className={`text-[9px] font-semibold uppercase tracking-wider mb-1 ${label}`}>Hourly Rate ($)</p>
+                            <input className={inputCls} placeholder="e.g. 75" value={hourlyRate}
+                                onChange={e => setHourlyRate(e.target.value)} type="number" min="0" />
+                        </div>
+                        <div>
+                            <p className={`text-[9px] font-semibold uppercase tracking-wider mb-1 ${label}`}>Revenue Uplift (%)</p>
+                            <input className={inputCls} placeholder="e.g. 5" value={revenueUpliftPct}
+                                onChange={e => setRevenueUpliftPct(e.target.value)} type="number" min="0" max="100" />
+                        </div>
+                        <div className="col-span-2">
+                            <p className={`text-[9px] font-semibold uppercase tracking-wider mb-1 ${label}`}>Current Annual Revenue ($)</p>
+                            <input className={inputCls} placeholder="e.g. 2000000" value={currentRevenue}
+                                onChange={e => setCurrentRevenue(e.target.value)} type="number" min="0" />
+                        </div>
+                    </div>
+
+                    {/* Results */}
+                    {(totalBenefit > 0 || deal > 0) && (
+                        <div className="grid grid-cols-3 gap-1.5 mt-1">
+                            <div className={resultCard('green')}>
+                                <p className={`text-[8px] font-semibold uppercase tracking-wider mb-0.5 ${resultLabel}`}>Annual Benefit</p>
+                                <p className={resultValue('green')}>{fmt(totalBenefit)}</p>
+                            </div>
+                            <div className={resultCard(roiPct >= 0 ? 'green' : 'red')}>
+                                <p className={`text-[8px] font-semibold uppercase tracking-wider mb-0.5 ${resultLabel}`}>ROI</p>
+                                <p className={resultValue(roiPct >= 0 ? 'green' : 'red')}>{roiPct}%</p>
+                            </div>
+                            <div className={resultCard('blue')}>
+                                <p className={`text-[8px] font-semibold uppercase tracking-wider mb-0.5 ${resultLabel}`}>Payback</p>
+                                <p className={resultValue('blue')}>{paybackMonths > 0 ? `${paybackMonths}mo` : '—'}</p>
+                            </div>
+                        </div>
+                    )}
+                </div>
+            ) : (
+                <div className="flex flex-col gap-2">
+                    {/* Inputs */}
+                    <div className="grid grid-cols-2 gap-2">
+                        <div>
+                            <p className={`text-[9px] font-semibold uppercase tracking-wider mb-1 ${label}`}>Monthly Loss ($)</p>
+                            <input className={inputCls} placeholder="e.g. 5000" value={costOfInaction}
+                                onChange={e => setCostOfInaction(e.target.value)} type="number" min="0" />
+                        </div>
+                        <div>
+                            <p className={`text-[9px] font-semibold uppercase tracking-wider mb-1 ${label}`}>Months Delayed</p>
+                            <input className={inputCls} placeholder="e.g. 6" value={monthsDelayed}
+                                onChange={e => setMonthsDelayed(e.target.value)} type="number" min="0" />
+                        </div>
+                        <div>
+                            <p className={`text-[9px] font-semibold uppercase tracking-wider mb-1 ${label}`}>Churn Risk (%)</p>
+                            <input className={inputCls} placeholder="e.g. 10" value={churnRiskPct}
+                                onChange={e => setChurnRiskPct(e.target.value)} type="number" min="0" max="100" />
+                        </div>
+                        <div>
+                            <p className={`text-[9px] font-semibold uppercase tracking-wider mb-1 ${label}`}>Annual Revenue ($)</p>
+                            <input className={inputCls} placeholder="e.g. 2000000" value={currentRevenue}
+                                onChange={e => setCurrentRevenue(e.target.value)} type="number" min="0" />
+                        </div>
+                    </div>
+
+                    {/* Results */}
+                    {(totalCoi > 0) && (
+                        <div className="grid grid-cols-2 gap-1.5 mt-1">
+                            <div className={resultCard('red')}>
+                                <p className={`text-[8px] font-semibold uppercase tracking-wider mb-0.5 ${resultLabel}`}>Delay Cost</p>
+                                <p className={resultValue('red')}>{fmt(totalLoss)}</p>
+                            </div>
+                            <div className={resultCard('red')}>
+                                <p className={`text-[8px] font-semibold uppercase tracking-wider mb-0.5 ${resultLabel}`}>Churn Risk</p>
+                                <p className={resultValue('red')}>{fmt(churnLoss)}</p>
+                            </div>
+                            <div className={`${resultCard('red')} col-span-2`}>
+                                <p className={`text-[8px] font-semibold uppercase tracking-wider mb-0.5 ${resultLabel}`}>Total Cost of Inaction</p>
+                                <p className={`${resultValue('red')} text-[18px]`}>{fmt(totalCoi)}</p>
+                            </div>
+                        </div>
+                    )}
+                </div>
+            )}
+        </div>
+    );
 };
 
 // ─── SectionToggle ─────────────────────────────────────────────────────────
@@ -312,6 +489,24 @@ export const LiveAnalysisContent: React.FC<LiveAnalysisContentProps> = ({
         });
     };
 
+    const [struckSignals, setStruckSignals] = useState<Set<number>>(new Set());
+    const toggleSignal = (index: number) => {
+        setStruckSignals(prev => {
+            const next = new Set(prev);
+            if (next.has(index)) next.delete(index); else next.add(index);
+            return next;
+        });
+    };
+
+    const [expandedSignals, setExpandedSignals] = useState<Set<number>>(new Set());
+    const toggleSignalExpand = (index: number) => {
+        setExpandedSignals(prev => {
+            const next = new Set(prev);
+            if (next.has(index)) next.delete(index); else next.add(index);
+            return next;
+        });
+    };
+
     // ── Divider ──────────────────────────────────────────────────────────────
     const Divider = () => (
         <div className={`h-px mx-4 ${isLight ? 'bg-slate-200' : 'bg-white/[0.04]'}`} />
@@ -490,85 +685,130 @@ export const LiveAnalysisContent: React.FC<LiveAnalysisContentProps> = ({
                         themed={calledFromAnalysisTab}
                         isLight={isLight}
                     >
-                        <div className="space-y-2.5 mt-1">
+                        <div className="mt-1">
                             {analysisData.signals.map((signal, i) => {
-                                const cardBorder = calledFromAnalysisTab
-                                    ? signal.category === 'negative' && signal.intensity === 'high'
-                                        ? isLight ? 'border-red-200 bg-red-50' : 'border-red-500/20 bg-red-500/[0.03]'
-                                        : signal.category === 'negative'
-                                            ? isLight ? 'border-amber-200 bg-amber-50' : 'border-amber-500/15 bg-amber-500/[0.02]'
-                                            : signal.category === 'positive'
-                                                ? isLight ? 'border-emerald-200 bg-emerald-50' : 'border-emerald-500/15 bg-emerald-500/[0.02]'
-                                                : isLight ? 'border-slate-200 bg-slate-50' : 'border-white/[0.07] bg-white/[0.02]'
-                                    : signal.category === 'negative' && signal.intensity === 'high'
-                                        ? 'border-red-500/20 bg-red-500/[0.03]'
-                                        : signal.category === 'negative'
-                                            ? 'border-amber-500/15 bg-amber-500/[0.02]'
-                                            : signal.category === 'positive'
-                                                ? 'border-emerald-500/15 bg-emerald-500/[0.02]'
-                                                : 'border-white/[0.07] bg-white/[0.02]';
+                                const isPositive = signal.category === 'positive';
+                                const isNegHigh = signal.category === 'negative' && signal.intensity === 'high';
+                                const isNeg = signal.category === 'negative';
+                                const isStruck = struckSignals.has(i);
+                                const isExpanded = expandedSignals.has(i);
 
-                                const intensityDot =
-                                    signal.intensity === 'high' ? 'bg-red-500' :
-                                        signal.intensity === 'medium' ? 'bg-amber-500' :
-                                            calledFromAnalysisTab ? (isLight ? 'bg-slate-300' : 'bg-white/20') : 'bg-white/20';
+                                // Left stripe colour
+                                const stripe = isNegHigh
+                                    ? 'bg-red-500'
+                                    : isNeg
+                                        ? 'bg-amber-400'
+                                        : isPositive
+                                            ? 'bg-emerald-400'
+                                            : 'bg-white/20';
 
+                                const rowBg = calledFromAnalysisTab
+                                    ? isLight ? 'hover:bg-slate-50' : 'hover:bg-white/[0.02]'
+                                    : 'hover:bg-white/[0.02]';
+
+                                const dividerCls = calledFromAnalysisTab
+                                    ? isLight ? 'border-slate-100' : 'border-white/[0.04]'
+                                    : 'border-white/[0.04]';
+
+                                const quoteCls = isStruck
+                                    ? calledFromAnalysisTab
+                                        ? isLight ? 'line-through text-slate-300' : 'line-through text-white/20'
+                                        : 'line-through text-white/20'
+                                    : calledFromAnalysisTab
+                                        ? isLight ? 'text-slate-600' : 'text-white/60'
+                                        : 'text-white/60';
+
+                                const askTextCls = calledFromAnalysisTab
+                                    ? isLight ? 'text-blue-600' : 'text-blue-300/70'
+                                    : 'text-blue-300/70';
+
+                                const askLabelCls = calledFromAnalysisTab
+                                    ? isLight ? 'text-blue-500' : 'text-blue-400/60'
+                                    : 'text-blue-400/60';
+
+                                const intensityDot = isNegHigh ? 'bg-red-500' : isNeg ? 'bg-amber-400' : 'bg-white/20';
                                 const intensityText = calledFromAnalysisTab
                                     ? isLight ? 'text-slate-400' : 'text-white/25'
                                     : 'text-white/25';
 
-                                const quoteText = calledFromAnalysisTab
-                                    ? isLight ? 'text-slate-600' : 'text-white/65'
-                                    : 'text-white/65';
-
-                                const askLabel = calledFromAnalysisTab
-                                    ? isLight ? 'text-blue-600' : 'text-blue-400/70'
-                                    : 'text-blue-400/70';
-
-                                const askText = calledFromAnalysisTab
-                                    ? isLight ? 'text-blue-700' : 'text-blue-300/80'
-                                    : 'text-blue-300/80';
-
-                                const borderTop = calledFromAnalysisTab
-                                    ? isLight ? 'border-slate-200' : 'border-white/[0.05]'
-                                    : 'border-white/[0.05]';
-
                                 return (
                                     <motion.div
                                         key={i}
-                                        initial={{ opacity: 0, y: 4 }}
-                                        animate={{ opacity: 1, y: 0 }}
-                                        transition={{ delay: i * 0.05 }}
-                                        className={`rounded-xl border px-3.5 py-3 ${cardBorder}`}
+                                        initial={{ opacity: 0, x: -2 }}
+                                        animate={{ opacity: 1, x: 0 }}
+                                        transition={{ delay: i * 0.04 }}
+                                        className={`border-b last:border-b-0 ${dividerCls} ${isStruck ? 'opacity-50' : ''}`}
                                     >
-                                        <div className="flex items-start justify-between gap-2 mb-2">
-                                            <div className="flex flex-wrap gap-1">
-                                                {signal.signal_type.map((type, j) => (
-                                                    <span
-                                                        key={j}
-                                                        className={`text-[9px] font-bold uppercase tracking-wider px-1.5 py-0.5 rounded-md border ${calledFromAnalysisTab
-                                                            ? signalTypeColorThemed(type, isLight)
-                                                            : signalTypeColor(type)
-                                                            }`}
-                                                    >
-                                                        {type.replace(/_/g, ' ')}
-                                                    </span>
-                                                ))}
-                                            </div>
-                                            {signal.intensity && (
-                                                <div className="flex items-center gap-1 shrink-0">
-                                                    <div className={`w-1.5 h-1.5 rounded-full ${intensityDot}`} />
-                                                    <span className={`text-[9px] capitalize ${intensityText}`}>{signal.intensity}</span>
+                                        {/* Main row — click to expand ask_now, positive signals click to strike */}
+                                        <div
+                                            className={`flex items-start gap-2 py-2 cursor-pointer transition-colors ${rowBg}`}
+                                            onClick={() => {
+                                                if (isPositive) toggleSignal(i);
+                                                else toggleSignalExpand(i);
+                                            }}
+                                        >
+                                            {/* Left colour stripe */}
+                                            <div className={`w-0.5 self-stretch rounded-full shrink-0 mt-0.5 ${stripe}`} />
+
+                                            <div className="flex-1 min-w-0">
+                                                {/* Type badges + intensity */}
+                                                <div className="flex items-center justify-between gap-1 mb-1">
+                                                    <div className="flex flex-wrap gap-1.5">
+                                                        {signal.signal_type.slice(0, 2).map((type, j) => (
+                                                            <span
+                                                                key={j}
+                                                                className={`text-[10px] font-bold uppercase tracking-wider px-1 py-0.5 rounded border ${calledFromAnalysisTab
+                                                                    ? signalTypeColorThemed(type, isLight)
+                                                                    : signalTypeColor(type)
+                                                                    }`}
+                                                            >
+                                                                {type.replace(/_/g, ' ')}
+                                                            </span>
+                                                        ))}
+                                                    </div>
+                                                    <div className="flex items-center gap-2 shrink-0">
+                                                        {/* Strike toggle hint for positive signals */}
+                                                        {isPositive && (
+                                                            <span className={`text-[10px] ${askLabelCls}`}>
+                                                                {isStruck ? '↩ restore' : '✓ done'}
+                                                            </span>
+                                                        )}
+                                                        <div className={`w-1.5 h-1.5 rounded-full ${intensityDot}`} />
+                                                        <span className={`text-[10px] capitalize ${intensityText}`}>{signal.intensity}</span>
+                                                    </div>
                                                 </div>
+
+                                                {/* Quote — 2-line clamp */}
+                                                <p className={`text-[12px] italic ${quoteCls}`}>
+                                                    "{signal.quote}"
+                                                </p>
+                                            </div>
+
+                                            {/* Expand chevron for non-positive signals */}
+                                            {!isPositive && (
+                                                <span className={`shrink-0 mt-1 ${intensityText}`}>
+                                                    {isExpanded ? <ChevronUp size={12} /> : <ChevronDown size={12} />}
+                                                </span>
                                             )}
                                         </div>
-                                        <p className={`text-[12px] leading-relaxed mb-2 italic ${quoteText}`}>
-                                            "{signal.quote}"
-                                        </p>
-                                        <div className={`flex items-start gap-1.5 pt-2 border-t ${borderTop}`}>
-                                            <span className={`text-[9px] font-bold uppercase tracking-wider mt-0.5 shrink-0 ${askLabel}`}>Ask now</span>
-                                            <p className={`text-[11px] leading-relaxed ${askText}`}>{signal.ask_now}</p>
-                                        </div>
+
+                                        {/* Ask now — collapsed by default, expands on click */}
+                                        <AnimatePresence initial={false}>
+                                            {!isPositive && isExpanded && (
+                                                <motion.div
+                                                    initial={{ height: 0, opacity: 0 }}
+                                                    animate={{ height: 'auto', opacity: 1 }}
+                                                    exit={{ height: 0, opacity: 0 }}
+                                                    transition={{ duration: 0.18, ease: [0.16, 1, 0.3, 1] }}
+                                                    className="overflow-hidden"
+                                                >
+                                                    <div className="flex items-start gap-1 pb-2 pl-3">
+                                                        <span className={`text-[8px] font-bold uppercase tracking-wider mt-0.5 shrink-0 ${askLabelCls}`}>Ask</span>
+                                                        <p className={`text-[10px] leading-snug ${askTextCls}`}>{signal.ask_now}</p>
+                                                    </div>
+                                                </motion.div>
+                                            )}
+                                        </AnimatePresence>
                                     </motion.div>
                                 );
                             })}
@@ -577,6 +817,17 @@ export const LiveAnalysisContent: React.FC<LiveAnalysisContentProps> = ({
                     <Divider />
                 </>
             )}
+
+            {/* ── ROI / COI Calculator ─────────────────────────────────────── */}
+            {/* <SectionToggle
+                icon={<Calculator size={13} />}
+                title="ROI / COI Calculator"
+                themed={calledFromAnalysisTab}
+                isLight={isLight}
+            >
+                <RoiCoiCalculator isLight={isLight} />
+            </SectionToggle>
+            <Divider /> */}
 
             {/* ── Objections ────────────────────────────────────────────────── */}
             {analysisData.objections.length > 0 && hideBar !== 'Objections' && (
@@ -649,6 +900,17 @@ export const LiveAnalysisContent: React.FC<LiveAnalysisContentProps> = ({
                                             <p className={`text-[12px] leading-relaxed transition-all ${quoteClass}`}>
                                                 {obj.quote}
                                             </p>
+                                            {/* Suggested answer — only for customer questions */}
+                                            {!isChecked && obj.type === 'customer_question' && obj.suggested_answer && (
+                                                <div className={`flex items-start gap-1.5 rounded-md px-1 py-1.5`}>
+                                                    <TrendingUp size={9} className={`shrink-0 mt-0.5 ${calledFromAnalysisTab ? (isLight ? 'text-blue-500' : 'text-blue-400/70') : 'text-blue-400/70'
+                                                        }`} />
+                                                    <p className={`text-[10px] leading-snug ${calledFromAnalysisTab ? (isLight ? 'text-blue-700' : 'text-blue-300/80') : 'text-blue-300/80'
+                                                        }`}>
+                                                        {obj.suggested_answer}
+                                                    </p>
+                                                </div>
+                                            )}
                                             <div className="flex items-center gap-1.5 mt-1">
                                                 <span className={`text-[9px] font-bold uppercase tracking-wider px-1.5 py-0.5 rounded border ${tagClass}`}>
                                                     {obj.type === 'ae_deferral' ? 'Follow up' : 'Open question'}

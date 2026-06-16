@@ -312,9 +312,6 @@ export class MeetingPersistence {
             isProcessed: false
         };
 
-        console.log("--> stopMeeting (snapshot): ", snapshot);
-        console.log("--> stopMeeting (placeholder): ", placeholder);
-
         try {
             DatabaseManager.getInstance().saveMeeting(placeholder, snapshot.startTime, durationMs);
             // Notify Frontend
@@ -374,11 +371,11 @@ export class MeetingPersistence {
                 // Build a compact Groq-compatible system prompt that includes live analysis grounding.
                 // Groq has a lower token budget, so we pass only the status+evidence lines.
                 const liveAnalysisGroqBlock = liveAnalysisData ? `
-LIVE ANALYSIS REFERENCE (captured during the call):
-BANT: Budget=${liveAnalysisData.bant.budget.status}|${liveAnalysisData.bant.budget.evidence || ''}, Authority=${liveAnalysisData.bant.authority.status}|${liveAnalysisData.bant.authority.evidence || ''}, Need=${liveAnalysisData.bant.need.status}|${liveAnalysisData.bant.need.evidence || ''}, Timeline=${liveAnalysisData.bant.timeline.status}|${liveAnalysisData.bant.timeline.evidence || ''}
-MEDDIC: Metrics=${liveAnalysisData.meddic.metrics.status}|${liveAnalysisData.meddic.metrics.evidence || ''}, EconBuyer=${liveAnalysisData.meddic.economic_buyer.status}|${liveAnalysisData.meddic.economic_buyer.evidence || ''}, Pain=${liveAnalysisData.meddic.identify_pain.status}|${liveAnalysisData.meddic.identify_pain.evidence || ''}, Champion=${liveAnalysisData.meddic.champion.status}|${liveAnalysisData.meddic.champion.evidence || ''}
-Use this as your grounding anchor. Map statuses: confirmed→Clear, partial→Partial, missing→Missing. Use evidence text verbatim in "detail" fields where available.
-` : '';
+                LIVE ANALYSIS REFERENCE (captured during the call):
+                BANT: Budget=${liveAnalysisData.bant.budget.status}|${liveAnalysisData.bant.budget.evidence || ''}, Authority=${liveAnalysisData.bant.authority.status}|${liveAnalysisData.bant.authority.evidence || ''}, Need=${liveAnalysisData.bant.need.status}|${liveAnalysisData.bant.need.evidence || ''}, Timeline=${liveAnalysisData.bant.timeline.status}|${liveAnalysisData.bant.timeline.evidence || ''}
+                MEDDIC: Metrics=${liveAnalysisData.meddic.metrics.status}|${liveAnalysisData.meddic.metrics.evidence || ''}, EconBuyer=${liveAnalysisData.meddic.economic_buyer.status}|${liveAnalysisData.meddic.economic_buyer.evidence || ''}, Pain=${liveAnalysisData.meddic.identify_pain.status}|${liveAnalysisData.meddic.identify_pain.evidence || ''}, Champion=${liveAnalysisData.meddic.champion.status}|${liveAnalysisData.meddic.champion.evidence || ''}
+                Use this as your grounding anchor. Map statuses: confirmed→Clear, partial→Partial, missing→Missing. Use evidence text verbatim in "detail" fields where available.
+                ` : '';
                 const groqSummaryPrompt = liveAnalysisGroqBlock
                     ? GROQ_SUMMARY_JSON_PROMPT + '\n\n' + liveAnalysisGroqBlock
                     : GROQ_SUMMARY_JSON_PROMPT;
@@ -449,8 +446,6 @@ Use this as your grounding anchor. Map statuses: confirmed→Clear, partial→Pa
                 isProcessed: true
             };
 
-            console.log("processAndSaveMeeting (meetingData): ", meetingData);
-
             DatabaseManager.getInstance().saveMeeting(meetingData, data.startTime, data.durationMs);
 
             // Metadata was already snapshotted before session.reset() — nothing to clear here.
@@ -487,9 +482,6 @@ Use this as your grounding anchor. Map statuses: confirmed→Clear, partial→Pa
             const existingLiveAnalysis = (meeting.detailedSummary as any)?.liveAnalysis as LiveAnalysisData | undefined;
             const groqSummaryPrompt = GROQ_SUMMARY_JSON_PROMPT;
 
-            console.log("--> buildSummaryPrompt: ", buildSummaryPrompt(existingLiveAnalysis));
-            console.log("--> fullRegenerateContext: ", fullRegenerateContext);
-            console.log("--> groqSummaryPrompt: ", groqSummaryPrompt);
             const generatedSummary = await this.llmHelper.generateMeetingSummary(
                 buildSummaryPrompt(existingLiveAnalysis),
                 fullRegenerateContext,
@@ -660,7 +652,6 @@ Use this as your grounding anchor. Map statuses: confirmed→Clear, partial→Pa
             }
         }
     }
-
 
 
 }

@@ -205,7 +205,7 @@ const SHARED_OUTPUT_FORMAT = `
             "competition":       { "emoji": "", "status": "", "evidence": "", "suggested_question": "" }
         },
         "objections": [
-            { "type": "", "quote": "", "owner": "", "status": "" }
+            { "type": "", "quote": "", "owner": "", "status": "", "suggested_answer": "" }
         ],
         "signals": [
             { "quote": "", "signal_type": [], "ask_now": "", "intensity": "", "category": "" }
@@ -282,6 +282,13 @@ ${SHARED_BANT_MEDDIC_FIELD_RULES}
     - quote:  Exact quote or tight one-line paraphrase (max 120 chars)
     - owner:  "customer" | "ae"
     - status: "open" | "deferred"
+    - suggested_answer: ONLY for customer_question type. A direct, confident 1–2 sentence
+                        rebuttal or answer the AE can use RIGHT NOW. Must be specific to
+                        this call — reference product names, pain points, or context already
+                        mentioned. Under 40 words. Return "" for ae_deferral type.
+                        BAD: "That's a great question. Our product handles that well." (generic)
+                        GOOD: "Our SOC 2 Type II report covers that — I'll send it after this call
+                               along with the security questionnaire template." (specific, actionable)
 
     ═══════════════════════════════════════
     SECTION 4: SIGNALS
@@ -334,6 +341,8 @@ ${newProspectDelta || '(no new prospect turns since last analysis)'}
     OBJECTIONS — MANDATORY COPY-THEN-APPEND:
     Step 1: Copy the ENTIRE prior objections array below VERBATIM into your output.
     Step 2: Append NEW objections found only in NEW CLIENT TURNS.
+    For each NEW customer_question objection, populate suggested_answer with a direct
+    1–2 sentence rebuttal the AE can use immediately. Return "" for ae_deferral type.
     DO NOT regenerate, deduplicate, or summarize prior objections. Copy them as-is.
     If your output has fewer objections than ${priorState.objections.length} (prior count), it is WRONG.
 

@@ -13,6 +13,7 @@ import FollowUpEmailModal from './FollowUpEmailModal';
 import { LiveAnalysisContent } from './LiveAnalysisContent';
 import { LiveAnalysisData } from '../types/liveAnalysis';
 import { guardSession } from '../lib/firebase';
+import { DealHealthScore } from './DealHealthScore';
 
 const formatTime = (ms: number) => {
     const date = new Date(ms);
@@ -1680,12 +1681,17 @@ const MeetingDetails: React.FC<MeetingDetailsProps> = ({ meeting: initialMeeting
                         {activeTab === 'analysis' && (
                             <motion.section initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }}>
                                 {meeting.detailedSummary?.liveAnalysis ? (
-                                    <LiveAnalysisContent
-                                        hideBar="Missing Details"
-                                        analysisData={meeting.detailedSummary.liveAnalysis}
-                                        aiInsight={meeting.detailedSummary.liveAnalysis.signals?.[0]?.ask_now || undefined}
-                                        calledFromAnalysisTab
-                                    />
+                                    <>
+                                        <div className={`rounded-2xl mb-4 overflow-hidden ${isLight ? 'bg-slate-900' : 'bg-[#0d0d0f]'}`}>
+                                            <DealHealthScore analysisData={meeting.detailedSummary.liveAnalysis} />
+                                        </div>
+                                        <LiveAnalysisContent
+                                            hideBar="Missing Details"
+                                            analysisData={meeting.detailedSummary.liveAnalysis}
+                                            aiInsight={meeting.detailedSummary.liveAnalysis.signals?.[0]?.ask_now || undefined}
+                                            calledFromAnalysisTab
+                                        />
+                                    </>
                                 ) : (
                                     <div className={`flex flex-col items-center justify-center py-16 gap-4 rounded-2xl border border-dashed ${isLight ? 'border-slate-200 bg-slate-50/50' : 'border-white/[0.07] bg-white/[0.02]'}`}>
                                         <div className={`w-12 h-12 rounded-2xl flex items-center justify-center ${isLight ? 'bg-slate-100' : 'bg-white/[0.05]'}`}>

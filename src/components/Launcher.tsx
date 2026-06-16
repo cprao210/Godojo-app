@@ -113,6 +113,11 @@ const Launcher: React.FC<LauncherProps> = ({ onStartMeeting, onOpenSettings, onP
         }
     };
 
+    // Detect whether any meeting in the list is still being processed
+    const hasProcessingMeeting = meetings.some(
+        m => m.isProcessed === false || m.title === 'Processing...'
+    );
+
     const fetchEvents = () => {
         if (window.electronAPI && window.electronAPI.getUpcomingEvents) {
             window.electronAPI.getUpcomingEvents().then(setUpcomingEvents).catch(err => console.error("Failed to fetch events:", err));
@@ -142,6 +147,17 @@ const Launcher: React.FC<LauncherProps> = ({ onStartMeeting, onOpenSettings, onP
         }
     };
 
+        // Active polling — fires every 3 s while any meeting is still processing.
+    // Stops automatically once all meetings have been fully processed.
+    // This is a safety net for the race where onMeetingsUpdated fires before
+    // the listener is registered, or is missed entirely.
+    useEffect(() => {
+        if (!hasProcessingMeeting) return;
+        const pollId = setInterval(fetchMeetings, 3000);
+        return () => clearInterval(pollId);
+        // eslint-disable-next-line react-hooks/exhaustive-deps
+    }, [hasProcessingMeeting]);
+    
     // Keybinds
     const { isShortcutPressed } = useShortcuts();
     const isLight = useResolvedTheme() === 'light';

@@ -3,6 +3,10 @@ import splashSrc from '../assets/Splash.svg';
 
 const SPLASH_TIMEOUT_MS = 3000;
 
+const dragStyle: React.CSSProperties & { WebkitAppRegion: string } = {
+  WebkitAppRegion: 'drag',
+};
+
 const StartupSequence: React.FC<{ onComplete: () => void }> = ({ onComplete }) => {
   const imgRef = useRef<HTMLImageElement>(null);
   const timeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -38,15 +42,14 @@ const StartupSequence: React.FC<{ onComplete: () => void }> = ({ onComplete }) =
   return (
     <div style={{
       position: 'fixed', inset: 0, zIndex: 9999,
-      // backgroundColor: '#0a0f1e',
       display: 'flex', alignItems: 'center', justifyContent: 'center',
-      width: '100vw', height: '100vh',
+      width: '100vw', height: '100vh', ...dragStyle,
     }}>
       <img
         ref={imgRef}
         src={splashSrc}
-        style={{ display: 'block', width: "100%", height: "100%", flexShrink: 0 }}
-        alt=""
+        style={{ display: 'block', width: "100%", height: "100%", flexShrink: 0, pointerEvents: 'none', ...dragStyle }}
+        alt="godojo-splash"
       />
     </div>
   );
