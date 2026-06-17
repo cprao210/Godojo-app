@@ -1,6 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import { X, RotateCcw, Check, Copy } from 'lucide-react';
 import { motion, AnimatePresence } from 'framer-motion';
+import { guardSession } from '../lib/firebase';
 
 interface Meeting {
     id: string;
@@ -43,6 +44,107 @@ interface FollowUpEmailModalProps {
     isLight?: boolean;
 }
 
+// ─── EmailPreview ─────────────────────────────────────────────────────────────
+// Renders the plain-text email body with Gmail-ready visual formatting.
+// Rules:
+//   - Blank lines between paragraphs → rendered as paragraph breaks
+//   - Lines starting with "•" or "-" or "*" → rendered as bullet points
+//   - ALL-CAPS lines (section headers like "NEXT STEPS") → styled as labels
+//   - Everything else → plain paragraph text
+const EmailPreview: React.FC<{ body: string; isLight: boolean }> = ({ body, isLight }) => {
+    if (!body.trim()) {
+        return (
+            <p className="text-[13px] text-text-tertiary italic">Your email will appear here...</p>
+        );
+    }
+
+    // Split into logical blocks separated by blank lines
+    const rawBlocks = body.split(/\n{2,}/);
+
+    return (
+        <div className="space-y-4 text-[14px] leading-7">
+            {rawBlocks.map((block, blockIdx) => {
+                const lines = block.split('\n').map(l => l.trimEnd()).filter(l => l !== '');
+                if (lines.length === 0) return null;
+
+                // Check if the first line is an ALL-CAPS section header
+                const firstLine = lines[0];
+                const isSectionHeader =
+                    firstLine === firstLine.toUpperCase() &&
+                    firstLine.length > 3 &&
+                    !/^[•\-*]/.test(firstLine) &&
+                    /[A-Z]/.test(firstLine);
+
+                if (isSectionHeader) {
+                    // Render header + its bullet lines together as a labeled group
+                    const bulletLines = lines.slice(1);
+                    return (
+                        <div key={blockIdx}>
+                            <p className={`text-[11px] font-bold uppercase tracking-widest mb-2 ${isLight ? 'text-slate-400' : 'text-white/35'}`}>
+                                {firstLine}
+                            </p>
+                            {bulletLines.length > 0 && (
+                                <ul className="space-y-1.5">
+                                    {bulletLines.map((line, i) => {
+                                        const text = line.replace(/^[•\-\*]\s*/, '');
+                                        return (
+                                            <li key={i} className={`flex items-start gap-2 ${isLight ? 'text-slate-700' : 'text-white/75'}`}>
+                                                <span className={`mt-2.5 w-1.5 h-1.5 rounded-full shrink-0 ${isLight ? 'bg-slate-400' : 'bg-white/30'}`} />
+                                                <span>{text}</span>
+                                            </li>
+                                        );
+                                    })}
+                                </ul>
+                            )}
+                        </div>
+                    );
+                }
+
+                // Check if ALL lines in this block are bullets
+                const allBullets = lines.every(l => /^[•\-\*]/.test(l.trim()));
+                if (allBullets) {
+                    return (
+                        <ul key={blockIdx} className="space-y-1.5">
+                            {lines.map((line, i) => {
+                                const text = line.replace(/^[•\-\*]\s*/, '');
+                                return (
+                                    <li key={i} className={`flex items-start gap-2 ${isLight ? 'text-slate-700' : 'text-white/75'}`}>
+                                        <span className={`mt-2.5 w-1.5 h-1.5 rounded-full shrink-0 ${isLight ? 'bg-slate-400' : 'bg-white/30'}`} />
+                                        <span>{text}</span>
+                                    </li>
+                                );
+                            })}
+                        </ul>
+                    );
+                }
+
+                // Mixed block: render line by line
+                return (
+                    <div key={blockIdx} className="space-y-1.5">
+                        {lines.map((line, i) => {
+                            const isBullet = /^[•\-\*]/.test(line.trim());
+                            if (isBullet) {
+                                const text = line.replace(/^[•\-\*]\s*/, '');
+                                return (
+                                    <div key={i} className={`flex items-start gap-2 ${isLight ? 'text-slate-700' : 'text-white/75'}`}>
+                                        <span className={`mt-2.5 w-1.5 h-1.5 rounded-full shrink-0 ${isLight ? 'bg-slate-400' : 'bg-white/30'}`} />
+                                        <span>{text}</span>
+                                    </div>
+                                );
+                            }
+                            return (
+                                <p key={i} className={isLight ? 'text-slate-700' : 'text-white/75'}>
+                                    {line}
+                                </p>
+                            );
+                        })}
+                    </div>
+                );
+            })}
+        </div>
+    );
+};
+
 const FollowUpEmailModal: React.FC<FollowUpEmailModalProps> = ({ isOpen, onClose, meeting, isLight = false }) => {
     const [recipientEmail, setRecipientEmail] = useState('');
     const [senderName, setSenderName] = useState('');
@@ -52,12 +154,15 @@ const FollowUpEmailModal: React.FC<FollowUpEmailModalProps> = ({ isOpen, onClose
     const [isCopied, setIsCopied] = useState(false);
     const [isGenerating, setIsGenerating] = useState(false);
     const [hasGeneratedOnce, setHasGeneratedOnce] = useState(false);
+    const [isEditMode, setIsEditMode] = useState(false);
+    const [isRegeneratedEmail, setIsRegeneratedEmail] = useState(false);
 
     useEffect(() => {
         if (isOpen) initializeFields();
     }, [isOpen, meeting]);
 
     const initializeFields = async () => {
+        setIsRegeneratedEmail(false);
         const cleanTitle = meeting.title.replace(/["*]/g, '').trim();
         setSubject(`Follow up - ${cleanTitle}`);
 
@@ -93,58 +198,159 @@ const FollowUpEmailModal: React.FC<FollowUpEmailModalProps> = ({ isOpen, onClose
         }
     };
 
+    // ── Helpers ────────────────────────────────────────────────────────────────
+
+    // Resolve the best available recipient first name.
+    // Priority: recipientName from calendar → leadName from transcript extraction → placeholder
+    const resolveRecipientName = (rName?: string): string => {
+        const name = rName || recipientName || meeting.detailedSummary?.leadName || '';
+        if (!name.trim()) return '[Prospect Name]';
+        // Use first name only
+        return name.trim().split(' ')[0];
+    };
+
+    // Resolve sender name.
+    // Priority: senderName state (from localStorage) → placeholder
+    const resolveSenderName = (sName?: string): string => {
+        const name = sName || senderName || '';
+        if (!name.trim()) return '[Your Name]';
+        return name.trim().split(' ')[0];
+    };
+
+    // Resolve company name for the closing context line.
+    const resolveCompany = (): string => {
+        return meeting.detailedSummary?.company || '[Company Name]';
+    };
+
+    // Wrap the raw body content with a proper greeting and sign-off.
+    const wrapWithGreetingAndSignoff = (bodyContent: string, rName: string, sName: string, omitOpeningLine = false): string => {
+        const greeting = `Dear ${rName},`;
+        const openingLine = `It was great connecting with you and understanding how things currently run.\n\nTo recap our discussion, here's a summary of the key points, identified needs, potential areas of improvement, and the proposed next steps from our conversation:`;
+        const signoff = `Thank you for your time. Looking forward to our next conversation.\n\nWarm regards,\n${sName}`;
+        if (omitOpeningLine) {
+            return `${greeting}\n\n${bodyContent.trim()}\n\n${signoff}`;
+        }
+        return `${greeting}\n\n${openingLine}\n\n${bodyContent.trim()}\n\n${signoff}`;
+    };
+
+    // ── Main generator ─────────────────────────────────────────────────────────
+
     const generateEmail = async (rName?: string, sName?: string) => {
         const prebuilt = meeting.detailedSummary?.followUpEmail;
+        const resolvedRecipient = resolveRecipientName(rName);
+        const resolvedSender = resolveSenderName(sName);
+        const company = resolveCompany();
 
-        if (prebuilt?.sections && !hasGeneratedOnce) {
-            const sections = prebuilt.sections;
-            const lines: string[] = [];
-
-            if (sections.whatWeDiscussed?.length)
-                lines.push(`WHAT WE DISCUSSED\n${sections.whatWeDiscussed.map((s: string) => `• ${s}`).join('\n')}`);
-            if (sections.whatIsTheNeed?.length)
-                lines.push(`WHAT IS THE NEED\n${sections.whatIsTheNeed.map((s: string) => `• ${s}`).join('\n')}`);
-            if (sections.scopeOfImprovement?.length)
-                lines.push(`SCOPE OF IMPROVEMENT / CHALLENGES\n${sections.scopeOfImprovement.map((s: string) => `• ${s}`).join('\n')}`);
-            if (sections.whatYouWillAchieveAfterTransformation?.length)
-                lines.push(`WHAT YOU WILL ACHIEVE AFTER TRANSFORMATION\n${sections.whatYouWillAchieveAfterTransformation.map((s: string) => `• ${s}`).join('\n')}`);
-            if (sections.nextSteps?.length)
-                lines.push(`NEXT STEPS\n${sections.nextSteps.map((s: string) => `• ${s}`).join('\n')}`);
-
+        // ── Path A: use prebuilt data from the post-call LLM ──────────────────
+        if (prebuilt && !hasGeneratedOnce) {
             if (prebuilt.subject) setSubject(prebuilt.subject);
-            setEmailBody(prebuilt.fullEmail || lines.join('\n\n'));
+
+            let bodyContent = '';
+
+            if (prebuilt.fullEmail?.trim()) {
+                // fullEmail exists — strip any greeting/sign-off the LLM may have
+                // included so we can re-wrap consistently with resolved names.
+                bodyContent = prebuilt.fullEmail
+                    .replace(/^(dear|hi|hello|hey)[^,\n]*[,\n]\s*/i, '')  // strip existing greeting
+                    // Sign-off: match from the last occurrence of a closing phrase to end,
+                    // using a non-greedy line-anchored pattern so body content is never eaten
+                    .replace(/\n(warm regards|sincerely|best regards|best|thank you|regards|cheers)[^\n]*(\n[\s\S]*)?$/i, '')
+                    .trim();
+            } else if (prebuilt.sections) {
+                // No fullEmail — build the body from structured sections.
+                const sections = prebuilt.sections;
+                const lines: string[] = [];
+
+                if (sections.whatWeDiscussed?.length)
+                    lines.push(`WHAT WE DISCUSSED\n${sections.whatWeDiscussed.map((s: string) => `• ${s}`).join('\n')}`);
+                if (sections.whatIsTheNeed?.length)
+                    lines.push(`WHAT IS THE NEED\n${sections.whatIsTheNeed.map((s: string) => `• ${s}`).join('\n')}`);
+                if (sections.scopeOfImprovement?.length)
+                    lines.push(`SCOPE OF IMPROVEMENT\n${sections.scopeOfImprovement.map((s: string) => `• ${s}`).join('\n')}`);
+                if (sections.whatYouWillAchieveAfterTransformation?.length)
+                    lines.push(`WHAT YOU WILL ACHIEVE\n${sections.whatYouWillAchieveAfterTransformation.map((s: string) => `• ${s}`).join('\n')}`);
+                if (sections.nextSteps?.length)
+                    lines.push(`NEXT STEPS\n${sections.nextSteps.map((s: string) => `• ${s}`).join('\n')}`);
+
+                bodyContent = lines.join('\n\n');
+            }
+
+            // Always wrap with greeting + sign-off regardless of which path was used
+            setEmailBody(wrapWithGreetingAndSignoff(
+                bodyContent || `I wanted to follow up on our conversation about ${company}.`,
+                resolvedRecipient,
+                resolvedSender
+            ));
             setHasGeneratedOnce(true);
             return;
         }
 
+        // ── Path B: generate via LLM (no prebuilt data, or forced regeneration) ─
         setIsGenerating(true);
         try {
+            const ds = meeting.detailedSummary;
             const input = {
                 meeting_type: 'meeting' as const,
                 title: meeting.title,
-                summary: meeting.detailedSummary?.overview || meeting.summary,
-                action_items: meeting.detailedSummary?.actionItems || [],
-                key_points: meeting.detailedSummary?.keyPoints || [],
-                recipient_name: rName || recipientName,
-                sender_name: sName || senderName,
+                date: meeting.date,
+
+                // Both field names — buildFollowUpEmailPromptInput checks both
+                overview: ds?.overview || meeting.summary,
+                summary: ds?.overview || meeting.summary,
+
+                // Structured lists
+                keyPoints: ds?.keyPoints || [],
+                actionItems: ds?.actionItems || [],
+                key_points: ds?.keyPoints || [],    // legacy alias
+                action_items: ds?.actionItems || [],   // legacy alias
+
+                // People / company — used for prompt personalisation
+                leadName: ds?.leadName || '',
+                company: ds?.company || '',
+                recipient_name: resolvedRecipient,
+                sender_name: resolvedSender,
+
+                // BANT — budget/need often contain the metrics the rep wants in the email
+                bant: (ds as any)?.bant || null,
+
+                // Pre-structured email sections (impact bullets, next steps, etc.)
+                followUpEmail: ds?.followUpEmail || null,
+
+                // Full transcript — gives the LLM direct access to numbers & quotes
+                // Capped at 80 segments inside buildFollowUpEmailPromptInput already
+                transcript: meeting.transcript || [],
+
                 tone: 'neutral' as const,
             };
 
-            // @ts-ignore
+            const sessionActive = await guardSession();
+            if (!sessionActive) return;
             const generatedBody = await window.electronAPI?.generateFollowupEmail(input);
+
             if (generatedBody) {
-                const subjectMatch = generatedBody.match(/^Subject:\s*(.+)/m);
+                // Strip the Subject: line if the LLM prefixed it
+                let body = generatedBody;
+                const subjectMatch = body.match(/^Subject:\s*(.+)/m);
                 if (subjectMatch) {
                     setSubject(subjectMatch[1].trim());
-                    setEmailBody(generatedBody.replace(/^Subject:\s*.+\n?/m, '').trimStart());
-                } else {
-                    setEmailBody(generatedBody);
+                    body = body.replace(/^Subject:\s*.+\n?/m, '').trimStart();
                 }
+
+                // Strip any greeting/sign-off the LLM wrote so we control the format
+                body = body
+                    .replace(/^(dear|hi|hello|hey)[^,\n]*[,\n]\s*/i, '')
+                    .replace(/\n(warm regards|sincerely|best regards|best|thank you|regards|cheers)[^\n]*(\n[\s\S]*)?$/i, '')
+                    .trim();
+
+                setEmailBody(wrapWithGreetingAndSignoff(body, resolvedRecipient, resolvedSender, true));
                 setHasGeneratedOnce(true);
+                setIsRegeneratedEmail(true);
             }
         } catch (error) {
             console.error('Failed to generate email:', error);
-            setEmailBody(`WHAT WE DISCUSSED\n• Thank you for taking the time to speak today.\n• We reviewed your current workflow and operational challenges.\n• We discussed potential improvements and next steps.\n\nNEXT STEPS\n• Please review the shared materials.\n• We will coordinate the next discussion internally.\n• Let us know if additional stakeholders should be included.`);
+            // Fallback: a minimal but properly structured email
+            const fallbackBody = `I wanted to follow up on our conversation about ${company}.\n\nWHAT WE DISCUSSED\n• We reviewed your current workflow and operational challenges.\n• We discussed how our solution addresses your core needs.\n• We aligned on potential next steps.\n\nNEXT STEPS\n• Please review the materials shared during our call.\n• Let us know if any additional stakeholders should be looped in.\n• We will follow up by [Date] to confirm timing.`;
+            setEmailBody(wrapWithGreetingAndSignoff(fallbackBody, resolvedRecipient, resolvedSender, true));
         } finally {
             setIsGenerating(false);
         }
@@ -252,7 +458,6 @@ const FollowUpEmailModal: React.FC<FollowUpEmailModalProps> = ({ isOpen, onClose
                                     <div className={`absolute inset-0 flex items-center justify-center z-10 backdrop-blur-[2px] ${isLight ? 'bg-white/70' : 'bg-bg-elevated/50'}`}>
                                         <div className="flex flex-col items-center gap-4">
                                             <div className="relative">
-                                                {/* Spinner uses accent-primary via Tailwind — intentional */}
                                                 <div className="w-10 h-10 border-2 rounded-full animate-spin border-border-muted border-t-accent-primary" />
                                                 <div className="absolute inset-0 flex items-center justify-center">
                                                     <div className="w-2 h-2 rounded-full animate-pulse bg-accent-primary" />
@@ -263,14 +468,18 @@ const FollowUpEmailModal: React.FC<FollowUpEmailModalProps> = ({ isOpen, onClose
                                             </span>
                                         </div>
                                     </div>
-                                ) : (
+                                ) : isEditMode ? (
                                     <textarea
                                         value={emailBody}
                                         onChange={(e) => setEmailBody(e.target.value)}
-                                        className="w-full h-[260px] bg-transparent text-[15px] leading-7 focus:outline-none resize-none font-normal text-text-secondary placeholder-text-tertiary"
+                                        className="w-full h-[300px] bg-transparent text-[13px] leading-6 focus:outline-none resize-none font-mono text-text-secondary placeholder-text-tertiary"
                                         placeholder="Write your email..."
                                         spellCheck={false}
                                     />
+                                ) : (
+                                    <div className="h-[300px] overflow-y-auto pr-1" style={{ scrollbarWidth: 'thin', scrollbarColor: 'rgba(255,255,255,0.1) transparent' }}>
+                                        <EmailPreview body={emailBody} isLight={isLight} />
+                                    </div>
                                 )}
                             </div>
 
@@ -302,7 +511,7 @@ const FollowUpEmailModal: React.FC<FollowUpEmailModalProps> = ({ isOpen, onClose
                                             size={15}
                                             className={`group-hover:rotate-180 transition-transform duration-500 ${isGenerating ? 'animate-spin' : ''}`}
                                         />
-                                        <span className="text-[13px] font-medium">Reset</span>
+                                        <span className="text-[13px] font-medium">Re-generate</span>
                                     </button>
                                 </div>
                             </div>

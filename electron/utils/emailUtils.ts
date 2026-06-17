@@ -84,13 +84,30 @@ export function buildFollowUpEmailPromptInput(input: any): string {
 
     if (input.title) parts.push(`Meeting Title: ${input.title}`);
     if (input.date) parts.push(`Date: ${new Date(input.date).toLocaleDateString()}`);
-    if (input.leadName) parts.push(`Prospect Name: ${input.leadName}`);
+
+    // Prospect name: prefer structured leadName, fall back to recipient_name passed by the modal
+    const prospectName = input.leadName || input.recipient_name;
+    if (prospectName) parts.push(`Prospect Name: ${prospectName}`);
+
     if (input.company) parts.push(`Company: ${input.company}`);
 
-    if (input.overview) parts.push(`\nCall Overview:\n${input.overview}`);
+    // Rep/sender name: surface it explicitly so the model can use it in the signature.
+    // Fall back to user profile fields when the modal doesn't pass sender_name directly.
+    const repName = input.sender_name || input.userName || input.userDisplayName;
+    if (repName) parts.push(`Sales Rep Name: ${repName}`);
 
-    if (input.keyPoints?.length) {
-        parts.push(`\nKey Discussion Points:\n${input.keyPoints.map((p: string) => `- ${p}`).join('\n')}`);
+    // summary is the field name used by Path B (modal LLM path); overview is used by the post-call path
+    if (input.overview) parts.push(`\nCall Overview:\n${input.overview}`);
+    else if (input.summary) parts.push(`\nCall Overview:\n${input.summary}`);
+
+    const keyPoints = input.keyPoints?.length ? input.keyPoints : (input.key_points || []);
+    if (keyPoints.length) {
+        parts.push(`\nKey Discussion Points:\n${keyPoints.map((p: string) => `- ${p}`).join('\n')}`);
+    }
+
+    const actionItems = input.actionItems?.length ? input.actionItems : (input.action_items || []);
+    if (actionItems.length) {
+        parts.push(`\nAction Items:\n${actionItems.map((a: string) => `- ${a}`).join('\n')}`);
     }
 
     if (input.bant) {
@@ -107,9 +124,9 @@ export function buildFollowUpEmailPromptInput(input: any): string {
         if (s.nextSteps?.length) parts.push(`\nAgreed Next Steps:\n${s.nextSteps.map((p: string) => `- ${p}`).join('\n')}`);
     }
 
-    if (input.actionItems?.length) {
-        parts.push(`\nAction Items:\n${input.actionItems.map((a: string) => `- ${a}`).join('\n')}`);
-    }
+    // if (input.actionItems?.length) {
+    //     parts.push(`\nAction Items:\n${input.actionItems.map((a: string) => `- ${a}`).join('\n')}`);
+    // }
 
     if (input.transcript?.length) {
         const transcriptText = input.transcript

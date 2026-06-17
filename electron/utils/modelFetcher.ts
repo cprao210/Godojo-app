@@ -100,20 +100,23 @@ async function fetchAnthropicModels(apiKey: string): Promise<ProviderModel[]> {
 
     const models: any[] = response.data?.data || [];
 
-    // Only include Claude 3.5+ models (haiku, sonnet, opus)
+    // Include all Claude models that contain a version number >= 3.5
+    // Handles both old format (claude-3-5-sonnet) and new format (claude-sonnet-4-6)
     const filtered = models.filter((m: any) => {
         const id = (m.id || '').toLowerCase();
         if (!id.includes('claude')) return false;
-        
-        // Match models that are version 3.5, 3.7, 4.0, etc.
-        // e.g. claude-3-5-sonnet, claude-3-7-sonnet, claude-4-opus
-        const versionMatch = id.match(/claude-(\d+)-(\d+)?/);
-        if (versionMatch) {
-            const major = parseInt(versionMatch[1], 10);
-            const minor = versionMatch[2] ? parseInt(versionMatch[2], 10) : 0;
-            if (major > 3 || (major === 3 && minor >= 5)) {
-                return true;
-            }
+        // New naming format: claude-<name>-<major>-<minor>, e.g. claude-sonnet-4-6
+        const newFormat = id.match(/claude-[a-z]+-(\d+)-(\d+)/);
+        if (newFormat) {
+            const major = parseInt(newFormat[1], 10);
+            return major >= 3;
+        }
+        // Old naming format: claude-<major>-<minor>-<name>, e.g. claude-3-5-sonnet
+        const oldFormat = id.match(/claude-(\d+)-(\d+)/);
+        if (oldFormat) {
+            const major = parseInt(oldFormat[1], 10);
+            const minor = parseInt(oldFormat[2], 10);
+            return major > 3 || (major === 3 && minor >= 5);
         }
         return false;
     });

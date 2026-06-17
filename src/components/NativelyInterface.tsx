@@ -17,7 +17,7 @@ import { FloatingDock } from './FloatingDock';
 
 interface Message {
     id: string;
-    role: 'user' | 'system' | 'interviewer';
+    role: 'user' | 'system' | 'client';
     text: string;
     isStreaming?: boolean;
     hasScreenshot?: boolean;
@@ -61,19 +61,30 @@ const NativelyInterface: React.FC<NativelyInterfaceProps> = ({ onEndMeeting, ove
     });
     const [isMeetingPaused, setIsMeetingPaused] = useState(false);
     const liveTranscriptRef = useRef<Array<{ speaker: string; displayName?: string; text: string; timestamp: number }>>([]);
+    // Add near the other useState declarations at the top of NativelyInterface
+    const [companyIntel, setCompanyIntel] = useState<Record<string, any> | null>(null);
 
-    const speakerNamesRef = useRef<{ user: string; interviewer: string }>({ user: 'Me', interviewer: 'Them' });
-    const [speakerNames, setSpeakerNames] = useState<{ user: string; interviewer: string }>({
+    const speakerNamesRef = useRef<{ user: string; client: string }>({ user: 'Me', client: 'Them' });
+    const [speakerNames, setSpeakerNames] = useState<{ user: string; client: string }>({
         user: 'Me',
-        interviewer: 'Them'
+        client: 'Them'
     });
+
+    // Add alongside the other IPC useEffect listeners
+    useEffect(() => {
+        if (!window.electronAPI?.onCompanyIntelUpdated) return;
+        const unsubscribe = window.electronAPI.onCompanyIntelUpdated((intel: Record<string, any> | null) => {
+            setCompanyIntel(intel);
+        });
+        return () => unsubscribe?.();
+    }, []);
 
     useEffect(() => {
         const loadSpeakerNames = async () => {
             if (window.electronAPI?.getDisplayName) {
                 const user = await window.electronAPI.getDisplayName('user');
-                const interviewer = await window.electronAPI.getDisplayName('interviewer');
-                setSpeakerNames({ user, interviewer });
+                const client = await window.electronAPI.getDisplayName('client');
+                setSpeakerNames({ user, client });
             }
         };
 
@@ -112,8 +123,16 @@ const NativelyInterface: React.FC<NativelyInterfaceProps> = ({ onEndMeeting, ove
         return () => window.removeEventListener('storage', handleStorage);
     }, []);
 
-    const [rollingTranscript, setRollingTranscript] = useState('');  // For interviewer rolling text bar
-    const [isInterviewerSpeaking, setIsInterviewerSpeaking] = useState(false);  // Track if actively speaking
+    // Per-speaker rolling transcript state — keeps "Me" and "Them" text strictly isolated
+    const [rollingTranscriptUser, setRollingTranscriptUser] = useState('');   // "Me" track
+    const [rollingTranscriptClient, setRollingTranscriptClient] = useState(''); // "Them" track
+    const [isClientSpeaking, setIsClientSpeaking] = useState(false);  // Track if actively speaking
+    const [isUserSpeaking, setIsUserSpeaking] = useState(false);      // Track if user is speaking
+
+    // Legacy combined props kept for any callers that still expect them;
+    // derived from per-speaker state so they stay in sync automatically.
+    const rollingTranscript = rollingTranscriptClient; // kept for commented-out legacy code
+    const rollingTranscriptSpeaker: 'client' | 'user' = 'client'; // unused after refactor
     const [voiceInput, setVoiceInput] = useState('');  // Accumulated user voice input
     const voiceInputRef = useRef<string>('');  // Ref for capturing in async handlers
     const isStealthRef = useRef<boolean>(false); // Tracks if the next expansion should be stealthy
@@ -285,7 +304,7 @@ const NativelyInterface: React.FC<NativelyInterfaceProps> = ({ onEndMeeting, ove
     useEffect(() => {
         const context = messages
             .filter(m => m.role !== 'user' || !m.hasScreenshot)
-            .map(m => `${m.role === 'interviewer' ? 'Interviewer' : m.role === 'user' ? 'User' : 'Assistant'}: ${m.text}`)
+            .map(m => `${m.role === 'client' ? 'Client' : m.role === 'user' ? 'User' : 'Assistant'}: ${m.text}`)
             .slice(-20)
             .join('\n');
         setConversationContext(context);
@@ -346,12 +365,14 @@ const NativelyInterface: React.FC<NativelyInterfaceProps> = ({ onEndMeeting, ove
             setManualTranscript('');
             setVoiceInput('');
             setIsProcessing(false);
+            setCompanyIntel(null)
 
             // CRITICAL FIX: Clear the live transcript ref when meeting resets
             liveTranscriptRef.current = [];
 
-            // Also reset rolling transcript
-            setRollingTranscript('');
+            // Also reset rolling transcripts (both speakers)
+            setRollingTranscriptUser('');
+            setRollingTranscriptClient('');
 
             // Track new conversation
             analytics.trackConversationStarted();
@@ -363,12 +384,12 @@ const NativelyInterface: React.FC<NativelyInterfaceProps> = ({ onEndMeeting, ove
                     speakerNamesRef.current = names;
                     setSpeakerNames(names);
                 } else {
-                    speakerNamesRef.current = { user: 'Me', interviewer: 'Them' };
-                    setSpeakerNames({ user: 'Me', interviewer: 'Them' });
+                    speakerNamesRef.current = { user: 'Me', client: 'Them' };
+                    setSpeakerNames({ user: 'Me', client: 'Them' });
                 }
             }).catch(() => {
-                speakerNamesRef.current = { user: 'Me', interviewer: 'Them' };
-                setSpeakerNames({ user: 'Me', interviewer: 'Them' });
+                speakerNamesRef.current = { user: 'Me', client: 'Them' };
+                setSpeakerNames({ user: 'Me', client: 'Them' });
             });
         });
         return () => unsubscribe();
@@ -417,6 +438,21 @@ const NativelyInterface: React.FC<NativelyInterfaceProps> = ({ onEndMeeting, ove
                     });
                     setManualTranscript('');  // Clear partial preview
                     manualTranscriptRef.current = '';
+
+                    // Still push to liveTranscriptRef so the full transcript
+                    // is available for live analysis and post-meeting use.
+                    const resolvedDisplayName = (transcript as any).displayName
+                        || speakerNamesRef.current.user
+                        || undefined;
+                    const lastLive = liveTranscriptRef.current[liveTranscriptRef.current.length - 1];
+                    if (!lastLive || lastLive.speaker !== transcript.speaker || lastLive.text !== transcript.text) {
+                        liveTranscriptRef.current.push({
+                            speaker: transcript.speaker,
+                            displayName: resolvedDisplayName,
+                            text: transcript.text,
+                            timestamp: Date.now(),
+                        });
+                    }
                 } else {
                     // Show live partial transcript
                     setManualTranscript(transcript.text);
@@ -426,60 +462,63 @@ const NativelyInterface: React.FC<NativelyInterfaceProps> = ({ onEndMeeting, ove
                 return;  // Don't add to messages while recording
             }
 
-            if (transcript.speaker === 'user' && transcript.final) {
-                const userDisplayName = (transcript as any).displayName
-                    || speakerNamesRef.current.user
-                    || undefined;
-                liveTranscriptRef.current.push({
-                    speaker: 'user',
-                    displayName: userDisplayName,
-                    text: transcript.text,
-                    timestamp: Date.now(),
-                });
-            }
-
-            // Route both user and interviewer transcripts to the rolling bar.
+            // Route both user and client transcripts to the rolling bar.
             // Skip any unknown speaker types for safety.
-            if (transcript.speaker !== 'user' && transcript.speaker !== 'interviewer') {
+            if (transcript.speaker !== 'user' && transcript.speaker !== 'client') {
                 return;
             }
 
-            // Track speaking state (used for the animated "..." indicator in the chat bar).
-            // We only animate for the interviewer/system audio since user mic is near-instant.
-            if (transcript.speaker === 'interviewer') {
-                setIsInterviewerSpeaking(!transcript.final);
+            const isClient = transcript.speaker === 'client';
+
+            // Track per-speaker speaking state for animated indicators
+            if (isClient) {
+                setIsClientSpeaking(!transcript.final);
+            } else {
+                setIsUserSpeaking(!transcript.final);
             }
+
+            const setRollingForSpeaker = isClient ? setRollingTranscriptClient : setRollingTranscriptUser;
 
             if (transcript.final) {
                 // Use displayName from payload (resolved in main process) for accurate attribution.
                 // Fall back to speakerNamesRef for older payloads without displayName.
                 const resolvedDisplayName = (transcript as any).displayName
-                    || (transcript.speaker === 'interviewer' ? speakerNamesRef.current.interviewer : speakerNamesRef.current.user)
+                    || (isClient ? speakerNamesRef.current.client : speakerNamesRef.current.user)
                     || undefined;
 
-                // Append finalized text to accumulated rolling transcript
-                setRollingTranscript(prev => {
+                // Append finalized text to this speaker's own rolling transcript.
+                // Guard against duplicate finals (e.g. both is_final and speech_final
+                // from Deepgram arriving as final before the STT fix takes effect).
+                setRollingForSpeaker(prev => {
+                    const lastSeparator = prev.lastIndexOf('  ·  ');
+                    const lastSegment = lastSeparator >= 0 ? prev.substring(lastSeparator + 5) : prev;
+                    if (lastSegment.trim() === transcript.text.trim()) return prev; // skip exact duplicate
                     const separator = prev ? '  ·  ' : '';
                     return prev + separator + transcript.text;
                 });
 
-                liveTranscriptRef.current.push({
-                    speaker: transcript.speaker,
-                    displayName: resolvedDisplayName,
-                    text: transcript.text,
-                    timestamp: Date.now(),
-                });
+                // Guard liveTranscriptRef against exact-text duplicates from rapid final events
+                const lastLive = liveTranscriptRef.current[liveTranscriptRef.current.length - 1];
+                if (!lastLive || lastLive.speaker !== transcript.speaker || lastLive.text !== transcript.text) {
+                    liveTranscriptRef.current.push({
+                        speaker: transcript.speaker,
+                        displayName: resolvedDisplayName,
+                        text: transcript.text,
+                        timestamp: Date.now(),
+                    });
+                }
 
-                // Clear speaking indicator after pause
-                if (transcript.speaker === 'interviewer') {
-                    setTimeout(() => {
-                        setIsInterviewerSpeaking(false);
-                    }, 3000);
+                // Clear speaking indicator after a pause
+                if (isClient) {
+                    setTimeout(() => setIsClientSpeaking(false), 3000);
+                } else {
+                    setTimeout(() => setIsUserSpeaking(false), 2000);
                 }
             } else {
-                // For partial transcripts, show current segment appended to accumulated
-                setRollingTranscript(prev => {
-                    // Find where previous finalized content ends (look for last separator)
+                // Partial (interim) transcript — update only this speaker's track.
+                // Previous finalized text from the same speaker is preserved;
+                // the other speaker's track is never touched.
+                setRollingForSpeaker(prev => {
                     const lastSeparator = prev.lastIndexOf('  ·  ');
                     const accumulated = lastSeparator >= 0 ? prev.substring(0, lastSeparator + 5) : '';
                     return accumulated + transcript.text;
@@ -1557,7 +1596,7 @@ Provide only the answer, nothing else.`;
                 currentAttachments.length > 0 ? currentAttachments.map(s => s.path) : undefined,
                 conversationContext // Pass context so "answer this" works
             );
-        } catch (err) {
+        } catch (err: any) {
             setIsProcessing(false);
             setMessages(prev => {
                 const last = prev[prev.length - 1];
@@ -1566,13 +1605,13 @@ Provide only the answer, nothing else.`;
                     return prev.slice(0, -1).concat({
                         id: Date.now().toString(),
                         role: 'system',
-                        text: `❌ Error starting stream: ${err}`
+                        text: `❌ Error starting stream: ${err?.message}`
                     });
                 }
                 return [...prev, {
                     id: Date.now().toString(),
                     role: 'system',
-                    text: `❌ Error: ${err}`
+                    text: `❌ Error: ${err?.message}`
                 }];
             });
         }
@@ -1892,7 +1931,7 @@ Provide only the answer, nothing else.`;
             );
         }
 
-        // Standard Text Messages (e.g. from User or Interviewer)
+        // Standard Text Messages (e.g. from User or Client)
         // We still want basic markdown support here too
         return (
             <div className="markdown-content">
@@ -2171,45 +2210,45 @@ Provide only the answer, nothing else.`;
 
 
     return (
-        <div ref={contentRef} className="flex flex-col items-center w-full mx-auto h-full min-h-0 bg-transparent p-0 rounded-[24px] font-sans gap-2 overlay-text-primary">
-            {/* AI Sales Coach */}
-            <motion.div initial={{ opacity: 0, y: 20, scale: 0.95 }} animate={{ opacity: 1, y: 0, scale: 1 }} exit={{ opacity: 0, y: 20, scale: 0.95 }} transition={{ duration: 0.3, ease: "easeInOut" }} className='flex gap-2'>
-                <AnimatePresence>
-                    <motion.div
-                        initial={{ opacity: 0, x: -10 }}
-                        animate={{ opacity: 1, x: 0 }}
-                        exit={{ opacity: 0, x: -10 }}
-                        transition={{ duration: 0.25, ease: [0.16, 1, 0.3, 1] }}
-                    >
+        // <div ref={contentRef} className="flex flex-col items-center w-full mx-auto h-full min-h-0 bg-transparent p-0 rounded-[24px] font-sans gap-2 overlay-text-primary">
+        <motion.div
+            ref={contentRef}
+            initial={{ opacity: 0, x: -10 }}
+            animate={{ opacity: 1, x: 0 }}
+            exit={{ opacity: 0, x: -10 }}
+            className="flex flex-col items-center w-full mx-auto h-full min-h-0 bg-transparent p-0 rounded-[24px] font-sans gap-2 overlay-text-primary"
+            transition={{ duration: 0.25, ease: [0.16, 1, 0.3, 1] }}
+        >
 
-                        <FloatingDock
-                            isMeetingPaused={isMeetingPaused}
-                            onPauseResume={handlePauseMeeting}
-                            onEndCall={onEndMeeting ?? (() => { })}
-                            isUndetectable={isUndetectable}
-                            onToggleGhost={() => {
-                                const next = !isUndetectable;
-                                setIsUndetectable(next);
-                                window.electronAPI?.setUndetectable(next);
-                            }}
-                            transcriptRef={liveTranscriptRef}
-                            rollingTranscript={rollingTranscript}
-                            isInterviewerSpeaking={isInterviewerSpeaking}
-                            showTranscript={showTranscript}
-                            onToggleTranscript={(v) => {
-                                setShowTranscript(v);
-                                localStorage.setItem('natively_interviewer_transcript', String(v));
-                            }}
-                            currentModel={currentModel}
-                            onSelectModel={setCurrentModel}
-                            speakerNames={speakerNames}
-                            shortcuts={shortcuts}
-                            overlayPanelClass={overlayPanelClass}
-                        />
-                    </motion.div>
-                </AnimatePresence>
-            </motion.div>
-        </div>
+            <FloatingDock
+                isMeetingPaused={isMeetingPaused}
+                onPauseResume={handlePauseMeeting}
+                onEndCall={onEndMeeting ?? (() => { })}
+                isUndetectable={isUndetectable}
+                onToggleGhost={() => {
+                    const next = !isUndetectable;
+                    setIsUndetectable(next);
+                    window.electronAPI?.setUndetectable(next);
+                }}
+                transcriptRef={liveTranscriptRef}
+                rollingTranscriptUser={rollingTranscriptUser}
+                rollingTranscriptClient={rollingTranscriptClient}
+                isClientSpeaking={isClientSpeaking}
+                isUserSpeaking={isUserSpeaking}
+                showTranscript={showTranscript}
+                onToggleTranscript={(v) => {
+                    setShowTranscript(v);
+                    localStorage.setItem('natively_interviewer_transcript', String(v));
+                }}
+                currentModel={currentModel}
+                onSelectModel={setCurrentModel}
+                speakerNames={speakerNames}
+                shortcuts={shortcuts}
+                overlayPanelClass={overlayPanelClass}
+                companyIntel={companyIntel}
+            />
+        </motion.div>
+        // </div>
     )
 
     // return (

@@ -1,5 +1,5 @@
 import React, { useEffect, useRef } from 'react';
-import { Shield, Cpu, Database, MicOff, Globe, Sparkles, Zap } from 'lucide-react';
+import { Shield, Cpu, Database, MicOff, Globe, Sparkles, Zap, FileText } from 'lucide-react';
 import { getPlatformShortcut } from '../utils/platformUtils';
 
 interface AboutSectionProps { }
@@ -32,6 +32,11 @@ export const AboutSection: React.FC<AboutSectionProps> = () => {
         return () => window.removeEventListener('focus', handleFocus);
     }, []);
 
+    const handleOpenLink = (e: React.MouseEvent, url: string) => {
+        e.preventDefault();
+        window.electronAPI?.openExternal?.(url);
+    };
+
     return (
         <div className="space-y-6 animated fadeIn pb-10">
             {/* Header */}
@@ -40,51 +45,53 @@ export const AboutSection: React.FC<AboutSectionProps> = () => {
                 <p className="text-sm text-text-secondary">Designed to be invisible, intelligent, and trusted.</p>
             </div>
 
-            {/* What's New Section */}
+            {/* Key Features Section */}
             <div>
-                <h4 className="text-xs font-bold text-text-tertiary uppercase tracking-wider mb-2 px-1">What's New in v2.0.7</h4>
+                <h4 className="text-xs font-bold text-text-tertiary uppercase tracking-wider mb-2 px-1">Key Features</h4>
                 <div className="bg-bg-item-surface rounded-xl border border-border-subtle overflow-hidden">
+
                     <div className="p-3 border-b border-border-subtle bg-bg-card/50">
                         <div className="flex items-start gap-4">
-                            <div className="w-10 h-10 rounded-lg bg-yellow-500/10 flex items-center justify-center text-yellow-400 shrink-0">
+                            <div className="w-10 h-10 rounded-lg bg-blue-500/10 flex items-center justify-center text-blue-400 shrink-0">
                                 <Zap size={20} />
                             </div>
                             <div>
-                                <h5 className="text-sm font-bold text-text-primary mb-1">Capture & Analyse — {getPlatformShortcut(['⌘', '⇧', 'Enter']).join('+')}</h5>
+                                <h5 className="text-sm font-bold text-text-primary mb-1">Live Call Intelligence</h5>
                                 <p className="text-xs text-text-secondary leading-relaxed">
-                                    One shortcut to screenshot your screen and instantly get AI analysis. No extra clicks — press {getPlatformShortcut(['⌘', '⇧', 'Enter']).join('+')} and GoDojo does the rest.
+                                    Get real-time MEDDICC/BANT insights during ongoing calls — deal qualification signals, gap analysis, and contextually suggested questions surfaced as the conversation unfolds.
                                 </p>
                             </div>
                         </div>
                     </div>
 
-                    {/* <div className="p-3 border-b border-border-subtle bg-bg-card/50">
+                    <div className="p-3 border-b border-border-subtle bg-bg-card/50">
                         <div className="flex items-start gap-4">
                             <div className="w-10 h-10 rounded-lg bg-emerald-500/10 flex items-center justify-center text-emerald-400 shrink-0">
                                 <Sparkles size={20} />
                             </div>
                             <div>
-                                <h5 className="text-sm font-bold text-text-primary mb-1">Salary Negotiation Script</h5>
+                                <h5 className="text-sm font-bold text-text-primary mb-1">Company Insights</h5>
                                 <p className="text-xs text-text-secondary leading-relaxed">
-                                    AI-generated negotiation playbook built from your resume, job description, and live company culture data — opening line, justification, and counter-offer fallback, on demand.
-                                </p>
-                            </div>
-                        </div>
-                    </div> */}
-
-                    <div className="p-3 bg-bg-card/50">
-                        <div className="flex items-start gap-4">
-                            <div className="w-10 h-10 rounded-lg bg-pink-500/10 flex items-center justify-center text-pink-400 shrink-0">
-                                <Globe size={20} />
-                            </div>
-                            <div>
-                                <h5 className="text-sm font-bold text-text-primary mb-1">Vision for Custom Providers</h5>
-                                <p className="text-xs text-text-secondary leading-relaxed">
-                                    Screenshots now flow automatically through any cURL-based or Ollama provider — no manual template edits needed. Bring your own model and get full vision support out of the box.
+                                    Before joining a call, get a full company insights — headcount, key competitors, recent funding rounds, news, and hiring signals — so you walk in prepared.
                                 </p>
                             </div>
                         </div>
                     </div>
+
+                    <div className="p-3 bg-bg-card/50">
+                        <div className="flex items-start gap-4">
+                            <div className="w-10 h-10 rounded-lg bg-purple-500/10 flex items-center justify-center text-purple-400 shrink-0">
+                                <FileText size={20} />
+                            </div>
+                            <div>
+                                <h5 className="text-sm font-bold text-text-primary mb-1">Post-Call Summary</h5>
+                                <p className="text-xs text-text-secondary leading-relaxed">
+                                    After every meeting, get an auto-generated summary, ask questions about what was discussed, and generate polished follow-up emails ready to send.
+                                </p>
+                            </div>
+                        </div>
+                    </div>
+
                 </div>
             </div>
 
@@ -131,7 +138,7 @@ export const AboutSection: React.FC<AboutSectionProps> = () => {
                         <div>
                             <h5 className="text-sm font-medium text-text-primary">Stealth & Control</h5>
                             <p className="text-xs text-text-secondary mt-1 leading-relaxed">
-                                Features "Undetectable Mode" to hide from the dock and "Masquerading" to disguise as system apps. You control exactly what data leaves your device.
+                                Features "Ghost Mode" to hide from the dock and "Masquerading" to disguise as system apps. You control exactly what data leaves your device.
                             </p>
                         </div>
                     </div>
@@ -304,6 +311,30 @@ export const AboutSection: React.FC<AboutSectionProps> = () => {
                     </div> */}
             {/* </div> */}
             {/* </div> */}
+
+            {/* Official Website */}
+            <div>
+                <h4 className="text-xs font-bold text-text-tertiary uppercase tracking-wider mb-2 px-1">Website</h4>
+                <div className="bg-bg-item-surface rounded-xl border border-border-subtle p-4 flex items-center justify-between">
+                    <div className="flex items-center gap-3">
+                        <div className="w-10 h-10 rounded-lg bg-indigo-500/10 flex items-center justify-center text-indigo-400 shrink-0">
+                            <Globe size={20} />
+                        </div>
+                        <div>
+                            <h5 className="text-sm font-bold text-text-primary">Official Website</h5>
+                            <p className="text-xs text-text-secondary mt-0.5">godojo.ai</p>
+                        </div>
+                    </div>
+                    <a
+                        href="https://godojo.ai/"
+                        onClick={(e) => handleOpenLink(e, "https://godojo.ai/")}
+                        className="whitespace-nowrap px-4 py-2 bg-bg-component hover:bg-bg-elevated border border-border-subtle text-text-primary text-xs font-bold rounded-lg transition-all flex items-center gap-2"
+                    >
+                        <Globe size={14} />
+                        Visit Website
+                    </a>
+                </div>
+            </div>
 
             {/* Credits */}
             <div className="pt-4 border-t border-border-subtle">

@@ -74,6 +74,15 @@ export const ProviderCard: React.FC<ProviderCardProps> = ({
         if (preferredModel) setSelectedModel(preferredModel);
     }, [preferredModel]);
 
+    // Auto-fetch models on mount if a key is already stored
+    const hasFetchedOnMount = useRef(false);
+    useEffect(() => {
+        if (hasStoredKey && fetchedModels.length === 0) {
+            hasFetchedOnMount.current = true;
+            handleFetchModels();
+        }
+    }, [hasStoredKey]);
+
     // Close dropdown on outside click
     useEffect(() => {
         const handleClickOutside = (event: MouseEvent) => {

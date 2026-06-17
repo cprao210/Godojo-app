@@ -78,14 +78,14 @@ function cleanText(text: string): string {
  */
 function normalizeSpeaker(speaker: string): string {
     const lower = speaker.toLowerCase();
-    if (lower === 'interviewer' || lower === 'speaker') {
+    if (lower === 'client' || lower === 'speaker') {
         return 'Speaker';
     }
     if (lower === 'user' || lower === 'me') {
         return 'You';
     }
     if (lower === 'assistant' || lower === 'natively') {
-        return 'Natively';
+        return 'Godojo.ai';
     }
     // Keep original if it looks like a name
     return speaker;

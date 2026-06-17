@@ -4,15 +4,20 @@ import { app, ipcMain, shell, dialog, desktopCapturer, systemPreferences, Browse
 import { AppState } from "./main"
 import { GEMINI_FLASH_MODEL } from "./IntelligenceManager"
 import { DatabaseManager } from "./db/DatabaseManager"; // Import Database Manager
+import { SupabaseReadService } from "./db/SupabaseReadService";
 import * as path from "path";
 import * as fs from "fs";
 import { AudioDevices } from "./audio/AudioDevices";
 import { detectTavilyIntent, extractAllowedCompaniesFromAttendees } from "./services/TavilyIntentDetector";
-import { searchCompany, buildCompanyContextBlock, clearCompanyCache } from "./services/TavilyManager";
+import { searchCompany, clearCompanyCache } from "./services/TavilyManager";
 
-
+import { buildCompanyContextBlock } from './utils/salesBriefUtils';
 import { RECOGNITION_LANGUAGES, AI_RESPONSE_LANGUAGES } from "./config/languages"
 import { LiveAnalysisData } from "../src/types/liveAnalysis";
+import {
+  buildOwnCompanyBlockFromOrchestrator,
+  hydrateOrchestratorFromContext,
+} from './utils/companyKnowledge';
 
 export function initializeIpcHandlers(appState: AppState): void {
   const safeHandle = (channel: string, listener: (event: any, ...args: any[]) => Promise<any> | any) => {
@@ -286,7 +291,6 @@ export function initializeIpcHandlers(appState: AppState): void {
     return { success: true };
   });
 
-
   // Generate suggestion from transcript - Natively-style text-only reasoning
   safeHandle("generate-suggestion", async (event, context: string, lastQuestion: string) => {
     try {
@@ -321,9 +325,19 @@ export function initializeIpcHandlers(appState: AppState): void {
 
   safeHandle("gemini-chat", async (event, message: string, imagePaths?: string[], context?: string, options?: { skipSystemPrompt?: boolean }) => {
     try {
-      const result = await appState.processingHelper.getLLMHelper().chatWithGemini(message, imagePaths, context, options?.skipSystemPrompt);
+      // Own-company context from orchestrator (seller perspective)
+      const ownCompanyBlock = buildOwnCompanyBlockFromOrchestrator(appState.getKnowledgeOrchestrator());
+      // Prospect intelligence from Tavily (prospect perspective) — unchanged
+      const prospectBlock = buildCompanyContextBlock(appState.getCompanyIntel());
+      // Combine: own context first (highest priority), then prospect, then caller-supplied context
+      let enrichedContext = context ?? '';
+      if (prospectBlock) enrichedContext = prospectBlock + (enrichedContext ? '\n\n' + enrichedContext : '');
+      if (ownCompanyBlock) enrichedContext = ownCompanyBlock + (enrichedContext ? '\n\n' + enrichedContext : '');
+      const result = await appState.processingHelper.getLLMHelper().chatWithGemini(message, imagePaths, enrichedContext, options?.skipSystemPrompt);
 
       console.log(`[IPC] gemini - chat response: `, result ? result.substring(0, 50) : "(empty)");
+      console.log("(gemini-chat) ownCompanyBlock: ", ownCompanyBlock);
+      console.log("(gemini-chat) prospectBlock: ", prospectBlock);
 
       // Don't process empty responses
       if (!result || result.trim().length === 0) {
@@ -347,7 +361,8 @@ export function initializeIpcHandlers(appState: AppState): void {
         text: message,
         speaker: 'user',
         timestamp: Date.now(),
-        final: true
+        final: true,
+        source: 'chat'
       }, true);
 
       // 2. Add assistant response and set as last message
@@ -395,23 +410,52 @@ export function initializeIpcHandlers(appState: AppState): void {
         text: message,
         speaker: 'user',
         timestamp: Date.now(),
-        final: true
+        final: true,
+        source: 'chat'
       }, true);
 
       let fullResponse = "";
 
+      // Own-company context (seller) — injected when knowledge mode is OFF.
+      // When knowledge mode is ON, LLMHelper.streamChat calls processQuestion()
+      // which builds a richer block (identity + retrieved asset chunks) internally.
+      // Injecting the metadata-only block here on top would duplicate identity info
+      // and push asset chunks further from the question in the context window.
+      try {
+        const orchestrator = appState.getKnowledgeOrchestrator();
+        const knowledgeModeOn = orchestrator?.isKnowledgeMode?.() ?? false;
+        if (!knowledgeModeOn) {
+          const ownCompanyBlock = buildOwnCompanyBlockFromOrchestrator(orchestrator);
+          if (ownCompanyBlock) {
+            context = context ? `${ownCompanyBlock}\n\n${context}` : ownCompanyBlock;
+          }
+        }
+        // Prospect intelligence (Tavily) — always injected regardless of knowledge mode
+        const prospectBlock = buildCompanyContextBlock(appState.getCompanyIntel());
+        if (prospectBlock) {
+          context = context ? `${prospectBlock}\n\n${context}` : prospectBlock;
+        }
+        console.log("gemini-chat-stream context block: ", context);
+      } catch (ctxErr) {
+        console.warn("[IPC] Failed to inject company context:", ctxErr);
+      }
+
       // Context Injection for "Answer" button (100s rolling window)
       if (!context) {
-        // User requested 100 seconds of context for the answer button
-        // Logic: If no explicit context provided (like from manual override), auto-inject from IntelligenceManager
         try {
-          const autoContext = intelligenceManager.getFormattedContext(100);
-          if (autoContext && autoContext.trim().length > 0) {
-            context = autoContext;
-            console.log(`[IPC] Auto - injected 100s context for gemini - chat - stream(${context.length} chars)`);
+          const fullSessionContext = intelligenceManager.getFullSessionContext();
+          if (fullSessionContext && fullSessionContext.trim().length > 0) {
+            context = fullSessionContext;
+            console.log(`[IPC] Auto-injected full session transcript for chat (${context.length} chars)`);
+          } else {
+            const autoContext = intelligenceManager.getFormattedContext(300);
+            if (autoContext && autoContext.trim().length > 0) {
+              context = autoContext;
+              console.log(`[IPC] Auto-injected 300s context fallback for chat (${context.length} chars)`);
+            }
           }
         } catch (ctxErr) {
-          console.warn("[IPC] Failed to auto-inject context:", ctxErr);
+          console.warn("[IPC] Failed to auto-inject transcript context:", ctxErr);
         }
       }
 
@@ -443,22 +487,6 @@ export function initializeIpcHandlers(appState: AppState): void {
         }
         // ── End Tavily enrichment ────────────────────────────────────────────────
 
-        // ── Scope Guard ──────────────────────────────────────────────────────────
-        // Refuse questions unrelated to: meeting context, transcript, meeting brief,
-        // or inferred participant companies. If no meeting is active at all, block
-        // before the LLM is ever called.
-        const _scopeRefusal =
-          "I can only help with questions related to this meeting, the transcript, the meeting brief, or companies of the participants. This question is outside that scope.";
-
-        const _isInMeetingSession = _tavilyAllowedCompanies.size > 0 || (context && context.trim().length > 0);
-
-        if (!_isInMeetingSession) {
-          console.log("[IPC] Scope guard: no active meeting context, refusing general question.");
-          event.sender.send("gemini-stream-token", _scopeRefusal);
-          event.sender.send("gemini-stream-done");
-          return null;
-        }
-
         // Inject inferred company names so the LLM knows the allowed scope
         if (_tavilyAllowedCompanies.size > 0) {
           const _companyList = [..._tavilyAllowedCompanies].join(", ");
@@ -469,7 +497,6 @@ export function initializeIpcHandlers(appState: AppState): void {
             "--- END PARTICIPANT INFO ---";
           context = context ? `${context}${_participantNote}` : _participantNote;
         }
-        // ── End Scope Guard ──────────────────────────────────────────────────────
 
         // USE streamChat which handles routing
         const stream = llmHelper.streamChat(message, imagePaths, context, options?.skipSystemPrompt ? "" : undefined);
@@ -512,16 +539,29 @@ export function initializeIpcHandlers(appState: AppState): void {
   });
 
   safeHandle("live-analysis-stream", async (event, prompt: string) => {
+
     try {
-      console.log('[IPC] live-analysis-stream called, prompt length:', prompt.length);
+
+      const promptKb = (prompt.length / 1024).toFixed(1);
+      console.log(`[IPC] live-analysis-stream called — prompt: ${prompt.length} chars (${promptKb} KB)`);
 
       const llmHelper = appState.processingHelper.getLLMHelper();
       const myStreamId = ++_analysisStreamId;
 
-      // Use a direct call that doesn't use the shared stream infrastructure
-      const result = await llmHelper.chatWithGemini(prompt, undefined, undefined, true);
+      appState.setLiveAnalysisInFlight(true);
+      let result: any;
+      try {
+        // Use the dedicated live analysis method (Gemini Flash → Claude → OpenAI, Groq excluded).
+        // This bypasses the general-purpose fallback waterfall and enforces temperature=0.1
+        // for schema-accurate extraction. Falls back to chatWithGemini if the method is absent
+        // (older LLMHelper version during hot-reload).
+        result = typeof llmHelper.generateLiveAnalysis === 'function'
+          ? await llmHelper.generateLiveAnalysis(prompt)
+          : await llmHelper.chatWithGemini(prompt, undefined, undefined, true);
+      } finally {
+        appState.setLiveAnalysisInFlight(false);
+      }
 
-      // Send result as a single chunk (non-streaming for analysis)
       if (_analysisStreamId === myStreamId) {
         event.sender.send('live-analysis-result', result);
       }
@@ -1674,18 +1714,30 @@ export function initializeIpcHandlers(appState: AppState): void {
   });
 
   safeHandle("get-recent-meetings", async () => {
-    // Fetch from SQLite (limit 50)
+    if (SupabaseReadService.isAvailable()) {
+      try {
+        return await SupabaseReadService.getRecentMeetings(50);
+      } catch (e) {
+        console.warn('[ipc] get-recent-meetings: Supabase failed, falling back to SQLite:', e);
+      }
+    }
     return DatabaseManager.getInstance().getRecentMeetings(50);
   });
 
   // Add this handler
-  safeHandle("get-display-name", async (_, role: 'user' | 'interviewer' | 'assistant') => {
+  safeHandle("get-display-name", async (_, role: 'user' | 'client' | 'assistant') => {
     const intelligenceManager = appState.getIntelligenceManager();
     return intelligenceManager.getDisplayNameForSpeaker(role);
   });
 
   safeHandle("get-meeting-details", async (event, id) => {
-    // Helper to fetch full details
+    if (SupabaseReadService.isAvailable()) {
+      try {
+        return await SupabaseReadService.getMeetingDetails(id);
+      } catch (e) {
+        console.warn('[ipc] get-meeting-details: Supabase failed, falling back to SQLite:', e);
+      }
+    }
     return DatabaseManager.getInstance().getMeetingDetails(id);
   });
 
@@ -1718,7 +1770,7 @@ export function initializeIpcHandlers(appState: AppState): void {
 
   });
 
-  safeHandle("update-speaker-names", async (_, names: { user: string; interviewer: string }) => {
+  safeHandle("update-speaker-names", async (_, names: { user: string; client: string }) => {
     const intelligenceManager = appState.getIntelligenceManager();
     // Need to add method to update speaker names in SessionTracker
     (intelligenceManager as any).updateSpeakerNames?.(names);
@@ -1745,7 +1797,7 @@ export function initializeIpcHandlers(appState: AppState): void {
 
   safeHandle("get-speaker-names", async () => {
     return appState.getIntelligenceManager().getSpeakerNameMap?.()
-      ?? { user: 'Me', interviewer: 'Them' };
+      ?? { user: 'Me', client: 'Them' };
   });
 
   safeHandle("seed-demo", async () => {
@@ -2147,7 +2199,13 @@ export function initializeIpcHandlers(appState: AppState): void {
 
       // 2. Build prompt
       const contextString = buildSalesBriefContext(eventData);
-      const userMessage = `Generate a complete sales meeting brief for this meeting:\n\n${contextString}`;
+      const ownCompanyBlock = buildOwnCompanyBlockFromOrchestrator(appState.getKnowledgeOrchestrator());
+      const fullContext = ownCompanyBlock
+        ? `${ownCompanyBlock}\n\n${contextString}`
+        : contextString;
+      const userMessage = `Generate a complete sales meeting brief for this meeting:\n\n${fullContext}`;
+
+      console.log("Sales Brief PRMOPT: ", userMessage);
 
       const llmHelper = appState.processingHelper.getLLMHelper();
       const myStreamId = ++_salesBriefStreamId;
@@ -2193,7 +2251,7 @@ export function initializeIpcHandlers(appState: AppState): void {
   // Company Intelligence (Sales Brief v2)
   // ==========================================
 
-  safeHandle("fetch-company-intel", async (_, payload: { companyName: string; domain?: string }) => {
+  safeHandle("fetch-company-intel", async (_, payload: { companyName: string; domain?: string; forceRefresh?: boolean }) => {
     try {
       const { CredentialsManager } = require('./services/CredentialsManager');
       const cm = CredentialsManager.getInstance();
@@ -2203,78 +2261,142 @@ export function initializeIpcHandlers(appState: AppState): void {
         return { success: false, error: 'No Tavily API key configured. Add one in Settings → AI Providers.' };
       }
 
-      const { companyName, domain } = payload;
-      const companyQuery = domain ? `${companyName} site:${domain}` : companyName;
+      const { companyName, domain, forceRefresh = false } = payload;
+
+      // ── Persistence: return cached intel unless forceRefresh ─────────────
+      const cacheKey = `company_intel:${(domain || companyName).toLowerCase()}`;
+      const db = DatabaseManager.getInstance();
+      if (!forceRefresh) {
+        const cached = db.getAppState(cacheKey);
+        if (cached) {
+          try {
+            const parsed = JSON.parse(cached);
+            console.log(`[IPC] fetch-company-intel: returning cached intel for "${companyName}"`);
+            return { success: true, intel: parsed, fromCache: true };
+          } catch {
+            // corrupt cache — fall through to fresh fetch
+            db.deleteAppState(cacheKey);
+          }
+        }
+      }
 
       // Run parallel Tavily searches for different intel categories
-      const tavilySearch = async (query: string, maxResults = 3): Promise<any[]> => {
+      const tavilySearch = async (query: string, maxResults = 4): Promise<any[]> => {
         const res = await fetch('https://api.tavily.com/search', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${tavilyApiKey}` },
-          body: JSON.stringify({ query, max_results: maxResults, search_depth: 'basic', include_answer: true }),
+          body: JSON.stringify({
+            query,
+            max_results: maxResults,
+            search_depth: 'advanced',   // advanced depth gives higher-quality, more specific results
+            include_answer: true,
+            include_domains: domain ? [domain] : [],  // bias results toward the known domain when available
+          }),
         });
         if (!res.ok) throw new Error(`Tavily error: ${res.status}`);
         const data = await res.json() as any;
         return data.results || [];
       };
 
-      const [overviewResults, fundingResults, newsResults, leadershipResults, competitorResults] = await Promise.allSettled([
-        tavilySearch(`${companyName} company overview founded headquarters employees industry`),
-        tavilySearch(`${companyName} funding valuation investors series revenue`),
-        tavilySearch(`${companyName} latest news announcements 2024 2025`, 4),
-        tavilySearch(`${companyName} leadership CEO CRO CMO executive changes`),
-        tavilySearch(`${companyName} competitors products customers clients`),
+      // When a domain is known, anchor every query to it so same-name companies
+      // from different industries cannot bleed into the results.
+      const domainAnchor = domain ? `"${domain}"` : `"${companyName}"`;
+      const nameAndDomain = domain ? `"${companyName}" ${domain}` : `"${companyName}"`;
+
+      const linkedinSlug = domain ? domain.split('.')[0] : companyName.toLowerCase().replace(/\s+/g, '-');
+      const linkedinQuery = `site:linkedin.com/company ${linkedinSlug} "${companyName}"`;
+
+      const [overviewResults, fundingResults, newsResults, leadershipResults, competitorResults, linkedinResults] = await Promise.allSettled([
+        tavilySearch(`${nameAndDomain} company overview founded headquarters employees industry`),
+        tavilySearch(`${nameAndDomain} funding valuation investors series revenue`),
+        tavilySearch(`${nameAndDomain} latest news announcements 2024 2025`, 5),
+        tavilySearch(`${nameAndDomain} leadership CEO CRO CMO executive team`),
+        tavilySearch(`${nameAndDomain} competitors alternative products market`, 5),
+        tavilySearch(linkedinQuery, 2),
       ]);
 
       const extract = (r: PromiseSettledResult<any[]>) => r.status === 'fulfilled' ? r.value : [];
 
+      // Extract the LinkedIn company URL from results if found
+      const linkedinHits = extract(linkedinResults);
+      const linkedinPageUrl = linkedinHits
+        .map((r: any) => r.url as string)
+        .find((u: string) => u?.includes('linkedin.com/company/')) || null;
+
       // Aggregate all snippets and pass to LLM for structured extraction
+      const linkedinSnippets = extract(linkedinResults).map((r: any) => r.content || r.snippet || '').filter(Boolean);
+
+      // Format each result as "[SOURCE: url]\ncontent" so the LLM can judge
+      // whether a snippet actually refers to the target company.
+      const formatResults = (results: any[]) =>
+        results
+          .filter((r: any) => (r.content || r.snippet || '').trim())
+          .map((r: any) => `[SOURCE: ${r.url || 'unknown'}]\n${(r.content || r.snippet || '').trim()}`)
+          .join('\n\n');
+
       const allSnippets = [
-        ...extract(overviewResults).map((r: any) => r.content || r.snippet || ''),
-        ...extract(fundingResults).map((r: any) => r.content || r.snippet || ''),
-        ...extract(newsResults).map((r: any) => r.content || r.snippet || ''),
-        ...extract(leadershipResults).map((r: any) => r.content || r.snippet || ''),
-        ...extract(competitorResults).map((r: any) => r.content || r.snippet || ''),
+        '=== GENERAL OVERVIEW ===',
+        formatResults(extract(overviewResults)),
+        '=== FUNDING & FINANCIALS ===',
+        formatResults(extract(fundingResults)),
+        '=== RECENT NEWS ===',
+        formatResults(extract(newsResults)),
+        '=== LEADERSHIP ===',
+        formatResults(extract(leadershipResults)),
+        '=== COMPETITORS & MARKET ===',
+        formatResults(extract(competitorResults)),
+        ...(extract(linkedinResults).length
+          ? ['=== LINKEDIN (authoritative for headcount, description, founding year) ===',
+            formatResults(extract(linkedinResults))]
+          : []),
       ].filter(Boolean).join('\n\n---\n\n');
 
       const llmHelper = appState.processingHelper.getLLMHelper();
 
-      const extractionPrompt = `You are a company research analyst. Extract structured company intelligence from the web search snippets below and return ONLY a valid JSON object. No markdown, no explanation.
+      const extractionPrompt = `You are a company research analyst. Extract structured intelligence ONLY about the specific company identified below. Return ONLY a valid JSON object — no markdown, no explanation.
 
-Company: ${companyName}${domain ? `\nWebsite: ${domain}` : ''}
-
-Web search snippets:
-${allSnippets.slice(0, 8000)}
-
-Return this exact JSON structure (use null for unknown fields, never omit a key):
-{
-  "companyName": string,
-  "website": string | null,
-  "foundedYear": number | null,
-  "companyAge": number | null,
-  "founders": string[] | null,
-  "headquarters": string | null,
-  "employeeCount": string | null,
-  "industry": string | null,
-  "revenue": string | null,
-  "valuation": string | null,
-  "fundingStage": string | null,
-  "latestFundingNews": string | null,
-  "investors": string[] | null,
-  "keyProducts": string[] | null,
-  "competitors": string[] | null,
-  "recentNews": [{ "headline": string, "date": string | null }] | null,
-  "leadershipChanges": [{ "name": string, "role": string, "date": string | null }] | null,
-  "linkedinUrl": string | null,
-  "businessModel": string | null,
-  "geographicPresence": string[] | null,
-  "topCustomers": string[] | null
-}
-
-RULES:
-- All string[] fields MUST be JSON arrays (e.g. ["Alice", "Bob"]), never comma-separated strings
-- Use null for any field you cannot determine from the snippets
-- Do not add keys beyond those listed above`;
+      TARGET COMPANY: ${companyName}${domain ? `\nTARGET WEBSITE/DOMAIN: ${domain}` : ''}
+      
+      CRITICAL DISAMBIGUATION RULES (read before processing):
+      1. Many companies share similar names. Every data point you extract MUST be verifiable from a snippet whose [SOURCE] URL belongs to ${domain ? `"${domain}"` : `"${companyName}"`} or a known authority (LinkedIn, Crunchbase, Bloomberg, TechCrunch, Reuters, etc.) that explicitly mentions ${companyName}${domain ? ` or ${domain}` : ''}.
+      2. If a snippet's source domain does not match and does not clearly reference the TARGET company by full name, IGNORE that snippet entirely — do not extract from it.
+      3. For "competitors": list only companies that are described as direct competitors TO ${companyName} in the snippets. Do NOT list companies that merely appear in the same snippet by coincidence. If no competitors can be confirmed, return null.
+      4. For "recentNews": include only headlines that are explicitly about ${companyName}${domain ? ` (${domain})` : ''}. If the same company name could refer to multiple organizations, only include news where the snippet's source URL or content confirms it is about the target. If unsure, exclude it — null is better than wrong data.
+      5. Never infer or hallucinate. If a field cannot be directly confirmed from the provided snippets, set it to null.
+      
+      Web search snippets (each prefixed with its source URL):
+      ${allSnippets.slice(0, 10000)}
+      
+      Return this exact JSON structure (use null for unknown fields, never omit a key):
+      {
+        "companyName": string,
+        "website": string | null,
+        "foundedYear": number | null,
+        "companyAge": number | null,
+        "founders": string[] | null,
+        "headquarters": string | null,
+        "employeeCount": string | null,
+        "industry": string | null,
+        "revenue": string | null,
+        "valuation": string | null,
+        "fundingStage": string | null,
+        "latestFundingNews": string | null,
+        "investors": string[] | null,
+        "keyProducts": string[] | null,
+        "competitors": string[] | null,
+        "recentNews": [{ "headline": string, "date": string | null, "source": string | null }] | null,
+        "leadershipChanges": [{ "name": string, "role": string, "date": string | null }] | null,
+        "linkedinUrl": string | null,
+        "businessModel": string | null,
+        "geographicPresence": string[] | null,
+        "topCustomers": string[] | null
+      }
+      
+      ADDITIONAL RULES:
+      - All string[] fields MUST be JSON arrays, never comma-separated strings
+      - "recentNews[].source" should be the domain of the article URL (e.g. "techcrunch.com")
+      - Use null for any field you cannot confirm from the snippets
+      - Do not add keys beyond those listed above`;
 
       const raw = await llmHelper.chatWithGemini(extractionPrompt, undefined, undefined, false);
       if (!raw) return { success: false, error: 'LLM extraction failed' };
@@ -2289,6 +2411,11 @@ RULES:
         const match = clean.match(/\{[\s\S]+\}/);
         if (match) intel = JSON.parse(match[0]);
         else return { success: false, error: 'Could not parse company intelligence' };
+      }
+
+      // Prefer the directly-found LinkedIn URL over whatever the LLM extracted
+      if (linkedinPageUrl && (!intel.linkedinUrl || !intel.linkedinUrl.includes('linkedin.com/company/'))) {
+        intel.linkedinUrl = linkedinPageUrl;
       }
 
       // Attach raw news snippets for the "Recent News" click-through
@@ -2339,10 +2466,327 @@ RULES:
         }
       }
 
+      // Persist intel so re-opening doesn't re-fetch
+      try {
+        db.setAppState(cacheKey, JSON.stringify(intel));
+        console.log(`[IPC] fetch-company-intel: cached intel for "${companyName}" (key: ${cacheKey})`);
+      } catch (e) {
+        console.warn('[IPC] fetch-company-intel: failed to cache intel:', e);
+      }
+
+      // Auto-store in appState so chat assistant can access it immediately without a separate set-company-intel call
+      appState.setCompanyIntel(intel);
+      console.log(`[IPC] fetch-company-intel: auto-stored intel in appState for "${companyName}"`);
+
       return { success: true, intel };
     } catch (error: any) {
       console.error('[IPC] fetch-company-intel error:', error);
       return { success: false, error: error.message || 'Unknown error' };
+    }
+  });
+
+  // ==========================================
+  // Company Context IPC Handlers
+  // ==========================================
+
+  safeHandle('company:getContext', async () => {
+    try {
+      // Prefer DB (source of truth); fall back to SettingsManager for pre-migration data
+      const dbCtx = DatabaseManager.getInstance().getCompanyContext();
+      if (dbCtx) return dbCtx;
+      const { SettingsManager } = require('./services/SettingsManager');
+      return SettingsManager.getInstance().get('companyContext') ?? null;
+    } catch (error: any) {
+      return null;
+    }
+  });
+
+  safeHandle('company:saveContext', async (_, data: any) => {
+    try {
+      const db = DatabaseManager.getInstance();
+
+      // 1. Persist identity + value prop
+      db.saveCompanyContext(data);
+
+      // 2. Sync assets: upsert all in draft, delete removed
+      const existing = db.getCompanyContext();
+      const incomingAssetIds = new Set<string>((data.assets ?? []).map((a: any) => a.id));
+      for (const a of (existing?.assets ?? [])) {
+        if (!incomingAssetIds.has(a.id)) {
+          db.deleteAssetFiles(a.id);      // clean up files + chunks
+          db.deleteCompanyAsset(a.id);
+        }
+      }
+      for (const asset of (data.assets ?? [])) {
+        db.upsertCompanyAsset({ id: asset.id, type: asset.type, label: asset.label, status: 'processing' });
+
+        // Only process file if this is a new upload (fileData present in draft)
+        if (asset.fileData && asset.fileName && asset.mimeType) {
+          const fileBuffer = Buffer.from(asset.fileData, 'base64');
+          db.saveAssetFile(asset.id, asset.fileName, asset.mimeType, fileBuffer);
+
+          // Kick off chunking + embedding in background
+          setImmediate(async () => {
+            try {
+              const { extractTextFromBuffer } = require('./utils/documentParser');
+              const { estimateTokens } = require('./rag');
+
+              const rawText: string = await extractTextFromBuffer(fileBuffer, asset.mimeType);
+
+              const MAX_TOKENS = 400;
+              const sentences = rawText.split(/(?<=[.!?])\s+/);
+              const chunks: Array<{ index: number; text: string; tokenCount: number }> = [];
+              let current = '';
+              let idx = 0;
+              for (const sentence of sentences) {
+                const combined = current ? `${current} ${sentence}` : sentence;
+                if (estimateTokens(combined) > MAX_TOKENS && current) {
+                  chunks.push({ index: idx++, text: current.trim(), tokenCount: estimateTokens(current) });
+                  current = sentence;
+                } else {
+                  current = combined;
+                }
+              }
+              if (current.trim()) {
+                chunks.push({ index: idx, text: current.trim(), tokenCount: estimateTokens(current) });
+              }
+
+              db.saveAssetChunks(asset.id, chunks);
+
+              const ragManager = appState.getRAGManager?.();
+              if (!ragManager) {
+                // RAG pipeline not available — mark error so the UI shows the real state
+                // instead of silently lying with 'mapped'
+                db.upsertCompanyAsset({ id: asset.id, type: asset.type, label: asset.label, status: 'error' });
+                console.warn(`[IPC] company:saveContext — ragManager not available, skipping embeddings for asset ${asset.id}`);
+                // Still link chunks (text-only, no embeddings) to the orchestrator
+                try {
+                  const orchestrator = appState.getKnowledgeOrchestrator();
+                  if (orchestrator && typeof orchestrator.ingestDocument === 'function') {
+                    await orchestrator.ingestDocument({ id: asset.id, type: asset.type, label: asset.label, mimeType: asset.mimeType });
+                  }
+                } catch (_) { }
+                return;
+              }
+
+              const pipeline = ragManager.getEmbeddingPipeline();
+
+              // Bug 2 fix: wait for the pipeline to finish initializing before embedding
+              try {
+                await pipeline.waitForReady(20000);
+              } catch (readyErr: any) {
+                console.error(`[IPC] company:saveContext — embedding pipeline not ready for asset ${asset.id}:`, readyErr.message);
+                db.upsertCompanyAsset({ id: asset.id, type: asset.type, label: asset.label, status: 'error' });
+                try {
+                  const orchestrator = appState.getKnowledgeOrchestrator();
+                  if (orchestrator && typeof orchestrator.ingestDocument === 'function') {
+                    await orchestrator.ingestDocument({ id: asset.id, type: asset.type, label: asset.label, mimeType: asset.mimeType });
+                  }
+                } catch (_) { }
+                return;
+              }
+
+              let embeddingsFailed = 0;
+              const storedChunks = db.getAssetChunksWithoutEmbeddings(asset.id);
+              for (const c of storedChunks) {
+                try {
+                  const vector = await pipeline.getEmbedding(c.chunk_text);
+                  const blob = Buffer.from(new Float32Array(vector).buffer);
+                  db.saveAssetChunkEmbedding(c.id, blob);
+                } catch (embErr: any) {
+                  embeddingsFailed++;
+                  console.warn(`[IPC] company:saveContext — embedding failed for chunk ${c.id}:`, embErr.message);
+                }
+              }
+
+              // Only mark 'mapped' if all embeddings succeeded
+              const finalStatus = embeddingsFailed === 0 ? 'mapped' : 'error';
+              if (embeddingsFailed > 0) {
+                console.error(`[IPC] company:saveContext — ${embeddingsFailed}/${storedChunks.length} chunks failed to embed for asset ${asset.id}`);
+              }
+              db.upsertCompanyAsset({ id: asset.id, type: asset.type, label: asset.label, status: finalStatus });
+
+              // [NEW] Link the indexed document to the orchestrator
+              try {
+                const orchestrator = appState.getKnowledgeOrchestrator();
+                if (orchestrator && typeof orchestrator.ingestDocument === 'function') {
+                  // Do NOT pass extractedText here — chunks + embeddings are already
+                  // written to DB above. Passing extractedText triggers Mode A which
+                  // re-embeds inline and produces null embeddings if the pipeline is
+                  // momentarily busy, making all chunks invisible to semantic search.
+                  // Mode B (no extractedText) reads the already-embedded chunks from DB.
+                  await orchestrator.ingestDocument({
+                    id: asset.id,
+                    type: asset.type,        // 'sales_deck' | 'product_specs' | 'case_studies' | 'custom'
+                    label: asset.label,
+                    mimeType: asset.mimeType,
+                  });
+                  console.log(`[IPC] company:saveContext — orchestrator.ingestDocument linked for asset ${asset.id}`);
+                }
+              } catch (ingestErr: any) {
+                // Non-fatal: orchestrator link failure should not block the save flow
+                console.warn(`[IPC] company:saveContext — orchestrator.ingestDocument failed for ${asset.id}:`, ingestErr.message);
+              }
+
+              console.log(`[IPC] company:saveContext — asset ${asset.id} fully indexed`);
+            } catch (indexErr: any) {
+              console.error(`[IPC] company:saveContext — indexing failed for asset ${asset.id}:`, indexErr.message);
+              db.upsertCompanyAsset({ id: asset.id, type: asset.type, label: asset.label, status: 'error' });
+            }
+          });
+        } else {
+          // Existing asset already in DB — just keep its current status
+          // Re-upsert with 'mapped' since it was already processed before
+          db.upsertCompanyAsset({ id: asset.id, type: asset.type, label: asset.label, status: 'mapped' });
+        }
+      }
+
+      // 3. Sync targetPersonas (unchanged)
+      const incomingPersonaIds = new Set<string>((data.targetPersonas ?? []).map((p: any) => p.id));
+      for (const p of (existing?.targetPersonas ?? [])) {
+        if (!incomingPersonaIds.has(p.id)) db.deleteCompanyPersona(p.id);
+      }
+      (data.targetPersonas ?? []).forEach((p: any, i: number) => db.upsertCompanyPersona(p, i));
+
+      // 4. Sync competitors (unchanged)
+      const incomingCompetitorIds = new Set<string>((data.competitors ?? []).map((c: any) => c.id));
+      for (const c of (existing?.competitors ?? [])) {
+        if (!incomingCompetitorIds.has(c.id)) db.deleteCompanyCompetitor(c.id);
+      }
+      (data.competitors ?? []).forEach((c: any, i: number) => db.upsertCompanyCompetitor(c, i));
+
+      // 5. Mirror to SettingsManager (unchanged)
+      const { SettingsManager } = require('./services/SettingsManager');
+      SettingsManager.getInstance().set('companyContext', data);
+
+      // 6. Synchronize the updated context into the KnowledgeOrchestrator.
+      //    We re-read from DB so the orchestrator always sees the canonical persisted state
+      //    (including any asset status changes written above).
+      //    hydrateOrchestratorFromContext skips re-ingesting asset documents — those
+      //    are linked separately via orchestrator.ingestDocument in company:uploadAsset.
+      try {
+        const orchestrator = appState.getKnowledgeOrchestrator();
+        if (orchestrator) {
+          const freshCtx = DatabaseManager.getInstance().getCompanyContext();
+          hydrateOrchestratorFromContext(orchestrator, freshCtx);
+          console.log('[IPC] company:saveContext — orchestrator synchronized');
+        }
+      } catch (orchErr: any) {
+        console.warn('[IPC] company:saveContext — orchestrator sync failed (non-fatal):', orchErr.message);
+      }
+
+      return { success: true };
+    } catch (error: any) {
+      return { success: false, error: error.message };
+    }
+  });
+
+  safeHandle('company:selectFile', async () => {
+    try {
+      const result: any = await dialog.showOpenDialog({
+        properties: ['openFile'],
+        filters: [
+          { name: 'Documents', extensions: ['pdf', 'doc', 'docx', 'ppt', 'pptx'] }
+        ]
+      });
+      if (result.canceled || result.filePaths.length === 0) {
+        return { cancelled: true };
+      }
+      const fp: string = result.filePaths[0];
+      const { statSync } = require('fs');
+      const { basename } = require('path');
+      const stat = statSync(fp);
+      return { success: true, filePath: fp, fileName: basename(fp), fileSize: stat.size };
+    } catch (error: any) {
+      return { success: false, error: error.message };
+    }
+  });
+
+  safeHandle('company:uploadAsset', async (_, type: string, filePath: string) => {
+    try {
+      const fs = require('fs');
+      const path = require('path');
+
+      if (!fs.existsSync(filePath)) {
+        return { success: false, error: 'File not found. Please re-select the file.' };
+      }
+
+      const fileData: Buffer = fs.readFileSync(filePath);
+      const fileName: string = path.basename(filePath);
+      const ext = path.extname(fileName).toLowerCase().slice(1);
+      const MIME_MAP: Record<string, string> = {
+        pdf: 'application/pdf',
+        doc: 'application/msword',
+        docx: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+        ppt: 'application/vnd.ms-powerpoint',
+        pptx: 'application/vnd.openxmlformats-officedocument.presentationml.presentation',
+      };
+      const mimeType = MIME_MAP[ext] ?? 'application/octet-stream';
+
+      const LABEL_MAP: Record<string, string> = {
+        sales_deck: 'Sales Deck',
+        product_specs: 'Product Specs',
+        case_studies: 'Case Studies',
+        custom: 'Custom Asset',
+      };
+
+      const asset = {
+        id: `${type}-${Date.now()}`,
+        type,
+        label: LABEL_MAP[type] ?? type,
+        status: 'pending',           // not 'mapped' yet — saved on commit
+        lastUpdated: new Date().toISOString(),
+        // Hold file in draft as base64 — never touches DB here
+        fileData: fileData.toString('base64'),
+        fileName,
+        mimeType,
+      };
+
+      // NOTE: No DB write here. File lives in frontend draft until
+      // user clicks "Save Intelligence Base" → company:saveContext.
+      return { success: true, asset };
+    } catch (error: any) {
+      console.error('[IPC] company:uploadAsset error:', error);
+      return { success: false, error: error.message };
+    }
+  });
+
+  safeHandle('company:deleteAsset', async (_, assetId: string) => {
+    try {
+      DatabaseManager.getInstance().deleteAssetFiles(assetId);
+      return { success: true };
+    } catch (error: any) {
+      return { success: false, error: error.message };
+    }
+  });
+
+  safeHandle('company:syncAsset', async (_assetId: string) => {
+    // NOTE: No DB write here. The frontend updates the asset status in draft.
+    // The updated status is committed to DB when the user clicks "Save Intelligence Base".
+    return { success: true, status: 'mapped' };
+  });
+
+  safeHandle('company:setPersonaEngine', async (_enabled: boolean) => {
+    // NOTE: No DB write here. The toggle updates the frontend draft only.
+    // Committed to DB on "Save Intelligence Base" via company:saveContext.
+    return { success: true };
+  });
+
+  safeHandle('company:getCompleteness', async () => {
+    try {
+      const { SettingsManager } = require('./services/SettingsManager');
+      const sm = SettingsManager.getInstance();
+      const ctx = sm.get('companyContext');
+      if (!ctx) return 0;
+      const checks = [
+        !!(ctx.identity?.name && ctx.identity?.industry),
+        (ctx.coreValueProposition ?? '').trim().length > 20,
+        (ctx.assets ?? []).some((a: any) => a.status === 'mapped'),
+        !!ctx.identity?.personaEngineEnabled,
+      ];
+      return Math.round((checks.filter(Boolean).length / 4) * 100);
+    } catch {
+      return 0;
     }
   });
 
@@ -2362,8 +2806,16 @@ RULES:
       const contextString = buildFollowUpEmailPromptInput(input);
 
       // Build prompts
-      const geminiPrompt = `${FOLLOWUP_EMAIL_PROMPT}\n\nMEETING DETAILS:\n${contextString}`;
-      const groqPrompt = `${GROQ_FOLLOWUP_EMAIL_PROMPT}\n\nMEETING DETAILS:\n${contextString}`;
+      const ownCompanyBlock = buildOwnCompanyBlockFromOrchestrator(appState.getKnowledgeOrchestrator());
+      const prospectBlock = buildCompanyContextBlock(appState.getCompanyIntel());
+      let enrichedContext = contextString;
+      if (prospectBlock) enrichedContext = `${prospectBlock}\n\n${enrichedContext}`;
+      if (ownCompanyBlock) enrichedContext = `${ownCompanyBlock}\n\n${enrichedContext}`;
+      const geminiPrompt = `${FOLLOWUP_EMAIL_PROMPT}\n\nMEETING DETAILS:\n${enrichedContext}`;
+      const groqPrompt = `${GROQ_FOLLOWUP_EMAIL_PROMPT}\n\nMEETING DETAILS:\n${enrichedContext}`;
+
+      console.log("=> generate follow-up email (geminiPrompt): ", geminiPrompt);
+      console.log("=> generate follow-up email (groqPrompt): ", groqPrompt);
 
       // Use chatWithGemini with alternateGroqMessage for fallback
       const emailBody = await llmHelper.chatWithGemini(geminiPrompt, undefined, undefined, true, groqPrompt);
@@ -2382,6 +2834,21 @@ RULES:
     } catch (error: any) {
       console.error("Error extracting emails:", error);
       return [];
+    }
+  });
+
+  safeHandle("set-company-intel", async (_, intel: Record<string, any> | null) => {
+    try {
+      appState.setCompanyIntel(intel);
+      // Broadcast to all renderer windows so NativelyInterface can update its state
+      const { BrowserWindow } = require('electron');
+      BrowserWindow.getAllWindows().forEach((win: any) => {
+        win.webContents.send('company-intel-updated', intel);
+      });
+      return { success: true };
+    } catch (error: any) {
+      console.error('[IPC] set-company-intel error:', error);
+      return { success: false, error: error.message };
     }
   });
 
@@ -2625,7 +3092,7 @@ RULES:
       if (!orchestrator) {
         return { success: false, error: 'Knowledge engine not initialized. Please ensure API keys are configured.' };
       }
-      const { DocType } = require('../premium/electron/knowledge/types');
+      const { DocType } = require('./premium/knowledge/types');
       const result = await orchestrator.ingestDocument(filePath, DocType.RESUME);
       return result;
     } catch (error: any) {
@@ -2654,20 +3121,26 @@ RULES:
     }
   });
 
+  safeHandle("profile:get-mode", async () => {
+    try {
+      const orchestrator = appState.getKnowledgeOrchestrator();
+      if (!orchestrator) return { active: false };
+      return { active: orchestrator.isKnowledgeMode() };
+    } catch {
+      return { active: false };
+    }
+  });
+
   safeHandle("profile:set-mode", async (_, enabled: boolean) => {
     try {
-      // Premium gate: only allow enabling profile mode with active license
-      if (enabled) {
-        const { LicenseManager } = require('../premium/electron/services/LicenseManager');
-        if (!LicenseManager.getInstance().isPremium()) {
-          return { success: false, error: 'Pro license required. Please activate a license key to use Profile Intelligence features.' };
-        }
-      }
       const orchestrator = appState.getKnowledgeOrchestrator();
       if (!orchestrator) {
         return { success: false, error: 'Knowledge engine not initialized' };
       }
       orchestrator.setKnowledgeMode(enabled);
+      // Persist so the toggle survives app restarts
+      const { CredentialsManager } = require('./services/CredentialsManager');
+      CredentialsManager.getInstance().setKnowledgeModeActive(enabled);
       return { success: true };
     } catch (error: any) {
       return { success: false, error: error.message };
@@ -2680,7 +3153,7 @@ RULES:
       if (!orchestrator) {
         return { success: false, error: 'Knowledge engine not initialized' };
       }
-      const { DocType } = require('../premium/electron/knowledge/types');
+      const { DocType } = require('./premium/knowledge/types');
       orchestrator.deleteDocumentsByType(DocType.RESUME);
       return { success: true };
     } catch (error: any) {
@@ -2723,17 +3196,11 @@ RULES:
 
   safeHandle("profile:upload-jd", async (_, filePath: string) => {
     try {
-      // Premium gate
-      const { LicenseManager } = require('../premium/electron/services/LicenseManager');
-      if (!LicenseManager.getInstance().isPremium()) {
-        return { success: false, error: 'Pro license required. Please activate a license key to use Profile Intelligence features.' };
-      }
-      console.log(`[IPC] profile:upload-jd called with: ${filePath}`);
       const orchestrator = appState.getKnowledgeOrchestrator();
       if (!orchestrator) {
         return { success: false, error: 'Knowledge engine not initialized. Please ensure API keys are configured.' };
       }
-      const { DocType } = require('../premium/electron/knowledge/types');
+      const { DocType } = require('./premium/knowledge/types');
       const result = await orchestrator.ingestDocument(filePath, DocType.JD);
       return result;
     } catch (error: any) {
@@ -2748,7 +3215,7 @@ RULES:
       if (!orchestrator) {
         return { success: false, error: 'Knowledge engine not initialized' };
       }
-      const { DocType } = require('../premium/electron/knowledge/types');
+      const { DocType } = require('./premium/knowledge/types');
       orchestrator.deleteDocumentsByType(DocType.JD);
       return { success: true };
     } catch (error: any) {
@@ -2758,11 +3225,6 @@ RULES:
 
   safeHandle("profile:research-company", async (_, companyName: string) => {
     try {
-      // Premium gate
-      const { LicenseManager } = require('../premium/electron/services/LicenseManager');
-      if (!LicenseManager.getInstance().isPremium()) {
-        return { success: false, error: 'Pro license required. Please activate a license key to use Profile Intelligence features.' };
-      }
       const orchestrator = appState.getKnowledgeOrchestrator();
       if (!orchestrator) {
         return { success: false, error: 'Knowledge engine not initialized' };
@@ -2774,7 +3236,7 @@ RULES:
       const cm = CredentialsManager.getInstance();
       const tavilyApiKey = cm.getTavilyApiKey();
       if (tavilyApiKey) {
-        const { TavilySearchProvider } = require('../premium/electron/knowledge/TavilySearchProvider');
+        const { TavilySearchProvider } = require('./premium/knowledge/TavilySearchProvider');
         engine.setSearchProvider(new TavilySearchProvider(tavilyApiKey));
       }
 
@@ -2801,11 +3263,7 @@ RULES:
 
   safeHandle("profile:generate-negotiation", async (_, force: boolean = false) => {
     try {
-      // Premium gate
-      const { LicenseManager } = require('../premium/electron/services/LicenseManager');
-      if (!LicenseManager.getInstance().isPremium()) {
-        return { success: false, error: 'Pro license required. Please activate a license key to use Profile Intelligence features.' };
-      }
+
       const orchestrator = appState.getKnowledgeOrchestrator();
       if (!orchestrator) {
         return { success: false, error: 'Knowledge engine not initialized' };
@@ -3035,6 +3493,31 @@ RULES:
       return { success: true };
     } catch (error: any) {
       console.error('[ipc] supabase:force-backfill failed:', error);
+      return { success: false, error: error?.message ?? String(error) };
+    }
+  });
+
+  // Fire-and-forget reconciliation pass: compares local SQLite rows against
+  // their Supabase mirror and re-enqueues anything missing/divergent. Runs in
+  // the background; the UI polls supabase:get-mirror-status for progress.
+  safeHandle('supabase:sync-audit', async () => {
+    try {
+      const { SupabaseSyncAudit } = require('./db/SupabaseSyncAudit');
+      const { DatabaseManager } = require('./db/DatabaseManager');
+      const { SupabaseClientManager } = require('./db/SupabaseClient');
+      if (!SupabaseClientManager.isConfigured?.()) {
+        return { success: false, error: 'Supabase not configured or not signed in' };
+      }
+      const db = DatabaseManager.getInstance().getDb();
+      if (!db) return { success: false, error: 'SQLite not ready' };
+
+      // Fire-and-forget; UI can poll supabase:get-mirror-status.
+      SupabaseSyncAudit.run(db).catch((err: any) => {
+        console.warn('[ipc] supabase:sync-audit run error:', err);
+      });
+      return { success: true };
+    } catch (error: any) {
+      console.error('[ipc] supabase:sync-audit failed:', error);
       return { success: false, error: error?.message ?? String(error) };
     }
   });
