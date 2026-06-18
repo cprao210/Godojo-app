@@ -315,23 +315,21 @@ export const LiveAnalysisContent: React.FC<LiveAnalysisContentProps> = ({
         });
     };
 
-    const [struckSignals, setStruckSignals] = useState<Set<number>>(new Set());
-    const toggleSignal = (index: number) => {
-        setStruckSignals(prev => {
-            const next = new Set(prev);
-            if (next.has(index)) next.delete(index); else next.add(index);
-            return next;
+    const [dismissedSignals, setDismissedSignals] = useState<Set<number>>(new Set());
+    const dismissSignal = (index: number) => {
+        setDismissedSignals(prev => { const n = new Set(prev); n.add(index); return n; });
+    };
+
+    const restoreSignal = (index: number) => {
+        setDismissedSignals(prev => {
+            const n = new Set(prev);
+            n.delete(index);
+            if (n.size === 0) setDismissedDrawerOpen(false);
+            return n;
         });
     };
 
-    const [expandedSignals, setExpandedSignals] = useState<Set<number>>(new Set());
-    const toggleSignalExpand = (index: number) => {
-        setExpandedSignals(prev => {
-            const next = new Set(prev);
-            if (next.has(index)) next.delete(index); else next.add(index);
-            return next;
-        });
-    };
+    const [dismissedDrawerOpen, setDismissedDrawerOpen] = useState(false);
 
     // ── Divider ──────────────────────────────────────────────────────────────
     const Divider = () => (
@@ -381,6 +379,167 @@ export const LiveAnalysisContent: React.FC<LiveAnalysisContentProps> = ({
         ? 'bg-slate-100 text-slate-600 border border-slate-200'
         : 'bg-white/10 text-white/40';
 
+    // ── Shared signal list renderer ───────────────────────────────────────────
+    // Used in both the tabbed overlay (activeTab='signals') and the accordion
+    // (calledFromAnalysisTab) so dismiss/restore state is shared.
+    const renderSignalList = (paddingCls = 'pt-2 pb-2') => {
+        const archived = analysisData.signals.filter((_, i) => dismissedSignals.has(i));
+        // keep original indices so dismiss/restore keys stay correct
+        const activeWithIdx = analysisData.signals.map((s, i) => ({ s, i })).filter(({ i }) => !dismissedSignals.has(i));
+        const archivedWithIdx = analysisData.signals.map((s, i) => ({ s, i })).filter(({ i }) => dismissedSignals.has(i));
+
+        const stripe = (cat: string, intensity: string) => {
+            if (cat === 'negative' && intensity === 'high') return 'bg-red-500';
+            if (cat === 'negative') return 'bg-amber-400';
+            if (cat === 'positive') return 'bg-emerald-400';
+            return 'bg-white/20';
+        };
+        const intensityDot = (cat: string, intensity: string) => {
+            if (cat === 'negative' && intensity === 'high') return 'bg-red-500';
+            if (cat === 'negative') return 'bg-amber-400';
+            return 'bg-white/20';
+        };
+
+        return (
+            <div className={paddingCls}>
+                {/* ── Active signals ── */}
+                {activeWithIdx.length === 0 && archived.length === 0 && (
+                    <p className="text-[12px] text-white/30 text-center py-10">No signals detected yet</p>
+                )}
+
+                <AnimatePresence initial={false}>
+                    {activeWithIdx.map(({ s: signal, i }) => (
+                        <motion.div
+                            key={i}
+                            initial={{ opacity: 0, height: 'auto' }}
+                            animate={{ opacity: 1, height: 'auto' }}
+                            exit={{ opacity: 0, height: 0, overflow: 'hidden' }}
+                            transition={{ duration: 0.18, ease: [0.16, 1, 0.3, 1] }}
+                            className="border-b border-white/[0.04] last:border-b-0"
+                        >
+                            <div className="flex items-start gap-2 py-2.5 px-4 group">
+                                <div className={`w-0.5 self-stretch rounded-full shrink-0 mt-0.5 ${stripe(signal.category, signal.intensity)}`} />
+                                <div className="flex-1 min-w-0">
+                                    <div className="flex items-center justify-between gap-1 mb-1">
+                                        <div className="flex flex-wrap gap-1.5">
+                                            {signal.signal_type.slice(0, 2).map((type, j) => (
+                                                <span
+                                                    key={j}
+                                                    className={`text-[10px] font-bold uppercase tracking-wider px-1 py-0.5 rounded border ${calledFromAnalysisTab
+                                                        ? signalTypeColorThemed(type, isLight)
+                                                        : signalTypeColor(type)
+                                                        }`}
+                                                >
+                                                    {type.replace(/_/g, ' ')}
+                                                </span>
+                                            ))}
+                                        </div>
+                                        <div className="flex items-center gap-2 shrink-0">
+                                            <div className={`w-1.5 h-1.5 rounded-full ${intensityDot(signal.category, signal.intensity)}`} />
+                                            <span className={`text-[10px] capitalize ${calledFromAnalysisTab ? (isLight ? 'text-slate-400' : 'text-white/25') : 'text-white/25'}`}>
+                                                {signal.intensity}
+                                            </span>
+                                            {/* Dismiss button — appears on hover */}
+                                            <button
+                                                onClick={() => dismissSignal(i)}
+                                                title="Dismiss signal"
+                                                className="opacity-0 group-hover:opacity-100 transition-opacity ml-1 w-4 h-4 rounded flex items-center justify-center hover:bg-white/10"
+                                                style={{ color: 'rgba(255,255,255,0.25)' }}
+                                            >
+                                                <svg width="8" height="8" viewBox="0 0 8 8" fill="none">
+                                                    <path d="M1 1l6 6M7 1L1 7" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" />
+                                                </svg>
+                                            </button>
+                                        </div>
+                                    </div>
+                                    <p className={`text-[12px] italic ${calledFromAnalysisTab ? (isLight ? 'text-slate-600' : 'text-white/60') : 'text-white/60'}`}>
+                                        "{signal.quote}"
+                                    </p>
+                                </div>
+                            </div>
+                            {/* Ask now — always visible */}
+                            {signal.ask_now && (
+                                <div className="flex items-start gap-1 pb-2.5 pl-5">
+                                    <span className={`text-[8px] font-bold uppercase tracking-wider mt-0.5 shrink-0 ${calledFromAnalysisTab ? (isLight ? 'text-blue-500' : 'text-blue-400/60') : 'text-blue-400/60'}`}>
+                                        Ask
+                                    </span>
+                                    <p className={`text-[10px] leading-snug ${calledFromAnalysisTab ? (isLight ? 'text-blue-600' : 'text-blue-300/70') : 'text-blue-300/70'}`}>
+                                        {signal.ask_now}
+                                    </p>
+                                </div>
+                            )}
+                        </motion.div>
+                    ))}
+                </AnimatePresence>
+
+                {/* ── Dismissed drawer ── */}
+                {archivedWithIdx.length > 0 && (
+                    <div className="mt-2 mx-3">
+                        <button
+                            onClick={() => setDismissedDrawerOpen(v => !v)}
+                            className="w-full flex items-center gap-2 px-3 py-2 rounded-lg transition-colors hover:bg-white/[0.04]"
+                            style={{ border: '1px solid rgba(255,255,255,0.06)' }}
+                        >
+                            <span className="text-[10px] font-bold uppercase tracking-wider text-white/25 flex-1 text-left">
+                                Dismissed
+                            </span>
+                            <span
+                                className="text-[9px] font-bold px-1.5 py-0.5 rounded-full"
+                                style={{ background: 'rgba(255,255,255,0.06)', color: 'rgba(255,255,255,0.3)' }}
+                            >
+                                {archivedWithIdx.length}
+                            </span>
+                            <span className="text-white/20">
+                                {dismissedDrawerOpen
+                                    ? <ChevronUp size={11} />
+                                    : <ChevronDown size={11} />}
+                            </span>
+                        </button>
+
+                        <AnimatePresence initial={false}>
+                            {dismissedDrawerOpen && (
+                                <motion.div
+                                    initial={{ height: 0, opacity: 0 }}
+                                    animate={{ height: 'auto', opacity: 1 }}
+                                    exit={{ height: 0, opacity: 0 }}
+                                    transition={{ duration: 0.2, ease: [0.16, 1, 0.3, 1] }}
+                                    className="overflow-hidden"
+                                >
+                                    <div className="pt-1 pb-2 space-y-0">
+                                        {archivedWithIdx.map(({ s: signal, i }) => (
+                                            <div
+                                                key={i}
+                                                className="flex items-start gap-2 px-3 py-2 opacity-40 hover:opacity-70 transition-opacity"
+                                            >
+                                                <div className={`w-0.5 self-stretch rounded-full shrink-0 mt-0.5 ${stripe(signal.category, signal.intensity)}`} />
+                                                <div className="flex-1 min-w-0">
+                                                    <p className="text-[11px] italic text-white/50 line-clamp-1">
+                                                        "{signal.quote}"
+                                                    </p>
+                                                    {signal.ask_now && (
+                                                        <p className="text-[10px] text-blue-300/50 mt-0.5">{signal.ask_now}</p>
+                                                    )}
+                                                </div>
+                                                {/* Restore button */}
+                                                <button
+                                                    onClick={() => restoreSignal(i)}
+                                                    title="Restore signal"
+                                                    className="shrink-0 text-[9px] font-bold uppercase tracking-wider text-white/30 hover:text-white/60 transition-colors px-1.5 py-1 rounded hover:bg-white/[0.06] mt-0.5"
+                                                >
+                                                    ↩
+                                                </button>
+                                            </div>
+                                        ))}
+                                    </div>
+                                </motion.div>
+                            )}
+                        </AnimatePresence>
+                    </div>
+                )}
+            </div>
+        );
+    };
+
     // ── Tabbed overlay render (FloatingIntelligencePanel context) ─────────────
     // When activeTab is provided we render one section at a time, always fully
     // expanded — no accordion, no scrolling across sections.
@@ -416,78 +575,7 @@ export const LiveAnalysisContent: React.FC<LiveAnalysisContentProps> = ({
                         </div>
                     );
                 case 'signals':
-                    if (analysisData.signals.length === 0) {
-                        return (
-                            <div className="flex flex-col items-center justify-center h-full py-16 gap-2">
-                                <p className="text-[12px] text-white/30">No signals detected yet</p>
-                            </div>
-                        );
-                    }
-                    return (
-                        <div className="pt-2 pb-6">
-                            {analysisData.signals.map((signal, i) => {
-                                const isPositive = signal.category === 'positive';
-                                const isNegHigh = signal.category === 'negative' && signal.intensity === 'high';
-                                const isNeg = signal.category === 'negative';
-                                const isExpanded = expandedSignals.has(i);
-                                const stripe = isNegHigh ? 'bg-red-500' : isNeg ? 'bg-amber-400' : isPositive ? 'bg-emerald-400' : 'bg-white/20';
-                                const intensityDot = isNegHigh ? 'bg-red-500' : isNeg ? 'bg-amber-400' : 'bg-white/20';
-                                return (
-                                    <motion.div
-                                        key={i}
-                                        initial={{ opacity: 0, x: -2 }}
-                                        animate={{ opacity: 1, x: 0 }}
-                                        transition={{ delay: i * 0.04 }}
-                                        className="border-b border-white/[0.04] last:border-b-0"
-                                    >
-                                        <div
-                                            className="flex items-start gap-2 py-2.5 px-4 cursor-pointer hover:bg-white/[0.02] transition-colors"
-                                            onClick={() => toggleSignalExpand(i)}
-                                        >
-                                            <div className={`w-0.5 self-stretch rounded-full shrink-0 mt-0.5 ${stripe}`} />
-                                            <div className="flex-1 min-w-0">
-                                                <div className="flex items-center justify-between gap-1 mb-1">
-                                                    <div className="flex flex-wrap gap-1.5">
-                                                        {signal.signal_type.slice(0, 2).map((type, j) => (
-                                                            <span key={j} className={`text-[10px] font-bold uppercase tracking-wider px-1 py-0.5 rounded border ${signalTypeColor(type)}`}>
-                                                                {type.replace(/_/g, ' ')}
-                                                            </span>
-                                                        ))}
-                                                    </div>
-                                                    <div className="flex items-center gap-2 shrink-0">
-                                                        <div className={`w-1.5 h-1.5 rounded-full ${intensityDot}`} />
-                                                        <span className="text-[10px] capitalize text-white/25">{signal.intensity}</span>
-                                                    </div>
-                                                </div>
-                                                <p className="text-[12px] italic text-white/60">"{signal.quote}"</p>
-                                            </div>
-                                            {!isPositive && (
-                                                <span className="shrink-0 mt-1 text-white/20">
-                                                    {isExpanded ? <ChevronUp size={12} /> : <ChevronDown size={12} />}
-                                                </span>
-                                            )}
-                                        </div>
-                                        <AnimatePresence initial={false}>
-                                            {!isPositive && isExpanded && (
-                                                <motion.div
-                                                    initial={{ height: 0, opacity: 0 }}
-                                                    animate={{ height: 'auto', opacity: 1 }}
-                                                    exit={{ height: 0, opacity: 0 }}
-                                                    transition={{ duration: 0.18, ease: [0.16, 1, 0.3, 1] }}
-                                                    className="overflow-hidden"
-                                                >
-                                                    <div className="flex items-start gap-1 pb-2 pl-7">
-                                                        <span className="text-[8px] font-bold uppercase tracking-wider mt-0.5 shrink-0 text-blue-400/60">Ask</span>
-                                                        <p className="text-[10px] leading-snug text-blue-300/70">{signal.ask_now}</p>
-                                                    </div>
-                                                </motion.div>
-                                            )}
-                                        </AnimatePresence>
-                                    </motion.div>
-                                );
-                            })}
-                        </div>
-                    );
+                    return renderSignalList('pt-2 pb-4');
                 case 'objections':
                     if (analysisData.objections.length === 0) {
                         return (
@@ -683,140 +771,12 @@ export const LiveAnalysisContent: React.FC<LiveAnalysisContentProps> = ({
                     <SectionToggle
                         icon={<Zap size={13} />}
                         title="Buying Signals"
-                        badge={`${analysisData.signals.length}`}
+                        badge={`${analysisData.signals.length - dismissedSignals.size > 0 ? analysisData.signals.length - dismissedSignals.size : analysisData.signals.length}`}
                         badgeColor={signalsBadge()}
                         themed={calledFromAnalysisTab}
                         isLight={isLight}
                     >
-                        <div className="mt-1">
-                            {analysisData.signals.map((signal, i) => {
-                                const isPositive = signal.category === 'positive';
-                                const isNegHigh = signal.category === 'negative' && signal.intensity === 'high';
-                                const isNeg = signal.category === 'negative';
-                                const isStruck = struckSignals.has(i);
-                                const isExpanded = expandedSignals.has(i);
-
-                                // Left stripe colour
-                                const stripe = isNegHigh
-                                    ? 'bg-red-500'
-                                    : isNeg
-                                        ? 'bg-amber-400'
-                                        : isPositive
-                                            ? 'bg-emerald-400'
-                                            : 'bg-white/20';
-
-                                const rowBg = calledFromAnalysisTab
-                                    ? isLight ? 'hover:bg-slate-50' : 'hover:bg-white/[0.02]'
-                                    : 'hover:bg-white/[0.02]';
-
-                                const dividerCls = calledFromAnalysisTab
-                                    ? isLight ? 'border-slate-100' : 'border-white/[0.04]'
-                                    : 'border-white/[0.04]';
-
-                                const quoteCls = isStruck
-                                    ? calledFromAnalysisTab
-                                        ? isLight ? 'line-through text-slate-300' : 'line-through text-white/20'
-                                        : 'line-through text-white/20'
-                                    : calledFromAnalysisTab
-                                        ? isLight ? 'text-slate-600' : 'text-white/60'
-                                        : 'text-white/60';
-
-                                const askTextCls = calledFromAnalysisTab
-                                    ? isLight ? 'text-blue-600' : 'text-blue-300/70'
-                                    : 'text-blue-300/70';
-
-                                const askLabelCls = calledFromAnalysisTab
-                                    ? isLight ? 'text-blue-500' : 'text-blue-400/60'
-                                    : 'text-blue-400/60';
-
-                                const intensityDot = isNegHigh ? 'bg-red-500' : isNeg ? 'bg-amber-400' : 'bg-white/20';
-                                const intensityText = calledFromAnalysisTab
-                                    ? isLight ? 'text-slate-400' : 'text-white/25'
-                                    : 'text-white/25';
-
-                                return (
-                                    <motion.div
-                                        key={i}
-                                        initial={{ opacity: 0, x: -2 }}
-                                        animate={{ opacity: 1, x: 0 }}
-                                        transition={{ delay: i * 0.04 }}
-                                        className={`border-b last:border-b-0 ${dividerCls} ${isStruck ? 'opacity-50' : ''}`}
-                                    >
-                                        {/* Main row — click to expand ask_now, positive signals click to strike */}
-                                        <div
-                                            className={`flex items-start gap-2 py-2 cursor-pointer transition-colors ${rowBg}`}
-                                            onClick={() => {
-                                                // if (isPositive) toggleSignal(i);
-                                                // else 
-                                                toggleSignalExpand(i);
-                                            }}
-                                        >
-                                            {/* Left colour stripe */}
-                                            <div className={`w-0.5 self-stretch rounded-full shrink-0 mt-0.5 ${stripe}`} />
-
-                                            <div className="flex-1 min-w-0">
-                                                {/* Type badges + intensity */}
-                                                <div className="flex items-center justify-between gap-1 mb-1">
-                                                    <div className="flex flex-wrap gap-1.5">
-                                                        {signal.signal_type.slice(0, 2).map((type, j) => (
-                                                            <span
-                                                                key={j}
-                                                                className={`text-[10px] font-bold uppercase tracking-wider px-1 py-0.5 rounded border ${calledFromAnalysisTab
-                                                                    ? signalTypeColorThemed(type, isLight)
-                                                                    : signalTypeColor(type)
-                                                                    }`}
-                                                            >
-                                                                {type.replace(/_/g, ' ')}
-                                                            </span>
-                                                        ))}
-                                                    </div>
-                                                    <div className="flex items-center gap-2 shrink-0">
-                                                        {/* Strike toggle hint for positive signals */}
-                                                        {/* {isPositive && (
-                                                            <span className={`text-[10px] ${askLabelCls}`}>
-                                                                {isStruck ? '↩ restore' : '✓ done'}
-                                                            </span>
-                                                        )} */}
-                                                        <div className={`w-1.5 h-1.5 rounded-full ${intensityDot}`} />
-                                                        <span className={`text-[10px] capitalize ${intensityText}`}>{signal.intensity}</span>
-                                                    </div>
-                                                </div>
-
-                                                {/* Quote — 2-line clamp */}
-                                                <p className={`text-[12px] italic ${quoteCls}`}>
-                                                    "{signal.quote}"
-                                                </p>
-                                            </div>
-
-                                            {/* Expand chevron for non-positive signals */}
-                                            {!isPositive && (
-                                                <span className={`shrink-0 mt-1 ${intensityText}`}>
-                                                    {isExpanded ? <ChevronUp size={12} /> : <ChevronDown size={12} />}
-                                                </span>
-                                            )}
-                                        </div>
-
-                                        {/* Ask now — collapsed by default, expands on click */}
-                                        <AnimatePresence initial={false}>
-                                            {!isPositive && isExpanded && (
-                                                <motion.div
-                                                    initial={{ height: 0, opacity: 0 }}
-                                                    animate={{ height: 'auto', opacity: 1 }}
-                                                    exit={{ height: 0, opacity: 0 }}
-                                                    transition={{ duration: 0.18, ease: [0.16, 1, 0.3, 1] }}
-                                                    className="overflow-hidden"
-                                                >
-                                                    <div className="flex items-start gap-1 pb-2 pl-3">
-                                                        <span className={`text-[8px] font-bold uppercase tracking-wider mt-0.5 shrink-0 ${askLabelCls}`}>Ask</span>
-                                                        <p className={`text-[10px] leading-snug ${askTextCls}`}>{signal.ask_now}</p>
-                                                    </div>
-                                                </motion.div>
-                                            )}
-                                        </AnimatePresence>
-                                    </motion.div>
-                                );
-                            })}
-                        </div>
+                        {renderSignalList('mt-1 -mx-4')}
                     </SectionToggle>
                     <Divider />
                 </>
