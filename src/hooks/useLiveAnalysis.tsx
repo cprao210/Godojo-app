@@ -444,6 +444,13 @@ const guardMEDDICField = (
   return incoming;
 };
 
+/** Deterministic short id from a quote string — djb2 hash, base-36, 6 chars. */
+const stableId = (quote: string): string => {
+  let h = 5381;
+  for (let i = 0; i < quote.length; i++) h = ((h << 5) + h) ^ quote.charCodeAt(i);
+  return (h >>> 0).toString(36).slice(0, 6);
+};
+
 const mergeWithPrior = (
   incoming: LiveAnalysisData,
   prior: LiveAnalysisData | null
@@ -472,20 +479,29 @@ const mergeWithPrior = (
     competition: guardMEDDICField(incoming.meddic.competition, prior.meddic.competition),
   };
 
-  // ── Objections/Signals: preserve-and-append guard ─────────────────────────
-  // Even with explicit prompt instructions, a model switch or token pressure
-  // can cause prior entries to be dropped. This is the final safety net.
-  const mergedObjections = [...prior.objections];
-  for (const obj of incoming.objections) {
-    const alreadyPresent = mergedObjections.some(p => isSimilar(p.quote, obj.quote));
-    if (!alreadyPresent) mergedObjections.unshift(obj); // newest first
-  }
+  // ── Objections/Signals: preserve-and-prepend guard ────────────────────────
+  // Stamp a stable content-derived id on every item at merge time so that
+  // UI state (checked, dismissed) can key by id instead of array index —
+  // which would shift whenever new items are prepended.
+  // New items are prepended as a batch (not sequential unshifts) to preserve
+  // the LLM's own ordering (index 0 = most recent).
+  const priorObjIds = new Set(prior.objections.map(o => o.id ?? stableId(o.quote)));
+  const newObjections = incoming.objections
+    .filter(obj => !priorObjIds.has(obj.id ?? stableId(obj.quote)))
+    .map(obj => ({ ...obj, id: obj.id ?? stableId(obj.quote) }));
+  const mergedObjections = [
+    ...newObjections,
+    ...prior.objections.map(o => ({ ...o, id: o.id ?? stableId(o.quote) })),
+  ];
 
-  const mergedSignals = [...prior.signals];
-  for (const sig of incoming.signals) {
-    const alreadyPresent = mergedSignals.some(p => isSimilar(p.quote, sig.quote));
-    if (!alreadyPresent) mergedSignals.unshift(sig); // newest first
-  }
+  const priorSigIds = new Set(prior.signals.map(s => s.id ?? stableId(s.quote)));
+  const newSignals = incoming.signals
+    .filter(sig => !priorSigIds.has(sig.id ?? stableId(sig.quote)))
+    .map(sig => ({ ...sig, id: sig.id ?? stableId(sig.quote) }));
+  const mergedSignals = [
+    ...newSignals,
+    ...prior.signals.map(s => ({ ...s, id: s.id ?? stableId(s.quote) })),
+  ];
 
   return {
     bant,

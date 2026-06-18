@@ -306,24 +306,24 @@ export const LiveAnalysisContent: React.FC<LiveAnalysisContentProps> = ({
             .map(s => ({ title: 'Risk Signal', desc: s.ask_now, icon: '⚠' })),
     ];
 
-    const [checkedObjections, setCheckedObjections] = useState<Set<number>>(new Set());
-    const toggleObjection = (index: number) => {
+    const [checkedObjections, setCheckedObjections] = useState<Set<string>>(new Set());
+    const toggleObjection = (id: string) => {
         setCheckedObjections(prev => {
             const next = new Set(prev);
-            if (next.has(index)) next.delete(index); else next.add(index);
+            if (next.has(id)) next.delete(id); else next.add(id);
             return next;
         });
     };
 
-    const [dismissedSignals, setDismissedSignals] = useState<Set<number>>(new Set());
-    const dismissSignal = (index: number) => {
-        setDismissedSignals(prev => { const n = new Set(prev); n.add(index); return n; });
+    const [dismissedSignals, setDismissedSignals] = useState<Set<string>>(new Set());
+    const dismissSignal = (id: string) => {
+        setDismissedSignals(prev => { const n = new Set(prev); n.add(id); return n; });
     };
 
-    const restoreSignal = (index: number) => {
+    const restoreSignal = (id: string) => {
         setDismissedSignals(prev => {
             const n = new Set(prev);
-            n.delete(index);
+            n.delete(id);
             if (n.size === 0) setDismissedDrawerOpen(false);
             return n;
         });
@@ -383,10 +383,8 @@ export const LiveAnalysisContent: React.FC<LiveAnalysisContentProps> = ({
     // Used in both the tabbed overlay (activeTab='signals') and the accordion
     // (calledFromAnalysisTab) so dismiss/restore state is shared.
     const renderSignalList = (paddingCls = 'pt-2 pb-2') => {
-        const archived = analysisData.signals.filter((_, i) => dismissedSignals.has(i));
-        // keep original indices so dismiss/restore keys stay correct
-        const activeWithIdx = analysisData.signals.map((s, i) => ({ s, i })).filter(({ i }) => !dismissedSignals.has(i));
-        const archivedWithIdx = analysisData.signals.map((s, i) => ({ s, i })).filter(({ i }) => dismissedSignals.has(i));
+        const activeSignals = analysisData.signals.filter(s => !dismissedSignals.has(s.id ?? s.quote));
+        const archivedSignals = analysisData.signals.filter(s => dismissedSignals.has(s.id ?? s.quote));
 
         const stripe = (cat: string, intensity: string) => {
             if (cat === 'negative' && intensity === 'high') return 'bg-red-500';
@@ -403,14 +401,14 @@ export const LiveAnalysisContent: React.FC<LiveAnalysisContentProps> = ({
         return (
             <div className={paddingCls}>
                 {/* ── Active signals ── */}
-                {activeWithIdx.length === 0 && archived.length === 0 && (
+                {activeSignals.length === 0 && (
                     <p className="text-[12px] text-white/30 text-center py-10">No signals detected yet</p>
                 )}
 
                 <AnimatePresence initial={false}>
-                    {activeWithIdx.map(({ s: signal, i }) => (
+                    {activeSignals.map(signal => (
                         <motion.div
-                            key={i}
+                            key={signal.id ?? signal.quote}
                             initial={{ opacity: 0, height: 'auto' }}
                             animate={{ opacity: 1, height: 'auto' }}
                             exit={{ opacity: 0, height: 0, overflow: 'hidden' }}
@@ -441,7 +439,7 @@ export const LiveAnalysisContent: React.FC<LiveAnalysisContentProps> = ({
                                             </span>
                                             {/* Dismiss button — appears on hover */}
                                             <button
-                                                onClick={() => dismissSignal(i)}
+                                                onClick={() => dismissSignal(signal.id ?? signal.quote)}
                                                 title="Dismiss signal"
                                                 className="opacity-0 group-hover:opacity-100 transition-opacity ml-1 w-4 h-4 rounded flex items-center justify-center hover:bg-white/10"
                                                 style={{ color: 'rgba(255,255,255,0.25)' }}
@@ -473,7 +471,7 @@ export const LiveAnalysisContent: React.FC<LiveAnalysisContentProps> = ({
                 </AnimatePresence>
 
                 {/* ── Dismissed drawer ── */}
-                {archivedWithIdx.length > 0 && (
+                {archivedSignals.length > 0 && (
                     <div className="mt-2 mx-3">
                         <button
                             onClick={() => setDismissedDrawerOpen(v => !v)}
@@ -487,7 +485,7 @@ export const LiveAnalysisContent: React.FC<LiveAnalysisContentProps> = ({
                                 className="text-[9px] font-bold px-1.5 py-0.5 rounded-full"
                                 style={{ background: 'rgba(255,255,255,0.06)', color: 'rgba(255,255,255,0.3)' }}
                             >
-                                {archivedWithIdx.length}
+                                {archivedSignals.length}
                             </span>
                             <span className="text-white/20">
                                 {dismissedDrawerOpen
@@ -506,9 +504,9 @@ export const LiveAnalysisContent: React.FC<LiveAnalysisContentProps> = ({
                                     className="overflow-hidden"
                                 >
                                     <div className="pt-1 pb-2 space-y-0">
-                                        {archivedWithIdx.map(({ s: signal, i }) => (
+                                        {archivedSignals.map(signal => (
                                             <div
-                                                key={i}
+                                                key={signal.id ?? signal.quote}
                                                 className="flex items-start gap-2 px-3 py-2 opacity-40 hover:opacity-70 transition-opacity"
                                             >
                                                 <div className={`w-0.5 self-stretch rounded-full shrink-0 mt-0.5 ${stripe(signal.category, signal.intensity)}`} />
@@ -522,7 +520,7 @@ export const LiveAnalysisContent: React.FC<LiveAnalysisContentProps> = ({
                                                 </div>
                                                 {/* Restore button */}
                                                 <button
-                                                    onClick={() => restoreSignal(i)}
+                                                    onClick={() => restoreSignal(signal.id ?? signal.quote)}
                                                     title="Restore signal"
                                                     className="shrink-0 text-[9px] font-bold uppercase tracking-wider text-white/30 hover:text-white/60 transition-colors px-1.5 py-1 rounded hover:bg-white/[0.06] mt-0.5"
                                                 >
@@ -586,8 +584,8 @@ export const LiveAnalysisContent: React.FC<LiveAnalysisContentProps> = ({
                     }
                     return (
                         <div className="px-3 pt-2 pb-4 space-y-1.5">
-                            {analysisData.objections.map((obj, i) => {
-                                const isChecked = checkedObjections.has(i);
+                            {analysisData.objections.map((obj) => {
+                                const isChecked = checkedObjections.has(obj.id ?? obj.quote);
                                 const cardClass = isChecked
                                     ? 'border-white/[0.04] bg-white/[0.01] opacity-50'
                                     : obj.type === 'ae_deferral'
@@ -602,11 +600,11 @@ export const LiveAnalysisContent: React.FC<LiveAnalysisContentProps> = ({
                                     : 'text-white/30 bg-white/5 border-white/10';
                                 return (
                                     <motion.button
-                                        key={i}
+                                        key={obj.id ?? obj.quote}
                                         initial={{ opacity: 0, x: -4 }}
                                         animate={{ opacity: 1, x: 0 }}
-                                        transition={{ delay: i * 0.05 }}
-                                        onClick={() => toggleObjection(i)}
+                                        transition={{ delay: 0 }}
+                                        onClick={() => toggleObjection(obj.id ?? obj.quote)}
                                         className={`w-full flex items-start gap-2.5 px-3 py-2 rounded-xl border text-left transition-all duration-200 ${cardClass}`}
                                     >
                                         <div className={`mt-0.5 w-4 h-4 rounded shrink-0 flex items-center justify-center border transition-all ${checkboxClass}`}>
@@ -771,7 +769,7 @@ export const LiveAnalysisContent: React.FC<LiveAnalysisContentProps> = ({
                     <SectionToggle
                         icon={<Zap size={13} />}
                         title="Buying Signals"
-                        badge={`${analysisData.signals.length - dismissedSignals.size > 0 ? analysisData.signals.length - dismissedSignals.size : analysisData.signals.length}`}
+                        badge={`${Math.max(0, analysisData.signals.length - dismissedSignals.size)}`}
                         badgeColor={signalsBadge()}
                         themed={calledFromAnalysisTab}
                         isLight={isLight}
@@ -795,7 +793,7 @@ export const LiveAnalysisContent: React.FC<LiveAnalysisContentProps> = ({
                     >
                         <div className="space-y-2 mt-1">
                             {analysisData.objections.map((obj, i) => {
-                                const isChecked = checkedObjections.has(i);
+                                const isChecked = checkedObjections.has(obj.id ?? obj.quote);
 
                                 const cardClass = calledFromAnalysisTab
                                     ? isChecked
@@ -835,11 +833,11 @@ export const LiveAnalysisContent: React.FC<LiveAnalysisContentProps> = ({
 
                                 return (
                                     <motion.button
-                                        key={i}
+                                        key={obj.id ?? obj.quote}
                                         initial={{ opacity: 0, x: -4 }}
                                         animate={{ opacity: 1, x: 0 }}
-                                        transition={{ delay: i * 0.05 }}
-                                        onClick={() => toggleObjection(i)}
+                                        transition={{ delay: 0 }}
+                                        onClick={() => toggleObjection(obj.id ?? obj.quote)}
                                         className={`w-full flex items-start gap-2.5 px-3 py-2 rounded-xl border text-left transition-all duration-200 ${cardClass}`}
                                     >
                                         <div className={`mt-0.5 w-4 h-4 rounded shrink-0 flex items-center justify-center border transition-all ${checkboxClass}`}>

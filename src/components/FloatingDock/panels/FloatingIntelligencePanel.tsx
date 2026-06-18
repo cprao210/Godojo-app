@@ -74,6 +74,7 @@ interface FloatingIntelligencePanelProps {
     // Analysis state is owned by FloatingDock and passed down — never lost on remount
     analysisData: LiveAnalysisData | null;
     analysisError: string | null;
+    isOpen: boolean;
     isLoading: boolean;
     showTranscript: boolean;
     onRegenerate: () => void;      // Manual / forced refresh — timer is managed by FloatingDock
@@ -365,10 +366,16 @@ export const FloatingIntelligencePanel: React.FC<FloatingIntelligencePanelProps>
     isUserSpeaking,
     speakerNames,
     panelFirstOpenedAt,
+    isOpen,
 }) => {
     const [showRefreshPicker, setShowRefreshPicker] = useState(false);
     const refreshPickerRef = useRef<HTMLDivElement>(null);
     const [activeTab, setActiveTab] = useState<'meddicc' | 'bant' | 'signals' | 'objections'>('meddicc');
+
+    // Reset to default tab whenever the panel is opened
+    useEffect(() => {
+        if (isOpen) setActiveTab('meddicc');
+    }, [isOpen]);
 
     // Treat an all-missing analysis the same as no data (show WaitingPlaceholder)
     const isAllMissing = (data: LiveAnalysisData) =>
