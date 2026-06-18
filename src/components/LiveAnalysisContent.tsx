@@ -266,6 +266,8 @@ interface LiveAnalysisContentProps {
     /** Pass true when rendered inside the Call Analysis tab (MeetingDetails).
      *  Enables full theme awareness (light/dark). Overlay callers omit this. */
     calledFromAnalysisTab?: boolean;
+    /** When set (overlay context), renders only the active tab section — fully expanded, no accordion. */
+    activeTab?: 'meddicc' | 'bant' | 'signals' | 'objections';
 }
 
 // ─── Main component ────────────────────────────────────────────────────────
@@ -275,6 +277,7 @@ export const LiveAnalysisContent: React.FC<LiveAnalysisContentProps> = ({
     // aiInsight,
     hideBar = null,
     calledFromAnalysisTab = false,
+    activeTab,
 }) => {
     // Only consume theme hook when rendered in analysis tab context.
     // Overlay callers always render dark-glass regardless of system theme.
@@ -377,6 +380,183 @@ export const LiveAnalysisContent: React.FC<LiveAnalysisContentProps> = ({
     const objectionsBadge = isLight
         ? 'bg-slate-100 text-slate-600 border border-slate-200'
         : 'bg-white/10 text-white/40';
+
+    // ── Tabbed overlay render (FloatingIntelligencePanel context) ─────────────
+    // When activeTab is provided we render one section at a time, always fully
+    // expanded — no accordion, no scrolling across sections.
+    if (activeTab !== undefined) {
+        const tabContent = () => {
+            switch (activeTab) {
+                case 'meddicc':
+                    return (
+                        <div className="px-4 pt-3 pb-6 space-y-1.5">
+                            {(['metrics', 'economic_buyer', 'decision_criteria', 'decision_process', 'identify_pain', 'champion', 'competition'] as const).map(key => (
+                                <FieldRow
+                                    key={key}
+                                    label={key.replace(/_/g, ' ').replace(/\b\w/g, c => c.toUpperCase())}
+                                    field={analysisData.meddic[key]}
+                                    themed={false}
+                                    isLight={false}
+                                />
+                            ))}
+                        </div>
+                    );
+                case 'bant':
+                    return (
+                        <div className="px-4 pt-3 pb-6 space-y-1.5">
+                            {(['budget', 'authority', 'need', 'timeline'] as const).map(key => (
+                                <FieldRow
+                                    key={key}
+                                    label={key.charAt(0).toUpperCase() + key.slice(1)}
+                                    field={analysisData.bant[key]}
+                                    themed={false}
+                                    isLight={false}
+                                />
+                            ))}
+                        </div>
+                    );
+                case 'signals':
+                    if (analysisData.signals.length === 0) {
+                        return (
+                            <div className="flex flex-col items-center justify-center h-full py-16 gap-2">
+                                <p className="text-[12px] text-white/30">No signals detected yet</p>
+                            </div>
+                        );
+                    }
+                    return (
+                        <div className="pt-2 pb-6">
+                            {analysisData.signals.map((signal, i) => {
+                                const isPositive = signal.category === 'positive';
+                                const isNegHigh = signal.category === 'negative' && signal.intensity === 'high';
+                                const isNeg = signal.category === 'negative';
+                                const isExpanded = expandedSignals.has(i);
+                                const stripe = isNegHigh ? 'bg-red-500' : isNeg ? 'bg-amber-400' : isPositive ? 'bg-emerald-400' : 'bg-white/20';
+                                const intensityDot = isNegHigh ? 'bg-red-500' : isNeg ? 'bg-amber-400' : 'bg-white/20';
+                                return (
+                                    <motion.div
+                                        key={i}
+                                        initial={{ opacity: 0, x: -2 }}
+                                        animate={{ opacity: 1, x: 0 }}
+                                        transition={{ delay: i * 0.04 }}
+                                        className="border-b border-white/[0.04] last:border-b-0"
+                                    >
+                                        <div
+                                            className="flex items-start gap-2 py-2.5 px-4 cursor-pointer hover:bg-white/[0.02] transition-colors"
+                                            onClick={() => toggleSignalExpand(i)}
+                                        >
+                                            <div className={`w-0.5 self-stretch rounded-full shrink-0 mt-0.5 ${stripe}`} />
+                                            <div className="flex-1 min-w-0">
+                                                <div className="flex items-center justify-between gap-1 mb-1">
+                                                    <div className="flex flex-wrap gap-1.5">
+                                                        {signal.signal_type.slice(0, 2).map((type, j) => (
+                                                            <span key={j} className={`text-[10px] font-bold uppercase tracking-wider px-1 py-0.5 rounded border ${signalTypeColor(type)}`}>
+                                                                {type.replace(/_/g, ' ')}
+                                                            </span>
+                                                        ))}
+                                                    </div>
+                                                    <div className="flex items-center gap-2 shrink-0">
+                                                        <div className={`w-1.5 h-1.5 rounded-full ${intensityDot}`} />
+                                                        <span className="text-[10px] capitalize text-white/25">{signal.intensity}</span>
+                                                    </div>
+                                                </div>
+                                                <p className="text-[12px] italic text-white/60">"{signal.quote}"</p>
+                                            </div>
+                                            {!isPositive && (
+                                                <span className="shrink-0 mt-1 text-white/20">
+                                                    {isExpanded ? <ChevronUp size={12} /> : <ChevronDown size={12} />}
+                                                </span>
+                                            )}
+                                        </div>
+                                        <AnimatePresence initial={false}>
+                                            {!isPositive && isExpanded && (
+                                                <motion.div
+                                                    initial={{ height: 0, opacity: 0 }}
+                                                    animate={{ height: 'auto', opacity: 1 }}
+                                                    exit={{ height: 0, opacity: 0 }}
+                                                    transition={{ duration: 0.18, ease: [0.16, 1, 0.3, 1] }}
+                                                    className="overflow-hidden"
+                                                >
+                                                    <div className="flex items-start gap-1 pb-2 pl-7">
+                                                        <span className="text-[8px] font-bold uppercase tracking-wider mt-0.5 shrink-0 text-blue-400/60">Ask</span>
+                                                        <p className="text-[10px] leading-snug text-blue-300/70">{signal.ask_now}</p>
+                                                    </div>
+                                                </motion.div>
+                                            )}
+                                        </AnimatePresence>
+                                    </motion.div>
+                                );
+                            })}
+                        </div>
+                    );
+                case 'objections':
+                    if (analysisData.objections.length === 0) {
+                        return (
+                            <div className="flex flex-col items-center justify-center h-full py-16 gap-2">
+                                <p className="text-[12px] text-white/30">No objections logged yet</p>
+                            </div>
+                        );
+                    }
+                    return (
+                        <div className="px-4 pt-3 pb-6 space-y-2">
+                            {analysisData.objections.map((obj, i) => {
+                                const isChecked = checkedObjections.has(i);
+                                const cardClass = isChecked
+                                    ? 'border-white/[0.04] bg-white/[0.01] opacity-50'
+                                    : obj.type === 'ae_deferral'
+                                        ? 'border-amber-500/20 bg-amber-500/5 hover:bg-amber-500/8'
+                                        : 'border-white/[0.07] bg-white/[0.02] hover:bg-white/[0.04]';
+                                const checkboxClass = isChecked
+                                    ? 'bg-emerald-500/80 border-emerald-500'
+                                    : 'border-white/20 bg-transparent';
+                                const quoteClass = isChecked ? 'line-through text-white/25' : 'text-white/65';
+                                const tagClass = obj.type === 'ae_deferral'
+                                    ? 'text-amber-600 bg-amber-50 border-amber-200'
+                                    : 'text-white/30 bg-white/5 border-white/10';
+                                return (
+                                    <motion.button
+                                        key={i}
+                                        initial={{ opacity: 0, x: -4 }}
+                                        animate={{ opacity: 1, x: 0 }}
+                                        transition={{ delay: i * 0.05 }}
+                                        onClick={() => toggleObjection(i)}
+                                        className={`w-full flex items-start gap-3 px-3.5 py-3 rounded-xl border text-left transition-all duration-200 ${cardClass}`}
+                                    >
+                                        <div className={`mt-0.5 w-4 h-4 rounded shrink-0 flex items-center justify-center border transition-all ${checkboxClass}`}>
+                                            {isChecked && (
+                                                <svg width="9" height="7" viewBox="0 0 9 7" fill="none">
+                                                    <path d="M1 3.5L3.5 6L8 1" stroke="white" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" />
+                                                </svg>
+                                            )}
+                                        </div>
+                                        <div className="flex-1 min-w-0">
+                                            <p className={`text-[12px] leading-relaxed transition-all ${quoteClass}`}>{obj.quote}</p>
+                                            {!isChecked && obj.type === 'customer_question' && obj.suggested_answer && (
+                                                <div className="flex items-start gap-1.5 rounded-md px-1 py-1.5">
+                                                    <TrendingUp size={9} className="shrink-0 mt-0.5 text-blue-400/70" />
+                                                    <p className="text-[10px] leading-snug text-blue-300/80">{obj.suggested_answer}</p>
+                                                </div>
+                                            )}
+                                            <div className="flex items-center gap-1.5 mt-1">
+                                                <span className={`text-[9px] font-bold uppercase tracking-wider px-1.5 py-0.5 rounded border ${tagClass}`}>
+                                                    {obj.type === 'ae_deferral' ? 'Follow up' : 'Open question'}
+                                                </span>
+                                                <span className="text-[9px] capitalize text-white/20">{obj.owner}</span>
+                                            </div>
+                                        </div>
+                                    </motion.button>
+                                );
+                            })}
+                        </div>
+                    );
+            }
+        };
+
+        return (
+            <div className="flex-1 min-h-0 overflow-y-auto overflow-x-hidden custom-scrollbar no-drag">
+                {tabContent()}
+            </div>
+        );
+    }
 
     return (
         <div className="flex-1 min-h-0 overflow-y-auto overflow-x-hidden custom-scrollbar pb-6 no-drag">
