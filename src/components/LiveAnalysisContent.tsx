@@ -112,7 +112,7 @@ const SectionToggle: React.FC<SectionToggleProps> = ({
             <div className="mb-1">
                 <button
                     onClick={() => setOpen(v => !v)}
-                    className={`w-full flex items-center gap-2.5 px-4 py-3 transition-colors group rounded-lg ${isLight ? 'hover:bg-slate-100' : 'hover:bg-white/[0.03]'
+                    className={`w-full flex items-center gap-2.5 px-4 py-2 transition-colors group rounded-lg ${isLight ? 'hover:bg-slate-100' : 'hover:bg-white/[0.03]'
                         }`}
                 >
                     <span className={`transition-colors ${isLight ? 'text-slate-400 group-hover:text-slate-600' : 'text-white/40 group-hover:text-white/60'}`}>
@@ -140,7 +140,7 @@ const SectionToggle: React.FC<SectionToggleProps> = ({
                             transition={{ duration: 0.2, ease: [0.16, 1, 0.3, 1] }}
                             className="overflow-hidden"
                         >
-                            <div className="px-4 pb-4">{children}</div>
+                            <div className="px-4 pb-2">{children}</div>
                         </motion.div>
                     )}
                 </AnimatePresence>
@@ -153,7 +153,7 @@ const SectionToggle: React.FC<SectionToggleProps> = ({
         <div className="mb-1">
             <button
                 onClick={() => setOpen(v => !v)}
-                className="w-full flex items-center gap-2.5 px-4 py-3 hover:bg-white/[0.03] transition-colors group"
+                className="w-full flex items-center gap-2.5 px-4 py-2 hover:bg-white/[0.03] transition-colors group"
             >
                 <span className="text-white/40 group-hover:text-white/60 transition-colors">{icon}</span>
                 <span className="text-[11px] font-bold uppercase tracking-[0.12em] text-white/50 group-hover:text-white/70 transition-colors flex-1 text-left">
@@ -177,7 +177,7 @@ const SectionToggle: React.FC<SectionToggleProps> = ({
                         transition={{ duration: 0.2, ease: [0.16, 1, 0.3, 1] }}
                         className="overflow-hidden"
                     >
-                        <div className="px-4 pb-4">{children}</div>
+                        <div className="px-4 pb-2">{children}</div>
                     </motion.div>
                 )}
             </AnimatePresence>
@@ -197,8 +197,8 @@ interface FieldRowProps {
 const FieldRow: React.FC<FieldRowProps> = ({ label, field, themed = false, isLight = false }) => {
     if (themed) {
         return (
-            <div className={`rounded-xl border px-3.5 py-3 mb-2 last:mb-0 ${statusRingThemed(field.status, isLight)}`}>
-                <div className="flex items-center justify-between mb-1">
+            <div className={`rounded-xl border px-3 py-2 mb-1.5 last:mb-0 ${statusRingThemed(field.status, isLight)}`}>
+                <div className="flex items-center justify-between mb-0.5">
                     <span className={`text-[9px] font-bold uppercase tracking-[0.14em] ${isLight ? 'text-slate-400' : 'text-white/30'}`}>
                         {label}
                     </span>
@@ -231,8 +231,8 @@ const FieldRow: React.FC<FieldRowProps> = ({ label, field, themed = false, isLig
 
     // Original overlay variant
     return (
-        <div className={`rounded-xl border px-3.5 py-3 mb-2 last:mb-0 ${statusRing(field.status)}`}>
-            <div className="flex items-center justify-between mb-1">
+        <div className={`rounded-xl border px-3 py-2 mb-1.5 last:mb-0 ${statusRing(field.status)}`}>
+            <div className="flex items-center justify-between mb-0.5">
                 <span className="text-[9px] font-bold uppercase tracking-[0.14em] text-white/30">{label}</span>
                 <div className="flex items-center gap-1.5">
                     <div className={`w-1.5 h-1.5 rounded-full ${statusDot(field.status)}`} />
@@ -242,7 +242,7 @@ const FieldRow: React.FC<FieldRowProps> = ({ label, field, themed = false, isLig
                 </div>
             </div>
             {field.evidence ? (
-                <p className="text-[12px] text-white/65 leading-relaxed">{field.evidence}</p>
+                <p className="text-[12px] text-white/65 leading-normal">{field.evidence}</p>
             ) : field.suggested_question ? (
                 <div className="flex items-start gap-1.5">
                     <span className="text-[9px] font-bold text-blue-400/70 uppercase tracking-wider mt-[2px] shrink-0">Ask this</span>
@@ -250,7 +250,7 @@ const FieldRow: React.FC<FieldRowProps> = ({ label, field, themed = false, isLig
                 </div>
             ) : (
                 <p className="text-[12px] text-white/25 italic">
-                    Not yet captured — listen for cues
+                    Not yet captured
                 </p>
             )}
         </div>
@@ -548,7 +548,7 @@ export const LiveAnalysisContent: React.FC<LiveAnalysisContentProps> = ({
             switch (activeTab) {
                 case 'meddicc':
                     return (
-                        <div className="px-4 pt-3 pb-6 space-y-1.5">
+                        <div className="px-3 pt-2 pb-4 space-y-1.5">
                             {(['metrics', 'economic_buyer', 'decision_criteria', 'decision_process', 'identify_pain', 'champion', 'competition'] as const).map(key => (
                                 <FieldRow
                                     key={key}
@@ -562,7 +562,7 @@ export const LiveAnalysisContent: React.FC<LiveAnalysisContentProps> = ({
                     );
                 case 'bant':
                     return (
-                        <div className="px-4 pt-3 pb-6 space-y-1.5">
+                        <div className="px-3 pt-2 pb-4 space-y-1.5">
                             {(['budget', 'authority', 'need', 'timeline'] as const).map(key => (
                                 <FieldRow
                                     key={key}
@@ -585,7 +585,7 @@ export const LiveAnalysisContent: React.FC<LiveAnalysisContentProps> = ({
                         );
                     }
                     return (
-                        <div className="px-4 pt-3 pb-6 space-y-2">
+                        <div className="px-3 pt-2 pb-4 space-y-1.5">
                             {analysisData.objections.map((obj, i) => {
                                 const isChecked = checkedObjections.has(i);
                                 const cardClass = isChecked
@@ -607,7 +607,7 @@ export const LiveAnalysisContent: React.FC<LiveAnalysisContentProps> = ({
                                         animate={{ opacity: 1, x: 0 }}
                                         transition={{ delay: i * 0.05 }}
                                         onClick={() => toggleObjection(i)}
-                                        className={`w-full flex items-start gap-3 px-3.5 py-3 rounded-xl border text-left transition-all duration-200 ${cardClass}`}
+                                        className={`w-full flex items-start gap-2.5 px-3 py-2 rounded-xl border text-left transition-all duration-200 ${cardClass}`}
                                     >
                                         <div className={`mt-0.5 w-4 h-4 rounded shrink-0 flex items-center justify-center border transition-all ${checkboxClass}`}>
                                             {isChecked && (
@@ -624,7 +624,7 @@ export const LiveAnalysisContent: React.FC<LiveAnalysisContentProps> = ({
                                                     <p className="text-[10px] leading-snug text-blue-300/80">{obj.suggested_answer}</p>
                                                 </div>
                                             )}
-                                            <div className="flex items-center gap-1.5 mt-1">
+                                            <div className="flex items-center gap-1.5 mt-0.5">
                                                 <span className={`text-[9px] font-bold uppercase tracking-wider px-1.5 py-0.5 rounded border ${tagClass}`}>
                                                     {obj.type === 'ae_deferral' ? 'Follow up' : 'Open question'}
                                                 </span>
@@ -713,7 +713,7 @@ export const LiveAnalysisContent: React.FC<LiveAnalysisContentProps> = ({
                         themed={calledFromAnalysisTab}
                         isLight={isLight}
                     >
-                        <div className="space-y-2 mt-1">
+                        <div className="space-y-1.5 mt-1">
                             {missingSignals.map((signal, i) => {
                                 const cardClass = calledFromAnalysisTab
                                     ? signal.icon === '!'
@@ -840,7 +840,7 @@ export const LiveAnalysisContent: React.FC<LiveAnalysisContentProps> = ({
                                         animate={{ opacity: 1, x: 0 }}
                                         transition={{ delay: i * 0.05 }}
                                         onClick={() => toggleObjection(i)}
-                                        className={`w-full flex items-start gap-3 px-3.5 py-3 rounded-xl border text-left transition-all duration-200 ${cardClass}`}
+                                        className={`w-full flex items-start gap-2.5 px-3 py-2 rounded-xl border text-left transition-all duration-200 ${cardClass}`}
                                     >
                                         <div className={`mt-0.5 w-4 h-4 rounded shrink-0 flex items-center justify-center border transition-all ${checkboxClass}`}>
                                             {isChecked && (
