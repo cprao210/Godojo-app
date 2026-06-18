@@ -792,7 +792,7 @@ export const LiveAnalysisContent: React.FC<LiveAnalysisContentProps> = ({
                         isLight={isLight}
                     >
                         <div className="space-y-2 mt-1">
-                            {analysisData.objections.map((obj, i) => {
+                            {analysisData.objections.map((obj) => {
                                 const isChecked = checkedObjections.has(obj.id ?? obj.quote);
 
                                 const cardClass = calledFromAnalysisTab
