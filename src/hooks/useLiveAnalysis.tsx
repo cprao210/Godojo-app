@@ -157,7 +157,7 @@ const SHARED_SIGNAL_CATALOGUE = `
        "high"   → Explicit, named, unmistakable. Act on it this minute.
        "medium" → Implied but clear. Worth a targeted follow-up question.
        "low"    → Background context only. Only assign when "medium" clearly does not fit.
-    8. Sort order: high-intensity signals first, then medium, then low.
+    8. Sort order: most recently detected first (last quote in the transcript = index 0). Within the same turn, order high-intensity before medium before low.
     9. APPEND ONLY — never remove or overwrite prior signals between analysis runs.`;
 
 const SHARED_BANT_MEDDIC_FIELD_RULES = `
@@ -478,13 +478,13 @@ const mergeWithPrior = (
   const mergedObjections = [...prior.objections];
   for (const obj of incoming.objections) {
     const alreadyPresent = mergedObjections.some(p => isSimilar(p.quote, obj.quote));
-    if (!alreadyPresent) mergedObjections.push(obj);
+    if (!alreadyPresent) mergedObjections.unshift(obj); // newest first
   }
 
   const mergedSignals = [...prior.signals];
   for (const sig of incoming.signals) {
     const alreadyPresent = mergedSignals.some(p => isSimilar(p.quote, sig.quote));
-    if (!alreadyPresent) mergedSignals.push(sig);
+    if (!alreadyPresent) mergedSignals.unshift(sig); // newest first
   }
 
   return {
