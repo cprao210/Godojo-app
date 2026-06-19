@@ -22,24 +22,30 @@ interface FloatingDockProps {
 
     // Chat panel props
     transcriptRef: React.MutableRefObject<Array<{ speaker: string; displayName?: string; text: string; timestamp: number }>>;
-    rollingTranscript: string;
-    isInterviewerSpeaking: boolean;
+    rollingTranscriptUser: string;
+    rollingTranscriptClient: string;
+    isClientSpeaking: boolean;
+    isUserSpeaking: boolean;
     showTranscript: boolean;
     onToggleTranscript: (v: boolean) => void;
     currentModel: string;
     onSelectModel: (m: string) => void;
-    speakerNames: { user: string; interviewer: string };
+    speakerNames: { user: string; client: string };
 
     // Settings
     shortcuts: ShortcutConfig;
 
     overlayPanelClass?: string;
+
+    // Company intelligence from pre-call sales brief
+    companyIntel?: Record<string, any> | null;
+
 }
 
 // ─── Chat message type (mirrors FloatingChatPanel) ──────────────────────────
 interface ChatMessage {
     id: string;
-    role: 'user' | 'system' | 'interviewer';
+    role: 'user' | 'system' | 'client';
     text: string;
     isStreaming?: boolean;
     intent?: string;
@@ -52,8 +58,10 @@ export const FloatingDock: React.FC<FloatingDockProps> = ({
     isUndetectable,
     onToggleGhost,
     transcriptRef,
-    rollingTranscript,
-    isInterviewerSpeaking,
+    rollingTranscriptUser,
+    rollingTranscriptClient,
+    isClientSpeaking,
+    isUserSpeaking,
     showTranscript,
     onToggleTranscript,
     currentModel,
@@ -61,6 +69,7 @@ export const FloatingDock: React.FC<FloatingDockProps> = ({
     speakerNames,
     shortcuts,
     overlayPanelClass,
+    companyIntel,
 }) => {
     const [activePanel, setActivePanel] = useState<ActivePanel>(null);
     const [isFrozen, setIsFrozen] = useState(false);
@@ -97,15 +106,59 @@ export const FloatingDock: React.FC<FloatingDockProps> = ({
 
     // ── Lifted state: survives panel switches ──────────────────────────────────
     // Analysis state is owned here so FloatingIntelligencePanel never loses it on remount.
-    const { analysisData, isLoading: analysisLoading, runAnalysis, resetAnalysis } = useLiveAnalysis(transcriptRef, isMeetingPaused);
+    const { analysisData, isLoading: analysisLoading, error: analysisError, runAnalysis, resetAnalysis, isRefreshRun } = useLiveAnalysis(transcriptRef, isMeetingPaused, companyIntel);
+
+    // Stable ref to runAnalysis — prevents the timer useEffect from re-running
+    // (and resetting the countdown) whenever runAnalysis identity changes.
+    const runAnalysisRef = useRef(runAnalysis);
+    useEffect(() => { runAnalysisRef.current = runAnalysis; }, [runAnalysis]);
+
     // Track whether the first analysis has been triggered so we don't re-run on every remount.
     const analysisInitiatedRef = useRef(false);
 
     // Chat messages lifted here so history survives panel switches.
     const [chatMessages, setChatMessages] = useState<ChatMessage[]>([]);
 
-    // Auto-refresh interval lifted here so it survives panel switches.
-    const [autoRefreshInterval, setAutoRefreshInterval] = useState<number | null>(5);
+    // Auto-refresh interval owned here (not in the panel) so the timer survives
+    // panel close/open cycles and responds correctly to isMeetingPaused changes.
+    const [autoRefreshInterval, setAutoRefreshInterval] = useState<number | null>(2);
+    const autoRefreshTimerRef = useRef<ReturnType<typeof setInterval> | null>(null);
+
+    // Timestamp of when the intelligence panel was first opened — used to
+    // synchronise the countdown display with the actual auto-refresh timer.
+    const [intelligencePanelFirstOpenedAt, setIntelligencePanelFirstOpenedAt] = useState<number | null>(null);
+
+    // Manage the auto-refresh timer in FloatingDock so it lives independent of
+    // FloatingIntelligencePanel mount/unmount cycles.
+    // Re-runs whenever: interval changes, meeting is paused/resumed.
+    // When paused — timer is cleared and NOT restarted until resumed.
+    // When interval changes mid-countdown — timer resets from NOW, and
+    // intelligencePanelFirstOpenedAt is updated so the countdown display realigns.
+    useEffect(() => {
+        if (autoRefreshTimerRef.current) {
+            clearInterval(autoRefreshTimerRef.current);
+            autoRefreshTimerRef.current = null;
+        }
+        // Don't run timer while paused or when auto-refresh is off
+        if (autoRefreshInterval === null || isMeetingPaused) return;
+
+        // Align the countdown origin to NOW so the countdown display
+        // always matches how long until the next real refresh fires.
+        setIntelligencePanelFirstOpenedAt(Date.now());
+
+        autoRefreshTimerRef.current = setInterval(() => {
+            runAnalysisRef.current(false);
+            // Reset countdown origin after each fire so the next cycle is accurate
+            setIntelligencePanelFirstOpenedAt(Date.now());
+        }, autoRefreshInterval * 60 * 1000);
+
+        return () => {
+            if (autoRefreshTimerRef.current) {
+                clearInterval(autoRefreshTimerRef.current);
+                autoRefreshTimerRef.current = null;
+            }
+        };
+    }, [autoRefreshInterval, isMeetingPaused]);
 
     // Reset all state when a new meeting starts (IPC session-reset event)
     useEffect(() => {
@@ -138,72 +191,119 @@ export const FloatingDock: React.FC<FloatingDockProps> = ({
 
             <motion.div
                 ref={constraintsRef}
-                className={`relative w-[880px] mx-auto h-fit bg-transparent max-w-full rounded-2xl items-center flex flex-col min-h-0 ${overlayPanelClass}`}
-                style={{ height: '720px' }}
+                className={`relative w-[480px] mx-auto h-fit bg-transparent max-w-full rounded-2xl items-center flex flex-col min-h-0 ${overlayPanelClass}`}
+                style={{ height: '735px' }}
             >
 
-                {/* Overlay Panel (above dock) */}
-                <AnimatePresence mode="wait">
-                    {activePanel && (
+                {/* Overlay Panels — all three stay mounted so internal state (countdown
+                    timers, chat history, scroll position) is never lost on panel switch.
+                    Visibility + pointer-events are toggled via CSS only. */}
+
+                {/* Intelligence panel — always mounted once analysis has been initiated */}
+                {analysisInitiatedRef.current && (
+                    <motion.div
+                        animate={{
+                            opacity: activePanel === 'intelligence' ? dockOpacity : 0,
+                            y: activePanel === 'intelligence' ? 0 : 20,
+                            scale: activePanel === 'intelligence' ? 1 : 0.96,
+                        }}
+                        transition={{ type: 'spring', damping: 28, stiffness: 380, mass: 0.8 }}
+                        className="fixed bottom-[76px] left-[65px]"
+                        style={{
+                            position: 'fixed',
+                            pointerEvents: activePanel === 'intelligence' ? 'auto' : 'none',
+                        }}
+                    >
+                        {isFrozen && activePanel === 'intelligence' && (
+                            <div
+                                className="absolute inset-0 rounded-2xl z-50"
+                                style={{ pointerEvents: 'auto', background: 'rgba(0,0,0,0.10)', cursor: 'not-allowed' }}
+                            />
+                        )}
+                        <FloatingIntelligencePanel
+                            isMeetingPaused={isMeetingPaused}
+                            analysisData={analysisData}
+                            analysisError={analysisError}
+                            rollingTranscriptUser={rollingTranscriptUser}
+                            rollingTranscriptClient={rollingTranscriptClient}
+                            isClientSpeaking={isClientSpeaking}
+                            isUserSpeaking={isUserSpeaking}
+                            speakerNames={speakerNames}
+                            showTranscript={showTranscript}
+                            isLoading={analysisLoading}
+                            onRegenerate={() => runAnalysis(true)}
+                            autoRefreshInterval={autoRefreshInterval}
+                            onAutoRefreshIntervalChange={setAutoRefreshInterval}
+                            isRefreshRun={isRefreshRun}
+                            panelFirstOpenedAt={intelligencePanelFirstOpenedAt}
+                        />
+                    </motion.div>
+                )}
+
+                {/* Chat panel — always mounted once first opened */}
+                {chatMessages.length > 0 || activePanel === 'chat' ? (
+                    <motion.div
+                        animate={{
+                            opacity: activePanel === 'chat' ? dockOpacity : 0,
+                            y: activePanel === 'chat' ? 0 : 20,
+                            scale: activePanel === 'chat' ? 1 : 0.96,
+                        }}
+                        transition={{ type: 'spring', damping: 28, stiffness: 380, mass: 0.8 }}
+                        className="fixed bottom-[76px] left-[65px]"
+                        style={{
+                            position: 'fixed',
+                            pointerEvents: activePanel === 'chat' ? 'auto' : 'none',
+                        }}
+                    >
+                        {isFrozen && activePanel === 'chat' && (
+                            <div
+                                className="absolute inset-0 rounded-2xl z-50"
+                                style={{ pointerEvents: 'auto', background: 'rgba(0,0,0,0.10)', cursor: 'not-allowed' }}
+                            />
+                        )}
+                        <FloatingChatPanel
+                            transcriptRef={transcriptRef}
+                            isMeetingPaused={isMeetingPaused}
+                            rollingTranscriptUser={rollingTranscriptUser}
+                            rollingTranscriptClient={rollingTranscriptClient}
+                            isClientSpeaking={isClientSpeaking}
+                            isUserSpeaking={isUserSpeaking}
+                            showTranscript={showTranscript}
+                            currentModel={currentModel}
+                            onSelectModel={onSelectModel}
+                            speakerNames={speakerNames}
+                            messages={chatMessages}
+                            onMessagesChange={setChatMessages}
+                        />
+                    </motion.div>
+                ) : null}
+
+                {/* Settings panel — lightweight, can unmount freely (no timer state) */}
+                <AnimatePresence>
+                    {activePanel === 'settings' && (
                         <motion.div
-                            key={activePanel}
                             initial={{ opacity: 0, y: 20, scale: 0.96 }}
                             animate={{ opacity: dockOpacity, y: 0, scale: 1 }}
                             exit={{ opacity: 0, y: 12, scale: 0.97 }}
                             transition={{ type: 'spring', damping: 28, stiffness: 380, mass: 0.8 }}
-                            className="fixed bottom-[90px] left-[35px]"
+                            className="fixed top-[110px] left-[65px]"
                             style={{ position: 'fixed' }}
                         >
-                            {/* Freeze overlay — keeps panel visible but blocks all interaction */}
                             {isFrozen && (
                                 <div
                                     className="absolute inset-0 rounded-2xl z-50"
-                                    style={{
-                                        pointerEvents: 'auto',
-                                        background: 'rgba(0,0,0,0.10)',
-                                        cursor: 'not-allowed',
-                                    }}
+                                    style={{ pointerEvents: 'auto', background: 'rgba(0,0,0,0.10)', cursor: 'not-allowed' }}
                                 />
                             )}
-                            {activePanel === 'intelligence' && (
-                                <FloatingIntelligencePanel
-                                    transcriptRef={transcriptRef}
-                                    isMeetingPaused={isMeetingPaused}
-                                    analysisData={analysisData}
-                                    showTranscript={showTranscript}
-                                    isLoading={analysisLoading}
-                                    onRegenerate={() => runAnalysis(true)}
-                                    onAutoRefresh={() => runAnalysis(false)}
-                                    autoRefreshInterval={autoRefreshInterval}
-                                    onAutoRefreshIntervalChange={setAutoRefreshInterval}
-                                />
-                            )}
-                            {activePanel === 'chat' && (
-                                <FloatingChatPanel
-                                    transcriptRef={transcriptRef}
-                                    isMeetingPaused={isMeetingPaused}
-                                    rollingTranscript={rollingTranscript}
-                                    isInterviewerSpeaking={isInterviewerSpeaking}
-                                    showTranscript={showTranscript}
-                                    currentModel={currentModel}
-                                    onSelectModel={onSelectModel}
-                                    speakerNames={speakerNames}
-                                    messages={chatMessages}
-                                    onMessagesChange={setChatMessages}
-                                />
-                            )}
-                            {activePanel === 'settings' && (
-                                <FloatingSettingsPanel
-                                    showTranscript={showTranscript}
-                                    onToggleTranscript={onToggleTranscript}
-                                    shortcuts={shortcuts}
-                                    currentModel={currentModel}
-                                    onSelectModel={onSelectModel}
-                                    dockOpacity={dockOpacity}
-                                    onDockOpacityChange={handleDockOpacityChange}
-                                />
-                            )}
-
+                            <FloatingSettingsPanel
+                                showTranscript={showTranscript}
+                                onToggleTranscript={onToggleTranscript}
+                                shortcuts={shortcuts}
+                                currentModel={currentModel}
+                                onSelectModel={onSelectModel}
+                                dockOpacity={dockOpacity}
+                                onDockOpacityChange={handleDockOpacityChange}
+                            />
                         </motion.div>
                     )}
                 </AnimatePresence>
@@ -214,11 +314,11 @@ export const FloatingDock: React.FC<FloatingDockProps> = ({
                     animate={{ opacity: 1, y: 0 }}
                     transition={{ type: 'spring', damping: 26, stiffness: 300 }}
                     className="fixed pointer-events-auto"
-                    style={{ left: 35, bottom: 10 }}
+                    style={{ top: 30 }}
                 >
                     {/* The Dock */}
                     <motion.div
-                        className={`flex items-center gap-1 px-3 py-3 rounded-2xl relative select-none draggable-area`}
+                        className={`flex items-center gap-2.5 px-3 py-3 rounded-2xl relative select-none draggable-area`}
                         style={{
                             background: `rgba(18, 22, 34, ${dockOpacity})`,
                             backdropFilter: 'blur(24px) saturate(180%)',
@@ -263,7 +363,7 @@ export const FloatingDock: React.FC<FloatingDockProps> = ({
                         />
 
                         {/* Freeze Mode */}
-                        <DockButton
+                        {/* <DockButton
                             icon={<Hand size={22} strokeWidth={1.6} />}
                             tooltip={isFrozen ? 'Unfreeze' : 'Freeze Mode'}
                             isActive={isFrozen}
@@ -272,7 +372,7 @@ export const FloatingDock: React.FC<FloatingDockProps> = ({
                             frozen={false}
                             onClick={handleFreezeMode}
                             zIndex={isFrozen ? 20 : undefined}
-                        />
+                        /> */}
 
                         {/* Ghost Mode */}
                         <DockButton

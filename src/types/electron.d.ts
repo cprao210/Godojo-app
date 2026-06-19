@@ -111,15 +111,16 @@ export interface ElectronAPI {
   setGroqSttModel: (model: string) => Promise<{ success: boolean; error?: string }>
   setSonioxApiKey: (apiKey: string) => Promise<{ success: boolean; error?: string }>
   testSttConnection: (provider: 'groq' | 'openai' | 'deepgram' | 'elevenlabs' | 'azure' | 'ibmwatson' | 'soniox', apiKey: string, region?: string) => Promise<{ success: boolean; error?: string }>
-  getDisplayName: (role: 'user' | 'interviewer' | 'assistant') => Promise<string>;
-  getSpeakerNames: () => Promise<{ user: string; interviewer: string }>;
-  onSpeakerNamesResolved: (callback: (names: { user: string; interviewer: string }) => void) => () => void;
+  getDisplayName: (role: 'user' | 'client' | 'assistant') => Promise<string>;
+  getSpeakerNames: () => Promise<{ user: string; client: string }>;
+  onSpeakerNamesResolved: (callback: (names: { user: string; client: string }) => void) => () => void;
 
   // Native Audio Service Events
   onNativeAudioTranscript: (callback: (transcript: { speaker: string; text: string; final: boolean }) => void) => () => void
   onNativeAudioSuggestion: (callback: (suggestion: { context: string; lastQuestion: string; confidence: number }) => void) => () => void
   onNativeAudioConnected: (callback: () => void) => () => void
   onNativeAudioDisconnected: (callback: () => void) => () => void
+  onMeetingAudioWarning: (callback: (message: string) => void) => () => void
   onSuggestionGenerated: (callback: (data: { question: string; suggestion: string; confidence: number }) => void) => () => void
   onSuggestionProcessingStart: (callback: () => void) => () => void
   onSuggestionError: (callback: (error: { error: string }) => void) => () => void
@@ -278,7 +279,7 @@ export interface ElectronAPI {
   onSalesBriefStreamToken: (callback: (token: string) => void) => () => void
   onSalesBriefStreamDone: (callback: () => void) => () => void
   onSalesBriefStreamError: (callback: (error: string) => void) => () => void
-  fetchCompanyIntel: (payload: { companyName: string; domain?: string }) => Promise<{ success: boolean; intel?: any; error?: string }>
+  fetchCompanyIntel: (payload: { companyName: string; domain?: string; forceRefresh?: boolean }) => Promise<{ success: boolean; intel?: any; fromCache?: boolean; error?: string }>;
 
   // Auto-Update
   onUpdateAvailable: (callback: (info: any) => void) => () => void
@@ -306,6 +307,8 @@ export interface ElectronAPI {
 
   onTavilySearching: (callback: (data: { entity: string }) => void) => () => void
   onTavilySearchDone: (callback: (data: { entity: string | null; status: string; fromCache: boolean }) => void) => () => void
+  setCompanyIntel: (intel: Record<string, any> | null) => Promise<{ success: boolean; error?: string }>
+  onCompanyIntelUpdated: (callback: (intel: Record<string, any> | null) => void) => (() => void)
 
   // Donation API
   getDonationStatus: () => Promise<{ shouldShow: boolean; hasDonated: boolean; lifetimeShows: number }>;
@@ -319,9 +322,33 @@ export interface ElectronAPI {
   onKeybindsUpdate: (callback: (keybinds: Array<any>) => void) => () => void
   onGlobalShortcut: (callback: (data: { action: string }) => void) => () => void
 
+  // Company Context API
+  companyGetContext: () => Promise<any>;
+  companySaveContext: (data: any) => Promise<{ success: boolean; error?: string }>;
+  companyUploadAsset: (type: string, filePath: string) => Promise<{
+    success: boolean;
+    asset?: {
+      id: string;
+      type: string;
+      label: string;
+      status: string;
+      lastUpdated: string;
+      fileData: string;       // base64 — held in frontend draft only
+      fileName: string;
+      mimeType: string;
+    };
+    error?: string;
+  }>;
+  companyDeleteAsset: (assetId: string) => Promise<{ success: boolean; error?: string }>;
+  companySyncAsset: (assetId: string) => Promise<{ success: boolean; status?: string; error?: string }>;
+  companySetPersonaEngine: (enabled: boolean) => Promise<{ success: boolean; error?: string }>;
+  companySelectFile: () => Promise<{ filePath?: string; fileName?: string; fileSize?: number; cancelled?: boolean; success?: boolean; error?: string }>;
+  companyGetCompleteness: () => Promise<number>;
+
   // Profile Engine API
   profileUploadResume: (filePath: string) => Promise<{ success: boolean; error?: string }>
   profileGetStatus: () => Promise<{ hasProfile: boolean; profileMode: boolean; name?: string; role?: string; totalExperienceYears?: number }>
+  profileGetMode: () => Promise<{ active: boolean }>
   profileSetMode: (enabled: boolean) => Promise<{ success: boolean; error?: string }>
   profileDelete: () => Promise<{ success: boolean; error?: string }>
   profileGetProfile: () => Promise<any>
@@ -397,6 +424,7 @@ export interface ElectronAPI {
     lastError?: string | null;
   }>;
   supabaseForceBackfill: () => Promise<{ success: boolean; error?: string }>;
+  supabaseSyncAudit: () => Promise<{ success: boolean; error?: string }>;
 
   // Platform
   platform: NodeJS.Platform;

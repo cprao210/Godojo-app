@@ -16,6 +16,8 @@ import UserProfileButton from './ui/UserProfileButton';
 import { IoSparklesSharp } from 'react-icons/io5';
 import NextMeetingCard from './NextMeetingCard';
 import MeetingTimeline from './MeetingTimeline';
+import godojoLogo from '../assets/logo-variant-3.svg';
+import { loadUserProfile } from './settings/UserProfileTab';
 
 interface Meeting {
     id: string;
@@ -95,11 +97,27 @@ const Launcher: React.FC<LauncherProps> = ({ onStartMeeting, onOpenSettings, onP
     const [isGlobalChatOpen, setIsGlobalChatOpen] = useState(false);
     const [submittedGlobalQuery, setSubmittedGlobalQuery] = useState('');
 
+    const [localProfile, setLocalProfile] = useState(() => loadUserProfile());
+    useEffect(() => {
+        const handler = (e: StorageEvent) => {
+            if (e.key === 'gd_user_profile') setLocalProfile(loadUserProfile());
+        };
+        window.addEventListener('storage', handler);
+        return () => window.removeEventListener('storage', handler);
+    }, []);
+
+    const effectiveName = localProfile.displayName || authUser?.displayName || authUser?.email?.split('@')[0] || '';
+
     const fetchMeetings = () => {
         if (window.electronAPI && window.electronAPI.getRecentMeetings) {
             window.electronAPI.getRecentMeetings().then(setMeetings).catch(err => console.error("Failed to fetch meetings:", err));
         }
     };
+
+    // Detect whether any meeting in the list is still being processed
+    const hasProcessingMeeting = meetings.some(
+        m => m.isProcessed === false || m.title === 'Processing...'
+    );
 
     const fetchEvents = () => {
         if (window.electronAPI && window.electronAPI.getUpcomingEvents) {
@@ -129,6 +147,17 @@ const Launcher: React.FC<LauncherProps> = ({ onStartMeeting, onOpenSettings, onP
             setTimeout(() => setIsRefreshing(false), 500);
         }
     };
+
+    // Active polling — fires every 3 s while any meeting is still processing.
+    // Stops automatically once all meetings have been fully processed.
+    // This is a safety net for the race where onMeetingsUpdated fires before
+    // the listener is registered, or is missed entirely.
+    useEffect(() => {
+        if (!hasProcessingMeeting) return;
+        const pollId = setInterval(fetchMeetings, 3000);
+        return () => clearInterval(pollId);
+        // eslint-disable-next-line react-hooks/exhaustive-deps
+    }, [hasProcessingMeeting]);
 
     // Keybinds
     const { isShortcutPressed } = useShortcuts();
@@ -172,6 +201,33 @@ const Launcher: React.FC<LauncherProps> = ({ onStartMeeting, onOpenSettings, onP
         if (window.electronAPI?.onMeetingStateChanged) {
             removeMeetingStateListener = window.electronAPI.onMeetingStateChanged(({ isActive }) => {
                 setIsMeetingActive(isActive);
+
+                // When a meeting ends, optimistically prepend a Processing placeholder
+                // to the meetings list immediately — before fetchMeetings() round-trips
+                // to the backend. This makes the card appear with zero perceived delay.
+                // The real entry (with actual id/title) arrives via onMeetingsUpdated
+                // and replaces this placeholder naturally since setMeetings overwrites
+                // the whole list.
+                if (!isActive) {
+                    setMeetings(prev => {
+                        // Don't double-insert if one is already there from a previous
+                        // rapid end cycle
+                        const alreadyHasPlaceholder = prev.some(
+                            m => m.title === 'Processing...' && m.isProcessed === false
+                        );
+                        if (alreadyHasPlaceholder) return prev;
+
+                        const optimisticPlaceholder: Meeting = {
+                            id: `optimistic-${Date.now()}`,
+                            title: 'Processing...',
+                            date: new Date().toISOString(),
+                            duration: '—',
+                            summary: 'Generating summary...',
+                            isProcessed: false,
+                        };
+                        return [optimisticPlaceholder, ...prev];
+                    });
+                }
             });
         }
 
@@ -372,25 +428,27 @@ const Launcher: React.FC<LauncherProps> = ({ onStartMeeting, onOpenSettings, onP
         }
     };
 
-    // Helper to format duration to mm:ss or mmm:ss
-    const formatDurationPill = (durationStr: string) => {
+    // Helper to format duration to mm:ss or hh:mm:ss
+    const formatDurationPill = (durationStr: string): string => {
         if (!durationStr) return "00:00";
 
-        // Check if it's already in colon format (e.g. "5:30", "105:20")
+        // Already in hh:mm:ss or mm:ss from DatabaseManager.formatDuration — pass through
+        // with zero-padding applied to each segment
         if (durationStr.includes(':')) {
             const parts = durationStr.split(':');
-            const mins = parts[0];
-            const secs = parts[1] || "00";
-
-            // Allow 3 digits for mins if >= 100, otherwise pad to 2
-            const formattedMins = mins.length >= 3 ? mins : mins.padStart(2, '0');
-            return `${formattedMins}:${secs}`;
+            if (parts.length === 3) {
+                // hh:mm:ss
+                const [h, m, s] = parts;
+                return `${h.padStart(2, '0')}:${m.padStart(2, '0')}:${s.padStart(2, '0')}`;
+            }
+            // mm:ss
+            const [m, s] = parts;
+            return `${m.padStart(2, '0')}:${s.padStart(2, '0')}`;
         }
 
-        // Fallback for "X min" format (legacy)
-        const minutes = parseInt(durationStr.replace('min', '').trim()) || 0;
-        const mm = minutes.toString().padStart(2, '0');
-        return `${mm}:00`;
+        // Legacy fallback: "X min" → convert to mm:ss
+        const minutes = parseInt(durationStr.replace(/[^0-9]/g, ''), 10) || 0;
+        return `${minutes.toString().padStart(2, '0')}:00`;
     };
 
     return (
@@ -440,14 +498,15 @@ const Launcher: React.FC<LauncherProps> = ({ onStartMeeting, onOpenSettings, onP
                 </div>
 
                 {/* Logo */}
-                <div className="flex items-center gap-2 no-drag ml-1">
+                {/* <div className="flex items-center gap-2 no-drag ml-1">
                     <div className="relative flex h-5 w-5 items-center justify-center rounded-md bg-gradient-to-br from-blue-500 to-blue-700 shadow-[0_2px_8px_rgba(59,130,246,0.35)]">
                         <Sparkles className="h-2.5 w-2.5 fill-white text-white" />
                     </div>
                     <span className={["text-sm font-semibold tracking-tight", isLight ? "text-text-primary" : "text-white"].join(" ")}>
                         GoDojo AI
                     </span>
-                </div>
+                </div> */}
+                <img src={godojoLogo} alt="GoDojo AI" className="h-5 object-contain" />
 
                 {/* Center: Search pill */}
                 <div className="mx-2 flex-1 no-drag">
@@ -564,7 +623,7 @@ const Launcher: React.FC<LauncherProps> = ({ onStartMeeting, onOpenSettings, onP
                                             <IoSparklesSharp className="text-blue-500 shrink-0" size={22} />
                                             <div>
                                                 <h1 className="text-xl font-semibold tracking-tight text-text-primary">
-                                                    Welcome back{authUser?.displayName ? `, ${authUser.displayName.split(' ')[0]}` : ''}
+                                                    Welcome back{effectiveName ? `, ${effectiveName.split(' ')[0]}` : ''}
                                                 </h1>
                                                 <p className="text-xs mt-0.5 text-text-secondary">
                                                     Your meetings, transcripts and AI insights — all in one place.
@@ -808,7 +867,7 @@ const Launcher: React.FC<LauncherProps> = ({ onStartMeeting, onOpenSettings, onP
                                             <div className="relative flex-1 space-y-3">
                                                 {[
                                                     { icon: Zap, label: "Auto-detect meetings", color: "text-yellow-400" },
-                                                    { icon: Briefcase, label: "AI sales brief per event", color: "text-blue-400" },
+                                                    { icon: Briefcase, label: "Company insights per event", color: "text-blue-400" },
                                                     { icon: Calendar, label: "One-click join", color: "text-purple-400" },
                                                 ].map(({ icon: Icon, label, color }) => (
                                                     <div key={label} className="flex items-center gap-2.5">
@@ -1181,7 +1240,7 @@ const Launcher: React.FC<LauncherProps> = ({ onStartMeeting, onOpenSettings, onP
                                         <textarea
                                             value={uploadText}
                                             onChange={e => setUploadText(e.target.value)}
-                                            placeholder={`Paste transcript here. Supported formats:\n\n[00:00:12] REP: Hello, thanks for joining...\nPROSPECT: Happy to be here...\n\nor plain text lines`}
+                                            placeholder={`Paste transcript here. Supported formats:\n\n[00:00:12] SALES PERSON: Hello, thanks for joining...\nCLIENT: Happy to be here...\n\nor plain text lines`}
                                             rows={12}
                                             className={[
                                                 "w-full rounded-xl px-4 py-3 text-sm text-text-primary focus:outline-none transition-colors resize-none font-mono leading-relaxed",

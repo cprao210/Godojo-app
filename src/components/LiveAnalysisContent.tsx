@@ -1,5 +1,5 @@
 import React, { useState } from 'react';
-import { Shield, BarChart2, AlertTriangle, Zap, CheckSquare, ChevronDown, ChevronUp } from 'lucide-react';
+import { Shield, BarChart2, AlertTriangle, Zap, CheckSquare, ChevronDown, ChevronUp, Calculator, TrendingUp, TrendingDown } from 'lucide-react';
 import { AnimatePresence, motion } from 'framer-motion';
 import { LiveAnalysisData } from '../types/liveAnalysis';
 import { useResolvedTheme } from '../hooks/useResolvedTheme';
@@ -221,7 +221,9 @@ const FieldRow: React.FC<FieldRowProps> = ({ label, field, themed = false, isLig
                         </p>
                     </div>
                 ) : (
-                    <p className={`text-[12px] italic ${isLight ? 'text-slate-400' : 'text-white/20'}`}>Not mentioned</p>
+                    <p className={`text-[12px] italic ${isLight ? 'text-slate-400' : 'text-white/25'}`}>
+                        Not yet captured — listen for clues
+                    </p>
                 )}
             </div>
         );
@@ -247,7 +249,9 @@ const FieldRow: React.FC<FieldRowProps> = ({ label, field, themed = false, isLig
                     <p className="text-[11px] text-blue-300/80 leading-relaxed">{field.suggested_question}</p>
                 </div>
             ) : (
-                <p className="text-[12px] text-white/20 italic">Not mentioned</p>
+                <p className="text-[12px] text-white/25 italic">
+                    Not yet captured — listen for cues
+                </p>
             )}
         </div>
     );
@@ -302,6 +306,24 @@ export const LiveAnalysisContent: React.FC<LiveAnalysisContentProps> = ({
     const [checkedObjections, setCheckedObjections] = useState<Set<number>>(new Set());
     const toggleObjection = (index: number) => {
         setCheckedObjections(prev => {
+            const next = new Set(prev);
+            if (next.has(index)) next.delete(index); else next.add(index);
+            return next;
+        });
+    };
+
+    const [struckSignals, setStruckSignals] = useState<Set<number>>(new Set());
+    const toggleSignal = (index: number) => {
+        setStruckSignals(prev => {
+            const next = new Set(prev);
+            if (next.has(index)) next.delete(index); else next.add(index);
+            return next;
+        });
+    };
+
+    const [expandedSignals, setExpandedSignals] = useState<Set<number>>(new Set());
+    const toggleSignalExpand = (index: number) => {
+        setExpandedSignals(prev => {
             const next = new Set(prev);
             if (next.has(index)) next.delete(index); else next.add(index);
             return next;
@@ -486,85 +508,131 @@ export const LiveAnalysisContent: React.FC<LiveAnalysisContentProps> = ({
                         themed={calledFromAnalysisTab}
                         isLight={isLight}
                     >
-                        <div className="space-y-2.5 mt-1">
+                        <div className="mt-1">
                             {analysisData.signals.map((signal, i) => {
-                                const cardBorder = calledFromAnalysisTab
-                                    ? signal.category === 'negative' && signal.intensity === 'high'
-                                        ? isLight ? 'border-red-200 bg-red-50' : 'border-red-500/20 bg-red-500/[0.03]'
-                                        : signal.category === 'negative'
-                                            ? isLight ? 'border-amber-200 bg-amber-50' : 'border-amber-500/15 bg-amber-500/[0.02]'
-                                            : signal.category === 'positive'
-                                                ? isLight ? 'border-emerald-200 bg-emerald-50' : 'border-emerald-500/15 bg-emerald-500/[0.02]'
-                                                : isLight ? 'border-slate-200 bg-slate-50' : 'border-white/[0.07] bg-white/[0.02]'
-                                    : signal.category === 'negative' && signal.intensity === 'high'
-                                        ? 'border-red-500/20 bg-red-500/[0.03]'
-                                        : signal.category === 'negative'
-                                            ? 'border-amber-500/15 bg-amber-500/[0.02]'
-                                            : signal.category === 'positive'
-                                                ? 'border-emerald-500/15 bg-emerald-500/[0.02]'
-                                                : 'border-white/[0.07] bg-white/[0.02]';
+                                const isPositive = signal.category === 'positive';
+                                const isNegHigh = signal.category === 'negative' && signal.intensity === 'high';
+                                const isNeg = signal.category === 'negative';
+                                const isStruck = struckSignals.has(i);
+                                const isExpanded = expandedSignals.has(i);
 
-                                const intensityDot =
-                                    signal.intensity === 'high' ? 'bg-red-500' :
-                                        signal.intensity === 'medium' ? 'bg-amber-500' :
-                                            calledFromAnalysisTab ? (isLight ? 'bg-slate-300' : 'bg-white/20') : 'bg-white/20';
+                                // Left stripe colour
+                                const stripe = isNegHigh
+                                    ? 'bg-red-500'
+                                    : isNeg
+                                        ? 'bg-amber-400'
+                                        : isPositive
+                                            ? 'bg-emerald-400'
+                                            : 'bg-white/20';
 
+                                const rowBg = calledFromAnalysisTab
+                                    ? isLight ? 'hover:bg-slate-50' : 'hover:bg-white/[0.02]'
+                                    : 'hover:bg-white/[0.02]';
+
+                                const dividerCls = calledFromAnalysisTab
+                                    ? isLight ? 'border-slate-100' : 'border-white/[0.04]'
+                                    : 'border-white/[0.04]';
+
+                                const quoteCls = isStruck
+                                    ? calledFromAnalysisTab
+                                        ? isLight ? 'line-through text-slate-300' : 'line-through text-white/20'
+                                        : 'line-through text-white/20'
+                                    : calledFromAnalysisTab
+                                        ? isLight ? 'text-slate-600' : 'text-white/60'
+                                        : 'text-white/60';
+
+                                const askTextCls = calledFromAnalysisTab
+                                    ? isLight ? 'text-blue-600' : 'text-blue-300/70'
+                                    : 'text-blue-300/70';
+
+                                const askLabelCls = calledFromAnalysisTab
+                                    ? isLight ? 'text-blue-500' : 'text-blue-400/60'
+                                    : 'text-blue-400/60';
+
+                                const intensityDot = isNegHigh ? 'bg-red-500' : isNeg ? 'bg-amber-400' : 'bg-white/20';
                                 const intensityText = calledFromAnalysisTab
                                     ? isLight ? 'text-slate-400' : 'text-white/25'
                                     : 'text-white/25';
 
-                                const quoteText = calledFromAnalysisTab
-                                    ? isLight ? 'text-slate-600' : 'text-white/65'
-                                    : 'text-white/65';
-
-                                const askLabel = calledFromAnalysisTab
-                                    ? isLight ? 'text-blue-600' : 'text-blue-400/70'
-                                    : 'text-blue-400/70';
-
-                                const askText = calledFromAnalysisTab
-                                    ? isLight ? 'text-blue-700' : 'text-blue-300/80'
-                                    : 'text-blue-300/80';
-
-                                const borderTop = calledFromAnalysisTab
-                                    ? isLight ? 'border-slate-200' : 'border-white/[0.05]'
-                                    : 'border-white/[0.05]';
-
                                 return (
                                     <motion.div
                                         key={i}
-                                        initial={{ opacity: 0, y: 4 }}
-                                        animate={{ opacity: 1, y: 0 }}
-                                        transition={{ delay: i * 0.05 }}
-                                        className={`rounded-xl border px-3.5 py-3 ${cardBorder}`}
+                                        initial={{ opacity: 0, x: -2 }}
+                                        animate={{ opacity: 1, x: 0 }}
+                                        transition={{ delay: i * 0.04 }}
+                                        className={`border-b last:border-b-0 ${dividerCls} ${isStruck ? 'opacity-50' : ''}`}
                                     >
-                                        <div className="flex items-start justify-between gap-2 mb-2">
-                                            <div className="flex flex-wrap gap-1">
-                                                {signal.signal_type.map((type, j) => (
-                                                    <span
-                                                        key={j}
-                                                        className={`text-[9px] font-bold uppercase tracking-wider px-1.5 py-0.5 rounded-md border ${calledFromAnalysisTab
-                                                            ? signalTypeColorThemed(type, isLight)
-                                                            : signalTypeColor(type)
-                                                            }`}
-                                                    >
-                                                        {type.replace(/_/g, ' ')}
-                                                    </span>
-                                                ))}
-                                            </div>
-                                            {signal.intensity && (
-                                                <div className="flex items-center gap-1 shrink-0">
-                                                    <div className={`w-1.5 h-1.5 rounded-full ${intensityDot}`} />
-                                                    <span className={`text-[9px] capitalize ${intensityText}`}>{signal.intensity}</span>
+                                        {/* Main row — click to expand ask_now, positive signals click to strike */}
+                                        <div
+                                            className={`flex items-start gap-2 py-2 cursor-pointer transition-colors ${rowBg}`}
+                                            onClick={() => {
+                                                // if (isPositive) toggleSignal(i);
+                                                // else 
+                                                toggleSignalExpand(i);
+                                            }}
+                                        >
+                                            {/* Left colour stripe */}
+                                            <div className={`w-0.5 self-stretch rounded-full shrink-0 mt-0.5 ${stripe}`} />
+
+                                            <div className="flex-1 min-w-0">
+                                                {/* Type badges + intensity */}
+                                                <div className="flex items-center justify-between gap-1 mb-1">
+                                                    <div className="flex flex-wrap gap-1.5">
+                                                        {signal.signal_type.slice(0, 2).map((type, j) => (
+                                                            <span
+                                                                key={j}
+                                                                className={`text-[10px] font-bold uppercase tracking-wider px-1 py-0.5 rounded border ${calledFromAnalysisTab
+                                                                    ? signalTypeColorThemed(type, isLight)
+                                                                    : signalTypeColor(type)
+                                                                    }`}
+                                                            >
+                                                                {type.replace(/_/g, ' ')}
+                                                            </span>
+                                                        ))}
+                                                    </div>
+                                                    <div className="flex items-center gap-2 shrink-0">
+                                                        {/* Strike toggle hint for positive signals */}
+                                                        {/* {isPositive && (
+                                                            <span className={`text-[10px] ${askLabelCls}`}>
+                                                                {isStruck ? '↩ restore' : '✓ done'}
+                                                            </span>
+                                                        )} */}
+                                                        <div className={`w-1.5 h-1.5 rounded-full ${intensityDot}`} />
+                                                        <span className={`text-[10px] capitalize ${intensityText}`}>{signal.intensity}</span>
+                                                    </div>
                                                 </div>
+
+                                                {/* Quote — 2-line clamp */}
+                                                <p className={`text-[12px] italic ${quoteCls}`}>
+                                                    "{signal.quote}"
+                                                </p>
+                                            </div>
+
+                                            {/* Expand chevron for non-positive signals */}
+                                            {!isPositive && (
+                                                <span className={`shrink-0 mt-1 ${intensityText}`}>
+                                                    {isExpanded ? <ChevronUp size={12} /> : <ChevronDown size={12} />}
+                                                </span>
                                             )}
                                         </div>
-                                        <p className={`text-[12px] leading-relaxed mb-2 italic ${quoteText}`}>
-                                            "{signal.quote}"
-                                        </p>
-                                        <div className={`flex items-start gap-1.5 pt-2 border-t ${borderTop}`}>
-                                            <span className={`text-[9px] font-bold uppercase tracking-wider mt-0.5 shrink-0 ${askLabel}`}>Ask now</span>
-                                            <p className={`text-[11px] leading-relaxed ${askText}`}>{signal.ask_now}</p>
-                                        </div>
+
+                                        {/* Ask now — collapsed by default, expands on click */}
+                                        <AnimatePresence initial={false}>
+                                            {!isPositive && isExpanded && (
+                                                <motion.div
+                                                    initial={{ height: 0, opacity: 0 }}
+                                                    animate={{ height: 'auto', opacity: 1 }}
+                                                    exit={{ height: 0, opacity: 0 }}
+                                                    transition={{ duration: 0.18, ease: [0.16, 1, 0.3, 1] }}
+                                                    className="overflow-hidden"
+                                                >
+                                                    <div className="flex items-start gap-1 pb-2 pl-3">
+                                                        <span className={`text-[8px] font-bold uppercase tracking-wider mt-0.5 shrink-0 ${askLabelCls}`}>Ask</span>
+                                                        <p className={`text-[10px] leading-snug ${askTextCls}`}>{signal.ask_now}</p>
+                                                    </div>
+                                                </motion.div>
+                                            )}
+                                        </AnimatePresence>
                                     </motion.div>
                                 );
                             })}
@@ -645,6 +713,17 @@ export const LiveAnalysisContent: React.FC<LiveAnalysisContentProps> = ({
                                             <p className={`text-[12px] leading-relaxed transition-all ${quoteClass}`}>
                                                 {obj.quote}
                                             </p>
+                                            {/* Suggested answer — only for customer questions */}
+                                            {!isChecked && obj.type === 'customer_question' && obj.suggested_answer && (
+                                                <div className={`flex items-start gap-1.5 rounded-md px-1 py-1.5`}>
+                                                    <TrendingUp size={9} className={`shrink-0 mt-0.5 ${calledFromAnalysisTab ? (isLight ? 'text-blue-500' : 'text-blue-400/70') : 'text-blue-400/70'
+                                                        }`} />
+                                                    <p className={`text-[10px] leading-snug ${calledFromAnalysisTab ? (isLight ? 'text-blue-700' : 'text-blue-300/80') : 'text-blue-300/80'
+                                                        }`}>
+                                                        {obj.suggested_answer}
+                                                    </p>
+                                                </div>
+                                            )}
                                             <div className="flex items-center gap-1.5 mt-1">
                                                 <span className={`text-[9px] font-bold uppercase tracking-wider px-1.5 py-0.5 rounded border ${tagClass}`}>
                                                     {obj.type === 'ae_deferral' ? 'Follow up' : 'Open question'}

@@ -12,6 +12,8 @@ import { vscDarkPlus } from 'react-syntax-highlighter/dist/esm/styles/prism';
 import FollowUpEmailModal from './FollowUpEmailModal';
 import { LiveAnalysisContent } from './LiveAnalysisContent';
 import { LiveAnalysisData } from '../types/liveAnalysis';
+import { guardSession } from '../lib/firebase';
+import { DealHealthScore } from './DealHealthScore';
 
 const formatTime = (ms: number) => {
     const date = new Date(ms);
@@ -128,6 +130,8 @@ const Skeleton: React.FC<{ className?: string }> = ({ className = '' }) => (
 // ─── Check if a detailedSummary exists but has no meaningful data ──────────────
 function isSummaryEmpty(ds: NonNullable<Meeting['detailedSummary']>): boolean {
     const hasContent = (arr?: string[]) => Array.isArray(arr) && arr.some(s => s?.trim());
+    // A meeting with live analysis data is never considered "empty" — the Analysis tab has content
+    if ((ds as any).liveAnalysis) return false;
     return (
         !ds.overview?.trim() &&
         !hasContent(ds.keyPoints) &&
@@ -162,7 +166,7 @@ const MeetingDetails: React.FC<MeetingDetailsProps> = ({ meeting: initialMeeting
     const [isTalktimeOpen, setIsTalktimeOpen] = useState(false);
 
     const speakerNames = (meeting.detailedSummary as any)?.speakerNames as
-        { user: string; interviewer: string } | undefined;
+        { user: string; client: string } | undefined;
 
     const getSpeakerDisplayName = (speaker: string, displayName?: string): string => {
         // 1. Live transcription supplies displayName directly — always prefer it.
@@ -171,7 +175,7 @@ const MeetingDetails: React.FC<MeetingDetailsProps> = ({ meeting: initialMeeting
         //    These are set by SessionTracker (e.g. "Nikhilbarot", "Salesforce").
         //    Fall back to "You" / "Other Party" only when no calendar data was resolved.
         if (speaker === 'user') return speakerNames?.user || 'You';
-        if (speaker === 'interviewer') return speakerNames?.interviewer || 'Other Party';
+        if (speaker === 'client' || speaker === "interviewer") return speakerNames?.client || 'Other Party';
         if (speaker === 'assistant') return 'Assistant';
         return speaker;
     };
@@ -224,13 +228,17 @@ const MeetingDetails: React.FC<MeetingDetailsProps> = ({ meeting: initialMeeting
             const formatList = (arr?: string[]) =>
                 arr && arr.length ? arr.map(i => `  • ${i}`).join('\n') : '  None';
 
+            const toStatusIcon = (s: string) =>
+                (s === 'Clear' || s === 'confirmed') ? '✅'
+                    : (s === 'Partial' || s === 'partial') ? '⚠️' : '❌';
+
             const formatBANT = () => {
                 if (!ds.bant) return '  None';
                 return (['budget', 'authority', 'need', 'timeline'] as const)
                     .map(key => {
                         const item = ds.bant?.[key];
                         if (!item) return null;
-                        const statusIcon = item.status === 'Clear' ? '✅' : item.status === 'Partial' ? '⚠️' : '❌';
+                        const statusIcon = toStatusIcon(item.status);
                         return `  ${statusIcon} ${key.toUpperCase()} (${item.status}): ${item.detail}`;
                     })
                     .filter(Boolean)
@@ -245,7 +253,7 @@ const MeetingDetails: React.FC<MeetingDetailsProps> = ({ meeting: initialMeeting
                         const item = ds.meddicc?.[key];
                         if (!item) return null;
                         const label = key.replace(/([A-Z])/g, ' $1').trim();
-                        const statusIcon = item.status === 'Clear' ? '✅' : item.status === 'Partial' ? '⚠️' : '❌';
+                        const statusIcon = toStatusIcon(item.status);
                         return `  ${statusIcon} ${label.toUpperCase()} (${item.status}): ${item.detail}`;
                     })
                     .filter(Boolean)
@@ -256,34 +264,6 @@ const MeetingDetails: React.FC<MeetingDetailsProps> = ({ meeting: initialMeeting
                     : '';
 
                 return rows + gaps;
-            };
-
-            const formatFollowUpEmail = () => {
-                if (!ds.followUpEmail) return '  None';
-                const sections = ds.followUpEmail.sections;
-                if (!sections) return '  None';
-
-                const sectionLabels: Record<string, string> = {
-                    whatWeDiscussed: 'What We Discussed',
-                    currentProcess: 'Current Process',
-                    scopeOfImprovement: 'Scope of Improvement',
-                    howOurSolutionHelps: 'How Our Solution Helps',
-                    expectedBusinessImpact: 'Expected Business Impact',
-                    nextSteps: 'Next Steps',
-                };
-
-                return (Object.keys(sectionLabels) as Array<keyof typeof sections>)
-                    .map(key => {
-                        const val = sections[key];
-                        if (!val || (Array.isArray(val) && val.length === 0)) return null;
-                        const label = sectionLabels[key as string];
-                        const content = Array.isArray(val)
-                            ? val.map(s => `    • ${s}`).join('\n')
-                            : `    ${val}`;
-                        return `  ${label}:\n${content}`;
-                    })
-                    .filter(Boolean)
-                    .join('\n\n');
             };
 
             const formatSalesCoachReview = () => {
@@ -392,15 +372,6 @@ const MeetingDetails: React.FC<MeetingDetailsProps> = ({ meeting: initialMeeting
                     `MEDDICC QUALIFICATION`,
                     `${'━'.repeat(50)}`,
                     formatMEDDICC(),
-                    ``
-                ].join('\n') : null,
-
-                ds.followUpEmail ? [
-                    `${'━'.repeat(50)}`,
-                    `FOLLOW-UP EMAIL DRAFT`,
-                    `${'━'.repeat(50)}`,
-                    ds.followUpEmail.subject ? `  Subject: ${ds.followUpEmail.subject}\n` : '',
-                    formatFollowUpEmail(),
                     ``
                 ].join('\n') : null,
 
@@ -579,6 +550,8 @@ const MeetingDetails: React.FC<MeetingDetailsProps> = ({ meeting: initialMeeting
 
         try {
 
+            const sessionActive = await guardSession();
+            if (!sessionActive) return;
             const result = await window.electronAPI.regenerateMeetingSummary(meeting.id);
 
             if (result?.success && result.meeting) {
@@ -607,22 +580,22 @@ const MeetingDetails: React.FC<MeetingDetailsProps> = ({ meeting: initialMeeting
     };
 
     const computeTalkTime = (transcript: { speaker: string; text: string; timestamp: number; }[] | undefined) => {
-        if (!transcript || transcript.length === 0) return { user: 0, interviewer: 0, userWords: 0, interviewerWords: 0 };
-        let userWords = 0, interviewerWords = 0;
+        if (!transcript || transcript.length === 0) return { user: 0, client: 0, userWords: 0, clientWords: 0 };
+        let userWords = 0, clientWords = 0;
         for (const seg of transcript) {
             if (!seg.text?.trim()) continue; // Ignore empty/system messages
             const wordCount = seg.text.trim().split(/\s+/).filter(Boolean).length; // Count words
             if (seg.speaker === 'user') { userWords += wordCount; }
-            else if (seg.speaker === 'interviewer') { interviewerWords += wordCount };
+            else if (seg.speaker === 'client') { clientWords += wordCount };
         }
-        const totalWords = userWords + interviewerWords;
-        if (totalWords === 0) return { user: 0, interviewer: 0, userWords, interviewerWords };
+        const totalWords = userWords + clientWords;
+        if (totalWords === 0) return { user: 0, client: 0, userWords, clientWords };
         return {
             user: Math.round((userWords / totalWords) * 100),
-            interviewer: Math.round((interviewerWords / totalWords) * 100),
+            client: Math.round((clientWords / totalWords) * 100),
             // Optional raw counts
             userWords,
-            interviewerWords,
+            clientWords,
         };
     };
 
@@ -1119,9 +1092,17 @@ const MeetingDetails: React.FC<MeetingDetailsProps> = ({ meeting: initialMeeting
                                                     {/* Better Execution */}
                                                     {(() => {
                                                         const validBetterItems = meeting.detailedSummary?.salesCoachReview?.whatICouldHaveDoneBetter
-                                                            ?.filter(item => {
-                                                                const lower = item.toLowerCase().trim();
-                                                                return item.trim() &&
+                                                            ?.map(item => {
+                                                                const colonIndex = item.indexOf(':');
+                                                                const hasLabel = colonIndex > 0 && colonIndex < 30;
+                                                                const label = hasLabel ? item.substring(0, colonIndex).trim() : null;
+                                                                const content = hasLabel ? item.substring(colonIndex + 1).trim() : item.trim();
+                                                                return { label, content };
+                                                            })
+                                                            .filter(({ content }) => {
+                                                                if (!content || content.trim() === '' || content.trim() === '-' || content.trim() === '—') return false;
+                                                                const lower = content.toLowerCase().trim();
+                                                                return (
                                                                     !lower.startsWith('n/a') &&
                                                                     !lower.startsWith('not ') &&
                                                                     !lower.startsWith('none') &&
@@ -1130,7 +1111,8 @@ const MeetingDetails: React.FC<MeetingDetailsProps> = ({ meeting: initialMeeting
                                                                     !lower.startsWith('not discussed') &&
                                                                     !lower.startsWith('not mentioned') &&
                                                                     lower !== '-' &&
-                                                                    lower !== '—';
+                                                                    lower !== '—'
+                                                                );
                                                             });
 
                                                         if (!validBetterItems || validBetterItems.length === 0) return null;
@@ -1138,13 +1120,23 @@ const MeetingDetails: React.FC<MeetingDetailsProps> = ({ meeting: initialMeeting
                                                         return (
                                                             <div className={`p-4 rounded-xl border ${isLight ? 'bg-white border-slate-200' : 'bg-gray-800/30 border-white/10'}`}>
                                                                 <div className='flex gap-3 mb-3'>
-                                                                    <div><TrendingUp size={18} className={isLight ? 'text-slate-400' : 'text-white/50'} /></div>
-                                                                    <div className={`text-sm font-bold tracking-wider mb-3 ${isLight ? 'text-slate-400' : 'text-white/50'}`}>BETTER EXECUTION</div>
+                                                                    <div><TrendingUp size={18} className={isLight ? 'text-amber-400' : 'text-amber-400'} /></div>
+                                                                    <div className={`text-sm font-bold tracking-wider mb-3 ${isLight ? 'text-amber-600' : 'text-amber-400'}`}>BETTER EXECUTION</div>
                                                                 </div>
-                                                                {validBetterItems.map((item, i) => (
-                                                                    <p key={i} className={`text-sm italic mb-4 ${isLight ? 'text-slate-600' : 'text-white/70'}`}>
-                                                                        <span className={isLight ? 'text-slate-300' : 'text-gray-50/30'}>•</span> {item}
-                                                                    </p>
+                                                                {validBetterItems.map(({ label, content }, i) => (
+                                                                    label ? (
+                                                                        <div key={i} className="flex items-start gap-3 mb-4">
+                                                                            <span className={`text-[10px] font-bold px-2 py-0.5 rounded border shrink-0 mt-0.5 w-[130px] text-center ${isLight ? 'text-amber-700 bg-amber-50 border-amber-200' : 'text-amber-400 bg-amber-500/10 border-amber-500/20'}`}>
+                                                                                {label}
+                                                                            </span>
+                                                                            <div className={`w-px self-stretch shrink-0 ${isLight ? 'bg-amber-200' : 'bg-amber-500/20'}`} />
+                                                                            <p className={`text-sm leading-relaxed ${isLight ? 'text-slate-600' : 'text-white/70'}`}>{content}</p>
+                                                                        </div>
+                                                                    ) : (
+                                                                        <p key={i} className={`text-sm italic mb-4 ${isLight ? 'text-slate-600' : 'text-white/70'}`}>
+                                                                            <span className={isLight ? 'text-slate-300' : 'text-gray-50/30'}>•</span> {content}
+                                                                        </p>
+                                                                    )
                                                                 ))}
                                                             </div>
                                                         );
@@ -1516,24 +1508,24 @@ const MeetingDetails: React.FC<MeetingDetailsProps> = ({ meeting: initialMeeting
                                                                     <div className="flex items-center gap-2">
 
                                                                         <span className={`text-sm ${isLight ? 'text-slate-700' : 'text-white/80'}`}>
-                                                                            {getSpeakerDisplayName('interviewer')}
+                                                                            {getSpeakerDisplayName('client')}
                                                                         </span>
                                                                     </div>
 
                                                                     <div className={`text-xs ${isLight ? 'text-slate-400' : 'text-white/40'}`}>
-                                                                        • {talkTime.interviewerWords.toLocaleString()} words spoken
+                                                                        • {talkTime.clientWords.toLocaleString()} words spoken
                                                                     </div>
 
                                                                 </div>
                                                                 <span className={`text-sm font-medium ${isLight ? 'text-slate-800' : 'text-white'}`}>
-                                                                    {talkTime.interviewer}%
+                                                                    {talkTime.client}%
                                                                 </span>
                                                             </div>
 
                                                             <div className={`h-1 overflow-hidden rounded-full ${isLight ? 'bg-slate-200' : 'bg-white/10'}`}>
                                                                 <div
                                                                     className={`h-full rounded-full transition-all duration-500 ${isLight ? 'bg-slate-400' : 'bg-blue-500/30'}`}
-                                                                    style={{ width: `${talkTime.interviewer}%` }}
+                                                                    style={{ width: `${talkTime.client}%` }}
                                                                 />
                                                             </div>
                                                         </div>
@@ -1576,6 +1568,7 @@ const MeetingDetails: React.FC<MeetingDetailsProps> = ({ meeting: initialMeeting
 
                                             return filteredTranscript.map((entry, i) => (
                                                 <div key={i} className="group">
+
                                                     <div className="flex items-center gap-2 mb-1">
                                                         <span className={`text-xs font-semibold text-white ${entry.speaker === 'user'
                                                             ? 'bg-blue-600'
@@ -1589,6 +1582,8 @@ const MeetingDetails: React.FC<MeetingDetailsProps> = ({ meeting: initialMeeting
                                                         <span className="text-xs text-text-tertiary font-mono">{entry.timestamp ? formatTime(entry.timestamp) : '0:00'}</span>
                                                     </div>
                                                     <p className="text-text-secondary text-[15px] leading-relaxed transition-colors select-text cursor-text">{entry.text}</p>
+
+
                                                 </div>
                                             ));
 
@@ -1705,12 +1700,17 @@ const MeetingDetails: React.FC<MeetingDetailsProps> = ({ meeting: initialMeeting
                         {activeTab === 'analysis' && (
                             <motion.section initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }}>
                                 {meeting.detailedSummary?.liveAnalysis ? (
-                                    <LiveAnalysisContent
-                                        hideBar="Missing Details"
-                                        analysisData={meeting.detailedSummary.liveAnalysis}
-                                        aiInsight={meeting.detailedSummary.liveAnalysis.signals?.[0]?.ask_now || undefined}
-                                        calledFromAnalysisTab
-                                    />
+                                    <>
+                                        <div className={`rounded-2xl mb-4 overflow-hidden ${isLight ? 'transparent' : 'bg-[#0d0d0f]'}`}>
+                                            <DealHealthScore analysisData={meeting.detailedSummary.liveAnalysis} calledFromAnalysisTab={true} />
+                                        </div>
+                                        <LiveAnalysisContent
+                                            hideBar="Missing Details"
+                                            analysisData={meeting.detailedSummary.liveAnalysis}
+                                            aiInsight={meeting.detailedSummary.liveAnalysis.signals?.[0]?.ask_now || undefined}
+                                            calledFromAnalysisTab
+                                        />
+                                    </>
                                 ) : (
                                     <div className={`flex flex-col items-center justify-center py-16 gap-4 rounded-2xl border border-dashed ${isLight ? 'border-slate-200 bg-slate-50/50' : 'border-white/[0.07] bg-white/[0.02]'}`}>
                                         <div className={`w-12 h-12 rounded-2xl flex items-center justify-center ${isLight ? 'bg-slate-100' : 'bg-white/[0.05]'}`}>

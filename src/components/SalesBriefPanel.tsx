@@ -8,6 +8,7 @@ import {
     GitBranch, Briefcase
 } from 'lucide-react';
 import { useResolvedTheme } from '../hooks/useResolvedTheme';
+import { guardSession } from '../lib/firebase';
 
 const GENERIC_DOMAINS = new Set([
     'gmail.com', 'yahoo.com', 'outlook.com', 'hotmail.com', 'icloud.com',
@@ -242,6 +243,7 @@ const SalesBriefPanel: React.FC<SalesBriefPanelProps> = ({ eventData, onClose })
     const [loadingStage, setLoadingStage] = useState(0);
     const [hasTavily, setHasTavily] = useState<boolean | null>(null);
     const [isCopied, setIsCopied] = useState(false);
+    const [fromCache, setFromCache] = useState(false);
 
     const copyToClipboard = () => {
         if (!intel) return;
@@ -347,7 +349,10 @@ const SalesBriefPanel: React.FC<SalesBriefPanelProps> = ({ eventData, onClose })
         return () => clearInterval(t);
     }, [loading]);
 
-    const fetchIntel = useCallback(async () => {
+    const fetchIntel = useCallback(async (forceRefresh = false) => {
+        const sessionActive = await guardSession();
+        if (!sessionActive) return;
+
         if (!companyName) {
             setError('Could not identify the prospect company from this meeting\'s attendees.');
             setLoading(false);
@@ -356,10 +361,11 @@ const SalesBriefPanel: React.FC<SalesBriefPanelProps> = ({ eventData, onClose })
 
         setLoading(true);
         setError(null);
-        setIntel(null);
+        // Only clear displayed intel on a force-refresh so the previous data
+        // stays visible while the new request is in-flight.
+        if (forceRefresh) setIntel(null);
 
         try {
-            // Check Tavily key first
             const creds = await window.electronAPI.getStoredCredentials();
             const tavily = !!creds?.hasTavilyKey;
             setHasTavily(tavily);
@@ -370,9 +376,14 @@ const SalesBriefPanel: React.FC<SalesBriefPanelProps> = ({ eventData, onClose })
                 return;
             }
 
-            const result = await window.electronAPI?.fetchCompanyIntel({ companyName, domain });
+            const result = await window.electronAPI?.fetchCompanyIntel({ companyName, domain, forceRefresh });
             if (result.success && result.intel) {
                 setIntel(result.intel);
+                setFromCache(result.fromCache ?? false);
+                // Persist to AppState for LLM context (previous change)
+                window.electronAPI?.setCompanyIntel?.(result.intel).catch((e: any) =>
+                    console.warn('[SalesBriefPanel] Failed to store company intel:', e)
+                );
             } else {
                 setError(result.error || 'Failed to fetch company intelligence.');
             }
@@ -435,7 +446,7 @@ const SalesBriefPanel: React.FC<SalesBriefPanelProps> = ({ eventData, onClose })
                             <Briefcase size={13} strokeWidth={2.3} />
                         </div>
                         <div>
-                            <p className="text-[13px] font-semibold text-text-primary leading-none">Sales Brief</p>
+                            <p className="text-[13px] font-semibold text-text-primary leading-none">Company Insights</p>
                             <p className={['text-[10px] mt-0.5 truncate max-w-[280px]',
                                 isLight ? 'text-slate-400' : 'text-slate-500'].join(' ')}>
                                 Key company intelligence at a glance.
@@ -446,8 +457,8 @@ const SalesBriefPanel: React.FC<SalesBriefPanelProps> = ({ eventData, onClose })
                         {intel && (
                             <>
                                 <button
-                                    onClick={fetchIntel}
-                                    title="Refresh"
+                                    onClick={() => fetchIntel(true)}
+                                    title="Re-fetch company intelligence"
                                     className={['p-1.5 rounded-lg transition-colors',
                                         isLight ? 'text-slate-400 hover:text-slate-600 hover:bg-slate-100' : 'text-slate-500 hover:text-slate-300 hover:bg-white/[0.07]'].join(' ')}
                                 >
@@ -512,7 +523,7 @@ const SalesBriefPanel: React.FC<SalesBriefPanelProps> = ({ eventData, onClose })
                                     <p className="text-[14px] font-semibold text-text-primary mb-1">Tavily API key required</p>
                                     <p className={['text-[12px] leading-relaxed max-w-xs',
                                         isLight ? 'text-slate-500' : 'text-slate-400'].join(' ')}>
-                                        Sales Brief uses Tavily to fetch live company data. Add your key in{' '}
+                                        Company Insights uses Tavily to fetch live company data. Add your key in{' '}
                                         <span className="font-semibold text-text-primary">Settings → AI Providers</span>.
                                     </p>
                                 </div>
@@ -527,14 +538,14 @@ const SalesBriefPanel: React.FC<SalesBriefPanelProps> = ({ eventData, onClose })
                                     <AlertCircle size={22} className="text-red-400" />
                                 </div>
                                 <div>
-                                    <p className="text-[14px] font-semibold text-text-primary mb-1">Could not load brief</p>
+                                    <p className="text-[14px] font-semibold text-text-primary mb-1">Could not load insights</p>
                                     <p className={['text-[12px] leading-relaxed max-w-xs',
                                         isLight ? 'text-slate-500' : 'text-slate-400'].join(' ')}>
                                         {error}
                                     </p>
                                 </div>
                                 <button
-                                    onClick={fetchIntel}
+                                    onClick={() => fetchIntel(true)}
                                     className={['flex items-center gap-2 px-4 py-2 rounded-xl text-[12px] font-semibold transition-colors',
                                         isLight ? 'bg-slate-100 text-slate-700 hover:bg-slate-200' : 'bg-white/[0.07] text-slate-200 hover:bg-white/[0.12]'].join(' ')}
                                 >
@@ -774,9 +785,8 @@ const SalesBriefPanel: React.FC<SalesBriefPanelProps> = ({ eventData, onClose })
                                     <div className="flex items-center gap-1.5">
                                         <div className={['w-1.5 h-1.5 rounded-full',
                                             isLight ? 'bg-blue-400' : 'bg-blue-500'].join(' ')} />
-                                        <span className={['text-[10px] font-medium',
-                                            isLight ? 'text-slate-400' : 'text-slate-500'].join(' ')}>
-                                            AI-generated intelligence
+                                        <span className={['text-[10px] font-medium', isLight ? 'text-slate-400' : 'text-slate-500'].join(' ')}>
+                                            {fromCache ? 'Cached intelligence — click ↻ to refresh' : 'AI-generated intelligence'}
                                         </span>
                                         <span className={isLight ? 'text-slate-300' : 'text-slate-600'}>·</span>
                                         <span className={['text-[10px]', isLight ? 'text-slate-400' : 'text-slate-500'].join(' ')}>

@@ -64,6 +64,8 @@ export interface StoredCredentials {
     // but we keep both encrypted at rest to avoid casual exfiltration)
     supabaseUrl?: string;
     supabaseAnonKey?: string;
+    // Knowledge Base
+    knowledgeModeActive?: boolean;
 }
 
 export class CredentialsManager {
@@ -119,11 +121,12 @@ export class CredentialsManager {
     }
 
     public getSttProvider(): 'google' | 'groq' | 'openai' | 'deepgram' | 'elevenlabs' | 'azure' | 'ibmwatson' | 'soniox' {
-        return this.credentials.sttProvider || 'azure';
+        const envProvider = process.env.STT_PROVIDER as StoredCredentials['sttProvider'];
+        return this.credentials.sttProvider || envProvider || 'azure';
     }
 
     public getDeepgramApiKey(): string | undefined {
-        return this.credentials.deepgramApiKey;
+        return this.credentials.deepgramApiKey || process.env.DEEPGRAM_API_KEY;
     }
 
     public getGroqSttApiKey(): string | undefined {
@@ -143,7 +146,7 @@ export class CredentialsManager {
     }
 
     public getAzureApiKey(): string | undefined {
-        return this.credentials.azureApiKey || process.env.AZURE_SPEECH_API_KEY;
+        return this.credentials.azureApiKey || process.env.AZURE_SPEECH_API_KEY || process.env.AZURE_SPEECH_KEY;
     }
 
     public getAzureRegion(): string {
@@ -299,6 +302,17 @@ export class CredentialsManager {
         this.saveCredentials();
         console.log(`[CredentialsManager] AI Response Language set to: ${language}`);
     }
+
+    public getKnowledgeModeActive(): boolean {
+        return this.credentials.knowledgeModeActive ?? false;
+    }
+
+    public setKnowledgeModeActive(enabled: boolean): void {
+        this.credentials.knowledgeModeActive = enabled;
+        this.saveCredentials();
+        console.log(`[CredentialsManager] Knowledge mode persisted: ${enabled}`);
+    }
+
     public setDefaultModel(model: string): void {
         this.credentials.defaultModel = model;
         this.saveCredentials();

@@ -1,11 +1,14 @@
 import { ForwardRefExoticComponent, RefAttributes, useEffect, useState } from "react";
 import { motion, type Variants } from "framer-motion";
-import { User, Phone, Mail, Lock, Eye, EyeOff, Sparkles, LucideProps, LoaderCircle } from "lucide-react";
-import { signInWithGoogle, signInWithEmail, signUpWithEmailExtended, resetPassword } from '../lib/firebase';
+import { User, Phone, Mail, Lock, Eye, EyeOff, Sparkles, LucideProps, LoaderCircle, X } from "lucide-react";
+import { signInWithGoogle, signInWithEmail, signUpWithEmailExtended, resetPassword, getAuthErrorMessage } from '../lib/firebase';
 import { useResolvedTheme } from '../hooks/useResolvedTheme';
+import godojoLogo from '../assets/logo-variant-3.svg';
 
 interface SignInProps {
     onSignedIn?: () => void;
+    bannerMessage?: string | null;
+    onBannerDismiss?: () => void;
 }
 
 const fieldVariants: Variants = {
@@ -35,7 +38,7 @@ type FieldValuesType = {
     placeholder: string;
 }
 
-export const SignIn: React.FC<SignInProps> = ({ onSignedIn }) => {
+export const SignIn: React.FC<SignInProps> = ({ bannerMessage, onBannerDismiss }) => {
 
     const [mode, setMode] = useState<'sign-in' | 'sign-up' | 'reset'>('sign-in');
     const [userData, setUserData] = useState({ email: "", password: "", displayName: "", phoneNumber: "" });
@@ -43,6 +46,10 @@ export const SignIn: React.FC<SignInProps> = ({ onSignedIn }) => {
     const [error, setError] = useState<string | null>(null);
     const [info, setInfo] = useState<string | null>(null);
     const [showPassword, setShowPassword] = useState(false);
+
+    // Set to a User object after email/password sign-up until email is verified
+    const [pendingVerificationUser, setPendingVerificationUser] = useState<import('firebase/auth').User | null>(null);
+
     const isLight = useResolvedTheme() === 'light';
 
     const [googleBusy, setGoogleBusy] = useState(false);
@@ -77,11 +84,10 @@ export const SignIn: React.FC<SignInProps> = ({ onSignedIn }) => {
 
         try {
             await signInWithGoogle();
-            onSignedIn?.();
         } catch (e: any) {
             const msg: string = e?.message ?? '';
             if (!msg.toLowerCase().includes('cancelled') && !msg.toLowerCase().includes('closed')) {
-                setError(msg || 'Google sign-in failed. Please try again.');
+                setError(getAuthErrorMessage(e) || 'Google sign-in failed. Please try again.');
             }
         } finally {
             setGoogleBusy(false);
@@ -104,10 +110,11 @@ export const SignIn: React.FC<SignInProps> = ({ onSignedIn }) => {
 
             if (mode === 'sign-up') {
                 await signUpWithEmailExtended({ email, password, displayName, phoneNumber });
-                onSignedIn?.();
+                // Do not call onSignedIn. Firebase fires onAuthStateChanged which
+                // subscribeAuthState in App.tsx intercepts. If emailVerified=false
+                // it shows EmailVerification; if true it opens the app.
             } else if (mode === 'sign-in') {
                 await signInWithEmail(email, password);
-                onSignedIn?.();
             } else if (mode === 'reset') {
                 await resetPassword(email);
                 setInfo('Password reset email sent.');
@@ -115,7 +122,7 @@ export const SignIn: React.FC<SignInProps> = ({ onSignedIn }) => {
             }
 
         } catch (err: any) {
-            setError(err?.message ?? 'Authentication failed');
+            setError(getAuthErrorMessage(err) || 'Authentication failed. Please try again.');
         } finally {
             setBusy(false);
             setUserData({ email: "", password: "", phoneNumber: "", displayName: "" });
@@ -223,13 +230,29 @@ export const SignIn: React.FC<SignInProps> = ({ onSignedIn }) => {
                         transition={{ duration: 0.5 }}
                         className="mb-6 flex items-center justify-center gap-2"
                     >
-                        <div className="relative flex h-8 w-8 items-center justify-center rounded-lg bg-gradient-to-br from-blue-400 to-blue-600 shadow-[0_0_20px_rgba(59,130,246,0.6)]">
+                        {/* <div className="relative flex h-8 w-8 items-center justify-center rounded-lg bg-gradient-to-br from-blue-400 to-blue-600 shadow-[0_0_20px_rgba(59,130,246,0.6)]">
                             <Sparkles size={16} className="text-white" />
                         </div>
                         <span className={`text-xl font-semibold tracking-tight ${isLight ? "text-slate-900" : "text-white"}`}>
                             GoDojo AI
-                        </span>
+                        </span> */}
+                        <img src={godojoLogo} alt="GoDojo AI" className="h-10 object-contain" />
                     </motion.div>
+
+                    {bannerMessage && (
+                        <motion.div
+                            initial={{ opacity: 0, y: -8 }}
+                            animate={{ opacity: 1, y: 0 }}
+                            className="mb-4 flex items-start gap-2 rounded-xl border border-amber-500/30 bg-amber-500/10 px-4 py-3 text-sm text-amber-300"
+                        >
+                            <span className="flex-1">{bannerMessage}</span>
+                            {onBannerDismiss && (
+                                <button onClick={onBannerDismiss} className="mt-0.5 shrink-0 opacity-60 hover:opacity-100">
+                                    <X size={14} />
+                                </button>
+                            )}
+                        </motion.div>
+                    )}
 
                     {/* Card */}
                     <motion.div

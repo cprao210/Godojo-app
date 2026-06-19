@@ -16,7 +16,7 @@ interface RollingTranscriptProps {
  * - Text flows from right to left as new words arrive
  * - Edge fade gradients for visual polish
  */
-const RollingTranscript: React.FC<RollingTranscriptProps> = ({ text, isActive = true, surfaceStyle, speakerName = "Them" }) => {
+const RollingTranscript: React.FC<RollingTranscriptProps> = ({ text, isActive = true, surfaceStyle, speakerName = "" }) => {
     const containerRef = useRef<HTMLDivElement>(null);
 
     // Auto-scroll to the end when text updates

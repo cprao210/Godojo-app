@@ -241,7 +241,7 @@ const SettingsPopup = () => {
                         </button>
                     </div>
 
-                    {/* Interviewer Transcript Toggle */}
+                    {/* Client Transcript Toggle */}
                     <div className={`flex items-center justify-between px-3 py-2 rounded-lg transition-colors duration-200 group cursor-default ${itemHoverClass}`}>
                         <div className="flex items-center gap-3">
                             <MessageSquare

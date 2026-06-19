@@ -98,6 +98,7 @@ interface ElectronAPI {
   onNativeAudioSuggestion: (callback: (suggestion: { context: string; lastQuestion: string; confidence: number }) => void) => () => void
   onNativeAudioConnected: (callback: () => void) => () => void
   onNativeAudioDisconnected: (callback: () => void) => () => void
+  onMeetingAudioWarning: (callback: (message: string) => void) => () => void
   onSuggestionGenerated: (callback: (data: { question: string; suggestion: string; confidence: number }) => void) => () => void
   onSuggestionProcessingStart: (callback: () => void) => () => void
   onSuggestionError: (callback: (error: { error: string }) => void) => () => void
@@ -146,8 +147,8 @@ interface ElectronAPI {
   uploadTranscript: (text: string, title?: string) => Promise<{ success: boolean; meetingId?: string; error?: string }>
   updateMeetingSummary: (id: string, updates: { overview?: string, actionItems?: string[], keyPoints?: string[], actionItemsTitle?: string, keyPointsTitle?: string }) => Promise<boolean>
   onMeetingsUpdated: (callback: () => void) => () => void
-  getDisplayName: (role: 'user' | 'interviewer' | 'assistant') => Promise<string>;
-  getSpeakerNames: () => Promise<{ user: string; interviewer: string }>;
+  getDisplayName: (role: 'user' | 'client' | 'assistant') => Promise<string>;
+  getSpeakerNames: () => Promise<{ user: string; client: string }>;
 
   // Intelligence Mode Events
   onIntelligenceAssistUpdate: (callback: (data: { insight: string }) => void) => () => void
@@ -167,8 +168,8 @@ interface ElectronAPI {
   setDefaultModel: (modelId: string) => Promise<{ success: boolean; error?: string }>
   toggleModelSelector: (coords: { x: number; y: number }) => Promise<void>
   forceRestartOllama: () => Promise<void>
-  onSpeakerNamesResolved: (callback: (names: { user: string; interviewer: string }) => void) => () => void;
-  updateSpeakerNames: (names: { user: string; interviewer: string }) => Promise<{ success: boolean }>,
+  onSpeakerNamesResolved: (callback: (names: { user: string; client: string }) => void) => () => void;
+  updateSpeakerNames: (names: { user: string; client: string }) => Promise<{ success: boolean }>,
 
   // Settings Window
   toggleSettingsWindow: (coords?: { x: number; y: number }) => Promise<void>
@@ -283,6 +284,7 @@ interface ElectronAPI {
 
   onTavilySearching: (callback: (data: { entity: string }) => void) => () => void
   onTavilySearchDone: (callback: (data: { entity: string | null; status: string; fromCache: boolean }) => void) => () => void
+  onCompanyIntelUpdated: (callback: (intel: Record<string, any> | null) => void) => (() => void);
 
   // Keybind Management
   getKeybinds: () => Promise<Array<{ id: string; label: string; accelerator: string; isGlobal: boolean; defaultAccelerator: string }>>
@@ -301,10 +303,34 @@ interface ElectronAPI {
   // Profile Engine API
   profileUploadResume: (filePath: string) => Promise<{ success: boolean; error?: string }>;
   profileGetStatus: () => Promise<{ hasProfile: boolean; profileMode: boolean; name?: string; role?: string; totalExperienceYears?: number }>;
+  profileGetMode: () => Promise<{ active: boolean }>;
   profileSetMode: (enabled: boolean) => Promise<{ success: boolean; error?: string }>;
   profileDelete: () => Promise<{ success: boolean; error?: string }>;
   profileGetProfile: () => Promise<any>;
   profileSelectFile: () => Promise<{ success?: boolean; cancelled?: boolean; filePath?: string; error?: string }>;
+
+  // Company Context API
+  companyGetContext: () => Promise<any>;
+  companySaveContext: (data: any) => Promise<{ success: boolean; error?: string }>;
+  companyUploadAsset: (type: string, filePath: string) => Promise<{
+    success: boolean;
+    asset?: {
+      id: string;
+      type: string;
+      label: string;
+      status: string;
+      lastUpdated: string;
+      fileData: string;       // base64 — held in frontend draft only
+      fileName: string;
+      mimeType: string;
+    };
+    error?: string;
+  }>;
+  companyDeleteAsset: (assetId: string) => Promise<{ success: boolean; error?: string }>;
+  companySyncAsset: (assetId: string) => Promise<{ success: boolean; status?: string; error?: string }>;
+  companySetPersonaEngine: (enabled: boolean) => Promise<{ success: boolean; error?: string }>;
+  companySelectFile: () => Promise<{ filePath?: string; fileName?: string; fileSize?: number; cancelled?: boolean; success?: boolean; error?: string }>;
+  companyGetCompleteness: () => Promise<number>;
 
   // JD & Research API
   profileUploadJD: (filePath: string) => Promise<{ success: boolean; error?: string }>;
@@ -316,6 +342,7 @@ interface ElectronAPI {
 
   // Tavily Search API
   setTavilyApiKey: (apiKey: string) => Promise<{ success: boolean; error?: string }>;
+  setCompanyIntel: (intel: Record<string, any> | null) => Promise<{ success: boolean; error?: string }>;
 
   // Overlay Opacity (Stealth Mode)
   setOverlayOpacity: (opacity: number) => Promise<void>;
@@ -366,9 +393,10 @@ interface ElectronAPI {
     lastError?: string | null;
   }>;
   supabaseForceBackfill: () => Promise<{ success: boolean; error?: string }>;
+  supabaseSyncAudit: () => Promise<{ success: boolean; error?: string }>;
 
   // Company Intelligence
-  fetchCompanyIntel: (payload: { companyName: string; domain?: string }) => Promise<{ success: boolean; intel?: any; error?: string }>;
+  fetchCompanyIntel: (payload: { companyName: string; domain?: string; forceRefresh?: boolean }) => Promise<{ success: boolean; intel?: any; fromCache?: boolean; error?: string }>;
 
   // Platform
   platform: NodeJS.Platform;
@@ -542,7 +570,7 @@ contextBridge.exposeInMainWorld("electronAPI", {
   windowMaximize: () => ipcRenderer.invoke("window-maximize"),
   windowClose: () => ipcRenderer.invoke("window-close"),
   windowIsMaximized: () => ipcRenderer.invoke("window-is-maximized"),
-  updateSpeakerNames: (names: { user: string; interviewer: string }) =>
+  updateSpeakerNames: (names: { user: string; client: string }) =>
     ipcRenderer.invoke("update-speaker-names", names),
 
   analyzeImageFile: (path: string) => ipcRenderer.invoke("analyze-image-file", path),
@@ -599,7 +627,7 @@ contextBridge.exposeInMainWorld("electronAPI", {
       ipcRenderer.removeListener('disguise-changed', subscription)
     }
   },
-  getDisplayName: (role: 'user' | 'interviewer' | 'assistant') => ipcRenderer.invoke("get-display-name", role),
+  getDisplayName: (role: 'user' | 'client' | 'assistant') => ipcRenderer.invoke("get-display-name", role),
   getSpeakerNames: () => ipcRenderer.invoke("get-speaker-names"),
 
   onSettingsVisibilityChange: (callback: (isVisible: boolean) => void) => {
@@ -676,6 +704,13 @@ contextBridge.exposeInMainWorld("electronAPI", {
       ipcRenderer.removeListener("native-audio-disconnected", subscription)
     }
   },
+  onMeetingAudioWarning: (callback: (message: string) => void) => {
+    const subscription = (_: any, message: string) => callback(message)
+    ipcRenderer.on("meeting-audio-warning", subscription)
+    return () => {
+      ipcRenderer.removeListener("meeting-audio-warning", subscription)
+    }
+  },
   onSuggestionGenerated: (callback: (data: { question: string; suggestion: string; confidence: number }) => void) => {
     const subscription = (_: any, data: any) => callback(data)
     ipcRenderer.on("suggestion-generated", subscription)
@@ -703,6 +738,8 @@ contextBridge.exposeInMainWorld("electronAPI", {
   getNativeAudioStatus: () => ipcRenderer.invoke("native-audio-status"),
   getInputDevices: () => ipcRenderer.invoke("get-input-devices"),
   getOutputDevices: () => ipcRenderer.invoke("get-output-devices"),
+  setCompanyIntel: (intel: Record<string, any> | null) =>
+    ipcRenderer.invoke('set-company-intel', intel),
   setRecognitionLanguage: (key: string) => ipcRenderer.invoke("set-recognition-language", key),
   getAiResponseLanguages: () => ipcRenderer.invoke("get-ai-response-languages"),
   setAiResponseLanguage: (language: string) => ipcRenderer.invoke("set-ai-response-language", language),
@@ -1045,7 +1082,7 @@ contextBridge.exposeInMainWorld("electronAPI", {
     ipcRenderer.on('sales-brief-stream-error', sub);
     return () => { ipcRenderer.removeListener('sales-brief-stream-error', sub); };
   },
-  fetchCompanyIntel: (payload: { companyName: string; domain?: string }) =>
+  fetchCompanyIntel: (payload: { companyName: string; domain?: string; forceRefresh?: boolean }) =>
     ipcRenderer.invoke('fetch-company-intel', payload),
 
   // Zoom Calendar
@@ -1191,6 +1228,13 @@ contextBridge.exposeInMainWorld("electronAPI", {
     return () => ipcRenderer.removeListener('tavily-search-done', subscription);
   },
 
+  // Add alongside similar onXxx listeners:
+  onCompanyIntelUpdated: (callback: (intel: Record<string, any> | null) => void) => {
+    const handler = (_: any, intel: Record<string, any> | null) => callback(intel);
+    ipcRenderer.on('company-intel-updated', handler);
+    return () => ipcRenderer.removeListener('company-intel-updated', handler);
+  },
+
   // Keybind Management
   getKeybinds: () => ipcRenderer.invoke('keybinds:get-all'),
   setKeybind: (id: string, accelerator: string) => ipcRenderer.invoke('keybinds:set', id, accelerator),
@@ -1220,6 +1264,7 @@ contextBridge.exposeInMainWorld("electronAPI", {
   // Profile Engine API
   profileUploadResume: (filePath: string) => ipcRenderer.invoke('profile:upload-resume', filePath),
   profileGetStatus: () => ipcRenderer.invoke('profile:get-status'),
+  profileGetMode: () => ipcRenderer.invoke('profile:get-mode'),
   profileSetMode: (enabled: boolean) => ipcRenderer.invoke('profile:set-mode', enabled),
   profileDelete: () => ipcRenderer.invoke('profile:delete'),
   profileGetProfile: () => ipcRenderer.invoke('profile:get-profile'),
@@ -1232,6 +1277,16 @@ contextBridge.exposeInMainWorld("electronAPI", {
   profileGenerateNegotiation: (force?: boolean) => ipcRenderer.invoke('profile:generate-negotiation', force),
   profileGetNegotiationState: () => ipcRenderer.invoke('profile:get-negotiation-state'),
   profileResetNegotiation: () => ipcRenderer.invoke('profile:reset-negotiation'),
+
+  // Company Context API
+  companyGetContext: () => ipcRenderer.invoke('company:getContext'),
+  companySaveContext: (data: any) => ipcRenderer.invoke('company:saveContext', data),
+  companyUploadAsset: (type: string, filePath: string) => ipcRenderer.invoke('company:uploadAsset', type, filePath),
+  companyDeleteAsset: (assetId: string) => ipcRenderer.invoke('company:deleteAsset', assetId),
+  companySyncAsset: (assetId: string) => ipcRenderer.invoke('company:syncAsset', assetId),
+  companySetPersonaEngine: (enabled: boolean) => ipcRenderer.invoke('company:setPersonaEngine', enabled),
+  companySelectFile: () => ipcRenderer.invoke('company:selectFile'),
+  companyGetCompleteness: () => ipcRenderer.invoke('company:getCompleteness'),
 
   // Tavily Search API
   setTavilyApiKey: (apiKey: string) => ipcRenderer.invoke('set-tavily-api-key', apiKey),
@@ -1293,6 +1348,7 @@ contextBridge.exposeInMainWorld("electronAPI", {
     ipcRenderer.invoke('supabase:set-credentials', { url, anonKey }),
   supabaseGetMirrorStatus: () => ipcRenderer.invoke('supabase:get-mirror-status'),
   supabaseForceBackfill: () => ipcRenderer.invoke('supabase:force-backfill'),
+  supabaseSyncAudit: () => ipcRenderer.invoke('supabase:sync-audit'),
 
   // Platform
   platform: process.platform,

@@ -12,6 +12,12 @@ document.documentElement.setAttribute(
   window.electronAPI?.platform ?? process?.platform ?? ''
 );
 
+// Mark the overlay window so CSS can scope rules (e.g. #root sizing)
+const _urlWindowParam = new URLSearchParams(window.location.search).get('window');
+if (_urlWindowParam) {
+  document.documentElement.setAttribute('data-window', _urlWindowParam);
+}
+
 // Step 1: Apply cached theme synchronously — before React renders.
 // This ensures useResolvedTheme()'s initial useState read sees the correct value.
 const cachedTheme = localStorage.getItem(THEME_CACHE_KEY) as 'light' | 'dark' | null;

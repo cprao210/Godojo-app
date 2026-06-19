@@ -84,7 +84,7 @@ const UpdateModal: React.FC<UpdateModalProps> = ({
     };
 
     const handleCopyCommand = () => {
-        navigator.clipboard.writeText('xattr -cr /Applications/Natively.app');
+        navigator.clipboard.writeText('xattr -cr /Applications/Godojo.ai.app');
         setCopied(true);
         setTimeout(() => setCopied(false), 2000);
     };
@@ -191,14 +191,14 @@ const UpdateModal: React.FC<UpdateModalProps> = ({
                                 <div className="flex-1 overflow-y-auto custom-scrollbar pr-2 mb-4 space-y-2 w-full">
                                     <div className="space-y-1 w-full">
                                         <p className="text-[12px] font-medium text-white/80">1. Clear quarantine on the downloaded file:</p>
-                                        <CopyBlock command={`xattr -cr ~/Downloads/Natively-${displayVersion.replace('v', '')}-${instructionsArch || 'arm64'}.dmg`} />
+                                        <CopyBlock command={`xattr -cr ~/Downloads/Godojo.ai-${displayVersion.replace('v', '')}-${instructionsArch || 'arm64'}.dmg`} />
                                     </div>
                                     <div className="space-y-1 mt-1 pl-0.5">
-                                        <p className="text-[12px] font-medium text-white/80">2. Open the file and install Natively.</p>
+                                        <p className="text-[12px] font-medium text-white/80">2. Open the file and install Godojo.ai.</p>
                                     </div>
                                     <div className="space-y-1 mt-3 w-full">
                                         <p className="text-[12px] font-medium text-white/80">3. Clear quarantine on the installed app:</p>
-                                        <CopyBlock command="xattr -cr /Applications/Natively.app" />
+                                        <CopyBlock command="xattr -cr /Applications/Godojo.ai.app" />
                                     </div>
                                 </div>
                                 <div className="flex items-center justify-center mt-auto w-full">
@@ -245,7 +245,7 @@ const UpdateModal: React.FC<UpdateModalProps> = ({
                                     {/* Code Block with Copy */}
                                     <div className="flex items-center justify-between bg-black/20 rounded-lg pl-3 pr-1.5 py-1.5 border border-white/[0.03] group hover:border-white/10 transition-colors">
                                         <code className="text-[10px] font-mono text-blue-400 truncate mr-2 select-all">
-                                            xattr -cr /Applications/Natively.app
+                                            xattr -cr /Applications/Godojo.ai.app
                                         </code>
                                         <button
                                             onClick={handleCopyCommand}

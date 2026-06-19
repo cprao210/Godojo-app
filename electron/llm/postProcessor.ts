@@ -86,10 +86,12 @@ function stripMarkdown(text: string): string {
     const codeBlocks: string[] = [];
     let result = text;
 
-    // Extract code blocks to protect them
+    // Extract code blocks to protect them.
+    // Use a placeholder that contains no underscores or asterisks so the
+    // italic/bold stripping regexes below cannot corrupt it.
     result = result.replace(/```[\s\S]*?```/g, (match) => {
         codeBlocks.push(match);
-        return `__CODE_BLOCK_${codeBlocks.length - 1}__`;
+        return `XCODEBLOCKX${codeBlocks.length - 1}XCODEBLOCKX`;
     });
 
     // Remove headers (# ## ### etc.)
@@ -129,9 +131,8 @@ function stripMarkdown(text: string): string {
     result = result.replace(/\s+/g, " ");
 
     // Restore code blocks
-    // Add newlines around them for better formatting
     codeBlocks.forEach((block, index) => {
-        result = result.replace(`__CODE_BLOCK_${index}__`, `\n${block}\n`);
+        result = result.replace(`XCODEBLOCKX${index}XCODEBLOCKX`, `\n${block}\n`);
     });
 
     return result.trim();

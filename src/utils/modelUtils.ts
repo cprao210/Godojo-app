@@ -21,9 +21,13 @@ export const STANDARD_CLOUD_MODELS: Record<string, {
     },
     claude: {
         hasKeyCheck: (creds) => !!creds?.hasClaudeKey,
-        ids: ['claude-sonnet-4-6'],
-        names: ['Sonnet 4.6'],
-        descs: ['Anthropic'],
+        ids: [
+            'claude-opus-4-6',
+            'claude-sonnet-4-6',
+            'claude-haiku-4-5-20251001',
+        ],
+        names: ['Claude Opus 4.6', 'Claude Sonnet 4.6', 'Claude Haiku 4.5'],
+        descs: ['Most Capable', 'Balanced', 'Fastest'],
         pmKey: 'claudePreferredModel'
     },
     groq: {

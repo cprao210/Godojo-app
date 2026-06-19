@@ -73,7 +73,7 @@ class ZeroShotClassifier {
     private loadingPromise: Promise<void> | null = null;
     private loadFailed = false;
 
-    private constructor() {}
+    private constructor() { }
 
     static getInstance(): ZeroShotClassifier {
         if (!ZeroShotClassifier.instance) {
@@ -171,7 +171,7 @@ class ZeroShotClassifier {
      * Call this early in app lifecycle to avoid cold-start latency.
      */
     warmup(): void {
-        this.ensureLoaded().catch(() => {});
+        this.ensureLoaded().catch(() => { });
     }
 }
 
@@ -183,8 +183,8 @@ class ZeroShotClassifier {
  * Pattern-based intent detection (fast, no model call)
  * For common patterns this is sufficient
  */
-function detectIntentByPattern(lastInterviewerTurn: string): IntentResult | null {
-    const text = lastInterviewerTurn.toLowerCase().trim();
+function detectIntentByPattern(lastClientTurn: string): IntentResult | null {
+    const text = lastClientTurn.toLowerCase().trim();
 
     // Clarification patterns
     if (/(can you explain|what do you mean|clarify|could you elaborate on that specific)/i.test(text)) {
@@ -236,15 +236,15 @@ function detectIntentByContext(
     recentTranscript: string,
     assistantMessageCount: number
 ): IntentResult {
-    // If we've given multiple answers and interviewer is probing, likely follow_up
+    // If we've given multiple answers and client is probing, likely follow_up
     if (assistantMessageCount >= 2) {
-        // Check if interviewer is drilling down
+        // Check if client is drilling down
         const lines = recentTranscript.split('\n');
-        const interviewerLines = lines.filter(l => l.includes('[INTERVIEWER'));
+        const clientLines = lines.filter(l => l.includes('[CLIENT'));
 
-        // Short interviewer prompts after long exchanges = follow-up probe
-        const lastInterviewerLine = interviewerLines[interviewerLines.length - 1] || '';
-        if (lastInterviewerLine.length < 50 && assistantMessageCount >= 2) {
+        // Short client prompts after long exchanges = follow-up probe
+        const lastClientLine = clientLines[clientLines.length - 1] || '';
+        if (lastClientLine.length < 50 && assistantMessageCount >= 2) {
             return { intent: 'follow_up', confidence: 0.7, answerShape: INTENT_ANSWER_SHAPES.follow_up };
         }
     }
@@ -266,20 +266,20 @@ function detectIntentByContext(
  *   3. Context-based heuristic (0ms, low confidence)
  */
 export async function classifyIntent(
-    lastInterviewerTurn: string | null,
+    lastClientTurn: string | null,
     recentTranscript: string,
     assistantMessageCount: number
 ): Promise<IntentResult> {
     // Tier 1: Try regex-based first (high confidence, instant)
-    if (lastInterviewerTurn) {
-        const patternResult = detectIntentByPattern(lastInterviewerTurn);
+    if (lastClientTurn) {
+        const patternResult = detectIntentByPattern(lastClientTurn);
         if (patternResult) {
             return patternResult;
         }
 
         // Tier 2: Try zero-shot SLM (if regex didn't match)
-        if (lastInterviewerTurn.trim().length > 5) {
-            const slmResult = await ZeroShotClassifier.getInstance().classify(lastInterviewerTurn);
+        if (lastClientTurn.trim().length > 5) {
+            const slmResult = await ZeroShotClassifier.getInstance().classify(lastClientTurn);
             if (slmResult) {
                 return slmResult;
             }

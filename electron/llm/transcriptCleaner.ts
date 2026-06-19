@@ -3,7 +3,7 @@
 // Fast string-based processing for interview copilot
 
 export interface TranscriptTurn {
-    role: 'interviewer' | 'user' | 'assistant';
+    role: 'client' | 'user' | 'assistant';
     text: string;
     timestamp: number;
 }
@@ -56,8 +56,8 @@ function cleanText(text: string): string {
  * Check if a turn is meaningful enough to keep
  */
 function isMeaningfulTurn(turn: TranscriptTurn, cleanedText: string): boolean {
-    // Always keep interviewer speech (priority)
-    if (turn.role === 'interviewer' && cleanedText.length >= 5) {
+    // Always keep client speech (priority)
+    if (turn.role === 'client' && cleanedText.length >= 5) {
         return true;
     }
 
@@ -100,7 +100,7 @@ export function cleanTranscript(turns: TranscriptTurn[]): TranscriptTurn[] {
 
 /**
  * Sparsify transcript to target turn count
- * Prioritizes interviewer speech, keeps recent context
+ * Prioritizes client speech, keeps recent context
  * Target: 8-12 turns, ~300-600 tokens
  */
 export function sparsifyTranscript(
@@ -112,21 +112,21 @@ export function sparsifyTranscript(
     }
 
     // Separate by role
-    const interviewerTurns = turns.filter(t => t.role === 'interviewer');
-    const otherTurns = turns.filter(t => t.role !== 'interviewer');
+    const clientTurns = turns.filter(t => t.role === 'client');
+    const otherTurns = turns.filter(t => t.role !== 'client');
 
-    // Keep all interviewer turns if under limit
+    // Keep all client turns if under limit
     const result: TranscriptTurn[] = [];
 
-    // Prioritize recent interviewer turns (last 6)
-    const recentInterviewer = interviewerTurns.slice(-6);
+    // Prioritize recent client turns (last 6)
+    const recentClient = clientTurns.slice(-6);
 
     // Fill remaining with recent other turns
-    const remainingSlots = maxTurns - recentInterviewer.length;
+    const remainingSlots = maxTurns - recentClient.length;
     const recentOther = otherTurns.slice(-remainingSlots);
 
     // Merge and sort by timestamp
-    result.push(...recentInterviewer, ...recentOther);
+    result.push(...recentClient, ...recentOther);
     result.sort((a, b) => a.timestamp - b.timestamp);
 
     return result;
@@ -137,7 +137,7 @@ export function sparsifyTranscript(
  */
 export function formatTranscriptForLLM(turns: TranscriptTurn[]): string {
     return turns.map(turn => {
-        const label = turn.role === 'interviewer' ? 'INTERVIEWER' :
+        const label = turn.role === 'client' ? 'CLIENT' :
             turn.role === 'user' ? 'ME' : 'ASSISTANT';
         return `[${label}]: ${turn.text}`;
     }).join('\n');

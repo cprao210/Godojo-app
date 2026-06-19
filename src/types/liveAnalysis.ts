@@ -17,6 +17,9 @@ export interface Objection {
     quote: string;
     owner: 'customer' | 'ae';
     status: 'open' | 'deferred';
+    /** AI-suggested answer or rebuttal for this objection. Only populated for
+    customer_question type. Empty string when not applicable. **/
+    suggested_answer?: string;
 }
 
 export interface Signal {

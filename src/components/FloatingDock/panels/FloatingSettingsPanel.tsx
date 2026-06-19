@@ -232,7 +232,7 @@ export const FloatingSettingsPanel: React.FC<FloatingSettingsPanelProps> = ({
                                 className="text-[13px] tracking-widest uppercase font-semibold"
                                 style={{ color: isDragging ? 'rgba(255,255,255,0.85)' : 'rgba(255,255,255,0.45)', transition: 'color 0.2s ease' }}
                             >
-                                Transparency
+                                Interface Opacity
                             </span>
                         </div>
                         {/* Live % badge */}
@@ -269,9 +269,9 @@ export const FloatingSettingsPanel: React.FC<FloatingSettingsPanelProps> = ({
 
                 </div>
 
-                <SettingRow icon={<Camera size={18} strokeWidth={1.8} />} label="Screenshot" divider>
+                {/* <SettingRow icon={<Camera size={18} strokeWidth={1.8} />} label="Screenshot" divider>
                     <KeyBadge keys={screenshotKeys} />
-                </SettingRow>
+                </SettingRow> */}
 
                 <SettingRow icon={<Eye size={18} strokeWidth={1.8} />} label="Show / Hide" divider>
                     <KeyBadge keys={showHideKeys} />
