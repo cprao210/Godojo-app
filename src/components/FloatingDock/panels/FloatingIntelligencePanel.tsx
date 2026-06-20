@@ -74,6 +74,7 @@ interface FloatingIntelligencePanelProps {
     // Analysis state is owned by FloatingDock and passed down — never lost on remount
     analysisData: LiveAnalysisData | null;
     analysisError: string | null;
+    isOpen: boolean;
     isLoading: boolean;
     showTranscript: boolean;
     onRegenerate: () => void;      // Manual / forced refresh — timer is managed by FloatingDock
@@ -365,9 +366,16 @@ export const FloatingIntelligencePanel: React.FC<FloatingIntelligencePanelProps>
     isUserSpeaking,
     speakerNames,
     panelFirstOpenedAt,
+    isOpen,
 }) => {
     const [showRefreshPicker, setShowRefreshPicker] = useState(false);
     const refreshPickerRef = useRef<HTMLDivElement>(null);
+    const [activeTab, setActiveTab] = useState<'meddicc' | 'bant' | 'signals' | 'objections'>('meddicc');
+
+    // Reset to default tab whenever the panel is opened
+    useEffect(() => {
+        if (isOpen) setActiveTab('meddicc');
+    }, [isOpen]);
 
     // Treat an all-missing analysis the same as no data (show WaitingPlaceholder)
     const isAllMissing = (data: LiveAnalysisData) =>
@@ -561,6 +569,66 @@ export const FloatingIntelligencePanel: React.FC<FloatingIntelligencePanelProps>
                 <DealHealthScore analysisData={displayData} isRefreshRun={isRefreshRun} />
             )} */}
 
+            {/* Tab bar — only shown when there is live data */}
+            {displayData && !isLoading && (
+                <div
+                    className="flex items-center gap-0.5 px-3 pt-2.5 pb-0 shrink-0"
+                    style={{ borderBottom: '1px solid rgba(255,255,255,0.06)' }}
+                >
+                    {(
+                        [
+                            {
+                                key: 'meddicc' as const,
+                                label: 'MEDDICC',
+                                badge: `${Object.values(displayData.meddic).filter(f => f.status === 'confirmed').length}/7`,
+                            },
+                            {
+                                key: 'bant' as const,
+                                label: 'BANT',
+                                badge: `${Object.values(displayData.bant).filter(f => f.status === 'confirmed').length}/4`,
+                            },
+                            {
+                                key: 'signals' as const,
+                                label: 'Signals',
+                                badge: displayData.signals.length > 0 ? `${displayData.signals.length}` : null,
+                            },
+                            {
+                                key: 'objections' as const,
+                                label: 'Objections',
+                                badge: displayData.objections.length > 0 ? `${displayData.objections.length}` : null,
+                            },
+                        ] as const
+                    ).map(tab => {
+                        const isActive = activeTab === tab.key;
+                        return (
+                            <button
+                                key={tab.key}
+                                onClick={() => setActiveTab(tab.key)}
+                                className="relative flex items-center gap-1.5 px-3 py-2 text-[11px] font-semibold transition-colors rounded-t-lg"
+                                style={{
+                                    color: isActive ? '#ffffff' : 'rgba(255,255,255,0.35)',
+                                    background: isActive ? 'rgba(255,255,255,0.05)' : 'transparent',
+                                    borderBottom: isActive ? '2px solid #3b82f6' : '2px solid transparent',
+                                }}
+                            >
+                                {tab.label}
+                                {tab.badge && (
+                                    <span
+                                        className="text-[9px] font-bold px-1.5 py-0.5 rounded-full"
+                                        style={{
+                                            background: isActive ? 'rgba(59,130,246,0.25)' : 'rgba(255,255,255,0.08)',
+                                            color: isActive ? '#93c5fd' : 'rgba(255,255,255,0.3)',
+                                        }}
+                                    >
+                                        {tab.badge}
+                                    </span>
+                                )}
+                            </button>
+                        );
+                    })}
+                </div>
+            )}
+
             {/* Content */}
             <div className="overflow-y-auto flex-1" style={{ scrollbarWidth: 'thin', scrollbarColor: 'rgba(255,255,255,0.1) transparent' }}>
                 {isLoading && !isRefreshRun ? (
@@ -592,7 +660,11 @@ export const FloatingIntelligencePanel: React.FC<FloatingIntelligencePanelProps>
                         <WaitingPlaceholder />
                     )
                 ) : (
-                    <LiveAnalysisContent analysisData={displayData} hideBar="Missing Details" />
+                    <LiveAnalysisContent
+                        analysisData={displayData}
+                        hideBar="Missing Details"
+                        activeTab={activeTab}
+                    />
                 )}
             </div>
         </div>

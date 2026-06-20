@@ -2,7 +2,7 @@
   "name": "godojo-ai",
   "version": "1.0.0",
   "main": "dist-electron/electron/main.js",
-  "description": "Godojo.ai is a meeting notes app that uses AI to generate notes from your meetings.",
+  "description": "GoDojo AI is an AI sales copilot that listens to your calls live, tracks deal intelligence like MEDDICC and BANT in real time, and writes your meeting notes for you.",
   "scripts": {
     "clean": "rimraf dist dist-electron",
     "dev": "vite",
@@ -23,9 +23,9 @@
   },
   "build": {
     "generateUpdatesFilesForAllChannels": true,
-    "appId": "com.geoserves.sales-ai",
+    "appId": "com.geoserves.godojo-ai",
     "afterPack": "./scripts/ad-hoc-sign.js",
-    "productName": "Sales AI",
+    "productName": "GoDojo AI",
     "files": [
       "dist",
       "dist-electron",

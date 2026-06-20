@@ -20,6 +20,8 @@ export interface Objection {
     /** AI-suggested answer or rebuttal for this objection. Only populated for
     customer_question type. Empty string when not applicable. **/
     suggested_answer?: string;
+    /** Stable content-derived id stamped at merge time. Never changes after first assignment. */
+    id?: string;
 }
 
 export interface Signal {
@@ -28,6 +30,8 @@ export interface Signal {
     ask_now: string;
     intensity: 'high' | 'medium' | 'low';
     category: 'positive' | 'negative' | 'neutral';
+    /** Stable content-derived id stamped at merge time. Never changes after first assignment. */
+    id?: string;
 }
 
 export interface LiveAnalysisData {

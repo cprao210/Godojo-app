@@ -53,6 +53,19 @@ if (os.platform() === 'darwin') {
 
   verifyArtifacts(macTargets.map((target) => artifactMap[target]));
 
+} else if (os.platform() === 'win32') {
+  const prebuiltMap = {
+    x64: 'index.win32-x64-msvc.node',
+    ia32: 'index.win32-ia32-msvc.node',
+    arm64: 'index.win32-arm64-msvc.node',
+  };
+  const prebuilt = prebuiltMap[os.arch()];
+  if (prebuilt && fs.existsSync(path.join(nativeModulePath, prebuilt))) {
+    console.log(`[build-native] Pre-built Windows artifact found (${prebuilt}), skipping Rust compilation.`);
+  } else {
+    console.log(`Building for current platform: ${os.platform()}`);
+    runCommand('npx napi build --platform --release');
+  }
 } else {
   console.log(`Building for current platform: ${os.platform()}`);
   runCommand('npx napi build --platform --release');

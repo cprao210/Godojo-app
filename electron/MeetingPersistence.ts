@@ -307,10 +307,12 @@ export class MeetingPersistence {
             durationMs: durationMs,
             summary: "Generating summary...",
             detailedSummary: { actionItems: [], keyPoints: [] },
-            transcript: snapshot.transcript,
-            usage: snapshot.usage,
+            transcript: [],
+            usage: [],
             isProcessed: false
         };
+
+        console.log("==> placeholder: ", placeholder.transcript);
 
         try {
             DatabaseManager.getInstance().saveMeeting(placeholder, snapshot.startTime, durationMs);

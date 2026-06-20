@@ -221,6 +221,7 @@ export const FloatingDock: React.FC<FloatingDockProps> = ({
                             />
                         )}
                         <FloatingIntelligencePanel
+                            isOpen={activePanel === 'intelligence'}
                             isMeetingPaused={isMeetingPaused}
                             analysisData={analysisData}
                             analysisError={analysisError}
