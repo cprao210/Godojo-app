@@ -45,7 +45,7 @@ function useDebugOpen() {
 }
 
 // ── Shortcut label (platform-aware) ──────────────────────────────────────────
-const SHORTCUT_LABEL = isMac ? '⌘⇧D' : 'Ctrl+Shift+D';
+const SHORTCUT_LABEL = isMac ? '⌘ + ⇧ + D' : 'Ctrl + Shift + D';
 
 interface DebugToggleFABProps {
     /** Pass total error count from log entries if you want the red dot */

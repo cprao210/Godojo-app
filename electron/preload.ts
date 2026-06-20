@@ -10,6 +10,8 @@ const DEBUG_IPC = {
   BACKEND_LOGS_CLEAR: 'debug:backend-logs-clear',
 } as const;
 
+const IS_DEV = process.env.NODE_ENV === 'development';
+
 // Minimal type needed by preload — avoids cross-bundle src/ import
 type LogEntry = { id: string; timestamp: number; level: string; source: string; message: string; metadata?: unknown; };
 
@@ -497,19 +499,21 @@ contextBridge.exposeInMainWorld("electronAPI", {
       ipcRenderer.removeListener("debug-success", subscription)
     }
   },
-  debugGetBackendLogs: () =>
-    ipcRenderer.invoke(DEBUG_IPC.BACKEND_LOGS_REQUEST),
-  debugClearBackendLogs: () =>
-    ipcRenderer.invoke(DEBUG_IPC.BACKEND_LOGS_CLEAR),
-  onBackendLogsPush: (
-    callback: (entries: LogEntry[]) => void
-  ) => {
-    const subscription = (_event: Electron.IpcRendererEvent, entries: any) =>
-      callback(entries);
-    ipcRenderer.on(DEBUG_IPC.BACKEND_LOGS_PUSH, subscription);
-    return () =>
-      ipcRenderer.removeListener(DEBUG_IPC.BACKEND_LOGS_PUSH, subscription);
-  },
+  debugGetBackendLogs: IS_DEV
+    ? () => ipcRenderer.invoke(DEBUG_IPC.BACKEND_LOGS_REQUEST)
+    : async () => [],
+  debugClearBackendLogs: IS_DEV
+    ? () => ipcRenderer.invoke(DEBUG_IPC.BACKEND_LOGS_CLEAR)
+    : async () => { },
+  onBackendLogsPush: IS_DEV
+    ? (callback: (entries: LogEntry[]) => void) => {
+      const subscription = (_event: Electron.IpcRendererEvent, entries: any) =>
+        callback(entries);
+      ipcRenderer.on(DEBUG_IPC.BACKEND_LOGS_PUSH, subscription);
+      return () =>
+        ipcRenderer.removeListener(DEBUG_IPC.BACKEND_LOGS_PUSH, subscription);
+    }
+    : () => () => { },
   onDebugError: (callback: (error: string) => void) => {
     const subscription = (_: any, error: string) => callback(error)
     ipcRenderer.on(PROCESSING_EVENTS.DEBUG_ERROR, subscription)

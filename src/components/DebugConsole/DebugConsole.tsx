@@ -24,6 +24,8 @@ import { AnimatePresence, motion } from 'framer-motion';
 import {
     AlertCircle,
     AlertTriangle,
+    ArrowDown,
+    ArrowUp,
     Bug,
     ChevronDown,
     CircleCheck,
@@ -190,7 +192,7 @@ const JsonNode: React.FC<{ data: unknown; depth?: number; label?: string; isLigh
                 <div className="border-l mt-0.5 mb-0.5" style={{ borderColor, marginLeft: 4, paddingLeft: 6 }}>
                     {keys.map(k => (
                         <div key={k} className="py-px">
-                            <JsonNode data={(data as Record<string, unknown>)[k]} depth={0} label={isArr ? `[${k}]` : k} isLight={isLight} />
+                            <JsonNode data={(data as Record<string, unknown>)[k]} depth={depth + 1} label={isArr ? `[${k}]` : k} isLight={isLight} />
                         </div>
                     ))}
                 </div>
@@ -288,7 +290,7 @@ const DrawerLogRow = React.memo<DrawerLogRowProps>(({ entry, isLight }) => {
 
     const handleCopy = useCallback(async (e: React.MouseEvent) => {
         e.stopPropagation();
-        const text = `[${formatTimestamp(entry.timestamp)}] [${entry.level.toUpperCase()}] [${entry.source}] ${!hasMeta ? entry.message : ""}` +
+        const text = `[${formatTimestamp(entry.timestamp)}] [${entry.level.toUpperCase()}] [${entry.source}] ${entry.message}` +
             (hasMeta ? `\n${metaString(entry.metadata)}` : '');
         await navigator.clipboard.writeText(text).catch(() => { });
         setCopied(true);
@@ -470,11 +472,27 @@ const DrawerLogPane: React.FC<DrawerLogPaneProps> = ({ entries, onClear, isLight
                         );
                     })}
                 </div>
-                <button onClick={() => setAutoScroll(p => !p)} title={autoScroll ? 'Pause auto-scroll' : 'Resume auto-scroll'}
+                {/* <button onClick={() => setAutoScroll(p => !p)} title={autoScroll ? 'Pause auto-scroll' : 'Resume auto-scroll'}
                     className={['shrink-0 h-7 w-7 flex items-center justify-center rounded-lg border transition-all',
                         autoScroll ? isLight ? 'bg-emerald-50 border-emerald-200 text-emerald-600' : 'bg-emerald-500/10 border-emerald-500/20 text-emerald-400'
                             : isLight ? 'border-slate-200 text-slate-400 hover:text-slate-600' : 'border-white/10 text-white/30 hover:text-white/60'].join(' ')}>
                     {autoScroll ? <Pause size={11} /> : <Play size={11} />}
+                </button> */}
+                <button
+                    onClick={() => { if (scrollRef.current) scrollRef.current.scrollTop = 0; }}
+                    title="Jump to top"
+                    className={['shrink-0 h-7 w-7 flex items-center justify-center rounded-lg border transition-all',
+                        isLight ? 'border-slate-200 text-slate-400 hover:text-slate-600 hover:border-slate-300'
+                            : 'border-white/10 text-white/30 hover:text-white/60 hover:border-white/20'].join(' ')}>
+                    <ArrowUp size={11} />
+                </button>
+                <button
+                    onClick={() => { if (scrollRef.current) scrollRef.current.scrollTop = scrollRef.current.scrollHeight; setAutoScroll(true); }}
+                    title="Jump to bottom"
+                    className={['shrink-0 h-7 w-7 flex items-center justify-center rounded-lg border transition-all',
+                        isLight ? 'border-slate-200 text-slate-400 hover:text-slate-600 hover:border-slate-300'
+                            : 'border-white/10 text-white/30 hover:text-white/60 hover:border-white/20'].join(' ')}>
+                    <ArrowDown size={11} />
                 </button>
                 <button onClick={handleCopy} title="Copy visible logs"
                     className={['shrink-0 h-7 w-7 flex items-center justify-center rounded-lg border transition-all',
@@ -542,7 +560,10 @@ const PanelLogPane: React.FC<PanelLogPaneProps> = ({ entries, onClear }) => {
     }, [entries]);
 
     const handleCopyAll = useCallback(async () => {
-        const text = visible.map(e => `[${formatTimestamp(e.timestamp)}] [${e.level.toUpperCase()}] ${e.source ? `[${e.source}] ` : ''}${e.message}`).join('\n');
+        const text = visible.map(e =>
+            `[${formatTimestamp(e.timestamp)}] [${e.level.toUpperCase()}] [${e.source}] ${e.message}` +
+            (e.metadata ? `\n  ${metaString(e.metadata)}` : '')
+        ).join('\n');
         await navigator.clipboard.writeText(text).catch(() => { });
         setCopied(true);
         setTimeout(() => setCopied(false), 1500);
@@ -569,6 +590,20 @@ const PanelLogPane: React.FC<PanelLogPaneProps> = ({ entries, onClear }) => {
                     className="shrink-0 w-6 h-6 flex items-center justify-center rounded-lg transition-colors"
                     style={{ background: 'rgba(255,255,255,0.04)', border: '1px solid rgba(255,255,255,0.07)' }}>
                     {copied ? <CircleCheck size={9} className="text-emerald-400" /> : <Copy size={9} className="text-white/30" />}
+                </button>
+                <button
+                    onClick={() => { if (scrollRef.current) scrollRef.current.scrollTop = 0; }}
+                    title="Jump to top"
+                    className="shrink-0 w-6 h-6 flex items-center justify-center rounded-lg transition-colors"
+                    style={{ background: 'rgba(255,255,255,0.04)', border: '1px solid rgba(255,255,255,0.07)' }}>
+                    <ArrowUp size={9} className="text-white/30" />
+                </button>
+                <button
+                    onClick={() => { if (scrollRef.current) { scrollRef.current.scrollTop = scrollRef.current.scrollHeight; setAutoScroll(true); } }}
+                    title="Jump to bottom"
+                    className="shrink-0 w-6 h-6 flex items-center justify-center rounded-lg transition-colors"
+                    style={{ background: 'rgba(255,255,255,0.04)', border: '1px solid rgba(255,255,255,0.07)' }}>
+                    <ArrowDown size={9} className="text-white/30" />
                 </button>
                 <button onClick={onClear} title="Clear logs"
                     className="shrink-0 w-6 h-6 flex items-center justify-center rounded-lg transition-colors hover:border-red-500/30"

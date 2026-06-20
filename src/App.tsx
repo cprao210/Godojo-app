@@ -85,6 +85,9 @@ const App: React.FC = () => {
     window.addEventListener('beforeunload', handleUnload);
     return () => {
       window.removeEventListener('beforeunload', handleUnload);
+      if (import.meta.env.DEV) {
+        logger.restoreConsole();
+      }
     };
   }, [isLauncherWindow, isOverlayWindow, isDefault]);
 

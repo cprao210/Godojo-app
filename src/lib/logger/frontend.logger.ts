@@ -29,6 +29,18 @@ function makeId(): string {
 class FrontendLoggerService {
     private entries: LogEntry[] = [];
     private listeners: Set<LogListener> = new Set();
+    private _intercepted = false;
+    private _originals: Pick<Console, 'log' | 'info' | 'warn' | 'error' | 'debug'> | null = null;
+    /** Safely convert any value to a string, handling circular refs, BigInt, Errors, etc. */
+    private _safeStringify(a: unknown): string {
+        if (typeof a === 'string') return a;
+        if (a instanceof Error) return `${a.message}${a.stack ? `\n${a.stack}` : ''}`;
+        try {
+            return JSON.stringify(a);
+        } catch {
+            return String(a);
+        }
+    }
 
     // ── Public API ────────────────────────────────────────────────────────────
 
@@ -83,42 +95,56 @@ class FrontendLoggerService {
      * Does nothing in production.
      */
     interceptConsole(): void {
-        if (!IS_DEV) return;
+        if (!IS_DEV || this._intercepted) return;
+        this._intercepted = true;
 
-        const original = {
+        const originals = {
             log: console.log.bind(console),
             info: console.info.bind(console),
             warn: console.warn.bind(console),
             error: console.error.bind(console),
             debug: console.debug.bind(console),
         };
+        this._originals = originals;
 
-        const capture =
-            (level: LogLevel, origFn: (...args: unknown[]) => void) =>
-                (...args: unknown[]) => {
-                    origFn(...args);
-                    // Extract source from first string argument if it looks like [Module]
-                    let source = 'Console';
-                    let message = args.map(a => (typeof a === 'string' ? a : JSON.stringify(a))).join(' ');
+        const capture = (level: LogLevel, origFn: (...args: unknown[]) => void) => (...args: unknown[]) => {
+            origFn(...args);
+            try {
+                let source = 'Console';
+                let message = args.map(a => this._safeStringify(a)).join(' ');
 
-                    const srcMatch = message.match(/^\[([^\]]+)\]/);
-                    if (srcMatch) {
-                        source = srcMatch[1];
-                        message = message.slice(srcMatch[0].length).trim();
-                    }
+                const srcMatch = message.match(/^\[([^\]]+)\]/);
+                if (srcMatch) {
+                    source = srcMatch[1];
+                    message = message.slice(srcMatch[0].length).trim();
+                }
 
-                    const metadata = args.length > 1 && typeof args[args.length - 1] !== 'string'
-                        ? args[args.length - 1]
-                        : undefined;
+                const metadata = args.length > 1 && typeof args[args.length - 1] !== 'string'
+                    ? args[args.length - 1]
+                    : undefined;
 
-                    this._emit(level, source, message, metadata, /* fromConsole */ true);
-                };
+                this._emit(level, source, message, metadata, /* fromConsole */ true);
+            } catch {
+                // Never let log capture crash the caller
+            }
+        };
 
-        console.log = capture('info', original.log);
-        console.info = capture('info', original.info);
-        console.warn = capture('warn', original.warn);
-        console.error = capture('error', original.error);
-        console.debug = capture('debug', original.debug);
+        console.log = capture('info', originals.log);
+        console.info = capture('info', originals.info);
+        console.warn = capture('warn', originals.warn);
+        console.error = capture('error', originals.error);
+        console.debug = capture('debug', originals.debug);
+    }
+
+    restoreConsole(): void {
+        if (!IS_DEV || !this._intercepted || !this._originals) return;
+        console.log = this._originals.log;
+        console.info = this._originals.info;
+        console.warn = this._originals.warn;
+        console.error = this._originals.error;
+        console.debug = this._originals.debug;
+        this._originals = null;
+        this._intercepted = false;
     }
 
     // ── Private ───────────────────────────────────────────────────────────────
