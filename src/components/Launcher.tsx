@@ -158,6 +158,17 @@ const Launcher: React.FC<LauncherProps> = ({ onStartMeeting, onOpenSettings, onP
         // eslint-disable-next-line react-hooks/exhaustive-deps
     }, [hasProcessingMeeting]);
 
+
+    useEffect(() => {
+        if (!window.electronAPI) return;
+        Promise.all([
+            window.electronAPI.getCalendarStatus(),
+            window.electronAPI.getZoomCalendarStatus(),
+        ]).then(([google, zoom]) => {
+            setIsCalendarConnected(google.connected || zoom.connected);
+        });
+    }, []);
+
     // Keybinds
     const { isShortcutPressed } = useShortcuts();
     const isLight = useResolvedTheme() === 'light';
@@ -882,6 +893,7 @@ const Launcher: React.FC<LauncherProps> = ({ onStartMeeting, onOpenSettings, onP
                                             <ConnectCalendarButton
                                                 className="relative mt-4 w-full"
                                                 onConnect={() => setIsCalendarConnected(true)}
+                                                onDisconnect={() => setIsCalendarConnected(false)}
                                             />
                                         </motion.div>
 
