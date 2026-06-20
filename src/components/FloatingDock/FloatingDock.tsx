@@ -208,7 +208,7 @@ export const FloatingDock: React.FC<FloatingDockProps> = ({
                             scale: activePanel === 'intelligence' ? 1 : 0.96,
                         }}
                         transition={{ type: 'spring', damping: 28, stiffness: 380, mass: 0.8 }}
-                        className="fixed bottom-[76px] left-[65px]"
+                        className="fixed bottom-[76px] left-[115px]"
                         style={{
                             position: 'fixed',
                             pointerEvents: activePanel === 'intelligence' ? 'auto' : 'none',
@@ -244,13 +244,11 @@ export const FloatingDock: React.FC<FloatingDockProps> = ({
                 {/* Chat panel — always mounted once first opened */}
                 {chatMessages.length > 0 || activePanel === 'chat' ? (
                     <motion.div
-                        animate={{
-                            opacity: activePanel === 'chat' ? dockOpacity : 0,
-                            y: activePanel === 'chat' ? 0 : 20,
-                            scale: activePanel === 'chat' ? 1 : 0.96,
-                        }}
+                        initial={{ opacity: 0, y: 20, scale: 0.96 }}
+                        animate={{ opacity: dockOpacity, y: 0, scale: 1 }}
+                        exit={{ opacity: 0, y: 12, scale: 0.97 }}
                         transition={{ type: 'spring', damping: 28, stiffness: 380, mass: 0.8 }}
-                        className="fixed bottom-[76px] left-[65px]"
+                        className="fixed bottom-[76px] left-[115px]"
                         style={{
                             position: 'fixed',
                             pointerEvents: activePanel === 'chat' ? 'auto' : 'none',
@@ -287,7 +285,7 @@ export const FloatingDock: React.FC<FloatingDockProps> = ({
                             animate={{ opacity: dockOpacity, y: 0, scale: 1 }}
                             exit={{ opacity: 0, y: 12, scale: 0.97 }}
                             transition={{ type: 'spring', damping: 28, stiffness: 380, mass: 0.8 }}
-                            className="fixed top-[110px] left-[65px]"
+                            className="fixed top-[110px] left-[115px]"
                             style={{ position: 'fixed' }}
                         >
                             {isFrozen && (
@@ -315,7 +313,7 @@ export const FloatingDock: React.FC<FloatingDockProps> = ({
                     animate={{ opacity: 1, y: 0 }}
                     transition={{ type: 'spring', damping: 26, stiffness: 300 }}
                     className="fixed pointer-events-auto"
-                    style={{ top: 30 }}
+                    style={{ top: 30, left: 115 }}
                 >
                     {/* The Dock */}
                     <motion.div
@@ -441,6 +439,7 @@ export const FloatingDock: React.FC<FloatingDockProps> = ({
 
 
             </motion.div>
+
         </>
     );
 };
