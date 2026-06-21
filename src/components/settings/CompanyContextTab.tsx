@@ -12,7 +12,6 @@ export interface CompanyIdentity {
     name: string;
     website: string;
     industry: string;
-    personaEngineEnabled: boolean;
 }
 
 export interface KnowledgeAsset {
@@ -48,7 +47,6 @@ export interface CompanyContextData {
         hasIdentity: boolean;
         hasValueProp: boolean;
         hasAssets: boolean;
-        hasPersonaEngine: boolean;
     };
 }
 
@@ -451,35 +449,23 @@ export const CompanyContextTab: React.FC<CompanyContextTabProps> = ({
             name: ctx.identity?.name ?? '',
             website: ctx.identity?.website ?? '',
             industry: ctx.identity?.industry ?? '',
-            personaEngineEnabled: ctx.identity?.personaEngineEnabled ?? false,
+            // personaEngineEnabled: ctx.identity?.personaEngineEnabled ?? false,
         },
-        completenessBreakdown: ctx.completenessBreakdown ?? { hasIdentity: false, hasValueProp: false, hasAssets: false, hasPersonaEngine: false },
+        completenessBreakdown: ctx.completenessBreakdown ?? { hasIdentity: false, hasValueProp: false, hasAssets: false },
     } : {
-        identity: { name: '', website: '', industry: '', personaEngineEnabled: false },
+        identity: { name: '', website: '', industry: '' },
         coreValueProposition: '',
         assets: [],
         targetPersonas: [],
         competitors: [],
         dataCompleteness: 0,
-        completenessBreakdown: { hasIdentity: false, hasValueProp: false, hasAssets: false, hasPersonaEngine: false },
+        completenessBreakdown: { hasIdentity: false, hasValueProp: false, hasAssets: false },
     };
 
     const [draft, setDraft] = useState<CompanyContextData>(() => normalizeContext(companyContext));
     const savedSnapshot = useRef<CompanyContextData>(draft);
 
     const [isDirty, setIsDirty] = useState(false);
-
-    // ── Knowledge Mode (RAG) — fires immediately via IPC, no Save needed ──────
-    const [knowledgeModeActive, setKnowledgeModeActive] = useState(false);
-    const [knowledgeModeTooltipVisible, setKnowledgeModeTooltipVisible] = useState(false);
-
-    const [personaEngineTooltipVisible, setPersonaEngineTooltipVisible] = useState(false);
-
-    useEffect(() => {
-        window.electronAPI?.profileGetMode?.().then(res => {
-            if (res?.active !== undefined) setKnowledgeModeActive(res.active);
-        }).catch(() => { });
-    }, []);
 
     // Persona modal state
     const [personaModalOpen, setPersonaModalOpen] = useState(false);
@@ -501,12 +487,12 @@ export const CompanyContextTab: React.FC<CompanyContextTabProps> = ({
 
     // Derived completeness
     const completeness = React.useMemo(() => {
-        const { identity, coreValueProposition, assets, identity: { personaEngineEnabled } } = draft;
+        const { identity, coreValueProposition, assets } = draft;
         const hasIdentity = !!(identity.name && identity.industry);
         const hasValueProp = coreValueProposition.trim().length > 20;
         const hasAssets = assets.some(a => a.status === 'mapped');
-        const score = [hasIdentity, hasValueProp, hasAssets, personaEngineEnabled].filter(Boolean).length;
-        return Math.round((score / 4) * 100);
+        const score = [hasIdentity, hasValueProp, hasAssets].filter(Boolean).length;
+        return Math.round((score / 3) * 100);
     }, [draft]);
 
     const patch = useCallback((updates: Partial<CompanyContextData>) => {
@@ -594,6 +580,7 @@ export const CompanyContextTab: React.FC<CompanyContextTabProps> = ({
                     assets: prev.assets.map(a => a.id === tempId ? mappedAsset : a),
                 }));
                 setIsDirty(true);
+                await window.electronAPI?.profileSetMode?.(true);
             } else {
                 setDraft(prev => ({ ...prev, assets: prev.assets.filter(a => a.id !== tempId) }));
                 setCompanyError(result?.error || 'Upload failed');
@@ -621,32 +608,14 @@ export const CompanyContextTab: React.FC<CompanyContextTabProps> = ({
         setIsDirty(true);
     };
 
-    // ── Persona Engine toggle ─────────────────────────────────────────────────
-    const handlePersonaToggle = () => {
-        // Draft-only: committed to DB on "Save Intelligence Base"
-        patchIdentity({ personaEngineEnabled: !draft.identity.personaEngineEnabled });
-    };
-
-    // ── Knowledge Mode toggle — takes effect immediately, no Save needed ──────
-    // True when at least one asset is fully indexed in the DB (status === 'mapped')
-    const hasMappedAssets = draft.assets.some(a => a.status === 'mapped');
-
-    const handleKnowledgeModeToggle = async () => {
-        // Button is disabled when no mapped assets exist — this is a safety net only
-        if (!hasMappedAssets) return;
-        const next = !knowledgeModeActive;
-        try {
-            const result = await window.electronAPI.profileSetMode(next);
-            if (result?.success) {
-                setKnowledgeModeActive(next);
-                setCompanyError('');
-            } else {
-                setCompanyError(result?.error || 'Failed to toggle Knowledge Mode. Please try again.');
-            }
-        } catch (err: any) {
-            setCompanyError(err?.message || 'Failed to toggle Knowledge Mode. Please try again.');
+    // Replace the removed profileGetMode useEffect with this
+    useEffect(() => {
+        if (!window.electronAPI) return;
+        const hasMapped = companyContext?.assets?.some(a => a.status === 'mapped');
+        if (hasMapped) {
+            window.electronAPI?.profileSetMode?.(true).catch(() => { });
         }
-    };
+    }, [companyContext]);
 
     // ── Persona CRUD ──────────────────────────────────────────────────────────
     const handlePersonaSave = (p: TargetPersona) => {
@@ -723,42 +692,9 @@ export const CompanyContextTab: React.FC<CompanyContextTabProps> = ({
                                 </div>
                             </div>
 
-                            {/* Right: completeness ring + persona toggle */}
+                            {/* Right: completeness ring */}
                             <div className="flex items-center gap-3">
                                 <CompletenessRing percentage={completeness} />
-                                <div className="relative flex items-center">
-                                    <div
-                                        className="flex items-center gap-2 bg-bg-input px-3 py-1.5 rounded-full border border-border-subtle cursor-pointer"
-                                        onClick={handlePersonaToggle}
-                                        onMouseEnter={() => setPersonaEngineTooltipVisible(true)}
-                                        onMouseLeave={() => setPersonaEngineTooltipVisible(false)}
-                                    >
-                                        <span className="text-xs font-medium text-text-secondary">Persona Engine</span>
-                                        <div className={`w-9 h-5 rounded-full relative transition-colors ${draft.identity.personaEngineEnabled ? 'bg-accent-primary' : 'bg-bg-toggle-switch border border-border-muted'}`}>
-                                            <div className={`absolute top-1 left-1 w-3 h-3 rounded-full bg-white transition-transform ${draft.identity.personaEngineEnabled ? 'translate-x-4' : 'translate-x-0'}`} />
-                                        </div>
-                                    </div>
-                                    {personaEngineTooltipVisible && (
-                                        <div
-                                            className="absolute right-0 top-full mb-2 w-64 rounded-xl px-3 py-2.5 text-[11px] leading-relaxed shadow-lg z-50 pointer-events-none"
-                                            style={{
-                                                background: isLight ? '#1a1a2e' : '#0d1117',
-                                                color: '#e2e8f0',
-                                                border: '1px solid rgba(255,255,255,0.08)',
-                                            }}
-                                        >
-                                            <div className="flex items-center gap-1.5 mb-1">
-                                                <Users size={11} className="text-accent-primary shrink-0" />
-                                                <span className="font-semibold text-white">Persona Engine</span>
-                                            </div>
-                                            When on, the AI tailors its responses based on your{' '}
-                                            <span className="text-blue-300 font-medium">target buyer personas</span>.
-                                            It infers who you're speaking with from the conversation and frames
-                                            messaging around their specific priorities — rather than giving a generic answer.
-                                            <div className="absolute right-3 top-full w-0 h-0" />
-                                        </div>
-                                    )}
-                                </div>
                             </div>
                         </div>
                     </div>
@@ -788,7 +724,7 @@ export const CompanyContextTab: React.FC<CompanyContextTabProps> = ({
                             </div>
                         </div>
                         <div>
-                            <label className="text-[10px] font-bold text-text-tertiary uppercase tracking-wider mb-1 block flex items-center gap-1.5">
+                            <label className="text-[10px] font-bold text-text-tertiary uppercase tracking-wider mb-1 flex items-center gap-1.5">
                                 <Globe size={10} /> Website
                             </label>
                             <input
@@ -811,7 +747,6 @@ export const CompanyContextTab: React.FC<CompanyContextTabProps> = ({
                                     { key: 'hasIdentity', label: 'Identity', check: !!(draft.identity.name && draft.identity.industry), color: 'bg-blue-500' },
                                     { key: 'hasValueProp', label: 'Value Prop', check: draft.coreValueProposition.trim().length > 20, color: 'bg-purple-500' },
                                     { key: 'hasAssets', label: 'Assets', check: draft.assets.some(a => a.status === 'mapped'), color: 'bg-emerald-500' },
-                                    { key: 'hasPersona', label: 'Persona', check: draft.identity.personaEngineEnabled, color: 'bg-amber-500' },
                                 ] as const).map(item => (
                                     <div key={item.key} className="flex-1 flex flex-col items-center gap-1">
                                         <div className={`w-full h-1.5 rounded-full ${item.check ? item.color : 'bg-bg-elevated'} transition-colors`} />
@@ -860,55 +795,6 @@ export const CompanyContextTab: React.FC<CompanyContextTabProps> = ({
                 <div>
                     <div className="flex items-center justify-between mb-2 px-1">
                         <h4 className="text-xs font-bold text-text-tertiary uppercase tracking-wider">Knowledge Base</h4>
-                        <div className="flex items-center gap-2">
-                            <div className="relative flex items-center">
-                                <div
-                                    className="cursor-pointer text-text-tertiary hover:text-text-secondary transition-colors"
-                                    onMouseEnter={() => setKnowledgeModeTooltipVisible(true)}
-                                    onMouseLeave={() => setKnowledgeModeTooltipVisible(false)}
-                                >
-                                    <Info size={12} />
-                                </div>
-                                {knowledgeModeTooltipVisible && (
-                                    <div
-                                        className="absolute right-0 bottom-full mb-2 w-64 rounded-xl px-3 py-2.5 text-[11px] leading-relaxed shadow-lg z-50 pointer-events-none"
-                                        style={{
-                                            background: isLight ? '#1a1a2e' : '#0d1117',
-                                            color: '#e2e8f0',
-                                            border: '1px solid rgba(255,255,255,0.08)',
-                                        }}
-                                    >
-                                        <div className="flex items-center gap-1.5 mb-1">
-                                            <Zap size={11} className="text-amber-400 shrink-0" />
-                                            <span className="font-semibold text-white">Knowledge Mode</span>
-                                        </div>
-                                        When on, your uploaded assets (sales deck, product specs, case studies) are{' '}
-                                        <span className="text-amber-300 font-medium">actively searched</span> on every
-                                        AI call — relevant content is pulled in automatically based on what's being
-                                        discussed. Without this, only asset names are visible to the AI.
-                                        <div
-                                            className="absolute right-2 top-full w-0 h-0"
-                                            style={{
-                                                borderLeft: '5px solid transparent',
-                                                borderRight: '5px solid transparent',
-                                                borderTop: `5px solid ${isLight ? '#1a1a2e' : '#1e1e2e'}`,
-                                            }}
-                                        />
-                                    </div>
-                                )}
-                            </div>
-                            <span className="text-[11px] font-medium text-text-secondary">Knowledge Mode</span>
-                            <button
-                                onClick={handleKnowledgeModeToggle}
-                                disabled={!hasMappedAssets}
-                                title={hasMappedAssets ? 'Knowledge Mode' : 'Upload and save a document first to enable Knowledge Mode'}
-                                className={`flex items-center gap-1.5 focus:outline-none ${!hasMappedAssets ? 'opacity-40 cursor-not-allowed' : 'cursor-pointer'}`}
-                            >
-                                <div className={`w-9 h-5 rounded-full relative transition-colors ${knowledgeModeActive ? 'bg-amber-500' : 'bg-bg-toggle-switch border border-border-muted'}`}>
-                                    <div className={`absolute top-1 left-1 w-3 h-3 rounded-full bg-white transition-transform ${knowledgeModeActive ? 'translate-x-4' : 'translate-x-0'}`} />
-                                </div>
-                            </button>
-                        </div>
                     </div>
                     <div className="space-y-2.5">
                         {(['sales_deck', 'product_specs', 'case_studies'] as KnowledgeAsset['type'][]).map(type => {

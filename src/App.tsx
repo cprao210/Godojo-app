@@ -610,6 +610,7 @@ const App: React.FC = () => {
                         isOpen={isSettingsOpen}
                         onClose={() => {
                           setIsSettingsOpen(false);
+                          window.dispatchEvent(new CustomEvent('settings-closed'));
                         }}
                         initialTab={settingsInitialTab}
                       />

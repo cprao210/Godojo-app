@@ -102,8 +102,8 @@ function ProviderChip({ link, isLight }: { link?: string; isLight: boolean }) {
     const { Icon, label, bg, iconClass } = configs[provider];
 
     return (
-        <div className={`flex items-center gap-2 px-3 py-2 rounded-xl border text-[12px] font-medium ${bg} ${isLight ? 'text-slate-700' : 'text-slate-200'}`}>
-            <Icon className={`text-[15px] ${iconClass}`} />
+        <div className={`flex items-center gap-2 px-3 py-2 rounded-xl border text-[11px] font-medium ${bg} ${isLight ? 'text-slate-700' : 'text-slate-200'}`}>
+            <Icon className={`text-[13px] ${iconClass}`} />
             {label}
         </div>
     );
@@ -400,10 +400,10 @@ function NextMeetingDetails({
             />
 
             {/* Main content */}
-            <div className="relative flex-1 flex gap-4 p-5">
+            <div className="relative flex-1 flex gap-4 p-4">
 
                 {/* Left: all text content */}
-                <div className="flex-1 min-w-0 flex flex-col gap-3">
+                <div className="flex-1 min-w-0 flex flex-col gap-2">
 
                     {/* Status badge */}
                     <div className="flex items-center gap-1.5">
@@ -452,7 +452,7 @@ function NextMeetingDetails({
                     <div className="flex items-center gap-2 flex-wrap">
                         {/* Date + time chip */}
                         <div className={[
-                            "flex items-center gap-2 px-3 py-2 rounded-xl border text-[12px] font-medium",
+                            "flex items-center gap-2 px-3 py-2 rounded-xl border text-[11px] font-medium",
                             isLight ? "bg-slate-50 border-slate-200 text-slate-700" : "bg-[#1a2035] border-white/[0.08] text-slate-300",
                         ].join(" ")}>
                             <Calendar size={12} strokeWidth={2} className={isLight ? "text-slate-400" : "text-slate-500"} />
