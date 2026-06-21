@@ -213,7 +213,7 @@ export const FloatingDock: React.FC<FloatingDockProps> = ({
                         scale: activePanel === 'intelligence' ? 1 : 0.96,
                     }}
                     transition={{ type: 'spring', damping: 28, stiffness: 380, mass: 0.8 }}
-                    className="fixed bottom-[76px] left-[65px]"
+                    className="fixed bottom-[76px] left-[115px]"
                     style={{
                         position: 'fixed',
                         pointerEvents: activePanel === 'intelligence' ? 'auto' : 'none',
