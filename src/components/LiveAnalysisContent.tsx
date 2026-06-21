@@ -382,7 +382,7 @@ export const LiveAnalysisContent: React.FC<LiveAnalysisContentProps> = ({
     // ── Shared signal list renderer ───────────────────────────────────────────
     // Used in both the tabbed overlay (activeTab='signals') and the accordion
     // (calledFromAnalysisTab) so dismiss/restore state is shared.
-    const renderSignalList = (paddingCls = 'pt-2 pb-2') => {
+    const renderSignalList = (paddingCls = 'pt-1 pb-1') => {
         const activeSignals = analysisData.signals.filter(s => !dismissedSignals.has(s.id ?? s.quote));
         const archivedSignals = analysisData.signals.filter(s => dismissedSignals.has(s.id ?? s.quote));
 
@@ -415,7 +415,7 @@ export const LiveAnalysisContent: React.FC<LiveAnalysisContentProps> = ({
                             transition={{ duration: 0.18, ease: [0.16, 1, 0.3, 1] }}
                             className="border-b border-white/[0.04] last:border-b-0"
                         >
-                            <div className="flex items-start gap-2 py-2.5 px-4 group">
+                            <div className="flex items-start gap-2 pt-2 px-4 group">
                                 <div className={`w-0.5 self-stretch rounded-full shrink-0 mt-0.5 ${stripe(signal.category, signal.intensity)}`} />
                                 <div className="flex-1 min-w-0">
                                     <div className="flex items-center justify-between gap-1 mb-1">
@@ -458,10 +458,10 @@ export const LiveAnalysisContent: React.FC<LiveAnalysisContentProps> = ({
                             {/* Ask now — always visible */}
                             {signal.ask_now && (
                                 <div className="flex items-start gap-1 pb-2.5 pl-5">
-                                    <span className={`text-[10px] font-bold uppercase tracking-wider mt-0.5 shrink-0 ${calledFromAnalysisTab ? (isLight ? 'text-blue-500' : 'text-blue-400/60') : 'text-blue-400/60'}`}>
+                                    <span className={`text-[11px] font-bold uppercase tracking-wider mt-0.5 shrink-0 ${calledFromAnalysisTab ? (isLight ? 'text-blue-500' : 'text-blue-400/60') : 'text-blue-400/60'}`}>
                                         Ask
                                     </span>
-                                    <p className={`text-[11px] leading-snug ${calledFromAnalysisTab ? (isLight ? 'text-blue-600' : 'text-blue-300/70') : 'text-blue-300/70'}`}>
+                                    <p className={`text-[12px] leading-snug ${calledFromAnalysisTab ? (isLight ? 'text-blue-600' : 'text-blue-300/70') : 'text-blue-300/70'}`}>
                                         {signal.ask_now}
                                     </p>
                                 </div>
@@ -573,7 +573,7 @@ export const LiveAnalysisContent: React.FC<LiveAnalysisContentProps> = ({
                         </div>
                     );
                 case 'signals':
-                    return renderSignalList('pt-2 pb-4');
+                    return renderSignalList('pt-1 pb-1');
                 case 'objections':
                     if (analysisData.objections.length === 0) {
                         return (

@@ -202,8 +202,9 @@ const WaitingPlaceholder: React.FC = () => (
         <div className="text-center flex flex-col gap-2">
             <p className="text-[13px] font-semibold text-white/60 tracking-wide">No Analysis Yet</p>
             <p className="text-[11px] text-white/30 leading-relaxed max-w-[220px]">
-                Hit <span className="text-blue-400/70 font-semibold">Refresh</span> to analyse the live call,
-                or enable <span className="text-blue-400/70 font-semibold">Auto</span> for scheduled updates.
+                Analysis will begin once there is enough transcript. Enable{' '}
+                <span className="text-blue-400/70 font-semibold">Auto</span> for scheduled updates or hit{' '}
+                <span className="text-blue-400/70 font-semibold">Refresh</span> manually.
             </p>
         </div>
 
