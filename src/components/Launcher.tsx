@@ -939,8 +939,8 @@ const Launcher: React.FC<LauncherProps> = ({ onStartMeeting, onOpenSettings, onP
                                             {/* Right-side header actions */}
                                             <div className="flex items-center gap-2">
 
-                                                {/* Upload Transcript — dev only */}
-                                                {process.env.NODE_ENV === 'development' && (
+                                                {/* Upload Transcript */}
+                                                {(
                                                     <button
                                                         onClick={() => setIsUploadOpen(true)}
                                                         className={[
@@ -1173,7 +1173,7 @@ const Launcher: React.FC<LauncherProps> = ({ onStartMeeting, onOpenSettings, onP
                 )}
             </AnimatePresence>
 
-            {/* DEV ONLY — Transcript Upload Modal */}
+            {/* Transcript Upload Modal */}
             <AnimatePresence>
                 {isUploadOpen && (
                     <>
