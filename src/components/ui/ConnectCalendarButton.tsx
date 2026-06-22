@@ -35,8 +35,9 @@ const PROVIDERS: {
 
 const ConnectCalendarButton: React.FC<{
     onConnect?: () => void;
+    onDisconnect?: () => void;
     className?: string;
-}> = ({ onConnect, className = '' }) => {
+}> = ({ onConnect, onDisconnect, className = '' }) => {
     const isLight = useResolvedTheme() === 'light';
 
     const [loading, setLoading] = useState<Provider | null>(null);
@@ -62,6 +63,27 @@ const ConnectCalendarButton: React.FC<{
             if (google.connected || zoom.connected) onConnect?.();
         });
     }, []);
+
+    useEffect(() => {
+        if (!window.electronAPI) return;
+        const handleSettingsClosed = () => {
+            Promise.all([
+                window.electronAPI.getCalendarStatus(),
+                window.electronAPI.getZoomCalendarStatus(),
+            ]).then(([google, zoom]) => {
+                const wasAnyConnected = Object.values(connected).some(Boolean);
+                const isAnyConnected = google.connected || zoom.connected;
+                setConnected({ google: google.connected, zoom: zoom.connected });
+                if (isAnyConnected) {
+                    onConnect?.();
+                } else if (wasAnyConnected && !isAnyConnected) {
+                    onDisconnect?.();
+                }
+            });
+        };
+        window.addEventListener('settings-closed', handleSettingsClosed);
+        return () => window.removeEventListener('settings-closed', handleSettingsClosed);
+    }, [connected, onConnect, onDisconnect]);
 
     // ── Close on outside click or Escape ─────────────────────────────────────
     useEffect(() => {

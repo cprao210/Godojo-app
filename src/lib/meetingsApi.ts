@@ -11,7 +11,13 @@ import type { Meeting } from "../types/meeting";
 export const meetingsApi = {
   list: async (): Promise<Meeting[]> => {
     const rows = await apiFetch<any[]>("/meetings");
-    return (rows ?? []).map(mapMeetingRow);
+    // Dedupe by id (defensive — preserves the renderer's previous IPC-side dedup).
+    const seen = new Set<string>();
+    return (rows ?? []).map(mapMeetingRow).filter((m) => {
+      if (seen.has(m.id)) return false;
+      seen.add(m.id);
+      return true;
+    });
   },
 
   get: async (id: string): Promise<Meeting> => {

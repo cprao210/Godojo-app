@@ -382,7 +382,7 @@ export const LiveAnalysisContent: React.FC<LiveAnalysisContentProps> = ({
     // ── Shared signal list renderer ───────────────────────────────────────────
     // Used in both the tabbed overlay (activeTab='signals') and the accordion
     // (calledFromAnalysisTab) so dismiss/restore state is shared.
-    const renderSignalList = (paddingCls = 'pt-2 pb-2') => {
+    const renderSignalList = (paddingCls = 'pt-1 pb-1') => {
         const activeSignals = analysisData.signals.filter(s => !dismissedSignals.has(s.id ?? s.quote));
         const archivedSignals = analysisData.signals.filter(s => dismissedSignals.has(s.id ?? s.quote));
 
@@ -415,7 +415,7 @@ export const LiveAnalysisContent: React.FC<LiveAnalysisContentProps> = ({
                             transition={{ duration: 0.18, ease: [0.16, 1, 0.3, 1] }}
                             className="border-b border-white/[0.04] last:border-b-0"
                         >
-                            <div className="flex items-start gap-2 py-2.5 px-4 group">
+                            <div className="flex items-start gap-2 pt-2 px-4 group">
                                 <div className={`w-0.5 self-stretch rounded-full shrink-0 mt-0.5 ${stripe(signal.category, signal.intensity)}`} />
                                 <div className="flex-1 min-w-0">
                                     <div className="flex items-center justify-between gap-1 mb-1">
@@ -423,7 +423,7 @@ export const LiveAnalysisContent: React.FC<LiveAnalysisContentProps> = ({
                                             {signal.signal_type.slice(0, 2).map((type, j) => (
                                                 <span
                                                     key={j}
-                                                    className={`text-[10px] font-bold uppercase tracking-wider px-1 py-0.5 rounded border ${calledFromAnalysisTab
+                                                    className={`text-[9px] font-bold uppercase tracking-wider px-1 py-0.5 rounded border ${calledFromAnalysisTab
                                                         ? signalTypeColorThemed(type, isLight)
                                                         : signalTypeColor(type)
                                                         }`}
@@ -450,18 +450,18 @@ export const LiveAnalysisContent: React.FC<LiveAnalysisContentProps> = ({
                                             </button>
                                         </div>
                                     </div>
-                                    <p className={`text-[12px] italic ${calledFromAnalysisTab ? (isLight ? 'text-slate-600' : 'text-white/60') : 'text-white/60'}`}>
+                                    <p className={`text-[12.5px] italic ${calledFromAnalysisTab ? (isLight ? 'text-slate-600' : 'text-white/60') : 'text-white/60'}`}>
                                         "{signal.quote}"
                                     </p>
                                 </div>
                             </div>
                             {/* Ask now — always visible */}
                             {signal.ask_now && (
-                                <div className="flex items-start gap-1 pb-2.5 pl-5">
-                                    <span className={`text-[8px] font-bold uppercase tracking-wider mt-0.5 shrink-0 ${calledFromAnalysisTab ? (isLight ? 'text-blue-500' : 'text-blue-400/60') : 'text-blue-400/60'}`}>
+                                <div className="flex items-center gap-1 mt-0.5 pb-2.5 pl-5">
+                                    <span className={`text-[11px] font-bold uppercase tracking-wider shrink-0 ${calledFromAnalysisTab ? (isLight ? 'text-blue-500' : 'text-blue-400/60') : 'text-blue-400/60'}`}>
                                         Ask
                                     </span>
-                                    <p className={`text-[10px] leading-snug ${calledFromAnalysisTab ? (isLight ? 'text-blue-600' : 'text-blue-300/70') : 'text-blue-300/70'}`}>
+                                    <p className={`text-[12px] leading-snug ${calledFromAnalysisTab ? (isLight ? 'text-blue-600' : 'text-blue-300/70') : 'text-blue-300/70'}`}>
                                         {signal.ask_now}
                                     </p>
                                 </div>
@@ -507,15 +507,15 @@ export const LiveAnalysisContent: React.FC<LiveAnalysisContentProps> = ({
                                         {archivedSignals.map(signal => (
                                             <div
                                                 key={signal.id ?? signal.quote}
-                                                className="flex items-start gap-2 px-3 py-2 opacity-40 hover:opacity-70 transition-opacity"
+                                                className="flex items-start gap-2 px-3 py-2 opacity-60 hover:opacity-80 transition-opacity"
                                             >
                                                 <div className={`w-0.5 self-stretch rounded-full shrink-0 mt-0.5 ${stripe(signal.category, signal.intensity)}`} />
                                                 <div className="flex-1 min-w-0">
-                                                    <p className="text-[11px] italic text-white/50 line-clamp-1">
+                                                    <p className="text-[12.5px] italic text-white/50 line-clamp-1">
                                                         "{signal.quote}"
                                                     </p>
                                                     {signal.ask_now && (
-                                                        <p className="text-[10px] text-blue-300/50 mt-0.5">{signal.ask_now}</p>
+                                                        <p className="text-[11px] text-blue-300/50 mt-0.5">{signal.ask_now}</p>
                                                     )}
                                                 </div>
                                                 {/* Restore button */}
@@ -573,7 +573,7 @@ export const LiveAnalysisContent: React.FC<LiveAnalysisContentProps> = ({
                         </div>
                     );
                 case 'signals':
-                    return renderSignalList('pt-2 pb-4');
+                    return renderSignalList('pt-1 pb-1');
                 case 'objections':
                     if (analysisData.objections.length === 0) {
                         return (
@@ -617,12 +617,12 @@ export const LiveAnalysisContent: React.FC<LiveAnalysisContentProps> = ({
                                         <div className="flex-1 min-w-0">
                                             <p className={`text-[12px] leading-relaxed transition-all ${quoteClass}`}>{obj.quote}</p>
                                             {!isChecked && obj.type === 'customer_question' && obj.suggested_answer && (
-                                                <div className="flex items-start gap-1.5 rounded-md px-1 py-1.5">
-                                                    <TrendingUp size={9} className="shrink-0 mt-0.5 text-blue-400/70" />
-                                                    <p className="text-[10px] leading-snug text-blue-300/80">{obj.suggested_answer}</p>
+                                                <div className="flex items-start gap-1.5 rounded-md py-1.5">
+                                                    {/* <TrendingUp size={9} className="shrink-0 mt-0.5 text-blue-400/70" /> */}
+                                                    <p className="text-[11px] mb-1 leading-snug text-blue-300/80">{obj.suggested_answer}</p>
                                                 </div>
                                             )}
-                                            <div className="flex items-center gap-1.5 mt-0.5">
+                                            <div className="flex items-center gap-1.5 mt-0.5 justify-between">
                                                 <span className={`text-[9px] font-bold uppercase tracking-wider px-1.5 py-0.5 rounded border ${tagClass}`}>
                                                     {obj.type === 'ae_deferral' ? 'Follow up' : 'Open question'}
                                                 </span>
@@ -853,16 +853,16 @@ export const LiveAnalysisContent: React.FC<LiveAnalysisContentProps> = ({
                                             </p>
                                             {/* Suggested answer — only for customer questions */}
                                             {!isChecked && obj.type === 'customer_question' && obj.suggested_answer && (
-                                                <div className={`flex items-start gap-1.5 rounded-md px-1 py-1.5`}>
-                                                    <TrendingUp size={9} className={`shrink-0 mt-0.5 ${calledFromAnalysisTab ? (isLight ? 'text-blue-500' : 'text-blue-400/70') : 'text-blue-400/70'
-                                                        }`} />
-                                                    <p className={`text-[10px] leading-snug ${calledFromAnalysisTab ? (isLight ? 'text-blue-700' : 'text-blue-300/80') : 'text-blue-300/80'
+                                                <div className={`flex items-start gap-1.5 rounded-md py-1.5`}>
+                                                    {/* <TrendingUp size={9} className={`shrink-0 mt-0.5 ${calledFromAnalysisTab ? (isLight ? 'text-blue-500' : 'text-blue-400/70') : 'text-blue-400/70'
+                                                        }`} /> */}
+                                                    <p className={`text-[11px] leading-snug ${calledFromAnalysisTab ? (isLight ? 'text-blue-700' : 'text-blue-300/80') : 'text-blue-300/80'
                                                         }`}>
                                                         {obj.suggested_answer}
                                                     </p>
                                                 </div>
                                             )}
-                                            <div className="flex items-center gap-1.5 mt-1">
+                                            <div className="flex items-center justify-between gap-1.5 mt-1">
                                                 <span className={`text-[9px] font-bold uppercase tracking-wider px-1.5 py-0.5 rounded border ${tagClass}`}>
                                                     {obj.type === 'ae_deferral' ? 'Follow up' : 'Open question'}
                                                 </span>

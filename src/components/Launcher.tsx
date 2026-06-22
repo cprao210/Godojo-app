@@ -110,6 +110,7 @@ const Launcher: React.FC<LauncherProps> = ({ onStartMeeting, onOpenSettings, onP
 
     // Meetings load over HTTP via React Query (the useQuery above). Existing call sites keep
     // working: this just invalidates the cache so the list refetches from the backend.
+    // (The incoming branch's dedup-by-id now lives in meetingsApi.list.)
     const fetchMeetings = () => { void queryClient.invalidateQueries(["meetings"]); };
 
     // Detect whether any meeting in the list is still being processed
@@ -151,6 +152,17 @@ const Launcher: React.FC<LauncherProps> = ({ onStartMeeting, onOpenSettings, onP
     // This is a safety net for the race where onMeetingsUpdated fires before
     // the listener is registered, or is missed entirely.
     // The "still processing" poll is handled by the useQuery refetchInterval above.
+
+
+    useEffect(() => {
+        if (!window.electronAPI) return;
+        Promise.all([
+            window.electronAPI.getCalendarStatus(),
+            window.electronAPI.getZoomCalendarStatus(),
+        ]).then(([google, zoom]) => {
+            setIsCalendarConnected(google.connected || zoom.connected);
+        });
+    }, []);
 
     // Keybinds
     const { isShortcutPressed } = useShortcuts();
@@ -332,6 +344,26 @@ const Launcher: React.FC<LauncherProps> = ({ onStartMeeting, onOpenSettings, onP
         if (!uploadText.trim()) return;
         setIsUploading(true);
         setUploadError(null);
+
+        // Optimistically inject a placeholder immediately so the user sees
+        // the card appear right away without needing to hit refresh.
+        const optimisticId = `optimistic-upload-${Date.now()}`;
+        queryClient.setQueryData<Meeting[]>(["meetings"], (prev = []) => {
+            const alreadyHasPlaceholder = prev.some(
+                m => m.title === 'Processing...' && m.isProcessed === false
+            );
+            if (alreadyHasPlaceholder) return prev;
+            const placeholder: Meeting = {
+                id: optimisticId,
+                title: uploadTitle.trim() || 'Processing...',
+                date: new Date().toISOString(),
+                duration: '—',
+                summary: 'Analyzing transcript...',
+                isProcessed: false,
+            };
+            return [placeholder, ...prev];
+        });
+
         try {
             const result = await window.electronAPI.uploadTranscript(
                 uploadText.trim(),
@@ -341,11 +373,14 @@ const Launcher: React.FC<LauncherProps> = ({ onStartMeeting, onOpenSettings, onP
                 setIsUploadOpen(false);
                 setUploadText('');
                 setUploadTitle('');
-                fetchMeetings(); // refresh list
+                fetchMeetings(); // replaces placeholder with real entry
             } else {
+                // Remove the placeholder on failure
+                queryClient.setQueryData<Meeting[]>(["meetings"], (prev = []) => prev.filter(m => m.id !== optimisticId));
                 setUploadError(result?.error || 'Upload failed');
             }
         } catch (e) {
+            queryClient.setQueryData<Meeting[]>(["meetings"], (prev = []) => prev.filter(m => m.id !== optimisticId));
             setUploadError('Something went wrong');
         } finally {
             setIsUploading(false);
@@ -799,7 +834,7 @@ const Launcher: React.FC<LauncherProps> = ({ onStartMeeting, onOpenSettings, onP
                                             animate={{ opacity: 1, y: 0 }}
                                             transition={{ duration: 0.5, delay: 0.08, ease: [0.22, 1, 0.36, 1] }}
                                             className={[
-                                                "w-[300px] shrink-0 relative rounded-xl overflow-hidden border p-5 flex flex-col",
+                                                "w-[300px] shrink-0 relative rounded-xl overflow-hidden border p-4 flex flex-col",
                                                 isLight
                                                     ? "border-border-muted bg-gradient-to-br from-white via-[#f5f3fb] to-[#ece9f7] shadow-[0_4px_24px_-8px_rgba(99,102,241,0.2)]"
                                                     : "border-white/[0.08] bg-gradient-to-br from-[#12082e] via-[#0e0625] to-[#090418] shadow-[0_0_60px_-10px_rgba(99,60,255,0.3)]",
@@ -810,7 +845,7 @@ const Launcher: React.FC<LauncherProps> = ({ onStartMeeting, onOpenSettings, onP
                                             <div aria-hidden className={["pointer-events-none absolute -bottom-16 -right-10 h-48 w-48 rounded-full blur-3xl", isLight ? "bg-purple-300/35" : "bg-purple-600/20"].join(" ")} />
 
                                             {/* Header row */}
-                                            <div className="relative flex items-center justify-between mb-4">
+                                            <div className="relative flex items-center justify-between mb-3">
                                                 <div className="flex items-center gap-2">
                                                     <span className={["inline-flex h-8 w-8 items-center justify-center rounded-lg relative", isLight ? "bg-gradient-to-br from-purple-100 to-fuchsia-50 text-purple-600 ring-1 ring-inset ring-purple-200/60" : "bg-gradient-to-br from-purple-500/25 to-fuchsia-700/10 text-purple-300"].join(" ")}>
                                                         <Calendar className="h-[15px] w-[15px]" strokeWidth={2.2} />
@@ -824,24 +859,24 @@ const Launcher: React.FC<LauncherProps> = ({ onStartMeeting, onOpenSettings, onP
                                             </div>
 
                                             {/* Title */}
-                                            <h3 className="relative text-[15px] font-semibold leading-snug tracking-tight mb-4">
+                                            <h4 className="relative text-[15px] font-semibold leading-snug tracking-tight mb-4">
                                                 {isCalendarConnected ? (
                                                     <>Calendar linked<br /><span className="text-[13px] font-normal text-text-secondary">Events are syncing automatically.</span></>
                                                 ) : (
-                                                    <>Connect your calendar<br />to unlock AI meeting<br />preparation</>
+                                                    <>Connect your calendar<br />to unlock AI meeting preparation</>
                                                 )}
-                                            </h3>
+                                            </h4>
 
                                             {/* Features list */}
-                                            <div className="relative flex-1 space-y-3">
+                                            <div className="relative flex-1 space-y-2">
                                                 {[
                                                     { icon: Zap, label: "Auto-detect meetings", color: "text-yellow-400" },
                                                     { icon: Briefcase, label: "Company insights per event", color: "text-blue-400" },
                                                     { icon: Calendar, label: "One-click join", color: "text-purple-400" },
                                                 ].map(({ icon: Icon, label, color }) => (
                                                     <div key={label} className="flex items-center gap-2.5">
-                                                        <span className={["inline-flex h-7 w-7 shrink-0 items-center justify-center rounded-lg", isLight ? "bg-bg-elevated shadow-sm border border-border-subtle" : "bg-bg-item-surface"].join(" ")}>
-                                                            <Icon className={`h-3.5 w-3.5 ${color}`} strokeWidth={2.2} />
+                                                        <span className={["inline-flex shrink-0 items-center justify-center rounded-lg", isLight ? "bg-bg-elevated shadow-sm border border-border-subtle" : "bg-bg-item-surface"].join(" ")}>
+                                                            <Icon className={`h-3 w-3 ${color}`} strokeWidth={3} />
                                                         </span>
                                                         <span className="text-[12px] font-medium text-text-secondary">{label}</span>
                                                     </div>
@@ -850,8 +885,9 @@ const Launcher: React.FC<LauncherProps> = ({ onStartMeeting, onOpenSettings, onP
 
                                             {/* CTA */}
                                             <ConnectCalendarButton
-                                                className="relative mt-4 w-full"
+                                                className="relative mt-3 w-full"
                                                 onConnect={() => setIsCalendarConnected(true)}
+                                                onDisconnect={() => setIsCalendarConnected(false)}
                                             />
                                         </motion.div>
 
@@ -897,8 +933,8 @@ const Launcher: React.FC<LauncherProps> = ({ onStartMeeting, onOpenSettings, onP
                                             {/* Right-side header actions */}
                                             <div className="flex items-center gap-2">
 
-                                                {/* Upload Transcript — dev only */}
-                                                {process.env.NODE_ENV === 'development' && (
+                                                {/* Upload Transcript */}
+                                                {(
                                                     <button
                                                         onClick={() => setIsUploadOpen(true)}
                                                         className={[
@@ -1128,7 +1164,7 @@ const Launcher: React.FC<LauncherProps> = ({ onStartMeeting, onOpenSettings, onP
                 )}
             </AnimatePresence>
 
-            {/* DEV ONLY — Transcript Upload Modal */}
+            {/* Transcript Upload Modal */}
             <AnimatePresence>
                 {isUploadOpen && (
                     <>

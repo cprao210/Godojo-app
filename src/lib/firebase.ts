@@ -303,13 +303,19 @@ export async function trySilentRestore(): Promise<boolean> {
         // so we rely on the SDK picking up the existing user via auth/emulator
         // mechanisms — easiest fallback: just push the token to main ourselves
         // and let the renderer treat the user as signed-in for UI purposes.
+
+        const auth = getFirebaseAuth();
+
+        // Wait briefly for Firebase SDK to pick up the restored session
+        const currentUser = auth.currentUser;
+
         await window.electronAPI?.authSetIdToken?.({
             idToken: data.id_token,
             refreshToken: data.refresh_token,
             uid: data.user_id,
-            email: null,
-            displayName: null,
-            photoURL: null,
+            email: currentUser?.email ?? null,
+            displayName: currentUser?.displayName ?? null,
+            photoURL: currentUser?.photoURL ?? null,
             expiresAt: Date.now() + parseInt(data.expires_in, 10) * 1000,
         });
         return true;

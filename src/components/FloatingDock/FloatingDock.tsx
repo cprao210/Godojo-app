@@ -116,6 +116,16 @@ export const FloatingDock: React.FC<FloatingDockProps> = ({
     // Track whether the first analysis has been triggered so we don't re-run on every remount.
     const analysisInitiatedRef = useRef(false);
 
+    // ── Trigger first analysis immediately on meeting start (dock mount) ──────
+    // Analysis no longer waits for the intelligence panel to be opened.
+    // This runs once on mount. The analysisInitiatedRef guard prevents a second
+    // run if the component remounts within the same session.
+    useEffect(() => {
+        if (analysisInitiatedRef.current) return;
+        analysisInitiatedRef.current = true;
+        runAnalysisRef.current(true);
+    }, []); // eslint-disable-line react-hooks/exhaustive-deps
+
     // Chat messages lifted here so history survives panel switches.
     const [chatMessages, setChatMessages] = useState<ChatMessage[]>([]);
 
@@ -124,7 +134,7 @@ export const FloatingDock: React.FC<FloatingDockProps> = ({
     const [autoRefreshInterval, setAutoRefreshInterval] = useState<number | null>(2);
     const autoRefreshTimerRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
-    // Timestamp of when the intelligence panel was first opened — used to
+    // Timestamp of when the meeting started (FloatingDock mount) — used to
     // synchronise the countdown display with the actual auto-refresh timer.
     const [intelligencePanelFirstOpenedAt, setIntelligencePanelFirstOpenedAt] = useState<number | null>(null);
 
@@ -174,11 +184,6 @@ export const FloatingDock: React.FC<FloatingDockProps> = ({
 
     const togglePanel = (panel: ActivePanel) => {
         if (isFrozen && panel !== null) return;
-        // When intelligence panel opens for the first time, trigger analysis once.
-        if (panel === 'intelligence' && !analysisInitiatedRef.current) {
-            analysisInitiatedRef.current = true;
-            runAnalysis(true);
-        }
         setActivePanel(prev => prev === panel ? null : panel);
     };
 
@@ -200,47 +205,46 @@ export const FloatingDock: React.FC<FloatingDockProps> = ({
                     timers, chat history, scroll position) is never lost on panel switch.
                     Visibility + pointer-events are toggled via CSS only. */}
 
-                {/* Intelligence panel — always mounted once analysis has been initiated */}
-                {analysisInitiatedRef.current && (
-                    <motion.div
-                        animate={{
-                            opacity: activePanel === 'intelligence' ? dockOpacity : 0,
-                            y: activePanel === 'intelligence' ? 0 : 20,
-                            scale: activePanel === 'intelligence' ? 1 : 0.96,
-                        }}
-                        transition={{ type: 'spring', damping: 28, stiffness: 380, mass: 0.8 }}
-                        className="fixed bottom-[76px] left-[65px]"
-                        style={{
-                            position: 'fixed',
-                            pointerEvents: activePanel === 'intelligence' ? 'auto' : 'none',
-                        }}
-                    >
-                        {isFrozen && activePanel === 'intelligence' && (
-                            <div
-                                className="absolute inset-0 rounded-2xl z-50"
-                                style={{ pointerEvents: 'auto', background: 'rgba(0,0,0,0.10)', cursor: 'not-allowed' }}
-                            />
-                        )}
-                        <FloatingIntelligencePanel
-                            isOpen={activePanel === 'intelligence'}
-                            isMeetingPaused={isMeetingPaused}
-                            analysisData={analysisData}
-                            analysisError={analysisError}
-                            rollingTranscriptUser={rollingTranscriptUser}
-                            rollingTranscriptClient={rollingTranscriptClient}
-                            isClientSpeaking={isClientSpeaking}
-                            isUserSpeaking={isUserSpeaking}
-                            speakerNames={speakerNames}
-                            showTranscript={showTranscript}
-                            isLoading={analysisLoading}
-                            onRegenerate={() => runAnalysis(true)}
-                            autoRefreshInterval={autoRefreshInterval}
-                            onAutoRefreshIntervalChange={setAutoRefreshInterval}
-                            isRefreshRun={isRefreshRun}
-                            panelFirstOpenedAt={intelligencePanelFirstOpenedAt}
+                {/* Intelligence panel — always mounted (analysis starts on meeting start) */}
+
+                <motion.div
+                    animate={{
+                        opacity: activePanel === 'intelligence' ? dockOpacity : 0,
+                        y: activePanel === 'intelligence' ? 0 : 20,
+                        scale: activePanel === 'intelligence' ? 1 : 0.96,
+                    }}
+                    transition={{ type: 'spring', damping: 28, stiffness: 380, mass: 0.8 }}
+                    className="fixed bottom-[76px] left-[65px]"
+                    style={{
+                        position: 'fixed',
+                        pointerEvents: activePanel === 'intelligence' ? 'auto' : 'none',
+                    }}
+                >
+                    {isFrozen && activePanel === 'intelligence' && (
+                        <div
+                            className="absolute inset-0 rounded-2xl z-50"
+                            style={{ pointerEvents: 'auto', background: 'rgba(0,0,0,0.10)', cursor: 'not-allowed' }}
                         />
-                    </motion.div>
-                )}
+                    )}
+                    <FloatingIntelligencePanel
+                        isOpen={activePanel === 'intelligence'}
+                        isMeetingPaused={isMeetingPaused}
+                        analysisData={analysisData}
+                        analysisError={analysisError}
+                        rollingTranscriptUser={rollingTranscriptUser}
+                        rollingTranscriptClient={rollingTranscriptClient}
+                        isClientSpeaking={isClientSpeaking}
+                        isUserSpeaking={isUserSpeaking}
+                        speakerNames={speakerNames}
+                        showTranscript={showTranscript}
+                        isLoading={analysisLoading}
+                        onRegenerate={() => runAnalysis(true)}
+                        autoRefreshInterval={autoRefreshInterval}
+                        onAutoRefreshIntervalChange={setAutoRefreshInterval}
+                        isRefreshRun={isRefreshRun}
+                        panelFirstOpenedAt={intelligencePanelFirstOpenedAt}
+                    />
+                </motion.div>
 
                 {/* Chat panel — always mounted once first opened */}
                 {chatMessages.length > 0 || activePanel === 'chat' ? (

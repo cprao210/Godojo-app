@@ -84,16 +84,19 @@ export class SupabaseMirrorService {
     private _upsertCurrentUserRow(): void {
         const snap = AuthManager.getInstance().snapshot();
         if (!snap.uid) return;
+
+        const payload: Record<string, any> = {
+            firebase_uid: snap.uid,
+            last_seen_at: new Date().toISOString(),
+        };
+        if (snap.email) payload.email = snap.email;
+        if (snap.displayName) payload.display_name = snap.displayName;
+        if (snap.photoURL) payload.photo_url = snap.photoURL;
+
         this._enqueue({
             op: 'upsert',
             table: 'users',
-            payload: {
-                firebase_uid: snap.uid,
-                email: snap.email,
-                display_name: snap.displayName,
-                photo_url: snap.photoURL,
-                last_seen_at: new Date().toISOString(),
-            },
+            payload,
             retries: 0,
         });
     }
