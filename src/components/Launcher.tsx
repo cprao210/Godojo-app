@@ -18,33 +18,11 @@ import NextMeetingCard from './NextMeetingCard';
 import MeetingTimeline from './MeetingTimeline';
 import godojoLogo from '../assets/logo-variant-3.svg';
 import { loadUserProfile } from './settings/UserProfileTab';
+import { useQuery, useMutation, useQueryClient } from 'react-query';
+import { meetingsApi } from '../lib/meetingsApi';
+import type { Meeting } from '../types/meeting';
 
-interface Meeting {
-    id: string;
-    title: string;
-    date: string;
-    duration: string;
-    summary: string;
-    isProcessed?: boolean;
-    detailedSummary?: {
-        actionItems: string[];
-        keyPoints: string[];
-    };
-    transcript?: Array<{
-        speaker: string;
-        text: string;
-        timestamp: number;
-    }>;
-    usage?: Array<{
-        type: 'assist' | 'followup' | 'chat' | 'followup_questions';
-        timestamp: number;
-        question?: string;
-        answer?: string;
-        items?: string[];
-    }>;
-    active?: boolean; // UI state
-    time?: string; // Optional for compatibility
-}
+// Meeting type is imported from ../types/meeting (shared with MeetingDetails + meetingsApi).
 
 interface LauncherProps {
     onStartMeeting: (calendarEvent?: any) => void;
@@ -83,7 +61,30 @@ const formatTime = (dateStr: string) => {
 };
 
 const Launcher: React.FC<LauncherProps> = ({ onStartMeeting, onOpenSettings, onPageChange, ollamaPullStatus = 'idle', ollamaPullPercent = 0, ollamaPullMessage = '', authUser, onSignOut }) => {
-    const [meetings, setMeetings] = useState<Meeting[]>([]);
+    const queryClient = useQueryClient();
+    const { data: meetings = [] } = useQuery<Meeting[]>(["meetings"], meetingsApi.list, {
+        // Poll only while a meeting is still processing (replaces the manual setInterval).
+        refetchInterval: (data) =>
+            (data ?? []).some(m => m.isProcessed === false || m.title === 'Processing...') ? 3000 : false,
+    });
+    const deleteMutation = useMutation<void, unknown, string, { prev?: Meeting[] }>(
+        (id) => meetingsApi.remove(id),
+        {
+            onMutate: async (id) => {
+                await queryClient.cancelQueries(["meetings"]);
+                const prev = queryClient.getQueryData<Meeting[]>(["meetings"]);
+                queryClient.setQueryData<Meeting[]>(["meetings"], (old = []) => old.filter(x => x.id !== id));
+                return { prev };
+            },
+            onError: (_err, _id, ctx) => {
+                if (ctx?.prev) queryClient.setQueryData(["meetings"], ctx.prev);
+            },
+            // Write-through: also delete locally so the async SQLite→Supabase mirror can't
+            // resurrect the row, and offline/RAG reads stay consistent.
+            onSuccess: (_data, id) => { window.electronAPI?.deleteMeeting?.(id); },
+            onSettled: () => { void queryClient.invalidateQueries(["meetings"]); },
+        }
+    );
     const [isDetectable, setIsDetectable] = useState(false);
     const [isMeetingActive, setIsMeetingActive] = useState(false);
     const [selectedMeeting, setSelectedMeeting] = useState<Meeting | null>(null);
@@ -107,11 +108,9 @@ const Launcher: React.FC<LauncherProps> = ({ onStartMeeting, onOpenSettings, onP
 
     const effectiveName = localProfile.displayName || authUser?.displayName || authUser?.email?.split('@')[0] || '';
 
-    const fetchMeetings = () => {
-        if (window.electronAPI && window.electronAPI.getRecentMeetings) {
-            window.electronAPI.getRecentMeetings().then(setMeetings).catch(err => console.error("Failed to fetch meetings:", err));
-        }
-    };
+    // Meetings load over HTTP via React Query (the useQuery above). Existing call sites keep
+    // working: this just invalidates the cache so the list refetches from the backend.
+    const fetchMeetings = () => { void queryClient.invalidateQueries(["meetings"]); };
 
     // Detect whether any meeting in the list is still being processed
     const hasProcessingMeeting = meetings.some(
@@ -151,12 +150,7 @@ const Launcher: React.FC<LauncherProps> = ({ onStartMeeting, onOpenSettings, onP
     // Stops automatically once all meetings have been fully processed.
     // This is a safety net for the race where onMeetingsUpdated fires before
     // the listener is registered, or is missed entirely.
-    useEffect(() => {
-        if (!hasProcessingMeeting) return;
-        const pollId = setInterval(fetchMeetings, 3000);
-        return () => clearInterval(pollId);
-        // eslint-disable-next-line react-hooks/exhaustive-deps
-    }, [hasProcessingMeeting]);
+    // The "still processing" poll is handled by the useQuery refetchInterval above.
 
     // Keybinds
     const { isShortcutPressed } = useShortcuts();
@@ -208,7 +202,7 @@ const Launcher: React.FC<LauncherProps> = ({ onStartMeeting, onOpenSettings, onP
                 // and replaces this placeholder naturally since setMeetings overwrites
                 // the whole list.
                 if (!isActive) {
-                    setMeetings(prev => {
+                    queryClient.setQueryData<Meeting[]>(["meetings"], (prev = []) => {
                         // Don't double-insert if one is already there from a previous
                         // rapid end cycle
                         const alreadyHasPlaceholder = prev.some(
@@ -383,35 +377,11 @@ const Launcher: React.FC<LauncherProps> = ({ onStartMeeting, onOpenSettings, onP
         }
     }, [selectedMeeting, isGlobalChatOpen, onPageChange]);
 
-    const handleOpenMeeting = async (meeting: Meeting) => {
+    const handleOpenMeeting = (meeting: Meeting) => {
         setForwardMeeting(null); // Clear forward history on new navigation
-        console.log("[Launcher] Opening meeting:", meeting.id);
         analytics.trackCommandExecuted('open_meeting_details');
-
-        if (meeting.title === 'Processing...' || meeting.isProcessed === false) {
-            setSelectedMeeting(meeting);
-            return;
-        }
-
-        // Fetch full meeting details including transcript and usage
-        if (window.electronAPI && window.electronAPI.getMeetingDetails) {
-            try {
-                console.log("[Launcher] Fetching full meeting details...");
-                const fullMeeting = await window.electronAPI.getMeetingDetails(meeting.id);
-                console.log("[Launcher] Got meeting details:", fullMeeting);
-                console.log("[Launcher] Transcript count:", fullMeeting?.transcript?.length);
-                console.log("[Launcher] Usage count:", fullMeeting?.usage?.length);
-                if (fullMeeting) {
-                    setSelectedMeeting(fullMeeting);
-                    return;
-                }
-            } catch (err) {
-                console.error("[Launcher] Failed to fetch meeting details:", err);
-            }
-        } else {
-            console.warn("[Launcher] getMeetingDetails not available on electronAPI");
-        }
-        // Fallback to list-view data if fetch fails
+        // Full detail (transcript + usage) loads in MeetingDetails via React Query
+        // (meetingsApi.get → GET /meetings/{id}); the list row seeds it as initialData.
         setSelectedMeeting(meeting);
     };
 
@@ -1088,11 +1058,8 @@ const Launcher: React.FC<LauncherProps> = ({ onStartMeeting, onOpenSettings, onP
                                                                         </button>
                                                                         <button
                                                                             className="w-full flex items-center gap-2 px-3 py-1.5 text-[12px] text-red-400 hover:bg-red-500/10 hover:text-red-300 rounded-lg transition-colors text-left"
-                                                                            onClick={async () => {
-                                                                                if (window.electronAPI?.deleteMeeting) {
-                                                                                    const ok = await window.electronAPI.deleteMeeting(m.id);
-                                                                                    if (ok) setMeetings(prev => prev.filter(x => x.id !== m.id));
-                                                                                }
+                                                                            onClick={() => {
+                                                                                deleteMutation.mutate(m.id);
                                                                                 setActiveMenuId(null);
                                                                             }}
                                                                         >

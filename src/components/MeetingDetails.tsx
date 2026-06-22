@@ -11,7 +11,9 @@ import { Prism as SyntaxHighlighter } from 'react-syntax-highlighter';
 import { vscDarkPlus } from 'react-syntax-highlighter/dist/esm/styles/prism';
 import FollowUpEmailModal from './FollowUpEmailModal';
 import { LiveAnalysisContent } from './LiveAnalysisContent';
-import { LiveAnalysisData } from '../types/liveAnalysis';
+import { useQuery, useMutation, useQueryClient } from 'react-query';
+import { meetingsApi } from '../lib/meetingsApi';
+import type { Meeting } from '../types/meeting';
 import { guardSession } from '../lib/firebase';
 import { DealHealthScore } from './DealHealthScore';
 
@@ -26,92 +28,7 @@ const cleanMarkdown = (content: string) => {
     return content.replace(/([^\n])```/g, '$1\n\n```');
 };
 
-interface Meeting {
-    id: string;
-    title: string;
-    date: string;
-    duration: string;
-    summary: string;
-    isProcessed?: boolean;
-    detailedSummary?: {
-        // Old fields (keep for backward compat with existing meetings)
-        overview?: string;
-        actionItems: string[];
-        keyPoints: string[];
-        actionItemsTitle?: string;
-        keyPointsTitle?: string;
-
-        leadName?: string;
-        company?: string;
-
-        liveAnalysis?: LiveAnalysisData;
-
-        // New sales fields
-        dealStatus?: {
-            stage?: string;
-            summary?: string;
-        };
-        bant?: {
-            budget?: { status: string; detail: string };
-            authority?: { status: string; detail: string };
-            need?: { status: string; detail: string };
-            timeline?: { status: string; detail: string };
-        };
-        meddicc?: {
-            metrics?: { status: string; detail: string };
-            economicBuyer?: { status: string; detail: string };
-            decisionCriteria?: { status: string; detail: string };
-            decisionProcess?: { status: string; detail: string };
-            identifyPain?: { status: string; detail: string };
-            champion?: { status: string; detail: string };
-            competition?: { status: string; detail: string };
-            gaps?: string[];
-        };
-        followUpEmail?: {
-            subject?: string;
-            sections?: {
-                whatYouWillAchieveAfterTransformation?: string[];
-                whatWeDiscussed?: string[];
-                whatIsTheNeed?: string[];
-                currentProcess?: string;
-                scopeOfImprovement?: string[];
-                howOurSolutionHelps?: string[];
-                expectedBusinessImpact?: string[];
-                nextSteps?: string[];
-            };
-            fullEmail?: string;
-        };
-        salesCoachReview?: {
-            whatIDidRight?: string[];
-            whatICouldHaveDoneBetter?: string[];
-            whatIMissedCompletely?: string[];
-        };
-        nextCallPlaybook?: {
-            openingRecap?: string;
-            questionsToAsk?: string[];
-            valueAndROI?: {
-                quantitative?: string[];
-                qualitative?: string[];
-            };
-        };
-    };
-    participants?: { email: string | null, name: string | null, oraganizer: boolean, self: boolean }[];
-    transcript?: Array<{
-        speaker: string;
-        displayName?: string;
-        text: string;
-        timestamp: number;
-        final?: boolean;
-        confidence?: number;
-    }>;
-    usage?: Array<{
-        type: 'assist' | 'followup' | 'chat' | 'followup_questions';
-        timestamp: number;
-        question?: string;
-        answer?: string;
-        items?: string[];
-    }>;
-}
+// Meeting type is imported from ../types/meeting (shared with Launcher + meetingsApi).
 
 interface Message {
     id: string;
@@ -149,8 +66,64 @@ function isSummaryEmpty(ds: NonNullable<Meeting['detailedSummary']>): boolean {
 const MeetingDetails: React.FC<MeetingDetailsProps> = ({ meeting: initialMeeting }) => {
 
     const isLight = useResolvedTheme() === 'light';
-    // We need local state for the meeting object to reflect optimistic updates
-    const [meeting, setMeeting] = useState<Meeting>(initialMeeting);
+    const queryClient = useQueryClient();
+    const meetingKey = ["meeting", initialMeeting.id];
+
+    // Tracks the post-call processing skeleton. While processing we don't fetch detail
+    // over HTTP (the row may not be in the backend yet); the onMeetingsUpdated effect
+    // below pulls it once main signals it's ready.
+    const [isProcessing, setIsProcessing] = useState<boolean>(
+        initialMeeting.title === 'Processing...' || initialMeeting.isProcessed === false
+    );
+
+    // Full detail (transcript + usage) loads over HTTP; the list row seeds initialData so
+    // the view renders instantly, then reconciles with the backend.
+    const { data: meeting = initialMeeting } = useQuery<Meeting>(
+        meetingKey,
+        () => meetingsApi.get(initialMeeting.id),
+        { initialData: initialMeeting, enabled: !isProcessing && !!initialMeeting.id },
+    );
+
+    // Title / summary edits: HTTP is canonical; the existing IPC write is fired on success
+    // as a write-through so local SQLite + RAG stay consistent (and the async mirror can't
+    // clobber the edit). Optimistic onMutate preserves the instant-edit feel.
+    const titleMutation = useMutation<unknown, unknown, string, { prev?: Meeting }>(
+        (title) => meetingsApi.updateTitle(initialMeeting.id, title),
+        {
+            onMutate: async (title) => {
+                await queryClient.cancelQueries(meetingKey);
+                const prev = queryClient.getQueryData<Meeting>(meetingKey);
+                queryClient.setQueryData<Meeting>(meetingKey, (m = initialMeeting) => ({ ...m, title }));
+                return { prev };
+            },
+            onError: (_e, _t, ctx) => { if (ctx?.prev) queryClient.setQueryData(meetingKey, ctx.prev); },
+            onSuccess: (_d, title) => { window.electronAPI?.updateMeetingTitle?.(initialMeeting.id, title); },
+            onSettled: () => {
+                void queryClient.invalidateQueries(meetingKey);
+                void queryClient.invalidateQueries(["meetings"]);
+            },
+        },
+    );
+    const summaryMutation = useMutation<unknown, unknown, Record<string, any>, { prev?: Meeting }>(
+        (updates) => meetingsApi.updateSummary(initialMeeting.id, updates),
+        {
+            onMutate: async (updates) => {
+                await queryClient.cancelQueries(meetingKey);
+                const prev = queryClient.getQueryData<Meeting>(meetingKey);
+                queryClient.setQueryData<Meeting>(meetingKey, (m = initialMeeting) => ({
+                    ...m,
+                    detailedSummary: { actionItems: [], keyPoints: [], ...(m.detailedSummary ?? {}), ...updates },
+                }));
+                return { prev };
+            },
+            onError: (_e, _u, ctx) => { if (ctx?.prev) queryClient.setQueryData(meetingKey, ctx.prev); },
+            onSuccess: (_d, updates) => { window.electronAPI?.updateMeetingSummary?.(initialMeeting.id, updates as any); },
+            onSettled: () => {
+                void queryClient.invalidateQueries(meetingKey);
+                void queryClient.invalidateQueries(["meetings"]);
+            },
+        },
+    );
     const [activeTab, setActiveTab] = useState<'summary' | 'transcript' | 'usage' | 'analysis'>('summary');
     const [query, setQuery] = useState('');
     const [isCopied, setIsCopied] = useState(false);
@@ -160,9 +133,6 @@ const MeetingDetails: React.FC<MeetingDetailsProps> = ({ meeting: initialMeeting
     const [isChatOpen, setIsChatOpen] = useState(false);
     const [pendingQuery, setPendingQuery] = useState<{ text: string; id: number } | null>(null);
     const [chatMessages, setChatMessages] = useState<Message[]>([]);
-    const [isProcessing, setIsProcessing] = useState<boolean>(
-        initialMeeting.title === 'Processing...' || initialMeeting.isProcessed === false
-    );
     const [isTalktimeOpen, setIsTalktimeOpen] = useState(false);
 
     const speakerNames = (meeting.detailedSummary as any)?.speakerNames as
@@ -184,23 +154,22 @@ const MeetingDetails: React.FC<MeetingDetailsProps> = ({ meeting: initialMeeting
         if (!isProcessing) return;
         if (!window.electronAPI?.onMeetingsUpdated) return;
 
+        // Main signals (via IPC) when processing finishes / the row is mirrored. We then
+        // pull the full detail over HTTP and, once it reports processed, stop the skeleton —
+        // after which the useQuery above owns subsequent refetches.
         const unsubscribe = window.electronAPI.onMeetingsUpdated(() => {
-            if (window.electronAPI?.getMeetingDetails) {
-                window.electronAPI.getMeetingDetails(meeting.id)
-                    .then((updated: any) => {
-                        if (updated && updated.isProcessed) {
-                            setMeeting(updated);
-                            setIsProcessing(false); // ← stop skeleton
-                        }
-                    })
-                    .catch((e) => {
-                        console.log("[ERROR: Get Meeting Details]: ", e);
-                    });
-            }
+            meetingsApi.get(initialMeeting.id)
+                .then((updated) => {
+                    if (updated && updated.isProcessed) {
+                        queryClient.setQueryData<Meeting>(meetingKey, updated);
+                        setIsProcessing(false); // ← stop skeleton
+                    }
+                })
+                .catch((e) => console.log("[ERROR: Get Meeting Details]: ", e));
         });
 
         return () => unsubscribe();
-    }, [isProcessing, meeting.id]);
+    }, [isProcessing, initialMeeting.id]);
 
     const handleSubmitQuestion = () => {
         if (query.trim()) {
@@ -499,48 +468,18 @@ const MeetingDetails: React.FC<MeetingDetailsProps> = ({ meeting: initialMeeting
     };
 
     // UPDATE HANDLERS
-    const handleTitleSave = async (newTitle: string) => {
-        setMeeting(prev => ({ ...prev, title: newTitle }));
-        if (window.electronAPI?.updateMeetingTitle) {
-            await window.electronAPI.updateMeetingTitle(meeting.id, newTitle);
-        }
-    };
+    const handleTitleSave = (newTitle: string) => { titleMutation.mutate(newTitle); };
 
-    const handleActionItemSave = async (index: number, newVal: string) => {
+    const handleActionItemSave = (index: number, newVal: string) => {
         const newItems = [...(meeting.detailedSummary?.actionItems || [])];
-        if (!newVal.trim()) {
-            // Optional: Remove empty items? For now just keep empty or update
-        }
         newItems[index] = newVal;
-
-        setMeeting(prev => ({
-            ...prev,
-            detailedSummary: {
-                ...prev.detailedSummary!,
-                actionItems: newItems
-            }
-        }));
-
-        if (window.electronAPI?.updateMeetingSummary) {
-            await window.electronAPI.updateMeetingSummary(meeting.id, { actionItems: newItems });
-        }
+        summaryMutation.mutate({ actionItems: newItems });
     };
 
-    const handleKeyPointSave = async (index: number, newVal: string) => {
+    const handleKeyPointSave = (index: number, newVal: string) => {
         const newItems = [...(meeting.detailedSummary?.keyPoints || [])];
         newItems[index] = newVal;
-
-        setMeeting(prev => ({
-            ...prev,
-            detailedSummary: {
-                ...prev.detailedSummary!,
-                keyPoints: newItems
-            }
-        }));
-
-        if (window.electronAPI?.updateMeetingSummary) {
-            await window.electronAPI.updateMeetingSummary(meeting.id, { keyPoints: newItems });
-        }
+        summaryMutation.mutate({ keyPoints: newItems });
     };
 
     const handleRegenerateSummary = async () => {
@@ -555,8 +494,9 @@ const MeetingDetails: React.FC<MeetingDetailsProps> = ({ meeting: initialMeeting
             const result = await window.electronAPI.regenerateMeetingSummary(meeting.id);
 
             if (result?.success && result.meeting) {
-                // Replace the entire meeting state with fresh data from DB
-                setMeeting(result.meeting);
+                // Regenerate stays on IPC (LLM = Phase 2); push the fresh data into the cache.
+                queryClient.setQueryData<Meeting>(meetingKey, result.meeting);
+                void queryClient.invalidateQueries(["meetings"]);
             } else {
                 setRegenError('Failed to regenerate. Please try again.');
             }
@@ -1259,13 +1199,7 @@ const MeetingDetails: React.FC<MeetingDetailsProps> = ({ meeting: initialMeeting
                                                                 <div className="flex items-center justify-between mb-4">
                                                                     <EditableTextBlock
                                                                         initialValue={meeting.detailedSummary?.actionItemsTitle || 'Action Items'}
-                                                                        onSave={(val) => {
-                                                                            setMeeting(prev => ({
-                                                                                ...prev,
-                                                                                detailedSummary: { ...prev.detailedSummary!, actionItemsTitle: val }
-                                                                            }));
-                                                                            window.electronAPI?.updateMeetingSummary(meeting.id, { actionItemsTitle: val });
-                                                                        }}
+                                                                        onSave={(val) => summaryMutation.mutate({ actionItemsTitle: val })}
                                                                         tagName="h2"
                                                                         className="text-lg font-semibold text-text-primary -ml-2 px-2 py-1 rounded-sm transition-colors"
                                                                         multiline={false}
@@ -1285,9 +1219,9 @@ const MeetingDetails: React.FC<MeetingDetailsProps> = ({ meeting: initialMeeting
                                                                                     onEnter={() => {
                                                                                         const newItems = [...(meeting.detailedSummary?.actionItems || [])];
                                                                                         newItems.splice(i + 1, 0, "");
-                                                                                        setMeeting(prev => ({
-                                                                                            ...prev,
-                                                                                            detailedSummary: { ...prev.detailedSummary!, actionItems: newItems }
+                                                                                        queryClient.setQueryData<Meeting>(meetingKey, (m = meeting) => ({
+                                                                                            ...m,
+                                                                                            detailedSummary: { keyPoints: [], ...(m.detailedSummary ?? {}), actionItems: newItems }
                                                                                         }));
                                                                                     }}
                                                                                 />
@@ -1347,13 +1281,7 @@ const MeetingDetails: React.FC<MeetingDetailsProps> = ({ meeting: initialMeeting
                                                                                 <ClipboardList size={18} className={isLight ? 'text-blue-600' : 'text-blue-400'} />
                                                                                 <EditableTextBlock
                                                                                     initialValue={meeting.detailedSummary?.keyPointsTitle || 'Key Points'}
-                                                                                    onSave={(val) => {
-                                                                                        setMeeting(prev => ({
-                                                                                            ...prev,
-                                                                                            detailedSummary: { ...prev.detailedSummary!, keyPointsTitle: val }
-                                                                                        }));
-                                                                                        window.electronAPI?.updateMeetingSummary(meeting.id, { keyPointsTitle: val });
-                                                                                    }}
+                                                                                    onSave={(val) => summaryMutation.mutate({ keyPointsTitle: val })}
                                                                                     tagName="h3"
                                                                                     className={`text-[15px] font-semibold tracking-tight -ml-1 px-1 rounded-sm transition-colors ${isLight ? 'text-blue-700' : 'text-blue-300'}`}
                                                                                     multiline={false}
@@ -1376,9 +1304,9 @@ const MeetingDetails: React.FC<MeetingDetailsProps> = ({ meeting: initialMeeting
                                                                                                 onEnter={() => {
                                                                                                     const newItems = [...(meeting.detailedSummary?.keyPoints || [])];
                                                                                                     newItems.splice(i + 1, 0, "");
-                                                                                                    setMeeting(prev => ({
-                                                                                                        ...prev,
-                                                                                                        detailedSummary: { ...prev.detailedSummary!, keyPoints: newItems }
+                                                                                                    queryClient.setQueryData<Meeting>(meetingKey, (m = meeting) => ({
+                                                                                                        ...m,
+                                                                                                        detailedSummary: { actionItems: [], ...(m.detailedSummary ?? {}), keyPoints: newItems }
                                                                                                     }));
                                                                                                 }}
                                                                                             />

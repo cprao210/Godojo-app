@@ -23,7 +23,7 @@
   },
   "build": {
     "generateUpdatesFilesForAllChannels": true,
-    "appId": "com.geoserves.godojo-ai",
+    "appId": "com.electron.meeting-notes",
     "afterPack": "./scripts/ad-hoc-sign.js",
     "productName": "GoDojo AI",
     "files": [

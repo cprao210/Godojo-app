@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from "react" // forcing refresh
-import { QueryClient, QueryClientProvider } from "react-query"
+import { QueryClient, QueryClientProvider, QueryCache, MutationCache } from "react-query"
 import { ToastProvider, ToastViewport } from "./components/ui/toast"
 import NativelyInterface from "./components/NativelyInterface"
 import SettingsPopup from "./components/SettingsPopup" // Keeping for legacy/specific window support if needed
@@ -24,10 +24,21 @@ import { analytics } from "./lib/analytics/analytics.service"
 import { ErrorBoundary } from "./components/ErrorBoundary"
 import { SignIn } from "./_pages/SignIn"
 import { subscribeAuthState, signOut as fbSignOut, verifySessionIsActive, installSessionGuard } from "./lib/firebase";
+import { apiFetch, ApiError, notifyInvalidSession, setInvalidSessionHandler } from "./lib/apiClient";
 import { EmailVerification } from "./_pages/EmailVerification";
 import type { User } from "firebase/auth"
 
-const queryClient = new QueryClient()
+// Route HTTP auth failures (a terminal 401 from apiClient, surfaced through React
+// Query) into the same session-expired flow as the Firebase guard. The QueryClient
+// lives at module scope so it can't close over React state — it hands off via the
+// apiClient bridge (notifyInvalidSession), which <App/> wires to handleInvalidSession.
+const handleApiError = (error: unknown) => {
+  if (error instanceof ApiError && error.status === 401) notifyInvalidSession(error.code);
+};
+const queryClient = new QueryClient({
+  queryCache: new QueryCache({ onError: handleApiError }),
+  mutationCache: new MutationCache({ onError: handleApiError }),
+})
 
 const App: React.FC = () => {
   const isSettingsWindow = new URLSearchParams(window.location.search).get('window') === 'settings';
@@ -135,16 +146,32 @@ const App: React.FC = () => {
   // latest — or immediately if the token has already expired.
   useEffect(() => {
     if (!(isLauncherWindow || isDefault || isOverlayWindow)) return;
-    const unsub = installSessionGuard(async (errorCode?: string) => {
+    const handleInvalidSession = async (errorCode?: string) => {
       const { getAuthErrorMessage } = await import('./lib/firebase');
       const msg = errorCode
         ? getAuthErrorMessage({ code: errorCode })
         : 'Your session has expired or the account was disabled. Please sign in again.';
       setSessionExpiredMessage(msg || 'Your session has ended. Please sign in again.');
       await fbSignOut().catch(() => { });
-    });
-    return () => unsub();
+    };
+    // Firebase token-refresh guard (catches account disabled/deleted/revoked).
+    const unsub = installSessionGuard(handleInvalidSession);
+    // A terminal HTTP 401 from apiClient (after its one refresh-retry) routes through
+    // the SAME handler via React Query's QueryCache/MutationCache onError bridge.
+    setInvalidSessionHandler((code) => { void handleInvalidSession(code); });
+    return () => {
+      unsub();
+      setInvalidSessionHandler(null);
+    };
   }, [isLauncherWindow, isDefault]);
+
+  // Backend readiness probe: once signed in, confirm the API is reachable and the
+  // forwarded token is accepted. /auth/me is RLS-independent (works even before
+  // Supabase third-party auth is enabled). Best-effort — failures are logged, not fatal.
+  useEffect(() => {
+    if (!authUser) return;
+    apiFetch('/auth/me').catch((e) => console.warn('[api] /auth/me probe failed:', e));
+  }, [authUser]);
 
   useEffect(() => {
     if (!window.electronAPI?.onAuthStateChanged) return;
