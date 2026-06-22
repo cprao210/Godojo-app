@@ -457,8 +457,8 @@ export const LiveAnalysisContent: React.FC<LiveAnalysisContentProps> = ({
                             </div>
                             {/* Ask now — always visible */}
                             {signal.ask_now && (
-                                <div className="flex items-start gap-1 pb-2.5 pl-5">
-                                    <span className={`text-[11px] font-bold uppercase tracking-wider mt-0.5 shrink-0 ${calledFromAnalysisTab ? (isLight ? 'text-blue-500' : 'text-blue-400/60') : 'text-blue-400/60'}`}>
+                                <div className="flex items-center gap-1 mt-0.5 pb-2.5 pl-5">
+                                    <span className={`text-[11px] font-bold uppercase tracking-wider shrink-0 ${calledFromAnalysisTab ? (isLight ? 'text-blue-500' : 'text-blue-400/60') : 'text-blue-400/60'}`}>
                                         Ask
                                     </span>
                                     <p className={`text-[12px] leading-snug ${calledFromAnalysisTab ? (isLight ? 'text-blue-600' : 'text-blue-300/70') : 'text-blue-300/70'}`}>
