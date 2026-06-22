@@ -110,7 +110,19 @@ const Launcher: React.FC<LauncherProps> = ({ onStartMeeting, onOpenSettings, onP
 
     const fetchMeetings = () => {
         if (window.electronAPI && window.electronAPI.getRecentMeetings) {
-            window.electronAPI.getRecentMeetings().then(setMeetings).catch(err => console.error("Failed to fetch meetings:", err));
+            window.electronAPI.getRecentMeetings()
+                .then(meetings => {
+                    // Deduplicate by id in case backend returns duplicates
+                    // or rapid successive calls overlap
+                    const seen = new Set<string>();
+                    const deduped = meetings.filter(m => {
+                        if (seen.has(m.id)) return false;
+                        seen.add(m.id);
+                        return true;
+                    });
+                    setMeetings(deduped);
+                })
+                .catch(err => console.error("Failed to fetch meetings:", err));
         }
     };
 
@@ -350,6 +362,26 @@ const Launcher: React.FC<LauncherProps> = ({ onStartMeeting, onOpenSettings, onP
         if (!uploadText.trim()) return;
         setIsUploading(true);
         setUploadError(null);
+
+        // Optimistically inject a placeholder immediately so the user sees
+        // the card appear right away without needing to hit refresh.
+        const optimisticId = `optimistic-upload-${Date.now()}`;
+        setMeetings(prev => {
+            const alreadyHasPlaceholder = prev.some(
+                m => m.title === 'Processing...' && m.isProcessed === false
+            );
+            if (alreadyHasPlaceholder) return prev;
+            const placeholder: Meeting = {
+                id: optimisticId,
+                title: uploadTitle.trim() || 'Processing...',
+                date: new Date().toISOString(),
+                duration: '—',
+                summary: 'Analyzing transcript...',
+                isProcessed: false,
+            };
+            return [placeholder, ...prev];
+        });
+
         try {
             const result = await window.electronAPI.uploadTranscript(
                 uploadText.trim(),
@@ -359,11 +391,14 @@ const Launcher: React.FC<LauncherProps> = ({ onStartMeeting, onOpenSettings, onP
                 setIsUploadOpen(false);
                 setUploadText('');
                 setUploadTitle('');
-                fetchMeetings(); // refresh list
+                fetchMeetings(); // replaces placeholder with real entry
             } else {
+                // Remove the placeholder on failure
+                setMeetings(prev => prev.filter(m => m.id !== optimisticId));
                 setUploadError(result?.error || 'Upload failed');
             }
         } catch (e) {
+            setMeetings(prev => prev.filter(m => m.id !== optimisticId));
             setUploadError('Something went wrong');
         } finally {
             setIsUploading(false);
@@ -940,8 +975,8 @@ const Launcher: React.FC<LauncherProps> = ({ onStartMeeting, onOpenSettings, onP
                                             {/* Right-side header actions */}
                                             <div className="flex items-center gap-2">
 
-                                                {/* Upload Transcript — dev only */}
-                                                {process.env.NODE_ENV === 'development' && (
+                                                {/* Upload Transcript */}
+                                                {(
                                                     <button
                                                         onClick={() => setIsUploadOpen(true)}
                                                         className={[
@@ -1174,7 +1209,7 @@ const Launcher: React.FC<LauncherProps> = ({ onStartMeeting, onOpenSettings, onP
                 )}
             </AnimatePresence>
 
-            {/* DEV ONLY — Transcript Upload Modal */}
+            {/* Transcript Upload Modal */}
             <AnimatePresence>
                 {isUploadOpen && (
                     <>
