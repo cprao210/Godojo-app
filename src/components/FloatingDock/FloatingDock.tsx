@@ -1,7 +1,7 @@
 import React, { useState, useRef, useEffect } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
 import { Radio, Brain, Hand, Pause, Play, StopCircle, Settings, GripVertical, Ghost } from 'lucide-react';
-import { FloatingIntelligencePanel } from './panels/FloatingIntelligencePanel';
+import { FloatingIntelligencePanel, MeetingType } from './panels/FloatingIntelligencePanel';
 import { FloatingChatPanel } from './panels/FloatingChatPanel';
 import { FloatingSettingsPanel } from './panels/FloatingSettingsPanel';
 import { DockButton } from './DockButton';
@@ -82,6 +82,8 @@ export const FloatingDock: React.FC<FloatingDockProps> = ({
         const parsed = stored ? parseFloat(stored) : NaN;
         return Number.isFinite(parsed) ? clampOpacity(parsed) : 0.88;
     });
+
+    const [meetingTypes, setMeetingTypes] = useState<MeetingType[]>(['discovery']);
 
     useEffect(() => {
         const onStorage = (e: StorageEvent) => {
@@ -243,6 +245,8 @@ export const FloatingDock: React.FC<FloatingDockProps> = ({
                         onAutoRefreshIntervalChange={setAutoRefreshInterval}
                         isRefreshRun={isRefreshRun}
                         panelFirstOpenedAt={intelligencePanelFirstOpenedAt}
+                        meetingTypes={meetingTypes}
+                        onMeetingTypesChange={setMeetingTypes}
                     />
                 </motion.div>
 
