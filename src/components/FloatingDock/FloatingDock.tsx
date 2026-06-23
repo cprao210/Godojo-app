@@ -180,6 +180,7 @@ export const FloatingDock: React.FC<FloatingDockProps> = ({
             analysisInitiatedRef.current = false;  // allows first-open to trigger fresh analysis
             setChatMessages([]);          // clears chat history
             setActivePanel(null);         // close any open panel
+            setMeetingTypes(['discovery']);   // reset to default — Discovery pre-checked
         });
         return () => unsubscribe();
     }, [resetAnalysis]);

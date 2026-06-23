@@ -428,12 +428,19 @@ export const FloatingIntelligencePanel: React.FC<FloatingIntelligencePanelProps>
 }) => {
     const [showRefreshPicker, setShowRefreshPicker] = useState(false);
     const refreshPickerRef = useRef<HTMLDivElement>(null);
-    const [activeTab, setActiveTab] = useState<'meddicc' | 'bant' | 'signals' | 'objections'>('meddicc');
+    const [activeTab, setActiveTab] = useState<'meddicc' | 'bant' | 'signals' | 'objections' | 'deal_optimizer'>('meddicc');
 
     // Reset to default tab whenever the panel is opened
     useEffect(() => {
         if (isOpen) setActiveTab('meddicc');
     }, [isOpen]);
+
+    // If Negotiation is unchecked while on deal_optimizer tab, jump back to meddicc
+    useEffect(() => {
+        if (activeTab === 'deal_optimizer' && !meetingTypes.includes('negotiation')) {
+            setActiveTab('meddicc');
+        }
+    }, [meetingTypes, activeTab]);
 
     // Treat an all-missing analysis the same as no data (show WaitingPlaceholder)
     const isAllMissing = (data: LiveAnalysisData) =>
@@ -636,60 +643,69 @@ export const FloatingIntelligencePanel: React.FC<FloatingIntelligencePanelProps>
             {/* Tab bar — only shown when there is live data */}
             {displayData && !isLoading && (
                 <div
-                    className="flex items-center gap-0.5 px-3 pt-2.5 pb-0 shrink-0"
-                    style={{ borderBottom: '1px solid rgba(255,255,255,0.06)' }}
+                    className="shrink-0 overflow-x-auto"
+                    style={{ borderBottom: '1px solid rgba(255,255,255,0.06)', scrollbarWidth: 'none' }}
                 >
-                    {(
-                        [
-                            {
-                                key: 'meddicc' as const,
-                                label: 'MEDDICC',
-                                badge: `${Object.values(displayData.meddic).filter(f => f.status === 'confirmed').length}/7`,
-                            },
-                            {
-                                key: 'bant' as const,
-                                label: 'BANT',
-                                badge: `${Object.values(displayData.bant).filter(f => f.status === 'confirmed').length}/4`,
-                            },
-                            {
-                                key: 'signals' as const,
-                                label: 'Signals',
-                                badge: displayData.signals.length > 0 ? `${displayData.signals.length}` : null,
-                            },
-                            {
-                                key: 'objections' as const,
-                                label: 'Objections',
-                                badge: displayData.objections.length > 0 ? `${displayData.objections.length}` : null,
-                            },
-                        ] as const
-                    ).map(tab => {
-                        const isActive = activeTab === tab.key;
-                        return (
-                            <button
-                                key={tab.key}
-                                onClick={() => setActiveTab(tab.key)}
-                                className="relative flex items-center gap-1.5 px-3 py-2 text-[11px] font-semibold transition-colors rounded-t-lg"
-                                style={{
-                                    color: isActive ? '#ffffff' : 'rgba(255,255,255,0.35)',
-                                    background: isActive ? 'rgba(255,255,255,0.05)' : 'transparent',
-                                    borderBottom: isActive ? '2px solid #3b82f6' : '2px solid transparent',
-                                }}
-                            >
-                                {tab.label}
-                                {tab.badge && (
-                                    <span
-                                        className="text-[9px] font-bold px-1.5 py-0.5 rounded-full"
-                                        style={{
-                                            background: isActive ? 'rgba(59,130,246,0.25)' : 'rgba(255,255,255,0.08)',
-                                            color: isActive ? '#93c5fd' : 'rgba(255,255,255,0.3)',
-                                        }}
-                                    >
-                                        {tab.badge}
-                                    </span>
-                                )}
-                            </button>
-                        );
-                    })}
+                    <div className="flex items-center gap-0.5 px-3 pt-2.5 pb-0 w-max min-w-full">
+                        {(
+                            [
+                                {
+                                    key: 'meddicc' as const,
+                                    label: 'MEDDICC',
+                                    badge: `${Object.values(displayData.meddic).filter(f => f.status === 'confirmed').length}/7`,
+                                },
+                                {
+                                    key: 'bant' as const,
+                                    label: 'BANT',
+                                    badge: `${Object.values(displayData.bant).filter(f => f.status === 'confirmed').length}/4`,
+                                },
+                                {
+                                    key: 'signals' as const,
+                                    label: 'Signals',
+                                    badge: displayData.signals.length > 0 ? `${displayData.signals.length}` : null,
+                                },
+                                {
+                                    key: 'objections' as const,
+                                    label: 'Objections',
+                                    badge: displayData.objections.length > 0 ? `${displayData.objections.length}` : null,
+                                },
+                                ...(meetingTypes.includes('negotiation') ? [{
+                                    key: 'deal_optimizer' as const,
+                                    label: 'Deal Alert',
+                                    badge: (displayData.dealOptimizer?.length ?? 0) > 0 ? `${displayData.dealOptimizer!.length}` : null,
+                                }] : []),
+                            ] as const
+                        ).map(tab => {
+                            const isActive = activeTab === tab.key;
+                            return (
+                                <button
+                                    key={tab.key}
+                                    onClick={() => setActiveTab(tab.key)}
+                                    className="relative flex items-center gap-1.5 px-3 py-2 text-[11px] font-semibold transition-colors rounded-t-lg"
+                                    style={{
+                                        color: isActive ? '#ffffff' : 'rgba(255,255,255,0.35)',
+                                        background: isActive ? 'rgba(255,255,255,0.05)' : 'transparent',
+                                        borderBottom: isActive
+                                            ? `2px solid ${tab.key === 'deal_optimizer' ? '#fbbf24' : '#3b82f6'}`
+                                            : '2px solid transparent',
+                                    }}
+                                >
+                                    {tab.label}
+                                    {tab.badge && (
+                                        <span
+                                            className="text-[9px] font-bold px-1.5 py-0.5 rounded-full"
+                                            style={{
+                                                background: isActive ? 'rgba(59,130,246,0.25)' : 'rgba(255,255,255,0.08)',
+                                                color: isActive ? '#93c5fd' : 'rgba(255,255,255,0.3)',
+                                            }}
+                                        >
+                                            {tab.badge}
+                                        </span>
+                                    )}
+                                </button>
+                            );
+                        })}
+                    </div>
                 </div>
             )}
 
@@ -727,7 +743,7 @@ export const FloatingIntelligencePanel: React.FC<FloatingIntelligencePanelProps>
                     <LiveAnalysisContent
                         analysisData={displayData}
                         hideBar="Missing Details"
-                        activeTab={activeTab}
+                        activeTab={activeTab as 'meddicc' | 'bant' | 'signals' | 'objections' | 'deal_optimizer'}
                     />
                 )}
             </div>
