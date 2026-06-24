@@ -112,7 +112,7 @@ const SectionToggle: React.FC<SectionToggleProps> = ({
             <div className="mb-1">
                 <button
                     onClick={() => setOpen(v => !v)}
-                    className={`w-full flex items-center gap-2.5 px-4 py-3 transition-colors group rounded-lg ${isLight ? 'hover:bg-slate-100' : 'hover:bg-white/[0.03]'
+                    className={`w-full flex items-center gap-2.5 px-4 py-2 transition-colors group rounded-lg ${isLight ? 'hover:bg-slate-100' : 'hover:bg-white/[0.03]'
                         }`}
                 >
                     <span className={`transition-colors ${isLight ? 'text-slate-400 group-hover:text-slate-600' : 'text-white/40 group-hover:text-white/60'}`}>
@@ -140,7 +140,7 @@ const SectionToggle: React.FC<SectionToggleProps> = ({
                             transition={{ duration: 0.2, ease: [0.16, 1, 0.3, 1] }}
                             className="overflow-hidden"
                         >
-                            <div className="px-4 pb-4">{children}</div>
+                            <div className="px-4 pb-2">{children}</div>
                         </motion.div>
                     )}
                 </AnimatePresence>
@@ -153,7 +153,7 @@ const SectionToggle: React.FC<SectionToggleProps> = ({
         <div className="mb-1">
             <button
                 onClick={() => setOpen(v => !v)}
-                className="w-full flex items-center gap-2.5 px-4 py-3 hover:bg-white/[0.03] transition-colors group"
+                className="w-full flex items-center gap-2.5 px-4 py-2 hover:bg-white/[0.03] transition-colors group"
             >
                 <span className="text-white/40 group-hover:text-white/60 transition-colors">{icon}</span>
                 <span className="text-[11px] font-bold uppercase tracking-[0.12em] text-white/50 group-hover:text-white/70 transition-colors flex-1 text-left">
@@ -177,7 +177,7 @@ const SectionToggle: React.FC<SectionToggleProps> = ({
                         transition={{ duration: 0.2, ease: [0.16, 1, 0.3, 1] }}
                         className="overflow-hidden"
                     >
-                        <div className="px-4 pb-4">{children}</div>
+                        <div className="px-4 pb-2">{children}</div>
                     </motion.div>
                 )}
             </AnimatePresence>
@@ -197,8 +197,8 @@ interface FieldRowProps {
 const FieldRow: React.FC<FieldRowProps> = ({ label, field, themed = false, isLight = false }) => {
     if (themed) {
         return (
-            <div className={`rounded-xl border px-3.5 py-3 mb-2 last:mb-0 ${statusRingThemed(field.status, isLight)}`}>
-                <div className="flex items-center justify-between mb-1">
+            <div className={`rounded-xl border px-3 py-2 mb-1.5 last:mb-0 ${statusRingThemed(field.status, isLight)}`}>
+                <div className="flex items-center justify-between mb-0.5">
                     <span className={`text-[9px] font-bold uppercase tracking-[0.14em] ${isLight ? 'text-slate-400' : 'text-white/30'}`}>
                         {label}
                     </span>
@@ -231,8 +231,8 @@ const FieldRow: React.FC<FieldRowProps> = ({ label, field, themed = false, isLig
 
     // Original overlay variant
     return (
-        <div className={`rounded-xl border px-3.5 py-3 mb-2 last:mb-0 ${statusRing(field.status)}`}>
-            <div className="flex items-center justify-between mb-1">
+        <div className={`rounded-xl border px-3 py-2 mb-1.5 last:mb-0 ${statusRing(field.status)}`}>
+            <div className="flex items-center justify-between mb-0.5">
                 <span className="text-[9px] font-bold uppercase tracking-[0.14em] text-white/30">{label}</span>
                 <div className="flex items-center gap-1.5">
                     <div className={`w-1.5 h-1.5 rounded-full ${statusDot(field.status)}`} />
@@ -242,7 +242,7 @@ const FieldRow: React.FC<FieldRowProps> = ({ label, field, themed = false, isLig
                 </div>
             </div>
             {field.evidence ? (
-                <p className="text-[12px] text-white/65 leading-relaxed">{field.evidence}</p>
+                <p className="text-[12px] text-white/65 leading-normal">{field.evidence}</p>
             ) : field.suggested_question ? (
                 <div className="flex items-start gap-1.5">
                     <span className="text-[9px] font-bold text-blue-400/70 uppercase tracking-wider mt-[2px] shrink-0">Ask this</span>
@@ -250,7 +250,7 @@ const FieldRow: React.FC<FieldRowProps> = ({ label, field, themed = false, isLig
                 </div>
             ) : (
                 <p className="text-[12px] text-white/25 italic">
-                    Not yet captured — listen for cues
+                    Not yet captured
                 </p>
             )}
         </div>
@@ -266,6 +266,8 @@ interface LiveAnalysisContentProps {
     /** Pass true when rendered inside the Call Analysis tab (MeetingDetails).
      *  Enables full theme awareness (light/dark). Overlay callers omit this. */
     calledFromAnalysisTab?: boolean;
+    /** When set (overlay context), renders only the active tab section — fully expanded, no accordion. */
+    activeTab?: 'meddicc' | 'bant' | 'signals' | 'objections';
 }
 
 // ─── Main component ────────────────────────────────────────────────────────
@@ -275,6 +277,7 @@ export const LiveAnalysisContent: React.FC<LiveAnalysisContentProps> = ({
     // aiInsight,
     hideBar = null,
     calledFromAnalysisTab = false,
+    activeTab,
 }) => {
     // Only consume theme hook when rendered in analysis tab context.
     // Overlay callers always render dark-glass regardless of system theme.
@@ -303,32 +306,30 @@ export const LiveAnalysisContent: React.FC<LiveAnalysisContentProps> = ({
             .map(s => ({ title: 'Risk Signal', desc: s.ask_now, icon: '⚠' })),
     ];
 
-    const [checkedObjections, setCheckedObjections] = useState<Set<number>>(new Set());
-    const toggleObjection = (index: number) => {
+    const [checkedObjections, setCheckedObjections] = useState<Set<string>>(new Set());
+    const toggleObjection = (id: string) => {
         setCheckedObjections(prev => {
             const next = new Set(prev);
-            if (next.has(index)) next.delete(index); else next.add(index);
+            if (next.has(id)) next.delete(id); else next.add(id);
             return next;
         });
     };
 
-    const [struckSignals, setStruckSignals] = useState<Set<number>>(new Set());
-    const toggleSignal = (index: number) => {
-        setStruckSignals(prev => {
-            const next = new Set(prev);
-            if (next.has(index)) next.delete(index); else next.add(index);
-            return next;
+    const [dismissedSignals, setDismissedSignals] = useState<Set<string>>(new Set());
+    const dismissSignal = (id: string) => {
+        setDismissedSignals(prev => { const n = new Set(prev); n.add(id); return n; });
+    };
+
+    const restoreSignal = (id: string) => {
+        setDismissedSignals(prev => {
+            const n = new Set(prev);
+            n.delete(id);
+            if (n.size === 0) setDismissedDrawerOpen(false);
+            return n;
         });
     };
 
-    const [expandedSignals, setExpandedSignals] = useState<Set<number>>(new Set());
-    const toggleSignalExpand = (index: number) => {
-        setExpandedSignals(prev => {
-            const next = new Set(prev);
-            if (next.has(index)) next.delete(index); else next.add(index);
-            return next;
-        });
-    };
+    const [dismissedDrawerOpen, setDismissedDrawerOpen] = useState(false);
 
     // ── Divider ──────────────────────────────────────────────────────────────
     const Divider = () => (
@@ -377,6 +378,271 @@ export const LiveAnalysisContent: React.FC<LiveAnalysisContentProps> = ({
     const objectionsBadge = isLight
         ? 'bg-slate-100 text-slate-600 border border-slate-200'
         : 'bg-white/10 text-white/40';
+
+    // ── Shared signal list renderer ───────────────────────────────────────────
+    // Used in both the tabbed overlay (activeTab='signals') and the accordion
+    // (calledFromAnalysisTab) so dismiss/restore state is shared.
+    const renderSignalList = (paddingCls = 'pt-1 pb-1') => {
+        const activeSignals = analysisData.signals.filter(s => !dismissedSignals.has(s.id ?? s.quote));
+        const archivedSignals = analysisData.signals.filter(s => dismissedSignals.has(s.id ?? s.quote));
+
+        const stripe = (cat: string, intensity: string) => {
+            if (cat === 'negative' && intensity === 'high') return 'bg-red-500';
+            if (cat === 'negative') return 'bg-amber-400';
+            if (cat === 'positive') return 'bg-emerald-400';
+            return 'bg-white/20';
+        };
+        const intensityDot = (cat: string, intensity: string) => {
+            if (cat === 'negative' && intensity === 'high') return 'bg-red-500';
+            if (cat === 'negative') return 'bg-amber-400';
+            return 'bg-white/20';
+        };
+
+        return (
+            <div className={paddingCls}>
+                {/* ── Active signals ── */}
+                {activeSignals.length === 0 && (
+                    <p className="text-[12px] text-white/30 text-center py-10">No signals detected yet</p>
+                )}
+
+                <AnimatePresence initial={false}>
+                    {activeSignals.map(signal => (
+                        <motion.div
+                            key={signal.id ?? signal.quote}
+                            initial={{ opacity: 0, height: 'auto' }}
+                            animate={{ opacity: 1, height: 'auto' }}
+                            exit={{ opacity: 0, height: 0, overflow: 'hidden' }}
+                            transition={{ duration: 0.18, ease: [0.16, 1, 0.3, 1] }}
+                            className="border-b border-white/[0.04] last:border-b-0"
+                        >
+                            <div className="flex items-start gap-2 pt-2 px-4 group">
+                                <div className={`w-0.5 self-stretch rounded-full shrink-0 mt-0.5 ${stripe(signal.category, signal.intensity)}`} />
+                                <div className="flex-1 min-w-0">
+                                    <div className="flex items-center justify-between gap-1 mb-1">
+                                        <div className="flex flex-wrap gap-1.5">
+                                            {signal.signal_type.slice(0, 2).map((type, j) => (
+                                                <span
+                                                    key={j}
+                                                    className={`text-[9px] font-bold uppercase tracking-wider px-1 py-0.5 rounded border ${calledFromAnalysisTab
+                                                        ? signalTypeColorThemed(type, isLight)
+                                                        : signalTypeColor(type)
+                                                        }`}
+                                                >
+                                                    {type.replace(/_/g, ' ')}
+                                                </span>
+                                            ))}
+                                        </div>
+                                        <div className="flex items-center gap-2 shrink-0">
+                                            <div className={`w-1.5 h-1.5 rounded-full ${intensityDot(signal.category, signal.intensity)}`} />
+                                            <span className={`text-[10px] capitalize ${calledFromAnalysisTab ? (isLight ? 'text-slate-400' : 'text-white/25') : 'text-white/25'}`}>
+                                                {signal.intensity}
+                                            </span>
+                                            {/* Dismiss button — appears on hover */}
+                                            <button
+                                                onClick={() => dismissSignal(signal.id ?? signal.quote)}
+                                                title="Dismiss signal"
+                                                className="opacity-0 group-hover:opacity-100 transition-opacity ml-1 w-4 h-4 rounded flex items-center justify-center hover:bg-white/10"
+                                                style={{ color: 'rgba(255,255,255,0.25)' }}
+                                            >
+                                                <svg width="8" height="8" viewBox="0 0 8 8" fill="none">
+                                                    <path d="M1 1l6 6M7 1L1 7" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" />
+                                                </svg>
+                                            </button>
+                                        </div>
+                                    </div>
+                                    <p className={`text-[12.5px] italic ${calledFromAnalysisTab ? (isLight ? 'text-slate-600' : 'text-white/60') : 'text-white/60'}`}>
+                                        "{signal.quote}"
+                                    </p>
+                                </div>
+                            </div>
+                            {/* Ask now — always visible */}
+                            {signal.ask_now && (
+                                <div className="flex items-center gap-1 mt-0.5 pb-2.5 pl-5">
+                                    <span className={`text-[11px] font-bold uppercase tracking-wider shrink-0 ${calledFromAnalysisTab ? (isLight ? 'text-blue-500' : 'text-blue-400/60') : 'text-blue-400/60'}`}>
+                                        Ask
+                                    </span>
+                                    <p className={`text-[12px] leading-snug ${calledFromAnalysisTab ? (isLight ? 'text-blue-600' : 'text-blue-300/70') : 'text-blue-300/70'}`}>
+                                        {signal.ask_now}
+                                    </p>
+                                </div>
+                            )}
+                        </motion.div>
+                    ))}
+                </AnimatePresence>
+
+                {/* ── Dismissed drawer ── */}
+                {archivedSignals.length > 0 && (
+                    <div className="mt-2 mx-3">
+                        <button
+                            onClick={() => setDismissedDrawerOpen(v => !v)}
+                            className="w-full flex items-center gap-2 px-3 py-2 rounded-lg transition-colors hover:bg-white/[0.04]"
+                            style={{ border: '1px solid rgba(255,255,255,0.06)' }}
+                        >
+                            <span className="text-[10px] font-bold uppercase tracking-wider text-white/25 flex-1 text-left">
+                                Dismissed
+                            </span>
+                            <span
+                                className="text-[9px] font-bold px-1.5 py-0.5 rounded-full"
+                                style={{ background: 'rgba(255,255,255,0.06)', color: 'rgba(255,255,255,0.3)' }}
+                            >
+                                {archivedSignals.length}
+                            </span>
+                            <span className="text-white/20">
+                                {dismissedDrawerOpen
+                                    ? <ChevronUp size={11} />
+                                    : <ChevronDown size={11} />}
+                            </span>
+                        </button>
+
+                        <AnimatePresence initial={false}>
+                            {dismissedDrawerOpen && (
+                                <motion.div
+                                    initial={{ height: 0, opacity: 0 }}
+                                    animate={{ height: 'auto', opacity: 1 }}
+                                    exit={{ height: 0, opacity: 0 }}
+                                    transition={{ duration: 0.2, ease: [0.16, 1, 0.3, 1] }}
+                                    className="overflow-hidden"
+                                >
+                                    <div className="pt-1 pb-2 space-y-0">
+                                        {archivedSignals.map(signal => (
+                                            <div
+                                                key={signal.id ?? signal.quote}
+                                                className="flex items-start gap-2 px-3 py-2 opacity-60 hover:opacity-80 transition-opacity"
+                                            >
+                                                <div className={`w-0.5 self-stretch rounded-full shrink-0 mt-0.5 ${stripe(signal.category, signal.intensity)}`} />
+                                                <div className="flex-1 min-w-0">
+                                                    <p className="text-[12.5px] italic text-white/50 line-clamp-1">
+                                                        "{signal.quote}"
+                                                    </p>
+                                                    {signal.ask_now && (
+                                                        <p className="text-[11px] text-blue-300/50 mt-0.5">{signal.ask_now}</p>
+                                                    )}
+                                                </div>
+                                                {/* Restore button */}
+                                                <button
+                                                    onClick={() => restoreSignal(signal.id ?? signal.quote)}
+                                                    title="Restore signal"
+                                                    className="shrink-0 text-[9px] font-bold uppercase tracking-wider text-white/30 hover:text-white/60 transition-colors px-1.5 py-1 rounded hover:bg-white/[0.06] mt-0.5"
+                                                >
+                                                    ↩
+                                                </button>
+                                            </div>
+                                        ))}
+                                    </div>
+                                </motion.div>
+                            )}
+                        </AnimatePresence>
+                    </div>
+                )}
+            </div>
+        );
+    };
+
+    // ── Tabbed overlay render (FloatingIntelligencePanel context) ─────────────
+    // When activeTab is provided we render one section at a time, always fully
+    // expanded — no accordion, no scrolling across sections.
+    if (activeTab !== undefined) {
+        const tabContent = () => {
+            switch (activeTab) {
+                case 'meddicc':
+                    return (
+                        <div className="px-3 pt-2 pb-4 space-y-1.5">
+                            {(['metrics', 'economic_buyer', 'decision_criteria', 'decision_process', 'identify_pain', 'champion', 'competition'] as const).map(key => (
+                                <FieldRow
+                                    key={key}
+                                    label={key.replace(/_/g, ' ').replace(/\b\w/g, c => c.toUpperCase())}
+                                    field={analysisData.meddic[key]}
+                                    themed={false}
+                                    isLight={false}
+                                />
+                            ))}
+                        </div>
+                    );
+                case 'bant':
+                    return (
+                        <div className="px-3 pt-2 pb-4 space-y-1.5">
+                            {(['budget', 'authority', 'need', 'timeline'] as const).map(key => (
+                                <FieldRow
+                                    key={key}
+                                    label={key.charAt(0).toUpperCase() + key.slice(1)}
+                                    field={analysisData.bant[key]}
+                                    themed={false}
+                                    isLight={false}
+                                />
+                            ))}
+                        </div>
+                    );
+                case 'signals':
+                    return renderSignalList('pt-1 pb-1');
+                case 'objections':
+                    if (analysisData.objections.length === 0) {
+                        return (
+                            <div className="flex flex-col items-center justify-center h-full py-16 gap-2">
+                                <p className="text-[12px] text-white/30">No objections logged yet</p>
+                            </div>
+                        );
+                    }
+                    return (
+                        <div className="px-3 pt-2 pb-4 space-y-1.5">
+                            {analysisData.objections.map((obj) => {
+                                const isChecked = checkedObjections.has(obj.id ?? obj.quote);
+                                const cardClass = isChecked
+                                    ? 'border-white/[0.04] bg-white/[0.01] opacity-50'
+                                    : obj.type === 'ae_deferral'
+                                        ? 'border-amber-500/20 bg-amber-500/5 hover:bg-amber-500/8'
+                                        : 'border-white/[0.07] bg-white/[0.02] hover:bg-white/[0.04]';
+                                const checkboxClass = isChecked
+                                    ? 'bg-emerald-500/80 border-emerald-500'
+                                    : 'border-white/20 bg-transparent';
+                                const quoteClass = isChecked ? 'line-through text-white/25' : 'text-white/65';
+                                const tagClass = obj.type === 'ae_deferral'
+                                    ? 'text-amber-600 bg-amber-50 border-amber-200'
+                                    : 'text-white/30 bg-white/5 border-white/10';
+                                return (
+                                    <motion.button
+                                        key={obj.id ?? obj.quote}
+                                        initial={{ opacity: 0, x: -4 }}
+                                        animate={{ opacity: 1, x: 0 }}
+                                        transition={{ delay: 0 }}
+                                        onClick={() => toggleObjection(obj.id ?? obj.quote)}
+                                        className={`w-full flex items-start gap-2.5 px-3 py-2 rounded-xl border text-left transition-all duration-200 ${cardClass}`}
+                                    >
+                                        <div className={`mt-0.5 w-4 h-4 rounded shrink-0 flex items-center justify-center border transition-all ${checkboxClass}`}>
+                                            {isChecked && (
+                                                <svg width="9" height="7" viewBox="0 0 9 7" fill="none">
+                                                    <path d="M1 3.5L3.5 6L8 1" stroke="white" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" />
+                                                </svg>
+                                            )}
+                                        </div>
+                                        <div className="flex-1 min-w-0">
+                                            <p className={`text-[12px] leading-relaxed transition-all ${quoteClass}`}>{obj.quote}</p>
+                                            {!isChecked && obj.type === 'customer_question' && obj.suggested_answer && (
+                                                <div className="flex items-start gap-1.5 rounded-md py-1.5">
+                                                    {/* <TrendingUp size={9} className="shrink-0 mt-0.5 text-blue-400/70" /> */}
+                                                    <p className="text-[11px] mb-1 leading-snug text-blue-300/80">{obj.suggested_answer}</p>
+                                                </div>
+                                            )}
+                                            <div className="flex items-center gap-1.5 mt-0.5 justify-between">
+                                                <span className={`text-[9px] font-bold uppercase tracking-wider px-1.5 py-0.5 rounded border ${tagClass}`}>
+                                                    {obj.type === 'ae_deferral' ? 'Follow up' : 'Open question'}
+                                                </span>
+                                                <span className="text-[9px] capitalize text-white/20">{obj.owner}</span>
+                                            </div>
+                                        </div>
+                                    </motion.button>
+                                );
+                            })}
+                        </div>
+                    );
+            }
+        };
+
+        return (
+            <div className="flex-1 min-h-0 overflow-y-auto overflow-x-hidden custom-scrollbar no-drag">
+                {tabContent()}
+            </div>
+        );
+    }
 
     return (
         <div className="flex-1 min-h-0 overflow-y-auto overflow-x-hidden custom-scrollbar pb-6 no-drag">
@@ -445,7 +711,7 @@ export const LiveAnalysisContent: React.FC<LiveAnalysisContentProps> = ({
                         themed={calledFromAnalysisTab}
                         isLight={isLight}
                     >
-                        <div className="space-y-2 mt-1">
+                        <div className="space-y-1.5 mt-1">
                             {missingSignals.map((signal, i) => {
                                 const cardClass = calledFromAnalysisTab
                                     ? signal.icon === '!'
@@ -503,140 +769,12 @@ export const LiveAnalysisContent: React.FC<LiveAnalysisContentProps> = ({
                     <SectionToggle
                         icon={<Zap size={13} />}
                         title="Buying Signals"
-                        badge={`${analysisData.signals.length}`}
+                        badge={`${Math.max(0, analysisData.signals.length - dismissedSignals.size)}`}
                         badgeColor={signalsBadge()}
                         themed={calledFromAnalysisTab}
                         isLight={isLight}
                     >
-                        <div className="mt-1">
-                            {analysisData.signals.map((signal, i) => {
-                                const isPositive = signal.category === 'positive';
-                                const isNegHigh = signal.category === 'negative' && signal.intensity === 'high';
-                                const isNeg = signal.category === 'negative';
-                                const isStruck = struckSignals.has(i);
-                                const isExpanded = expandedSignals.has(i);
-
-                                // Left stripe colour
-                                const stripe = isNegHigh
-                                    ? 'bg-red-500'
-                                    : isNeg
-                                        ? 'bg-amber-400'
-                                        : isPositive
-                                            ? 'bg-emerald-400'
-                                            : 'bg-white/20';
-
-                                const rowBg = calledFromAnalysisTab
-                                    ? isLight ? 'hover:bg-slate-50' : 'hover:bg-white/[0.02]'
-                                    : 'hover:bg-white/[0.02]';
-
-                                const dividerCls = calledFromAnalysisTab
-                                    ? isLight ? 'border-slate-100' : 'border-white/[0.04]'
-                                    : 'border-white/[0.04]';
-
-                                const quoteCls = isStruck
-                                    ? calledFromAnalysisTab
-                                        ? isLight ? 'line-through text-slate-300' : 'line-through text-white/20'
-                                        : 'line-through text-white/20'
-                                    : calledFromAnalysisTab
-                                        ? isLight ? 'text-slate-600' : 'text-white/60'
-                                        : 'text-white/60';
-
-                                const askTextCls = calledFromAnalysisTab
-                                    ? isLight ? 'text-blue-600' : 'text-blue-300/70'
-                                    : 'text-blue-300/70';
-
-                                const askLabelCls = calledFromAnalysisTab
-                                    ? isLight ? 'text-blue-500' : 'text-blue-400/60'
-                                    : 'text-blue-400/60';
-
-                                const intensityDot = isNegHigh ? 'bg-red-500' : isNeg ? 'bg-amber-400' : 'bg-white/20';
-                                const intensityText = calledFromAnalysisTab
-                                    ? isLight ? 'text-slate-400' : 'text-white/25'
-                                    : 'text-white/25';
-
-                                return (
-                                    <motion.div
-                                        key={i}
-                                        initial={{ opacity: 0, x: -2 }}
-                                        animate={{ opacity: 1, x: 0 }}
-                                        transition={{ delay: i * 0.04 }}
-                                        className={`border-b last:border-b-0 ${dividerCls} ${isStruck ? 'opacity-50' : ''}`}
-                                    >
-                                        {/* Main row — click to expand ask_now, positive signals click to strike */}
-                                        <div
-                                            className={`flex items-start gap-2 py-2 cursor-pointer transition-colors ${rowBg}`}
-                                            onClick={() => {
-                                                // if (isPositive) toggleSignal(i);
-                                                // else 
-                                                toggleSignalExpand(i);
-                                            }}
-                                        >
-                                            {/* Left colour stripe */}
-                                            <div className={`w-0.5 self-stretch rounded-full shrink-0 mt-0.5 ${stripe}`} />
-
-                                            <div className="flex-1 min-w-0">
-                                                {/* Type badges + intensity */}
-                                                <div className="flex items-center justify-between gap-1 mb-1">
-                                                    <div className="flex flex-wrap gap-1.5">
-                                                        {signal.signal_type.slice(0, 2).map((type, j) => (
-                                                            <span
-                                                                key={j}
-                                                                className={`text-[10px] font-bold uppercase tracking-wider px-1 py-0.5 rounded border ${calledFromAnalysisTab
-                                                                    ? signalTypeColorThemed(type, isLight)
-                                                                    : signalTypeColor(type)
-                                                                    }`}
-                                                            >
-                                                                {type.replace(/_/g, ' ')}
-                                                            </span>
-                                                        ))}
-                                                    </div>
-                                                    <div className="flex items-center gap-2 shrink-0">
-                                                        {/* Strike toggle hint for positive signals */}
-                                                        {/* {isPositive && (
-                                                            <span className={`text-[10px] ${askLabelCls}`}>
-                                                                {isStruck ? '↩ restore' : '✓ done'}
-                                                            </span>
-                                                        )} */}
-                                                        <div className={`w-1.5 h-1.5 rounded-full ${intensityDot}`} />
-                                                        <span className={`text-[10px] capitalize ${intensityText}`}>{signal.intensity}</span>
-                                                    </div>
-                                                </div>
-
-                                                {/* Quote — 2-line clamp */}
-                                                <p className={`text-[12px] italic ${quoteCls}`}>
-                                                    "{signal.quote}"
-                                                </p>
-                                            </div>
-
-                                            {/* Expand chevron for non-positive signals */}
-                                            {!isPositive && (
-                                                <span className={`shrink-0 mt-1 ${intensityText}`}>
-                                                    {isExpanded ? <ChevronUp size={12} /> : <ChevronDown size={12} />}
-                                                </span>
-                                            )}
-                                        </div>
-
-                                        {/* Ask now — collapsed by default, expands on click */}
-                                        <AnimatePresence initial={false}>
-                                            {!isPositive && isExpanded && (
-                                                <motion.div
-                                                    initial={{ height: 0, opacity: 0 }}
-                                                    animate={{ height: 'auto', opacity: 1 }}
-                                                    exit={{ height: 0, opacity: 0 }}
-                                                    transition={{ duration: 0.18, ease: [0.16, 1, 0.3, 1] }}
-                                                    className="overflow-hidden"
-                                                >
-                                                    <div className="flex items-start gap-1 pb-2 pl-3">
-                                                        <span className={`text-[8px] font-bold uppercase tracking-wider mt-0.5 shrink-0 ${askLabelCls}`}>Ask</span>
-                                                        <p className={`text-[10px] leading-snug ${askTextCls}`}>{signal.ask_now}</p>
-                                                    </div>
-                                                </motion.div>
-                                            )}
-                                        </AnimatePresence>
-                                    </motion.div>
-                                );
-                            })}
-                        </div>
+                        {renderSignalList('mt-1 -mx-4')}
                     </SectionToggle>
                     <Divider />
                 </>
@@ -654,8 +792,8 @@ export const LiveAnalysisContent: React.FC<LiveAnalysisContentProps> = ({
                         isLight={isLight}
                     >
                         <div className="space-y-2 mt-1">
-                            {analysisData.objections.map((obj, i) => {
-                                const isChecked = checkedObjections.has(i);
+                            {analysisData.objections.map((obj) => {
+                                const isChecked = checkedObjections.has(obj.id ?? obj.quote);
 
                                 const cardClass = calledFromAnalysisTab
                                     ? isChecked
@@ -695,12 +833,12 @@ export const LiveAnalysisContent: React.FC<LiveAnalysisContentProps> = ({
 
                                 return (
                                     <motion.button
-                                        key={i}
+                                        key={obj.id ?? obj.quote}
                                         initial={{ opacity: 0, x: -4 }}
                                         animate={{ opacity: 1, x: 0 }}
-                                        transition={{ delay: i * 0.05 }}
-                                        onClick={() => toggleObjection(i)}
-                                        className={`w-full flex items-start gap-3 px-3.5 py-3 rounded-xl border text-left transition-all duration-200 ${cardClass}`}
+                                        transition={{ delay: 0 }}
+                                        onClick={() => toggleObjection(obj.id ?? obj.quote)}
+                                        className={`w-full flex items-start gap-2.5 px-3 py-2 rounded-xl border text-left transition-all duration-200 ${cardClass}`}
                                     >
                                         <div className={`mt-0.5 w-4 h-4 rounded shrink-0 flex items-center justify-center border transition-all ${checkboxClass}`}>
                                             {isChecked && (
@@ -715,16 +853,16 @@ export const LiveAnalysisContent: React.FC<LiveAnalysisContentProps> = ({
                                             </p>
                                             {/* Suggested answer — only for customer questions */}
                                             {!isChecked && obj.type === 'customer_question' && obj.suggested_answer && (
-                                                <div className={`flex items-start gap-1.5 rounded-md px-1 py-1.5`}>
-                                                    <TrendingUp size={9} className={`shrink-0 mt-0.5 ${calledFromAnalysisTab ? (isLight ? 'text-blue-500' : 'text-blue-400/70') : 'text-blue-400/70'
-                                                        }`} />
-                                                    <p className={`text-[10px] leading-snug ${calledFromAnalysisTab ? (isLight ? 'text-blue-700' : 'text-blue-300/80') : 'text-blue-300/80'
+                                                <div className={`flex items-start gap-1.5 rounded-md py-1.5`}>
+                                                    {/* <TrendingUp size={9} className={`shrink-0 mt-0.5 ${calledFromAnalysisTab ? (isLight ? 'text-blue-500' : 'text-blue-400/70') : 'text-blue-400/70'
+                                                        }`} /> */}
+                                                    <p className={`text-[11px] leading-snug ${calledFromAnalysisTab ? (isLight ? 'text-blue-700' : 'text-blue-300/80') : 'text-blue-300/80'
                                                         }`}>
                                                         {obj.suggested_answer}
                                                     </p>
                                                 </div>
                                             )}
-                                            <div className="flex items-center gap-1.5 mt-1">
+                                            <div className="flex items-center justify-between gap-1.5 mt-1">
                                                 <span className={`text-[9px] font-bold uppercase tracking-wider px-1.5 py-0.5 rounded border ${tagClass}`}>
                                                     {obj.type === 'ae_deferral' ? 'Follow up' : 'Open question'}
                                                 </span>

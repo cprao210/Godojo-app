@@ -307,10 +307,12 @@ export class MeetingPersistence {
             durationMs: durationMs,
             summary: "Generating summary...",
             detailedSummary: { actionItems: [], keyPoints: [] },
-            transcript: snapshot.transcript,
-            usage: snapshot.usage,
+            transcript: [],
+            usage: [],
             isProcessed: false
         };
+
+        console.log("==> placeholder: ", placeholder.transcript);
 
         try {
             DatabaseManager.getInstance().saveMeeting(placeholder, snapshot.startTime, durationMs);
@@ -409,6 +411,72 @@ export class MeetingPersistence {
             }
         } catch (e) {
             console.error("Error generating meeting metadata", e);
+        }
+
+        // Generate call analysis for uploaded transcripts (no live analysis available)
+        if (!liveAnalysisData && data.transcript.length > 2) {
+            try {
+
+                const analysisPrompt = `Analyze this sales call transcript and return ONLY a valid JSON object with NO markdown, no backticks, no explanation. Use exactly this structure:
+                {
+                  "bant": {
+                    "budget":    { "emoji": "✅|⚠️|❌", "status": "confirmed|partial|missing", "evidence": "direct quote or empty string", "suggested_question": "string" },
+                    "authority": { "emoji": "✅|⚠️|❌", "status": "confirmed|partial|missing", "evidence": "direct quote or empty string", "suggested_question": "string" },
+                    "need":      { "emoji": "✅|⚠️|❌", "status": "confirmed|partial|missing", "evidence": "direct quote or empty string", "suggested_question": "string" },
+                    "timeline":  { "emoji": "✅|⚠️|❌", "status": "confirmed|partial|missing", "evidence": "direct quote or empty string", "suggested_question": "string" }
+                  },
+                  "meddic": {
+                    "metrics":           { "emoji": "✅|⚠️|❌", "status": "confirmed|partial|missing", "evidence": "direct quote or empty string", "suggested_question": "string" },
+                    "economic_buyer":    { "emoji": "✅|⚠️|❌", "status": "confirmed|partial|missing", "evidence": "direct quote or empty string", "suggested_question": "string" },
+                    "decision_criteria": { "emoji": "✅|⚠️|❌", "status": "confirmed|partial|missing", "evidence": "direct quote or empty string", "suggested_question": "string" },
+                    "decision_process":  { "emoji": "✅|⚠️|❌", "status": "confirmed|partial|missing", "evidence": "direct quote or empty string", "suggested_question": "string" },
+                    "identify_pain":     { "emoji": "✅|⚠️|❌", "status": "confirmed|partial|missing", "evidence": "direct quote or empty string", "suggested_question": "string" },
+                    "champion":          { "emoji": "✅|⚠️|❌", "status": "confirmed|partial|missing", "evidence": "direct quote or empty string", "suggested_question": "string" },
+                    "competition":       { "emoji": "✅|⚠️|❌", "status": "confirmed|partial|missing", "evidence": "direct quote or empty string", "suggested_question": "string" }
+                  },
+                  "objections": [
+                    {
+                      "type": "customer_question",
+                      "quote": "exact quote from transcript",
+                      "owner": "customer",
+                      "status": "open|deferred",
+                      "suggested_answer": "AI suggested rebuttal"
+                    }
+                  ],
+                  "signals": [
+                    {
+                      "quote": "exact quote from transcript",
+                      "signal_type": ["buying_signal|risk|frustration|objection|positive"],
+                      "ask_now": "suggested follow-up question or action",
+                      "intensity": "high|medium|low",
+                      "category": "positive|negative|neutral"
+                    }
+                  ]
+                }
+                Rules:
+                - emoji must be "✅" for confirmed, "⚠️" for partial, "❌" for missing
+                - signal_type is always an ARRAY of strings even if only one value
+                - Return raw JSON only, no markdown fences`;
+
+                const transcriptText = data.transcript
+                    .filter(t => !['system', 'ai', 'assistant', 'model'].includes(t.speaker?.toLowerCase()))
+                    .map(t => `${t.speaker === 'user' ? (speakerNames?.user || 'REP') : (speakerNames?.client || 'PROSPECT')}: ${t.text}`)
+                    .join('\n')
+                    .substring(0, 12000);
+
+                const analysisRaw = await this.llmHelper.generateMeetingSummary(analysisPrompt, transcriptText, analysisPrompt);
+                if (analysisRaw) {
+                    const jsonMatch = analysisRaw.match(/```json\n([\s\S]*?)\n```/) || [null, analysisRaw];
+                    const jsonStr = (jsonMatch[1] || analysisRaw).trim();
+                    try {
+                        liveAnalysisData = JSON.parse(jsonStr);
+                    } catch (e) {
+                        console.warn('[MeetingPersistence] Failed to parse call analysis JSON:', e);
+                    }
+                }
+            } catch (e) {
+                console.warn('[MeetingPersistence] Call analysis generation failed (non-fatal):', e);
+            }
         }
 
         try {
@@ -518,27 +586,40 @@ export class MeetingPersistence {
             const transcript: TranscriptSegment[] = [];
             const lines = rawText.split('\n').filter(l => l.trim());
 
-            lines.forEach((line, i) => {
-                // Match "[timestamp] SPEAKER: text" or "SPEAKER: text"
-                const withTimestamp = line.match(/^\[[\d:]+\]\s*(REP|PROSPECT|ME|THEM|USER|SPEAKER\s*\d*|[A-Z][A-Z\s]{0,15}):\s*(.+)/i);
-                const withoutTimestamp = line.match(/^(REP|PROSPECT|ME|THEM|USER|SPEAKER\s*\d*|[A-Z][A-Z\s]{0,15}):\s*(.+)/i);
-                const match = withTimestamp || withoutTimestamp;
+            // Helper to parse "[HH:MM:SS]" or "[MM:SS]" into milliseconds
+            const parseTimestamp = (raw: string): number | null => {
+                const parts = raw.replace(/[\[\]]/g, '').split(':').map(Number);
+                if (parts.some(isNaN)) return null;
+                if (parts.length === 3) return ((parts[0] * 3600) + (parts[1] * 60) + parts[2]) * 1000;
+                if (parts.length === 2) return ((parts[0] * 60) + parts[1]) * 1000;
+                return null;
+            };
 
-                if (match) {
-                    const speakerRaw = match[1].trim().toUpperCase();
-                    const text = match[2].trim();
-                    // Map common speaker names to user/other
+            let lastParsedTs = 0;
+            lines.forEach((line, i) => {
+                const withTimestamp = line.match(/^(\[[\d:]+\])\s*(REP|PROSPECT|CLIENT|ME|THEM|USER|SPEAKER\s*\d*|[A-Z][A-Z\s]{0,15}):\s*(.+)/i);
+                const withoutTimestamp = line.match(/^(REP|PROSPECT|CLIENT|ME|THEM|USER|SPEAKER\s*\d*|[A-Z][A-Z\s]{0,15}):\s*(.+)/i);
+
+                if (withTimestamp) {
+                    const tsRaw = withTimestamp[1];
+                    const speakerRaw = withTimestamp[2].trim().toUpperCase();
+                    const text = withTimestamp[3].trim();
+                    const parsedTs = parseTimestamp(tsRaw);
+                    const timestamp = parsedTs !== null ? parsedTs : lastParsedTs + 5000;
+                    lastParsedTs = timestamp;
                     const speaker = ['REP', 'ME', 'USER', 'SALES', 'SELLER'].includes(speakerRaw) ? 'user' : 'client';
-                    transcript.push({
-                        speaker, text, timestamp: i * 5000,
-                        final: true
-                    });
+                    transcript.push({ speaker, text, timestamp, final: true });
+                } else if (withoutTimestamp) {
+                    const speakerRaw = withoutTimestamp[1].trim().toUpperCase();
+                    const text = withoutTimestamp[2].trim();
+                    const timestamp = lastParsedTs + 5000;
+                    lastParsedTs = timestamp;
+                    const speaker = ['REP', 'ME', 'USER', 'SALES', 'SELLER'].includes(speakerRaw) ? 'user' : 'client';
+                    transcript.push({ speaker, text, timestamp, final: true });
                 } else if (line.trim()) {
-                    // Plain line — treat as client (remote/other party)
-                    transcript.push({
-                        speaker: 'client', text: line.trim(), timestamp: i * 5000,
-                        final: true
-                    });
+                    const timestamp = lastParsedTs + 5000;
+                    lastParsedTs = timestamp;
+                    transcript.push({ speaker: 'client', text: line.trim(), timestamp, final: true });
                 }
             });
 
@@ -553,10 +634,12 @@ export class MeetingPersistence {
             // Fall back to now - 60s minimum if timestamps are missing/zero.
             const firstTs = transcript[0]?.timestamp ?? 0;
             const lastTs = transcript[transcript.length - 1]?.timestamp ?? 0;
-            const durationMs = (firstTs > 0 && lastTs > firstTs)
-                ? (lastTs - firstTs)
-                : 60_000;
-            const startTimeMs = firstTs > 0 ? firstTs : now - durationMs;
+            // Use real parsed timestamps if available (lastTs > 0 means timestamps were found)
+            // Otherwise estimate from line count: avg 15 seconds per exchange
+            const durationMs = lastTs > 0
+                ? lastTs - firstTs
+                : Math.max(transcript.length * 15_000, 60_000);
+            const startTimeMs = now - durationMs;
             const context = transcript.map(t => `${t.speaker === 'user' ? 'Me' : 'Them'}: ${t.text}`).join('\n');
 
             // Save placeholder immediately so it appears in the list
@@ -568,7 +651,7 @@ export class MeetingPersistence {
                 durationMs: durationMs,
                 summary: 'Generating summary...',
                 detailedSummary: { actionItems: [], keyPoints: [] },
-                transcript,
+                transcript: [],
                 usage: [],
                 isProcessed: false,
             };
