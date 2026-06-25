@@ -1,7 +1,7 @@
 import React, { useState } from 'react';
-import { Shield, BarChart2, AlertTriangle, Zap, CheckSquare, ChevronDown, ChevronUp, Calculator, TrendingUp, TrendingDown } from 'lucide-react';
+import { Shield, BarChart2, AlertTriangle, Zap, CheckSquare, ChevronDown, ChevronUp, Calculator, TrendingUp, TrendingDown, Sparkles } from 'lucide-react';
 import { AnimatePresence, motion } from 'framer-motion';
-import { LiveAnalysisData } from '../types/liveAnalysis';
+import { LiveAnalysisData, DealOptimizerAlert, DealTrigger } from '../types/liveAnalysis';
 import { useResolvedTheme } from '../hooks/useResolvedTheme';
 
 // ─── Status helpers — overlay (dark glass) variants ────────────────────────
@@ -267,7 +267,7 @@ interface LiveAnalysisContentProps {
      *  Enables full theme awareness (light/dark). Overlay callers omit this. */
     calledFromAnalysisTab?: boolean;
     /** When set (overlay context), renders only the active tab section — fully expanded, no accordion. */
-    activeTab?: 'meddicc' | 'bant' | 'signals' | 'objections';
+    activeTab?: 'meddicc' | 'bant' | 'signals' | 'objections' | 'deal_optimizer';
 }
 
 // ─── Main component ────────────────────────────────────────────────────────
@@ -538,6 +538,99 @@ export const LiveAnalysisContent: React.FC<LiveAnalysisContentProps> = ({
         );
     };
 
+    // ── Deal Optimizer renderer ───────────────────────────────────────────────────
+    const TRIGGER_META: Record<DealTrigger, { label: string; color: string; bg: string; border: string }> = {
+        pricing_objection: { label: 'Pricing Objection', color: '#f87171', bg: 'rgba(239,68,68,0.10)', border: 'rgba(239,68,68,0.20)' },
+        discount_request: { label: 'Discount Request', color: '#fb923c', bg: 'rgba(249,115,22,0.10)', border: 'rgba(249,115,22,0.22)' },
+        competitor_comparison: { label: 'Competitor Compare', color: '#facc15', bg: 'rgba(234,179,8,0.10)', border: 'rgba(234,179,8,0.20)' },
+        procurement_pressure: { label: 'Procurement Pressure', color: '#a78bfa', bg: 'rgba(139,92,246,0.10)', border: 'rgba(139,92,246,0.22)' },
+        budget_concern: { label: 'Budget Concern', color: '#fb923c', bg: 'rgba(249,115,22,0.10)', border: 'rgba(249,115,22,0.20)' },
+        closing_signal: { label: 'Closing Signal', color: '#34d399', bg: 'rgba(52,211,153,0.10)', border: 'rgba(52,211,153,0.22)' },
+    };
+
+    const renderDealOptimizer = () => {
+        const alerts = analysisData.dealOptimizer ?? [];
+        if (alerts.length === 0) {
+            return (
+                <div className="flex flex-col items-center justify-center py-14 px-6 gap-3">
+                    <div className="w-10 h-10 rounded-xl flex items-center justify-center" style={{ background: 'rgba(251,191,36,0.10)', border: '1px solid rgba(251,191,36,0.18)' }}>
+                        <TrendingUp size={18} className="text-amber-400/70" strokeWidth={1.8} />
+                    </div>
+                    <p className="text-[12px] text-white/30 text-center max-w-[200px] leading-relaxed">
+                        No negotiation triggers detected yet. Alerts appear when pricing, discounts, or competitor pressure surfaces.
+                    </p>
+                </div>
+            );
+        }
+
+        return (
+            <div className="px-3 pt-2 pb-4 space-y-2">
+                <AnimatePresence initial={false}>
+                    {alerts.map((alert) => {
+                        const meta = TRIGGER_META[alert.trigger] ?? TRIGGER_META.pricing_objection;
+                        return (
+                            <motion.div
+                                key={alert.id ?? alert.quote}
+                                initial={{ opacity: 0, y: -4 }}
+                                animate={{ opacity: 1, y: 0 }}
+                                transition={{ duration: 0.2, ease: [0.16, 1, 0.3, 1] }}
+                                className="rounded-xl border p-3"
+                                style={{ background: meta.bg, borderColor: meta.border }}
+                            >
+                                {/* Trigger badge + intensity */}
+                                <div className="flex items-center justify-between gap-2 mb-2">
+                                    <span
+                                        className="text-[9px] font-bold uppercase tracking-wider px-2 py-0.5 rounded-full"
+                                        style={{ color: meta.color, background: meta.bg, border: `1px solid ${meta.border}` }}
+                                    >
+                                        {meta.label}
+                                    </span>
+                                    <span className="text-[9px] capitalize text-white/25">{alert.intensity}</span>
+                                </div>
+
+                                {/* Quote */}
+                                <p className="text-[11.5px] italic text-white/55 mb-2 leading-snug">
+                                    "{alert.quote}"
+                                </p>
+
+                                {/* Headline */}
+                                <p className="text-[11px] font-semibold text-white/70 mb-2">{alert.headline}</p>
+
+                                {/* Moves */}
+                                <div className="space-y-1.5 mb-2">
+                                    {alert.moves.map((move, i) => (
+                                        <div key={i} className="flex items-start gap-2">
+                                            <span
+                                                className="text-[9px] font-bold w-4 h-4 rounded-full flex items-center justify-center shrink-0 mt-0.5"
+                                                style={{ background: 'rgba(255,255,255,0.07)', color: meta.color }}
+                                            >
+                                                {i + 1}
+                                            </span>
+                                            <p className="text-[11px] text-white/60 leading-snug">{move}</p>
+                                        </div>
+                                    ))}
+                                </div>
+
+                                {/* Anchor */}
+                                {alert.anchor && (
+                                    <div
+                                        className="flex items-start gap-2 rounded-lg px-2.5 py-2"
+                                        style={{ background: 'rgba(255,255,255,0.04)', border: '1px solid rgba(255,255,255,0.06)' }}
+                                    >
+                                        <Sparkles size={9} className="shrink-0 mt-0.5" style={{ color: meta.color }} />
+                                        <p className="text-[11px] leading-snug" style={{ color: meta.color }}>
+                                            {alert.anchor}
+                                        </p>
+                                    </div>
+                                )}
+                            </motion.div>
+                        );
+                    })}
+                </AnimatePresence>
+            </div>
+        );
+    };
+
     // ── Tabbed overlay render (FloatingIntelligencePanel context) ─────────────
     // When activeTab is provided we render one section at a time, always fully
     // expanded — no accordion, no scrolling across sections.
@@ -634,6 +727,8 @@ export const LiveAnalysisContent: React.FC<LiveAnalysisContentProps> = ({
                             })}
                         </div>
                     );
+                case 'deal_optimizer':
+                    return renderDealOptimizer()
             }
         };
 

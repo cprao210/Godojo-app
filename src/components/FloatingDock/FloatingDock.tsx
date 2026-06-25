@@ -1,7 +1,7 @@
 import React, { useState, useRef, useEffect } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
 import { Radio, Brain, Hand, Pause, Play, StopCircle, Settings, GripVertical, Ghost } from 'lucide-react';
-import { FloatingIntelligencePanel } from './panels/FloatingIntelligencePanel';
+import { FloatingIntelligencePanel, MeetingType } from './panels/FloatingIntelligencePanel';
 import { FloatingChatPanel } from './panels/FloatingChatPanel';
 import { FloatingSettingsPanel } from './panels/FloatingSettingsPanel';
 import { DockButton } from './DockButton';
@@ -82,6 +82,8 @@ export const FloatingDock: React.FC<FloatingDockProps> = ({
         const parsed = stored ? parseFloat(stored) : NaN;
         return Number.isFinite(parsed) ? clampOpacity(parsed) : 0.88;
     });
+
+    const [meetingTypes, setMeetingTypes] = useState<MeetingType[]>(['discovery']);
 
     useEffect(() => {
         const onStorage = (e: StorageEvent) => {
@@ -178,6 +180,7 @@ export const FloatingDock: React.FC<FloatingDockProps> = ({
             analysisInitiatedRef.current = false;  // allows first-open to trigger fresh analysis
             setChatMessages([]);          // clears chat history
             setActivePanel(null);         // close any open panel
+            setMeetingTypes(['discovery']);   // reset to default — Discovery pre-checked
         });
         return () => unsubscribe();
     }, [resetAnalysis]);
@@ -213,7 +216,7 @@ export const FloatingDock: React.FC<FloatingDockProps> = ({
                         scale: activePanel === 'intelligence' ? 1 : 0.96,
                     }}
                     transition={{ type: 'spring', damping: 28, stiffness: 380, mass: 0.8 }}
-                    className="fixed bottom-[76px] left-[115px]"
+                    className="fixed bottom-[10px] left-[65px]"
                     style={{
                         position: 'fixed',
                         pointerEvents: activePanel === 'intelligence' ? 'auto' : 'none',
@@ -242,6 +245,8 @@ export const FloatingDock: React.FC<FloatingDockProps> = ({
                         onAutoRefreshIntervalChange={setAutoRefreshInterval}
                         isRefreshRun={isRefreshRun}
                         panelFirstOpenedAt={intelligencePanelFirstOpenedAt}
+                        meetingTypes={meetingTypes}
+                        onMeetingTypesChange={setMeetingTypes}
                     />
                 </motion.div>
 
@@ -252,7 +257,7 @@ export const FloatingDock: React.FC<FloatingDockProps> = ({
                         animate={{ opacity: dockOpacity, y: 0, scale: 1 }}
                         exit={{ opacity: 0, y: 12, scale: 0.97 }}
                         transition={{ type: 'spring', damping: 28, stiffness: 380, mass: 0.8 }}
-                        className="fixed bottom-[76px] left-[115px]"
+                        className="fixed bottom-[10px] left-[65px]"
                         style={{
                             position: 'fixed',
                             pointerEvents: activePanel === 'chat' ? 'auto' : 'none',
@@ -289,7 +294,7 @@ export const FloatingDock: React.FC<FloatingDockProps> = ({
                             animate={{ opacity: dockOpacity, y: 0, scale: 1 }}
                             exit={{ opacity: 0, y: 12, scale: 0.97 }}
                             transition={{ type: 'spring', damping: 28, stiffness: 380, mass: 0.8 }}
-                            className="fixed top-[110px] left-[115px]"
+                            className="fixed top-[96.5px] left-[65px]"
                             style={{ position: 'fixed' }}
                         >
                             {isFrozen && (
@@ -317,7 +322,7 @@ export const FloatingDock: React.FC<FloatingDockProps> = ({
                     animate={{ opacity: 1, y: 0 }}
                     transition={{ type: 'spring', damping: 26, stiffness: 300 }}
                     className="fixed pointer-events-auto"
-                    style={{ top: 30, left: 115 }}
+                    style={{ top: 15, left: 65 }}
                 >
                     {/* The Dock */}
                     <motion.div

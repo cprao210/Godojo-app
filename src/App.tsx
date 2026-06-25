@@ -513,8 +513,8 @@ const App: React.FC = () => {
                 transition={{ type: 'spring', damping: 28, stiffness: 380, mass: 0.8 }}
                 style={{
                   position: 'fixed',
-                  bottom: 64,
-                  left: 550,
+                  bottom: 0,
+                  left: 495,
                   pointerEvents: 'auto',
                   zIndex: 901,
                 }}

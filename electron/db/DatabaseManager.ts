@@ -57,6 +57,7 @@ export interface Meeting {
 
         speakerNames?: { user: string; client: string };
         liveAnalysis?: LiveAnalysisData;
+        scorecard?: import('../../src/types/score-card').MeetingScorecardResult;
 
         // New sales fields
         dealStatus?: {
@@ -125,6 +126,7 @@ export interface Meeting {
     }>;
     calendarEventId?: string;
     source?: 'manual' | 'calendar';
+    meetingTypes?: ('discovery' | 'demo' | 'negotiation')[];
 }
 
 export class DatabaseManager {
@@ -392,7 +394,8 @@ export class DatabaseManager {
             console.log('[DatabaseManager] Applying migration v4 → v5: Add embedding provider/dimensions columns');
             const columnsToAdd = [
                 "ALTER TABLE meetings ADD COLUMN embedding_provider TEXT",
-                "ALTER TABLE meetings ADD COLUMN embedding_dimensions INTEGER"
+                "ALTER TABLE meetings ADD COLUMN embedding_dimensions INTEGER",
+                "ALTER TABLE meetings ADD COLUMN meeting_types TEXT"   // JSON array: ["discovery","demo"]
             ];
             for (const sql of columnsToAdd) {
                 try { this.db.exec(sql); } catch (e) { /* Column already exists */ }
@@ -1348,6 +1351,17 @@ export class DatabaseManager {
             return info.changes > 0;
         } catch (error) {
             console.error(`[DatabaseManager] Failed to update title for meeting ${id}:`, error);
+            return false;
+        }
+    }
+
+    public updateMeetingTypes(id: string, types: ('discovery' | 'demo' | 'negotiation')[]): boolean {
+        try {
+            const stmt = this.db.prepare('UPDATE meetings SET meeting_types = ? WHERE id = ?');
+            stmt.run(JSON.stringify(types), id);
+            return true;
+        } catch (e) {
+            console.error('[DatabaseManager] updateMeetingTypes failed:', e);
             return false;
         }
     }

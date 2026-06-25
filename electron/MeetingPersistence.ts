@@ -9,6 +9,8 @@ import { GROQ_TITLE_PROMPT, GROQ_SUMMARY_JSON_PROMPT } from './llm';
 import { LiveAnalysisData } from '../src/types/liveAnalysis';
 import { AppState } from './main';
 import { buildCompanyContextBlock } from '../electron/utils/salesBriefUtils';
+import { buildScorecardPrompt } from './llm/ScoreCardLLM';
+import { MeetingScorecardResult } from '../src/types/score-card';
 const crypto = require('crypto');
 
 const buildSummaryPrompt = (liveAnalysis?: LiveAnalysisData | null, companyIntel?: Record<string, any> | null): string => {
@@ -350,6 +352,21 @@ export class MeetingPersistence {
             if (metadata.source) source = metadata.source;
         }
 
+        // Build full transcript text directly from the transcript array so the
+        // LLM sees the complete call. The pre-built data.context is capped at
+        // 10,000 chars which silently cuts off the second half of longer calls.
+        // Average ~60 chars per turn × 1500 turns = 90,000 chars — well within
+        // Gemini/Claude/GPT context windows. Groq has a 100k token guard already.
+        const fullTranscriptText = data.transcript
+            .filter(t => !['system', 'ai', 'assistant', 'model'].includes(t.speaker?.toLowerCase()))
+            .map(t => {
+                const role = t.speaker === 'user'
+                    ? (speakerNames?.user || 'REP')
+                    : (speakerNames?.client || 'PROSPECT');
+                return `${role}: ${t.text}`;
+            })
+            .join('\n');
+
         try {
             // Generate Title (only if not set by calendar)
             if (!metadata || !metadata.title) {
@@ -381,21 +398,6 @@ export class MeetingPersistence {
                 const groqSummaryPrompt = liveAnalysisGroqBlock
                     ? GROQ_SUMMARY_JSON_PROMPT + '\n\n' + liveAnalysisGroqBlock
                     : GROQ_SUMMARY_JSON_PROMPT;
-
-                // Build full transcript text directly from the transcript array so the
-                // LLM sees the complete call. The pre-built data.context is capped at
-                // 10,000 chars which silently cuts off the second half of longer calls.
-                // Average ~60 chars per turn × 1500 turns = 90,000 chars — well within
-                // Gemini/Claude/GPT context windows. Groq has a 100k token guard already.
-                const fullTranscriptText = data.transcript
-                    .filter(t => !['system', 'ai', 'assistant', 'model'].includes(t.speaker?.toLowerCase()))
-                    .map(t => {
-                        const role = t.speaker === 'user'
-                            ? (speakerNames?.user || 'REP')
-                            : (speakerNames?.client || 'PROSPECT');
-                        return `${role}: ${t.text}`;
-                    })
-                    .join('\n');
 
                 const generatedSummary = await this.llmHelper.generateMeetingSummary(buildSummaryPrompt(liveAnalysisData, companyIntel), fullTranscriptText, groqSummaryPrompt);
 
@@ -484,6 +486,41 @@ export class MeetingPersistence {
             let detailedSummary = { ...summaryData };
             if (liveAnalysisData) {
                 detailedSummary = { ...summaryData, liveAnalysis: liveAnalysisData };
+            }
+
+            // ── Generate Meeting Scorecard ─────────────────────────────────────────
+            let scorecardResult: MeetingScorecardResult | null = null;
+            if (data.transcript.length > 2) {
+                try {
+                    const scorecardPrompt = buildScorecardPrompt();
+                    console.log(scorecardPrompt);
+                    const scorecardRaw = await this.llmHelper.generateMeetingSummary(
+                        scorecardPrompt,
+                        fullTranscriptText,
+                        scorecardPrompt
+                    );
+                    if (scorecardRaw) {
+                        const clean = scorecardRaw.replace(/```json|```/g, '').trim();
+                        const parsed = JSON.parse(clean);
+                        // Normalise: flatten categoryBreakdown object → array
+                        scorecardResult = {
+                            detectedTypes: parsed.detectedTypes ?? [],
+                            overallWeightedScore: parsed.overallWeightedScore ?? 0,
+                            scorecards: Object.values(parsed.scorecards ?? {}).map((sc: any) => ({
+                                ...sc,
+                                categoryBreakdown: Array.isArray(sc.categoryBreakdown)
+                                    ? sc.categoryBreakdown
+                                    : Object.values(sc.categoryBreakdown ?? {}),
+                            })),
+                        } as MeetingScorecardResult;
+                    }
+                } catch (e) {
+                    console.warn('[MeetingPersistence] Scorecard generation failed (non-fatal):', e);
+                }
+            }
+
+            if (scorecardResult) {
+                detailedSummary = { ...detailedSummary, scorecard: scorecardResult } as any;
             }
 
             // Use the speaker names snapshot captured BEFORE session.reset() was called.
