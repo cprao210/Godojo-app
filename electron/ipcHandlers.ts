@@ -385,7 +385,6 @@ export function initializeIpcHandlers(appState: AppState): void {
   // Each new invocation increments the ID; any in-flight iteration bails as soon as it detects
   // that a newer stream has taken over.
   let _chatStreamId = 0;
-  let _analysisStreamId = 0;
 
   /**
    * Per-session Tavily dedup cache for gemini-chat-stream.
@@ -535,42 +534,6 @@ export function initializeIpcHandlers(appState: AppState): void {
     } catch (error: any) {
       console.error("[IPC] Error in gemini-chat-stream setup:", error);
       throw error;
-    }
-  });
-
-  safeHandle("live-analysis-stream", async (event, prompt: string) => {
-
-    try {
-
-      const promptKb = (prompt.length / 1024).toFixed(1);
-      console.log(`[IPC] live-analysis-stream called — prompt: ${prompt.length} chars (${promptKb} KB)`);
-
-      const llmHelper = appState.processingHelper.getLLMHelper();
-      const myStreamId = ++_analysisStreamId;
-
-      appState.setLiveAnalysisInFlight(true);
-      let result: any;
-      try {
-        // Use the dedicated live analysis method (Gemini Flash → Claude → OpenAI, Groq excluded).
-        // This bypasses the general-purpose fallback waterfall and enforces temperature=0.1
-        // for schema-accurate extraction. Falls back to chatWithGemini if the method is absent
-        // (older LLMHelper version during hot-reload).
-        result = typeof llmHelper.generateLiveAnalysis === 'function'
-          ? await llmHelper.generateLiveAnalysis(prompt)
-          : await llmHelper.chatWithGemini(prompt, undefined, undefined, true);
-      } finally {
-        appState.setLiveAnalysisInFlight(false);
-      }
-
-      if (_analysisStreamId === myStreamId) {
-        event.sender.send('live-analysis-result', result);
-      }
-
-      return { success: true };
-    } catch (error: any) {
-      console.error('[IPC] live-analysis-stream error:', error);
-      event.sender.send('live-analysis-error', error.message || 'Analysis failed');
-      return { success: false, error: error.message };
     }
   });
 

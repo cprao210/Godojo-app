@@ -1,5 +1,6 @@
 import { useState, useCallback, useRef, useEffect } from 'react';
-import { LiveAnalysisData } from '../types/liveAnalysis';
+import { LiveAnalysisData, LiveAnalysisTurn } from '../types/liveAnalysis';
+import { intelligenceApi } from '../lib/intelligenceApi';
 
 // ─── Prompt builders ─────────────────────────────────────────────────────────
 //
@@ -584,9 +585,6 @@ export const useLiveAnalysis = (
     setIsLoading(true);
     setError(null);
 
-    let resultCleanup: (() => void) | undefined;
-    let errorCleanup: (() => void) | undefined;
-
     // Snapshot cursor and prior state at call time to avoid stale closures
     const priorState = analysisDataRef.current;
 
@@ -684,31 +682,21 @@ export const useLiveAnalysis = (
         console.log(`[useLiveAnalysis] Refresh run — ${newTurns.length} new turns, ${prospectDelta.length} chars of prospect delta`);
       }
 
-      // ── Electron path ────────────────────────────────────────────────
-      if (window.electronAPI?.startLiveAnalysis) {
-        const analysisPromise = new Promise<LiveAnalysisData>((resolve, reject) => {
-          const timeoutId = setTimeout(() => reject(new Error('Analysis timed out')), 60000);
+      // ── Backend path (renderer-direct via axios) ─────────────────────
+      // The renderer owns the transcript + Firebase token, so it POSTs the raw
+      // turns straight to /intelligence/live-analysis (no IPC round-trip through
+      // the main-process GodojoClient). The backend builds the prompt server-side,
+      // so `livePrompt` is only used by the Anthropic fallback below.
+      // electronAPI is undefined in the web/dev environment despite its non-optional
+      // global type; alias through a nullable local so the else (Anthropic) branch
+      // stays reachable without narrowing the global the rest of the app relies on.
+      const electronAPI: typeof window.electronAPI | undefined = window.electronAPI;
+      if (electronAPI) {
+        const turns: LiveAnalysisTurn[] = humanTurns
+          .filter(t => (t.speaker === 'user' || t.speaker === 'client') && t.text?.trim())
+          .map(t => ({ speaker: t.speaker, text: t.text }));
 
-          resultCleanup = window.electronAPI?.onLiveAnalysisResult?.((result: string) => {
-            clearTimeout(timeoutId);
-            try {
-              let jsonStr = result.trim();
-              const jsonMatch = result.match(/```(?:json)?\s*([\s\S]*?)\s*```/);
-              if (jsonMatch) jsonStr = jsonMatch[1];
-              resolve(JSON.parse(jsonStr));
-            } catch {
-              reject(new Error('Failed to parse analysis result'));
-            }
-          });
-
-          errorCleanup = window.electronAPI?.onLiveAnalysisError?.((err: string) => {
-            clearTimeout(timeoutId);
-            reject(new Error(err));
-          });
-        });
-
-        await window.electronAPI.startLiveAnalysis(livePrompt);
-        const parsed = await analysisPromise;
+        const parsed = await intelligenceApi.analyzeLive(turns, null);
 
         // Client-side merge: ensures prior objections/signals are never lost even if
         // the LLM dropped them (model switch, context truncation, etc.)
@@ -740,8 +728,6 @@ export const useLiveAnalysis = (
     } finally {
       isLoadingRef.current = false;
       setIsLoading(false);
-      resultCleanup?.();
-      errorCleanup?.();
     }
   }, [transcriptRef, isMeetingPaused, setAnalysisDataAndRef]);
 

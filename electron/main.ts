@@ -1838,14 +1838,6 @@ export class AppState {
     return this._currentLiveAnalysis;
   }
 
-  public setLiveAnalysisInFlight(inFlight: boolean): void {
-    this._liveAnalysisInFlight = inFlight;
-  }
-
-  public getLiveAnalysisInFlight(): boolean {
-    return this._liveAnalysisInFlight;
-  }
-
   public setCurrentLiveAnalysis(data: LiveAnalysisData | null): void {
     this._currentLiveAnalysis = data;
 

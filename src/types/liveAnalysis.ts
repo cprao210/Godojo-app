@@ -34,6 +34,13 @@ export interface Signal {
     id?: string;
 }
 
+/** A single transcript turn sent to the backend live-analysis endpoint.
+ *  Mirrors the electron-side GodojoClient.LiveAnalysisTurn request shape. */
+export interface LiveAnalysisTurn {
+    speaker: string;
+    text: string;
+}
+
 export interface LiveAnalysisData {
     bant: {
         budget: BANTField;
