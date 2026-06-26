@@ -100,6 +100,7 @@
       "requestedExecutionLevel": "asInvoker"
     },
     "linux": {
+      "maintainer": "GoDojo AI <contact@godojo.ai>",
       "target": [
         {
           "target": "AppImage",

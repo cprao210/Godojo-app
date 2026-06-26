@@ -93,8 +93,6 @@ jobs:
           $paths = $env:PATH -split ';' | Where-Object { $_ -notmatch 'Strawberry' }
           "PATH=$($paths -join ';')" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
 
-      # Activates the VS Developer environment so cl.exe, link.exe etc. are on PATH.
-      # This is what webrtc-audio-processing-sys's build.rs needs when it calls meson setup.
       - name: Activate MSVC environment
         uses: ilammy/msvc-dev-cmd@v1
         with:
@@ -110,6 +108,36 @@ jobs:
         run: |
           npm run build
           npm run build:electron
+
+      - name: Patch abseil-cpp.wrap to fix missing MSVC source files
+        shell: pwsh
+        run: |
+          # abseil-cpp-20240722.0 tarball is missing unscaledcycleclock.cc on MSVC.
+          # Fetch the crate source first, then patch the wrap file to use 20250127.0.
+          cd native-module
+          cargo fetch
+          $wrap = Get-ChildItem "$env:USERPROFILE\.cargo\registry\src" `
+            -Recurse -Filter "abseil-cpp.wrap" | Select-Object -First 1
+          if (-not $wrap) { Write-Error "abseil-cpp.wrap not found"; exit 1 }
+          Write-Host "Patching $($wrap.FullName)"
+          @"
+          [wrap-file]
+          directory = abseil-cpp-20250127.0
+          source_url = https://github.com/abseil/abseil-cpp/releases/download/20250127.0/abseil-cpp-20250127.0.tar.gz
+          source_filename = abseil-cpp-20250127.0.tar.gz
+          source_hash = 40a5949f1af5b6a4be580952fd3d5a5d87fbc0c37b9dfbcfa51114c54e91e98f
+          patch_url = https://wrapdb.mesonbuild.com/v2/abseil-cpp_20250127.0-1/get_patch
+          patch_hash = a9c1e98898ac1a2b8f53b7fdb12ee5c7b5f08a02c451abd42e1a69c5bbffde5c
+
+          [provide]
+          absl_base = absl_base_dep
+          absl_flags = absl_flags_dep
+          absl_strings = absl_strings_dep
+          absl_numeric = absl_numeric_dep
+          absl_synchronization = absl_synchronization_dep
+          absl_bad_optional_access = absl_bad_optional_access_dep
+          "@ | Set-Content $wrap.FullName -Encoding UTF8
+          Write-Host "Done - abseil-cpp.wrap patched to 20250127.0"
 
       - name: Build native module (Windows)
         run: npm run build:native
