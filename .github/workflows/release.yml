@@ -30,6 +30,11 @@ jobs:
         with:
           targets: x86_64-apple-darwin,aarch64-apple-darwin
 
+      - name: Install Meson & Ninja
+        run: |
+          python3 -m pip install --upgrade pip
+          pip3 install meson ninja
+
       - name: Install dependencies
         env:
           SHARP_IGNORE_GLOBAL_LIBVIPS: "1"
@@ -79,6 +84,12 @@ jobs:
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
 
+      - name: Install Meson & Ninja
+        shell: pwsh
+        run: |
+          python -m pip install --upgrade pip
+          pip install meson ninja
+
       - name: Install dependencies
         env:
           SHARP_IGNORE_GLOBAL_LIBVIPS: "1"
@@ -124,7 +135,7 @@ jobs:
       - name: Install system packages required by electron-builder
         run: |
           sudo apt-get update -y
-          sudo apt-get install -y rpm libarchive-tools
+          sudo apt-get install -y rpm libarchive-tools libasound2-dev pkg-config meson ninja-build
 
       - name: Install dependencies
         env:
