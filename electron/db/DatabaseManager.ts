@@ -57,6 +57,7 @@ export interface Meeting {
 
         speakerNames?: { user: string; client: string };
         liveAnalysis?: LiveAnalysisData;
+        scorecard?: import('../../src/types/score-card').MeetingScorecardResult;
 
         // New sales fields
         dealStatus?: {
