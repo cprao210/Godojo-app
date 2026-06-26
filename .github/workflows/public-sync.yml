@@ -8,49 +8,50 @@ on:
 
 jobs:
   sync:
+    name: Strip Premium & Sync to Public Repo
     runs-on: ubuntu-latest
     steps:
-      - name: Checkout Private Repository
-        uses: actions/checkout@v4
-        
-      - name: Setup Node.js
-        uses: actions/setup-node@v4
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
         with:
-          node-version: 20
-          cache: 'npm'
-          
-      - name: Remove Premium Features & Secrets
+          node-version: 22
+          cache: npm
+
+      - name: Install dependencies (skip postinstall)
+        run: npm ci --ignore-scripts
+
+      - name: Type check renderer
+        run: npx tsc --noEmit
+
+      - name: Type check electron
+        run: npx tsc -p electron/tsconfig.json --noEmit
+
+      - name: Build renderer (verify open-source build compiles cleanly)
+        run: npx vite build
+
+      - name: Remove premium features and secrets
         run: |
-          echo "Purging premium features..."
+          echo "Purging premium features and secrets..."
           rm -rf premium/
-          rm -f .env*
-          
-      - name: Verify Open-Source Build Integrity
-        run: |
-          npm ci
-          npx tsc --noEmit
-          npx tsc -p electron/tsconfig.json --noEmit
-          npx vite build
-          
-      - name: Sync to Public Repository
+          rm -f .env .env.local .env.production .env.development
+
+      - name: Sync to public repository
         env:
           PUBLIC_REPO_PAT: ${{ secrets.PUBLIC_REPO_PAT }}
           COMMIT_MESSAGE: ${{ github.event.head_commit.message }}
         run: |
           if [ -z "$PUBLIC_REPO_PAT" ]; then
-            echo "Error: PUBLIC_REPO_PAT secret is missing. Please add it to your repository secrets."
+            echo "ERROR: PUBLIC_REPO_PAT secret is missing."
+            echo "Go to Settings → Secrets → Actions and add it."
             exit 1
           fi
 
-          # Setup Git for committing to the public repo
           git config --global user.name "github-actions[bot]"
           git config --global user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          
-          # Clone the public repository
+
           git clone https://$PUBLIC_REPO_PAT@github.com/evinjohnn/natively-cluely-ai-assistant.git public-repo
-          
-          # Sync files from the current (sanitized) workspace to the public repo clone
-          # We exclude .git, the clone folder itself, and build outputs
+
           rsync -av --delete \
             --exclude '.git' \
             --exclude 'public-repo' \
@@ -59,18 +60,18 @@ jobs:
             --exclude 'dist-electron' \
             --exclude 'release' \
             --exclude 'native-module/target' \
-            --exclude '.github/workflows/public-sync.yml' \
+            --exclude 'native-module/src' \
+            --exclude 'native-module/.cargo' \
             --exclude '.github/workflows/public-sync.yml' \
             ./ public-repo/
-            
+
           cd public-repo
-          
-          # Check if there are changes to commit
+
           git add .
           if git diff --staged --quiet; then
-             echo "No changes to sync."
+            echo "No changes to sync — skipping commit."
           else
-             git commit -m "$COMMIT_MESSAGE" -m "Auto-sync from private repo: ${{ github.sha }}"
-             git push --force origin HEAD:main
-             echo "Successfully synced to public repository."
+            git commit -m "$COMMIT_MESSAGE" -m "Auto-sync from private repo: ${{ github.sha }}"
+            git push --force origin HEAD:main
+            echo "Successfully synced to public repository."
           fi

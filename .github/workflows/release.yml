@@ -1,0 +1,189 @@
+name: Release — Build & Publish
+
+on:
+  push:
+    tags:
+      - 'v*.*.*'
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Version tag (e.g. v2.1.0)'
+        required: true
+        default: 'v0.0.0-test'
+
+jobs:
+  # ─── macOS: .dmg + .zip for x64 and arm64 ───────────────────────────────────
+  build-macos:
+    name: Build macOS (x64 + arm64)
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      # build-native.js uses rustup + napi-rs to compile the native Rust module
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: x86_64-apple-darwin,aarch64-apple-darwin
+
+      - name: Install dependencies
+        env:
+          SHARP_IGNORE_GLOBAL_LIBVIPS: "1"
+          SKIP_DOWNLOAD_MODELS: "1"
+        run: npm ci
+
+      - name: Build renderer + electron
+        run: |
+          npm run build
+          npm run build:electron
+
+      - name: Build native Rust module (x64 + arm64)
+        # NATIVELY_BUILD_ALL_MAC_ARCHES=1 tells build-native.js to compile both arches
+        env:
+          NATIVELY_BUILD_ALL_MAC_ARCHES: "1"
+        run: npm run build:native
+
+      - name: Package with electron-builder (macOS)
+        # ad-hoc-sign.js runs automatically as afterPack hook via package.json
+        # identity: null in package.json = unsigned, no CSC secrets needed
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: npx electron-builder --mac --publish never
+
+      - name: Upload macOS artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: mac-release
+          path: |
+            release/*.dmg
+            release/*.zip
+          if-no-files-found: error
+
+  # ─── Windows: .exe installer (nsis) + portable ───────────────────────────────
+  build-windows:
+    name: Build Windows (x64 + ia32)
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      # Rust needed in case no pre-built .node is found (build-native.js falls through)
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Install dependencies
+        env:
+          SHARP_IGNORE_GLOBAL_LIBVIPS: "1"
+          SKIP_DOWNLOAD_MODELS: "1"
+        run: npm ci
+
+      - name: Build renderer + electron
+        run: |
+          npm run build
+          npm run build:electron
+
+      - name: Build native module (Windows)
+        # build-native.js checks for pre-built .node first and skips Rust if found
+        run: npm run build:native
+
+      - name: Package with electron-builder (Windows)
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: npx electron-builder --win --publish never
+
+      - name: Upload Windows artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: win-release
+          path: release/*.exe
+          if-no-files-found: error
+
+  # ─── Linux: .AppImage + .deb ─────────────────────────────────────────────────
+  build-linux:
+    name: Build Linux (x64)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Install system packages required by electron-builder
+        run: |
+          sudo apt-get update -y
+          sudo apt-get install -y rpm libarchive-tools
+
+      - name: Install dependencies
+        env:
+          SHARP_IGNORE_GLOBAL_LIBVIPS: "1"
+          SKIP_DOWNLOAD_MODELS: "1"
+        run: npm ci
+
+      - name: Build renderer + electron
+        run: |
+          npm run build
+          npm run build:electron
+
+      - name: Build native module (Linux x64)
+        run: npm run build:native
+
+      - name: Package with electron-builder (Linux)
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: npx electron-builder --linux --publish never
+
+      - name: Upload Linux artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: linux-release
+          path: |
+            release/*.AppImage
+            release/*.deb
+          if-no-files-found: error
+
+  # ─── Publish: collect all artifacts → create draft GitHub Release ────────────
+  publish:
+    name: Publish GitHub Release
+    runs-on: ubuntu-latest
+    needs: [build-macos, build-windows, build-linux]
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Download all build artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts/
+
+      - name: List artifacts
+        run: find artifacts/ -type f | sort
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ github.ref_name || inputs.tag }}
+          name: GoDojo AI ${{ github.ref_name || inputs.tag }}
+          body_path: .github/RELEASE_TEMPLATE.md
+          draft: true        # set to false to auto-publish on tag push
+          prerelease: false
+          generate_release_notes: true
+          files: |
+            artifacts/mac-release/*
+            artifacts/win-release/*
+            artifacts/linux-release/*
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
