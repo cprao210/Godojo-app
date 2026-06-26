@@ -64,7 +64,21 @@ if (os.platform() === 'darwin') {
     console.log(`[build-native] Pre-built Windows artifact found (${prebuilt}), skipping Rust compilation.`);
   } else {
     console.log(`Building for current platform: ${os.platform()}`);
+
+    // Meson needs to find the abseil-cpp tarball in the subprojects/packagecache
+    // directory. The vendoring step in CI places it there. For local dev, Meson
+    // will download it normally. Either way the build command is the same.
     runCommand('npx napi build --platform --release');
+
+    // Verify the artifact was produced
+    const verifyTarget = prebuiltMap[os.arch()];
+    if (verifyTarget) {
+      const artifactPath = path.join(nativeModulePath, verifyTarget);
+      if (!fs.existsSync(artifactPath)) {
+        throw new Error(`Missing native artifact after build: ${verifyTarget}`);
+      }
+      console.log(`[build-native] Verified: ${verifyTarget}`);
+    }
   }
 } else {
   console.log(`Building for current platform: ${os.platform()}`);

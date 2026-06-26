@@ -109,35 +109,54 @@ jobs:
           npm run build
           npm run build:electron
 
-      - name: Patch abseil-cpp.wrap to fix missing MSVC source files
+      - name: Vendor abseil-cpp to avoid flaky GitHub tarball download
         shell: pwsh
         run: |
-          # abseil-cpp-20240722.0 tarball is missing unscaledcycleclock.cc on MSVC.
-          # Fetch the crate source first, then patch the wrap file to use 20250127.0.
+          # The abseil-cpp tarball served by GitHub CDN has an unstable hash.
+          # Instead of patching the .wrap file, we pre-download the tarball with
+          # the exact hash the .wrap file expects and place it in Meson's download
+          # cache so Meson uses the cached copy instead of hitting the network.
+
           cd native-module
           cargo fetch
+
+          # Find the .wrap file to read the expected hash and URL
           $wrap = Get-ChildItem "$env:USERPROFILE\.cargo\registry\src" `
             -Recurse -Filter "abseil-cpp.wrap" | Select-Object -First 1
           if (-not $wrap) { Write-Error "abseil-cpp.wrap not found"; exit 1 }
-          Write-Host "Patching $($wrap.FullName)"
-          @"
-          [wrap-file]
-          directory = abseil-cpp-20250127.0
-          source_url = https://github.com/abseil/abseil-cpp/releases/download/20250127.0/abseil-cpp-20250127.0.tar.gz
-          source_filename = abseil-cpp-20250127.0.tar.gz
-          source_hash = 40a5949f1af5b6a4be580952fd3d5a5d87fbc0c37b9dfbcfa51114c54e91e98f
-          patch_url = https://wrapdb.mesonbuild.com/v2/abseil-cpp_20250127.0-1/get_patch
-          patch_hash = a9c1e98898ac1a2b8f53b7fdb12ee5c7b5f08a02c451abd42e1a69c5bbffde5c
+          Write-Host "Found wrap: $($wrap.FullName)"
+          $wrapContent = Get-Content $wrap.FullName -Raw
+          Write-Host "Wrap content:`n$wrapContent"
 
-          [provide]
-          absl_base = absl_base_dep
-          absl_flags = absl_flags_dep
-          absl_strings = absl_strings_dep
-          absl_numeric = absl_numeric_dep
-          absl_synchronization = absl_synchronization_dep
-          absl_bad_optional_access = absl_bad_optional_access_dep
-          "@ | Set-Content $wrap.FullName -Encoding UTF8
-          Write-Host "Done - abseil-cpp.wrap patched to 20250127.0"
+          # Extract source_url and source_hash from the wrap file
+          $url   = ($wrapContent | Select-String 'source_url\s*=\s*(.+)').Matches[0].Groups[1].Value.Trim()
+          $hash  = ($wrapContent | Select-String 'source_hash\s*=\s*(.+)').Matches[0].Groups[1].Value.Trim()
+          $fname = ($wrapContent | Select-String 'source_filename\s*=\s*(.+)').Matches[0].Groups[1].Value.Trim()
+          Write-Host "URL: $url"
+          Write-Host "Expected hash: $hash"
+          Write-Host "Filename: $fname"
+
+          # Download the tarball
+          $outFile = Join-Path $env:TEMP $fname
+          Write-Host "Downloading $url → $outFile"
+          Invoke-WebRequest -Uri $url -OutFile $outFile -UseBasicParsing
+
+          # Verify the hash matches what the wrap file expects
+          $actual = (Get-FileHash $outFile -Algorithm SHA256).Hash.ToLower()
+          Write-Host "Actual hash:   $actual"
+          Write-Host "Expected hash: $hash"
+          if ($actual -ne $hash) {
+            Write-Error "Hash mismatch for $fname — expected $hash but got $actual"
+            exit 1
+          }
+          Write-Host "Hash verified OK"
+
+          # Place in Meson's packagecache so it is never downloaded again during build
+          # Meson looks in packagecache/ relative to the subprojects directory
+          $mesonCache = Join-Path (Split-Path $wrap.FullName) ".." "subprojects" "packagecache"
+          New-Item -ItemType Directory -Force -Path $mesonCache | Out-Null
+          Copy-Item $outFile (Join-Path $mesonCache $fname) -Force
+          Write-Host "Cached to $mesonCache\$fname"
 
       - name: Build native module (Windows)
         run: npm run build:native
