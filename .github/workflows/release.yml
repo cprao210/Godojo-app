@@ -99,7 +99,22 @@ jobs:
           npm run build
           npm run build:electron
 
+      - name: Remove Strawberry Perl GCC from PATH
+        shell: pwsh
+        run: |
+          $paths = $env:PATH -split ';' | Where-Object {
+            $_ -notmatch 'Strawberry'
+          }
+          "PATH=$($paths -join ';')" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+
       - name: Build native module (Windows)
+        shell: pwsh
+        env:
+          # Force Meson to activate the VS environment (finds cl.exe, not gcc)
+          MESON_ARGS: "--vsenv"
+          # Tell cc-rs / bindgen to use MSVC
+          CC: cl
+          CXX: cl
         # build-native.js checks for pre-built .node first and skips Rust if found
         run: npm run build:native
 
