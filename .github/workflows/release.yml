@@ -12,60 +12,6 @@ on:
         default: 'v0.0.0-test'
 
 jobs:
-  # ─── macOS: .dmg + .zip for x64 and arm64 ───────────────────────────────────
-  build-macos:
-    name: Build macOS (x64 + arm64)
-    runs-on: macos-latest
-    steps:
-      - uses: actions/checkout@v4
-
-      - uses: actions/setup-node@v4
-        with:
-          node-version: 22
-          cache: npm
-
-      # build-native.js uses rustup + napi-rs to compile the native Rust module
-      - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@stable
-        with:
-          targets: x86_64-apple-darwin,aarch64-apple-darwin
-
-      - name: Install Meson & Ninja
-        run: brew install meson ninja
-
-      - name: Install dependencies
-        env:
-          SHARP_IGNORE_GLOBAL_LIBVIPS: "1"
-          SKIP_DOWNLOAD_MODELS: "1"
-        run: npm ci
-
-      - name: Build renderer + electron
-        run: |
-          npm run build
-          npm run build:electron
-
-      - name: Build native Rust module (x64 + arm64)
-        # NATIVELY_BUILD_ALL_MAC_ARCHES=1 tells build-native.js to compile both arches
-        env:
-          NATIVELY_BUILD_ALL_MAC_ARCHES: "1"
-        run: npm run build:native
-
-      - name: Package with electron-builder (macOS)
-        # ad-hoc-sign.js runs automatically as afterPack hook via package.json
-        # identity: null in package.json = unsigned, no CSC secrets needed
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: npx electron-builder --mac --publish never
-
-      - name: Upload macOS artifacts
-        uses: actions/upload-artifact@v4
-        with:
-          name: mac-release
-          path: |
-            release/*.dmg
-            release/*.zip
-          if-no-files-found: error
-
   # ─── Windows: .exe installer (nsis) + portable ───────────────────────────────
   build-windows:
     name: Build Windows (x64 + ia32)
@@ -109,54 +55,54 @@ jobs:
           npm run build
           npm run build:electron
 
-      - name: Vendor abseil-cpp to avoid flaky GitHub tarball download
+      - name: Force abseil-cpp 20250127.0 (fixes missing unscaledcycleclock.cc on MSVC)
         shell: pwsh
         run: |
-          # The abseil-cpp tarball served by GitHub CDN has an unstable hash.
-          # Instead of patching the .wrap file, we pre-download the tarball with
-          # the exact hash the .wrap file expects and place it in Meson's download
-          # cache so Meson uses the cached copy instead of hitting the network.
+          # abseil-cpp 20240722.0 ships without unscaledcycleclock.cc in its tarball,
+          # causing a fatal C1083 error when compiled with MSVC cl.exe.
+          # 20250127.0 includes the file. We patch the .wrap before cargo compiles
+          # webrtc-audio-processing-sys so Meson fetches the correct version.
 
-          cd native-module
+          # Run cargo fetch so the crate registry is populated
+          Set-Location native-module
           cargo fetch
 
-          # Find the .wrap file to read the expected hash and URL
+          # Find the wrap file inside the cargo registry cache
           $wrap = Get-ChildItem "$env:USERPROFILE\.cargo\registry\src" `
-            -Recurse -Filter "abseil-cpp.wrap" | Select-Object -First 1
-          if (-not $wrap) { Write-Error "abseil-cpp.wrap not found"; exit 1 }
-          Write-Host "Found wrap: $($wrap.FullName)"
-          $wrapContent = Get-Content $wrap.FullName -Raw
-          Write-Host "Wrap content:`n$wrapContent"
+            -Recurse -Filter "abseil-cpp.wrap" -ErrorAction SilentlyContinue |
+            Select-Object -First 1
 
-          # Extract source_url and source_hash from the wrap file
-          $url   = ($wrapContent | Select-String 'source_url\s*=\s*(.+)').Matches[0].Groups[1].Value.Trim()
-          $hash  = ($wrapContent | Select-String 'source_hash\s*=\s*(.+)').Matches[0].Groups[1].Value.Trim()
-          $fname = ($wrapContent | Select-String 'source_filename\s*=\s*(.+)').Matches[0].Groups[1].Value.Trim()
-          Write-Host "URL: $url"
-          Write-Host "Expected hash: $hash"
-          Write-Host "Filename: $fname"
-
-          # Download the tarball
-          $outFile = Join-Path $env:TEMP $fname
-          Write-Host "Downloading $url → $outFile"
-          Invoke-WebRequest -Uri $url -OutFile $outFile -UseBasicParsing
-
-          # Verify the hash matches what the wrap file expects
-          $actual = (Get-FileHash $outFile -Algorithm SHA256).Hash.ToLower()
-          Write-Host "Actual hash:   $actual"
-          Write-Host "Expected hash: $hash"
-          if ($actual -ne $hash) {
-            Write-Error "Hash mismatch for $fname — expected $hash but got $actual"
+          if (-not $wrap) {
+            Write-Error "abseil-cpp.wrap not found in cargo registry"
             exit 1
           }
-          Write-Host "Hash verified OK"
+          Write-Host "Patching: $($wrap.FullName)"
 
-          # Place in Meson's packagecache so it is never downloaded again during build
-          # Meson looks in packagecache/ relative to the subprojects directory
-          $mesonCache = Join-Path (Split-Path $wrap.FullName) ".." "subprojects" "packagecache"
-          New-Item -ItemType Directory -Force -Path $mesonCache | Out-Null
-          Copy-Item $outFile (Join-Path $mesonCache $fname) -Force
-          Write-Host "Cached to $mesonCache\$fname"
+          # Write the corrected wrap file — 20250127.0 has the correct hash and
+          # includes unscaledcycleclock.cc which is missing from 20240722.0
+          $newContent = @'
+          [wrap-file]
+          directory = abseil-cpp-20250127.0
+          source_url = https://github.com/abseil/abseil-cpp/releases/download/20250127.0/abseil-cpp-20250127.0.tar.gz
+          source_filename = abseil-cpp-20250127.0.tar.gz
+          source_hash = 40a5949f1af5b6a4be580952fd3d5a5d87fbc0c37b9dfbcfa51114c54e91e98f
+          patch_url = https://wrapdb.mesonbuild.com/v2/abseil-cpp_20250127.0-1/get_patch
+          patch_hash = a9c1e98898ac1a2b8f53b7fdb12ee5c7b5f08a02c451abd42e1a69c5bbffde5c
+
+          [provide]
+          absl_base = absl_base_dep
+          absl_flags = absl_flags_dep
+          absl_strings = absl_strings_dep
+          absl_numeric = absl_numeric_dep
+          absl_synchronization = absl_synchronization_dep
+          absl_bad_optional_access = absl_bad_optional_access_dep
+          '@
+          # Write without BOM, Unix line endings — Meson is sensitive to encoding
+          $utf8NoBom = New-Object System.Text.UTF8Encoding $false
+          [System.IO.File]::WriteAllText($wrap.FullName, $newContent, $utf8NoBom)
+          Write-Host "Patched to abseil-cpp 20250127.0"
+          Write-Host "--- wrap file content ---"
+          Get-Content $wrap.FullName
 
       - name: Build native module (Windows)
         run: npm run build:native
@@ -172,89 +118,3 @@ jobs:
           name: win-release
           path: release/*.exe
           if-no-files-found: error
-
-  # ─── Linux: .AppImage + .deb ─────────────────────────────────────────────────
-  build-linux:
-    name: Build Linux (x64)
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-
-      - uses: actions/setup-node@v4
-        with:
-          node-version: 22
-          cache: npm
-
-      - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@stable
-
-      - name: Install system packages required by electron-builder
-        run: |
-          sudo apt-get update -y
-          sudo apt-get install -y \
-            rpm libarchive-tools pkg-config meson ninja-build \
-            libasound-dev \
-            libclang-dev clang \
-            libssl-dev
-
-      - name: Install dependencies
-        env:
-          SHARP_IGNORE_GLOBAL_LIBVIPS: "1"
-          SKIP_DOWNLOAD_MODELS: "1"
-        run: npm ci
-
-      - name: Build renderer + electron
-        run: |
-          npm run build
-          npm run build:electron
-
-      - name: Build native module (Linux x64)
-        run: npm run build:native
-
-      - name: Package with electron-builder (Linux)
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: npx electron-builder --linux --publish never
-
-      - name: Upload Linux artifacts
-        uses: actions/upload-artifact@v4
-        with:
-          name: linux-release
-          path: |
-            release/*.AppImage
-            release/*.deb
-          if-no-files-found: error
-
-  # ─── Publish: collect all artifacts → create draft GitHub Release ────────────
-  publish:
-    name: Publish GitHub Release
-    runs-on: ubuntu-latest
-    needs: [build-macos, build-windows, build-linux]
-    permissions:
-      contents: write
-    steps:
-      - uses: actions/checkout@v4
-
-      - name: Download all build artifacts
-        uses: actions/download-artifact@v4
-        with:
-          path: artifacts/
-
-      - name: List artifacts
-        run: find artifacts/ -type f | sort
-
-      - name: Create GitHub Release
-        uses: softprops/action-gh-release@v2
-        with:
-          tag_name: ${{ github.ref_name || inputs.tag }}
-          name: GoDojo AI ${{ github.ref_name || inputs.tag }}
-          body_path: .github/RELEASE_TEMPLATE.md
-          draft: true        # set to false to auto-publish on tag push
-          prerelease: false
-          generate_release_notes: true
-          files: |
-            artifacts/mac-release/*
-            artifacts/win-release/*
-            artifacts/linux-release/*
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
