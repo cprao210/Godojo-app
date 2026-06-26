@@ -31,9 +31,7 @@ jobs:
           targets: x86_64-apple-darwin,aarch64-apple-darwin
 
       - name: Install Meson & Ninja
-        run: |
-          python3 -m pip install --upgrade pip
-          pip3 install meson ninja
+        run: brew install meson ninja
 
       - name: Install dependencies
         env:
@@ -135,7 +133,11 @@ jobs:
       - name: Install system packages required by electron-builder
         run: |
           sudo apt-get update -y
-          sudo apt-get install -y rpm libarchive-tools libasound2-dev pkg-config meson ninja-build
+          sudo apt-get install -y \
+            rpm libarchive-tools pkg-config meson ninja-build \
+            libasound-dev \
+            libclang-dev clang \
+            libssl-dev
 
       - name: Install dependencies
         env:
