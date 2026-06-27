@@ -55,47 +55,37 @@ jobs:
           npm run build
           npm run build:electron
 
-      - name: Pre-cache abseil-cpp and patch wrap file
+      - name: Force abseil-cpp 20250127.0 (fixes missing unscaledcycleclock.cc on MSVC)
         shell: pwsh
         run: |
-          # The wrap file expects hash 40a5949f for abseil-cpp 20250127.0
-          # but GitHub's CDN returns a tarball with a different hash depending
-          # on the edge node serving it. The only reliable fix is to pre-download
-          # via a mirror/redirect that serves the canonical bytes, verify the hash
-          # ourselves, then drop it into Meson's packagecache so Meson never
-          # makes a network request during the build.
+          # abseil-cpp 20240722.0 ships without unscaledcycleclock.cc in its tarball,
+          # causing a fatal C1083 error when compiled with MSVC cl.exe.
+          # 20250127.0 includes the file. We patch the .wrap before cargo compiles
+          # webrtc-audio-processing-sys so Meson fetches the correct version.
 
+          # Run cargo fetch so the crate registry is populated
           Set-Location native-module
           cargo fetch
 
-          # ── 1. Find the wrap file ──────────────────────────────────────────
+          # Find the wrap file inside the cargo registry cache
           $wrap = Get-ChildItem "$env:USERPROFILE\.cargo\registry\src" `
             -Recurse -Filter "abseil-cpp.wrap" -ErrorAction SilentlyContinue |
             Select-Object -First 1
-          if (-not $wrap) { Write-Error "abseil-cpp.wrap not found"; exit 1 }
-          Write-Host "Found: $($wrap.FullName)"
 
-          # ── 2. Download the tarball and discover its actual hash ───────────
-          $url      = "https://github.com/abseil/abseil-cpp/releases/download/20250127.0/abseil-cpp-20250127.0.tar.gz"
-          $filename = "abseil-cpp-20250127.0.tar.gz"
-          $outFile  = Join-Path $env:TEMP $filename
+          if (-not $wrap) {
+            Write-Error "abseil-cpp.wrap not found in cargo registry"
+            exit 1
+          }
+          Write-Host "Patching: $($wrap.FullName)"
 
-          Write-Host "Downloading $url"
-          Invoke-WebRequest -Uri $url -OutFile $outFile -UseBasicParsing
-          $actualHash = (Get-FileHash $outFile -Algorithm SHA256).Hash.ToLower()
-          Write-Host "Downloaded hash: $actualHash"
-
-          # ── 3. Patch the wrap file to use the actual hash we just measured ──
-          # This makes the wrap file agree with whatever GitHub CDN served.
-          # The 20250127.0 source tree is correct regardless of CDN variance —
-          # the unscaledcycleclock.cc file is present in this release.
-          $utf8NoBom = New-Object System.Text.UTF8Encoding $false
-          $newWrap = @"
+          # Write the corrected wrap file — 20250127.0 has the correct hash and
+          # includes unscaledcycleclock.cc which is missing from 20240722.0
+          $newContent = @'
           [wrap-file]
           directory = abseil-cpp-20250127.0
           source_url = https://github.com/abseil/abseil-cpp/releases/download/20250127.0/abseil-cpp-20250127.0.tar.gz
-          source_filename = $filename
-          source_hash = $actualHash
+          source_filename = abseil-cpp-20250127.0.tar.gz
+          source_hash = 16242f394245627e508ec6bb296b433c90f8d914f73b9c026fddb905e27276e8
           patch_url = https://wrapdb.mesonbuild.com/v2/abseil-cpp_20250127.0-1/get_patch
           patch_hash = a9c1e98898ac1a2b8f53b7fdb12ee5c7b5f08a02c451abd42e1a69c5bbffde5c
 
@@ -106,38 +96,15 @@ jobs:
           absl_numeric = absl_numeric_dep
           absl_synchronization = absl_synchronization_dep
           absl_bad_optional_access = absl_bad_optional_access_dep
-          "@
-          [System.IO.File]::WriteAllText($wrap.FullName, $newWrap, $utf8NoBom)
-          Write-Host "Wrap file patched with actual hash: $actualHash"
-
-          # ── 4. Place the tarball in Meson's packagecache ──────────────────
-          # Meson checks packagecache/ first before any network request.
-          # The cache dir lives next to the subprojects/ directory inside the
-          # webrtc-audio-processing source that cargo unpacks at build time.
-          # We can't predict the exact cargo build dir path, so we also place
-          # it in the system-wide Meson package cache fallback locations.
-          $mesonCacheDirs = @(
-            "$env:LOCALAPPDATA\meson\packagecache",
-            "$env:USERPROFILE\.cache\meson\packagecache"
-          )
-          foreach ($dir in $mesonCacheDirs) {
-            New-Item -ItemType Directory -Force -Path $dir | Out-Null
-            Copy-Item $outFile (Join-Path $dir $filename) -Force
-            Write-Host "Cached to: $dir\$filename"
-          }
-
-          # ── 5. Set MESON_PACKAGE_CACHE_DIR for the build step ─────────────
-          $cacheDir = $mesonCacheDirs[0]
-          "MESON_PACKAGE_CACHE_DIR=$cacheDir" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
-          Write-Host "MESON_PACKAGE_CACHE_DIR set to $cacheDir"
-
-          Write-Host "--- Final wrap file ---"
+          '@
+          # Write without BOM, Unix line endings — Meson is sensitive to encoding
+          $utf8NoBom = New-Object System.Text.UTF8Encoding $false
+          [System.IO.File]::WriteAllText($wrap.FullName, $newContent, $utf8NoBom)
+          Write-Host "Patched to abseil-cpp 20250127.0"
+          Write-Host "--- wrap file content ---"
           Get-Content $wrap.FullName
 
       - name: Build native module (Windows)
-        env:
-          MESON_PACKAGE_CACHE_DIR: ${{ env.MESON_PACKAGE_CACHE_DIR }}
-          RUST_BACKTRACE: "1"
         run: npm run build:native
 
       - name: Package with electron-builder (Windows)
