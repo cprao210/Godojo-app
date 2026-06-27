@@ -27,7 +27,12 @@ use crate::webrtc_aec::{ApmCapture, ApmRender};
 // Processor is Send + Sync; both DSP threads hold an Arc clone.
 // SystemAudioCapture owns an ApmRender (per-thread render accumulator).
 // MicrophoneCapture owns an ApmCapture (per-thread capture accumulator).
+#[cfg(not(target_os = "windows"))]
 static WEBRTC_APM: Lazy<std::sync::Arc<webrtc_audio_processing::Processor>> =
+    Lazy::new(|| webrtc_aec::create_processor());
+
+#[cfg(target_os = "windows")]
+static WEBRTC_APM: Lazy<std::sync::Arc<()>> =
     Lazy::new(|| webrtc_aec::create_processor());
 
 // Counts 10 ms render frames pushed to APM by SystemAudioCapture.
@@ -398,6 +403,7 @@ impl MicrophoneCapture {
         // only at meeting start — unlike SystemAudioCapture::start() which is called on
         // every VAD-lockout restart. Resetting here means SCK restarts don't wipe the
         // AEC3 echo model mid-meeting.
+        #[cfg(not(target_os = "windows"))]
         WEBRTC_APM.reinitialize();
         APM_RENDER_FRAMES.store(0, Ordering::SeqCst);
         println!("[WebRtcAec] APM reset for new meeting");
