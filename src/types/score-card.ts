@@ -282,6 +282,55 @@ export const SCORECARD_CONFIGS: ScorecardConfig[] = [
     },
 ];
 
+// ─── Custom Scoring Criteria (user-defined, stored in DB) ────────────────────
+
+export interface CustomCategoryConfig {
+    key: string;
+    label: string;
+    weight: number;           // 0–100; all weights in a meeting type must sum to 100
+    checkpoints: string[];    // one per line in the UI
+    framework?: string;       // optional: "MEDDIC", "BANT", "SPIN", custom label, etc.
+}
+
+export interface CustomScorecardConfig {
+    meetingType: MeetingType;
+    enabled: boolean;         // if false, falls back to SCORECARD_CONFIGS defaults
+    categories: CustomCategoryConfig[];
+}
+
+export interface ScoringCriteriaSettings {
+    configs: CustomScorecardConfig[];   // one entry per meeting type
+    updatedAt?: string;
+}
+
+/**
+ * Merge user-defined criteria with the built-in defaults.
+ * Returns the custom config if it's enabled and has at least one category,
+ * otherwise falls back to the built-in SCORECARD_CONFIGS entry.
+ */
+export function resolveEffectiveScorecardConfig(
+    meetingType: MeetingType,
+    customSettings: ScoringCriteriaSettings | null,
+): ScorecardConfig {
+    const builtIn = SCORECARD_CONFIGS.find(c => c.meetingType === meetingType)!;
+    if (!customSettings) return builtIn;
+
+    const custom = customSettings.configs.find(c => c.meetingType === meetingType);
+    if (!custom || !custom.enabled || custom.categories.length === 0) return builtIn;
+
+    return {
+        meetingType: custom.meetingType,
+        label: builtIn.label,
+        color: builtIn.color,
+        categories: custom.categories.map(cat => ({
+            key: cat.key,
+            label: cat.label,
+            weight: cat.weight,
+            checkpoints: cat.checkpoints,
+        })),
+    };
+}
+
 export function getConfigForType(type: MeetingType): ScorecardConfig | undefined {
     return SCORECARD_CONFIGS.find(c => c.meetingType === type);
 }

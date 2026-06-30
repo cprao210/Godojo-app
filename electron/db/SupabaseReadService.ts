@@ -72,12 +72,31 @@ export class SupabaseReadService {
         });
     }
 
+    /** Fetch a single meeting's scorecard. Returns null if not found. */
+    static async getMeetingScorecard(meetingId: string): Promise<any | null> {
+        const client = SupabaseClientManager.getClient();
+        if (!client) return null;
+
+        const { data, error } = await client
+            .from('meeting_scorecards')
+            .select('scorecard_json')
+            .eq('meeting_id', meetingId)
+            .maybeSingle();
+
+        if (error) throw error;
+        if (!data) return null;
+
+        return typeof data.scorecard_json === 'string'
+            ? JSON.parse(data.scorecard_json)
+            : data.scorecard_json;
+    }
+
     /** Full detail view. Mirrors DatabaseManager.getMeetingDetails(). */
     static async getMeetingDetails(id: string): Promise<Meeting | null> {
         const client = SupabaseClientManager.getClient();
         if (!client) return null;
 
-        const [meetingRes, transcriptRes, usageRes] = await Promise.all([
+        const [meetingRes, transcriptRes, usageRes, scorecardRes] = await Promise.all([
             client
                 .from('meetings')
                 .select('id, title, created_at, duration_ms, summary_json, calendar_event_id, source')
@@ -92,17 +111,39 @@ export class SupabaseReadService {
                 .from('ai_interactions')
                 .select('id, meeting_id, type, timestamp, user_query, ai_response, metadata_json')
                 .eq('meeting_id', id)
-                .order('timestamp', { ascending: true })
+                .order('timestamp', { ascending: true }),
+            client
+                .from('meeting_scorecards')       // ← NEW: 4th parallel query
+                .select('scorecard_json')
+                .eq('meeting_id', id)
+                .maybeSingle()
         ]);
 
         if (meetingRes.error) throw meetingRes.error;
         if (transcriptRes.error) throw transcriptRes.error;
         if (usageRes.error) throw usageRes.error;
+        // scorecardRes errors are non-fatal — a missing scorecard row is expected for
+        // unscored meetings and should not prevent the rest of the details from loading.
+        if (scorecardRes.error) {
+            console.warn('[SupabaseReadService] getMeetingDetails: scorecard fetch failed (non-fatal):', scorecardRes.error);
+        }
 
         const meetingRow = meetingRes.data as any;
         if (!meetingRow) return null;
 
         const summaryData = this.parseSummary(meetingRow.summary_json);
+
+        // Attach scorecard from dedicated table, mirroring DatabaseManager behaviour.
+        // This is the authoritative source; falls back to any scorecard already
+        // embedded in summary_json.detailedSummary for legacy rows.
+        if (!scorecardRes.error && scorecardRes.data) {
+            const rawScorecard = scorecardRes.data.scorecard_json;
+            const parsedScorecard = typeof rawScorecard === 'string'
+                ? JSON.parse(rawScorecard)
+                : rawScorecard;
+            if (!summaryData.detailedSummary) summaryData.detailedSummary = {};
+            summaryData.detailedSummary.scorecard = parsedScorecard;  // ← NEW: wired in
+        }
 
         const transcript = (transcriptRes.data ?? []).map((row: any) => ({
             speaker: row.speaker,

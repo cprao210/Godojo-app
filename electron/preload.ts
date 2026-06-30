@@ -129,7 +129,7 @@ interface ElectronAPI {
   updateMeetingTypes: (id: string, types: string[]) => Promise<boolean>
   updateLiveAnalysis: (data: LiveAnalysisData) => Promise<{ success: boolean }>;
   regenerateMeetingSummary: (id: string) => Promise<{ success: boolean; meeting?: any; error?: string }>
-  uploadTranscript: (text: string, title?: string) => Promise<{ success: boolean; meetingId?: string; error?: string }>
+  uploadTranscript: (text: string, title?: string, meetingTypes?: ('discovery' | 'demo' | 'negotiation')[]) => Promise<{ success: boolean; meetingId?: string; error?: string }>
   updateMeetingSummary: (id: string, updates: { overview?: string, actionItems?: string[], keyPoints?: string[], actionItemsTitle?: string, keyPointsTitle?: string }) => Promise<boolean>
   onMeetingsUpdated: (callback: () => void) => () => void
   getDisplayName: (role: 'user' | 'client' | 'assistant') => Promise<string>;
@@ -316,6 +316,13 @@ interface ElectronAPI {
   companySetPersonaEngine: (enabled: boolean) => Promise<{ success: boolean; error?: string }>;
   companySelectFile: () => Promise<{ filePath?: string; fileName?: string; fileSize?: number; cancelled?: boolean; success?: boolean; error?: string }>;
   companyGetCompleteness: () => Promise<number>;
+
+  // Scoring criteria
+  meetingGetScorecard: (meetingId: string) => Promise<{ success: boolean; data?: any; error?: string }>;
+  meetingDeleteScorecard: (meetingId: string) => Promise<{ success: boolean; error?: string }>;
+  scoringGetCriteria: () => Promise<{ success: boolean; data?: any; error?: string }>;
+  scoringSaveCriteria: (settings: any) => Promise<{ success: boolean; error?: string }>;
+  scoringResetCriteria: () => Promise<{ success: boolean; error?: string }>;
 
   // JD & Research API
   profileUploadJD: (filePath: string) => Promise<{ success: boolean; error?: string }>;
@@ -753,7 +760,7 @@ contextBridge.exposeInMainWorld("electronAPI", {
   updateMeetingTypes: (id, types) => ipcRenderer.invoke("update-meeting-types", { id, types }),
   updateMeetingSummary: (id: string, updates: any) => ipcRenderer.invoke("update-meeting-summary", { id, updates }),
   regenerateMeetingSummary: (id: string) => ipcRenderer.invoke('regenerate-meeting-summary', { id }),
-  uploadTranscript: (text: string, title?: string) => ipcRenderer.invoke('upload-transcript', { text, title }),
+  uploadTranscript: (text: string, title?: string, meetingTypes?: ('discovery' | 'demo' | 'negotiation')[]) => ipcRenderer.invoke('upload-transcript', { text, title, meetingTypes }),
   deleteMeeting: (id: string) => ipcRenderer.invoke("delete-meeting", id),
 
   onMeetingsUpdated: (callback: () => void) => {
@@ -1260,6 +1267,13 @@ contextBridge.exposeInMainWorld("electronAPI", {
   companySetPersonaEngine: (enabled: boolean) => ipcRenderer.invoke('company:setPersonaEngine', enabled),
   companySelectFile: () => ipcRenderer.invoke('company:selectFile'),
   companyGetCompleteness: () => ipcRenderer.invoke('company:getCompleteness'),
+
+  // Scoring criteria
+  meetingGetScorecard: (meetingId: string) => ipcRenderer.invoke('meeting:getScorecard', meetingId),
+  meetingDeleteScorecard: (meetingId: string) => ipcRenderer.invoke('meeting:deleteScorecard', meetingId),
+  scoringGetCriteria: () => ipcRenderer.invoke('scoring:getCriteria'),
+  scoringSaveCriteria: (settings: any) => ipcRenderer.invoke('scoring:saveCriteria', settings),
+  scoringResetCriteria: () => ipcRenderer.invoke('scoring:resetCriteria'),
 
   // Tavily Search API
   setTavilyApiKey: (apiKey: string) => ipcRenderer.invoke('set-tavily-api-key', apiKey),

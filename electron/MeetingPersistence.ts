@@ -284,9 +284,6 @@ export class MeetingPersistence {
             context: this.session.getFullSessionContext()
         };
 
-        // console.log("==> this.session.getFullSessionContext(): ", this.session.getFullSessionContext());
-        // console.log("==> this.session.getFullTranscript(): ", this.session.getFullTranscript());
-
         // BUG-04 fix: snapshot metadata BEFORE reset() clears it so the
         // background processAndSaveMeeting worker receives the calendar info.
         const metadataSnapshot = this.session.getMeetingMetadata();
@@ -314,8 +311,6 @@ export class MeetingPersistence {
             isProcessed: false
         };
 
-        console.log("==> placeholder: ", placeholder.transcript);
-
         try {
             DatabaseManager.getInstance().saveMeeting(placeholder, snapshot.startTime, durationMs);
             // Notify Frontend
@@ -337,7 +332,8 @@ export class MeetingPersistence {
         metadata?: { title?: string; calendarEventId?: string; source?: 'manual' | 'calendar' } | null,
         liveAnalysisData?: LiveAnalysisData | null,
         speakerNames?: { user: string; client: string },
-        companyIntel?: Record<string, any> | null   // ← new param
+        companyIntel?: Record<string, any> | null,
+        hintMeetingTypes?: ('discovery' | 'demo' | 'negotiation')[]
     ): Promise<void> {
         let title = "Untitled Session";
         let summaryData: { actionItems: string[], keyPoints: string[], liveAnalysis?: LiveAnalysisData, speakerNames?: { user: string, client: string } } = { actionItems: [], keyPoints: [] };
@@ -488,12 +484,20 @@ export class MeetingPersistence {
                 detailedSummary = { ...summaryData, liveAnalysis: liveAnalysisData };
             }
 
-            // ── Generate Meeting Scorecard ─────────────────────────────────────────
+            // ── Generate Meeting Scorecard ─────────────────────────────────────────────────
             let scorecardResult: MeetingScorecardResult | null = null;
+            let customScoringCriteria: import('../src/types/score-card').ScoringCriteriaSettings | null = null;
+
             if (data.transcript.length > 2) {
                 try {
-                    const scorecardPrompt = buildScorecardPrompt();
-                    console.log(scorecardPrompt);
+                    // Load org-defined criteria (falls back to built-in defaults if none saved)
+                    try {
+                        customScoringCriteria = DatabaseManager.getInstance().getScoringCriteria();
+                    } catch (criteriaErr) {
+                        console.warn('[MeetingPersistence] Could not load custom scoring criteria, using defaults:', criteriaErr);
+                    }
+
+                    const scorecardPrompt = buildScorecardPrompt(customScoringCriteria, hintMeetingTypes ?? null);
                     const scorecardRaw = await this.llmHelper.generateMeetingSummary(
                         scorecardPrompt,
                         fullTranscriptText,
@@ -502,7 +506,6 @@ export class MeetingPersistence {
                     if (scorecardRaw) {
                         const clean = scorecardRaw.replace(/```json|```/g, '').trim();
                         const parsed = JSON.parse(clean);
-                        // Normalise: flatten categoryBreakdown object → array
                         scorecardResult = {
                             detectedTypes: parsed.detectedTypes ?? [],
                             overallWeightedScore: parsed.overallWeightedScore ?? 0,
@@ -519,8 +522,33 @@ export class MeetingPersistence {
                 }
             }
 
+            // Write scorecard to its dedicated table — NOT into summary_json
             if (scorecardResult) {
-                detailedSummary = { ...detailedSummary, scorecard: scorecardResult } as any;
+                try {
+                    DatabaseManager.getInstance().saveMeetingScorecard(
+                        meetingId,
+                        scorecardResult,
+                        customScoringCriteria ?? null   // snapshot the criteria used
+                    );
+                    // Mirror to Supabase
+                    try {
+                        const { SupabaseMirrorService } = require('./db/SupabaseMirrorService');
+                        SupabaseMirrorService.getInstance().upsertRow('meeting_scorecards', {
+                            meeting_id: meetingId,
+                            overall_score: scorecardResult.overallWeightedScore ?? 0,
+                            detected_types: JSON.stringify(scorecardResult.detectedTypes ?? []),
+                            scorecard_json: JSON.stringify(scorecardResult),
+                            criteria_snapshot_json: customScoringCriteria ? JSON.stringify(customScoringCriteria) : null,
+                            generated_at: new Date().toISOString(),
+                        });
+                    } catch (mirrorErr) {
+                        console.warn('[MeetingPersistence] Scorecard mirror to Supabase failed (non-fatal):', mirrorErr);
+                    }
+                } catch (scorecardSaveErr) {
+                    console.warn('[MeetingPersistence] Failed to persist scorecard (non-fatal):', scorecardSaveErr);
+                    // Fallback: embed in summary_json so the UI still gets data
+                    detailedSummary = { ...detailedSummary, scorecard: scorecardResult } as any;
+                }
             }
 
             // Use the speaker names snapshot captured BEFORE session.reset() was called.
@@ -565,8 +593,71 @@ export class MeetingPersistence {
     }
 
     /**
+     * Re-scores a meeting using the latest scoring criteria from the DB.
+     * Saves the result to `meeting_scorecards` (and mirrors to Supabase) so the
+     * next `getMeetingDetails` call returns fresh scorecard data.
+     */
+    private async regenerateScorecard(
+        meetingId: string,
+        transcriptContext: string,
+        detectedMeetingTypes: ('discovery' | 'demo' | 'negotiation')[] | null
+    ): Promise<void> {
+        let customScoringCriteria: import('../src/types/score-card').ScoringCriteriaSettings | null = null;
+        try {
+            customScoringCriteria = DatabaseManager.getInstance().getScoringCriteria();
+        } catch (criteriaErr) {
+            console.warn('[MeetingPersistence] Could not load custom scoring criteria for regen, using defaults:', criteriaErr);
+        }
+
+        const scorecardPrompt = buildScorecardPrompt(customScoringCriteria, detectedMeetingTypes ?? null);
+        const scorecardRaw = await this.llmHelper.generateMeetingSummary(
+            scorecardPrompt,
+            transcriptContext,
+            scorecardPrompt
+        );
+        if (!scorecardRaw) return;
+
+        const clean = scorecardRaw.replace(/```json|```/g, '').trim();
+        const parsed = JSON.parse(clean);
+        const scorecardResult: MeetingScorecardResult = {
+            detectedTypes: parsed.detectedTypes ?? [],
+            overallWeightedScore: parsed.overallWeightedScore ?? 0,
+            scorecards: Object.values(parsed.scorecards ?? {}).map((sc: any) => ({
+                ...sc,
+                categoryBreakdown: Array.isArray(sc.categoryBreakdown)
+                    ? sc.categoryBreakdown
+                    : Object.values(sc.categoryBreakdown ?? {}),
+            })),
+        };
+
+        DatabaseManager.getInstance().saveMeetingScorecard(
+            meetingId,
+            scorecardResult,
+            customScoringCriteria ?? null
+        );
+
+        // Mirror to Supabase
+        try {
+            const { SupabaseMirrorService } = require('./db/SupabaseMirrorService');
+            SupabaseMirrorService.getInstance().upsertRow('meeting_scorecards', {
+                meeting_id: meetingId,
+                overall_score: scorecardResult.overallWeightedScore ?? 0,
+                detected_types: JSON.stringify(scorecardResult.detectedTypes ?? []),
+                scorecard_json: JSON.stringify(scorecardResult),
+                criteria_snapshot_json: customScoringCriteria ? JSON.stringify(customScoringCriteria) : null,
+                generated_at: new Date().toISOString(),
+            });
+        } catch (mirrorErr) {
+            console.warn('[MeetingPersistence] Scorecard mirror to Supabase failed (non-fatal):', mirrorErr);
+        }
+
+        console.log(`[MeetingPersistence] Regenerated scorecard for meeting ${meetingId}`);
+    }
+
+    /**
      * Regenerate the summary for a meeting
      */
+
     public async regenerateSummary(meetingId: string): Promise<boolean> {
 
         try {
@@ -601,6 +692,17 @@ export class MeetingPersistence {
 
             DatabaseManager.getInstance().updateMeetingSummary(meetingId, summaryData);
             console.log(`[MeetingPersistence] Regenerated summary for meeting ${meetingId}`);
+
+            // Re-score using the latest criteria so any criteria changes made before
+            // clicking "regenerate" are reflected in the scorecard shown in the UI.
+            const existingTypes = (meeting.detailedSummary as any)?.scorecard?.detectedTypes ?? null;
+            try {
+                await this.regenerateScorecard(meetingId, fullRegenerateContext, existingTypes);
+            } catch (scorecardErr) {
+                // Non-fatal: text summary was already saved; log and continue.
+                console.warn('[MeetingPersistence] Scorecard regeneration failed (non-fatal):', scorecardErr);
+            }
+
             return true;
 
         } catch (e) {
@@ -616,7 +718,8 @@ export class MeetingPersistence {
      */
     public async uploadTranscript(
         rawText: string,
-        title?: string
+        title?: string,
+        meetingTypes?: ('discovery' | 'demo' | 'negotiation')[]
     ): Promise<string | null> {
         try {
             // Parse lines like "[00:00:12] REP: text" or "REP: text" or plain text
@@ -702,7 +805,11 @@ export class MeetingPersistence {
             this.processAndSaveMeeting(
                 { transcript, usage: [], startTime: startTimeMs, durationMs, context },
                 meetingId,
-                { title: title || undefined, source: 'manual' }
+                { title: title || undefined, source: 'manual' },
+                null,           // liveAnalysisData — not available for uploads
+                undefined,      // speakerNames
+                null,           // companyIntel
+                meetingTypes    // ← pass through
             ).catch(err => console.error('[MeetingPersistence] Upload processing failed:', err));
 
             return meetingId;
