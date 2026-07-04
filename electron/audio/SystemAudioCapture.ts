@@ -17,11 +17,13 @@ export class SystemAudioCapture extends EventEmitter {
     private _vadInnerTimer: NodeJS.Timeout | null = null; // BUG FIX: track inner timer so stop() can cancel it
     private _vadDisabled: boolean = false;
     private _sampleRateEmitted: boolean = false;
+    private _echoMode: string | undefined;
 
-    constructor(deviceId?: string | null, options?: { disableVad?: boolean }) {
+    constructor(deviceId?: string | null, options?: { disableVad?: boolean; echoMode?: string }) {
         super();
         this.deviceId = deviceId || null;
         this._vadDisabled = options?.disableVad ?? false;
+        this._echoMode = options?.echoMode;
         if (!RustAudioCapture) {
             console.error('[SystemAudioCapture] Rust class implementation not found.');
         } else {
@@ -76,9 +78,10 @@ export class SystemAudioCapture extends EventEmitter {
         if (!this.monitor) {
             console.log('[SystemAudioCapture] Creating native monitor (lazy init)...');
             try {
-                // Pass null VAD threshold to disable silence suppression for system audio
-                // System audio is clean speaker output — VAD causes false suppression
-                this.monitor = new RustAudioCapture(this.deviceId, { vadDisabled: true });
+                // System audio is clean speaker output — the Rust side always runs
+                // the permissive for_system_audio() suppressor; echoMode selects the
+                // mic-gate pipeline (CaptureOptions is shared by both constructors).
+                this.monitor = new RustAudioCapture(this.deviceId, { vadDisabled: true, echoMode: this._echoMode });
             } catch (e) {
                 console.error('[SystemAudioCapture] Failed to create native monitor:', e);
                 this.emit('error', e);

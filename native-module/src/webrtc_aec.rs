@@ -11,13 +11,27 @@ const FRAME_SAMPLES: usize = 160; // 10 ms at 16 kHz  (sample_rate / 100)
 /// Processor is Send + Sync; both DSP threads hold an Arc clone.
 pub fn create_processor() -> Arc<Processor> {
     let p = Processor::new(SAMPLE_RATE_HZ).expect("[WebRtcAec] Processor init failed");
+    let full_duplex = crate::echo_control::mode() == crate::echo_control::EchoMode::FullDuplex;
+    apply_mode_config(&p, full_duplex);
+    Arc::new(p)
+}
+
+/// Apply the APM configuration for the active echo mode. Safe to call at any
+/// time (set_config takes effect on the next processed frame).
+pub fn apply_mode_config(p: &Processor, full_duplex: bool) {
     p.set_config(Config {
-        // stream_delay_ms = 40: hint to AEC3 that echo arrives ~40ms after render.
-        // For MacBook built-in speakers the acoustic + buffer delay is ~20-60ms.
-        // Without this hint, AEC3 uses automatic delay estimation which takes
-        // several seconds to converge — allowing echo to leak through to STT.
-        // A correct hint locks AEC3 onto the right delay immediately.
-        echo_canceller: Some(EchoCanceller::Full { stream_delay_ms: Some(40) }),
+        // legacy/phase1: stream_delay_ms = 40 hints that echo arrives ~40ms
+        // after render — correct for MacBook built-in speakers and it locks
+        // AEC3 onto the right delay immediately.
+        //
+        // full_duplex: no fixed hint. The echo_align delay buffer keeps the
+        // reference within a small causal residual of the acoustic echo, and
+        // AEC3's own delay estimator (fed a continuous render timeline) locks
+        // onto the remainder. A fixed hint would fight the estimator whenever
+        // the aligned residual differs from 40ms.
+        echo_canceller: Some(EchoCanceller::Full {
+            stream_delay_ms: if full_duplex { None } else { Some(40) },
+        }),
         // HPF removes sub-80 Hz rumble (HVAC, desk vibration, 60 Hz hum).
         // No STT content below 80 Hz; negligible CPU cost.
         high_pass_filter: Some(Default::default()),
@@ -26,7 +40,6 @@ pub fn create_processor() -> Arc<Processor> {
         noise_suppression: None,
         ..Default::default()
     });
-    Arc::new(p)
 }
 
 /// Owned exclusively by the SystemAudioCapture DSP thread.
@@ -84,7 +97,7 @@ impl ApmCapture {
 
             // Log ERLE every 50 frames (~500ms) so we can verify AEC3 is converging.
             // ERLE > 20dB = good cancellation. ERLE ~0dB = AEC3 not working.
-            if self.frame_count % 50 == 0 {
+            if self.frame_count.is_multiple_of(50) {
                 let stats: Stats = self.proc.get_stats();
                 println!(
                     "[WebRtcAec] frame={} ERLE={:.1}dB delay={}ms",

@@ -1122,6 +1122,74 @@ export function initializeIpcHandlers(appState: AppState): void {
     }
   });
 
+  // Deepgram diarization on the far-end (client) stream — paid streaming add-on.
+  safeHandle("set-diarize-client-enabled", async (_, enabled: boolean) => {
+    try {
+      const { CredentialsManager } = require('./services/CredentialsManager');
+      CredentialsManager.getInstance().setDiarizeClientEnabled(!!enabled);
+      // Rebuild both STT instances so the client connection picks up diarize.
+      await appState.reconfigureSttProvider();
+      return { success: true };
+    } catch (error: any) {
+      console.error("Error setting client diarization:", error);
+      return { success: false, error: error.message };
+    }
+  });
+
+  safeHandle("get-diarize-client-enabled", async () => {
+    try {
+      const { CredentialsManager } = require('./services/CredentialsManager');
+      return CredentialsManager.getInstance().getDiarizeClientEnabled();
+    } catch {
+      return false;
+    }
+  });
+
+  // Echo pipeline mode for the native audio gate ('legacy' | 'phase1' | 'full_duplex').
+  safeHandle("set-echo-pipeline-mode", async (_, mode: string) => {
+    try {
+      const { CredentialsManager } = require('./services/CredentialsManager');
+      CredentialsManager.getInstance().setEchoPipelineMode(mode);
+      return { success: true };
+    } catch (error: any) {
+      return { success: false, error: error.message };
+    }
+  });
+
+  safeHandle("get-echo-pipeline-mode", async () => {
+    try {
+      const { CredentialsManager } = require('./services/CredentialsManager');
+      return CredentialsManager.getInstance().getEchoPipelineMode();
+    } catch {
+      return 'phase1';
+    }
+  });
+
+  // Echo pipeline telemetry (ERLE, gate state, mute ratio) for a debug panel.
+  safeHandle("get-audio-pipeline-stats", async () => {
+    try {
+      const { loadNativeModule } = require('./audio/nativeModuleLoader');
+      const native = loadNativeModule();
+      if (!native?.getAudioPipelineStats) return null;
+      return JSON.parse(native.getAudioPipelineStats());
+    } catch (error: any) {
+      console.error("Error reading audio pipeline stats:", error);
+      return null;
+    }
+  });
+
+  // Current default output route classification (headphones/speakers).
+  safeHandle("get-output-route", async () => {
+    try {
+      const { loadNativeModule } = require('./audio/nativeModuleLoader');
+      const native = loadNativeModule();
+      if (!native?.getOutputRoute) return null;
+      return native.getOutputRoute();
+    } catch {
+      return null;
+    }
+  });
+
   safeHandle("set-groq-stt-api-key", async (_, apiKey: string) => {
     try {
       const { CredentialsManager } = require('./services/CredentialsManager');

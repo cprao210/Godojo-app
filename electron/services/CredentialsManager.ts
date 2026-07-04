@@ -66,6 +66,13 @@ export interface StoredCredentials {
     supabaseAnonKey?: string;
     // Knowledge Base
     knowledgeModeActive?: boolean;
+    // Echo pipeline mode for the native audio gate ('legacy' | 'phase1' | 'full_duplex')
+    echoPipelineMode?: string;
+    // Deepgram streaming diarization on the system-audio (client) stream.
+    // Default OFF: it is a paid streaming add-on (~$0.002/min on top of Nova-3).
+    diarizeClientEnabled?: boolean;
+    // Word-timestamp echo filter in the main process (free, inert without word data)
+    echoWordFilterEnabled?: boolean;
 }
 
 export class CredentialsManager {
@@ -311,6 +318,39 @@ export class CredentialsManager {
         this.credentials.knowledgeModeActive = enabled;
         this.saveCredentials();
         console.log(`[CredentialsManager] Knowledge mode persisted: ${enabled}`);
+    }
+
+    /** Echo pipeline mode for the native gate. Env var wins for field debugging. */
+    public getEchoPipelineMode(): string {
+        return process.env.NATIVELY_ECHO_MODE || this.credentials.echoPipelineMode || 'phase1';
+    }
+
+    public setEchoPipelineMode(mode: string): void {
+        this.credentials.echoPipelineMode = mode;
+        this.saveCredentials();
+        console.log(`[CredentialsManager] Echo pipeline mode persisted: ${mode}`);
+    }
+
+    /** Deepgram diarization on the client (system-audio) stream. Default OFF — paid add-on. */
+    public getDiarizeClientEnabled(): boolean {
+        return this.credentials.diarizeClientEnabled ?? false;
+    }
+
+    public setDiarizeClientEnabled(enabled: boolean): void {
+        this.credentials.diarizeClientEnabled = enabled;
+        this.saveCredentials();
+        console.log(`[CredentialsManager] Client diarization persisted: ${enabled}`);
+    }
+
+    /** Word-timestamp transcript echo filter. Default ON — free, inert without word data. */
+    public getEchoWordFilterEnabled(): boolean {
+        return this.credentials.echoWordFilterEnabled ?? true;
+    }
+
+    public setEchoWordFilterEnabled(enabled: boolean): void {
+        this.credentials.echoWordFilterEnabled = enabled;
+        this.saveCredentials();
+        console.log(`[CredentialsManager] Echo word filter persisted: ${enabled}`);
     }
 
     public setDefaultModel(model: string): void {

@@ -640,9 +640,13 @@ contextBridge.exposeInMainWorld("electronAPI", {
   setGroqSttModel: (model: string) => ipcRenderer.invoke("set-groq-stt-model", model),
   setSonioxApiKey: (apiKey: string) => ipcRenderer.invoke("set-soniox-api-key", apiKey),
   testSttConnection: (provider: 'groq' | 'openai' | 'deepgram' | 'elevenlabs' | 'azure' | 'ibmwatson' | 'soniox', apiKey: string, region?: string) => ipcRenderer.invoke("test-stt-connection", provider, apiKey, region),
+  setDiarizeClientEnabled: (enabled: boolean) => ipcRenderer.invoke("set-diarize-client-enabled", enabled),
+  getDiarizeClientEnabled: () => ipcRenderer.invoke("get-diarize-client-enabled"),
+  getAudioPipelineStats: () => ipcRenderer.invoke("get-audio-pipeline-stats"),
+  getOutputRoute: () => ipcRenderer.invoke("get-output-route"),
 
   // Native Audio Service Events
-  onNativeAudioTranscript: (callback: (transcript: { speaker: string; text: string; final: boolean }) => void) => {
+  onNativeAudioTranscript: (callback: (transcript: { speaker: string; displayName?: string; text: string; timestamp?: number; final: boolean; confidence?: number; speakerIndex?: number }) => void) => {
     const subscription = (_: any, data: any) => callback(data)
     ipcRenderer.on("native-audio-transcript", subscription)
     return () => {

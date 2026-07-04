@@ -60,7 +60,10 @@ const NativelyInterface: React.FC<NativelyInterfaceProps> = ({ onEndMeeting, ove
         return stored !== 'false';
     });
     const [isMeetingPaused, setIsMeetingPaused] = useState(false);
-    const liveTranscriptRef = useRef<Array<{ speaker: string; displayName?: string; text: string; timestamp: number }>>([]);
+    const liveTranscriptRef = useRef<Array<{ speaker: string; displayName?: string; text: string; timestamp: number; speakerIndex?: number }>>([]);
+    // Last diarized far-end speaker index seen on a client FINAL — used to
+    // inject a "Speaker n:" marker in the rolling text only when it changes.
+    const lastClientSpeakerIndexRef = useRef<number | undefined>(undefined);
     // Add near the other useState declarations at the top of NativelyInterface
     const [companyIntel, setCompanyIntel] = useState<Record<string, any> | null>(null);
 
@@ -486,6 +489,20 @@ const NativelyInterface: React.FC<NativelyInterfaceProps> = ({ onEndMeeting, ove
                     || (isClient ? speakerNamesRef.current.client : speakerNamesRef.current.user)
                     || undefined;
 
+                // Diarization: mark far-end speaker changes inline in the rolling
+                // text ("Speaker 2: ..."). Only when the index actually changes —
+                // 1:1 calls (or diarize off) never show a marker.
+                let speakerMarker = '';
+                if (isClient && transcript.speakerIndex !== undefined) {
+                    if (
+                        lastClientSpeakerIndexRef.current !== undefined &&
+                        lastClientSpeakerIndexRef.current !== transcript.speakerIndex
+                    ) {
+                        speakerMarker = `Speaker ${transcript.speakerIndex + 1}: `;
+                    }
+                    lastClientSpeakerIndexRef.current = transcript.speakerIndex;
+                }
+
                 // Append finalized text to this speaker's own rolling transcript.
                 // Guard against duplicate finals (e.g. both is_final and speech_final
                 // from Deepgram arriving as final before the STT fix takes effect).
@@ -494,7 +511,7 @@ const NativelyInterface: React.FC<NativelyInterfaceProps> = ({ onEndMeeting, ove
                     const lastSegment = lastSeparator >= 0 ? prev.substring(lastSeparator + 5) : prev;
                     if (lastSegment.trim() === transcript.text.trim()) return prev; // skip exact duplicate
                     const separator = prev ? '  ·  ' : '';
-                    return prev + separator + transcript.text;
+                    return prev + separator + speakerMarker + transcript.text;
                 });
 
                 // Guard liveTranscriptRef against exact-text duplicates from rapid final events
@@ -505,6 +522,7 @@ const NativelyInterface: React.FC<NativelyInterfaceProps> = ({ onEndMeeting, ove
                         displayName: resolvedDisplayName,
                         text: transcript.text,
                         timestamp: Date.now(),
+                        speakerIndex: transcript.speakerIndex,
                     });
                 }
 

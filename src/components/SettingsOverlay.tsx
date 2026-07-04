@@ -829,6 +829,7 @@ const SettingsOverlay: React.FC<SettingsOverlayProps> = ({ isOpen, onClose, init
 
     // STT Provider settings
     const [sttProvider, setSttProvider] = useState<'google' | 'groq' | 'openai' | 'deepgram' | 'elevenlabs' | 'azure' | 'ibmwatson' | 'soniox'>('google');
+    const [diarizeClientEnabled, setDiarizeClientEnabled] = useState(false);
     const [groqSttModel, setGroqSttModel] = useState('whisper-large-v3-turbo');
     const [sttGroqKey, setSttGroqKey] = useState('');
     const [sttOpenaiKey, setSttOpenaiKey] = useState('');
@@ -886,12 +887,26 @@ const SettingsOverlay: React.FC<SettingsOverlayProps> = ({ isOpen, onClose, init
                     setHasStoredSonioxKey(creds.hasSonioxKey || false);
                     setHasStoredTavilyKey(creds.hasTavilyKey || false);
                 }
+                const diarize = await window.electronAPI?.getDiarizeClientEnabled?.();
+                setDiarizeClientEnabled(!!diarize);
             } catch (e) {
                 console.error('Failed to load STT settings:', e);
             }
         };
         if (isOpen) loadSttSettings();
     }, [isOpen]);
+
+    const handleDiarizeToggle = async () => {
+        const next = !diarizeClientEnabled;
+        setDiarizeClientEnabled(next); // optimistic
+        try {
+            const res = await window.electronAPI?.setDiarizeClientEnabled?.(next);
+            if (res && res.success === false) setDiarizeClientEnabled(!next);
+        } catch (e) {
+            console.error('Failed to set diarization:', e);
+            setDiarizeClientEnabled(!next);
+        }
+    };
 
     const handleSttProviderChange = async (provider: 'google' | 'groq' | 'openai' | 'deepgram' | 'elevenlabs' | 'azure' | 'ibmwatson' | 'soniox') => {
         setSttProvider(provider);
@@ -2691,6 +2706,29 @@ const SettingsOverlay: React.FC<SettingsOverlayProps> = ({ isOpen, onClose, init
                                                         />
                                                     </div>
                                                 </div>
+
+                                                {/* Deepgram: far-end speaker diarization */}
+                                                {sttProvider === 'deepgram' && (
+                                                    <div className={`${isLight ? "bg-white border-slate-200/80" : "bg-bg-item-surface border-border-subtle"} rounded-xl border p-4`}>
+                                                        <div className="flex items-center justify-between gap-3">
+                                                            <div className="min-w-0">
+                                                                <label className="text-xs font-medium text-text-primary block">Identify multiple far-end speakers</label>
+                                                                <p className="text-[10px] text-text-tertiary mt-1 leading-relaxed">
+                                                                    Labels different people on the other side as Speaker 1, Speaker 2.
+                                                                    Deepgram only — billed by Deepgram as a streaming add-on (~$0.002/min).
+                                                                </p>
+                                                            </div>
+                                                            <button
+                                                                role="switch"
+                                                                aria-checked={diarizeClientEnabled}
+                                                                onClick={handleDiarizeToggle}
+                                                                className={`relative shrink-0 w-10 h-[22px] rounded-full transition-colors duration-200 ${diarizeClientEnabled ? 'bg-blue-600' : isLight ? 'bg-slate-300' : 'bg-bg-input'}`}
+                                                            >
+                                                                <span className={`absolute top-[3px] left-[3px] w-4 h-4 rounded-full bg-white shadow transition-transform duration-200 ${diarizeClientEnabled ? 'translate-x-[18px]' : ''}`} />
+                                                            </button>
+                                                        </div>
+                                                    </div>
+                                                )}
 
                                                 {/* Groq Model Selector */}
                                                 {sttProvider === 'groq' && (

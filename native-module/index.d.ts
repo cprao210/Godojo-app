@@ -2,11 +2,12 @@
 /* eslint-disable */
 export declare class MicrophoneCapture {
   /**
-   * `device_id`   — CPAL device name or `None` for system default.
+   * `device_id`    — CPAL device name or `None` for system default.
    * `vad_disabled` — set `true` when no external audio device is present
    *                  (built-in mic scenario) to bypass local silence gating.
+   * `options`      — optional CaptureOptions (echo pipeline mode etc.).
    */
-  constructor(deviceId?: string | undefined | null, vadDisabled?: boolean | undefined | null)
+  constructor(deviceId?: string | undefined | null, vadDisabled?: boolean | undefined | null, options?: CaptureOptions | undefined | null)
   getSampleRate(): number
   getOutputSampleRate(): number
   start(callback: ((err: Error | null, arg: Buffer) => any), onSpeechEnded?: (((err: Error | null, arg: boolean) => any)) | undefined | null): void
@@ -14,7 +15,7 @@ export declare class MicrophoneCapture {
 }
 
 export declare class SystemAudioCapture {
-  constructor(deviceId?: string | undefined | null)
+  constructor(deviceId?: string | undefined | null, options?: CaptureOptions | undefined | null)
   getSampleRate(): number
   getOutputSampleRate(): number
   start(callback: ((err: Error | null, arg: Buffer) => any), onSpeechEnded?: (((err: Error | null, arg: boolean) => any)) | undefined | null): void
@@ -27,6 +28,27 @@ export interface AudioDeviceInfo {
 }
 
 /**
+ * Optional trailing options object accepted by both capture constructors.
+ * Backward compatible: older JS that omits it (or passes extra unknown keys)
+ * keeps working against a newer .node, and vice versa.
+ */
+export interface CaptureOptions {
+  /**
+   * Echo pipeline mode: "legacy" | "phase1" | "full_duplex".
+   * Overrides the NATIVELY_ECHO_MODE env var. Unknown values are ignored.
+   */
+  echoMode?: string
+  /** Bypass the local RMS+VAD gate (see MicrophoneCapture docs). */
+  vadDisabled?: boolean
+}
+
+/**
+ * JSON snapshot of the echo pipeline (mode, gate state, ERLE, delay,
+ * alignment, mute ratio). Poll from JS for field telemetry / debug panel.
+ */
+export declare function getAudioPipelineStats(): string
+
+/**
  * Returns a deterministic hardware fingerprint (SHA-256 hash of the machine UID).
  * This is used to lock license keys to a specific physical device.
  */
@@ -35,6 +57,19 @@ export declare function getHardwareId(): string
 export declare function getInputDevices(): Array<AudioDeviceInfo>
 
 export declare function getOutputDevices(): Array<AudioDeviceInfo>
+
+/**
+ * Classify the current default output device: headphones have no acoustic
+ * path to the mic, so the echo gate is bypassed while they are active.
+ */
+export declare function getOutputRoute(): OutputRouteJs
+
+export interface OutputRouteJs {
+  /** "headphones" | "speakers" | "unknown" */
+  kind: string
+  transport: string
+  name: string
+}
 
 /**
  * Validates a Gumroad license key by calling the Gumroad Licenses API.

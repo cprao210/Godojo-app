@@ -350,6 +350,34 @@ export class MeetingPersistence {
             if (metadata.source) source = metadata.source;
         }
 
+        // Build full transcript text directly from the transcript array so the
+        // LLM sees the complete call. The pre-built data.context is capped at
+        // 10,000 chars which silently cuts off the second half of longer calls.
+        // Average ~60 chars per turn × 1500 turns = 90,000 chars — well within
+        // Gemini/Claude/GPT context windows. Groq has a 100k token guard already.
+        //
+        // When diarization identified 2+ far-end speakers, label prospect turns
+        // "PROSPECT (Speaker n)" so the summary LLM can attribute statements.
+        const clientIndices = new Set(
+            data.transcript
+                .filter(t => t.speaker !== 'user' && (t as any).speakerIndex !== undefined)
+                .map(t => (t as any).speakerIndex as number)
+        );
+        const multiClientSpeakers = clientIndices.size >= 2;
+        const fullTranscriptText = data.transcript
+            .filter(t => !['system', 'ai', 'assistant', 'model'].includes(t.speaker?.toLowerCase()))
+            .map(t => {
+                let role = t.speaker === 'user'
+                    ? (speakerNames?.user || 'REP')
+                    : (speakerNames?.client || 'PROSPECT');
+                const idx = (t as any).speakerIndex;
+                if (t.speaker !== 'user' && multiClientSpeakers && idx !== undefined) {
+                    role = `${role} (Speaker ${idx + 1})`;
+                }
+                return `${role}: ${t.text}`;
+            })
+            .join('\n');
+
         try {
             // Generate Title (only if not set by calendar)
             if (!metadata || !metadata.title) {

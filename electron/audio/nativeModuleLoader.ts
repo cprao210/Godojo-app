@@ -5,17 +5,45 @@ export interface AudioDeviceInfo {
   name: string;
 }
 
+/** Optional trailing options accepted by both native capture constructors. */
+export interface NativeCaptureOptions {
+  /** Echo pipeline mode: 'legacy' | 'phase1' | 'full_duplex'. */
+  echoMode?: string;
+  vadDisabled?: boolean;
+}
+
+export interface OutputRouteInfo {
+  /** 'headphones' | 'speakers' | 'unknown' */
+  kind: string;
+  transport: string;
+  name: string;
+}
+
 export interface NativeModule {
   getHardwareId(): string;
   verifyGumroadKey(licenseKey: string): Promise<string>;
   getInputDevices(): Array<AudioDeviceInfo>;
   getOutputDevices(): Array<AudioDeviceInfo>;
-  SystemAudioCapture: new (deviceId?: string | null) => {
+  /**
+   * Optional — present in .node binaries built after the echo pipeline rework.
+   * NOT in REQUIRED_METHODS so a stale binary still loads; callers must guard.
+   */
+  getOutputRoute?: () => OutputRouteInfo;
+  /** Optional — JSON snapshot of the echo pipeline (ERLE, gate state, ...). */
+  getAudioPipelineStats?: () => string;
+  SystemAudioCapture: new (
+    deviceId?: string | null,
+    options?: NativeCaptureOptions | null
+  ) => {
     getSampleRate(): number;
     start(callback: (...args: any[]) => any, onSpeechEnded?: (...args: any[]) => any): void;
     stop(): void;
   };
-  MicrophoneCapture: new (deviceId?: string | null) => {
+  MicrophoneCapture: new (
+    deviceId?: string | null,
+    vadDisabled?: boolean | null,
+    options?: NativeCaptureOptions | null
+  ) => {
     getSampleRate(): number;
     start(callback: (...args: any[]) => any, onSpeechEnded?: (...args: any[]) => any): void;
     stop(): void;

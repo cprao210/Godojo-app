@@ -138,14 +138,34 @@ const MeetingDetails: React.FC<MeetingDetailsProps> = ({ meeting: initialMeeting
     const speakerNames = (meeting.detailedSummary as any)?.speakerNames as
         { user: string; client: string } | undefined;
 
-    const getSpeakerDisplayName = (speaker: string, displayName?: string): string => {
+    // Diarization: suffix far-end labels only when 2+ distinct speaker indices
+    // were recorded for this meeting — 1:1 calls render exactly as before.
+    const hasMultipleClientSpeakers = useMemo(() => {
+        const seen = new Set<number>();
+        for (const seg of meeting.transcript || []) {
+            const idx = (seg as any).speakerIndex;
+            if (idx !== undefined && idx !== null && seg.speaker !== 'user') {
+                seen.add(idx);
+                if (seen.size >= 2) return true;
+            }
+        }
+        return false;
+    }, [meeting.transcript]);
+
+    const getSpeakerDisplayName = (speaker: string, displayName?: string, speakerIndex?: number): string => {
         // 1. Live transcription supplies displayName directly — always prefer it.
         if (displayName) return displayName;
         // 2. Use resolved calendar names saved in detailedSummary.speakerNames.
         //    These are set by SessionTracker (e.g. "Nikhilbarot", "Salesforce").
         //    Fall back to "You" / "Other Party" only when no calendar data was resolved.
         if (speaker === 'user') return speakerNames?.user || 'You';
-        if (speaker === 'client' || speaker === "interviewer") return speakerNames?.client || 'Other Party';
+        if (speaker === 'client' || speaker === "interviewer") {
+            const base = speakerNames?.client || 'Other Party';
+            if (hasMultipleClientSpeakers && speakerIndex !== undefined && speakerIndex !== null) {
+                return `${base} · Speaker ${speakerIndex + 1}`;
+            }
+            return base;
+        }
         if (speaker === 'assistant') return 'Assistant';
         return speaker;
     };
@@ -368,7 +388,7 @@ const MeetingDetails: React.FC<MeetingDetailsProps> = ({ meeting: initialMeeting
         } else if (activeTab === 'transcript' && meeting.transcript) {
             textToCopy = meeting.transcript
                 .filter(t => !['system', 'ai', 'assistant', 'model'].includes(t.speaker?.toLowerCase()))
-                .map(t => `[${formatTime(t.timestamp)}] ${getSpeakerDisplayName(t.speaker, t.displayName)}: ${t.text}`)
+                .map(t => `[${formatTime(t.timestamp)}] ${getSpeakerDisplayName(t.speaker, t.displayName, (t as any).speakerIndex)}: ${t.text}`)
                 .join('\n');
 
         } else if (activeTab === 'usage' && meeting.usage) {
@@ -1504,7 +1524,8 @@ const MeetingDetails: React.FC<MeetingDetailsProps> = ({ meeting: initialMeeting
                                                             } px-2 py-1 rounded-full truncate max-w-[120px]`}>
                                                             {getSpeakerDisplayName(
                                                                 entry.speaker,
-                                                                entry.displayName
+                                                                entry.displayName,
+                                                                (entry as any).speakerIndex
                                                             )}
                                                         </span>
                                                         <span className="text-xs text-text-tertiary font-mono">{entry.timestamp ? formatTime(entry.timestamp) : '0:00'}</span>

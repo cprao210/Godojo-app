@@ -28,5 +28,14 @@ cidre = { version = "0.11.10", features = ["ca", "cm", "av", "cat", "dispatch", 
 
 [target.'cfg(target_os = "windows")'.dependencies]
 wasapi = "0.13.0"
-windows = { version = "0.52.0", features = ["Win32_Media_Audio", "Win32_System_Com", "Win32_System_Threading"] }
+windows = { version = "0.52.0", features = [
+    "Win32_Media_Audio",
+    "Win32_System_Com",
+    "Win32_System_Threading",
+    # output_route.rs: endpoint form-factor query (headphone detection)
+    "Win32_UI_Shell_PropertiesSystem",
+    "Win32_System_Com_StructuredStorage",
+    "Win32_Foundation",
+    "Win32_Devices_FunctionDiscovery",
+] }
 tracing = "0.1.44"

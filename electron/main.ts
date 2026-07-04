@@ -124,6 +124,9 @@ import { ProcessingHelper } from "./ProcessingHelper"
 import { IntelligenceManager } from "./IntelligenceManager"
 import { SystemAudioCapture } from "./audio/SystemAudioCapture"
 import { MicrophoneCapture } from "./audio/MicrophoneCapture"
+import { loadNativeModule } from "./audio/nativeModuleLoader"
+import { TranscriptEchoFilter } from "./audio/TranscriptEchoFilter"
+import type { SttWord } from "./audio/sttWordUtils"
 import { GoogleSTT } from "./audio/GoogleSTT"
 import { RestSTT } from "./audio/RestSTT"
 import { DeepgramStreamingSTT } from "./audio/DeepgramStreamingSTT"
@@ -614,6 +617,17 @@ export class AppState {
     return AudioDevices.isBuiltinOnly(inputDeviceId, outputDeviceId);
   }
 
+  // Echo pipeline mode for the native gate ('legacy' | 'phase1' | 'full_duplex').
+  // Persisted in CredentialsManager; NATIVELY_ECHO_MODE env var wins for field debugging.
+  private _echoMode(): string {
+    try {
+      const { CredentialsManager } = require('./services/CredentialsManager');
+      return CredentialsManager.getInstance().getEchoPipelineMode();
+    } catch {
+      return 'phase1';
+    }
+  }
+
   private _shouldDisableMicVad(inputDeviceId?: string, outputDeviceId?: string): boolean {
     const builtinOnly = this._isBuiltinOnly(inputDeviceId, outputDeviceId);
     if (builtinOnly) {
@@ -829,15 +843,47 @@ export class AppState {
   private _audioTestStarting = false;               // P2-12: in-flight guard against concurrent calls
   private googleSTT: STTProvider | null = null; // Client
   private googleSTT_User: STTProvider | null = null; // User
+  // Echo-pipeline telemetry poll (ERLE, gate state, mute ratio) — meeting-scoped.
+  private _pipelineStatsTimer: NodeJS.Timeout | null = null;
 
-  // Rolling window of recent final client (system audio) transcripts for macOS echo detection.
-  // Echo suppression only runs on macOS (Windows WASAPI has no acoustic bleed).
-  // Only FINAL transcripts are suppressed — partials still flow so live suggestions work.
-  // False-positive guard: short mic segments (< 4 words) are never suppressed because a
-  // natural reply ("yes", "exactly", "got it") overlapping with client text isn't echo.
-  private _recentClientTranscripts: Array<{ text: string; ts: number }> = [];
-  private static readonly _ECHO_WINDOW_MS = 6000;  // extended to cover STT latency + AEC convergence window
-  private static readonly _ECHO_SIMILARITY_THRESHOLD = 0.75; // base trigram overlap threshold
+  private _startPipelineStatsPolling(): void {
+    if (this._pipelineStatsTimer) return;
+    const native = loadNativeModule();
+    if (!native?.getAudioPipelineStats) return; // stale .node binary — no stats surface
+    this._pipelineStatsTimer = setInterval(() => {
+      try {
+        const stats = native.getAudioPipelineStats!();
+        console.log(`[AudioPipeline] ${stats}`);
+      } catch (e) {
+        console.warn('[AudioPipeline] stats poll failed:', e);
+      }
+    }, 5000);
+  }
+
+  private _stopPipelineStatsPolling(): void {
+    if (this._pipelineStatsTimer) {
+      clearInterval(this._pipelineStatsTimer);
+      this._pipelineStatsTimer = null;
+    }
+  }
+
+  // Transcript-level echo suppression (safety net behind the native AEC/gate).
+  // Word-timestamp based when Deepgram word data is available — can TRIM just
+  // the echoed words out of a mic segment instead of dropping it whole — with
+  // the legacy n-gram text fallback for providers without word data.
+  // Only FINAL transcripts are filtered — partials still flow so live suggestions work.
+  // echoPossible defaults to macOS only (Windows WASAPI setups show no bleed).
+  private _echoFilter = new TranscriptEchoFilter({
+    useWordFilter: () => {
+      try {
+        const { CredentialsManager } = require('./services/CredentialsManager');
+        return CredentialsManager.getInstance().getEchoWordFilterEnabled();
+      } catch {
+        return true;
+      }
+    },
+    isBuiltinOnly: () => this._builtinOnlyMode,
+  });
 
   // _builtinOnlyMode: true when built-in speakers + mic are in use (no external device).
   // Used by _isMicEcho to apply a lower similarity threshold and by audio init to
@@ -845,52 +891,10 @@ export class AppState {
   // physical echo; no JS-side RMS gate is needed.
   private _builtinOnlyMode: boolean = false;
 
-  private _isMicEcho(micText: string): boolean {
-    // Only applies on macOS — Windows handles echo at the OS/WASAPI level
-    if (process.platform !== 'darwin') return false;
-    if (!micText || this._recentClientTranscripts.length === 0) return false;
-
-    const words = micText.trim().split(/\s+/);
-    // Single-word responses ("yes", "no", "okay") are almost always genuine replies.
-    // 2–3 word phrases can echo acoustically during the AEC convergence window.
-    if (words.length < 2) return false;
-
-    const now = Date.now();
-    this._recentClientTranscripts = this._recentClientTranscripts.filter(
-      e => now - e.ts < AppState._ECHO_WINDOW_MS
-    );
-    const normalise = (s: string) => s.toLowerCase().replace(/[^a-z0-9 ]/g, '').trim();
-
-    // For 2–3 word segments trigrams don't exist — use bigrams instead.
-    // For 4+ word segments use trigrams (lower false-positive rate).
-    const ngrams = (s: string, n: number): Set<string> => {
-      const ws = normalise(s).split(/\s+/);
-      const tg = new Set<string>();
-      for (let i = 0; i + n - 1 < ws.length; i++) tg.add(ws.slice(i, i + n).join(' '));
-      return tg;
-    };
-    const gramSize = words.length <= 3 ? 2 : 3;
-    const micTg = ngrams(micText, gramSize);
-    if (micTg.size === 0) return false;
-
-    for (const entry of this._recentClientTranscripts) {
-      const clientTg = ngrams(entry.text, gramSize);
-      if (clientTg.size === 0) continue;
-      const intersection = [...micTg].filter(t => clientTg.has(t)).length;
-      // Mic-side precision: fraction of mic's n-grams that appeared in client transcript.
-      // Partial echoes (mic heard first half of a long sentence) still score high here.
-      const precision = intersection / micTg.size;
-      // Bigram matching is inherently noisier — use a higher threshold for short segments
-      // to avoid false-positive suppression of genuine short replies.
-      const baseThreshold = this._builtinOnlyMode ? 0.60 : AppState._ECHO_SIMILARITY_THRESHOLD;
-      const threshold = gramSize === 2 ? Math.max(baseThreshold, 0.80) : baseThreshold;
-      if (precision >= threshold) {
-        console.log(`[Main] Echo detected (${gramSize}-gram precision=${precision.toFixed(2)}, threshold=${threshold}): dropping mic segment`);
-        return true;
-      }
-    }
-    return false;
-  }
+  // Distinct diarization speaker indices observed on the client stream this
+  // meeting. Display labels get a "· Speaker n" suffix only once 2+ are seen,
+  // so 1:1 calls render exactly as before diarization existed.
+  private _clientSpeakerIndicesSeen: Set<number> = new Set();
 
   private createSTTProvider(speaker: 'client' | 'user'): STTProvider {
     const { CredentialsManager } = require('./services/CredentialsManager');
@@ -902,8 +906,12 @@ export class AppState {
     if (sttProvider === 'deepgram') {
       const apiKey = CredentialsManager.getInstance().getDeepgramApiKey();
       if (apiKey) {
-        console.log(`[Main] Using DeepgramStreamingSTT for ${speaker}`);
-        stt = new DeepgramStreamingSTT(apiKey, speaker);
+        // Diarization only on the client (system-audio) stream: the mic is
+        // single-speaker by role, and diarize is a paid streaming add-on.
+        const diarize = speaker === 'client'
+          && CredentialsManager.getInstance().getDiarizeClientEnabled();
+        console.log(`[Main] Using DeepgramStreamingSTT for ${speaker}${diarize ? ' (diarize on)' : ''}`);
+        stt = new DeepgramStreamingSTT(apiKey, speaker, { diarize });
       } else {
         console.warn(`[Main] No API key for Deepgram STT, falling back to GoogleSTT`);
         stt = new GoogleSTT();
@@ -966,7 +974,10 @@ export class AppState {
     stt.setRecognitionLanguage(sttLanguage);
 
     // Wire Transcript Events
-    stt.on('transcript', (segment: { text: string, isFinal: boolean, confidence: number }) => {
+    stt.on('transcript', (segment: {
+      text: string, isFinal: boolean, confidence: number,
+      speakerIndex?: number, words?: SttWord[]
+    }) => {
       console.log(`[Main] STT transcript (${speaker}, final=${segment.isFinal}): "${segment.text}"`);
       if (!this.isMeetingActive) {
         console.warn(`[Main] Dropping transcript — meeting not active (speaker=${speaker})`);
@@ -978,16 +989,31 @@ export class AppState {
       }
 
       // On macOS with external speakers the mic physically hears the speakers,
-      // causing the other party's speech to appear in both channels. Suppress
-      // mic (user) segments that are highly similar to a recent client transcript.
-      if (speaker === 'user' && segment.isFinal && this._isMicEcho(segment.text)) {
-        console.log(`[Main] Suppressing mic echo: "${segment.text}"`);
-        return;
+      // causing the other party's speech to appear in both channels. Filter
+      // mic (user) finals against recent client finals: word-timestamp matching
+      // can trim just the echoed span; the n-gram fallback drops whole segments.
+      if (speaker === 'user' && segment.isFinal) {
+        const verdict = this._echoFilter.filterUserFinal(segment.text, segment.words);
+        if (verdict.action === 'drop') {
+          console.log(`[Main] Suppressing mic echo (${verdict.method}, ratio=${verdict.matchRatio.toFixed(2)}): "${segment.text}"`);
+          return;
+        }
+        if (verdict.action === 'trim') {
+          console.log(`[Main] Trimming mic echo (ratio=${verdict.matchRatio.toFixed(2)}): "${segment.text}" → "${verdict.text}"`);
+          segment.text = verdict.text;
+          segment.words = verdict.keptWords;
+        }
       }
 
       // Record final client transcripts so mic echo detection has a reference window.
       if (speaker === 'client' && segment.isFinal) {
-        this._recentClientTranscripts.push({ text: segment.text, ts: Date.now() });
+        this._echoFilter.addClientFinal(segment.text, segment.words);
+      }
+
+      // Track distinct diarized far-end speakers. Labels only appear once a
+      // SECOND speaker is confirmed — 1:1 calls render exactly as before.
+      if (speaker === 'client' && segment.isFinal && segment.speakerIndex !== undefined) {
+        this._clientSpeakerIndicesSeen.add(segment.speakerIndex);
       }
 
       this.intelligenceManager.handleTranscript({
@@ -995,7 +1021,8 @@ export class AppState {
         text: segment.text,
         timestamp: Date.now(),
         final: segment.isFinal,
-        confidence: segment.confidence
+        confidence: segment.confidence,
+        speakerIndex: segment.speakerIndex
       });
 
       // Feed final transcript to JIT RAG indexer
@@ -1011,16 +1038,26 @@ export class AppState {
       // Resolve real display name at emit-time so the renderer always gets
       // a human-readable label, even before a speaker-names-resolved event fires.
       const speakerNameMap = this.intelligenceManager.getSpeakerNameMap();
-      const displayName = speaker === 'user'
+      let displayName = speaker === 'user'
         ? (speakerNameMap.user || 'Me')
         : (speakerNameMap.client || 'Them');
+      if (
+        speaker === 'client' &&
+        segment.speakerIndex !== undefined &&
+        this._clientSpeakerIndicesSeen.size >= 2
+      ) {
+        displayName = `${displayName} · Speaker ${segment.speakerIndex + 1}`;
+      }
       const payload = {
         speaker: speaker,          // internal role — kept for renderer routing logic
         displayName: displayName,  // resolved human name for UI display
         text: segment.text,
         timestamp: Date.now(),
         final: segment.isFinal,
-        confidence: segment.confidence
+        confidence: segment.confidence,
+        speakerIndex: segment.speakerIndex
+        // NOTE: segment.words stays main-process internal (echo filter input) —
+        // deliberately NOT serialized into the 10+/sec IPC stream.
       };
       helper.getLauncherWindow()?.webContents.send('native-audio-transcript', payload);
       helper.getOverlayWindow()?.webContents.send('native-audio-transcript', payload);
@@ -1047,7 +1084,7 @@ export class AppState {
       // wired to write to this.googleSTT / googleSTT_User.
 
       if (!this.systemAudioCapture) {
-        this.systemAudioCapture = new SystemAudioCapture();
+        this.systemAudioCapture = new SystemAudioCapture(undefined, { echoMode: this._echoMode() });
         // Wire Capture -> STT
         this.systemAudioCapture.on('data', (chunk: Buffer) => {
           this.googleSTT?.write(chunk);
@@ -1070,7 +1107,7 @@ export class AppState {
 
       if (!this.microphoneCapture) {
         const disableMicVad = this._shouldDisableMicVad(inputDeviceId, outputDeviceId);
-        this.microphoneCapture = new MicrophoneCapture(undefined, { vadDisabled: disableMicVad });
+        this.microphoneCapture = new MicrophoneCapture(undefined, { vadDisabled: disableMicVad, echoMode: this._echoMode() });
         this.microphoneCapture.on('data', (chunk: Buffer) => {
           this.googleSTT_User?.write(chunk);
         });
@@ -1145,13 +1182,13 @@ export class AppState {
 
     try {
       console.log('[Main] Initializing SystemAudioCapture...');
-      this.systemAudioCapture = new SystemAudioCapture(outputDeviceId || undefined);
+      this.systemAudioCapture = new SystemAudioCapture(outputDeviceId || undefined, { echoMode: this._echoMode() });
       wireSystemAudio(this.systemAudioCapture);
       console.log('[Main] SystemAudioCapture initialized.');
     } catch (err) {
       console.warn('[Main] Failed to initialize SystemAudioCapture with preferred device. Falling back to default.', err);
       try {
-        this.systemAudioCapture = new SystemAudioCapture();
+        this.systemAudioCapture = new SystemAudioCapture(undefined, { echoMode: this._echoMode() });
         wireSystemAudio(this.systemAudioCapture);
         console.log('[Main] SystemAudioCapture (Default) initialized.');
       } catch (err2) {
@@ -1186,7 +1223,7 @@ export class AppState {
       console.log('[Main] Initializing MicrophoneCapture...');
       this.microphoneCapture = new MicrophoneCapture(
         inputDeviceId || undefined,
-        { vadDisabled: disableMicVad }
+        { vadDisabled: disableMicVad, echoMode: this._echoMode() }
       );
       wireMicrophone(this.microphoneCapture);
       console.log('[Main] MicrophoneCapture initialized.');
@@ -1195,7 +1232,7 @@ export class AppState {
       try {
         this.microphoneCapture = new MicrophoneCapture(
           undefined,
-          { vadDisabled: disableMicVad }  // preserve VAD mode even on fallback
+          { vadDisabled: disableMicVad, echoMode: this._echoMode() }  // preserve VAD mode even on fallback
         );
         wireMicrophone(this.microphoneCapture);
         console.log('[Main] MicrophoneCapture (Default) initialized.');
@@ -1304,7 +1341,7 @@ export class AppState {
 
     try {
       const testVadDisabled = this._isBuiltinOnly(deviceId, undefined);
-      this.audioTestCapture = new MicrophoneCapture(deviceId || undefined, { vadDisabled: testVadDisabled });
+      this.audioTestCapture = new MicrophoneCapture(deviceId || undefined, { vadDisabled: testVadDisabled, echoMode: this._echoMode() });
       attachAudioTestListeners(this.audioTestCapture);
       this.audioTestCapture.start();
     } catch (err) {
@@ -1314,7 +1351,7 @@ export class AppState {
       try { this.audioTestCapture?.stop(); } catch { /* ignore errors on already-failed capture */ }
       this.audioTestCapture = null;
       try {
-        this.audioTestCapture = new MicrophoneCapture(undefined, { vadDisabled: false }); // fallback — unknown device, keep VAD
+        this.audioTestCapture = new MicrophoneCapture(undefined, { vadDisabled: false, echoMode: this._echoMode() }); // fallback — unknown device, keep VAD
         attachAudioTestListeners(this.audioTestCapture);
         this.audioTestCapture.start();
       } catch (fallbackErr) {
@@ -1354,6 +1391,8 @@ export class AppState {
 
     this._pendingLiveAnalysisMeetingId = null;
     this._liveAnalysisInFlight = false;
+    this._clientSpeakerIndicesSeen.clear();
+    this._echoFilter.reset();
     this.broadcastMeetingState();
 
     // Pass metadata directly to SessionTracker, which owns all name-resolution logic:
@@ -1471,6 +1510,8 @@ export class AppState {
           const micRate = this.microphoneCapture?.getOutputSampleRate() || 16000;
           console.log(`[Main][debug] Audio pipeline: input=${requestedInput} output=${requestedOutput} backend=${backend} sysRate=${sysRate}Hz micRate=${micRate}Hz`);
         }
+        // Field telemetry for the echo pipeline (ERLE, gate state, mute ratio).
+        this._startPipelineStatsPolling();
         console.log('[Main] Audio pipeline started successfully.');
       } catch (err) {
         console.error('[Main] Error initializing audio pipeline:', err);
@@ -1493,6 +1534,7 @@ export class AppState {
     }
 
     // Stop audio captures synchronously — these are fire-and-forget internally
+    this._stopPipelineStatsPolling();
     this.systemAudioCapture?.stop();
     this.googleSTT?.stop();
     this.microphoneCapture?.stop();

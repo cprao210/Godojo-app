@@ -115,6 +115,8 @@ export interface Meeting {
         timestamp: number;
         final?: boolean;
         confidence?: number;
+        /** Diarized far-end speaker index (client stream, Deepgram only). */
+        speakerIndex?: number;
     }>;
     usage?: Array<{
         type: 'assist' | 'followup' | 'chat' | 'followup_questions';
@@ -614,6 +616,13 @@ export class DatabaseManager {
         CREATE INDEX IF NOT EXISTS idx_asset_chunks_asset ON company_asset_chunks(asset_id);
     `);
             this.db.pragma('user_version = 13');
+        }
+
+        if (version < 14) {
+            console.log('[DatabaseManager] Applying migration v13 → v14: transcripts.speaker_index (diarization)');
+            // NULL for non-diarized segments (mic, diarize off, older meetings).
+            this.db.exec(`ALTER TABLE transcripts ADD COLUMN speaker_index INTEGER`);
+            this.db.pragma('user_version = 14');
         }
 
         console.log('[DatabaseManager] Migrations completed.');
@@ -1166,8 +1175,8 @@ export class DatabaseManager {
         `);
 
         const insertTranscript = this.db.prepare(`
-            INSERT INTO transcripts (meeting_id, speaker, content, timestamp_ms)
-            VALUES (?, ?, ?, ?)
+            INSERT INTO transcripts (meeting_id, speaker, content, timestamp_ms, speaker_index)
+            VALUES (?, ?, ?, ?, ?)
         `);
 
         const insertInteraction = this.db.prepare(`
@@ -1207,8 +1216,13 @@ export class DatabaseManager {
                         meeting.id,
                         segment.speaker,
                         segment.text,
-                        segment.timestamp
+                        segment.timestamp,
+                        segment.speakerIndex ?? null
                     );
+                    // NOTE: speaker_index is deliberately EXCLUDED from the mirror
+                    // payload until the Supabase transcripts table gains the column —
+                    // an unknown column fails the whole cloud upsert. TODO(supabase):
+                    // migrate cloud schema, then add speaker_index here.
                     transcriptMirror.push({
                         id: Number(info.lastInsertRowid),
                         meeting_id: meeting.id,
@@ -1455,7 +1469,8 @@ export class DatabaseManager {
         const transcript = transcriptRows.map(row => ({
             speaker: row.speaker,
             text: row.content,
-            timestamp: row.timestamp_ms
+            timestamp: row.timestamp_ms,
+            speakerIndex: row.speaker_index ?? undefined
         }));
 
         const usage = usageRows.map(row => {
