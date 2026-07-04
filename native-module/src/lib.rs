@@ -529,7 +529,13 @@ impl MicrophoneCapture {
 
                         if !resampled.is_empty() {
                             let speaker_on = SPEAKER_ACTIVE.load(Ordering::Acquire);
-                            let warming_up = APM_RENDER_FRAMES.load(Ordering::Acquire) < APM_WARMUP_FRAMES;
+                            // No AEC3 on Windows (see webrtc_aec.rs windows_stub) — there is
+                            // no render-frame warmup to wait for on that platform, so the
+                            // gate must never engage there regardless of what APM_RENDER_FRAMES
+                            // reports. Without this short-circuit the counter stays at 0
+                            // forever on Windows and MicrophoneCapture emits silence permanently.
+                            let warming_up = cfg!(not(target_os = "windows"))
+                                && APM_RENDER_FRAMES.load(Ordering::Acquire) < APM_WARMUP_FRAMES;
                             if speaker_on || warming_up {
                                 // Primary gate: mute mic while speaker is active, or while
                                 // AEC3 is warming up (< 100 ms of render frames received).
@@ -573,7 +579,10 @@ impl MicrophoneCapture {
 
                                 if !resampled.is_empty() {
                                     let speaker_on = SPEAKER_ACTIVE.load(Ordering::Acquire);
-                                    let warming_up = APM_RENDER_FRAMES.load(Ordering::Acquire) < APM_WARMUP_FRAMES;
+                                    // Same rationale as the native-audio-path branch above:
+                                    // no AEC3 warmup exists on Windows, so never gate on it there.
+                                    let warming_up = cfg!(not(target_os = "windows"))
+                                        && APM_RENDER_FRAMES.load(Ordering::Acquire) < APM_WARMUP_FRAMES;
                                     if speaker_on || warming_up {
                                         tsfn.call(
                                             Ok(Buffer::from(vec![0u8; resampled.len() * 2])),

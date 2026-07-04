@@ -113,6 +113,13 @@ pub use windows_stub::{ApmCapture, ApmRender, create_processor};
 
 #[cfg(target_os = "windows")]
 mod windows_stub {
+    // Must match `real::FRAME_SAMPLES` (10 ms @ 16 kHz) so the frame count
+    // returned here advances `APM_RENDER_FRAMES` in lib.rs at the same rate
+    // the real AEC path would. Without this, `push` always returns 0,
+    // `warming_up` in the mic DSP loop never clears, and the mic is
+    // permanently gated to silence on Windows.
+    const FRAME_SAMPLES: usize = 160;
+
     /// On Windows, AEC is a no-op passthrough. WASAPI loopback capture
     /// handles echo at the driver level (system mix excludes loopback from mic).
     pub struct ApmCapture;
@@ -131,6 +138,12 @@ mod windows_stub {
 
     impl ApmRender {
         pub fn new(_apm: std::sync::Arc<()>) -> Self { Self }
-        pub fn push(&mut self, _samples: &[i16]) -> usize { 0 }
+        pub fn push(&mut self, samples: &[i16]) -> usize {
+            // No real AEC buffering on Windows — just report how many 10ms
+            // frames this call's worth of samples represents, so the caller's
+            // `APM_RENDER_FRAMES.fetch_add(frames, ...)` behaves as if a real
+            // processor were running and the warmup window closes.
+            samples.len() / FRAME_SAMPLES
+        }
     }
 }
