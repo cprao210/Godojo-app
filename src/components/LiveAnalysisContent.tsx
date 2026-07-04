@@ -598,7 +598,7 @@ export const LiveAnalysisContent: React.FC<LiveAnalysisContentProps> = ({
 
                                 {/* Moves */}
                                 <div className="space-y-1.5 mb-2">
-                                    {alert.moves.map((move, i) => (
+                                    {(alert.moves ?? []).map((move, i) => (
                                         <div key={i} className="flex items-start gap-2">
                                             <span
                                                 className="text-[9px] font-bold w-4 h-4 rounded-full flex items-center justify-center shrink-0 mt-0.5"

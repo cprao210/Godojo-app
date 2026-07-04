@@ -108,7 +108,7 @@ export const FloatingDock: React.FC<FloatingDockProps> = ({
 
     // ── Lifted state: survives panel switches ──────────────────────────────────
     // Analysis state is owned here so FloatingIntelligencePanel never loses it on remount.
-    const { analysisData, isLoading: analysisLoading, error: analysisError, runAnalysis, resetAnalysis, isRefreshRun } = useLiveAnalysis(transcriptRef, isMeetingPaused, companyIntel);
+    const { analysisData, isLoading: analysisLoading, error: analysisError, runAnalysis, resetAnalysis, isRefreshRun } = useLiveAnalysis(transcriptRef, isMeetingPaused, companyIntel, meetingTypes);
 
     // Stable ref to runAnalysis — prevents the timer useEffect from re-running
     // (and resetting the countdown) whenever runAnalysis identity changes.

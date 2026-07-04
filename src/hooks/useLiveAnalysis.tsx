@@ -41,6 +41,17 @@ const URGENT_TRIGGER_PATTERNS = [
   /\bi\s+(can\s+)?approve\s+this\b|\bfinal\s+(call\s+)?is\s+mine\b/i,
 ];
 
+// Short, cheap stand-in for DEAL_OPTIMIZER_SECTION when the meeting isn't a
+// negotiation call. Keeps the "dealOptimizer" key present in the output schema
+// (so downstream parsing never breaks) without paying for the ~55 lines of
+// trigger docs + examples on every discovery/demo run.
+const DEAL_OPTIMIZER_SKIP_NOTE = `
+     ═══════════════════════════════════════
+     SECTION 5: DEAL OPTIMIZER (Negotiation Intelligence)
+     ═══════════════════════════════════════
+     Not applicable to this meeting type. Always return "dealOptimizer": [].
+ `;
+
 const hasUrgentTrigger = (text: string): boolean =>
   URGENT_TRIGGER_PATTERNS.some(r => r.test(text));
 
@@ -283,7 +294,7 @@ const DEAL_OPTIMIZER_SECTION = `
 `;
 
 // ── PROMPT 1: First run — full transcript, derive everything from scratch ──────
-const getFirstRunPrompt = (fullProspectContext: string): string =>
+const getFirstRunPrompt = (fullProspectContext: string, isNegotiation: boolean): string =>
   `You are an expert real-time sales intelligence engine analyzing a live sales call transcript. Your job is to extract structured insights across four areas: BANT, MEDDIC, Objections, and Buying Signals. Return ONLY valid JSON. No explanation, no markdown, no text outside the JSON object.
 
     ═══════════════════════════════════════
@@ -362,7 +373,7 @@ const getFirstRunPrompt = (fullProspectContext: string): string =>
     Apply the quality bar: only capture what a sales rep could act on RIGHT NOW.
     ${SHARED_SIGNAL_CATALOGUE}
     ${SHARED_OUTPUT_FORMAT}
-    ${DEAL_OPTIMIZER_SECTION}
+    ${isNegotiation ? DEAL_OPTIMIZER_SECTION : DEAL_OPTIMIZER_SKIP_NOTE}
 
     ═══════════════════════════════════════
     CLIENT TRANSCRIPT (client turns only — full call so far):
@@ -373,7 +384,8 @@ const getFirstRunPrompt = (fullProspectContext: string): string =>
 // ── PROMPT 2: Refresh run — prior state + new prospect delta only ─────────────
 const getRefreshPrompt = (
   priorState: LiveAnalysisData,
-  newProspectDelta: string
+  newProspectDelta: string,
+  isNegotiation: boolean
 ): string =>
   `You are an expert real-time sales intelligence engine updating a live analysis mid-call. Return ONLY valid JSON. No explanation, no markdown, no text outside the JSON object.
 
@@ -436,7 +448,7 @@ const getRefreshPrompt = (
     ═══════════════════════════════════════
     ${SHARED_SIGNAL_CATALOGUE}
     ${SHARED_OUTPUT_FORMAT}
-    ${DEAL_OPTIMIZER_SECTION}
+    ${isNegotiation ? DEAL_OPTIMIZER_SECTION : DEAL_OPTIMIZER_SKIP_NOTE}
 `;
 
 // ─── Anthropic API fallback (used when electronAPI is not available) ─────────
@@ -548,32 +560,32 @@ const mergeWithPrior = (
   // which would shift whenever new items are prepended.
   // New items are prepended as a batch (not sequential unshifts) to preserve
   // the LLM's own ordering (index 0 = most recent).
-  const priorObjIds = new Set(prior.objections.map(o => o.id ?? stableId(o.quote)));
+  const priorObjIds = new Set(prior.objections.map(o => o.id ?? stableId(o.quote ?? '')));
   const newObjections = incoming.objections
-    .filter(obj => !priorObjIds.has(obj.id ?? stableId(obj.quote)))
-    .map(obj => ({ ...obj, id: obj.id ?? stableId(obj.quote) }));
+    .filter(obj => !priorObjIds.has(obj.id ?? stableId(obj.quote ?? '')))
+    .map(obj => ({ ...obj, id: obj.id ?? stableId(obj.quote ?? '') }));
   const mergedObjections = [
     ...newObjections,
-    ...prior.objections.map(o => ({ ...o, id: o.id ?? stableId(o.quote) })),
+    ...prior.objections.map(o => ({ ...o, id: o.id ?? stableId(o.quote ?? '') })),
   ];
 
-  const priorSigIds = new Set(prior.signals.map(s => s.id ?? stableId(s.quote)));
+  const priorSigIds = new Set(prior.signals.map(s => s.id ?? stableId(s.quote ?? '')));
   const newSignals = incoming.signals
-    .filter(sig => !priorSigIds.has(sig.id ?? stableId(sig.quote)))
-    .map(sig => ({ ...sig, id: sig.id ?? stableId(sig.quote) }));
+    .filter(sig => !priorSigIds.has(sig.id ?? stableId(sig.quote ?? '')))
+    .map(sig => ({ ...sig, id: sig.id ?? stableId(sig.quote ?? '') }));
   const mergedSignals = [
     ...newSignals,
-    ...prior.signals.map(s => ({ ...s, id: s.id ?? stableId(s.quote) })),
+    ...prior.signals.map(s => ({ ...s, id: s.id ?? stableId(s.quote ?? '') })),
   ];
 
   // ── Deal Optimizer: preserve-and-append guard ─────────────────────────────
-  const priorAlertIds = new Set((prior.dealOptimizer ?? []).map(a => a.id ?? stableId(a.quote)));
+  const priorAlertIds = new Set((prior.dealOptimizer ?? []).map(a => a.id ?? stableId(a.quote ?? '')));
   const newAlerts = (incoming.dealOptimizer ?? [])
-    .filter(a => !priorAlertIds.has(a.id ?? stableId(a.quote)))
-    .map(a => ({ ...a, id: a.id ?? stableId(a.quote) }));
+    .filter(a => !priorAlertIds.has(a.id ?? stableId(a.quote ?? '')))
+    .map(a => ({ ...a, id: a.id ?? stableId(a.quote ?? '') }));
   const mergedAlerts = [
     ...newAlerts,
-    ...(prior.dealOptimizer ?? []).map(a => ({ ...a, id: a.id ?? stableId(a.quote) })),
+    ...(prior.dealOptimizer ?? []).map(a => ({ ...a, id: a.id ?? stableId(a.quote ?? '') })),
   ];
 
   return {
@@ -588,7 +600,8 @@ const mergeWithPrior = (
 export const useLiveAnalysis = (
   transcriptRef: React.MutableRefObject<Array<{ speaker: string; displayName?: string; text: string; timestamp: number }>>,
   isMeetingPaused: boolean,
-  companyIntel?: Record<string, any> | null
+  companyIntel?: Record<string, any> | null,
+  meetingTypes: string[] = []
 ) => {
   const [analysisData, setAnalysisData] = useState<LiveAnalysisData | null>(null);
   const [isLoading, setIsLoading] = useState(false);
@@ -617,6 +630,14 @@ export const useLiveAnalysis = (
   useEffect(() => {
     companyIntelRef.current = companyIntel;
   }, [companyIntel]);
+
+  // Mirrors meetingTypes in a ref (like companyIntelRef) so runAnalysis always reads
+  // the latest value without needing meetingTypes in its useCallback deps — avoids
+  // recreating the callback (and re-registering IPC listeners) on every meeting-type toggle.
+  const meetingTypesRef = useRef<string[]>(meetingTypes);
+  useEffect(() => {
+    meetingTypesRef.current = meetingTypes;
+  }, [meetingTypes]);
 
   // Keep ref in sync with state so the runAnalysis closure always sees the latest value.
   const setAnalysisDataAndRef = useCallback((data: LiveAnalysisData | null) => {
@@ -694,6 +715,7 @@ export const useLiveAnalysis = (
       const adjustedDeltaStartIndex = priorState ? lastAnalyzedIndexRef.current : 0;
 
       let livePrompt: string;
+      const isNegotiation = meetingTypesRef.current.includes('negotiation');
 
       if (!priorState) {
         setIsRefreshRun(false);
@@ -736,9 +758,9 @@ export const useLiveAnalysis = (
 
         const companyBlock = buildCompanyBlock(companyIntel);
         livePrompt = companyBlock
-          ? `${companyBlock}\n\n${getFirstRunPrompt(firstRunContext)}`
-          : getFirstRunPrompt(firstRunContext);
-        console.log(`[useLiveAnalysis] First run — sending ${humanTurns.length} turns (${firstRunContext.length} chars), compressed: ${hasOldTurns}`);
+          ? `${companyBlock}\n\n${getFirstRunPrompt(firstRunContext, isNegotiation)}`
+          : getFirstRunPrompt(firstRunContext, isNegotiation);
+        console.log(`[useLiveAnalysis] First run — ... compressed: ${hasOldTurns}, negotiation: ${isNegotiation}`);
       } else {
         setIsRefreshRun(true);
         // ── REFRESH RUN: prior state + new CLIENT turns only ────────────────────
@@ -753,9 +775,9 @@ export const useLiveAnalysis = (
 
         const companyBlock = buildCompanyBlock(companyIntel);
         livePrompt = companyBlock
-          ? `${companyBlock}\n\n${getRefreshPrompt(priorState, prospectDelta)}`
-          : getRefreshPrompt(priorState, prospectDelta);
-        console.log(`[useLiveAnalysis] Refresh run — ${newTurns.length} new turns, ${prospectDelta.length} chars of prospect delta`);
+          ? `${companyBlock}\n\n${getRefreshPrompt(priorState, prospectDelta, isNegotiation)}`
+          : getRefreshPrompt(priorState, prospectDelta, isNegotiation);
+        console.log(`[useLiveAnalysis] Refresh run — ${newTurns.length} new turns, ${prospectDelta.length} chars of prospect delta, negotiation: ${isNegotiation}`);
       }
 
       // ── Electron path ────────────────────────────────────────────────
