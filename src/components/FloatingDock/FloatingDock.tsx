@@ -1,7 +1,7 @@
 import React, { useState, useRef, useEffect } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
 import { Radio, Brain, Hand, Pause, Play, StopCircle, Settings, GripVertical, Ghost } from 'lucide-react';
-import { FloatingIntelligencePanel } from './panels/FloatingIntelligencePanel';
+import { FloatingIntelligencePanel, MeetingType } from './panels/FloatingIntelligencePanel';
 import { FloatingChatPanel } from './panels/FloatingChatPanel';
 import { FloatingSettingsPanel } from './panels/FloatingSettingsPanel';
 import { DockButton } from './DockButton';
@@ -83,6 +83,8 @@ export const FloatingDock: React.FC<FloatingDockProps> = ({
         return Number.isFinite(parsed) ? clampOpacity(parsed) : 0.88;
     });
 
+    const [meetingTypes, setMeetingTypes] = useState<MeetingType[]>(['discovery']);
+
     useEffect(() => {
         const onStorage = (e: StorageEvent) => {
             if (e.key === OPACITY_KEY && e.newValue) {
@@ -106,7 +108,7 @@ export const FloatingDock: React.FC<FloatingDockProps> = ({
 
     // ── Lifted state: survives panel switches ──────────────────────────────────
     // Analysis state is owned here so FloatingIntelligencePanel never loses it on remount.
-    const { analysisData, isLoading: analysisLoading, error: analysisError, runAnalysis, resetAnalysis, isRefreshRun } = useLiveAnalysis(transcriptRef, isMeetingPaused, companyIntel);
+    const { analysisData, isLoading: analysisLoading, error: analysisError, runAnalysis, resetAnalysis, isRefreshRun } = useLiveAnalysis(transcriptRef, isMeetingPaused, companyIntel, meetingTypes);
 
     // Stable ref to runAnalysis — prevents the timer useEffect from re-running
     // (and resetting the countdown) whenever runAnalysis identity changes.
@@ -178,6 +180,7 @@ export const FloatingDock: React.FC<FloatingDockProps> = ({
             analysisInitiatedRef.current = false;  // allows first-open to trigger fresh analysis
             setChatMessages([]);          // clears chat history
             setActivePanel(null);         // close any open panel
+            setMeetingTypes(['discovery']);   // reset to default — Discovery pre-checked
         });
         return () => unsubscribe();
     }, [resetAnalysis]);
@@ -243,6 +246,8 @@ export const FloatingDock: React.FC<FloatingDockProps> = ({
                         onAutoRefreshIntervalChange={setAutoRefreshInterval}
                         isRefreshRun={isRefreshRun}
                         panelFirstOpenedAt={intelligencePanelFirstOpenedAt}
+                        meetingTypes={meetingTypes}
+                        onMeetingTypesChange={setMeetingTypes}
                     />
                 </motion.div>
 

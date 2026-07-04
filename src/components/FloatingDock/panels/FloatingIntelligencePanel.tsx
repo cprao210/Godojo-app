@@ -69,6 +69,8 @@ const FilmRollTranscript: React.FC<{
     );
 };
 
+export type MeetingType = 'discovery' | 'demo' | 'negotiation';
+
 interface FloatingIntelligencePanelProps {
     isMeetingPaused: boolean;
     // Analysis state is owned by FloatingDock and passed down — never lost on remount
@@ -87,6 +89,8 @@ interface FloatingIntelligencePanelProps {
     isUserSpeaking: boolean;
     speakerNames: { user: string; client: string };
     panelFirstOpenedAt: number | null; // timestamp when intelligence panel was first opened
+    meetingTypes: MeetingType[];
+    onMeetingTypesChange: (types: MeetingType[]) => void;
 }
 
 // ─── AI Skeleton Loader ──────────────────────────────────────────────────────
@@ -351,6 +355,57 @@ const CountdownPlaceholder: React.FC<{
     );
 };
 
+// ─── Meeting Type Selector ────────────────────────────────────────────────────
+const MEETING_TYPES: { value: MeetingType; label: string; activeColor: string; activeBg: string; activeBorder: string }[] = [
+    { value: 'discovery', label: 'Discovery', activeColor: '#a78bfa', activeBg: 'rgba(139,92,246,0.15)', activeBorder: 'rgba(139,92,246,0.35)' },
+    { value: 'demo', label: 'Demo', activeColor: '#34d399', activeBg: 'rgba(52,211,153,0.12)', activeBorder: 'rgba(52,211,153,0.30)' },
+    { value: 'negotiation', label: 'Negotiation', activeColor: '#fbbf24', activeBg: 'rgba(251,191,36,0.12)', activeBorder: 'rgba(251,191,36,0.30)' },
+];
+
+const MeetingTypeSelector: React.FC<{
+    selected: MeetingType[];
+    onChange: (types: MeetingType[]) => void;
+}> = ({ selected, onChange }) => {
+    const toggle = (type: MeetingType) =>
+        onChange(selected.includes(type) ? selected.filter(t => t !== type) : [...selected, type]);
+
+    return (
+        <div
+            className="px-4 shrink-0 flex items-center gap-1.5"
+            style={{ height: 36, borderBottom: '1px solid rgba(255,255,255,0.05)', background: 'rgba(255,255,255,0.015)' }}
+        >
+            <span className="text-[10px] font-semibold uppercase tracking-widest text-white/25 mr-1 shrink-0">Type</span>
+            {MEETING_TYPES.map(opt => {
+                const on = selected.includes(opt.value);
+                return (
+                    <button
+                        key={opt.value}
+                        onClick={() => toggle(opt.value)}
+                        className="flex items-center gap-1 px-2 py-1 rounded-md text-[11px] font-medium transition-all active:scale-95 select-none"
+                        style={{
+                            background: on ? opt.activeBg : 'rgba(255,255,255,0.04)',
+                            border: `1px solid ${on ? opt.activeBorder : 'rgba(255,255,255,0.07)'}`,
+                            color: on ? opt.activeColor : 'rgba(255,255,255,0.30)',
+                        }}
+                    >
+                        <span
+                            className="w-2.5 h-2.5 rounded-sm flex items-center justify-center shrink-0"
+                            style={{ border: `1.5px solid ${on ? opt.activeColor : 'rgba(255,255,255,0.18)'}`, background: on ? opt.activeBg : 'transparent' }}
+                        >
+                            {on && (
+                                <svg width="6" height="5" viewBox="0 0 6 5" fill="none">
+                                    <path d="M0.5 2.5L2 4L5.5 0.5" stroke={opt.activeColor} strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" />
+                                </svg>
+                            )}
+                        </span>
+                        {opt.label}
+                    </button>
+                );
+            })}
+        </div>
+    );
+};
+
 export const FloatingIntelligencePanel: React.FC<FloatingIntelligencePanelProps> = ({
     isMeetingPaused,
     analysisData,
@@ -368,15 +423,24 @@ export const FloatingIntelligencePanel: React.FC<FloatingIntelligencePanelProps>
     speakerNames,
     panelFirstOpenedAt,
     isOpen,
+    meetingTypes,
+    onMeetingTypesChange,
 }) => {
     const [showRefreshPicker, setShowRefreshPicker] = useState(false);
     const refreshPickerRef = useRef<HTMLDivElement>(null);
-    const [activeTab, setActiveTab] = useState<'meddicc' | 'bant' | 'signals' | 'objections'>('meddicc');
+    const [activeTab, setActiveTab] = useState<'meddicc' | 'bant' | 'signals' | 'objections' | 'deal_optimizer'>('meddicc');
 
     // Reset to default tab whenever the panel is opened
     useEffect(() => {
         if (isOpen) setActiveTab('meddicc');
     }, [isOpen]);
+
+    // If Negotiation is unchecked while on deal_optimizer tab, jump back to meddicc
+    useEffect(() => {
+        if (activeTab === 'deal_optimizer' && !meetingTypes.includes('negotiation')) {
+            setActiveTab('meddicc');
+        }
+    }, [meetingTypes, activeTab]);
 
     // Treat an all-missing analysis the same as no data (show WaitingPlaceholder)
     const isAllMissing = (data: LiveAnalysisData) =>
@@ -565,6 +629,12 @@ export const FloatingIntelligencePanel: React.FC<FloatingIntelligencePanelProps>
                 </div>
             )}
 
+            {/* Meeting Type Selector */}
+            <MeetingTypeSelector
+                selected={meetingTypes}
+                onChange={onMeetingTypesChange}
+            />
+
             {/* Deal Health Score — visible when live analysis data is present */}
             {/* {displayData && !isLoading && (
                 <DealHealthScore analysisData={displayData} isRefreshRun={isRefreshRun} />
@@ -573,60 +643,69 @@ export const FloatingIntelligencePanel: React.FC<FloatingIntelligencePanelProps>
             {/* Tab bar — only shown when there is live data */}
             {displayData && !isLoading && (
                 <div
-                    className="flex items-center gap-0.5 px-3 pt-2.5 pb-0 shrink-0"
-                    style={{ borderBottom: '1px solid rgba(255,255,255,0.06)' }}
+                    className="shrink-0 overflow-x-auto"
+                    style={{ borderBottom: '1px solid rgba(255,255,255,0.06)', scrollbarWidth: 'none' }}
                 >
-                    {(
-                        [
-                            {
-                                key: 'meddicc' as const,
-                                label: 'MEDDICC',
-                                badge: `${Object.values(displayData.meddic).filter(f => f.status === 'confirmed').length}/7`,
-                            },
-                            {
-                                key: 'bant' as const,
-                                label: 'BANT',
-                                badge: `${Object.values(displayData.bant).filter(f => f.status === 'confirmed').length}/4`,
-                            },
-                            {
-                                key: 'signals' as const,
-                                label: 'Signals',
-                                badge: displayData.signals.length > 0 ? `${displayData.signals.length}` : null,
-                            },
-                            {
-                                key: 'objections' as const,
-                                label: 'Objections',
-                                badge: displayData.objections.length > 0 ? `${displayData.objections.length}` : null,
-                            },
-                        ] as const
-                    ).map(tab => {
-                        const isActive = activeTab === tab.key;
-                        return (
-                            <button
-                                key={tab.key}
-                                onClick={() => setActiveTab(tab.key)}
-                                className="relative flex items-center gap-1.5 px-3 py-2 text-[11px] font-semibold transition-colors rounded-t-lg"
-                                style={{
-                                    color: isActive ? '#ffffff' : 'rgba(255,255,255,0.35)',
-                                    background: isActive ? 'rgba(255,255,255,0.05)' : 'transparent',
-                                    borderBottom: isActive ? '2px solid #3b82f6' : '2px solid transparent',
-                                }}
-                            >
-                                {tab.label}
-                                {tab.badge && (
-                                    <span
-                                        className="text-[9px] font-bold px-1.5 py-0.5 rounded-full"
-                                        style={{
-                                            background: isActive ? 'rgba(59,130,246,0.25)' : 'rgba(255,255,255,0.08)',
-                                            color: isActive ? '#93c5fd' : 'rgba(255,255,255,0.3)',
-                                        }}
-                                    >
-                                        {tab.badge}
-                                    </span>
-                                )}
-                            </button>
-                        );
-                    })}
+                    <div className="flex items-center gap-0.5 px-3 pt-2.5 pb-0 w-max min-w-full">
+                        {(
+                            [
+                                {
+                                    key: 'meddicc' as const,
+                                    label: 'MEDDICC',
+                                    badge: `${Object.values(displayData.meddic).filter(f => f.status === 'confirmed').length}/7`,
+                                },
+                                {
+                                    key: 'bant' as const,
+                                    label: 'BANT',
+                                    badge: `${Object.values(displayData.bant).filter(f => f.status === 'confirmed').length}/4`,
+                                },
+                                {
+                                    key: 'signals' as const,
+                                    label: 'Signals',
+                                    badge: displayData.signals.length > 0 ? `${displayData.signals.length}` : null,
+                                },
+                                {
+                                    key: 'objections' as const,
+                                    label: 'Objections',
+                                    badge: displayData.objections.length > 0 ? `${displayData.objections.length}` : null,
+                                },
+                                ...(meetingTypes.includes('negotiation') ? [{
+                                    key: 'deal_optimizer' as const,
+                                    label: 'Deal Alert',
+                                    badge: (displayData.dealOptimizer?.length ?? 0) > 0 ? `${displayData.dealOptimizer!.length}` : null,
+                                }] : []),
+                            ] as const
+                        ).map(tab => {
+                            const isActive = activeTab === tab.key;
+                            return (
+                                <button
+                                    key={tab.key}
+                                    onClick={() => setActiveTab(tab.key)}
+                                    className="relative flex items-center gap-1.5 px-3 py-2 text-[11px] font-semibold transition-colors rounded-t-lg"
+                                    style={{
+                                        color: isActive ? '#ffffff' : 'rgba(255,255,255,0.35)',
+                                        background: isActive ? 'rgba(255,255,255,0.05)' : 'transparent',
+                                        borderBottom: isActive
+                                            ? `2px solid ${tab.key === 'deal_optimizer' ? '#fbbf24' : '#3b82f6'}`
+                                            : '2px solid transparent',
+                                    }}
+                                >
+                                    {tab.label}
+                                    {tab.badge && (
+                                        <span
+                                            className="text-[9px] font-bold px-1.5 py-0.5 rounded-full"
+                                            style={{
+                                                background: isActive ? 'rgba(59,130,246,0.25)' : 'rgba(255,255,255,0.08)',
+                                                color: isActive ? '#93c5fd' : 'rgba(255,255,255,0.3)',
+                                            }}
+                                        >
+                                            {tab.badge}
+                                        </span>
+                                    )}
+                                </button>
+                            );
+                        })}
+                    </div>
                 </div>
             )}
 
@@ -664,7 +743,7 @@ export const FloatingIntelligencePanel: React.FC<FloatingIntelligencePanelProps>
                     <LiveAnalysisContent
                         analysisData={displayData}
                         hideBar="Missing Details"
-                        activeTab={activeTab}
+                        activeTab={activeTab as 'meddicc' | 'bant' | 'signals' | 'objections' | 'deal_optimizer'}
                     />
                 )}
             </div>

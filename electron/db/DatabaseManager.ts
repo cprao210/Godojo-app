@@ -392,7 +392,7 @@ export class DatabaseManager {
             console.log('[DatabaseManager] Applying migration v4 → v5: Add embedding provider/dimensions columns');
             const columnsToAdd = [
                 "ALTER TABLE meetings ADD COLUMN embedding_provider TEXT",
-                "ALTER TABLE meetings ADD COLUMN embedding_dimensions INTEGER"
+                "ALTER TABLE meetings ADD COLUMN embedding_dimensions INTEGER",
             ];
             for (const sql of columnsToAdd) {
                 try { this.db.exec(sql); } catch (e) { /* Column already exists */ }
