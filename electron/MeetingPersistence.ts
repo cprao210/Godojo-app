@@ -252,7 +252,12 @@ export class MeetingPersistence {
      * Stops the meeting immediately, snapshots data, and triggers background processing.
      * Returns immediately so UI can switch.
      */
-    public async stopMeeting(): Promise<string | null> {
+    /**
+     * @param meetingTypes The meeting type(s) the rep selected live (e.g. Demo + Negotiation).
+     *   Forwarded as the scorecard's `hintMeetingTypes` so auto-detection respects the
+     *   rep's explicit selection instead of guessing from the transcript alone.
+     */
+    public async stopMeeting(meetingTypes?: ('discovery' | 'demo' | 'negotiation')[]): Promise<string | null> {
         console.log('[MeetingPersistence] Stopping meeting and queueing save...');
 
         // 0. Force-save any pending interim transcript
@@ -293,7 +298,15 @@ export class MeetingPersistence {
         this.session.reset();
 
         const meetingId = crypto.randomUUID();
-        this.processAndSaveMeeting(snapshot, meetingId, metadataSnapshot, liveAnalysisData, speakerNamesSnapshot).catch(err => {
+        this.processAndSaveMeeting(
+            snapshot,
+            meetingId,
+            metadataSnapshot,
+            liveAnalysisData,
+            speakerNamesSnapshot,
+            undefined,      // companyIntel — not captured at stop time for live calls
+            meetingTypes    // ← rep's live selection, was previously dropped (always undefined)
+        ).catch(err => {
             console.error('[MeetingPersistence] Background processing failed:', err);
         });
 
@@ -486,67 +499,17 @@ export class MeetingPersistence {
 
             // ── Generate Meeting Scorecard ─────────────────────────────────────────────────
             let scorecardResult: MeetingScorecardResult | null = null;
-            let customScoringCriteria: import('../src/types/score-card').ScoringCriteriaSettings | null = null;
 
             if (data.transcript.length > 2) {
-                try {
-                    // Load org-defined criteria (falls back to built-in defaults if none saved)
-                    try {
-                        customScoringCriteria = DatabaseManager.getInstance().getScoringCriteria();
-                    } catch (criteriaErr) {
-                        console.warn('[MeetingPersistence] Could not load custom scoring criteria, using defaults:', criteriaErr);
-                    }
 
-                    const scorecardPrompt = buildScorecardPrompt(customScoringCriteria, hintMeetingTypes ?? null);
-                    const scorecardRaw = await this.llmHelper.generateMeetingSummary(
-                        scorecardPrompt,
-                        fullTranscriptText,
-                        scorecardPrompt
-                    );
-                    if (scorecardRaw) {
-                        const clean = scorecardRaw.replace(/```json|```/g, '').trim();
-                        const parsed = JSON.parse(clean);
-                        scorecardResult = {
-                            detectedTypes: parsed.detectedTypes ?? [],
-                            overallWeightedScore: parsed.overallWeightedScore ?? 0,
-                            scorecards: Object.values(parsed.scorecards ?? {}).map((sc: any) => ({
-                                ...sc,
-                                categoryBreakdown: Array.isArray(sc.categoryBreakdown)
-                                    ? sc.categoryBreakdown
-                                    : Object.values(sc.categoryBreakdown ?? {}),
-                            })),
-                        } as MeetingScorecardResult;
-                    }
-                } catch (e) {
-                    console.warn('[MeetingPersistence] Scorecard generation failed (non-fatal):', e);
-                }
-            }
-
-            // Write scorecard to its dedicated table — NOT into summary_json
-            if (scorecardResult) {
-                try {
-                    DatabaseManager.getInstance().saveMeetingScorecard(
-                        meetingId,
-                        scorecardResult,
-                        customScoringCriteria ?? null   // snapshot the criteria used
-                    );
-                    // Mirror to Supabase
-                    try {
-                        const { SupabaseMirrorService } = require('./db/SupabaseMirrorService');
-                        SupabaseMirrorService.getInstance().upsertRow('meeting_scorecards', {
-                            meeting_id: meetingId,
-                            overall_score: scorecardResult.overallWeightedScore ?? 0,
-                            detected_types: JSON.stringify(scorecardResult.detectedTypes ?? []),
-                            scorecard_json: JSON.stringify(scorecardResult),
-                            criteria_snapshot_json: customScoringCriteria ? JSON.stringify(customScoringCriteria) : null,
-                            generated_at: new Date().toISOString(),
-                        });
-                    } catch (mirrorErr) {
-                        console.warn('[MeetingPersistence] Scorecard mirror to Supabase failed (non-fatal):', mirrorErr);
-                    }
-                } catch (scorecardSaveErr) {
-                    console.warn('[MeetingPersistence] Failed to persist scorecard (non-fatal):', scorecardSaveErr);
-                    // Fallback: embed in summary_json so the UI still gets data
+                const outcome = await this.generateAndPersistScorecard(
+                    meetingId,
+                    fullTranscriptText,
+                    hintMeetingTypes ?? null
+                );
+                scorecardResult = outcome.scorecardResult;
+                if (scorecardResult && !outcome.persisted) {
+                    // DB write failed — fall back to embedding it in summary_json so the UI still gets data
                     detailedSummary = { ...detailedSummary, scorecard: scorecardResult } as any;
                 }
             }
@@ -593,50 +556,75 @@ export class MeetingPersistence {
     }
 
     /**
-     * Re-scores a meeting using the latest scoring criteria from the DB.
-     * Saves the result to `meeting_scorecards` (and mirrors to Supabase) so the
-     * next `getMeetingDetails` call returns fresh scorecard data.
+     * Generates a meeting scorecard via the LLM and persists it to `meeting_scorecards`
+     * (mirroring to Supabase). Single source of truth for: loading scoring criteria,
+     * building the prompt, stripping ```json fences, parsing, normalizing
+     * `categoryBreakdown`, saving, and mirroring — used by both the initial
+     * post-meeting scorecard generation and manual regeneration so the two paths
+     * can't drift.
+     *
+     * Returns `scorecardResult: null` if generation/parsing failed (non-fatal —
+     * callers should treat this as "no scorecard produced this run").
+     * Returns `persisted: false` if generation succeeded but the DB write failed —
+     * callers that need a fallback (e.g. embedding the scorecard in summary_json)
+     * can check this flag.
      */
-    private async regenerateScorecard(
+    private async generateAndPersistScorecard(
         meetingId: string,
-        transcriptContext: string,
-        detectedMeetingTypes: ('discovery' | 'demo' | 'negotiation')[] | null
-    ): Promise<void> {
+        transcriptText: string,
+        hintTypes: ('discovery' | 'demo' | 'negotiation')[] | null
+    ): Promise<{ scorecardResult: MeetingScorecardResult | null; persisted: boolean }> {
         let customScoringCriteria: import('../src/types/score-card').ScoringCriteriaSettings | null = null;
         try {
             customScoringCriteria = DatabaseManager.getInstance().getScoringCriteria();
         } catch (criteriaErr) {
-            console.warn('[MeetingPersistence] Could not load custom scoring criteria for regen, using defaults:', criteriaErr);
+            console.warn('[MeetingPersistence] Could not load custom scoring criteria, using defaults:', criteriaErr);
         }
 
-        const scorecardPrompt = buildScorecardPrompt(customScoringCriteria, detectedMeetingTypes ?? null);
-        const scorecardRaw = await this.llmHelper.generateMeetingSummary(
-            scorecardPrompt,
-            transcriptContext,
-            scorecardPrompt
-        );
-        if (!scorecardRaw) return;
+        let scorecardResult: MeetingScorecardResult | null = null;
+        try {
+            const scorecardPrompt = buildScorecardPrompt(customScoringCriteria, hintTypes ?? null);
+            const scorecardRaw = await this.llmHelper.generateMeetingSummary(
+                scorecardPrompt,
+                transcriptText,
+                scorecardPrompt
+            );
+            if (scorecardRaw) {
+                const clean = scorecardRaw.replace(/```json|```/g, '').trim();
+                const parsed = JSON.parse(clean);
+                scorecardResult = {
+                    detectedTypes: parsed.detectedTypes ?? [],
+                    overallWeightedScore: parsed.overallWeightedScore ?? 0,
+                    scorecards: Object.values(parsed.scorecards ?? {}).map((sc: any) => ({
+                        ...sc,
+                        categoryBreakdown: Array.isArray(sc.categoryBreakdown)
+                            ? sc.categoryBreakdown
+                            : Object.values(sc.categoryBreakdown ?? {}),
+                    })),
+                } as MeetingScorecardResult;
+            }
+        } catch (e) {
+            console.warn('[MeetingPersistence] Scorecard generation failed (non-fatal):', e);
+            return { scorecardResult: null, persisted: false };
+        }
 
-        const clean = scorecardRaw.replace(/```json|```/g, '').trim();
-        const parsed = JSON.parse(clean);
-        const scorecardResult: MeetingScorecardResult = {
-            detectedTypes: parsed.detectedTypes ?? [],
-            overallWeightedScore: parsed.overallWeightedScore ?? 0,
-            scorecards: Object.values(parsed.scorecards ?? {}).map((sc: any) => ({
-                ...sc,
-                categoryBreakdown: Array.isArray(sc.categoryBreakdown)
-                    ? sc.categoryBreakdown
-                    : Object.values(sc.categoryBreakdown ?? {}),
-            })),
-        };
+        if (!scorecardResult) {
+            return { scorecardResult: null, persisted: false };
+        }
 
-        DatabaseManager.getInstance().saveMeetingScorecard(
-            meetingId,
-            scorecardResult,
-            customScoringCriteria ?? null
-        );
+        // Write scorecard to its dedicated table — NOT into summary_json
+        try {
+            DatabaseManager.getInstance().saveMeetingScorecard(
+                meetingId,
+                scorecardResult,
+                customScoringCriteria ?? null   // snapshot the criteria used
+            );
+        } catch (scorecardSaveErr) {
+            console.warn('[MeetingPersistence] Failed to persist scorecard (non-fatal):', scorecardSaveErr);
+            return { scorecardResult, persisted: false };
+        }
 
-        // Mirror to Supabase
+        // Mirror to Supabase — no-op if unauthenticated, non-fatal on failure
         try {
             const { SupabaseMirrorService } = require('./db/SupabaseMirrorService');
             SupabaseMirrorService.getInstance().upsertRow('meeting_scorecards', {
@@ -651,7 +639,29 @@ export class MeetingPersistence {
             console.warn('[MeetingPersistence] Scorecard mirror to Supabase failed (non-fatal):', mirrorErr);
         }
 
-        console.log(`[MeetingPersistence] Regenerated scorecard for meeting ${meetingId}`);
+        return { scorecardResult, persisted: true };
+    }
+
+    /**
+     * Re-scores a meeting using the latest scoring criteria from the DB.
+     * Saves the result to `meeting_scorecards` (and mirrors to Supabase) so the
+     * next `getMeetingDetails` call returns fresh scorecard data.
+     */
+
+    private async regenerateScorecard(
+        meetingId: string,
+        transcriptContext: string,
+        detectedMeetingTypes: ('discovery' | 'demo' | 'negotiation')[] | null
+    ): Promise<void> {
+        const { scorecardResult } = await this.generateAndPersistScorecard(
+            meetingId,
+            transcriptContext,
+            detectedMeetingTypes ?? null
+        );
+
+        if (scorecardResult) {
+            console.log(`[MeetingPersistence] Regenerated scorecard for meeting ${meetingId}`);
+        }
     }
 
     /**

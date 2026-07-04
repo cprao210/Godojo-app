@@ -14,7 +14,7 @@ interface FloatingDockProps {
     // Meeting state
     isMeetingPaused: boolean;
     onPauseResume: () => void;
-    onEndCall: () => void;
+    onEndCall: (meetingTypes?: MeetingType[]) => void;
 
     // Feature states
     isUndetectable: boolean;
@@ -418,7 +418,7 @@ export const FloatingDock: React.FC<FloatingDockProps> = ({
                             isActive={false}
                             dangerColor
                             frozen={isFrozen}
-                            onClick={onEndCall}
+                            onClick={() => onEndCall(meetingTypes)}
                         />
 
                         {/* Settings */}

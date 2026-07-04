@@ -1550,23 +1550,6 @@ export class DatabaseManager {
         return rows.map(row => {
             const summaryData = JSON.parse(row.summary_json || '{}');
 
-            // Hydrate scorecard from dedicated table for list view (needed for score badges)
-            const scorecardRow = (() => {
-                try {
-                    return this.db!.prepare(
-                        'SELECT overall_score, detected_types FROM meeting_scorecards WHERE meeting_id = ?'
-                    ).get(row.id) as { overall_score: number; detected_types: string } | undefined;
-                } catch { return undefined; }
-            })();
-            if (scorecardRow && summaryData.detailedSummary) {
-                // Only attach the lightweight fields needed by list-view score badges.
-                // Full scorecard_json is loaded in getMeetingDetails when the user opens a meeting.
-                summaryData.detailedSummary._scorecardMeta = {
-                    overallScore: scorecardRow.overall_score,
-                    detectedTypes: JSON.parse(scorecardRow.detected_types ?? '[]'),
-                };
-            }
-
             return {
                 id: row.id,
                 title: row.title,

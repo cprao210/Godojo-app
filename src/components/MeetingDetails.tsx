@@ -176,7 +176,7 @@ const DetailAnalysisAccordion: React.FC<DetailAnalysisAccordionProps> = ({ score
                     </span>
                     {/* Type pills summary — show each detected type with its score */}
                     <div className="flex gap-1 ml-1">
-                        {scorecard.scorecards.map(sc => {
+                        {(scorecard.scorecards ?? []).map(sc => {
                             const COLORS: Record<string, { color: string; bg: string }> = {
                                 discovery: { color: '#a78bfa', bg: 'rgba(167,139,250,0.1)' },
                                 demo: { color: '#34d399', bg: 'rgba(52,211,153,0.1)' },

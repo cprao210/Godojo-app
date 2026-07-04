@@ -17,6 +17,14 @@ const TYPE_ACCENT: Record<MeetingType, { color: string; glow: string; bg: string
     negotiation: { color: '#fbbf24', glow: 'rgba(251,191,36,0.25)', bg: 'rgba(251,191,36,0.07)', border: 'rgba(251,191,36,0.20)', label: 'Negotiation' },
 };
 
+// Fallback for meeting types outside the known union (e.g. a new/renamed type the
+// LLM emits before this map is updated). The backend spreads the LLM's JSON output
+// verbatim with no meetingType validation, so this lookup can't assume a hit.
+// Mirrors the guard in MeetingDetails.tsx for the equivalent tab-pill lookup.
+const DEFAULT_TYPE_ACCENT = { color: '#94a3b8', glow: 'rgba(148,163,184,0.25)', bg: 'rgba(148,163,184,0.08)', border: 'rgba(148,163,184,0.22)', label: '' };
+
+const getTypeAccent = (type: string) => TYPE_ACCENT[type as MeetingType] ?? { ...DEFAULT_TYPE_ACCENT, label: type };
+
 // ─── Score → semantic label ───────────────────────────────────────────────────
 function scoreLabel(n: number) {
     if (n >= 80) return 'Excellent';
@@ -193,7 +201,7 @@ interface ScorecardCardProps {
     defaultOpen?: boolean; // kept for API compatibility, ignored
 }
 const ScorecardCard: React.FC<ScorecardCardProps> = ({ scorecard, isLight }) => {
-    const accent = TYPE_ACCENT[scorecard.meetingType];
+    const accent = getTypeAccent(scorecard.meetingType);
     const categories: ScoredCategory[] = Array.isArray(scorecard.categoryBreakdown)
         ? scorecard.categoryBreakdown
         : Object.values(scorecard.categoryBreakdown as Record<string, ScoredCategory>);
@@ -355,7 +363,7 @@ export const MeetingScorecardPanel: React.FC<MeetingScorecardPanelProps> = ({
             {/* ── Tab bar ── */}
             <div className={`flex gap-1 mb-3 p-1 rounded-xl ${isLight ? 'bg-slate-100' : 'bg-white/[0.04]'}`}>
                 {result.scorecards.map(sc => {
-                    const accent = TYPE_ACCENT[sc.meetingType];
+                    const accent = getTypeAccent(sc.meetingType);
                     const isActive = sc.meetingType === currentType;
                     return (
                         <button

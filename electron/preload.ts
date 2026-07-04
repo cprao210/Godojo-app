@@ -121,7 +121,7 @@ interface ElectronAPI {
 
   // Meeting Lifecycle
   startMeeting: (metadata?: any) => Promise<{ success: boolean; error?: string }>
-  endMeeting: () => Promise<{ success: boolean; error?: string }>
+  endMeeting: (meetingTypes?: ('discovery' | 'demo' | 'negotiation')[]) => Promise<{ success: boolean; error?: string }>
   finalizeMicSTT: () => Promise<void>
   getRecentMeetings: () => Promise<Array<{ id: string; title: string; date: string; duration: string; summary: string }>>
   getMeetingDetails: (id: string) => Promise<any>
@@ -752,7 +752,7 @@ contextBridge.exposeInMainWorld("electronAPI", {
 
   // Meeting Lifecycle
   startMeeting: (metadata?: any) => ipcRenderer.invoke("start-meeting", metadata),
-  endMeeting: () => ipcRenderer.invoke("end-meeting"),
+  endMeeting: (meetingTypes?: ('discovery' | 'demo' | 'negotiation')[]) => ipcRenderer.invoke("end-meeting", { meetingTypes }),
   finalizeMicSTT: () => ipcRenderer.invoke("finalize-mic-stt"),
   getRecentMeetings: () => ipcRenderer.invoke("get-recent-meetings"),
   getMeetingDetails: (id: string) => ipcRenderer.invoke("get-meeting-details", id),
