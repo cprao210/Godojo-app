@@ -168,6 +168,24 @@ const MeetingDetails: React.FC<MeetingDetailsProps> = ({ meeting: initialMeeting
         { initialData: initialMeeting, enabled: !isProcessing && !!initialMeeting.id },
     );
 
+    // Scorecard is handled locally (IPC), NOT over HTTP: the backend's GET /meetings/{id}
+    // only serves summary_json, while the scorecard lives in the dedicated
+    // meeting_scorecards table. meeting:getScorecard reads Supabase first (other devices'
+    // scorecards) and falls back to local SQLite.
+    const scorecardKey = ["meeting-scorecard", initialMeeting.id];
+    const { data: localScorecard = null } = useQuery<MeetingScorecardResult | null>(
+        scorecardKey,
+        async () => {
+            const res = await window.electronAPI?.meetingGetScorecard?.(initialMeeting.id);
+            return res?.success ? (res.data ?? null) : null;
+        },
+        { enabled: !isProcessing && !!initialMeeting.id },
+    );
+    // Prefer the dedicated-table scorecard; the summary_json-embedded blob is only the
+    // legacy / DB-write-failure fallback (same precedence as DatabaseManager.getMeetingDetails).
+    const scorecard: MeetingScorecardResult | null =
+        localScorecard ?? meeting.detailedSummary?.scorecard ?? null;
+
     // Title / summary edits: HTTP is canonical; the existing IPC write is fired on success
     // as a write-through so local SQLite + RAG stay consistent (and the async mirror can't
     // clobber the edit). Optimistic onMutate preserves the instant-edit feel.
@@ -267,6 +285,10 @@ const MeetingDetails: React.FC<MeetingDetailsProps> = ({ meeting: initialMeeting
                     if (updated && updated.isProcessed) {
                         queryClient.setQueryData<Meeting>(meetingKey, updated);
                         setIsProcessing(false); // ← stop skeleton
+                        // Scorecard is generated during background processing (before the
+                        // final save) — fetch it now that processing is done. The query was
+                        // disabled while processing, so kick it explicitly.
+                        void queryClient.invalidateQueries(scorecardKey);
                     }
                 })
                 .catch((e) => console.log("[ERROR: Get Meeting Details]: ", e));
@@ -601,6 +623,9 @@ const MeetingDetails: React.FC<MeetingDetailsProps> = ({ meeting: initialMeeting
                 // Regenerate stays on IPC (LLM = Phase 2); push the fresh data into the cache.
                 queryClient.setQueryData<Meeting>(meetingKey, result.meeting);
                 void queryClient.invalidateQueries(["meetings"]);
+                // Regeneration also re-scores against the latest criteria — refetch the
+                // locally-served scorecard so the panel shows the fresh result.
+                void queryClient.invalidateQueries(scorecardKey);
             } else {
                 setRegenError('Failed to regenerate. Please try again.');
             }
@@ -974,11 +999,11 @@ const MeetingDetails: React.FC<MeetingDetailsProps> = ({ meeting: initialMeeting
                                         </section>}
 
                                         {/* ── Detail Analysis accordion ── */}
-                                        {meeting.detailedSummary?.scorecard && !isSummaryEmpty(meeting.detailedSummary) && (
+                                        {scorecard && meeting.detailedSummary && !isSummaryEmpty(meeting.detailedSummary) && (
                                             <div className='mb-7'>
 
                                                 <DetailAnalysisAccordion
-                                                    scorecard={meeting.detailedSummary.scorecard}
+                                                    scorecard={scorecard}
                                                     isLight={isLight}
                                                 />
                                             </div>
