@@ -57,6 +57,7 @@ export interface Meeting {
 
         speakerNames?: { user: string; client: string };
         liveAnalysis?: LiveAnalysisData;
+        scorecard?: import('../../src/types/score-card').MeetingScorecardResult;
 
         // New sales fields
         dealStatus?: {
@@ -127,6 +128,7 @@ export interface Meeting {
     }>;
     calendarEventId?: string;
     source?: 'manual' | 'calendar';
+    meetingTypes?: ('discovery' | 'demo' | 'negotiation')[];
 }
 
 export class DatabaseManager {
@@ -394,7 +396,8 @@ export class DatabaseManager {
             console.log('[DatabaseManager] Applying migration v4 → v5: Add embedding provider/dimensions columns');
             const columnsToAdd = [
                 "ALTER TABLE meetings ADD COLUMN embedding_provider TEXT",
-                "ALTER TABLE meetings ADD COLUMN embedding_dimensions INTEGER"
+                "ALTER TABLE meetings ADD COLUMN embedding_dimensions INTEGER",
+                "ALTER TABLE meetings ADD COLUMN meeting_types TEXT"   // JSON array: ["discovery","demo"]
             ];
             for (const sql of columnsToAdd) {
                 try { this.db.exec(sql); } catch (e) { /* Column already exists */ }
@@ -618,11 +621,42 @@ export class DatabaseManager {
             this.db.pragma('user_version = 13');
         }
 
+        // Version 13 → 14: Add meeting_scorecards and scoring_criteria dedicated tables
         if (version < 14) {
-            console.log('[DatabaseManager] Applying migration v13 → v14: transcripts.speaker_index (diarization)');
-            // NULL for non-diarized segments (mic, diarize off, older meetings).
-            this.db.exec(`ALTER TABLE transcripts ADD COLUMN speaker_index INTEGER`);
+            console.log('[DatabaseManager] Applying migration v13 → v14: Add meeting_scorecards + scoring_criteria tables');
+            this.db.exec(`
+                CREATE TABLE IF NOT EXISTS meeting_scorecards (
+                    id                     INTEGER PRIMARY KEY AUTOINCREMENT,
+                    meeting_id             TEXT    NOT NULL UNIQUE,
+                    overall_score          REAL    NOT NULL DEFAULT 0,
+                    detected_types         TEXT    NOT NULL DEFAULT '[]',
+                    scorecard_json         TEXT    NOT NULL,
+                    criteria_snapshot_json TEXT,
+                    generated_at           TEXT    NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                    FOREIGN KEY(meeting_id) REFERENCES meetings(id) ON DELETE CASCADE
+                );
+
+                CREATE INDEX IF NOT EXISTS idx_meeting_scorecards_meeting
+                    ON meeting_scorecards(meeting_id);
+
+                CREATE TABLE IF NOT EXISTS scoring_criteria (
+                    id          INTEGER PRIMARY KEY,
+                    config_json TEXT    NOT NULL DEFAULT '{}',
+                    updated_at  TEXT    NOT NULL DEFAULT CURRENT_TIMESTAMP
+                );
+            `);
             this.db.pragma('user_version = 14');
+        }
+
+        // Version 14 → 15: transcripts.speaker_index (diarization)
+        // Split into its own version so installs already at v14 (scorecards)
+        // still receive this column. NULL for non-diarized segments
+        // (mic, diarize off, older meetings). Guarded so re-runs are safe.
+        if (version < 15) {
+            console.log('[DatabaseManager] Applying migration v14 → v15: transcripts.speaker_index (diarization)');
+            try { this.db.exec(`ALTER TABLE transcripts ADD COLUMN speaker_index INTEGER`); }
+            catch (e) { /* Column already exists (e.g. dev DB that ran the old combined v14) */ }
+            this.db.pragma('user_version = 15');
         }
 
         console.log('[DatabaseManager] Migrations completed.');
@@ -779,6 +813,100 @@ export class DatabaseManager {
             }
         } catch (e) {
             console.error('[DatabaseManager] saveCompanyContext failed:', e);
+        }
+    }
+
+    // ============================================
+    // Meeting Scorecards
+    // ============================================
+
+    public saveMeetingScorecard(
+        meetingId: string,
+        result: import('../../src/types/score-card').MeetingScorecardResult,
+        criteriaSnapshot?: import('../../src/types/score-card').ScoringCriteriaSettings | null
+    ): void {
+        if (!this.db) return;
+        try {
+            this.db.prepare(`
+            INSERT OR REPLACE INTO meeting_scorecards
+                (meeting_id, overall_score, detected_types, scorecard_json, criteria_snapshot_json, generated_at)
+            VALUES (?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+        `).run(
+                meetingId,
+                result.overallWeightedScore ?? 0,
+                JSON.stringify(result.detectedTypes ?? []),
+                JSON.stringify(result),
+                criteriaSnapshot ? JSON.stringify(criteriaSnapshot) : null
+            );
+            console.log(`[DatabaseManager] Saved scorecard for meeting ${meetingId}`);
+        } catch (e) {
+            console.error('[DatabaseManager] saveMeetingScorecard failed:', e);
+        }
+    }
+
+    public getMeetingScorecard(
+        meetingId: string
+    ): import('../../src/types/score-card').MeetingScorecardResult | null {
+        if (!this.db) return null;
+        try {
+            const row = this.db
+                .prepare('SELECT scorecard_json FROM meeting_scorecards WHERE meeting_id = ?')
+                .get(meetingId) as { scorecard_json: string } | undefined;
+            if (!row) return null;
+            return JSON.parse(row.scorecard_json);
+        } catch (e) {
+            console.error('[DatabaseManager] getMeetingScorecard failed:', e);
+            return null;
+        }
+    }
+
+    public deleteMeetingScorecard(meetingId: string): void {
+        if (!this.db) return;
+        try {
+            this.db.prepare('DELETE FROM meeting_scorecards WHERE meeting_id = ?').run(meetingId);
+        } catch (e) {
+            console.error('[DatabaseManager] deleteMeetingScorecard failed:', e);
+        }
+    }
+
+    // ============================================
+    // Scoring Criteria (custom per-org)
+    // ============================================
+
+    public getScoringCriteria(): import('../../src/types/score-card').ScoringCriteriaSettings | null {
+        if (!this.db) return null;
+        try {
+            const row = this.db
+                .prepare('SELECT config_json FROM scoring_criteria WHERE id = 1')
+                .get() as { config_json: string } | undefined;
+            if (!row) return null;
+            return JSON.parse(row.config_json);
+        } catch (e) {
+            console.error('[DatabaseManager] getScoringCriteria failed:', e);
+            return null;
+        }
+    }
+
+    public saveScoringCriteria(settings: import('../../src/types/score-card').ScoringCriteriaSettings): void {
+        if (!this.db) return;
+        try {
+            this.db.prepare(`
+            INSERT OR REPLACE INTO scoring_criteria (id, config_json, updated_at)
+            VALUES (1, ?, CURRENT_TIMESTAMP)
+        `).run(JSON.stringify(settings));
+
+
+        } catch (e) {
+            console.error('[DatabaseManager] saveScoringCriteria failed:', e);
+        }
+    }
+
+    public resetScoringCriteria(): void {
+        if (!this.db) return;
+        try {
+            this.db.prepare('DELETE FROM scoring_criteria WHERE id = 1').run();
+        } catch (e) {
+            console.error('[DatabaseManager] resetScoringCriteria failed:', e);
         }
     }
 
@@ -1366,6 +1494,17 @@ export class DatabaseManager {
         }
     }
 
+    public updateMeetingTypes(id: string, types: ('discovery' | 'demo' | 'negotiation')[]): boolean {
+        try {
+            const stmt = this.db.prepare('UPDATE meetings SET meeting_types = ? WHERE id = ?');
+            stmt.run(JSON.stringify(types), id);
+            return true;
+        } catch (e) {
+            console.error('[DatabaseManager] updateMeetingTypes failed:', e);
+            return false;
+        }
+    }
+
     public updateMeetingSummary(id: string, updates: { overview?: string, actionItems?: string[], keyPoints?: string[], actionItemsTitle?: string, keyPointsTitle?: string }): boolean {
         if (!this.db) return false;
 
@@ -1463,8 +1602,23 @@ export class DatabaseManager {
         const usageStmt = this.db.prepare('SELECT * FROM ai_interactions WHERE meeting_id = ? ORDER BY timestamp ASC');
         const usageRows = usageStmt.all(id) as any[];
 
-        // Reconstruct
         const summaryData = JSON.parse(meetingRow.summary_json || '{}');
+
+        // Load scorecard from dedicated table (preferred) — fall back to embedded
+        // blob for meetings scored before the v14 migration so nothing breaks.
+        const scorecardRow = (() => {
+            try {
+                return this.db!.prepare(
+                    'SELECT scorecard_json FROM meeting_scorecards WHERE meeting_id = ?'
+                ).get(meetingRow.id) as { scorecard_json: string } | undefined;
+            } catch { return undefined; }
+        })();
+        if (scorecardRow) {
+            if (!summaryData.detailedSummary) summaryData.detailedSummary = {};
+            summaryData.detailedSummary.scorecard = JSON.parse(scorecardRow.scorecard_json);
+        }
+        // If no dedicated row exists, the legacy blob path (detailedSummary.scorecard)
+        // is already present in summaryData — no action needed.
 
         const transcript = transcriptRows.map(row => ({
             speaker: row.speaker,
@@ -1606,6 +1760,7 @@ export class DatabaseManager {
                 this.db!.exec('DELETE FROM chunks');
                 this.db!.exec('DELETE FROM ai_interactions');
                 this.db!.exec('DELETE FROM transcripts');
+                this.db!.exec('DELETE FROM meeting_scorecards');
                 this.db!.exec('DELETE FROM meetings');
                 this.db!.exec('DELETE FROM company_asset_chunks');
                 this.db!.exec('DELETE FROM company_asset_files');

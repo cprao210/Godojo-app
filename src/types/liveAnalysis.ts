@@ -41,6 +41,32 @@ export interface LiveAnalysisTurn {
     text: string;
 }
 
+/** Meeting types selected in the intelligence panel (multi-select). Sent to the backend
+ *  as `meeting_types`; the Deal Optimizer is produced only when 'negotiation' is included. */
+export type MeetingType = 'discovery' | 'demo' | 'negotiation';
+
+export type DealTrigger =
+    | 'pricing_objection'
+    | 'discount_request'
+    | 'competitor_comparison'
+    | 'procurement_pressure'
+    | 'budget_concern'
+    | 'closing_signal';
+
+export interface DealOptimizerAlert {
+    trigger: DealTrigger;
+    quote: string;
+    /** One-line framing of what's happening */
+    headline: string;
+    /** 1–3 recommended moves, ordered by priority */
+    moves: string[];
+    /** Optional trade-off or value anchor the AE should use */
+    anchor?: string;
+    intensity: 'high' | 'medium' | 'low';
+    /** Stable content-derived id stamped at merge time */
+    id?: string;
+}
+
 export interface LiveAnalysisData {
     bant: {
         budget: BANTField;
@@ -59,4 +85,5 @@ export interface LiveAnalysisData {
     };
     objections: Objection[];
     signals: Signal[];
+    dealOptimizer?: DealOptimizerAlert[];
 }

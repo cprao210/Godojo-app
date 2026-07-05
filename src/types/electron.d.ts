@@ -168,14 +168,14 @@ export interface ElectronAPI {
 
   // Meeting Lifecycle
   startMeeting: (metadata?: any) => Promise<{ success: boolean; error?: string }>
-  endMeeting: () => Promise<{ success: boolean; error?: string }>
+  endMeeting: (meetingTypes?: ('discovery' | 'demo' | 'negotiation')[]) => Promise<{ success: boolean; error?: string }>
   finalizeMicSTT: () => Promise<void>
   getRecentMeetings: () => Promise<Array<{ id: string; title: string; date: string; duration: string; summary: string }>>
   getMeetingDetails: (id: string) => Promise<any>
   updateMeetingTitle: (id: string, title: string) => Promise<boolean>
   updateMeetingSummary: (id: string, updates: { overview?: string, actionItems?: string[], keyPoints?: string[], actionItemsTitle?: string, keyPointsTitle?: string }) => Promise<boolean>
   regenerateMeetingSummary: (id: string) => Promise<any>
-  uploadTranscript: (text: string, title?: string) => Promise<{ success: boolean; meetingId?: string; error?: string }>
+  uploadTranscript: (text: string, title?: string, meetingTypes?: ('discovery' | 'demo' | 'negotiation')[]) => Promise<{ success: boolean; meetingId?: string; error?: string }>
   deleteMeeting: (id: string) => Promise<boolean>
   setWindowMode: (mode: 'launcher' | 'overlay', inactive?: boolean) => Promise<void>
 
@@ -337,6 +337,13 @@ export interface ElectronAPI {
   companySetPersonaEngine: (enabled: boolean) => Promise<{ success: boolean; error?: string }>;
   companySelectFile: () => Promise<{ filePath?: string; fileName?: string; fileSize?: number; cancelled?: boolean; success?: boolean; error?: string }>;
   companyGetCompleteness: () => Promise<number>;
+
+  // Scoring criteria
+  meetingGetScorecard: (meetingId: string) => Promise<{ success: boolean; data?: any; error?: string }>;
+  meetingDeleteScorecard: (meetingId: string) => Promise<{ success: boolean; error?: string }>;
+  scoringGetCriteria: () => Promise<{ success: boolean; data?: any; error?: string }>;
+  scoringSaveCriteria: (settings: any) => Promise<{ success: boolean; error?: string }>;
+  scoringResetCriteria: () => Promise<{ success: boolean; error?: string }>;
 
   // Profile Engine API
   profileUploadResume: (filePath: string) => Promise<{ success: boolean; error?: string }>

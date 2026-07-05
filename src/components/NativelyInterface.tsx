@@ -37,7 +37,7 @@ interface Message {
 }
 
 interface NativelyInterfaceProps {
-    onEndMeeting?: () => void;
+    onEndMeeting?: (meetingTypes?: ('discovery' | 'demo' | 'negotiation')[]) => void;
     overlayOpacity?: number;
 }
 

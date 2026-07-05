@@ -16,6 +16,8 @@ import { meetingsApi } from '../lib/meetingsApi';
 import type { Meeting } from '../types/meeting';
 import { guardSession } from '../lib/firebase';
 import { DealHealthScore } from './DealHealthScore';
+import { MeetingScorecardPanel } from './MeetingScoreCard';
+import type { MeetingScorecardResult } from '../types/score-card';
 
 const formatTime = (ms: number) => {
     const date = new Date(ms);
@@ -62,6 +64,88 @@ function isSummaryEmpty(ds: NonNullable<Meeting['detailedSummary']>): boolean {
         !ds.nextCallPlaybook?.questionsToAsk?.some(s => s?.trim())
     );
 }
+
+// ─── Detail Analysis accordion ────────────────────────────────────────────────
+// Self-contained — safe to lift to a dashboard widget in future.
+// Just pass `scorecard` + `isLight` and it renders standalone.
+interface DetailAnalysisAccordionProps {
+    scorecard: MeetingScorecardResult;
+    isLight: boolean;
+}
+const DetailAnalysisAccordion: React.FC<DetailAnalysisAccordionProps> = ({ scorecard, isLight }) => {
+    const [open, setOpen] = useState(false);
+    return (
+        <section className="mt-6">
+            <button
+                onClick={() => setOpen(o => !o)}
+                className={`w-full flex items-center justify-between px-4 py-3 rounded-xl border transition-all duration-150 ${isLight
+                    ? 'border-slate-200 bg-white hover:bg-slate-50'
+                    : 'border-white/[0.07] bg-white/[0.02] hover:bg-white/[0.04]'
+                    } ${open ? (isLight ? 'rounded-b-none border-b-transparent' : 'rounded-b-none border-b-transparent') : ''}`}
+            >
+                <div className="flex items-center gap-2.5">
+                    <div className={`w-5 h-5 rounded flex items-center justify-center ${isLight ? 'bg-slate-100' : 'bg-white/[0.06]'}`}>
+                        <TrendingUp size={11} strokeWidth={2} className={isLight ? 'text-slate-500' : 'text-white/40'} />
+                    </div>
+                    <span className={`text-[13px] font-semibold ${isLight ? 'text-slate-700' : 'text-white/70'}`}>
+                        Detailed Analysis
+                    </span>
+                    {/* Type pills summary — show each detected type with its score */}
+                    <div className="flex gap-1 ml-1">
+                        {(scorecard.scorecards ?? []).map(sc => {
+                            const COLORS: Record<string, { color: string; bg: string }> = {
+                                discovery: { color: '#a78bfa', bg: 'rgba(167,139,250,0.1)' },
+                                demo: { color: '#34d399', bg: 'rgba(52,211,153,0.1)' },
+                                negotiation: { color: '#fbbf24', bg: 'rgba(251,191,36,0.1)' },
+                            };
+                            const LABELS: Record<string, string> = {
+                                discovery: 'Discovery',
+                                demo: 'Demo',
+                                negotiation: 'Negotiation',
+                            };
+                            const c = COLORS[sc.meetingType] ?? { color: '#94a3b8', bg: 'rgba(148,163,184,0.1)' };
+                            return (
+                                <span key={sc.meetingType}
+                                    className="text-[9px] font-bold tracking-wide px-1.5 py-0.5 rounded flex items-center gap-1"
+                                    style={{ color: c.color, background: c.bg }}
+                                >
+                                    {LABELS[sc.meetingType] ?? sc.meetingType}
+                                    <span className="opacity-70 font-semibold">{sc.overallScore}</span>
+                                </span>
+                            );
+                        })}
+                    </div>
+                </div>
+                <div className="flex items-center gap-2">
+                    <span className={`text-[11px] font-semibold tabular-nums ${isLight ? 'text-slate-500' : 'text-white/40'}`}>
+                        Overall Score: {scorecard.overallWeightedScore}/100
+                    </span>
+                    <ChevronDown
+                        size={14}
+                        className={`transition-transform duration-200 ${isLight ? 'text-slate-400' : 'text-white/30'} ${open ? 'rotate-180' : ''}`}
+                    />
+                </div>
+            </button>
+
+            <AnimatePresence>
+                {open && (
+                    <motion.div
+                        initial={{ height: 0, opacity: 0 }}
+                        animate={{ height: 'auto', opacity: 1 }}
+                        exit={{ height: 0, opacity: 0 }}
+                        transition={{ duration: 0.22, ease: [0.4, 0, 0.2, 1] }}
+                        className="overflow-hidden"
+                    >
+                        <div className={`px-4 pt-3 pb-4 rounded-b-xl border border-t-0 ${isLight ? 'border-slate-200 bg-white' : 'border-white/[0.07] bg-white/[0.02]'
+                            }`}>
+                            <MeetingScorecardPanel result={scorecard} />
+                        </div>
+                    </motion.div>
+                )}
+            </AnimatePresence>
+        </section>
+    );
+};
 
 const MeetingDetails: React.FC<MeetingDetailsProps> = ({ meeting: initialMeeting }) => {
 
@@ -889,6 +973,17 @@ const MeetingDetails: React.FC<MeetingDetailsProps> = ({ meeting: initialMeeting
                                             </div>
                                         </section>}
 
+                                        {/* ── Detail Analysis accordion ── */}
+                                        {meeting.detailedSummary?.scorecard && !isSummaryEmpty(meeting.detailedSummary) && (
+                                            <div className='mb-7'>
+
+                                                <DetailAnalysisAccordion
+                                                    scorecard={meeting.detailedSummary.scorecard}
+                                                    isLight={isLight}
+                                                />
+                                            </div>
+                                        )}
+
                                         {meeting.detailedSummary && !isSummaryEmpty(meeting.detailedSummary) && meeting.detailedSummary?.salesCoachReview !== undefined ?
                                             <>
                                                 <section className="mb-10">
@@ -1368,7 +1463,6 @@ const MeetingDetails: React.FC<MeetingDetailsProps> = ({ meeting: initialMeeting
 
                                         }
 
-
                                     </motion.div>
                                 }
 
@@ -1650,9 +1744,9 @@ const MeetingDetails: React.FC<MeetingDetailsProps> = ({ meeting: initialMeeting
                             <motion.section initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }}>
                                 {meeting.detailedSummary?.liveAnalysis ? (
                                     <>
-                                        <div className={`rounded-2xl mb-4 overflow-hidden ${isLight ? 'transparent' : 'bg-[#0d0d0f]'}`}>
+                                        {/* <div className={`rounded-2xl mb-4 overflow-hidden ${isLight ? 'transparent' : 'bg-[#0d0d0f]'}`}>
                                             <DealHealthScore analysisData={meeting.detailedSummary.liveAnalysis} calledFromAnalysisTab={true} />
-                                        </div>
+                                        </div> */}
                                         <LiveAnalysisContent
                                             hideBar="Missing Details"
                                             analysisData={meeting.detailedSummary.liveAnalysis}

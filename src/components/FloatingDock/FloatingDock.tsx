@@ -1,7 +1,7 @@
 import React, { useState, useRef, useEffect } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
 import { Radio, Brain, Hand, Pause, Play, StopCircle, Settings, GripVertical, Ghost } from 'lucide-react';
-import { FloatingIntelligencePanel } from './panels/FloatingIntelligencePanel';
+import { FloatingIntelligencePanel, MeetingType } from './panels/FloatingIntelligencePanel';
 import { FloatingChatPanel } from './panels/FloatingChatPanel';
 import { FloatingSettingsPanel } from './panels/FloatingSettingsPanel';
 import { DockButton } from './DockButton';
@@ -14,7 +14,7 @@ interface FloatingDockProps {
     // Meeting state
     isMeetingPaused: boolean;
     onPauseResume: () => void;
-    onEndCall: () => void;
+    onEndCall: (meetingTypes?: MeetingType[]) => void;
 
     // Feature states
     isUndetectable: boolean;
@@ -83,6 +83,8 @@ export const FloatingDock: React.FC<FloatingDockProps> = ({
         return Number.isFinite(parsed) ? clampOpacity(parsed) : 0.88;
     });
 
+    const [meetingTypes, setMeetingTypes] = useState<MeetingType[]>(['discovery']);
+
     useEffect(() => {
         const onStorage = (e: StorageEvent) => {
             if (e.key === OPACITY_KEY && e.newValue) {
@@ -106,12 +108,26 @@ export const FloatingDock: React.FC<FloatingDockProps> = ({
 
     // ── Lifted state: survives panel switches ──────────────────────────────────
     // Analysis state is owned here so FloatingIntelligencePanel never loses it on remount.
-    const { analysisData, isLoading: analysisLoading, error: analysisError, runAnalysis, resetAnalysis, isRefreshRun } = useLiveAnalysis(transcriptRef, isMeetingPaused, companyIntel);
+    const { analysisData, isLoading: analysisLoading, error: analysisError, runAnalysis, resetAnalysis, isRefreshRun } = useLiveAnalysis(transcriptRef, isMeetingPaused, companyIntel, meetingTypes);
 
     // Stable ref to runAnalysis — prevents the timer useEffect from re-running
     // (and resetting the countdown) whenever runAnalysis identity changes.
     const runAnalysisRef = useRef(runAnalysis);
     useEffect(() => { runAnalysisRef.current = runAnalysis; }, [runAnalysis]);
+
+    // Fire an immediate analysis when Negotiation is NEWLY checked, so the Deal Optimizer
+    // tab populates within seconds instead of waiting for the next auto-refresh tick.
+    // The prev-ref means neither mount (['discovery'] default) nor session-reset fires it,
+    // and unchecking never triggers a run. Same force semantics as the Regenerate button;
+    // the hook's in-flight guard prevents duplicate calls.
+    const prevMeetingTypesRef = useRef<MeetingType[]>(meetingTypes);
+    useEffect(() => {
+        const hadNegotiation = prevMeetingTypesRef.current.includes('negotiation');
+        prevMeetingTypesRef.current = meetingTypes;
+        if (!hadNegotiation && meetingTypes.includes('negotiation')) {
+            runAnalysisRef.current(true);
+        }
+    }, [meetingTypes]);
 
     // Track whether the first analysis has been triggered so we don't re-run on every remount.
     const analysisInitiatedRef = useRef(false);
@@ -178,6 +194,7 @@ export const FloatingDock: React.FC<FloatingDockProps> = ({
             analysisInitiatedRef.current = false;  // allows first-open to trigger fresh analysis
             setChatMessages([]);          // clears chat history
             setActivePanel(null);         // close any open panel
+            setMeetingTypes(['discovery']);   // reset to default — Discovery pre-checked
         });
         return () => unsubscribe();
     }, [resetAnalysis]);
@@ -243,6 +260,8 @@ export const FloatingDock: React.FC<FloatingDockProps> = ({
                         onAutoRefreshIntervalChange={setAutoRefreshInterval}
                         isRefreshRun={isRefreshRun}
                         panelFirstOpenedAt={intelligencePanelFirstOpenedAt}
+                        meetingTypes={meetingTypes}
+                        onMeetingTypesChange={setMeetingTypes}
                     />
                 </motion.div>
 
@@ -255,7 +274,7 @@ export const FloatingDock: React.FC<FloatingDockProps> = ({
                             scale: activePanel === 'chat' ? 1 : 0.96,
                         }}
                         transition={{ type: 'spring', damping: 28, stiffness: 380, mass: 0.8 }}
-                        className="fixed bottom-[76px] left-[65px]"
+                        className="fixed bottom-0 left-[65px]"
                         style={{
                             position: 'fixed',
                             pointerEvents: activePanel === 'chat' ? 'auto' : 'none',
@@ -292,7 +311,7 @@ export const FloatingDock: React.FC<FloatingDockProps> = ({
                             animate={{ opacity: dockOpacity, y: 0, scale: 1 }}
                             exit={{ opacity: 0, y: 12, scale: 0.97 }}
                             transition={{ type: 'spring', damping: 28, stiffness: 380, mass: 0.8 }}
-                            className="fixed top-[110px] left-[65px]"
+                            className="fixed top-[106px] left-[65px]"
                             style={{ position: 'fixed' }}
                         >
                             {isFrozen && (
@@ -413,7 +432,7 @@ export const FloatingDock: React.FC<FloatingDockProps> = ({
                             isActive={false}
                             dangerColor
                             frozen={isFrozen}
-                            onClick={onEndCall}
+                            onClick={() => onEndCall(meetingTypes)}
                         />
 
                         {/* Settings */}

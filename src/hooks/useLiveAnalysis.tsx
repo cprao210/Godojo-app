@@ -1,5 +1,5 @@
 import { useState, useCallback, useRef, useEffect } from 'react';
-import { LiveAnalysisData, LiveAnalysisTurn } from '../types/liveAnalysis';
+import { LiveAnalysisData, LiveAnalysisTurn, MeetingType } from '../types/liveAnalysis';
 import { intelligenceApi } from '../lib/intelligenceApi';
 
 // ─── Prompt builders ─────────────────────────────────────────────────────────
@@ -210,15 +210,78 @@ const SHARED_OUTPUT_FORMAT = `
         ],
         "signals": [
             { "quote": "", "signal_type": [], "ask_now": "", "intensity": "", "category": "" }
+        ],
+        "dealOptimizer": [
+            { "trigger": "", "quote": "", "headline": "", "moves": [], "anchor": "", "intensity": "" }
         ]
     }
 
     ── FINAL CHECK BEFORE OUTPUT ──────────────────────────────────────────────────
     Valid JSON only. No prose, no markdown, no code fences.
-    All four top-level keys must be present: bant, meddic, objections, signals.
+    All five top-level keys must be present: bant, meddic, objections, signals, dealOptimizer.
     Every BANT and MEDDIC field must have: emoji, status, evidence, suggested_question.
+    dealOptimizer may be an empty array [] when no negotiation triggers are detected.
     Every signal must have: quote, signal_type (array), ask_now, intensity, category.
     Every objection must have: type, quote, owner, status.`;
+
+const DEAL_OPTIMIZER_SECTION = `
+    ═══════════════════════════════════════
+    SECTION 5: DEAL OPTIMIZER (Negotiation Intelligence)
+    ═══════════════════════════════════════
+
+    Analyze the conversation for negotiation triggers. Only populate this when you
+    detect one or more of the following in PROSPECT speech:
+
+    TRIGGERS:
+    - pricing_objection    → Prospect pushes back on price, says it's "too expensive",
+                             or challenges the value-to-cost ratio
+    - discount_request     → Prospect explicitly asks for a discount, lower price,
+                             better deal, or compares to a cheaper alternative
+    - competitor_comparison → Prospect mentions a competitor is cheaper or has better
+                             pricing/terms; implies leverage via alternatives
+    - procurement_pressure  → Procurement/legal/finance involvement creating friction,
+                             vendor comparison processes, formal RFP dynamics
+    - budget_concern       → Prospect signals budget is tight, constrained, not yet
+                             approved, or less than the price being discussed
+    - closing_signal       → Prospect is ready to move forward but has a final price
+                             or term objection standing in the way
+
+    RULES — CRITICAL:
+    - NEVER recommend a discount as a first move.
+    - Always explore value, differentiation, and leverage before price concessions.
+    - Suggest mutually beneficial trade-offs (e.g. longer contract, faster close, referral).
+    - Protect revenue: if a concession is suggested, it must be a trade-off, not a gift.
+    - Keep moves concise and actionable — under 20 words each.
+    - Maximum 3 moves per alert. Order them: best first.
+    - anchor: one sentence the AE can say RIGHT NOW to reframe value. Under 25 words.
+    - APPEND ONLY on refresh runs — never remove prior alerts.
+
+    For each detected trigger, return:
+    - trigger:   one of the 6 trigger types above
+    - quote:     exact prospect quote that triggered this (max 120 chars)
+    - headline:  one-line summary of what's happening (max 15 words)
+    - moves:     array of 1–3 recommended actions, ordered best-first (each under 20 words)
+    - anchor:    value reframe the AE can use now (under 25 words), or "" if not applicable
+    - intensity: "high" | "medium" | "low"
+
+    EXAMPLES:
+
+    Trigger: "Can you do anything on the price?"
+    → { trigger: "discount_request", headline: "Prospect opening negotiation on price",
+        moves: ["Anchor to ROI: quantify the cost of not solving this now",
+                "Offer contract length trade-off: 2-year commitment for better rate",
+                "Tie discount to accelerated close date to create mutual urgency"],
+        anchor: "Before we talk price, what's the cost per quarter of this problem continuing?",
+        intensity: "high" }
+
+    Trigger: "Salesforce is offering us a 20% discount to stay"
+    → { trigger: "competitor_comparison", headline: "Incumbent using price to retain deal",
+        moves: ["Differentiate on outcomes: what does 20% off a tool that doesn't work still cost?",
+                "Ask what Salesforce is giving up to match your terms — signals their desperation",
+                "Offer a pilot or phased rollout to reduce perceived risk vs. switching cost"],
+        anchor: "A discount on the wrong solution is still the wrong solution — what's the cost of staying?",
+        intensity: "high" }
+`;
 
 // ── PROMPT 1: First run — full transcript, derive everything from scratch ──────
 const getFirstRunPrompt = (fullProspectContext: string): string =>
@@ -237,7 +300,7 @@ const getFirstRunPrompt = (fullProspectContext: string): string =>
     ═══════════════════════════════════════
     SECTION 1: BANT
     ═══════════════════════════════════════
-${SHARED_BANT_MEDDIC_FIELD_RULES}
+    ${SHARED_BANT_MEDDIC_FIELD_RULES}
 
     Budget    → Money mentioned, approval thresholds, "we have budget", "we're looking at X"
     Authority → Decision-maker named, approval chain mentioned, "I need sign-off from", "our CFO decides"
@@ -298,13 +361,14 @@ ${SHARED_BANT_MEDDIC_FIELD_RULES}
     Detect meaningful signals in the conversation — positive buying signals,
     negative risk signals, and neutral informational signals that affect deal outcome.
     Apply the quality bar: only capture what a sales rep could act on RIGHT NOW.
-${SHARED_SIGNAL_CATALOGUE}
-${SHARED_OUTPUT_FORMAT}
+    ${SHARED_SIGNAL_CATALOGUE}
+    ${SHARED_OUTPUT_FORMAT}
+    ${DEAL_OPTIMIZER_SECTION}
 
     ═══════════════════════════════════════
     CLIENT TRANSCRIPT (client turns only — full call so far):
     ═══════════════════════════════════════
-${fullProspectContext}
+    ${fullProspectContext}
 `;
 
 // ── PROMPT 2: Refresh run — prior state + new prospect delta only ─────────────
@@ -325,7 +389,7 @@ const getRefreshPrompt = (
     ═══════════════════════════════════════
     (A) NEW CLIENT TURNS (process these first):
     ═══════════════════════════════════════
-${newProspectDelta || '(no new prospect turns since last analysis)'}
+    ${newProspectDelta || '(no new prospect turns since last analysis)'}
 
     ═══════════════════════════════════════
     WHAT TO DO WITH EACH SECTION:
@@ -356,26 +420,25 @@ ${newProspectDelta || '(no new prospect turns since last analysis)'}
     ═══════════════════════════════════════
     (B) PRIOR ANALYSIS — BANT + MEDDIC BASELINE (update from this):
     ═══════════════════════════════════════
-${serializeBANTMEDDIC(priorState)}
+    ${serializeBANTMEDDIC(priorState)}
 
     ═══════════════════════════════════════
     (B) PRIOR ANALYSIS — OBJECTIONS + SIGNALS (copy verbatim first, then append new):
     ═══════════════════════════════════════
-${serializeObjectionsSignals(priorState)}
+    ${serializeObjectionsSignals(priorState)}
 
     ═══════════════════════════════════════
     BANT + MEDDIC field rules:
     ═══════════════════════════════════════
-${SHARED_BANT_MEDDIC_FIELD_RULES}
+    ${SHARED_BANT_MEDDIC_FIELD_RULES}
 
     ═══════════════════════════════════════
     SIGNAL reference:
     ═══════════════════════════════════════
-${SHARED_SIGNAL_CATALOGUE}
-${SHARED_OUTPUT_FORMAT}
+    ${SHARED_SIGNAL_CATALOGUE}
+    ${SHARED_OUTPUT_FORMAT}
+    ${DEAL_OPTIMIZER_SECTION}
 `;
-
-
 
 // ─── Anthropic API fallback (used when electronAPI is not available) ─────────
 const runAnalysisViaAnthropicAPI = async (livePrompt: string): Promise<LiveAnalysisData> => {
@@ -504,18 +567,32 @@ const mergeWithPrior = (
     ...prior.signals.map(s => ({ ...s, id: s.id ?? stableId(s.quote) })),
   ];
 
+  // ── Deal Optimizer: preserve-and-append guard ─────────────────────────────
+  const priorAlertIds = new Set((prior.dealOptimizer ?? []).map(a => a.id ?? stableId(a.quote)));
+  const newAlerts = (incoming.dealOptimizer ?? [])
+    .filter(a => !priorAlertIds.has(a.id ?? stableId(a.quote)))
+    .map(a => ({ ...a, id: a.id ?? stableId(a.quote) }));
+  const mergedAlerts = [
+    ...newAlerts,
+    ...(prior.dealOptimizer ?? []).map(a => ({ ...a, id: a.id ?? stableId(a.quote) })),
+  ];
+
   return {
     bant,
     meddic,
     objections: mergedObjections,
     signals: mergedSignals,
+    dealOptimizer: mergedAlerts,
   };
 };
 
 export const useLiveAnalysis = (
   transcriptRef: React.MutableRefObject<Array<{ speaker: string; displayName?: string; text: string; timestamp: number }>>,
   isMeetingPaused: boolean,
-  companyIntel?: Record<string, any> | null
+  companyIntel?: Record<string, any> | null,
+  // Meeting Type multi-select state (owned by FloatingDock). Sent to the backend as
+  // `meeting_types`; dealOptimizer is produced only when it includes 'negotiation'.
+  meetingTypes: MeetingType[] = []
 ) => {
   const [analysisData, setAnalysisData] = useState<LiveAnalysisData | null>(null);
   const [isLoading, setIsLoading] = useState(false);
@@ -544,6 +621,14 @@ export const useLiveAnalysis = (
   useEffect(() => {
     companyIntelRef.current = companyIntel;
   }, [companyIntel]);
+
+  // Ref-mirror (same pattern as companyIntelRef): runAnalysis reads the latest selection
+  // without meetingTypes becoming a useCallback dep — its identity stays stable, so the
+  // FloatingDock auto-refresh timer holding runAnalysisRef never resets on a toggle.
+  const meetingTypesRef = useRef<MeetingType[]>(meetingTypes);
+  useEffect(() => {
+    meetingTypesRef.current = meetingTypes;
+  }, [meetingTypes]);
 
   // Keep ref in sync with state so the runAnalysis closure always sees the latest value.
   const setAnalysisDataAndRef = useCallback((data: LiveAnalysisData | null) => {
@@ -696,7 +781,9 @@ export const useLiveAnalysis = (
           .filter(t => (t.speaker === 'user' || t.speaker === 'client') && t.text?.trim())
           .map(t => ({ speaker: t.speaker, text: t.text }));
 
-        const parsed = await intelligenceApi.analyzeLive(turns, null);
+        const parsed = await intelligenceApi.analyzeLive(turns, null, {
+          meetingTypes: meetingTypesRef.current,
+        });
 
         // Client-side merge: ensures prior objections/signals are never lost even if
         // the LLM dropped them (model switch, context truncation, etc.)

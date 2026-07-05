@@ -164,6 +164,17 @@ const Launcher: React.FC<LauncherProps> = ({ onStartMeeting, onOpenSettings, onP
         });
     }, []);
 
+
+    useEffect(() => {
+        if (!window.electronAPI) return;
+        Promise.all([
+            window.electronAPI.getCalendarStatus(),
+            window.electronAPI.getZoomCalendarStatus(),
+        ]).then(([google, zoom]) => {
+            setIsCalendarConnected(google.connected || zoom.connected);
+        });
+    }, []);
+
     // Keybinds
     const { isShortcutPressed } = useShortcuts();
     const isLight = useResolvedTheme() === 'light';
@@ -333,6 +344,7 @@ const Launcher: React.FC<LauncherProps> = ({ onStartMeeting, onOpenSettings, onP
     const [uploadText, setUploadText] = useState('');
     const [uploadTitle, setUploadTitle] = useState('');
     const [isUploading, setIsUploading] = useState(false);
+    const [uploadMeetingTypes, setUploadMeetingTypes] = useState<('discovery' | 'demo' | 'negotiation')[]>(['discovery']);
     const [uploadError, setUploadError] = useState<string | null>(null);
     const [focusedMeetingId, setFocusedMeetingId] = useState<string | null>(null);
     const [isMeetingsExpanded, setIsMeetingsExpanded] = useState(false);
@@ -367,12 +379,14 @@ const Launcher: React.FC<LauncherProps> = ({ onStartMeeting, onOpenSettings, onP
         try {
             const result = await window.electronAPI.uploadTranscript(
                 uploadText.trim(),
-                uploadTitle.trim() || undefined
+                uploadTitle.trim() || undefined,
+                uploadMeetingTypes
             );
             if (result?.success) {
                 setIsUploadOpen(false);
                 setUploadText('');
                 setUploadTitle('');
+                setUploadMeetingTypes(['discovery']);
                 fetchMeetings(); // replaces placeholder with real entry
             } else {
                 // Remove the placeholder on failure
@@ -1187,37 +1201,37 @@ const Launcher: React.FC<LauncherProps> = ({ onStartMeeting, onOpenSettings, onP
                             className="fixed inset-0 z-[101] flex items-center justify-center p-4 pointer-events-none"
                         >
                             <div className={[
-                                "relative w-full max-w-2xl rounded-2xl shadow-2xl overflow-hidden pointer-events-auto",
+                                "relative w-full max-w-[580px] rounded-2xl shadow-2xl overflow-hidden pointer-events-auto",
                                 isLight
                                     ? "bg-bg-elevated border border-border-muted shadow-[0_20px_60px_rgba(0,0,0,0.15)]"
                                     : "bg-bg-secondary border border-border-muted shadow-[0_20px_60px_rgba(0,0,0,0.5)] ring-1 ring-white/[0.04]",
                             ].join(" ")}>
 
                                 {/* Header */}
-                                <div className={["flex items-center justify-between px-6 py-4 border-b", isLight ? "border-border-subtle" : "border-border-muted"].join(" ")}>
-                                    <div className="flex items-center gap-3">
-                                        <div className={["flex h-7 w-7 items-center justify-center rounded-lg", isLight ? "bg-blue-400/20 text-accent-primary" : "bg-blue-400/20 text-blue-400"].join(" ")}>
-                                            <Upload size={13} strokeWidth={2.2} />
+                                <div className={["flex items-center justify-between px-4 py-3 border-b", isLight ? "border-border-subtle" : "border-border-muted"].join(" ")}>
+                                    <div className="flex items-center gap-2">
+                                        <div className={["flex h-[26px] w-[26px] items-center justify-center rounded-lg", isLight ? "bg-blue-400/15 text-accent-primary" : "bg-blue-400/15 text-blue-400"].join(" ")}>
+                                            <Upload size={12} strokeWidth={2.2} />
                                         </div>
                                         <div>
-                                            <p className="text-sm font-semibold text-text-primary">Upload Transcript</p>
-                                            <p className="text-[11px] text-text-tertiary mt-0.5">Dev only · paste a transcript to generate a full sales analysis</p>
+                                            <p className="text-[13px] font-semibold text-text-primary leading-tight">Upload Transcript</p>
+                                            <p className="text-[11px] text-text-tertiary leading-tight">Paste a transcript to generate a full sales analysis</p>
                                         </div>
                                     </div>
                                     <button
                                         onClick={() => setIsUploadOpen(false)}
-                                        className={["p-1.5 rounded-full transition-colors", isLight ? "text-text-tertiary hover:text-text-primary hover:bg-bg-item-surface" : "text-text-tertiary hover:text-text-primary hover:bg-white/10"].join(" ")}
+                                        className={["p-1 rounded-full transition-colors", isLight ? "text-text-tertiary hover:text-text-primary hover:bg-bg-item-surface" : "text-text-tertiary hover:text-text-primary hover:bg-white/10"].join(" ")}
                                     >
-                                        <X size={14} />
+                                        <X size={13} />
                                     </button>
                                 </div>
 
                                 {/* Body */}
-                                <div className="px-6 py-5 space-y-4">
+                                <div className="px-4 py-3 space-y-3">
 
                                     {/* Title field */}
                                     <div>
-                                        <label className="text-[11px] font-medium text-text-tertiary uppercase tracking-wider mb-1.5 block">
+                                        <label className="text-[10px] font-medium text-text-tertiary uppercase tracking-wider mb-1 block">
                                             Meeting Title <span className="normal-case tracking-normal font-normal opacity-60">(optional)</span>
                                         </label>
                                         <input
@@ -1226,7 +1240,7 @@ const Launcher: React.FC<LauncherProps> = ({ onStartMeeting, onOpenSettings, onP
                                             onChange={e => setUploadTitle(e.target.value)}
                                             placeholder="e.g. Q4 Discovery Call — TechFlow"
                                             className={[
-                                                "w-full rounded-xl px-4 py-2.5 text-sm text-text-primary focus:outline-none transition-colors",
+                                                "w-full rounded-[10px] px-3 py-[7px] text-[13px] text-text-primary focus:outline-none transition-colors",
                                                 isLight
                                                     ? "bg-bg-input border border-border-muted placeholder-text-tertiary focus:border-accent-primary/40 focus:ring-2 focus:ring-accent-primary/10"
                                                     : "bg-bg-input border border-border-muted placeholder-text-tertiary focus:border-white/20 focus:ring-0",
@@ -1234,45 +1248,100 @@ const Launcher: React.FC<LauncherProps> = ({ onStartMeeting, onOpenSettings, onP
                                         />
                                     </div>
 
+                                    {/* Meeting Type */}
+                                    <div>
+                                        <label className="text-[10px] font-medium text-text-tertiary uppercase tracking-wider mb-1.5 block">
+                                            Meeting Type
+                                        </label>
+                                        <div className="flex items-center gap-1.5 flex-wrap">
+                                            {([
+                                                { value: 'discovery' as const, label: 'Discovery', activeColor: '#a78bfa', activeBg: 'rgba(139,92,246,0.12)', activeBorder: 'rgba(139,92,246,0.35)' },
+                                                { value: 'demo' as const, label: 'Demo', activeColor: '#34d399', activeBg: 'rgba(52,211,153,0.10)', activeBorder: 'rgba(52,211,153,0.30)' },
+                                                { value: 'negotiation' as const, label: 'Negotiation', activeColor: '#fbbf24', activeBg: 'rgba(251,191,36,0.10)', activeBorder: 'rgba(251,191,36,0.30)' },
+                                            ] as const).map(opt => {
+                                                const on = uploadMeetingTypes.includes(opt.value);
+                                                return (
+                                                    <button
+                                                        key={opt.value}
+                                                        type="button"
+                                                        onClick={() =>
+                                                            setUploadMeetingTypes(prev =>
+                                                                prev.includes(opt.value)
+                                                                    ? prev.filter(t => t !== opt.value)
+                                                                    : [...prev, opt.value]
+                                                            )
+                                                        }
+                                                        className="flex items-center gap-1.5 px-2.5 py-[5px] rounded-lg text-[11.5px] font-medium transition-all active:scale-95 select-none"
+                                                        style={{
+                                                            background: on ? opt.activeBg : isLight ? 'rgba(0,0,0,0.04)' : 'rgba(255,255,255,0.04)',
+                                                            border: `1px solid ${on ? opt.activeBorder : isLight ? 'rgba(0,0,0,0.10)' : 'rgba(255,255,255,0.08)'}`,
+                                                            color: on ? opt.activeColor : isLight ? 'rgba(0,0,0,0.35)' : 'rgba(255,255,255,0.30)',
+                                                        }}
+                                                    >
+                                                        <span
+                                                            className="w-[11px] h-[11px] rounded-sm flex items-center justify-center shrink-0"
+                                                            style={{
+                                                                border: `1.5px solid ${on ? opt.activeColor : isLight ? 'rgba(0,0,0,0.20)' : 'rgba(255,255,255,0.18)'}`,
+                                                                background: on ? opt.activeBg : 'transparent',
+                                                            }}
+                                                        >
+                                                            {on && (
+                                                                <svg width="6" height="5" viewBox="0 0 6 5" fill="none">
+                                                                    <path d="M0.5 2.5L2 4L5.5 0.5" stroke={opt.activeColor} strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" />
+                                                                </svg>
+                                                            )}
+                                                        </span>
+                                                        {opt.label}
+                                                    </button>
+                                                );
+                                            })}
+                                        </div>
+                                        <p className="text-[10px] text-text-tertiary mt-1">
+                                            Select one or more — used to generate the meeting scorecard
+                                        </p>
+                                    </div>
+
                                     {/* Transcript textarea */}
                                     <div>
-                                        <label className="text-[11px] font-medium text-text-tertiary uppercase tracking-wider mb-1.5 block">
-                                            Transcript
-                                        </label>
+                                        <div className="flex items-baseline justify-between mb-1">
+                                            <label className="text-[10px] font-medium text-text-tertiary uppercase tracking-wider">
+                                                Transcript
+                                            </label>
+                                            <span className="text-[10px] text-text-tertiary">
+                                                {uploadText.split('\n').filter(l => l.trim()).length} lines · Supports [timestamp] SPEAKER: text format
+                                            </span>
+                                        </div>
                                         <textarea
                                             value={uploadText}
                                             onChange={e => setUploadText(e.target.value)}
                                             placeholder={`Paste transcript here. Supported formats:\n\n[00:00:12] SALES PERSON: Hello, thanks for joining...\nCLIENT: Happy to be here...\n\nor plain text lines`}
-                                            rows={12}
+                                            rows={9}
                                             className={[
-                                                "w-full rounded-xl px-4 py-3 text-sm text-text-primary focus:outline-none transition-colors resize-none font-mono leading-relaxed",
+                                                "w-full rounded-[10px] px-3 py-2.5 text-[12px] text-text-primary focus:outline-none transition-colors resize-none font-mono leading-relaxed",
                                                 isLight
                                                     ? "bg-bg-input border border-border-muted placeholder-text-tertiary focus:border-accent-primary/40 focus:ring-2 focus:ring-accent-primary/10"
                                                     : "bg-bg-input border border-border-muted placeholder-text-tertiary/60 focus:border-white/20",
                                             ].join(" ")}
                                         />
-                                        <p className="text-[10px] text-text-tertiary mt-1.5">
-                                            {uploadText.split('\n').filter(l => l.trim()).length} lines · Supports [timestamp] SPEAKER: text format
-                                        </p>
                                     </div>
 
                                     {uploadError && (
-                                        <div className={["flex items-center gap-2 text-[12px] rounded-lg px-3 py-2.5 border", isLight ? "text-red-600 bg-red-50 border-red-200" : "text-red-400 bg-red-500/10 border-red-500/20"].join(" ")}>
-                                            <AlertCircle size={13} className="shrink-0" />
+                                        <div className={["flex items-center gap-2 text-[12px] rounded-lg px-3 py-2 border", isLight ? "text-red-600 bg-red-50 border-red-200" : "text-red-400 bg-red-500/10 border-red-500/20"].join(" ")}>
+                                            <AlertCircle size={12} className="shrink-0" />
                                             {uploadError}
                                         </div>
                                     )}
                                 </div>
 
                                 {/* Footer */}
-                                <div className={["flex items-center justify-between px-6 py-4 border-t", isLight ? "border-border-subtle bg-bg-primary/40" : "border-border-muted bg-bg-item-surface/50"].join(" ")}>
+                                <div className={["flex items-center justify-between px-4 py-2.5 border-t", isLight ? "border-border-subtle bg-bg-primary/40" : "border-border-muted bg-bg-item-surface/50"].join(" ")}>
                                     <p className="text-[11px] text-text-tertiary">
                                         {uploadText.trim() ? `${uploadText.trim().length.toLocaleString()} characters` : 'No transcript pasted yet'}
                                     </p>
-                                    <div className="flex items-center gap-2">
+                                    <div className="flex items-center gap-1.5">
                                         <button
                                             onClick={() => { setIsUploadOpen(false); setUploadText(''); setUploadTitle(''); }}
-                                            className={["px-4 py-2 text-sm rounded-xl transition-colors font-medium", isLight ? "text-text-secondary hover:text-text-primary hover:bg-bg-component" : "text-text-tertiary hover:text-text-secondary hover:bg-white/[0.06]"].join(" ")}
+                                            className={["px-3.5 py-1.5 text-[12.5px] rounded-[10px] transition-colors font-medium", isLight ? "text-text-secondary hover:text-text-primary hover:bg-bg-component" : "text-text-tertiary hover:text-text-secondary hover:bg-white/[0.06]"].join(" ")}
                                         >
                                             Cancel
                                         </button>
@@ -1280,18 +1349,18 @@ const Launcher: React.FC<LauncherProps> = ({ onStartMeeting, onOpenSettings, onP
                                             onClick={handleUploadTranscript}
                                             disabled={isUploading || !uploadText.trim()}
                                             className={[
-                                                "flex items-center gap-2 px-5 py-2 rounded-xl text-sm font-semibold text-white transition-all disabled:opacity-40 disabled:cursor-not-allowed",
+                                                "flex items-center gap-1.5 px-4 py-1.5 rounded-[10px] text-[12.5px] font-semibold text-white transition-all disabled:opacity-40 disabled:cursor-not-allowed",
                                                 isLight ? "bg-accent-primary hover:bg-blue-700 shadow-sm" : "bg-accent-primary hover:bg-blue-500",
                                             ].join(" ")}
                                         >
                                             {isUploading ? (
                                                 <>
-                                                    <RefreshCw size={13} className="animate-spin" />
+                                                    <RefreshCw size={12} className="animate-spin" />
                                                     Processing...
                                                 </>
                                             ) : (
                                                 <>
-                                                    <Upload size={13} />
+                                                    <Upload size={12} />
                                                     Upload & Analyse
                                                 </>
                                             )}

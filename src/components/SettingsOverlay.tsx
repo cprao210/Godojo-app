@@ -14,7 +14,8 @@ import {
     Hand,
     Pause,
     StopCircle,
-    GripVertical
+    GripVertical,
+    BarChart2
 } from 'lucide-react';
 import { analytics } from '../lib/analytics/analytics.service';
 import { AboutSection } from './AboutSection';
@@ -32,6 +33,7 @@ import {
 import { KeyRecorder } from './ui/KeyRecorder';
 import { ProfileVisualizer, PremiumUpgradeModal } from '../premium';
 import { CompanyContextTab } from './settings/CompanyContextTab';
+import { ScoringCriteriaTab } from './settings/ScoringCriteriaTab';
 import { UserProfileTab } from './settings/UserProfileTab';
 import icon from './icon.png';
 
@@ -1346,6 +1348,14 @@ const SettingsOverlay: React.FC<SettingsOverlayProps> = ({ isOpen, onClose, init
                                             className={`w-full text-left px-3 py-2 rounded-lg text-sm font-medium transition-colors flex items-center gap-3 ${activeTab === 'company-context' ? 'bg-bg-item-active text-text-primary' : 'text-text-secondary hover:text-text-primary hover:bg-bg-item-active/50'}`}
                                         >
                                             <Building2 size={16} /> Company Context
+                                        </button>
+
+                                        <button
+                                            onClick={() => setActiveTab('scoring-criteria')}
+                                            className={`w-full text-left px-3 py-2 rounded-lg text-sm font-medium transition-colors flex items-center gap-3 ${activeTab === 'scoring-criteria' ? 'bg-bg-item-active text-text-primary' : 'text-text-secondary hover:text-text-primary hover:bg-bg-item-active/50'}`}
+                                        >
+                                            <BarChart2 size={16} className="shrink-0" />
+                                            Scoring Criteria
                                         </button>
 
                                         <button
@@ -3318,6 +3328,10 @@ const SettingsOverlay: React.FC<SettingsOverlayProps> = ({ isOpen, onClose, init
                                         setIsPremiumModalOpen={setIsPremiumModalOpen}
                                         isLight={isLight}
                                     />
+                                )}
+
+                                {activeTab === 'scoring-criteria' && (
+                                    <ScoringCriteriaTab />
                                 )}
 
                                 {activeTab === 'about' && (

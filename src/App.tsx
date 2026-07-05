@@ -370,7 +370,7 @@ const App: React.FC = () => {
     }
   };
 
-  const handleEndMeeting = async () => {
+  const handleEndMeeting = async (meetingTypes?: ('discovery' | 'demo' | 'negotiation')[]) => {
     console.log("[App.tsx] handleEndMeeting triggered");
     analytics.trackMeetingEnded();
     setIsProcessingMeeting(true);
@@ -392,7 +392,7 @@ const App: React.FC = () => {
     // means the placeholder card is visible as soon as Launcher mounts and
     // receives the onMeetingsUpdated event, instead of only after the full IPC
     // round-trip completes.
-    window.electronAPI.endMeeting().catch(err =>
+    window.electronAPI.endMeeting(meetingTypes).catch(err =>
       console.error("Failed to end meeting:", err)
     );
 

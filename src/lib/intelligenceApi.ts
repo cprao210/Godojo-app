@@ -7,7 +7,7 @@
 // transcript STRING; the backend has no preprocess step.
 
 import { apiFetch } from "./apiClient";
-import type { LiveAnalysisData, LiveAnalysisTurn } from "../types/liveAnalysis";
+import type { LiveAnalysisData, LiveAnalysisTurn, MeetingType } from "../types/liveAnalysis";
 
 // Backend has no window cap (preprocess removed), so cap here. Keeps the extract prompt
 // small on long calls.
@@ -31,13 +31,23 @@ export const intelligenceApi = {
    * POST the formatted transcript to /intelligence/live-analysis. The backend runs RAG +
    * the fast extract (or the deep critique/revise loop) and returns LiveAnalysisData.
    * `meetingId` is null for a live (not-yet-ingested) call.
+   *
+   * `meetingTypes` mirrors the panel's Meeting Type multi-select — the backend produces
+   * `dealOptimizer` only when it includes "negotiation". `mode` defaults to "fast"
+   * (single extract call); "deep" adds the backend critique/revise loop.
    */
   analyzeLive: (
     turns: LiveAnalysisTurn[],
     meetingId: string | null = null,
+    opts: { mode?: "fast" | "deep"; meetingTypes?: MeetingType[] } = {},
   ): Promise<LiveAnalysisData> =>
     apiFetch<LiveAnalysisData>("/intelligence/live-analysis", {
       method: "POST",
-      body: JSON.stringify({ transcript: formatTranscript(turns), meeting_id: meetingId }),
+      body: JSON.stringify({
+        transcript: formatTranscript(turns),
+        meeting_id: meetingId,
+        mode: opts.mode ?? "fast",
+        meeting_types: opts.meetingTypes ?? [],
+      }),
     }),
 };

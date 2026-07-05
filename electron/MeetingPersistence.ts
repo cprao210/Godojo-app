@@ -9,6 +9,8 @@ import { GROQ_TITLE_PROMPT, GROQ_SUMMARY_JSON_PROMPT } from './llm';
 import { LiveAnalysisData } from '../src/types/liveAnalysis';
 import { AppState } from './main';
 import { buildCompanyContextBlock } from '../electron/utils/salesBriefUtils';
+import { buildScorecardPrompt } from './llm/ScoreCardLLM';
+import { MeetingScorecardResult } from '../src/types/score-card';
 const crypto = require('crypto');
 
 const buildSummaryPrompt = (liveAnalysis?: LiveAnalysisData | null, companyIntel?: Record<string, any> | null): string => {
@@ -250,7 +252,12 @@ export class MeetingPersistence {
      * Stops the meeting immediately, snapshots data, and triggers background processing.
      * Returns immediately so UI can switch.
      */
-    public async stopMeeting(): Promise<string | null> {
+    /**
+     * @param meetingTypes The meeting type(s) the rep selected live (e.g. Demo + Negotiation).
+     *   Forwarded as the scorecard's `hintMeetingTypes` so auto-detection respects the
+     *   rep's explicit selection instead of guessing from the transcript alone.
+     */
+    public async stopMeeting(meetingTypes?: ('discovery' | 'demo' | 'negotiation')[]): Promise<string | null> {
         console.log('[MeetingPersistence] Stopping meeting and queueing save...');
 
         // 0. Force-save any pending interim transcript
@@ -282,9 +289,6 @@ export class MeetingPersistence {
             context: this.session.getFullSessionContext()
         };
 
-        // console.log("==> this.session.getFullSessionContext(): ", this.session.getFullSessionContext());
-        // console.log("==> this.session.getFullTranscript(): ", this.session.getFullTranscript());
-
         // BUG-04 fix: snapshot metadata BEFORE reset() clears it so the
         // background processAndSaveMeeting worker receives the calendar info.
         const metadataSnapshot = this.session.getMeetingMetadata();
@@ -294,7 +298,15 @@ export class MeetingPersistence {
         this.session.reset();
 
         const meetingId = crypto.randomUUID();
-        this.processAndSaveMeeting(snapshot, meetingId, metadataSnapshot, liveAnalysisData, speakerNamesSnapshot).catch(err => {
+        this.processAndSaveMeeting(
+            snapshot,
+            meetingId,
+            metadataSnapshot,
+            liveAnalysisData,
+            speakerNamesSnapshot,
+            undefined,      // companyIntel — not captured at stop time for live calls
+            meetingTypes    // ← rep's live selection, was previously dropped (always undefined)
+        ).catch(err => {
             console.error('[MeetingPersistence] Background processing failed:', err);
         });
 
@@ -311,8 +323,6 @@ export class MeetingPersistence {
             usage: [],
             isProcessed: false
         };
-
-        console.log("==> placeholder: ", placeholder.transcript);
 
         try {
             DatabaseManager.getInstance().saveMeeting(placeholder, snapshot.startTime, durationMs);
@@ -335,7 +345,8 @@ export class MeetingPersistence {
         metadata?: { title?: string; calendarEventId?: string; source?: 'manual' | 'calendar' } | null,
         liveAnalysisData?: LiveAnalysisData | null,
         speakerNames?: { user: string; client: string },
-        companyIntel?: Record<string, any> | null   // ← new param
+        companyIntel?: Record<string, any> | null,
+        hintMeetingTypes?: ('discovery' | 'demo' | 'negotiation')[]
     ): Promise<void> {
         let title = "Untitled Session";
         let summaryData: { actionItems: string[], keyPoints: string[], liveAnalysis?: LiveAnalysisData, speakerNames?: { user: string, client: string } } = { actionItems: [], keyPoints: [] };
@@ -409,21 +420,6 @@ export class MeetingPersistence {
                 const groqSummaryPrompt = liveAnalysisGroqBlock
                     ? GROQ_SUMMARY_JSON_PROMPT + '\n\n' + liveAnalysisGroqBlock
                     : GROQ_SUMMARY_JSON_PROMPT;
-
-                // Build full transcript text directly from the transcript array so the
-                // LLM sees the complete call. The pre-built data.context is capped at
-                // 10,000 chars which silently cuts off the second half of longer calls.
-                // Average ~60 chars per turn × 1500 turns = 90,000 chars — well within
-                // Gemini/Claude/GPT context windows. Groq has a 100k token guard already.
-                const fullTranscriptText = data.transcript
-                    .filter(t => !['system', 'ai', 'assistant', 'model'].includes(t.speaker?.toLowerCase()))
-                    .map(t => {
-                        const role = t.speaker === 'user'
-                            ? (speakerNames?.user || 'REP')
-                            : (speakerNames?.client || 'PROSPECT');
-                        return `${role}: ${t.text}`;
-                    })
-                    .join('\n');
 
                 const generatedSummary = await this.llmHelper.generateMeetingSummary(buildSummaryPrompt(liveAnalysisData, companyIntel), fullTranscriptText, groqSummaryPrompt);
 
@@ -514,6 +510,23 @@ export class MeetingPersistence {
                 detailedSummary = { ...summaryData, liveAnalysis: liveAnalysisData };
             }
 
+            // ── Generate Meeting Scorecard ─────────────────────────────────────────────────
+            let scorecardResult: MeetingScorecardResult | null = null;
+
+            if (data.transcript.length > 2) {
+
+                const outcome = await this.generateAndPersistScorecard(
+                    meetingId,
+                    fullTranscriptText,
+                    hintMeetingTypes ?? null
+                );
+                scorecardResult = outcome.scorecardResult;
+                if (scorecardResult && !outcome.persisted) {
+                    // DB write failed — fall back to embedding it in summary_json so the UI still gets data
+                    detailedSummary = { ...detailedSummary, scorecard: scorecardResult } as any;
+                }
+            }
+
             // Use the speaker names snapshot captured BEFORE session.reset() was called.
             // Do NOT call this.session.getSpeakerNameMap() here — the session is already
             // reset at this point and would return the defaults { user: 'Me', client: 'Them' }.
@@ -556,8 +569,118 @@ export class MeetingPersistence {
     }
 
     /**
+     * Generates a meeting scorecard via the LLM and persists it to `meeting_scorecards`
+     * (mirroring to Supabase). Single source of truth for: loading scoring criteria,
+     * building the prompt, stripping ```json fences, parsing, normalizing
+     * `categoryBreakdown`, saving, and mirroring — used by both the initial
+     * post-meeting scorecard generation and manual regeneration so the two paths
+     * can't drift.
+     *
+     * Returns `scorecardResult: null` if generation/parsing failed (non-fatal —
+     * callers should treat this as "no scorecard produced this run").
+     * Returns `persisted: false` if generation succeeded but the DB write failed —
+     * callers that need a fallback (e.g. embedding the scorecard in summary_json)
+     * can check this flag.
+     */
+    private async generateAndPersistScorecard(
+        meetingId: string,
+        transcriptText: string,
+        hintTypes: ('discovery' | 'demo' | 'negotiation')[] | null
+    ): Promise<{ scorecardResult: MeetingScorecardResult | null; persisted: boolean }> {
+        let customScoringCriteria: import('../src/types/score-card').ScoringCriteriaSettings | null = null;
+        try {
+            customScoringCriteria = DatabaseManager.getInstance().getScoringCriteria();
+        } catch (criteriaErr) {
+            console.warn('[MeetingPersistence] Could not load custom scoring criteria, using defaults:', criteriaErr);
+        }
+
+        let scorecardResult: MeetingScorecardResult | null = null;
+        try {
+            const scorecardPrompt = buildScorecardPrompt(customScoringCriteria, hintTypes ?? null);
+            const scorecardRaw = await this.llmHelper.generateMeetingSummary(
+                scorecardPrompt,
+                transcriptText,
+                scorecardPrompt
+            );
+            if (scorecardRaw) {
+                const clean = scorecardRaw.replace(/```json|```/g, '').trim();
+                const parsed = JSON.parse(clean);
+                scorecardResult = {
+                    detectedTypes: parsed.detectedTypes ?? [],
+                    overallWeightedScore: parsed.overallWeightedScore ?? 0,
+                    scorecards: Object.values(parsed.scorecards ?? {}).map((sc: any) => ({
+                        ...sc,
+                        categoryBreakdown: Array.isArray(sc.categoryBreakdown)
+                            ? sc.categoryBreakdown
+                            : Object.values(sc.categoryBreakdown ?? {}),
+                    })),
+                } as MeetingScorecardResult;
+            }
+        } catch (e) {
+            console.warn('[MeetingPersistence] Scorecard generation failed (non-fatal):', e);
+            return { scorecardResult: null, persisted: false };
+        }
+
+        if (!scorecardResult) {
+            return { scorecardResult: null, persisted: false };
+        }
+
+        // Write scorecard to its dedicated table — NOT into summary_json
+        try {
+            DatabaseManager.getInstance().saveMeetingScorecard(
+                meetingId,
+                scorecardResult,
+                customScoringCriteria ?? null   // snapshot the criteria used
+            );
+        } catch (scorecardSaveErr) {
+            console.warn('[MeetingPersistence] Failed to persist scorecard (non-fatal):', scorecardSaveErr);
+            return { scorecardResult, persisted: false };
+        }
+
+        // Mirror to Supabase — no-op if unauthenticated, non-fatal on failure
+        try {
+            const { SupabaseMirrorService } = require('./db/SupabaseMirrorService');
+            SupabaseMirrorService.getInstance().upsertRow('meeting_scorecards', {
+                meeting_id: meetingId,
+                overall_score: scorecardResult.overallWeightedScore ?? 0,
+                detected_types: JSON.stringify(scorecardResult.detectedTypes ?? []),
+                scorecard_json: JSON.stringify(scorecardResult),
+                criteria_snapshot_json: customScoringCriteria ? JSON.stringify(customScoringCriteria) : null,
+                generated_at: new Date().toISOString(),
+            });
+        } catch (mirrorErr) {
+            console.warn('[MeetingPersistence] Scorecard mirror to Supabase failed (non-fatal):', mirrorErr);
+        }
+
+        return { scorecardResult, persisted: true };
+    }
+
+    /**
+     * Re-scores a meeting using the latest scoring criteria from the DB.
+     * Saves the result to `meeting_scorecards` (and mirrors to Supabase) so the
+     * next `getMeetingDetails` call returns fresh scorecard data.
+     */
+
+    private async regenerateScorecard(
+        meetingId: string,
+        transcriptContext: string,
+        detectedMeetingTypes: ('discovery' | 'demo' | 'negotiation')[] | null
+    ): Promise<void> {
+        const { scorecardResult } = await this.generateAndPersistScorecard(
+            meetingId,
+            transcriptContext,
+            detectedMeetingTypes ?? null
+        );
+
+        if (scorecardResult) {
+            console.log(`[MeetingPersistence] Regenerated scorecard for meeting ${meetingId}`);
+        }
+    }
+
+    /**
      * Regenerate the summary for a meeting
      */
+
     public async regenerateSummary(meetingId: string): Promise<boolean> {
 
         try {
@@ -592,6 +715,17 @@ export class MeetingPersistence {
 
             DatabaseManager.getInstance().updateMeetingSummary(meetingId, summaryData);
             console.log(`[MeetingPersistence] Regenerated summary for meeting ${meetingId}`);
+
+            // Re-score using the latest criteria so any criteria changes made before
+            // clicking "regenerate" are reflected in the scorecard shown in the UI.
+            const existingTypes = (meeting.detailedSummary as any)?.scorecard?.detectedTypes ?? null;
+            try {
+                await this.regenerateScorecard(meetingId, fullRegenerateContext, existingTypes);
+            } catch (scorecardErr) {
+                // Non-fatal: text summary was already saved; log and continue.
+                console.warn('[MeetingPersistence] Scorecard regeneration failed (non-fatal):', scorecardErr);
+            }
+
             return true;
 
         } catch (e) {
@@ -607,7 +741,8 @@ export class MeetingPersistence {
      */
     public async uploadTranscript(
         rawText: string,
-        title?: string
+        title?: string,
+        meetingTypes?: ('discovery' | 'demo' | 'negotiation')[]
     ): Promise<string | null> {
         try {
             // Parse lines like "[00:00:12] REP: text" or "REP: text" or plain text
@@ -693,7 +828,11 @@ export class MeetingPersistence {
             this.processAndSaveMeeting(
                 { transcript, usage: [], startTime: startTimeMs, durationMs, context },
                 meetingId,
-                { title: title || undefined, source: 'manual' }
+                { title: title || undefined, source: 'manual' },
+                null,           // liveAnalysisData — not available for uploads
+                undefined,      // speakerNames
+                null,           // companyIntel
+                meetingTypes    // ← pass through
             ).catch(err => console.error('[MeetingPersistence] Upload processing failed:', err));
 
             return meetingId;
