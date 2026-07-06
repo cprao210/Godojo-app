@@ -70,10 +70,7 @@ if (os.platform() === 'darwin') {
     runCommand('npx napi build --platform --release');
 
     // Verify the artifact was produced
-    const verifyTarget = prebuiltMap[os.arch()];
-    if (verifyTarget) {
-      verifyArtifacts([verifyTarget]);
-    }
+    verifyArtifacts([prebuiltMap[os.arch()]])
   }
 } else {
   console.log(`Building for current platform: ${os.platform()}`);

@@ -56,6 +56,10 @@
       {
         "from": "resources/models/",
         "to": "models/"
+      },
+      {
+        "from": ".env",
+        "to": ".env"
       }
     ],
     "mac": {
