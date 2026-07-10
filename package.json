@@ -127,8 +127,8 @@
     "publish": [
       {
         "provider": "github",
-        "owner": "evinjohnn",
-        "repo": "natively-cluely-ai-assistant",
+        "owner": "cprao210",
+        "repo": "Godojo-app",
         "releaseType": "release"
       }
     ]
