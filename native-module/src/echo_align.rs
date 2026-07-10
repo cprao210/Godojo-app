@@ -2,12 +2,13 @@
 //
 // AEC3 can only cancel echo when the render reference it receives is causally
 // aligned (reference no more than a few tens of ms ahead of the echo in the
-// mic). The system-audio tap reference can lead the acoustic echo by hundreds
-// of ms (measured ~324 ms on the ScreenCaptureKit backend), which is outside
-// AEC3's alignment range. This module measures the actual offset at runtime by
-// cross-correlating the energy envelopes of the two streams, and drives a
-// delay buffer that re-aligns the render feed (or, if the reference ever turns
-// out to be LATE, the capture feed).
+// mic). The system-audio reference offset is backend- and machine-dependent:
+// the ScreenCaptureKit backend leads the acoustic echo by hundreds of ms
+// (measured ~+324 ms), while the CoreAudio tap has been observed arriving
+// LATE (negative offsets down to ~-90 ms in field telemetry). This module
+// measures the actual offset at runtime by cross-correlating the energy
+// envelopes of the two streams, and drives a delay buffer that re-aligns the
+// render feed (reference early) or the capture feed (reference late).
 //
 // Everything here is pure data-in/data-out and unit-testable; lib.rs owns the
 // wiring. Envelope entries are (timestamp_ms, rms) pairs; timestamps are
@@ -22,10 +23,14 @@ use std::sync::Mutex;
 pub const ENV_PERIOD_MS: u64 = 10;
 const ENV_RING_CAP: usize = 1024; // ~10 s of 10 ms entries
 
-/// Correlation search window: negative = reference LATE (contingency),
-/// positive = reference EARLY (the observed tap/SCK case).
-const LAG_MIN_MS: i32 = -500;
-const LAG_MAX_MS: i32 = 1000;
+/// Correlation search window: negative = reference LATE (the observed
+/// CoreAudio-tap case), positive = reference EARLY (the SCK case).
+/// The negative bound is tight on purpose: the user's own voice returning
+/// from the far end shows up at the meeting RTT (300-1000 ms) and must fall
+/// OUTSIDE the search range, and CAPTURE_DELAY_CAP_MS caps what we could
+/// apply anyway. The positive bound comfortably covers the SCK lead (~324 ms).
+const LAG_MIN_MS: i32 = -250;
+const LAG_MAX_MS: i32 = 600;
 const LAG_STEP_MS: i32 = 10;
 
 /// Minimum overlapping envelope needed before attempting an estimate.
@@ -36,7 +41,7 @@ const MIN_OVERLAP_MS: u64 = 3_000;
 /// dominance test compares the peak against lags OUTSIDE that neighborhood —
 /// it rejects periodic material (music beats) without rejecting speech.
 const MIN_PEAK_SCORE: f32 = 0.5;
-const MIN_PEAK_DOMINANCE: f32 = 1.3;
+const MIN_PEAK_DOMINANCE: f32 = 1.5;
 const PEAK_NEIGHBORHOOD_MS: i32 = 150;
 
 /// Keep AEC3 a comfortable causal residual to lock onto instead of aligning
@@ -76,7 +81,10 @@ pub fn push_capture_env(ts_ms: u64, rms: f32) {
     push_env(&CAPTURE_ENV, ts_ms, rms);
 }
 
-/// Clear both rings (meeting start).
+/// Clear both rings + the last estimate (meeting start, route change).
+/// Deliberately does NOT touch the applied delay targets — callers that also
+/// want the buffers back at zero (or re-seeded) call `reset_targets()` and/or
+/// `AlignController::publish` explicitly so the ordering is intentional.
 pub fn reset_envelopes() {
     if let Ok(mut r) = RENDER_ENV.lock() {
         r.clear();
@@ -84,9 +92,22 @@ pub fn reset_envelopes() {
     if let Ok(mut c) = CAPTURE_ENV.lock() {
         c.clear();
     }
+    LAST_ESTIMATE_MS.store(i32::MIN, Ordering::Release);
+}
+
+/// Zero the applied delay-buffer targets.
+pub fn reset_targets() {
     TARGET_RENDER_DELAY_MS.store(0, Ordering::Release);
     TARGET_CAPTURE_DELAY_MS.store(0, Ordering::Release);
-    LAST_ESTIMATE_MS.store(i32::MIN, Ordering::Release);
+}
+
+/// Convert a persisted EFFECTIVE offset (the `applied_align_offset_ms` stats
+/// value: positive = render delayed by that many ms, negative = capture
+/// delayed) back to the RAW estimate space used by the correlator and
+/// `AlignController`. `publish()` maps raw R → effective E = R −
+/// ALIGN_HEADROOM_MS in both directions, so the inverse is uniform.
+pub fn seed_raw_from_effective(effective_ms: i32) -> i32 {
+    effective_ms + ALIGN_HEADROOM_MS
 }
 
 /// Snapshot both rings and estimate the current offset.
@@ -270,10 +291,19 @@ pub fn estimate_delay_ms(render: &[(u64, f32)], capture: &[(u64, f32)]) -> Optio
 // AlignController — median smoothing + hysteresis over raw estimates
 // ============================================================================
 
+/// Smoothed-estimate divergence needed before a re-apply is even considered.
+const APPLY_DIVERGENCE_MS: i32 = 50;
+/// Minimum spacing between applies. A re-apply invalidates AEC3 convergence,
+/// so it must be rare; the first apply of a session is exempt.
+const APPLY_MIN_INTERVAL_MS: u64 = 10_000;
+
 pub struct AlignController {
     history: VecDeque<i32>,
     applied_ms: i32,
     divergent_feeds: u32,
+    /// now_ms of the last apply; 0 = never applied (first apply is exempt
+    /// from APPLY_MIN_INTERVAL_MS).
+    last_apply_ms: u64,
 }
 
 impl AlignController {
@@ -282,6 +312,19 @@ impl AlignController {
             history: VecDeque::with_capacity(5),
             applied_ms: 0,
             divergent_feeds: 0,
+            last_apply_ms: 0,
+        }
+    }
+
+    /// Start from a known-good prior (persisted telemetry or backend default,
+    /// RAW estimate space). `feed()` then measures divergence from the seed,
+    /// so estimates that merely confirm it never trigger a re-apply.
+    pub fn with_seed(seed_raw_ms: i32) -> Self {
+        Self {
+            history: VecDeque::with_capacity(5),
+            applied_ms: seed_raw_ms,
+            divergent_feeds: 0,
+            last_apply_ms: 0,
         }
     }
 
@@ -289,10 +332,13 @@ impl AlignController {
         self.applied_ms
     }
 
-    /// Feed one raw estimate. Returns Some(new_applied_ms) when the smoothed
-    /// estimate has diverged from the applied value by >30 ms for 3
-    /// consecutive feeds (hysteresis against jitter and false peaks).
-    pub fn feed(&mut self, estimate_ms: i32) -> Option<i32> {
+    /// Feed one raw estimate at wall-clock `now_ms`. Returns
+    /// Some(new_applied_ms) when the smoothed estimate has diverged from the
+    /// applied value by >APPLY_DIVERGENCE_MS for 3 consecutive feeds
+    /// (hysteresis against jitter and false peaks) AND at least
+    /// APPLY_MIN_INTERVAL_MS passed since the previous apply (damping — every
+    /// apply costs a full AEC3 re-convergence).
+    pub fn feed(&mut self, now_ms: u64, estimate_ms: i32) -> Option<i32> {
         self.history.push_back(estimate_ms);
         while self.history.len() > 5 {
             self.history.pop_front();
@@ -304,11 +350,19 @@ impl AlignController {
         sorted.sort_unstable();
         let median = sorted[sorted.len() / 2];
 
-        if (median - self.applied_ms).abs() > 30 {
+        if (median - self.applied_ms).abs() > APPLY_DIVERGENCE_MS {
             self.divergent_feeds += 1;
             if self.divergent_feeds >= 3 {
+                if self.last_apply_ms != 0
+                    && now_ms.saturating_sub(self.last_apply_ms) < APPLY_MIN_INTERVAL_MS
+                {
+                    // Damped: strikes stay armed, the apply fires once the
+                    // interval elapses (if the estimates still diverge).
+                    return None;
+                }
                 self.divergent_feeds = 0;
                 self.applied_ms = median;
+                self.last_apply_ms = now_ms.max(1);
                 return Some(median);
             }
         } else {
@@ -439,9 +493,13 @@ mod tests {
             .collect()
     }
 
+    /// Serializes tests that mutate the global TARGET_* atomics.
+    static TEST_TARGET_LOCK: Mutex<()> = Mutex::new(());
+
     #[test]
     fn estimates_known_lags() {
-        for lag in [0i64, 40, 120, 324, 600] {
+        // All within the tightened search window [-250, 600].
+        for lag in [0i64, 40, 120, 324, 560] {
             let render = synth_envelope(10_000, 8_000, 42);
             let capture = shifted(&render, lag, 0.3); // echo is attenuated copy
             let est = estimate_delay_ms(&render, &capture)
@@ -475,29 +533,109 @@ mod tests {
     #[test]
     fn controller_applies_median_with_hysteresis() {
         let mut ctl = AlignController::new();
+        let mut t = 0u64;
+        let mut feed = |ctl: &mut AlignController, est: i32| {
+            t += 2_000; // real correlator cadence
+            ctl.feed(t, est)
+        };
         // Warm-up: not enough history.
-        assert_eq!(ctl.feed(320), None);
-        assert_eq!(ctl.feed(324), None);
+        assert_eq!(feed(&mut ctl, 320), None);
+        assert_eq!(feed(&mut ctl, 324), None);
         // Third feed: median 320+ diverges from applied 0 → strike 1... 3.
-        assert_eq!(ctl.feed(330), None);
-        assert_eq!(ctl.feed(318), None);
-        let applied = ctl.feed(325);
+        assert_eq!(feed(&mut ctl, 330), None);
+        assert_eq!(feed(&mut ctl, 318), None);
+        let applied = feed(&mut ctl, 325);
         assert!(applied.is_some(), "should apply after 3 divergent feeds");
         let a = applied.unwrap();
         assert!((a - 324).abs() <= 10, "applied {a}");
 
-        // Jitter around the applied value must not re-trigger.
-        assert_eq!(ctl.feed(a + 20), None);
-        assert_eq!(ctl.feed(a - 15), None);
-        assert_eq!(ctl.feed(a + 25), None);
+        // Jitter around the applied value (within ±50 ms) must not re-trigger.
+        assert_eq!(feed(&mut ctl, a + 40), None);
+        assert_eq!(feed(&mut ctl, a - 35), None);
+        assert_eq!(feed(&mut ctl, a + 45), None);
 
         // One outlier is absorbed by the median + strike counter.
-        assert_eq!(ctl.feed(900), None);
-        assert_eq!(ctl.feed(a + 5), None);
+        assert_eq!(feed(&mut ctl, 900), None);
+        assert_eq!(feed(&mut ctl, a + 5), None);
+    }
+
+    #[test]
+    fn seeded_controller_measures_divergence_from_seed() {
+        let mut ctl = AlignController::with_seed(324);
+        assert_eq!(ctl.applied_ms(), 324);
+
+        // Estimates confirming the seed must never re-apply.
+        let mut t = 0u64;
+        for est in [320, 330, 310, 340, 324, 318] {
+            t += 2_000;
+            assert_eq!(ctl.feed(t, est), None, "confirming estimate {est}");
+        }
+
+        // Genuinely divergent estimates re-apply after the median flips and
+        // 3 strikes accumulate (first apply of the session is exempt from
+        // the interval damping).
+        let mut applied = None;
+        for _ in 0..6 {
+            t += 2_000;
+            applied = ctl.feed(t, 100);
+            if applied.is_some() {
+                break;
+            }
+        }
+        assert_eq!(applied, Some(100), "divergent estimates must re-apply");
+    }
+
+    #[test]
+    fn min_apply_interval_damps_reapplies() {
+        let mut ctl = AlignController::new();
+        let mut t = 0u64;
+
+        // First apply: exempt from the interval.
+        let mut first = None;
+        while first.is_none() {
+            t += 500;
+            first = ctl.feed(t, 300);
+            assert!(t < 10_000, "first apply must not be interval-damped");
+        }
+        assert_eq!(first, Some(300));
+        let apply_t = t;
+
+        // Hard divergence immediately after: strikes accumulate but the
+        // re-apply must stay damped for APPLY_MIN_INTERVAL_MS.
+        let mut second = None;
+        while second.is_none() && t + 500 < apply_t + APPLY_MIN_INTERVAL_MS {
+            t += 500;
+            second = ctl.feed(t, -50);
+        }
+        assert_eq!(second, None, "re-apply within the interval must be damped");
+
+        // Once the interval elapses the pending divergence applies.
+        while second.is_none() && t < apply_t + 3 * APPLY_MIN_INTERVAL_MS {
+            t += 500;
+            second = ctl.feed(t, -50);
+        }
+        assert_eq!(second, Some(-50), "re-apply after the damping interval");
+    }
+
+    #[test]
+    fn seed_roundtrip_preserves_effective_offset() {
+        let _guard = TEST_TARGET_LOCK.lock().unwrap();
+        // publish(seed_raw_from_effective(E)) must reproduce the exact buffer
+        // targets a previous session persisted as applied_align_offset_ms=E.
+        for eff in [-250, -90, -41, 120, 284] {
+            AlignController::publish(seed_raw_from_effective(eff));
+            let rd = TARGET_RENDER_DELAY_MS.load(Ordering::Acquire);
+            let cd = TARGET_CAPTURE_DELAY_MS.load(Ordering::Acquire);
+            let roundtrip = if rd > 0 { rd } else { -cd };
+            assert_eq!(roundtrip, eff, "effective offset {eff}");
+        }
+        // Restore for other tests.
+        AlignController::publish(0);
     }
 
     #[test]
     fn publish_maps_offsets_to_buffer_targets() {
+        let _guard = TEST_TARGET_LOCK.lock().unwrap();
         AlignController::publish(324);
         assert_eq!(TARGET_RENDER_DELAY_MS.load(Ordering::Acquire), 324 - ALIGN_HEADROOM_MS);
         assert_eq!(TARGET_CAPTURE_DELAY_MS.load(Ordering::Acquire), 0);

@@ -32,6 +32,10 @@ pub mod fallback {
         pub fn new(_device_id: Option<String>) -> Result<Self> {
             Err(anyhow::anyhow!("Unsupported platform"))
         }
+
+        pub fn backend_name(&self) -> &'static str {
+            "none"
+        }
     }
     pub fn list_output_devices() -> Result<Vec<(String, String)>> {
         Ok(Vec::new())

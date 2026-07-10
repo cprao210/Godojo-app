@@ -42,11 +42,18 @@ export interface MicrophoneCaptureOptions {
     /**
      * Echo pipeline mode passed down to the Rust gate:
      *   'legacy'      — original hard mute (SPEAKER_ACTIVE + warmup)
-     *   'phase1'      — headphone bypass + short RMS-driven gate (default)
-     *   'full_duplex' — delay-aligned AEC3 + convergence-tracked soft gate
+     *   'phase1'      — headphone bypass + short RMS-driven gate
+     *   'full_duplex' — delay-aligned AEC3 + convergence-tracked soft gate (default)
      * Overrides the NATIVELY_ECHO_MODE env var when set.
      */
     echoMode?: string;
+    /**
+     * Persisted AEC alignment seed for the current output route (SIGNED ms:
+     * positive = render delayed, negative = capture delayed). Lets the native
+     * echo canceller start pre-aligned instead of re-estimating from scratch.
+     * Ignored by pre-rework .node binaries.
+     */
+    echoAlignSeedMs?: number;
 }
 
 export class MicrophoneCapture extends EventEmitter {
@@ -56,6 +63,7 @@ export class MicrophoneCapture extends EventEmitter {
     private _sampleRateEmitted: boolean = false;
     private _vadDisabled: boolean = false;
     private _echoMode: string | undefined;
+    private _echoAlignSeedMs: number | undefined;
 
     // VAD-lockout watchdog timers (only used when vadDisabled=false)
     private _vadResetTimer: NodeJS.Timeout | null = null;
@@ -67,6 +75,7 @@ export class MicrophoneCapture extends EventEmitter {
         this.deviceId = deviceId || null;
         this._vadDisabled = options?.vadDisabled ?? false;
         this._echoMode = options?.echoMode;
+        this._echoAlignSeedMs = options?.echoAlignSeedMs;
 
         if (!RustMicCapture) {
             console.error('[MicrophoneCapture] Rust class implementation not found.');
@@ -78,7 +87,7 @@ export class MicrophoneCapture extends EventEmitter {
                 console.log('[MicrophoneCapture] Creating native monitor (Eager Init)...');
                 // Rust signature: new(device_id, vad_disabled, options?: CaptureOptions)
                 // The trailing options object is ignored by pre-rework .node binaries.
-                this.monitor = new RustMicCapture(this.deviceId, this._vadDisabled, { echoMode: this._echoMode });
+                this.monitor = new RustMicCapture(this.deviceId, this._vadDisabled, this._captureOptions());
             } catch (e) {
                 console.error('[MicrophoneCapture] Failed to create native monitor:', e);
                 // Re-throw so callers (e.g. reconfigureAudio) can catch and fall back to
@@ -88,6 +97,19 @@ export class MicrophoneCapture extends EventEmitter {
                 throw e;
             }
         }
+    }
+
+    /**
+     * Options object for the native constructor. Typed loosely on purpose:
+     * the native CaptureOptions grows fields (echoAlignSeedMs) that may not
+     * exist in the local .d.ts until the concurrent napi rebuild lands —
+     * older binaries simply ignore unknown keys.
+     */
+    private _captureOptions(): any {
+        return {
+            echoMode: this._echoMode,
+            echoAlignSeedMs: this._echoAlignSeedMs,
+        };
     }
 
     public getSampleRate(): number {
@@ -125,7 +147,7 @@ export class MicrophoneCapture extends EventEmitter {
         if (!this.monitor) {
             console.log('[MicrophoneCapture] Monitor not initialized. Re-initializing...');
             try {
-                this.monitor = new RustMicCapture(this.deviceId, this._vadDisabled, { echoMode: this._echoMode });
+                this.monitor = new RustMicCapture(this.deviceId, this._vadDisabled, this._captureOptions());
             } catch (e) {
                 this.emit('error', e);
                 return;
@@ -193,7 +215,7 @@ export class MicrophoneCapture extends EventEmitter {
                                     if (!this.isRecording) {
                                         // Recreate monitor and restart
                                         try {
-                                            this.monitor = new RustMicCapture(this.deviceId, this._vadDisabled, { echoMode: this._echoMode });
+                                            this.monitor = new RustMicCapture(this.deviceId, this._vadDisabled, this._captureOptions());
                                         } catch (e) {
                                             this.emit('error', e);
                                             return;

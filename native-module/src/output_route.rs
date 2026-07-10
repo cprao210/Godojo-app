@@ -130,9 +130,11 @@ fn current_output_route_impl() -> OutputRouteInfo {
             }
         }
         ca::DeviceTransportType::BLUETOOTH | ca::DeviceTransportType::BLUETOOTH_LE => {
-            // BT devices are overwhelmingly headsets; BT speakers are caught
-            // by the name deny-list.
-            (classify_by_name(&name, RouteKind::Headphones), "bluetooth")
+            // Named headsets/speakers are caught by the pattern lists; an
+            // unrecognized BT name defaults to Unknown, which the gate treats
+            // as speakers (fail-safe: an unknown BT speaker must never bypass
+            // echo protection — only Headphones bypasses).
+            (classify_by_name(&name, RouteKind::Unknown), "bluetooth")
         }
         ca::DeviceTransportType::USB => (classify_by_name(&name, RouteKind::Unknown), "usb"),
         ca::DeviceTransportType::HDMI => (RouteKind::Speakers, "hdmi"),
@@ -250,6 +252,8 @@ mod tests {
 
     #[test]
     fn bt_headsets_classify_as_headphones() {
+        // The BT branch now passes Unknown as the default — recognized
+        // headset names must still classify as Headphones via the patterns.
         for name in [
             "Chandra's AirPods Pro",
             "WH-1000XM5",
@@ -259,7 +263,7 @@ mod tests {
             "Plantronics Voyager 5200",
         ] {
             assert_eq!(
-                classify_by_name(name, RouteKind::Headphones),
+                classify_by_name(name, RouteKind::Unknown),
                 RouteKind::Headphones,
                 "{name}"
             );
@@ -267,7 +271,7 @@ mod tests {
     }
 
     #[test]
-    fn bt_speakers_deny_listed_despite_headphone_default() {
+    fn bt_speakers_deny_listed() {
         for name in [
             "JBL Charge 5",
             "JBL Flip 6",
@@ -277,8 +281,21 @@ mod tests {
             "Studio Display",
         ] {
             assert_eq!(
-                classify_by_name(name, RouteKind::Headphones),
+                classify_by_name(name, RouteKind::Unknown),
                 RouteKind::Speakers,
+                "{name}"
+            );
+        }
+    }
+
+    #[test]
+    fn unrecognized_bt_names_default_to_unknown() {
+        // Unknown is treated as speakers by the gate — an unrecognized BT
+        // device must never bypass echo protection.
+        for name in ["BTR-3000", "Living Room Audio", "X99"] {
+            assert_eq!(
+                classify_by_name(name, RouteKind::Unknown),
+                RouteKind::Unknown,
                 "{name}"
             );
         }

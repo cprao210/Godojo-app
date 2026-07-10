@@ -104,4 +104,52 @@ export class AudioDevices {
             return false;
         }
     }
+
+    /**
+     * Detects whether the effective microphone input is a loopback/virtual
+     * device (BlackHole, Soundflower, VB-Cable, aggregate devices, ...).
+     * Such devices feed far-end playback straight back into the mic stream,
+     * so the other party's speech shows up as the user's own — the echo
+     * pipeline cannot fix a fully wired loop.
+     *
+     * WARN ONLY: callers surface a message; capture is never refused and the
+     * device is never switched automatically.
+     *
+     * @param inputDeviceId - The requested input device ID (from user settings)
+     */
+    public static detectLoopbackInput(
+        inputDeviceId?: string | null
+    ): { suspicious: boolean; deviceName?: string } {
+        const LOOPBACK_PATTERNS = /blackhole|loopback|soundflower|aggregate|multi.?output|vb.?cable|vb.?audio|virtual|ishowu/i;
+        const isDefaultOrEmpty = (id?: string | null) =>
+            !id || id === 'default' || id.trim() === '';
+
+        try {
+            const inputDevices = AudioDevices.getInputDevices();
+
+            // Resolve the effective device: an explicit ID wins; otherwise the
+            // 'default' pseudo-entry — whose name the native enumeration
+            // labels with the device the system default actually resolves to,
+            // e.g. "Default Microphone (BlackHole 2ch)" (older .node builds
+            // return the bare "Default Microphone" label, which simply never
+            // matches — fail-open).
+            let effective: AudioDevice | undefined;
+            if (!isDefaultOrEmpty(inputDeviceId)) {
+                effective = inputDevices.find(d => d.id === inputDeviceId)
+                    // Device IDs are CPAL device names — test the ID itself
+                    // when the device is not in the enumerated list.
+                    ?? { id: inputDeviceId!, name: inputDeviceId! };
+            } else {
+                effective = inputDevices.find(d => d.id === 'default');
+            }
+
+            if (effective && LOOPBACK_PATTERNS.test(effective.name)) {
+                return { suspicious: true, deviceName: effective.name };
+            }
+            return { suspicious: false };
+        } catch (e) {
+            console.warn('[AudioDevices] detectLoopbackInput: device check failed, assuming not suspicious', e);
+            return { suspicious: false };
+        }
+    }
 }

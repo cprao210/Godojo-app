@@ -35,11 +35,22 @@ export const intelligenceApi = {
    * `meetingTypes` mirrors the panel's Meeting Type multi-select — the backend produces
    * `dealOptimizer` only when it includes "negotiation". `mode` defaults to "fast"
    * (single extract call); "deep" adds the backend critique/revise loop.
+   *
+   * Incremental contract: the backend is stateless — the renderer carries the analysis
+   * state. Pass `opts.previousAnalysis` (the last response) and then `turns` is ONLY the
+   * new speech since that call (the delta); the backend merges the delta into the prior
+   * analysis and returns the full updated result. Omit it and `turns` is treated as the
+   * full call, analysed fresh. An empty delta with a previous analysis is a no-op on the
+   * backend (it echoes the prior analysis back without an LLM call).
    */
   analyzeLive: (
     turns: LiveAnalysisTurn[],
     meetingId: string | null = null,
-    opts: { mode?: "fast" | "deep"; meetingTypes?: MeetingType[] } = {},
+    opts: {
+      mode?: "fast" | "deep";
+      meetingTypes?: MeetingType[];
+      previousAnalysis?: LiveAnalysisData | null;
+    } = {},
   ): Promise<LiveAnalysisData> =>
     apiFetch<LiveAnalysisData>("/intelligence/live-analysis", {
       method: "POST",
@@ -48,6 +59,10 @@ export const intelligenceApi = {
         meeting_id: meetingId,
         mode: opts.mode ?? "fast",
         meeting_types: opts.meetingTypes ?? [],
+        // Only sent on incremental (delta) calls — see the contract note above.
+        ...(opts.previousAnalysis
+          ? { previous_analysis: opts.previousAnalysis }
+          : {}),
       }),
     }),
 };

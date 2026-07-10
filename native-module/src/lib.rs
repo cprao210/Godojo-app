@@ -72,6 +72,15 @@ pub struct CaptureOptions {
     pub echo_mode: Option<String>,
     /// Bypass the local RMS+VAD gate (see MicrophoneCapture docs).
     pub vad_disabled: Option<bool>,
+    /// Persisted echo-alignment seed from a previous session on this machine
+    /// (ms, signed EFFECTIVE offset: positive = render delayed, negative =
+    /// capture delayed) — pass back the applied_align_offset_ms value from
+    /// getAudioPipelineStats(). Omitted/undefined = no seed for the current
+    /// route (the session starts unseeded / on the backend default); 0 is a
+    /// REAL seed meaning "converged with no alignment applied". Consumed by
+    /// MicrophoneCapture only; applied on the next mic-session start
+    /// (full_duplex only — legacy/phase1 always run with zero delay targets).
+    pub echo_align_seed_ms: Option<i32>,
 }
 
 fn apply_capture_options(options: &Option<CaptureOptions>) {
@@ -172,6 +181,9 @@ impl SystemAudioCapture {
                 }
             };
 
+            // Record the active render backend (stats + alignment seeding).
+            echo_control::set_render_backend(input.backend_name());
+
             let mut stream = input.stream();
             let mut consumer = match stream.take_consumer() {
                 Some(c) => c,
@@ -222,6 +234,20 @@ impl SystemAudioCapture {
             // Envelope timestamps + optional alignment delay for the render feed.
             let mut env_clock = echo_align::EnvClock::new();
             let mut render_delay = echo_align::DelayBuffer::new();
+
+            // Drain any backlog buffered during the 5-7 s init (SCK's 128K
+            // ring can hold ~2.7 s): stale samples would poison the EnvClock
+            // anchors and feed AEC3 an out-of-time render reference.
+            let mut stale = 0usize;
+            while consumer.try_pop().is_some() {
+                stale += 1;
+            }
+            if stale > 0 {
+                println!(
+                    "[SystemAudioCapture] discarded {} stale ring samples before DSP start",
+                    stale
+                );
+            }
 
             loop {
                 if stop_signal.load(Ordering::Relaxed) {
@@ -359,7 +385,8 @@ impl SystemAudioCapture {
 // Echo handling: in EVERY mode the mic runs through AEC3 (apm_capture) on
 // every frame — processing must be continuous for AEC3's filters and delay
 // estimator to converge. What changes per echo_control mode is only the EMIT
-// decision (cleaned audio vs zeros), owned by echo_control::MicGate.
+// decision (cleaned audio, ducked audio, or zeros — GateAction), owned by
+// echo_control::MicGate.
 // ============================================================================
 
 #[napi]
@@ -395,6 +422,14 @@ impl MicrophoneCapture {
             .or(options.as_ref().and_then(|o| o.vad_disabled))
             .unwrap_or(false);
         apply_capture_options(&options);
+        // Alignment-seed contract (mic captures only): each construction
+        // either provides the persisted seed for the CURRENT route or omits
+        // it, meaning "start unseeded" — an omitted seed must clear any
+        // previous construction's value so a stale seed never leaks across
+        // routes/sessions.
+        echo_control::set_pending_align_seed(
+            options.as_ref().and_then(|o| o.echo_align_seed_ms),
+        );
 
         // Eagerly create the stream to detect device errors early and read the
         // native sample rate.
@@ -539,38 +574,65 @@ impl MicrophoneCapture {
                 vad_disabled, native_rate, chunk_size
             );
 
-            // Shared per-frame pipeline: envelope tap → optional alignment
-            // delay → AEC3 → gate decision → emit cleaned audio or zeros.
-            let process_and_emit = |resampled: &[i16],
-                                    apm_capture: &mut ApmCapture,
-                                    gate: &mut echo_control::MicGate,
-                                    env_clock: &mut echo_align::EnvClock,
-                                    capture_delay: &mut echo_align::DelayBuffer,
-                                    tsfn: &ThreadsafeFunction<Buffer>| {
+            // Shared per-frame DSP: envelope tap → optional alignment delay →
+            // AEC3. Returns the cleaned frame (may be empty while the 10 ms
+            // accumulators fill). Runs on EVERY frame — suppressed ones too —
+            // so AEC3's filters and delay estimator never starve.
+            let process_through_aec = |resampled: &[i16],
+                                       apm_capture: &mut ApmCapture,
+                                       env_clock: &mut echo_align::EnvClock,
+                                       capture_delay: &mut echo_align::DelayBuffer|
+             -> Vec<i16> {
                 echo_control::note_capture_frame(resampled, env_clock);
                 let target = echo_align::TARGET_CAPTURE_DELAY_MS.load(Ordering::Acquire);
                 let delayed = capture_delay.process(resampled, target);
                 if delayed.is_empty() {
-                    return;
+                    return Vec::new();
                 }
-                // AEC3 runs on EVERY frame regardless of the gate — this is
-                // what lets it converge while echo is actually present.
-                let cleaned = apm_capture.process(&delayed);
-                if cleaned.is_empty() {
-                    return;
-                }
-                if gate.decide(&cleaned) {
-                    tsfn.call(
-                        Ok(Buffer::from(vec![0u8; cleaned.len() * 2])),
-                        ThreadsafeFunctionCallMode::NonBlocking,
-                    );
-                } else {
-                    tsfn.call(
-                        Ok(Buffer::from(i16_slice_to_le_bytes(&cleaned))),
-                        ThreadsafeFunctionCallMode::NonBlocking,
-                    );
+                apm_capture.process(&delayed)
+            };
+
+            // Gate decision → emit cleaned audio, ducked audio, or zeros.
+            let emit_gated = |cleaned: &[i16],
+                              gate: &mut echo_control::MicGate,
+                              tsfn: &ThreadsafeFunction<Buffer>| {
+                match gate.decide(cleaned) {
+                    echo_control::GateAction::Emit => {
+                        tsfn.call(
+                            Ok(Buffer::from(i16_slice_to_le_bytes(cleaned))),
+                            ThreadsafeFunctionCallMode::NonBlocking,
+                        );
+                    }
+                    echo_control::GateAction::Duck(g) => {
+                        let ducked: Vec<i16> =
+                            cleaned.iter().map(|&s| (s as f32 * g) as i16).collect();
+                        tsfn.call(
+                            Ok(Buffer::from(i16_slice_to_le_bytes(&ducked))),
+                            ThreadsafeFunctionCallMode::NonBlocking,
+                        );
+                    }
+                    echo_control::GateAction::Mute => {
+                        tsfn.call(
+                            Ok(Buffer::from(vec![0u8; cleaned.len() * 2])),
+                            ThreadsafeFunctionCallMode::NonBlocking,
+                        );
+                    }
                 }
             };
+
+            // Drain any backlog buffered between stream start and DSP-loop
+            // entry — stale samples poison the EnvClock anchors and the APM
+            // capture timeline.
+            let mut stale = 0usize;
+            while consumer.try_pop().is_some() {
+                stale += 1;
+            }
+            if stale > 0 {
+                println!(
+                    "[MicrophoneCapture] discarded {} stale ring samples before DSP start",
+                    stale
+                );
+            }
 
             loop {
                 if stop_signal.load(Ordering::Relaxed) {
@@ -614,53 +676,62 @@ impl MicrophoneCapture {
                         };
 
                         if !resampled.is_empty() {
-                            process_and_emit(
+                            let cleaned = process_through_aec(
                                 &resampled,
                                 &mut apm_capture,
-                                &mut gate,
                                 &mut env_clock,
                                 &mut capture_delay,
-                                &tsfn,
                             );
+                            if !cleaned.is_empty() {
+                                emit_gated(&cleaned, &mut gate, &tsfn);
+                            }
                         }
                     } else {
                         // ── VAD-GATED MODE ────────────────────────────────────
                         // External device: signal level is normal. Apply the
-                        // two-stage RMS + WebRTC VAD gate for STT cost, then
-                        // the same AEC + gate pipeline. (Echo above the RMS
-                        // threshold passes the local VAD as speech, so AEC3
-                        // still sees the frames that matter.)
+                        // two-stage RMS + WebRTC VAD gate for STT cost. EVERY
+                        // frame — Suppress/SendSilence included — still runs
+                        // through the AEC pipeline so the APM capture feed is
+                        // continuous; only the EMIT decision differs per action.
                         let (action, speech_ended) = suppressor.process(&frame);
 
-                        match action {
-                            FrameAction::Send(data) => {
-                                let resampled: Vec<i16> = if let Some(ref mut rs) = resampler {
-                                    let f32_data: Vec<f32> = data.iter().map(|&s| s as f32 / 32767.0).collect();
-                                    match rs.resample(&f32_data) {
-                                        Ok(r) if !r.is_empty() => r,
-                                        Ok(_) => continue,
-                                        Err(e) => {
-                                            eprintln!("[MicrophoneCapture] Resample error: {} — using original", e);
-                                            data
-                                        }
-                                    }
-                                } else {
-                                    data
-                                };
+                        // Resample every chunk (FrameAction::Send always
+                        // carries the unmodified input frame, so resampling
+                        // `frame` covers all actions).
+                        let resampled: Vec<i16> = if let Some(ref mut rs) = resampler {
+                            let f32_data: Vec<f32> =
+                                frame.iter().map(|&s| s as f32 / 32767.0).collect();
+                            match rs.resample(&f32_data) {
+                                Ok(r) => r,
+                                Err(e) => {
+                                    eprintln!("[MicrophoneCapture] Resample error: {} — using original", e);
+                                    frame.clone()
+                                }
+                            }
+                        } else {
+                            frame.clone()
+                        };
 
-                                if !resampled.is_empty() {
-                                    process_and_emit(
-                                        &resampled,
-                                        &mut apm_capture,
-                                        &mut gate,
-                                        &mut env_clock,
-                                        &mut capture_delay,
-                                        &tsfn,
-                                    );
+                        let cleaned = if resampled.is_empty() {
+                            Vec::new() // resampler needs more input
+                        } else {
+                            process_through_aec(
+                                &resampled,
+                                &mut apm_capture,
+                                &mut env_clock,
+                                &mut capture_delay,
+                            )
+                        };
+
+                        match action {
+                            FrameAction::Send(_) => {
+                                if !cleaned.is_empty() {
+                                    emit_gated(&cleaned, &mut gate, &tsfn);
                                 }
                             }
                             FrameAction::SendSilence => {
-                                // Keepalive: send zeros at 16kHz size
+                                // Keepalive: send zeros at 16kHz size (the
+                                // frame already fed AEC3 above).
                                 let silence_samples = if resampler.is_some() { 320usize } else { chunk_size };
                                 let silence = vec![0u8; silence_samples * 2];
                                 tsfn.call(
@@ -669,7 +740,8 @@ impl MicrophoneCapture {
                                 );
                             }
                             FrameAction::Suppress => {
-                                // Do nothing — local VAD filtered this frame
+                                // Local VAD filtered this frame for STT cost —
+                                // emit nothing (AEC3 still saw it above).
                             }
                         }
 

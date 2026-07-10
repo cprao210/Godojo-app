@@ -131,6 +131,10 @@ const NativelyInterface: React.FC<NativelyInterfaceProps> = ({ onEndMeeting, ove
     const [rollingTranscriptClient, setRollingTranscriptClient] = useState(''); // "Them" track
     const [isClientSpeaking, setIsClientSpeaking] = useState(false);  // Track if actively speaking
     const [isUserSpeaking, setIsUserSpeaking] = useState(false);      // Track if user is speaking
+    // True while the tail of a rolling track is an un-finalized partial.
+    // The matching final REPLACES that tail (echo trims must not append after
+    // the full echoed partial), and a retract event strips it entirely.
+    const hasPendingPartialRef = useRef({ user: false, client: false });
 
     // Legacy combined props kept for any callers that still expect them;
     // derived from per-speaker state so they stay in sync automatically.
@@ -425,11 +429,47 @@ const NativelyInterface: React.FC<NativelyInterfaceProps> = ({ onEndMeeting, ove
             setIsConnected(false);
         }));
 
+        // Audio warnings from the main process (loopback input device, SCK
+        // permission problems, ...) — informational only, never blocking.
+        cleanups.push(window.electronAPI.onMeetingAudioWarning((message) => {
+            setMessages(prev => [...prev, {
+                id: Date.now().toString(),
+                role: 'system',
+                text: `Audio warning: ${message}`
+            }]);
+        }));
+
         // Real-time Transcripts
         cleanups.push(window.electronAPI.onNativeAudioTranscript((transcript) => {
             // When Answer button is active, capture USER transcripts for voice input
             // Use ref to avoid stale closure issue
             console.log(transcript, '[Transcript Event]');
+
+            // Retraction: the main process dropped an echo final whose partial
+            // was already displayed — remove that pending partial everywhere.
+            if (transcript.retract) {
+                const side = transcript.speaker === 'client' ? 'client' : 'user';
+                if (side === 'client') {
+                    setIsClientSpeaking(false);
+                } else {
+                    setIsUserSpeaking(false);
+                    if (isRecordingRef.current) {
+                        setManualTranscript('');
+                        manualTranscriptRef.current = '';
+                    }
+                }
+                if (hasPendingPartialRef.current[side]) {
+                    hasPendingPartialRef.current[side] = false;
+                    const setRolling = side === 'client' ? setRollingTranscriptClient : setRollingTranscriptUser;
+                    setRolling(prev => {
+                        // Strip the pending-partial tail (and its separator) —
+                        // the next segment re-adds its own separator.
+                        const lastSeparator = prev.lastIndexOf('  ·  ');
+                        return lastSeparator >= 0 ? prev.substring(0, lastSeparator) : '';
+                    });
+                }
+                return;
+            }
 
             if (isRecordingRef.current && transcript.speaker === 'user') {
                 if (transcript.final) {
@@ -503,11 +543,21 @@ const NativelyInterface: React.FC<NativelyInterfaceProps> = ({ onEndMeeting, ove
                     lastClientSpeakerIndexRef.current = transcript.speakerIndex;
                 }
 
-                // Append finalized text to this speaker's own rolling transcript.
-                // Guard against duplicate finals (e.g. both is_final and speech_final
-                // from Deepgram arriving as final before the STT fix takes effect).
+                // Finalized text for this speaker's rolling transcript. When a
+                // partial is pending, the final REPLACES the pending tail —
+                // critical for echo TRIM verdicts, where appending would leave
+                // the fully-echoed partial visible ahead of the trimmed final.
+                // Without a pending partial, append (guarding against duplicate
+                // finals, e.g. both is_final and speech_final from Deepgram).
+                const sideKey = isClient ? 'client' : 'user';
+                const hadPendingPartial = hasPendingPartialRef.current[sideKey];
+                hasPendingPartialRef.current[sideKey] = false;
                 setRollingForSpeaker(prev => {
                     const lastSeparator = prev.lastIndexOf('  ·  ');
+                    if (hadPendingPartial) {
+                        const accumulated = lastSeparator >= 0 ? prev.substring(0, lastSeparator + 5) : '';
+                        return accumulated + speakerMarker + transcript.text;
+                    }
                     const lastSegment = lastSeparator >= 0 ? prev.substring(lastSeparator + 5) : prev;
                     if (lastSegment.trim() === transcript.text.trim()) return prev; // skip exact duplicate
                     const separator = prev ? '  ·  ' : '';
@@ -535,11 +585,19 @@ const NativelyInterface: React.FC<NativelyInterfaceProps> = ({ onEndMeeting, ove
             } else {
                 // Partial (interim) transcript — update only this speaker's track.
                 // Previous finalized text from the same speaker is preserved;
-                // the other speaker's track is never touched.
+                // the other speaker's track is never touched. A growing partial
+                // replaces the pending tail; a fresh one opens a new segment.
+                const sideKey = isClient ? 'client' : 'user';
+                const hadPendingPartial = hasPendingPartialRef.current[sideKey];
+                hasPendingPartialRef.current[sideKey] = true;
                 setRollingForSpeaker(prev => {
-                    const lastSeparator = prev.lastIndexOf('  ·  ');
-                    const accumulated = lastSeparator >= 0 ? prev.substring(0, lastSeparator + 5) : '';
-                    return accumulated + transcript.text;
+                    if (hadPendingPartial) {
+                        const lastSeparator = prev.lastIndexOf('  ·  ');
+                        const accumulated = lastSeparator >= 0 ? prev.substring(0, lastSeparator + 5) : '';
+                        return accumulated + transcript.text;
+                    }
+                    const separator = prev ? '  ·  ' : '';
+                    return prev + separator + transcript.text;
                 });
             }
         }));
