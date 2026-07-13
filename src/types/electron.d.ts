@@ -1,4 +1,8 @@
+import { LiveAnalysisData } from "./liveAnalysis"
+
 export interface ElectronAPI {
+  getZoomCalendarStatus(): any
+  zoomCalendarConnect(): any
   updateContentDimensions: (dimensions: {
     width: number
     height: number
@@ -49,6 +53,10 @@ export interface ElectronAPI {
   hideOverlay: () => Promise<void>
   getMeetingActive: () => Promise<boolean>
   onMeetingStateChanged: (callback: (data: { isActive: boolean }) => void) => () => void
+  getMeetingPaused: () => Promise<boolean>
+  pauseMeeting: () => Promise<{ success: boolean; error?: string }>
+  resumeMeeting: () => Promise<{ success: boolean; error?: string }>
+  onMeetingPauseStateChanged: (callback: (data: { isPaused: boolean }) => void) => () => void
   onWindowMaximizedChanged: (callback: (isMaximized: boolean) => void) => () => void
   onEnsureExpanded: (callback: () => void) => () => void
   openExternal: (url: string) => Promise<void>
@@ -97,12 +105,16 @@ export interface ElectronAPI {
   setGroqSttModel: (model: string) => Promise<{ success: boolean; error?: string }>
   setSonioxApiKey: (apiKey: string) => Promise<{ success: boolean; error?: string }>
   testSttConnection: (provider: 'groq' | 'openai' | 'deepgram' | 'elevenlabs' | 'azure' | 'ibmwatson' | 'soniox', apiKey: string, region?: string) => Promise<{ success: boolean; error?: string }>
+  getDisplayName: (role: 'user' | 'client' | 'assistant') => Promise<string>;
+  getSpeakerNames: () => Promise<{ user: string; client: string }>;
+  onSpeakerNamesResolved: (callback: (names: { user: string; client: string }) => void) => () => void;
 
   // Native Audio Service Events
   onNativeAudioTranscript: (callback: (transcript: { speaker: string; text: string; final: boolean }) => void) => () => void
   onNativeAudioSuggestion: (callback: (suggestion: { context: string; lastQuestion: string; confidence: number }) => void) => () => void
   onNativeAudioConnected: (callback: () => void) => () => void
   onNativeAudioDisconnected: (callback: () => void) => () => void
+  onMeetingAudioWarning: (callback: (message: string) => void) => () => void
   onSuggestionGenerated: (callback: (data: { question: string; suggestion: string; confidence: number }) => void) => () => void
   onSuggestionProcessingStart: (callback: () => void) => () => void
   onSuggestionError: (callback: (error: { error: string }) => void) => () => void
@@ -152,12 +164,14 @@ export interface ElectronAPI {
 
   // Meeting Lifecycle
   startMeeting: (metadata?: any) => Promise<{ success: boolean; error?: string }>
-  endMeeting: () => Promise<{ success: boolean; error?: string }>
+  endMeeting: (meetingTypes?: ('discovery' | 'demo' | 'negotiation')[]) => Promise<{ success: boolean; error?: string }>
   finalizeMicSTT: () => Promise<void>
   getRecentMeetings: () => Promise<Array<{ id: string; title: string; date: string; duration: string; summary: string }>>
   getMeetingDetails: (id: string) => Promise<any>
   updateMeetingTitle: (id: string, title: string) => Promise<boolean>
   updateMeetingSummary: (id: string, updates: { overview?: string, actionItems?: string[], keyPoints?: string[], actionItemsTitle?: string, keyPointsTitle?: string }) => Promise<boolean>
+  regenerateMeetingSummary: (id: string) => Promise<any>
+  uploadTranscript: (text: string, title?: string, meetingTypes?: ('discovery' | 'demo' | 'negotiation')[]) => Promise<{ success: boolean; meetingId?: string; error?: string }>
   deleteMeeting: (id: string) => Promise<boolean>
   setWindowMode: (mode: 'launcher' | 'overlay', inactive?: boolean) => Promise<void>
 
@@ -182,9 +196,17 @@ export interface ElectronAPI {
 
   // Streaming listeners
   streamGeminiChat: (message: string, imagePaths?: string[], context?: string, options?: { skipSystemPrompt?: boolean }) => Promise<void>
+  chatWithGemini: (message: string, imagePaths?: string[], context?: string, skipSystemPrompt?: boolean) => Promise<string>
   onGeminiStreamToken: (callback: (token: string) => void) => () => void
   onGeminiStreamDone: (callback: () => void) => () => void
   onGeminiStreamError: (callback: (error: string) => void) => () => void;
+
+  // NEW: Dedicated Live Analysis with its own events
+  startLiveAnalysis: (prompt: string) => Promise<{ success: boolean; error?: string }>;
+  onLiveAnalysisResult: (callback: (result: string) => void) => () => void;
+  onLiveAnalysisError: (callback: (error: string) => void) => () => void;
+
+  updateLiveAnalysis: (data: LiveAnalysisData) => Promise<{ success: boolean }>;
 
   // Model Management
   getDefaultModel: () => Promise<{ model: string }>;
@@ -244,13 +266,15 @@ export interface ElectronAPI {
   calendarConnect: () => Promise<{ success: boolean; error?: string }>
   calendarDisconnect: () => Promise<{ success: boolean; error?: string }>
   getCalendarStatus: () => Promise<{ connected: boolean; email?: string }>
+  zoomCalendarDisconnect: () => Promise<{ success: boolean; error?: string }>
   getUpcomingEvents: () => Promise<Array<{ id: string; title: string; startTime: string; endTime: string; link?: string; source: 'google' }>>
   calendarRefresh: () => Promise<{ success: boolean; error?: string }>
   streamSalesBrief: (eventData: any) => Promise<{ success: boolean; cached?: boolean; error?: string }>
   onSalesBriefStreamToken: (callback: (token: string) => void) => () => void
   onSalesBriefStreamDone: (callback: () => void) => () => void
   onSalesBriefStreamError: (callback: (error: string) => void) => () => void
-  
+  fetchCompanyIntel: (payload: { companyName: string; domain?: string; forceRefresh?: boolean }) => Promise<{ success: boolean; intel?: any; fromCache?: boolean; error?: string }>;
+
   // Auto-Update
   onUpdateAvailable: (callback: (info: any) => void) => () => void
   onUpdateDownloaded: (callback: (info: any) => void) => () => void
@@ -275,6 +299,11 @@ export interface ElectronAPI {
   onRAGStreamComplete: (callback: (data: { meetingId?: string; global?: boolean }) => void) => () => void
   onRAGStreamError: (callback: (data: { meetingId?: string; global?: boolean; error: string }) => void) => () => void
 
+  onTavilySearching: (callback: (data: { entity: string }) => void) => () => void
+  onTavilySearchDone: (callback: (data: { entity: string | null; status: string; fromCache: boolean }) => void) => () => void
+  setCompanyIntel: (intel: Record<string, any> | null) => Promise<{ success: boolean; error?: string }>
+  onCompanyIntelUpdated: (callback: (intel: Record<string, any> | null) => void) => (() => void)
+
   // Donation API
   getDonationStatus: () => Promise<{ shouldShow: boolean; hasDonated: boolean; lifetimeShows: number }>;
   markDonationToastShown: () => Promise<{ success: boolean }>;
@@ -287,9 +316,40 @@ export interface ElectronAPI {
   onKeybindsUpdate: (callback: (keybinds: Array<any>) => void) => () => void
   onGlobalShortcut: (callback: (data: { action: string }) => void) => () => void
 
+  // Company Context API
+  companyGetContext: () => Promise<any>;
+  companySaveContext: (data: any) => Promise<{ success: boolean; error?: string }>;
+  companyUploadAsset: (type: string, filePath: string) => Promise<{
+    success: boolean;
+    asset?: {
+      id: string;
+      type: string;
+      label: string;
+      status: string;
+      lastUpdated: string;
+      fileData: string;       // base64 — held in frontend draft only
+      fileName: string;
+      mimeType: string;
+    };
+    error?: string;
+  }>;
+  companyDeleteAsset: (assetId: string) => Promise<{ success: boolean; error?: string }>;
+  companySyncAsset: (assetId: string) => Promise<{ success: boolean; status?: string; error?: string }>;
+  companySetPersonaEngine: (enabled: boolean) => Promise<{ success: boolean; error?: string }>;
+  companySelectFile: () => Promise<{ filePath?: string; fileName?: string; fileSize?: number; cancelled?: boolean; success?: boolean; error?: string }>;
+  companyGetCompleteness: () => Promise<number>;
+
+  // Scoring criteria
+  meetingGetScorecard: (meetingId: string) => Promise<{ success: boolean; data?: any; error?: string }>;
+  meetingDeleteScorecard: (meetingId: string) => Promise<{ success: boolean; error?: string }>;
+  scoringGetCriteria: () => Promise<{ success: boolean; data?: any; error?: string }>;
+  scoringSaveCriteria: (settings: any) => Promise<{ success: boolean; error?: string }>;
+  scoringResetCriteria: () => Promise<{ success: boolean; error?: string }>;
+
   // Profile Engine API
   profileUploadResume: (filePath: string) => Promise<{ success: boolean; error?: string }>
   profileGetStatus: () => Promise<{ hasProfile: boolean; profileMode: boolean; name?: string; role?: string; totalExperienceYears?: number }>
+  profileGetMode: () => Promise<{ active: boolean }>
   profileSetMode: (enabled: boolean) => Promise<{ success: boolean; error?: string }>
   profileDelete: () => Promise<{ success: boolean; error?: string }>
   profileGetProfile: () => Promise<any>
@@ -331,6 +391,41 @@ export interface ElectronAPI {
   cropperConfirmed: (bounds: { x: number; y: number; width: number; height: number }) => void;
   cropperCancelled: () => void;
   onResetCropper: (callback: (data: { hudPosition: { x: number; y: number } }) => void) => () => void;
+
+  // ===== Firebase Auth =====
+  authSetIdToken: (session: {
+    idToken: string;
+    refreshToken: string;
+    uid: string;
+    email?: string | null;
+    displayName?: string | null;
+    photoURL?: string | null;
+    expiresAt: number;
+  }) => Promise<{ success: boolean; error?: string }>;
+  authClear: () => Promise<{ success: boolean }>;
+  authGetState: () => Promise<{
+    signedIn: boolean;
+    uid?: string;
+    email?: string | null;
+    displayName?: string | null;
+    photoURL?: string | null;
+  }>;
+  authGetPersistedRefreshToken: () => Promise<{ refreshToken: string | null; uid: string | null }>;
+  onAuthStateChanged: (
+    callback: (state: { signedIn: boolean; uid?: string; email?: string | null; displayName?: string | null; photoURL?: string | null }) => void
+  ) => () => void;
+
+  // ===== Supabase mirror =====
+  supabaseSetCredentials: (url: string, anonKey: string) => Promise<{ success: boolean; error?: string }>;
+  supabaseGetMirrorStatus: () => Promise<{
+    configured: boolean;
+    signedIn: boolean;
+    outboxLength: number;
+    lastSyncAt: number | null;
+    lastError?: string | null;
+  }>;
+  supabaseForceBackfill: () => Promise<{ success: boolean; error?: string }>;
+  supabaseSyncAudit: () => Promise<{ success: boolean; error?: string }>;
 
   // Platform
   platform: NodeJS.Platform;

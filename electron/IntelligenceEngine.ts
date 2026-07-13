@@ -12,6 +12,10 @@ import {
     AssistantResponse as LLMAssistantResponse, classifyIntent,
     WhatAmIMissingLLM, DiscoveryLLM, ObjectionHandlerLLM
 } from './llm';
+import { detectTavilyIntent, extractAllowedCompaniesFromAttendees } from './services/TavilyIntentDetector';
+import { searchCompany, buildCompanyContextBlock, CompanySearchResult, clearCompanyCache } from './services/TavilyManager';
+import { RAGManager } from './rag/RAGManager';
+import { buildLiveAdvisorRAGBlock, retrieveLiveAdvisorContext } from './rag/liveAdvisorRAG';
 
 // Mode types
 export type IntelligenceMode = 'idle' | 'assist' | 'what_to_say' | 'what_am_i_missing' | 'discovery' | 'objection_handler' | 'follow_up' | 'recap' | 'clarify' | 'manual' | 'follow_up_questions' | 'code_hint' | 'brainstorm';
@@ -89,6 +93,26 @@ export class IntelligenceEngine extends EventEmitter {
     private lastTranscriptTime: number = 0;
     private lastTriggerTime: number = 0;
     private readonly triggerCooldown: number = 3000; // 3 seconds
+
+    /**
+     * Per-session Tavily cache.
+     * Key: entity name (lowercased) → in-flight Promise or resolved CompanySearchResult.
+     * One Tavily call per unique entity per session, even on rapid duplicate messages.
+     */
+    private tavilyAllowedCompanies: Set<string> = new Set();
+
+    /**
+     * Optional RAGManager for live advisor context injection.
+     * Injected from main.ts after initialization; null until set.
+     * Modes that use RAG guard against null and fall through silently if unset.
+     */
+    private ragManager: RAGManager | null = null;
+
+    /** Inject the RAGManager after construction (avoids circular init order). */
+    public setRAGManager(manager: RAGManager): void {
+        this.ragManager = manager;
+        console.log('[IntelligenceEngine] RAGManager attached for live advisor context');
+    }
 
     constructor(llmHelper: LLMHelper, session: SessionTracker) {
         super();
@@ -260,17 +284,17 @@ export class IntelligenceEngine extends EventEmitter {
             const contextItems = this.session.getContext(180);
 
             // Inject latest interim transcript if available
-            const lastInterim = this.session.getLastInterimInterviewer();
+            const lastInterim = this.session.getLastInterimClient();
             if (lastInterim && lastInterim.text.trim().length > 0) {
                 const lastItem = contextItems[contextItems.length - 1];
                 const isDuplicate = lastItem &&
-                    lastItem.role === 'interviewer' &&
+                    lastItem.role === 'client' &&
                     (lastItem.text === lastInterim.text || Math.abs(lastItem.timestamp - lastInterim.timestamp) < 1000);
 
                 if (!isDuplicate) {
                     console.log(`[IntelligenceEngine] Injecting interim transcript: "${lastInterim.text.substring(0, 50)}..."`);
                     contextItems.push({
-                        role: 'interviewer',
+                        role: 'client',
                         text: lastInterim.text,
                         timestamp: lastInterim.timestamp
                     });
@@ -291,20 +315,42 @@ export class IntelligenceEngine extends EventEmitter {
                 180
             );
 
-            const lastInterviewerTurn = this.session.getLastInterviewerTurn();
+            const lastClientTurn = this.session.getLastClientTurn();
             const intentResult = await classifyIntent(
-                lastInterviewerTurn,
+                lastClientTurn,
                 preparedTranscript,
                 this.session.getAssistantResponseHistory().length
             );
 
             console.log(`[IntelligenceEngine] Temporal RAG: ${temporalContext.previousResponses.length} responses, tone: ${temporalContext.toneSignals[0]?.type || 'neutral'}, intent: ${intentResult.intent}${imagePaths?.length ? `, with ${imagePaths.length} image(s)` : ''}`);
 
+            // ── Live Advisor RAG injection ────────────────────────────────────────
+            // Retrieve relevant past-call context using the last client turn as the
+            // query.  The entire block is wrapped in try/catch: any RAG failure is
+            // non-fatal and must never disrupt the live response path.
+            // The <past_call_context> block is injected as a prefix to the transcript
+            // context parameter of generateStream (not the system prompt) so it is
+            // treated as retrieved evidence, not a behavioral instruction, and does
+            // not pollute the cached system prompt.
+            let ragEnrichedTranscript = preparedTranscript;
+            try {
+                const ragQuery = this.session.getLastClientTurn() || preparedTranscript;
+                const ragChunks = await retrieveLiveAdvisorContext(this.ragManager, ragQuery);
+                const ragBlock = buildLiveAdvisorRAGBlock(ragChunks);
+                if (ragBlock) {
+                    ragEnrichedTranscript = `${ragBlock}\n\nLIVE TRANSCRIPT:\n${preparedTranscript}`;
+                    console.log(`[IntelligenceEngine] runWhatShouldISay: injected ${ragChunks.length} RAG chunk(s) into context`);
+                }
+            } catch (ragErr) {
+                console.warn('[IntelligenceEngine] runWhatShouldISay RAG injection failed (non-fatal):', (ragErr as Error).message);
+            }
+            // ── End RAG injection ─────────────────────────────────────────────────
+
             const generationId = ++this.currentGenerationId;
             let fullAnswer = "";
             // RC-03 fix: hold a reference to the generator so we can call .return()
             // to properly terminate the network request when a new generation starts.
-            const stream = this.whatToAnswerLLM.generateStream(preparedTranscript, temporalContext, intentResult, imagePaths);
+            const stream = this.whatToAnswerLLM.generateStream(ragEnrichedTranscript, temporalContext, intentResult, imagePaths);
             let streamAborted = false;
 
             for await (const token of stream) {
@@ -384,17 +430,17 @@ export class IntelligenceEngine extends EventEmitter {
             const contextItems = this.session.getContext(180);
 
             // Inject latest interim transcript if available
-            const lastInterim = this.session.getLastInterimInterviewer();
+            const lastInterim = this.session.getLastInterimClient();
             if (lastInterim && lastInterim.text.trim().length > 0) {
                 const lastItem = contextItems[contextItems.length - 1];
                 const isDuplicate = lastItem &&
-                    lastItem.role === 'interviewer' &&
+                    lastItem.role === 'client' &&
                     (lastItem.text === lastInterim.text ||
                         Math.abs(lastItem.timestamp - lastInterim.timestamp) < 1000);
 
                 if (!isDuplicate) {
                     contextItems.push({
-                        role: 'interviewer',
+                        role: 'client',
                         text: lastInterim.text,
                         timestamp: lastInterim.timestamp
                     });
@@ -403,7 +449,7 @@ export class IntelligenceEngine extends EventEmitter {
 
             // Format transcript — same pattern as WhatToAnswerLLM
             const transcript = contextItems
-                .map(item => `${item.role === 'interviewer' ? 'Customer' : 'Sales Rep'}: ${item.text}`)
+                .map(item => `${item.role === 'client' ? 'Customer' : 'Sales Rep'}: ${item.text}`)
                 .join('\n');
 
             console.log(`[IntelligenceEngine] runWhatAmIMissing: ${contextItems.length} turns`);
@@ -484,18 +530,18 @@ export class IntelligenceEngine extends EventEmitter {
             const contextItems = this.session.getContext(180);
 
             // Inject latest interim transcript if available
-            const lastInterim = this.session.getLastInterimInterviewer();
+            const lastInterim = this.session.getLastInterimClient();
             if (lastInterim && lastInterim.text.trim().length > 0) {
                 const lastItem = contextItems[contextItems.length - 1];
                 const isDuplicate = lastItem &&
-                    lastItem.role === 'interviewer' &&
+                    lastItem.role === 'client' &&
                     (lastItem.text === lastInterim.text ||
                         Math.abs(lastItem.timestamp - lastInterim.timestamp) < 1000);
 
                 if (!isDuplicate) {
                     console.log(`[IntelligenceEngine] Injecting interim for Discovery: "${lastInterim.text.substring(0, 50)}..."`);
                     contextItems.push({
-                        role: 'interviewer',
+                        role: 'client',
                         text: lastInterim.text,
                         timestamp: lastInterim.timestamp
                     });
@@ -504,7 +550,7 @@ export class IntelligenceEngine extends EventEmitter {
 
             // Format transcript
             const transcript = contextItems
-                .map(item => `${item.role === 'interviewer' ? 'Customer' : 'Sales Rep'}: ${item.text}`)
+                .map(item => `${item.role === 'client' ? 'Customer' : 'Sales Rep'}: ${item.text}`)
                 .join('\n');
 
             console.log(`[IntelligenceEngine] runDiscovery: ${contextItems.length} turns analyzed`);
@@ -584,18 +630,18 @@ export class IntelligenceEngine extends EventEmitter {
             const contextItems = this.session.getContext(180);
 
             // Inject latest interim transcript if available
-            const lastInterim = this.session.getLastInterimInterviewer();
+            const lastInterim = this.session.getLastInterimClient();
             if (lastInterim && lastInterim.text.trim().length > 0) {
                 const lastItem = contextItems[contextItems.length - 1];
                 const isDuplicate = lastItem &&
-                    lastItem.role === 'interviewer' &&
+                    lastItem.role === 'client' &&
                     (lastItem.text === lastInterim.text ||
                         Math.abs(lastItem.timestamp - lastInterim.timestamp) < 1000);
 
                 if (!isDuplicate) {
                     console.log(`[IntelligenceEngine] Injecting interim for ObjectionHandler: "${lastInterim.text.substring(0, 50)}..."`);
                     contextItems.push({
-                        role: 'interviewer',
+                        role: 'client',
                         text: lastInterim.text,
                         timestamp: lastInterim.timestamp
                     });
@@ -604,16 +650,37 @@ export class IntelligenceEngine extends EventEmitter {
 
             // Format transcript
             const transcript = contextItems
-                .map(item => `${item.role === 'interviewer' ? 'Customer' : 'Sales Rep'}: ${item.text}`)
+                .map(item => `${item.role === 'client' ? 'Customer' : 'Sales Rep'}: ${item.text}`)
                 .join('\n');
 
             console.log(`[IntelligenceEngine] runObjectionHandler: ${contextItems.length} turns analyzed`);
+
+            // ── Live Advisor RAG injection ────────────────────────────────────────
+            // Retrieve relevant past-call context to give the objection handler
+            // evidence of how similar objections were handled in previous calls.
+            // Failure is non-fatal — fall through to the live transcript only.
+            // The <past_call_context> block is prepended to the transcript string
+            // that ObjectionHandlerLLM receives as its user message content so it
+            // sits in the user-message portion (retrieved evidence, not instruction).
+            let objectionContext = transcript;
+            try {
+                const ragQuery = this.session.getLastClientTurn() || transcript;
+                const ragChunks = await retrieveLiveAdvisorContext(this.ragManager, ragQuery);
+                const ragBlock = buildLiveAdvisorRAGBlock(ragChunks);
+                if (ragBlock) {
+                    objectionContext = `${ragBlock}\n\nLIVE TRANSCRIPT:\n${transcript}`;
+                    console.log(`[IntelligenceEngine] runObjectionHandler: injected ${ragChunks.length} RAG chunk(s) into context`);
+                }
+            } catch (ragErr) {
+                console.warn('[IntelligenceEngine] runObjectionHandler RAG injection failed (non-fatal):', (ragErr as Error).message);
+            }
+            // ── End RAG injection ─────────────────────────────────────────────────
 
             const generationId = ++this.currentGenerationId;
             let fullAnswer = '';
             let streamAborted = false;
 
-            const stream = this.objectionHandlerLLM.generateStream(transcript);
+            const stream = this.objectionHandlerLLM.generateStream(objectionContext);
 
             for await (const token of stream) {
                 if (this.currentGenerationId !== generationId) {
@@ -795,7 +862,7 @@ export class IntelligenceEngine extends EventEmitter {
 
     /**
      * MODE: Clarify
-     * Ask a clarifying question to the interviewer
+     * Ask a clarifying question to the client
      */
     async runClarify(): Promise<string | null> {
         console.log('[IntelligenceEngine] runClarify called');
@@ -913,9 +980,24 @@ export class IntelligenceEngine extends EventEmitter {
         }
     }
 
+    public setAllowedTavilyCompanies(companies: Set<string>): void {
+        this.tavilyAllowedCompanies = companies;
+    }
+
     /**
-     * MODE 5: Manual Answer (Fallback)
-     * Explicit bypass when auto-detection fails
+     * MODE 5: Manual Answer with Tavily Company Enrichment
+     *
+     * Pipeline:
+     *   1. Synchronously classify whether the question needs external company data
+     *      (TavilyIntentDetector — <1 ms, no I/O).
+     *   2. If yes, fetch from Tavily — deduped via tavilyCache so rapid duplicate
+     *      messages never fire a second HTTP call for the same entity.
+     *   3. Prepend a compact company-context block to the transcript context so the
+     *      LLM can reference it without any prompt-template changes.
+     *   4. Generate answer exactly as before and emit the same events.
+     *
+     * Transcript behaviour is fully preserved — Tavily data is appended to the
+     * existing context string; the session is written to only after generation.
      */
     async runManualAnswer(question: string): Promise<string | null> {
         this.emit('manual_answer_started');
@@ -927,8 +1009,52 @@ export class IntelligenceEngine extends EventEmitter {
                 return null;
             }
 
-            const context = this.session.getFormattedContext(120);
-            const answer = await this.answerLLM.generate(question, context);
+            // ── Step 1: Intent detection (synchronous, <1 ms) ───────────────
+            const intentResult = detectTavilyIntent(question, this.tavilyAllowedCompanies);
+            let companyContext = '';
+            if (intentResult.needsExternalSearch && intentResult.searchQuery && intentResult.entityName) {
+                this.emit('tavily_searching', intentResult.entityName);
+                const state = await searchCompany(intentResult.searchQuery, intentResult.entityName);
+                this.emit('tavily_search_done', { entity: intentResult.entityName, status: state.status, fromCache: state.data?.fromCache ?? false });
+                if ((state.status === 'success' || state.status === 'cached') && state.data) {
+                    companyContext = buildCompanyContextBlock(state.data);
+                } else {
+                    console.warn(`[IntelligenceEngine] Tavily fallback for "${intentResult.entityName}": ${state.message}`);
+                }
+            }
+
+            // ── Step 3: Build context — transcript first, company block appended ─
+            const transcriptContext = this.session.getFormattedContext(120);
+
+            // ── Scope Guard ──────────────────────────────────────────────────
+            const _hasContext = transcriptContext && transcriptContext.trim().length > 0;
+            const _hasAllowedCompanies = this.tavilyAllowedCompanies.size > 0;
+
+            if (!_hasContext && !_hasAllowedCompanies) {
+                const refusal = "I can only help with questions related to this meeting, the transcript, the meeting brief, or companies of the participants. This question is outside that scope.";
+                this.emit('manual_answer_result', refusal, question);
+                this.setMode('idle');
+                return refusal;
+            }
+
+            // Inject inferred company names so the LLM knows the allowed scope
+            let participantNote = '';
+            if (_hasAllowedCompanies) {
+                const companyList = [...this.tavilyAllowedCompanies].join(', ');
+                participantNote =
+                    '\n\n--- MEETING PARTICIPANTS (inferred companies from professional email domains) ---\n' +
+                    `Companies represented in this meeting: ${companyList}\n` +
+                    'You may answer questions about these companies using any external context provided.\n' +
+                    '--- END PARTICIPANT INFO ---';
+            }
+            // ── End Scope Guard ──────────────────────────────────────────────
+
+            const enrichedContext = [transcriptContext, companyContext, participantNote]
+                .filter(Boolean)
+                .join('\n\n');
+
+            // ── Step 4: Generate (no prompt changes) ────────────────────────
+            const answer = await this.answerLLM.generate(question, enrichedContext);
 
             if (answer) {
                 this.session.addAssistantMessage(answer);
@@ -957,7 +1083,7 @@ export class IntelligenceEngine extends EventEmitter {
      * Analyzes a screenshot of partially written code against the detected/provided question
      * and returns a short targeted hint. Question comes from (priority order):
      *   1. problemStatement passed in from ipcHandler (screenshot extraction — highest confidence)
-     *   2. session.detectedCodingQuestion (detected from interviewer transcript)
+     *   2. session.detectedCodingQuestion (detected from client transcript)
      *   3. transcriptContext (last N seconds of conversation — fallback for inference)
      */
     async runCodeHint(imagePaths?: string[], problemStatement?: string): Promise<string | null> {
@@ -1132,5 +1258,8 @@ export class IntelligenceEngine extends EventEmitter {
             this.assistCancellationToken.abort();
             this.assistCancellationToken = null;
         }
+        // Clear per-session Tavily cache so a new meeting starts fresh
+        clearCompanyCache();
+        this.tavilyAllowedCompanies = new Set();
     }
 }

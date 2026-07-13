@@ -2,7 +2,6 @@ import React, { useState, useEffect, useRef, useCallback, useMemo } from 'react'
 import { createPortal } from 'react-dom';
 import { Search, Sparkles, FileText } from 'lucide-react';
 import { motion, AnimatePresence } from 'framer-motion';
-import { useResolvedTheme } from '../hooks/useResolvedTheme';
 
 // ============================================
 // Types
@@ -94,7 +93,6 @@ const TopSearchPill: React.FC<TopSearchPillProps> = ({
     onOpenMeeting,
     onExpansionChange
 }) => {
-    const isLight = useResolvedTheme() === 'light';
     const [state, setState] = useState<PillState>('idle');
     const [query, setQuery] = useState('');
     const [selectedIndex, setSelectedIndex] = useState(-1);
@@ -272,8 +270,7 @@ const TopSearchPill: React.FC<TopSearchPillProps> = ({
                             <div
                                 className={`
                                     relative overflow-hidden
-                                    ${isLight ? 'bg-[#F2F2F7]/90' : 'bg-[#161618]/90'}
-                                    backdrop-blur-xl backdrop-saturate-150
+                                    overlay-pill-surface
                                     rounded-2xl
                                     shadow-sm
                                 `}
@@ -337,7 +334,7 @@ const TopSearchPill: React.FC<TopSearchPillProps> = ({
                                                             transition-colors duration-100
                                                             ${selectedIndex === 0
                                                                     ? 'bg-bg-item-active'
-                                                                    : 'hover:bg-bg-item-hover'
+                                                                    : 'hover:bg-bg-item-surface'
                                                                 }
                                                         `}
                                                             onClick={() => handleSelect(0)}
@@ -361,7 +358,7 @@ const TopSearchPill: React.FC<TopSearchPillProps> = ({
                                                             transition-colors duration-100
                                                             ${selectedIndex === 1
                                                                     ? 'bg-bg-item-active'
-                                                                    : 'hover:bg-bg-item-hover'
+                                                                    : 'hover:bg-bg-item-surface'
                                                                 }
                                                         `}
                                                             onClick={() => handleSelect(1)}
@@ -397,7 +394,7 @@ const TopSearchPill: React.FC<TopSearchPillProps> = ({
                                                                         transition-colors duration-100
                                                                         ${selectedIndex === index + 2
                                                                                 ? 'bg-bg-item-active'
-                                                                                : 'hover:bg-bg-item-hover'
+                                                                                : 'hover:bg-bg-item-surface'
                                                                             }
                                                                     `}
                                                                         onClick={() => handleSelect(index + 2)}

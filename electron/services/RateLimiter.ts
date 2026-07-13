@@ -2,6 +2,10 @@
  * RateLimiter - Token bucket rate limiter for LLM API calls
  * Prevents 429 errors on free-tier API plans by queuing requests
  * when the bucket is empty.
+ *
+ * Also includes a circuit breaker: after 3 consecutive 429 errors within
+ * 60 seconds, the provider is marked OPEN for 120 seconds. isCircuitOpen()
+ * lets callers skip a provider immediately without a wasted network round-trip.
  */
 export class RateLimiter {
     private tokens: number;
@@ -10,6 +14,14 @@ export class RateLimiter {
     private lastRefillTime: number;
     private waitQueue: Array<() => void> = [];
     private refillTimer: ReturnType<typeof setInterval> | null = null;
+
+    // Circuit breaker state
+    private consecutiveRateLimitErrors: number = 0;
+    private firstErrorTimeInWindow: number = 0;
+    private circuitOpenUntil: number = 0;
+    private static readonly CIRCUIT_ERROR_WINDOW_MS = 60_000;   // 60s window to count errors
+    private static readonly CIRCUIT_ERROR_THRESHOLD = 3;         // errors before OPEN
+    private static readonly CIRCUIT_COOLDOWN_MS = 120_000;       // 120s cooldown when OPEN
 
     /**
      * @param maxTokens - Maximum burst capacity (e.g. 30 for Groq free tier)
@@ -40,6 +52,61 @@ export class RateLimiter {
         return new Promise<void>((resolve) => {
             this.waitQueue.push(resolve);
         });
+    }
+
+    /**
+     * Check whether the circuit breaker is open (provider is cooling down).
+     * Call this BEFORE attempting an API request to skip the provider immediately.
+     */
+    public isCircuitOpen(): boolean {
+        const now = Date.now();
+        if (this.circuitOpenUntil > 0 && now < this.circuitOpenUntil) {
+            return true;
+        }
+        // Auto-reset when cooldown expires
+        if (this.circuitOpenUntil > 0 && now >= this.circuitOpenUntil) {
+            this.circuitOpenUntil = 0;
+            this.consecutiveRateLimitErrors = 0;
+            this.firstErrorTimeInWindow = 0;
+        }
+        return false;
+    }
+
+    /**
+     * Call this when a 429 / rate-limit error is received from the provider.
+     * Tracks errors in a rolling 60-second window and opens the circuit after
+     * CIRCUIT_ERROR_THRESHOLD consecutive errors.
+     */
+    public markRateLimitError(): void {
+        const now = Date.now();
+
+        // Reset window if the first error was more than 60s ago
+        if (this.firstErrorTimeInWindow > 0 && (now - this.firstErrorTimeInWindow) > RateLimiter.CIRCUIT_ERROR_WINDOW_MS) {
+            this.consecutiveRateLimitErrors = 0;
+            this.firstErrorTimeInWindow = 0;
+        }
+
+        if (this.consecutiveRateLimitErrors === 0) {
+            this.firstErrorTimeInWindow = now;
+        }
+
+        this.consecutiveRateLimitErrors++;
+        console.warn(`[RateLimiter] 429 error recorded (${this.consecutiveRateLimitErrors}/${RateLimiter.CIRCUIT_ERROR_THRESHOLD})`);
+
+        if (this.consecutiveRateLimitErrors >= RateLimiter.CIRCUIT_ERROR_THRESHOLD) {
+            this.circuitOpenUntil = now + RateLimiter.CIRCUIT_COOLDOWN_MS;
+            console.warn(`[RateLimiter] Circuit OPEN — provider cooling down for ${RateLimiter.CIRCUIT_COOLDOWN_MS / 1000}s`);
+        }
+    }
+
+    /**
+     * Call this on a successful response to reset the error counter.
+     */
+    public markSuccess(): void {
+        if (this.consecutiveRateLimitErrors > 0) {
+            this.consecutiveRateLimitErrors = 0;
+            this.firstErrorTimeInWindow = 0;
+        }
     }
 
     private refill(): void {

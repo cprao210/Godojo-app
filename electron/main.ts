@@ -134,6 +134,7 @@ import { ThemeManager } from "./ThemeManager"
 import { RAGManager } from "./rag/RAGManager"
 import { DatabaseManager } from "./db/DatabaseManager"
 import { warmupIntentClassifier } from "./llm"
+import { AudioDevices } from "./audio/AudioDevices";
 
 /** Unified type for all STT providers with optional extended capabilities */
 type STTProvider = (GoogleSTT | RestSTT | DeepgramStreamingSTT | SonioxStreamingSTT | ElevenLabsStreamingSTT | OpenAIStreamingSTT) & {
@@ -160,8 +161,8 @@ interface ScreenshotCaptureSession {
 let KnowledgeOrchestratorClass: any = null;
 let KnowledgeDatabaseManagerClass: any = null;
 try {
-  KnowledgeOrchestratorClass = require('../premium/electron/knowledge/KnowledgeOrchestrator').KnowledgeOrchestrator;
-  KnowledgeDatabaseManagerClass = require('../premium/electron/knowledge/KnowledgeDatabaseManager').KnowledgeDatabaseManager;
+  KnowledgeOrchestratorClass = require('./premium/knowledge/KnowledgeOrchestrator').KnowledgeOrchestrator;
+  KnowledgeDatabaseManagerClass = require('./premium/knowledge/KnowledgeDatabaseManager').KnowledgeDatabaseManager;
 } catch {
   console.log('[Main] Knowledge modules not available — profile intelligence disabled.');
 }
@@ -171,6 +172,7 @@ import { SettingsManager } from "./services/SettingsManager"
 import { setVerboseLoggingFlag } from "./verboseLog"
 import { ReleaseNotesManager } from "./update/ReleaseNotesManager"
 import { OllamaManager } from './services/OllamaManager'
+import { LiveAnalysisData } from "../src/types/liveAnalysis";
 
 export class AppState {
   private static instance: AppState | null = null
@@ -189,6 +191,14 @@ export class AppState {
   private tray: Tray | null = null
   private updateAvailable: boolean = false
   private disguiseMode: 'terminal' | 'settings' | 'activity' | 'none' = 'none'
+  private _currentLiveAnalysis: LiveAnalysisData | null = null;
+  private _companyIntel: Record<string, any> | null = null;
+  // When setCurrentLiveAnalysis is called after endMeeting has already run, we
+  // need to know which meetingId to patch. This is set by endMeeting() and cleared
+  // after the late-arriving result is saved.
+  private _pendingLiveAnalysisMeetingId: string | null = null;
+  private _liveAnalysisInFlight: boolean = false;
+  private speakerNameMap: { user: string, client: string };
 
   // View management
   private view: "queue" | "solutions" = "queue"
@@ -204,6 +214,7 @@ export class AppState {
 
   private hasDebugged: boolean = false
   private isMeetingActive: boolean = false; // Guard for session state leaks
+  private isMeetingPaused: boolean = false; // Pause guard — blocks audio and AI while paused
   private _isQuitting: boolean = false;
   private _verboseLogging: boolean = false;
   private _disguiseTimers: NodeJS.Timeout[] = []; // Track forceUpdate timeouts
@@ -389,7 +400,6 @@ export class AppState {
 
 
 
-
     // Initialize IntelligenceManager with LLMHelper
     this.intelligenceManager = new IntelligenceManager(this.processingHelper.getLLMHelper())
 
@@ -431,6 +441,10 @@ export class AppState {
     return this.isMeetingActive;
   }
 
+  public getIsMeetingPaused(): boolean {
+    return this.isMeetingPaused;
+  }
+
   public isQuitting(): boolean {
     return this._isQuitting;
   }
@@ -439,8 +453,21 @@ export class AppState {
     this._isQuitting = value;
   }
 
+  public setCompanyIntel(intel: Record<string, any> | null): void {
+    this._companyIntel = intel;
+    console.log('[AppState] Company intel set:', intel?.companyName ?? 'cleared');
+  }
+
+  public getCompanyIntel(): Record<string, any> | null {
+    return this._companyIntel;
+  }
+
   private broadcastMeetingState(): void {
     this.broadcast('meeting-state-changed', { isActive: this.isMeetingActive });
+  }
+
+  private broadcastMeetingPauseState(): void {
+    this.broadcast('meeting-pause-state-changed', { isPaused: this.isMeetingPaused });
   }
 
   private async bootstrapOllamaEmbeddings() {
@@ -515,6 +542,7 @@ export class AppState {
 
         // generateContent function for LLM calls
         this.knowledgeOrchestrator.setGenerateContentFn(async (contents: any[]) => {
+          console.log("--> generateContent knowledgeOrchestrator: ", contents[0]?.text);
           return await llmHelper.generateContentStructured(
             contents[0]?.text || ''
           );
@@ -544,10 +572,62 @@ export class AppState {
         llmHelper.setKnowledgeOrchestrator(this.knowledgeOrchestrator);
 
         console.log('[AppState] KnowledgeOrchestrator initialized');
+
+        // ── Company context startup hydration ──────────────────────────────────────
+        // Load persisted company context from DB and hydrate the orchestrator so it
+        // becomes the single in-memory source of truth from the first request onward.
+        try {
+          const { hydrateOrchestratorFromContext } = require('./utils/companyKnowledge');
+          const companyCtx = DatabaseManager.getInstance().getCompanyContext();
+          if (companyCtx) {
+            hydrateOrchestratorFromContext(this.knowledgeOrchestrator, companyCtx);
+            console.log('[AppState] Orchestrator hydrated from DB on startup');
+          } else {
+            console.log('[AppState] No persisted company context found — orchestrator starts empty');
+          }
+        } catch (hydrateErr: any) {
+          console.warn('[AppState] Startup orchestrator hydration failed (non-fatal):', hydrateErr.message);
+        }
+
+        // ── Restore persisted knowledge mode toggle ─────────────────────────────────
+        try {
+          const { CredentialsManager } = require('./services/CredentialsManager');
+          const savedMode = CredentialsManager.getInstance().getKnowledgeModeActive();
+          if (savedMode) {
+            this.knowledgeOrchestrator.setKnowledgeMode(true);
+            console.log('[AppState] Knowledge mode restored from saved preferences: ON');
+          }
+        } catch (modeErr: any) {
+          console.warn('[AppState] Failed to restore knowledge mode (non-fatal):', modeErr.message);
+        }
+        // ── End startup hydration ───────────────────────────────────────────────────
+
       }
     } catch (error) {
       console.error('[AppState] Failed to initialize KnowledgeOrchestrator:', error);
     }
+  }
+
+  // Pure computation — does NOT set _builtinOnlyMode.
+  // Use this in contexts that should not affect the meeting-mode flag (e.g. audio test).
+  private _isBuiltinOnly(inputDeviceId?: string, outputDeviceId?: string): boolean {
+    return AudioDevices.isBuiltinOnly(inputDeviceId, outputDeviceId);
+  }
+
+  private _shouldDisableMicVad(inputDeviceId?: string, outputDeviceId?: string): boolean {
+    const builtinOnly = this._isBuiltinOnly(inputDeviceId, outputDeviceId);
+    if (builtinOnly) {
+      console.log(
+        '[Main] Built-in mic + speakers detected: disabling local VAD on MicrophoneCapture ' +
+        '(macOS AEC attenuates signal — Deepgram cloud VAD will handle silence detection)'
+      );
+    } else {
+      console.log(
+        '[Main] External audio device detected: local VAD remains active on MicrophoneCapture'
+      );
+    }
+    this._builtinOnlyMode = builtinOnly;
+    return builtinOnly;
   }
 
   private setupAutoUpdater(): void {
@@ -747,10 +827,72 @@ export class AppState {
   private microphoneCapture: MicrophoneCapture | null = null;
   private audioTestCapture: MicrophoneCapture | null = null; // For audio settings test
   private _audioTestStarting = false;               // P2-12: in-flight guard against concurrent calls
-  private googleSTT: STTProvider | null = null; // Interviewer
+  private googleSTT: STTProvider | null = null; // Client
   private googleSTT_User: STTProvider | null = null; // User
 
-  private createSTTProvider(speaker: 'interviewer' | 'user'): STTProvider {
+  // Rolling window of recent final client (system audio) transcripts for macOS echo detection.
+  // Echo suppression only runs on macOS (Windows WASAPI has no acoustic bleed).
+  // Only FINAL transcripts are suppressed — partials still flow so live suggestions work.
+  // False-positive guard: short mic segments (< 4 words) are never suppressed because a
+  // natural reply ("yes", "exactly", "got it") overlapping with client text isn't echo.
+  private _recentClientTranscripts: Array<{ text: string; ts: number }> = [];
+  private static readonly _ECHO_WINDOW_MS = 6000;  // extended to cover STT latency + AEC convergence window
+  private static readonly _ECHO_SIMILARITY_THRESHOLD = 0.75; // base trigram overlap threshold
+
+  // _builtinOnlyMode: true when built-in speakers + mic are in use (no external device).
+  // Used by _isMicEcho to apply a lower similarity threshold and by audio init to
+  // set vadDisabled=true on MicrophoneCapture. AEC in the Rust DSP layer handles the
+  // physical echo; no JS-side RMS gate is needed.
+  private _builtinOnlyMode: boolean = false;
+
+  private _isMicEcho(micText: string): boolean {
+    // Only applies on macOS — Windows handles echo at the OS/WASAPI level
+    if (process.platform !== 'darwin') return false;
+    if (!micText || this._recentClientTranscripts.length === 0) return false;
+
+    const words = micText.trim().split(/\s+/);
+    // Single-word responses ("yes", "no", "okay") are almost always genuine replies.
+    // 2–3 word phrases can echo acoustically during the AEC convergence window.
+    if (words.length < 2) return false;
+
+    const now = Date.now();
+    this._recentClientTranscripts = this._recentClientTranscripts.filter(
+      e => now - e.ts < AppState._ECHO_WINDOW_MS
+    );
+    const normalise = (s: string) => s.toLowerCase().replace(/[^a-z0-9 ]/g, '').trim();
+
+    // For 2–3 word segments trigrams don't exist — use bigrams instead.
+    // For 4+ word segments use trigrams (lower false-positive rate).
+    const ngrams = (s: string, n: number): Set<string> => {
+      const ws = normalise(s).split(/\s+/);
+      const tg = new Set<string>();
+      for (let i = 0; i + n - 1 < ws.length; i++) tg.add(ws.slice(i, i + n).join(' '));
+      return tg;
+    };
+    const gramSize = words.length <= 3 ? 2 : 3;
+    const micTg = ngrams(micText, gramSize);
+    if (micTg.size === 0) return false;
+
+    for (const entry of this._recentClientTranscripts) {
+      const clientTg = ngrams(entry.text, gramSize);
+      if (clientTg.size === 0) continue;
+      const intersection = [...micTg].filter(t => clientTg.has(t)).length;
+      // Mic-side precision: fraction of mic's n-grams that appeared in client transcript.
+      // Partial echoes (mic heard first half of a long sentence) still score high here.
+      const precision = intersection / micTg.size;
+      // Bigram matching is inherently noisier — use a higher threshold for short segments
+      // to avoid false-positive suppression of genuine short replies.
+      const baseThreshold = this._builtinOnlyMode ? 0.60 : AppState._ECHO_SIMILARITY_THRESHOLD;
+      const threshold = gramSize === 2 ? Math.max(baseThreshold, 0.80) : baseThreshold;
+      if (precision >= threshold) {
+        console.log(`[Main] Echo detected (${gramSize}-gram precision=${precision.toFixed(2)}, threshold=${threshold}): dropping mic segment`);
+        return true;
+      }
+    }
+    return false;
+  }
+
+  private createSTTProvider(speaker: 'client' | 'user'): STTProvider {
     const { CredentialsManager } = require('./services/CredentialsManager');
     const sttProvider = CredentialsManager.getInstance().getSttProvider();
     const sttLanguage = CredentialsManager.getInstance().getSttLanguage();
@@ -761,7 +903,7 @@ export class AppState {
       const apiKey = CredentialsManager.getInstance().getDeepgramApiKey();
       if (apiKey) {
         console.log(`[Main] Using DeepgramStreamingSTT for ${speaker}`);
-        stt = new DeepgramStreamingSTT(apiKey);
+        stt = new DeepgramStreamingSTT(apiKey, speaker);
       } else {
         console.warn(`[Main] No API key for Deepgram STT, falling back to GoogleSTT`);
         stt = new GoogleSTT();
@@ -825,8 +967,27 @@ export class AppState {
 
     // Wire Transcript Events
     stt.on('transcript', (segment: { text: string, isFinal: boolean, confidence: number }) => {
+      console.log(`[Main] STT transcript (${speaker}, final=${segment.isFinal}): "${segment.text}"`);
       if (!this.isMeetingActive) {
+        console.warn(`[Main] Dropping transcript — meeting not active (speaker=${speaker})`);
         return;
+      }
+
+      if (this.isMeetingPaused) {
+        return; // Drop transcript segments received during pause (rare, in-flight audio)
+      }
+
+      // On macOS with external speakers the mic physically hears the speakers,
+      // causing the other party's speech to appear in both channels. Suppress
+      // mic (user) segments that are highly similar to a recent client transcript.
+      if (speaker === 'user' && segment.isFinal && this._isMicEcho(segment.text)) {
+        console.log(`[Main] Suppressing mic echo: "${segment.text}"`);
+        return;
+      }
+
+      // Record final client transcripts so mic echo detection has a reference window.
+      if (speaker === 'client' && segment.isFinal) {
+        this._recentClientTranscripts.push({ text: segment.text, ts: Date.now() });
       }
 
       this.intelligenceManager.handleTranscript({
@@ -847,8 +1008,15 @@ export class AppState {
       }
 
       const helper = this.getWindowHelper();
+      // Resolve real display name at emit-time so the renderer always gets
+      // a human-readable label, even before a speaker-names-resolved event fires.
+      const speakerNameMap = this.intelligenceManager.getSpeakerNameMap();
+      const displayName = speaker === 'user'
+        ? (speakerNameMap.user || 'Me')
+        : (speakerNameMap.client || 'Them');
       const payload = {
-        speaker: speaker,
+        speaker: speaker,          // internal role — kept for renderer routing logic
+        displayName: displayName,  // resolved human name for UI display
         text: segment.text,
         timestamp: Date.now(),
         final: segment.isFinal,
@@ -858,7 +1026,7 @@ export class AppState {
       helper.getOverlayWindow()?.webContents.send('native-audio-transcript', payload);
 
       // Feed final recruiter (system audio) transcripts to negotiation tracker
-      if (segment.isFinal && speaker === 'interviewer') {
+      if (segment.isFinal && speaker === 'client') {
         this.knowledgeOrchestrator?.feedInterviewerUtterance?.(segment.text);
       }
     });
@@ -870,12 +1038,14 @@ export class AppState {
     return stt;
   }
 
-  private setupSystemAudioPipeline(): void {
+  private setupSystemAudioPipeline(inputDeviceId?: string, outputDeviceId?: string): void {
     // REMOVED EARLY RETURN: if (this.systemAudioCapture && this.microphoneCapture) return; // Already initialized
 
     try {
-      // 1. Initialize Captures if missing
-      // If they already exist (e.g. from reconfigureAudio), they are already wired to write to this.googleSTT/User
+      // 1. Initialize Captures if missing.
+      // If they already exist (e.g. from reconfigureAudio) they are already
+      // wired to write to this.googleSTT / googleSTT_User.
+
       if (!this.systemAudioCapture) {
         this.systemAudioCapture = new SystemAudioCapture();
         // Wire Capture -> STT
@@ -887,11 +1057,20 @@ export class AppState {
         });
         this.systemAudioCapture.on('error', (err: Error) => {
           console.error('[Main] SystemAudioCapture Error:', err);
+          // Surface SCK permission failures (macOS) to the user so they know to grant
+          // Screen Recording access in System Settings > Privacy & Security.
+          this.broadcast('meeting-audio-warning', err.message || 'System audio capture failed');
+        });
+        // Re-sync STT sample rate when the native hardware rate is discovered post-start
+        this.systemAudioCapture.on('sample-rate-detected', (rate: number) => {
+          console.log(`[Main] System audio true rate detected: ${rate}Hz — resyncing STT`);
+          this.googleSTT?.setSampleRate(rate);
         });
       }
 
       if (!this.microphoneCapture) {
-        this.microphoneCapture = new MicrophoneCapture();
+        const disableMicVad = this._shouldDisableMicVad(inputDeviceId, outputDeviceId);
+        this.microphoneCapture = new MicrophoneCapture(undefined, { vadDisabled: disableMicVad });
         this.microphoneCapture.on('data', (chunk: Buffer) => {
           this.googleSTT_User?.write(chunk);
         });
@@ -901,28 +1080,29 @@ export class AppState {
         this.microphoneCapture.on('error', (err: Error) => {
           console.error('[Main] MicrophoneCapture Error:', err);
         });
+        this.microphoneCapture.on('sample-rate-detected', (rate: number) => {
+          console.log(`[Main] Mic true rate detected: ${rate}Hz — resyncing User STT`);
+          this.googleSTT_User?.setSampleRate(rate);
+        });
       }
 
       // 2. Initialize STT Services if missing
       if (!this.googleSTT) {
-        this.googleSTT = this.createSTTProvider('interviewer');
+        this.googleSTT = this.createSTTProvider('client');
       }
 
       if (!this.googleSTT_User) {
         this.googleSTT_User = this.createSTTProvider('user');
       }
 
-      // --- CRITICAL FIX: SYNC SAMPLE RATES ---
-      // Always sync rates, even if just initialized, to ensure consistency
-
-      // 1. Sync System Audio Rate
-      const sysRate = this.systemAudioCapture?.getSampleRate() || 48000;
-      if (this._verboseLogging) console.log(`[Main] Configuring Interviewer STT to ${sysRate}Hz`);
+      // 3. Sync sample rates (pre-start best-effort; settle poll in startMeeting
+      //    will override these once the hardware reports real values).
+      const sysRate = this.systemAudioCapture?.getOutputSampleRate() || 16000;
+      if (this._verboseLogging) console.log(`[Main] Configuring Client STT to ${sysRate}Hz`);
       this.googleSTT?.setSampleRate(sysRate);
       this.googleSTT?.setAudioChannelCount?.(1);
 
-      // 2. Sync Mic Rate
-      const micRate = this.microphoneCapture?.getSampleRate() || 48000;
+      const micRate = this.microphoneCapture?.getOutputSampleRate() || 16000;
       if (this._verboseLogging) console.log(`[Main] Configuring User STT to ${micRate}Hz`);
       this.googleSTT_User?.setSampleRate(micRate);
       this.googleSTT_User?.setAudioChannelCount?.(1);
@@ -937,93 +1117,88 @@ export class AppState {
   private async reconfigureAudio(inputDeviceId?: string, outputDeviceId?: string): Promise<void> {
     console.log(`[Main] Reconfiguring Audio: Input=${inputDeviceId}, Output=${outputDeviceId}`);
 
-    // 1. System Audio (Output Capture)
+    // Determine VAD mode once upfront for this device combination.
+    const disableMicVad = this._shouldDisableMicVad(inputDeviceId, outputDeviceId);
+
+    // ── 1. System Audio (Output Capture) ──────────────────────────────────────
     if (this.systemAudioCapture) {
       this.systemAudioCapture.stop();
       this.systemAudioCapture = null;
     }
 
+    const wireSystemAudio = (capture: typeof this.systemAudioCapture) => {
+      if (!capture) return;
+      capture.on('data', (chunk: Buffer) => {
+        this.googleSTT?.write(chunk);
+      });
+      capture.on('speech_ended', () => {
+        this.googleSTT?.notifySpeechEnded?.();
+      });
+      capture.on('error', (err: Error) => {
+        console.error('[Main] SystemAudioCapture Error:', err);
+      });
+      capture.on('sample-rate-detected', (rate: number) => {
+        console.log(`[Main] System audio true rate detected: ${rate}Hz — resyncing STT`);
+        this.googleSTT?.setSampleRate(rate);
+      });
+    };
+
     try {
       console.log('[Main] Initializing SystemAudioCapture...');
       this.systemAudioCapture = new SystemAudioCapture(outputDeviceId || undefined);
-      const rate = this.systemAudioCapture.getSampleRate();
-      console.log(`[Main] SystemAudioCapture rate: ${rate}Hz`);
-      this.googleSTT?.setSampleRate(rate);
-
-      this.systemAudioCapture.on('data', (chunk: Buffer) => {
-        // console.log('[Main] SysAudio chunk', chunk.length);
-        this.googleSTT?.write(chunk);
-      });
-      this.systemAudioCapture.on('speech_ended', () => {
-        this.googleSTT?.notifySpeechEnded?.();
-      });
-      this.systemAudioCapture.on('error', (err: Error) => {
-        console.error('[Main] SystemAudioCapture Error:', err);
-      });
+      wireSystemAudio(this.systemAudioCapture);
       console.log('[Main] SystemAudioCapture initialized.');
     } catch (err) {
-      console.warn('[Main] Failed to initialize SystemAudioCapture with preferred ID. Falling back to default.', err);
+      console.warn('[Main] Failed to initialize SystemAudioCapture with preferred device. Falling back to default.', err);
       try {
-        this.systemAudioCapture = new SystemAudioCapture(); // Default
-        const rate = this.systemAudioCapture.getSampleRate();
-        console.log(`[Main] SystemAudioCapture (Default) rate: ${rate}Hz`);
-        this.googleSTT?.setSampleRate(rate);
-
-        this.systemAudioCapture.on('data', (chunk: Buffer) => {
-          this.googleSTT?.write(chunk);
-        });
-        this.systemAudioCapture.on('speech_ended', () => {
-          this.googleSTT?.notifySpeechEnded?.();
-        });
-        this.systemAudioCapture.on('error', (err: Error) => {
-          console.error('[Main] SystemAudioCapture (Default) Error:', err);
-        });
+        this.systemAudioCapture = new SystemAudioCapture();
+        wireSystemAudio(this.systemAudioCapture);
+        console.log('[Main] SystemAudioCapture (Default) initialized.');
       } catch (err2) {
         console.error('[Main] Failed to initialize SystemAudioCapture (Default):', err2);
       }
     }
 
-    // 2. Microphone (Input Capture)
+    // ── 2. Microphone (Input Capture) ─────────────────────────────────────────
     if (this.microphoneCapture) {
       this.microphoneCapture.stop();
       this.microphoneCapture = null;
     }
 
-    try {
-      console.log('[Main] Initializing MicrophoneCapture...');
-      this.microphoneCapture = new MicrophoneCapture(inputDeviceId || undefined);
-      const rate = this.microphoneCapture.getSampleRate();
-      console.log(`[Main] MicrophoneCapture rate: ${rate}Hz`);
-      this.googleSTT_User?.setSampleRate(rate);
-
-      this.microphoneCapture.on('data', (chunk: Buffer) => {
-        // console.log('[Main] Mic chunk', chunk.length);
+    const wireMicrophone = (capture: typeof this.microphoneCapture) => {
+      if (!capture) return;
+      capture.on('data', (chunk: Buffer) => {
         this.googleSTT_User?.write(chunk);
       });
-      this.microphoneCapture.on('speech_ended', () => {
+      capture.on('speech_ended', () => {
         this.googleSTT_User?.notifySpeechEnded?.();
       });
-      this.microphoneCapture.on('error', (err: Error) => {
+      capture.on('error', (err: Error) => {
         console.error('[Main] MicrophoneCapture Error:', err);
       });
+      capture.on('sample-rate-detected', (rate: number) => {
+        console.log(`[Main] Mic true rate detected: ${rate}Hz — resyncing User STT`);
+        this.googleSTT_User?.setSampleRate(rate);
+      });
+    };
+
+    try {
+      console.log('[Main] Initializing MicrophoneCapture...');
+      this.microphoneCapture = new MicrophoneCapture(
+        inputDeviceId || undefined,
+        { vadDisabled: disableMicVad }
+      );
+      wireMicrophone(this.microphoneCapture);
       console.log('[Main] MicrophoneCapture initialized.');
     } catch (err) {
-      console.warn('[Main] Failed to initialize MicrophoneCapture with preferred ID. Falling back to default.', err);
+      console.warn('[Main] Failed to initialize MicrophoneCapture with preferred device. Falling back to default.', err);
       try {
-        this.microphoneCapture = new MicrophoneCapture(); // Default
-        const rate = this.microphoneCapture.getSampleRate();
-        console.log(`[Main] MicrophoneCapture (Default) rate: ${rate}Hz`);
-        this.googleSTT_User?.setSampleRate(rate);
-
-        this.microphoneCapture.on('data', (chunk: Buffer) => {
-          this.googleSTT_User?.write(chunk);
-        });
-        this.microphoneCapture.on('speech_ended', () => {
-          this.googleSTT_User?.notifySpeechEnded?.();
-        });
-        this.microphoneCapture.on('error', (err: Error) => {
-          console.error('[Main] MicrophoneCapture (Default) Error:', err);
-        });
+        this.microphoneCapture = new MicrophoneCapture(
+          undefined,
+          { vadDisabled: disableMicVad }  // preserve VAD mode even on fallback
+        );
+        wireMicrophone(this.microphoneCapture);
+        console.log('[Main] MicrophoneCapture (Default) initialized.');
       } catch (err2) {
         console.error('[Main] Failed to initialize MicrophoneCapture (Default):', err2);
       }
@@ -1060,12 +1235,13 @@ export class AppState {
     // Reinitialize the pipeline (will pick up the new provider from CredentialsManager)
     this.setupSystemAudioPipeline();
 
-    // Restart audio captures and new STT instances if a meeting is active
+    // Restart STT first, then audio — same order as startMeeting to ensure
+    // write() calls are not dropped while isActive=false.
     if (this.isMeetingActive) {
-      this.systemAudioCapture?.start();
-      this.microphoneCapture?.start();
       this.googleSTT?.start();
       this.googleSTT_User?.start();
+      this.systemAudioCapture?.start();
+      this.microphoneCapture?.start();
     }
 
     console.log('[Main] STT Provider reconfigured');
@@ -1127,7 +1303,8 @@ export class AppState {
     };
 
     try {
-      this.audioTestCapture = new MicrophoneCapture(deviceId || undefined);
+      const testVadDisabled = this._isBuiltinOnly(deviceId, undefined);
+      this.audioTestCapture = new MicrophoneCapture(deviceId || undefined, { vadDisabled: testVadDisabled });
       attachAudioTestListeners(this.audioTestCapture);
       this.audioTestCapture.start();
     } catch (err) {
@@ -1137,7 +1314,7 @@ export class AppState {
       try { this.audioTestCapture?.stop(); } catch { /* ignore errors on already-failed capture */ }
       this.audioTestCapture = null;
       try {
-        this.audioTestCapture = new MicrophoneCapture();
+        this.audioTestCapture = new MicrophoneCapture(undefined, { vadDisabled: false }); // fallback — unknown device, keep VAD
         attachAudioTestListeners(this.audioTestCapture);
         this.audioTestCapture.start();
       } catch (fallbackErr) {
@@ -1163,6 +1340,7 @@ export class AppState {
     }
   }
 
+
   public async startMeeting(metadata?: any): Promise<void> {
     console.log('[Main] Starting Meeting...', metadata);
 
@@ -1173,10 +1351,26 @@ export class AppState {
     }
 
     this.isMeetingActive = true;
+
+    this._pendingLiveAnalysisMeetingId = null;
+    this._liveAnalysisInFlight = false;
     this.broadcastMeetingState();
+
+    // Pass metadata directly to SessionTracker, which owns all name-resolution logic:
+    // single attendee → real name, multiple → company-domain labeling, title fallback, etc.
+    // Do NOT pre-resolve here — that would duplicate and potentially contradict SessionTracker.
     if (metadata) {
       this.intelligenceManager.setMeetingMetadata(metadata);
     }
+
+    // Read back the names that SessionTracker just resolved and broadcast to renderer.
+    // This runs unconditionally so the renderer always gets an update at meeting start,
+    // even for manual meetings where metadata is undefined (defaults: Me / Them).
+    // The 100 ms delay ensures the renderer's session-reset handler fires first.
+    const resolvedNames = this.intelligenceManager.getSpeakerNameMap();
+    setTimeout(() => {
+      this.broadcast('speaker-names-resolved', resolvedNames);
+    }, 100);
 
     // Emit session reset to clear UI state immediately
     this.getWindowHelper().getOverlayWindow()?.webContents.send('session-reset');
@@ -1203,13 +1397,66 @@ export class AppState {
         // LAZY INIT: Ensure pipeline is ready (if not reconfigured above)
         this.setupSystemAudioPipeline();
 
-        // Start System Audio
-        this.systemAudioCapture?.start();
-        this.googleSTT?.start();
+        // Start STT BEFORE audio captures.
+        // DeepgramStreamingSTT.write() silently drops chunks when isActive=false,
+        // so if STT starts after the captures, all audio during the settle window
+        // is lost and no client transcript is generated for early speech.
+        // Starting with the 16000 fallback rate is safe: setSampleRate() after the
+        // settle poll triggers _reconnectWithNewConfig() which reconnects with the
+        // correct rate while preserving any buffered audio from the first connection.
+        this.googleSTT?.setSampleRate(16000);
+        this.googleSTT?.setAudioChannelCount?.(1);
+        this.googleSTT_User?.setSampleRate(16000);
+        this.googleSTT_User?.setAudioChannelCount?.(1);
 
-        // Start Microphone
-        this.microphoneCapture?.start();
+        // Reset session timer here — not at the previous stopMeeting() — so that
+        // duration = (stopTime − startTime) equals actual recording length only,
+        // with no idle-between-meetings inflation.
+        this.intelligenceManager.resetSessionTimer();
+
+        this.googleSTT?.start();
         this.googleSTT_User?.start();
+
+        // Start audio captures — data events now reach active STT connections immediately.
+        this.systemAudioCapture?.start();
+        this.microphoneCapture?.start();
+
+        // Adaptive poll: wait until hardware reports real sample rates (or 2s timeout).
+        // On macOS with SCK the background init thread can take 1-5s — the old fixed
+        // 200ms window always read the stale 48000 default.
+        let settledSysRate = 0;
+        let settledMicRate = 0;
+
+        await new Promise<void>(resolve => {
+          let elapsed = 0;
+          const POLL_INTERVAL_MS = 100;
+          const POLL_TIMEOUT_MS = 2000;
+          const DEFAULT_RATE = 0;
+
+          const poll = setInterval(() => {
+            elapsed += POLL_INTERVAL_MS;
+            const sysRate = this.systemAudioCapture?.getOutputSampleRate() ?? DEFAULT_RATE;
+            const micRate = this.microphoneCapture?.getOutputSampleRate() ?? DEFAULT_RATE;
+            const sysReady = sysRate > 0 || elapsed >= POLL_TIMEOUT_MS;
+            const micReady = micRate > 0 || elapsed >= POLL_TIMEOUT_MS;
+            if (sysReady && micReady) {
+              settledSysRate = sysRate;
+              settledMicRate = micRate;
+              clearInterval(poll);
+              resolve();
+            }
+          }, POLL_INTERVAL_MS);
+        });
+
+        // Update rates now that hardware has reported them.
+        // If different from the 16000 fallback used at start(), setSampleRate triggers
+        // _reconnectWithNewConfig() which reconnects with the correct rate while
+        // preserving buffered audio — no transcripts are lost.
+        console.log(`[Main] Settled rates — sys: ${settledSysRate}Hz, mic: ${settledMicRate}Hz`);
+        this.googleSTT?.setSampleRate(settledSysRate || 16000);
+        this.googleSTT?.setAudioChannelCount?.(1);
+        this.googleSTT_User?.setSampleRate(settledMicRate || 16000);
+        this.googleSTT_User?.setAudioChannelCount?.(1);
 
         // Start JIT RAG live indexing
         if (this.ragManager) {
@@ -1220,8 +1467,8 @@ export class AppState {
           const requestedInput = metadata?.audio?.inputDeviceId || 'default';
           const requestedOutput = metadata?.audio?.outputDeviceId || 'default';
           const backend = requestedOutput === 'sck' ? 'sck' : 'coreaudio';
-          const sysRate = this.systemAudioCapture?.getSampleRate() || 48000;
-          const micRate = this.microphoneCapture?.getSampleRate() || 48000;
+          const sysRate = this.systemAudioCapture?.getOutputSampleRate() || 16000;
+          const micRate = this.microphoneCapture?.getOutputSampleRate() || 16000;
           console.log(`[Main][debug] Audio pipeline: input=${requestedInput} output=${requestedOutput} backend=${backend} sysRate=${sysRate}Hz micRate=${micRate}Hz`);
         }
         console.log('[Main] Audio pipeline started successfully.');
@@ -1233,10 +1480,12 @@ export class AppState {
     }, 0); // Defer to next event loop tick — ensures IPC response reaches renderer before audio init
   }
 
-  public async endMeeting(): Promise<void> {
+  public async endMeeting(meetingTypes?: ('discovery' | 'demo' | 'negotiation')[]): Promise<void> {
     console.log('[Main] Ending Meeting...');
     this.isMeetingActive = false; // Block new data immediately
+    this.isMeetingPaused = false; // Reset pause flag — clean slate for next meeting
     this.broadcastMeetingState();
+    this.broadcastMeetingPauseState(); // Notify renderers so they don't retain stale paused UI
 
     // Reset Mouse Passthrough so the next meeting overlay starts fresh and focusable
     if (this.overlayMousePassthrough) {
@@ -1254,7 +1503,12 @@ export class AppState {
     // Capture the meetingId NOW so the background IIFE uses a deterministic ID
     // rather than getRecentMeetings(1) which could return a different meeting if the
     // user starts a new session before background processing finishes.
-    const meetingId = await this.intelligenceManager.stopMeeting();
+    const meetingId = await this.intelligenceManager.stopMeeting(meetingTypes);
+    // If an analysis call is currently in-flight, record the meetingId so
+    // setCurrentLiveAnalysis() can patch the DB when the result arrives.
+    if (this._liveAnalysisInFlight) {
+      this._pendingLiveAnalysisMeetingId = meetingId;
+    }
 
     // Revert to Default Model — synchronous, no blocking I/O
     try {
@@ -1309,6 +1563,316 @@ export class AppState {
       }
     }
     // ─────────────────────────────────────────────────────────────────────────
+  }
+
+  /**
+   * Shows a custom toast notification on whichever display the main app window
+   * currently lives on.
+   *
+   * WHY NOT electron.Notification?
+   *   On Windows, native toast notifications are always delivered to the display
+   *   that owns the primary taskbar — there is no Win32 API to redirect them to
+   *   another monitor.  Briefly focusing the app window does not change this.
+   *   The only reliable cross-platform solution is a frameless, transparent
+   *   BrowserWindow that we explicitly position in the bottom-right corner of
+   *   the target display ourselves.  This gives pixel-perfect control on every OS.
+   *
+   * Behaviour:
+   *   - Appears bottom-right of whatever screen the main app window is on.
+   *   - Never steals keyboard focus (showInactive).
+   *   - Always-on-top so it is visible over full-screen meeting apps.
+   *   - Auto-dismisses after `durationMs` (default 4 s) with a CSS fade-out.
+   *   - If a toast is already showing, it is closed first so toasts don't pile up.
+   */
+  private _toastWindow: BrowserWindow | null = null;
+  private _toastTimer: NodeJS.Timeout | null = null;
+
+  private showNotificationOnActiveDisplay(
+    title: string,
+    body: string,
+    _silent = true,          // kept for API compat; custom toast is always silent
+    durationMs = 4000,
+  ): void {
+    // --- 1. Tear down any existing toast immediately ---
+    if (this._toastTimer) {
+      clearTimeout(this._toastTimer);
+      this._toastTimer = null;
+    }
+    if (this._toastWindow && !this._toastWindow.isDestroyed()) {
+      this._toastWindow.close();
+      this._toastWindow = null;
+    }
+
+    // --- 2. Determine target display ---
+    const mainWin = this.getMainWindow();
+    let targetDisplay: Electron.Display;
+    if (mainWin && !mainWin.isDestroyed()) {
+      targetDisplay = screen.getDisplayMatching(mainWin.getBounds());
+    } else {
+      targetDisplay = screen.getPrimaryDisplay();
+    }
+
+    // --- 3. Calculate position: bottom-right corner, 16 px margin ---
+    const TOAST_W = 320;
+    const TOAST_H = 80;
+    const MARGIN = 16;
+    const { workArea } = targetDisplay;
+    const toastX = workArea.x + workArea.width - TOAST_W - MARGIN;
+    const toastY = workArea.y + workArea.height - TOAST_H - MARGIN;
+
+    // --- 4. Build the toast HTML inline (no external file needed) ---
+    const isMac = process.platform === 'darwin';
+    const bgColor = isMac ? '#1e1e1e' : '#2b2b2b';   // match screenshot style
+    const html = `<!DOCTYPE html><html><head><meta charset="utf-8"><style>
+      *{margin:0;padding:0;box-sizing:border-box}
+      html,body{width:100%;height:100%;overflow:hidden;background:transparent}
+      .toast{
+        position:absolute;inset:0;
+        background:${bgColor};
+        border-radius:8px;
+        border:1px solid rgba(255,255,255,0.12);
+        padding:12px 16px;
+        display:flex;flex-direction:column;justify-content:center;gap:4px;
+        font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;
+        color:#fff;
+        box-shadow:0 4px 24px rgba(0,0,0,0.5);
+        animation:fadeIn 0.2s ease;
+      }
+      .title{font-size:13px;font-weight:600;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+      .body {font-size:12px;color:rgba(255,255,255,0.72);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+      @keyframes fadeIn{from{opacity:0;transform:translateY(6px)}to{opacity:1;transform:translateY(0)}}
+      @keyframes fadeOut{from{opacity:1}to{opacity:0}}
+      .fading{animation:fadeOut 0.3s ease forwards}
+    </style></head><body>
+      <div class="toast" id="t">
+        <div class="title">${title.replace(/</g, '&lt;')}</div>
+        <div class="body">${body.replace(/</g, '&lt;')}</div>
+      </div>
+      <script>
+        const FADE=300,STAY=${durationMs - 300};
+        setTimeout(()=>{
+          document.getElementById('t').classList.add('fading');
+          setTimeout(()=>window.close(),FADE);
+        },STAY);
+      </script>
+    </body></html>`;
+
+    // --- 5. Create the toast BrowserWindow ---
+    const toast = new BrowserWindow({
+      width: TOAST_W,
+      height: TOAST_H,
+      x: toastX,
+      y: toastY,
+      frame: false,
+      transparent: true,
+      resizable: false,
+      movable: false,
+      focusable: false,
+      skipTaskbar: true,
+      alwaysOnTop: true,
+      show: false,
+      hasShadow: false,
+      webPreferences: {
+        nodeIntegration: false,
+        contextIsolation: true,
+        // No preload needed — the toast is self-contained HTML
+      },
+    });
+
+    // Apply content-protection so the toast is hidden from screen-capture
+    // on the same surfaces as the main window.
+    if (this.windowHelper.getContentProtection?.()) {
+      toast.setContentProtection(true);
+    }
+
+    this._toastWindow = toast;
+
+    toast.loadURL(`data:text/html;charset=utf-8,${encodeURIComponent(html)}`);
+
+    toast.once('ready-to-show', () => {
+      if (toast.isDestroyed()) return;
+      toast.showInactive();           // never steal focus
+    });
+
+    toast.on('closed', () => {
+      if (this._toastWindow === toast) this._toastWindow = null;
+    });
+
+    // --- 6. Hard-kill timer as safety net (CSS animation handles the visual fade) ---
+    this._toastTimer = setTimeout(() => {
+      this._toastTimer = null;
+      if (this._toastWindow && !this._toastWindow.isDestroyed()) {
+        this._toastWindow.close();
+        this._toastWindow = null;
+      }
+    }, durationMs + 500);   // 500 ms grace for the CSS fade-out
+  }
+
+  public pauseMeeting(): void {
+    if (!this.isMeetingActive) {
+      console.warn('[Main] pauseMeeting() called but no meeting is active — ignoring.');
+      return;
+    }
+    if (this.isMeetingPaused) {
+      console.warn('[Main] pauseMeeting() called but meeting is already paused — ignoring.');
+      return;
+    }
+
+    console.log('[Main] Pausing Meeting...');
+    this.isMeetingPaused = true;
+    this.intelligenceManager.recordPauseStart();
+
+    // 1. Stop audio capture — drop incoming audio chunks on the floor.
+    //    We call stop() (not destroy) so we can restart without re-initializing
+    //    the capture objects. The STT streams stay alive but receive no new data.
+    this.systemAudioCapture?.stop();
+    this.microphoneCapture?.stop();
+
+    // 2. Stop STT streams. They will be restarted on resume.
+    //    GoogleSTT / DeepgramSTT / OpenAISTT all have .stop() + .start() lifecycle.
+    this.googleSTT?.stop();
+    this.googleSTT_User?.stop();
+
+    // 3. Pause live RAG indexing so no partial sentences are embedded.
+    //    RAGManager does not have a pause() API — we stop it; resume will restart it.
+    if (this.ragManager) {
+      this.ragManager.stopLiveIndexing().catch(() => { });
+    }
+
+    // 4. Broadcast pause state to all renderer windows.
+    this.broadcastMeetingPauseState();
+
+    // 5. Update tray menu to show paused state
+    this.updateTrayMenu();
+
+    // 6. Show a native OS notification so the user knows recording is paused.
+    //    showNotificationOnActiveDisplay() ensures the notification appears on
+    //    whichever monitor the app window currently occupies (e.g. an external
+    //    display the user dragged the app to), not always the primary screen.
+    this.showNotificationOnActiveDisplay(
+      'Meeting Paused',
+      'Audio capture and transcription are paused.',
+    );
+
+    console.log('[Main] Meeting paused. Audio capture and STT stopped.');
+  }
+
+  public async resumeMeeting(): Promise<void> {
+    if (!this.isMeetingActive) {
+      console.warn('[Main] resumeMeeting() called but no meeting is active — ignoring.');
+      return;
+    }
+    if (!this.isMeetingPaused) {
+      console.warn('[Main] resumeMeeting() called but meeting is not paused — ignoring.');
+      return;
+    }
+
+    console.log('[Main] Resuming Meeting...');
+
+    try {
+      // FIX-3: Start STT FIRST so isActive=true and WebSocket is open before
+      // the native Rust capture threads begin emitting data events.
+      //
+      // The previous order (audio start → STT start) had a race window where
+      // the Rust DSP threads woke up and pushed chunks into the STT ring buffer
+      // while both STT instances still had isActive=false.  When googleSTT.start()
+      // and googleSTT_User.start() then fired, they each flushed their buffers —
+      // but the system-audio chunks that arrived during the gap were non-deterministically
+      // held in whichever STT instance connected first, causing speaker mismatch after
+      // every pause/resume cycle.
+      //
+      // Correct order: STT open (isActive=true, WebSocket connecting) → audio start.
+      // Chunks that arrive before the WebSocket handshake completes go into the STT
+      // ring buffer which is flushed on 'open', still assigned to the correct instance.
+
+      // 1. Re-sync rates in case the device changed while paused.
+      const resumeSysRate = this.systemAudioCapture?.getOutputSampleRate() || 16000;
+      const resumeMicRate = this.microphoneCapture?.getOutputSampleRate() || 16000;
+      this.googleSTT?.setSampleRate(resumeSysRate);
+      this.googleSTT?.setAudioChannelCount?.(1);
+      this.googleSTT_User?.setSampleRate(resumeMicRate);
+      this.googleSTT_User?.setAudioChannelCount?.(1);
+      this.googleSTT?.start();
+      this.googleSTT_User?.start();
+
+      // 2. NOW start audio — data events go to already-active STT instances.
+      this.systemAudioCapture?.start();
+      this.microphoneCapture?.start();
+
+      // 3. Resume live RAG indexing using the SAME session key 'live-meeting-current'
+      //    so all new transcript segments are appended to the existing session,
+      //    not a new one. No duplicate meeting ID is created.
+      if (this.ragManager) {
+        this.ragManager.startLiveIndexing('live-meeting-current');
+      }
+
+      // 4. Only clear the pause flag after the entire pipeline has successfully restarted.
+      this.isMeetingPaused = false;
+      this.intelligenceManager.recordPauseEnd();
+    } catch (err) {
+      console.error('[Main] Error resuming audio pipeline:', err);
+      // Restore paused state so UI stays consistent with the actual pipeline state.
+      this.isMeetingPaused = true;
+      this.broadcast('meeting-audio-error', (err as Error).message || 'Audio failed to resume');
+      this.broadcastMeetingPauseState();
+      return;
+    }
+
+    // 5. Broadcast resumed state to all renderer windows only on success.
+    this.broadcastMeetingPauseState();
+
+    // 6. Update tray menu to remove paused state indicator
+    this.updateTrayMenu();
+
+    // 7. Native OS notification — meeting resumed.
+    //    Same display-aware helper as pauseMeeting() above.
+    this.showNotificationOnActiveDisplay(
+      'Meeting Resumed',
+      'Audio capture and transcription have resumed.',
+    );
+
+    console.log('[Main] Meeting resumed. Audio capture and STT restarted.');
+  }
+
+  public getCurrentLiveAnalysis(): LiveAnalysisData | null {
+    return this._currentLiveAnalysis;
+  }
+
+  public setLiveAnalysisInFlight(inFlight: boolean): void {
+    this._liveAnalysisInFlight = inFlight;
+  }
+
+  public getLiveAnalysisInFlight(): boolean {
+    return this._liveAnalysisInFlight;
+  }
+
+  public setCurrentLiveAnalysis(data: LiveAnalysisData | null): void {
+    this._currentLiveAnalysis = data;
+
+    // If endMeeting() already ran and left a pending meetingId, this is a late-arriving
+    // analysis result. Patch it directly into the saved meeting record in the DB.
+    if (data && this._pendingLiveAnalysisMeetingId && !this.isMeetingActive) {
+      const meetingId = this._pendingLiveAnalysisMeetingId;
+      this._pendingLiveAnalysisMeetingId = null;
+      try {
+        const db = DatabaseManager.getInstance();
+        const meeting = db.getMeetingDetails(meetingId);
+        if (meeting) {
+          const existing = meeting.detailedSummary || { actionItems: [], keyPoints: [] };
+          db.updateMeeting(meetingId, {
+            detailedSummary: { ...existing, liveAnalysis: data }
+          });
+          console.log(`[AppState] Late-arriving live analysis patched into meeting ${meetingId}`);
+        }
+      } catch (err) {
+        console.error('[AppState] Failed to patch late live analysis:', err);
+      }
+    }
+  }
+
+  public clearCurrentLiveAnalysis(): void {
+    this._currentLiveAnalysis = null;
+    this._companyIntel = null;
   }
 
   private async processCompletedMeetingForRAG(meetingId: string): Promise<void> {
@@ -1479,6 +2043,15 @@ export class AppState {
       }
     })
 
+    this.intelligenceManager.on('speaker-names-resolved', (names: { user: string; client: string }) => {
+      console.log('[AppState] Speaker names resolved, broadcasting to all windows:', names);
+      BrowserWindow.getAllWindows().forEach(win => {
+        if (!win.isDestroyed()) {
+          win.webContents.send('speaker-names-resolved', names);
+        }
+      });
+    });
+
     this.intelligenceManager.on('error', (error: Error, mode: string) => {
       console.error(`[IntelligenceManager] Error in ${mode}:`, error)
       const win = mainWindow()
@@ -1578,6 +2151,10 @@ export class AppState {
 
   public getExtraScreenshotQueue(): string[] {
     return this.screenshotHelper.getExtraScreenshotQueue()
+  }
+
+  public getSpeakerNameMap(): { user: string; client: string } {
+    return { ...this.speakerNameMap };
   }
 
   // Window management methods
@@ -1858,7 +2435,7 @@ export class AppState {
     trayIcon.setTemplateImage(iconToUse.endsWith('Template.png'));
 
     this.tray = new Tray(trayIcon)
-    this.tray.setToolTip('Natively') // This tooltip might also need update if we change global shortcut, but global shortcut is removed.
+    this.tray.setToolTip('Godojo.ai') // This tooltip might also need update if we change global shortcut, but global shortcut is removed.
     this.updateTrayMenu();
 
     // Double-click to show window
@@ -1870,13 +2447,17 @@ export class AppState {
   public updateTrayMenu() {
     if (!this.tray) return;
 
+    // ── NEW: capture live state ──
+    const isActive = this.isMeetingActive;
+    const isPaused = this.isMeetingPaused;
+
     const keybindManager = KeybindManager.getInstance();
     const screenshotAccel = keybindManager.getKeybind('general:take-screenshot') || 'CommandOrControl+H';
 
     console.log('[Main] updateTrayMenu called. Screenshot Accelerator:', screenshotAccel);
 
     // Update tooltip for verification
-    this.tray.setToolTip('Natively');
+    this.tray.setToolTip('Godojo.ai');
 
     // Helper to format accelerator for display (e.g. CommandOrControl+H -> Cmd+H)
     const formatAccel = (accel: string) => {
@@ -1895,8 +2476,15 @@ export class AppState {
     const displayToggle = formatAccel(toggleAccel);
 
     const contextMenu = Menu.buildFromTemplate([
+      // ── NEW: pause status indicator (only shown during an active meeting) ──
+      ...(isActive ? [{
+        label: isPaused ? '⏸  Meeting Paused' : '🔴  Meeting Active',
+        enabled: false,   // non-clickable status label
+      }, {
+        type: 'separator' as const,
+      }] : []),
       {
-        label: 'Show Natively',
+        label: 'Show Godojo.ai',
         click: () => {
           this.centerAndShowWindow()
         }
@@ -2114,7 +2702,7 @@ export class AppState {
   }
 
   private _applyDisguise(mode: 'terminal' | 'settings' | 'activity' | 'none'): void {
-    let appName = "Natively";
+    let appName = "Godojo.ai";
     let iconPath = "";
 
     const isWin = process.platform === 'win32';
@@ -2158,7 +2746,7 @@ export class AppState {
         }
         break;
       case 'none':
-        appName = "Natively";
+        appName = "Godojo.ai";
         if (isMac) {
           iconPath = app.isPackaged
             ? path.join(process.resourcesPath, "natively.icns")
@@ -2315,6 +2903,105 @@ async function initializeApp() {
   const { CredentialsManager } = require('./services/CredentialsManager');
   CredentialsManager.getInstance().init();
 
+  // 3a. Initialize cloud sync stack: Firebase Auth identity restore + Supabase client.
+  //     The renderer's trySilentRestore() owns the actual refresh-token exchange
+  //     (it has the Firebase Web SDK + project apiKey). Main-side we just:
+  //       a. SupabaseClientManager.init() picks up persisted project URL/anon key
+  //          and constructs the supabase-js client with the accessToken callback.
+  //       b. SupabaseMirrorService.getInstance().init(db) below — done after
+  //          DatabaseManager is up — wires the outbox table and starts listening
+  //          for AuthManager 'signed-in' / 'auth-changed' events.
+
+  // Dev convenience: in unpackaged builds, if SUPABASE_URL / SUPABASE_KEY are present
+  // in the loaded .env AND no credentials have been persisted yet, hydrate them once
+  // so the SQL DDL / mirror flow works without manually calling supabaseSetCredentials
+  // from DevTools on every fresh machine. No-op in production builds.
+  try {
+    if (!app.isPackaged && process.env.SUPABASE_URL && process.env.SUPABASE_KEY) {
+      const cm = CredentialsManager.getInstance();
+      const existing = cm.getSupabaseCredentials?.();
+      if (!existing?.url || !existing?.anonKey) {
+        cm.setSupabaseCredentials(process.env.SUPABASE_URL, process.env.SUPABASE_KEY);
+        console.log('[Main] Supabase credentials hydrated from .env (dev only)');
+      }
+    }
+  } catch (e) {
+    console.warn('[Main] Supabase .env hydration failed (non-fatal):', e);
+  }
+
+  try {
+    const { SupabaseClientManager } = require('./db/SupabaseClient');
+    SupabaseClientManager.init();
+  } catch (e) {
+    console.warn('[Main] SupabaseClientManager.init failed (non-fatal):', e);
+  }
+  try {
+    const { SupabaseMirrorService } = require('./db/SupabaseMirrorService');
+    const { DatabaseManager } = require('./db/DatabaseManager');
+    const sqliteDb = DatabaseManager.getInstance().getDb();
+    if (sqliteDb) {
+      SupabaseMirrorService.getInstance().init(sqliteDb);
+      console.log('[Main] SupabaseMirrorService initialized');
+
+      // One-time historical backfill: pushes any local SQLite rows that pre-date
+      // mirror configuration up to Supabase. Idempotent — the backfill module
+      // checkpoints progress in app_state ('supabase_backfill_done') so it's a
+      // no-op after the first successful run. Must wait for a Firebase session
+      // because every upsert is RLS-scoped on auth.jwt() -> 'sub'.
+      try {
+        const { SupabaseBackfill } = require('./db/SupabaseBackfill');
+        const { AuthManager } = require('./services/AuthManager');
+        const auth = AuthManager.getInstance();
+
+        const runBackfillOnce = () => {
+          // Fire-and-forget; SupabaseBackfill.run handles its own errors and
+          // re-checkpoints, so a transient failure just means we'll resume on
+          // the next launch.
+          SupabaseBackfill.run(sqliteDb).catch((err: any) => {
+            console.warn('[Main] SupabaseBackfill.run failed (non-fatal):', err);
+          });
+        };
+
+        if (auth.isSignedIn()) {
+          runBackfillOnce();
+        } else {
+          // Wait for the renderer's silent-restore / first sign-in to deliver
+          // an ID token, then run exactly once.
+          auth.once('signed-in', runBackfillOnce);
+        }
+      } catch (e) {
+        console.warn('[Main] SupabaseBackfill wiring failed (non-fatal):', e);
+      }
+
+      // Gap detection: compare local SQLite IDs against Supabase and re-queue
+      // any rows that never made it (silent outbox failures, pre-credentials
+      // writes, etc.). Runs concurrently with the backfill; fire-and-forget.
+      try {
+        const { SupabaseSyncAudit } = require('./db/SupabaseSyncAudit');
+        const { AuthManager } = require('./services/AuthManager');
+        const auth = AuthManager.getInstance();
+
+        const runAuditOnce = () => {
+          SupabaseSyncAudit.run(sqliteDb).catch((err: any) => {
+            console.warn('[Main] SupabaseSyncAudit.run failed (non-fatal):', err);
+          });
+        };
+
+        if (auth.isSignedIn()) {
+          runAuditOnce();
+        } else {
+          auth.once('signed-in', runAuditOnce);
+        }
+      } catch (e) {
+        console.warn('[Main] SupabaseSyncAudit wiring failed (non-fatal):', e);
+      }
+    } else {
+      console.warn('[Main] DatabaseManager has no DB handle yet — mirror service deferred');
+    }
+  } catch (e) {
+    console.warn('[Main] SupabaseMirrorService init failed (non-fatal):', e);
+  }
+
   // 4. Initialize State
   const appState = AppState.getInstance()
 
@@ -2375,7 +3062,9 @@ async function initializeApp() {
       appState.startMeeting({
         title: event.title,
         calendarEventId: event.id,
-        source: 'calendar'
+        source: 'calendar',
+        attendees: event.attendees || [],
+        organizer: event.organizer || '',
       });
     });
 
@@ -2386,6 +3075,16 @@ async function initializeApp() {
     console.log('[Main] CalendarManager initialized');
   } catch (e) {
     console.error('[Main] Failed to initialize CalendarManager:', e);
+  }
+
+  // Initialize Zoom Calendar Manager
+  try {
+    const { ZoomCalendarManager } = require('./services/ZoomCalendarManager');
+    const zoomCal = ZoomCalendarManager.getInstance();
+    zoomCal.init();
+    console.log('[Main] ZoomCalendarManager initialized');
+  } catch (e) {
+    console.error('[Main] Failed to initialize ZoomCalendarManager:', e);
   }
 
   // Recover unprocessed meetings (persistence check)

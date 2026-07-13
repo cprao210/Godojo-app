@@ -1,8 +1,9 @@
 import React, { useState, useEffect } from 'react';
-import { Plus, Trash2, Edit2, AlertCircle, CheckCircle, Save, ChevronDown, Check, RefreshCw, ExternalLink, Loader2 } from 'lucide-react';
+import { Plus, Trash2, Edit2, AlertCircle, CheckCircle, Save, ChevronDown, Check, RefreshCw, Info, Globe } from 'lucide-react';
 import { STANDARD_CLOUD_MODELS, prettifyModelId } from '../../utils/modelUtils';
 import { validateCurl } from '../../lib/curl-validator';
 import { ProviderCard } from './ProviderCard';
+import { useResolvedTheme } from '../../hooks/useResolvedTheme';
 
 interface CustomProvider {
     id: string;
@@ -26,6 +27,7 @@ interface ModelSelectProps {
 const ModelSelect: React.FC<ModelSelectProps> = ({ value, options, onChange, placeholder = "Select model" }) => {
     const [isOpen, setIsOpen] = useState(false);
     const containerRef = React.useRef<HTMLDivElement>(null);
+    const isLight = useResolvedTheme() === "light";
 
     useEffect(() => {
         const handleClickOutside = (event: MouseEvent) => {
@@ -51,7 +53,7 @@ const ModelSelect: React.FC<ModelSelectProps> = ({ value, options, onChange, pla
             </button>
 
             {isOpen && (
-                <div className="absolute top-full right-0 mt-1 w-full bg-bg-elevated border border-border-subtle rounded-lg shadow-xl z-50 max-h-60 overflow-y-auto animated fadeIn">
+                <div className={`absolute top-full right-0 mt-1 w-full ${isLight ? "bg-bg-elevated" : "bg-gray-900"} border border-border-subtle rounded-lg shadow-xl z-50 max-h-60 overflow-y-auto animated fadeIn`}>
                     <div className="p-1 space-y-0.5">
                         {options.map((option) => (
                             <button
@@ -77,12 +79,26 @@ const ModelSelect: React.FC<ModelSelectProps> = ({ value, options, onChange, pla
     );
 };
 
-export const AIProvidersSettings: React.FC = () => {
+interface AIProvidersSettingsTypes {
+    tavilyApiKey: string;
+    hasStoredTavilyKey: boolean;
+    handleRemoveTavilyKey: () => Promise<void>;
+    tavilySaving: boolean;
+    tavilyError: string;
+    handleAddTavilyKey: (e: any) => void;
+    handleSaveTavilyKey: () => Promise<void>;
+}
+
+export const AIProvidersSettings: React.FC<AIProvidersSettingsTypes> = ({ tavilyApiKey, hasStoredTavilyKey, handleRemoveTavilyKey, tavilySaving,
+    tavilyError, handleAddTavilyKey,
+    handleSaveTavilyKey }) => {
     // --- Standard Providers ---
     const [apiKey, setApiKey] = useState('');
     const [groqApiKey, setGroqApiKey] = useState('');
     const [openaiApiKey, setOpenaiApiKey] = useState('');
     const [claudeApiKey, setClaudeApiKey] = useState('');
+
+    const isLight = useResolvedTheme() === "light";
 
     // Status
     const [savedStatus, setSavedStatus] = useState<Record<string, boolean>>({});
@@ -625,7 +641,7 @@ export const AIProvidersSettings: React.FC = () => {
                                 </p>
                                 <button
                                     onClick={handleFixOllama}
-                                    className="text-[10px] bg-bg-elevated hover:bg-bg-input px-2 py-1 rounded border border-border-subtle"
+                                    className="text-[10px] text-text-secondary bg-bg-elevated hover:bg-bg-input px-2 py-1 rounded border border-border-subtle"
                                 >
                                     Auto-Fix Connection
                                 </button>
@@ -850,6 +866,71 @@ export const AIProvidersSettings: React.FC = () => {
                         )}
                     </div>
                 )}
+            </div>
+
+            {/* Google Search API Card */}
+            <div className="mt-5">
+                <div className="bg-bg-item-surface rounded-xl border border-border-subtle">
+                    <div className="p-5">
+                        <div className="flex items-center gap-4 mb-4">
+                            <div className="w-10 h-10 rounded-lg bg-bg-input border border-border-subtle flex items-center justify-center text-emerald-500 shrink-0">
+                                <Globe size={20} />
+                            </div>
+                            <div>
+                                <div className="flex items-center gap-2">
+                                    <h4 className="text-sm font-bold text-text-primary">Tavily Search API</h4>
+                                    {hasStoredTavilyKey && (
+                                        <span className="text-[9px] font-bold text-emerald-500 px-1.5 py-0.5 bg-emerald-500/10 rounded-full border border-emerald-500/20 uppercase tracking-wide">Connected</span>
+                                    )}
+                                </div>
+                                <p className="text-[11px] text-text-secondary mt-0.5">
+                                    Powers live web search for company research.
+                                </p>
+                            </div>
+                        </div>
+
+                        <div className="space-y-3">
+                            <div>
+                                <div className="flex justify-between items-center mb-1.5">
+                                    <label className="text-[10px] font-semibold text-text-secondary uppercase tracking-wide block">API Key</label>
+                                    {hasStoredTavilyKey && (
+                                        <button
+                                            onClick={handleRemoveTavilyKey}
+                                            className="text-[10px] flex items-center gap-1 text-red-400 hover:text-red-300 transition-colors bg-red-500/10 hover:bg-red-500/20 px-1.5 py-0.5 rounded"
+                                            title="Remove API Key"
+                                        >
+                                            <Trash2 size={10} strokeWidth={2} /> Remove
+                                        </button>
+                                    )}
+                                </div>
+                                <input
+                                    type="password"
+                                    value={tavilyApiKey}
+                                    onChange={handleAddTavilyKey}
+                                    placeholder={hasStoredTavilyKey ? '••••••••••••' : 'Enter Tavily API key (tvly-...)'}
+                                    className={`w-full ${isLight ? "bg-bg-elevated" : "bg-gray-900"} border border-border-subtle rounded-lg px-3 py-2 text-xs text-text-primary placeholder-text-tertiary focus:outline-none focus:border-accent-primary/50 focus:ring-1 focus:ring-accent-primary/20 transition-all`}
+                                />
+                            </div>
+                            {tavilyError && (
+                                <p className="text-[10px] text-red-400 px-1">{tavilyError}</p>
+                            )}
+                            <button
+                                onClick={handleSaveTavilyKey}
+                                disabled={tavilySaving || !tavilyApiKey.trim()}
+                                className={`w-full px-4 py-2 rounded-lg text-xs font-medium transition-all ${tavilySaving ? 'bg-bg-input text-text-tertiary cursor-wait' : !tavilyApiKey.trim() ? 'bg-bg-input text-text-tertiary cursor-not-allowed' : 'bg-emerald-600 text-white hover:bg-emerald-500 shadow-sm'}`}
+                            >
+                                {tavilySaving ? 'Saving...' : 'Save API Key'}
+                            </button>
+                        </div>
+
+                        <div className="mt-3 flex items-start gap-2 px-3 py-2.5 bg-bg-input/50 rounded-lg">
+                            <Info size={12} className="text-text-tertiary shrink-0 mt-0.5" />
+                            <p className="text-[10px] text-text-tertiary leading-relaxed">
+                                If not provided, LLM general knowledge is used for company research, which may be outdated. Get your free API key at <span className="text-emerald-500/80 hover:text-emerald-400 underline underline-offset-2 cursor-pointer" onClick={() => window.electronAPI?.openExternal?.('https://app.tavily.com/home')}>app.tavily.com</span>. Keys start with <code className="text-emerald-500/80">tvly-</code>.
+                            </p>
+                        </div>
+                    </div>
+                </div>
             </div>
         </div>
     );

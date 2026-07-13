@@ -12,6 +12,12 @@ document.documentElement.setAttribute(
   window.electronAPI?.platform ?? process?.platform ?? ''
 );
 
+// Mark the overlay window so CSS can scope rules (e.g. #root sizing)
+const _urlWindowParam = new URLSearchParams(window.location.search).get('window');
+if (_urlWindowParam) {
+  document.documentElement.setAttribute('data-window', _urlWindowParam);
+}
+
 // Step 1: Apply cached theme synchronously — before React renders.
 // This ensures useResolvedTheme()'s initial useState read sees the correct value.
 const cachedTheme = localStorage.getItem(THEME_CACHE_KEY) as 'light' | 'dark' | null;
@@ -29,6 +35,20 @@ if (window.electronAPI?.getThemeMode) {
     localStorage.setItem(THEME_CACHE_KEY, resolved);
   });
 }
+
+// Step 3: Boot Firebase Auth bridge. This installs the onIdTokenChanged listener
+// that forwards every fresh ID token to main, and (if a refresh token is
+// persisted) silently exchanges it for a new ID token. Runs once per renderer
+// (multi-window: launcher + overlay each call this independently — both bridges
+// will simply forward the same token to main, which is idempotent).
+import('./lib/firebase').then(({ getFirebaseAuth, trySilentRestore }) => {
+  try {
+    getFirebaseAuth();
+    void trySilentRestore();
+  } catch (e) {
+    console.warn('[main.tsx] Firebase bootstrap failed (non-fatal):', e);
+  }
+});
 
 ReactDOM.createRoot(document.getElementById("root")!).render(
   <React.StrictMode>

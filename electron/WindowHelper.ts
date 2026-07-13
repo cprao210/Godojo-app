@@ -44,6 +44,10 @@ export class WindowHelper {
     this.appState = appState
   }
 
+  public getContentProtection(): boolean {
+    return this.contentProtection;
+  }
+
   public setContentProtection(enable: boolean): void {
     this.contentProtection = enable
     this.applyContentProtection(enable)
@@ -63,13 +67,14 @@ export class WindowHelper {
     if (!activeWindow || activeWindow.isDestroyed()) return
 
     const [currentX, currentY] = activeWindow.getPosition()
-    const primaryDisplay = screen.getPrimaryDisplay()
-    const workArea = primaryDisplay.workAreaSize
+
+    const currentDisplay = screen.getDisplayNearestPoint({ x: currentX, y: currentY })
+    const workArea = currentDisplay.workArea
     const maxAllowedWidth = Math.floor(workArea.width * 0.9)
     const newWidth = Math.min(width, maxAllowedWidth)
     const newHeight = Math.ceil(height)
-    const maxX = workArea.width - newWidth
-    const newX = Math.min(Math.max(currentX, 0), maxX)
+    const maxX = workArea.x + workArea.width - newWidth
+    const newX = Math.min(Math.max(currentX, workArea.x), maxX)
 
     activeWindow.setBounds({
       x: newX,
@@ -91,16 +96,16 @@ export class WindowHelper {
     console.log('[WindowHelper] setOverlayDimensions:', width, height);
 
     const [currentX, currentY] = this.overlayWindow.getPosition()
-    const primaryDisplay = screen.getPrimaryDisplay()
-    const workArea = primaryDisplay.workAreaSize
+    const currentDisplay = screen.getDisplayNearestPoint({ x: currentX, y: currentY });
+    const workArea = currentDisplay.workArea
     const maxAllowedWidth = Math.floor(workArea.width * 0.9)
     const maxAllowedHeight = Math.floor(workArea.height * 0.9)
     const newWidth = Math.min(Math.max(width, 300), maxAllowedWidth) // min 300, max 90%
     const newHeight = Math.min(Math.max(height, 1), maxAllowedHeight) // min 1, max 90%
-    const maxX = workArea.width - newWidth
-    const maxY = workArea.height - newHeight
-    const newX = Math.min(Math.max(currentX, 0), maxX)
-    const newY = Math.min(Math.max(currentY, 0), maxY)
+    const maxX = workArea.x + workArea.width - newWidth
+    const maxY = workArea.y + workArea.height - newHeight
+    const newX = Math.min(Math.max(currentX, workArea.x), maxX)
+    const newY = Math.min(Math.max(currentY, workArea.y), maxY)
 
     this.overlayWindow.setContentSize(newWidth, newHeight)
     this.overlayWindow.setPosition(newX, newY)
@@ -208,6 +213,95 @@ export class WindowHelper {
       console.error(`[WindowHelper] did-fail-load: ${errorCode} ${errorDescription}`);
     });
 
+    // Allow Firebase Google OAuth popup windows.
+    // signInWithPopup() asks Electron to open a new BrowserWindow for the
+    // accounts.google.com consent screen. Without this handler Electron
+    // silently blocks every new-window request, so the popup never appears
+    // and the sign-in call hangs / throws "popup-blocked".
+    this.launcherWindow.webContents.setWindowOpenHandler(({ url }) => {
+      // Parse the URL strictly — substring checks on raw strings can be
+      // bypassed by an attacker embedding the trusted hostname in a path or
+      // query string (e.g. `evil.com/accounts.google.com`).
+      let parsed: URL;
+      try {
+        parsed = new URL(url);
+      } catch {
+        // Unparseable URL — deny silently
+        return { action: 'deny' };
+      }
+
+      const { protocol, hostname, pathname } = parsed;
+
+      // Only https is ever allowed into an app-owned popup
+      const isHttps = protocol === 'https:';
+
+      const isGoogleAuth = isHttps && (
+        // Google's own consent screen
+        hostname === 'accounts.google.com' ||
+        // www.google.com only for the /accounts/... path family
+        (hostname === 'www.google.com' && pathname.startsWith('/accounts/')) ||
+        // Firebase auth relay — must be *.firebaseapp.com AND the /__/auth path
+        (hostname.endsWith('.firebaseapp.com') && pathname.startsWith('/__/auth')) ||
+        // Google OAuth2 token endpoint
+        (hostname === 'accounts.google.com' && pathname.startsWith('/o/oauth2'))
+      );
+
+      if (isGoogleAuth) {
+        // Center the popup on whichever display the launcher window is currently
+        // on. Without explicit x/y Electron defaults to the primary display
+        // (usually the laptop), so moving the app to an external monitor and
+        // clicking "Continue with Google" would open the popup on the wrong screen.
+        const popupWidth = 500;
+        const popupHeight = 650;
+
+        let popupX: number | undefined;
+        let popupY: number | undefined;
+
+        try {
+          const { screen } = require('electron');
+          const winBounds = this.launcherWindow?.getBounds();
+          if (winBounds) {
+            // Find the display that contains the centre of the launcher window
+            const winCenterX = winBounds.x + Math.floor(winBounds.width / 2);
+            const winCenterY = winBounds.y + Math.floor(winBounds.height / 2);
+            const currentDisplay = screen.getDisplayNearestPoint({ x: winCenterX, y: winCenterY });
+            const { workArea } = currentDisplay;
+            // Place popup in the centre of that display's work area
+            popupX = workArea.x + Math.floor((workArea.width - popupWidth) / 2);
+            popupY = workArea.y + Math.floor((workArea.height - popupHeight) / 2);
+          }
+        } catch (e) {
+          console.warn('[WindowHelper] Could not determine current display for auth popup:', e);
+        }
+
+        return {
+          action: 'allow',
+          overrideBrowserWindowOptions: {
+            width: popupWidth,
+            height: popupHeight,
+            ...(popupX !== undefined && popupY !== undefined ? { x: popupX, y: popupY } : {}),
+            webPreferences: {
+              nodeIntegration: false,
+              contextIsolation: true,
+              partition: 'persist:google-auth',
+            },
+            parent: this.launcherWindow ?? undefined,
+            modal: false,
+            autoHideMenuBar: true,
+          },
+        };
+      }
+
+      // For all other external links, open in the system browser.
+      // Only allow http/https — deny mailto, file, javascript, custom schemes etc.
+      if (isHttps || protocol === 'http:') {
+        require('electron').shell.openExternal(url);
+      } else {
+        console.warn('[WindowHelper] Blocked non-http(s) external URL:', url);
+      }
+      return { action: 'deny' };
+    });
+
     // if (isDev) {
     //   this.launcherWindow.webContents.openDevTools({ mode: 'detach' }); // DEBUG: Open DevTools
     // }
@@ -246,7 +340,7 @@ export class WindowHelper {
     }
 
     this.overlayWindow.loadURL(`${startUrl}?window=overlay`).catch(e => {
-        console.error('[WindowHelper] Failed to load Overlay URL:', e);
+      console.error('[WindowHelper] Failed to load Overlay URL:', e);
     })
 
     // --- 3. Startup Sequence ---
@@ -467,14 +561,31 @@ export class WindowHelper {
 
     // Show Overlay FIRST
     if (this.overlayWindow && !this.overlayWindow.isDestroyed()) {
-      // Reset overlay position to center or last known? 
-      // For now, center it nicely
-      const primaryDisplay = screen.getPrimaryDisplay()
-      const workArea = primaryDisplay.workArea;
+      // AFTER
+      const targetHeight = Math.max(this.overlayWindow.getBounds().height, 216);
+
+      // Always follow the launcher's current display — it may have been moved to an
+      // external monitor. Using the cursor or the overlay's stale bounds both fail
+      // because getDisplayMatching() never returns falsy (it always picks the nearest).
+      const launcherBounds = this.launcherWindow?.getBounds();
+      const referenceDisplay = launcherBounds
+        ? screen.getDisplayMatching(launcherBounds)
+        : screen.getDisplayNearestPoint(screen.getCursorScreenPoint());
+
+      const workArea = referenceDisplay.workArea;
+
+      // If the overlay is already on the same display as the launcher, keep its
+      // current x/y so the user's manual repositioning is respected.
       const currentBounds = this.overlayWindow.getBounds();
-      const targetHeight = Math.max(currentBounds.height, 216);
-      const x = Math.floor(workArea.x + (workArea.width - 600) / 2)
-      const y = Math.floor(workArea.y + (workArea.height - 600) / 2)
+      const currentDisplay = screen.getDisplayMatching(currentBounds);
+      const onSameDisplay = currentDisplay.id === referenceDisplay.id;
+
+      const x = onSameDisplay
+        ? currentBounds.x
+        : Math.floor(workArea.x + (workArea.width - 600) / 2);
+      const y = onSameDisplay
+        ? currentBounds.y
+        : Math.floor(workArea.y + (workArea.height - 600) / 2);
 
       this.overlayWindow.setBounds({ x, y, width: 600, height: targetHeight });
 

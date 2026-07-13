@@ -59,7 +59,8 @@ export class IntelligenceManager extends EventEmitter {
             'discovery',
             'discovery_token',
             'objection_handler',
-            'objection_handler_token'
+            'objection_handler_token',
+            'speaker-names-resolved'
         ];
 
         for (const event of events) {
@@ -88,8 +89,24 @@ export class IntelligenceManager extends EventEmitter {
     // Context Management (delegates to session)
     // ============================================
 
+    public getSpeakerNameMap(): { user: string; client: string } {
+        return this.session.getSpeakerNameMap();
+    }
+
+    /**
+     * Get display name for a speaker role
+     */
+    public getDisplayNameForSpeaker(role: 'user' | 'client' | 'assistant'): string {
+        return this.session.getDisplayNameForSpeaker(role);
+    }
+
+    public updateSpeakerNames(names: { user: string; client: string }): void {
+        this.session.updateSpeakerNames(names);
+    }
+
     setMeetingMetadata(metadata: any): void {
         this.session.setMeetingMetadata(metadata);
+        this.emit('speaker-names-resolved', this.session.getSpeakerNameMap());
     }
 
     addTranscript(segment: import('./SessionTracker').TranscriptSegment, skipRefinementCheck: boolean = false): void {
@@ -118,8 +135,12 @@ export class IntelligenceManager extends EventEmitter {
         return this.session.getFormattedContext(lastSeconds);
     }
 
-    getLastInterviewerTurn(): string | null {
-        return this.session.getLastInterviewerTurn();
+    getFullSessionContext(): string {
+        return this.session.getFullSessionContext();
+    }
+
+    getLastClientTurn(): string | null {
+        return this.session.getLastClientTurn();
     }
 
     logUsage(type: string, question: string, answer: string): void {
@@ -219,8 +240,37 @@ export class IntelligenceManager extends EventEmitter {
     // Meeting Lifecycle (delegates to persistence)
     // ============================================
 
-    async stopMeeting(): Promise<string | null> {
-        return this.persistence.stopMeeting();
+    async stopMeeting(meetingTypes?: ('discovery' | 'demo' | 'negotiation')[]): Promise<string | null> {
+        return this.persistence.stopMeeting(meetingTypes);
+    }
+
+
+    /**
+     * Notify session tracker that the meeting is pausing.
+     * Starts accumulating paused time so it can be subtracted from total duration.
+     */
+    recordPauseStart(): void {
+        this.session.recordPauseStart();
+    }
+
+    /**
+     * Notify session tracker that the meeting is resuming.
+     * Closes the current paused interval.
+     */
+    recordPauseEnd(): void {
+        this.session.recordPauseEnd();
+    }
+
+    resetSessionTimer(): void {
+        this.session.resetSessionTimer();
+    }
+
+    async regenerateSummary(meetingId: string): Promise<boolean> {
+        return this.persistence.regenerateSummary(meetingId);
+    }
+
+    async uploadTranscript(rawText: string, title?: string, meetingTypes?: ('discovery' | 'demo' | 'negotiation')[]): Promise<string | null> {
+        return this.persistence.uploadTranscript(rawText, title, meetingTypes);
     }
 
     async recoverUnprocessedMeetings(): Promise<void> {

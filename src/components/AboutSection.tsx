@@ -1,16 +1,10 @@
 import React, { useEffect, useRef } from 'react';
-import {
-    Github, Twitter, Shield, Cpu, Database,
-    Heart, Linkedin, Instagram, Mail, MicOff, Star, Bug, Globe, Sparkles, Zap
-} from 'lucide-react';
-import evinProfile from '../assets/evin.png';
-import { useResolvedTheme } from '../hooks/useResolvedTheme';
+import { Shield, Cpu, Database, MicOff, Globe, Sparkles, Zap, FileText } from 'lucide-react';
 import { getPlatformShortcut } from '../utils/platformUtils';
 
 interface AboutSectionProps { }
 
 export const AboutSection: React.FC<AboutSectionProps> = () => {
-    const isLight = useResolvedTheme() === 'light';
     const donationClickTimeRef = useRef<number | null>(null);
 
     // Initial check for donation status not needed for visuals anymore (since we removed key input)
@@ -38,43 +32,33 @@ export const AboutSection: React.FC<AboutSectionProps> = () => {
         return () => window.removeEventListener('focus', handleFocus);
     }, []);
 
-    const handleOpenLink = (e: React.MouseEvent<HTMLAnchorElement>, url: string) => {
+    const handleOpenLink = (e: React.MouseEvent, url: string) => {
         e.preventDefault();
-
-        // Special handling for donation link
-        if (url.includes('buymeacoffee.com')) {
-            donationClickTimeRef.current = Date.now();
-        }
-
-        // Use backend shell.openExternal
-        if (window.electronAPI?.openExternal) {
-            window.electronAPI.openExternal(url);
-        } else {
-            window.open(url, '_blank');
-        }
+        window.electronAPI?.openExternal?.(url);
     };
 
     return (
         <div className="space-y-6 animated fadeIn pb-10">
             {/* Header */}
             <div>
-                <h3 className="text-lg font-bold text-text-primary mb-1">About Natively</h3>
+                <h3 className="text-lg font-bold text-text-primary mb-1">About GoDojo</h3>
                 <p className="text-sm text-text-secondary">Designed to be invisible, intelligent, and trusted.</p>
             </div>
 
-            {/* What's New Section */}
+            {/* Key Features Section */}
             <div>
-                <h4 className="text-xs font-bold text-text-tertiary uppercase tracking-wider mb-2 px-1">What's New in v2.0.7</h4>
+                <h4 className="text-xs font-bold text-text-tertiary uppercase tracking-wider mb-2 px-1">Key Features</h4>
                 <div className="bg-bg-item-surface rounded-xl border border-border-subtle overflow-hidden">
+
                     <div className="p-3 border-b border-border-subtle bg-bg-card/50">
                         <div className="flex items-start gap-4">
-                            <div className="w-10 h-10 rounded-lg bg-yellow-500/10 flex items-center justify-center text-yellow-400 shrink-0">
+                            <div className="w-10 h-10 rounded-lg bg-blue-500/10 flex items-center justify-center text-blue-400 shrink-0">
                                 <Zap size={20} />
                             </div>
                             <div>
-                                <h5 className="text-sm font-bold text-text-primary mb-1">Capture & Analyse — {getPlatformShortcut(['⌘', '⇧', 'Enter']).join('+')}</h5>
+                                <h5 className="text-sm font-bold text-text-primary mb-1">Live Call Intelligence</h5>
                                 <p className="text-xs text-text-secondary leading-relaxed">
-                                    One shortcut to screenshot your screen and instantly get AI analysis. No extra clicks — press {getPlatformShortcut(['⌘', '⇧', 'Enter']).join('+')} and Natively does the rest.
+                                    Get real-time MEDDICC/BANT insights during ongoing calls — deal qualification signals, gap analysis, and contextually suggested questions surfaced as the conversation unfolds.
                                 </p>
                             </div>
                         </div>
@@ -86,9 +70,9 @@ export const AboutSection: React.FC<AboutSectionProps> = () => {
                                 <Sparkles size={20} />
                             </div>
                             <div>
-                                <h5 className="text-sm font-bold text-text-primary mb-1">Salary Negotiation Script</h5>
+                                <h5 className="text-sm font-bold text-text-primary mb-1">Company Insights</h5>
                                 <p className="text-xs text-text-secondary leading-relaxed">
-                                    AI-generated negotiation playbook built from your resume, job description, and live company culture data — opening line, justification, and counter-offer fallback, on demand.
+                                    Before joining a call, get a full company insights — headcount, key competitors, recent funding rounds, news, and hiring signals — so you walk in prepared.
                                 </p>
                             </div>
                         </div>
@@ -96,23 +80,24 @@ export const AboutSection: React.FC<AboutSectionProps> = () => {
 
                     <div className="p-3 bg-bg-card/50">
                         <div className="flex items-start gap-4">
-                            <div className="w-10 h-10 rounded-lg bg-pink-500/10 flex items-center justify-center text-pink-400 shrink-0">
-                                <Globe size={20} />
+                            <div className="w-10 h-10 rounded-lg bg-purple-500/10 flex items-center justify-center text-purple-400 shrink-0">
+                                <FileText size={20} />
                             </div>
                             <div>
-                                <h5 className="text-sm font-bold text-text-primary mb-1">Vision for Custom Providers</h5>
+                                <h5 className="text-sm font-bold text-text-primary mb-1">Post-Call Summary</h5>
                                 <p className="text-xs text-text-secondary leading-relaxed">
-                                    Screenshots now flow automatically through any cURL-based or Ollama provider — no manual template edits needed. Bring your own model and get full vision support out of the box.
+                                    After every meeting, get an auto-generated summary, ask questions about what was discussed, and generate polished follow-up emails ready to send.
                                 </p>
                             </div>
                         </div>
                     </div>
+
                 </div>
             </div>
 
             {/* Architecture Section */}
             <div>
-                <h4 className="text-xs font-bold text-text-tertiary uppercase tracking-wider mb-2 px-1">How Natively Works</h4>
+                <h4 className="text-xs font-bold text-text-tertiary uppercase tracking-wider mb-2 px-1">How GoDojo Works</h4>
                 <div className="bg-bg-item-surface rounded-xl border border-border-subtle overflow-hidden">
                     <div className="p-3 border-b border-border-subtle bg-bg-card/50">
                         <div className="flex items-start gap-4">
@@ -136,7 +121,7 @@ export const AboutSection: React.FC<AboutSectionProps> = () => {
                             <div>
                                 <h5 className="text-sm font-bold text-text-primary mb-1">Local RAG & Memory</h5>
                                 <p className="text-xs text-text-secondary leading-relaxed">
-                                    A purely local vector memory system allows Natively to recall details from past meetings. Embeddings and retrieval happen on-device via SQLite for maximum privacy.
+                                    A purely local vector memory system allows GoDojo to recall details from past meetings. Embeddings and retrieval happen on-device via SQLite for maximum privacy.
                                 </p>
                             </div>
                         </div>
@@ -153,7 +138,7 @@ export const AboutSection: React.FC<AboutSectionProps> = () => {
                         <div>
                             <h5 className="text-sm font-medium text-text-primary">Stealth & Control</h5>
                             <p className="text-xs text-text-secondary mt-1 leading-relaxed">
-                                Features "Undetectable Mode" to hide from the dock and "Masquerading" to disguise as system apps. You control exactly what data leaves your device.
+                                Features "Ghost Mode" to hide from the dock and "Masquerading" to disguise as system apps. You control exactly what data leaves your device.
                             </p>
                         </div>
                     </div>
@@ -162,7 +147,7 @@ export const AboutSection: React.FC<AboutSectionProps> = () => {
                         <div>
                             <h5 className="text-sm font-medium text-text-primary">No Recording</h5>
                             <p className="text-xs text-text-secondary mt-1 leading-relaxed">
-                                Natively listens only when active. It does not record video, take arbitrary screenshots without command, or perform background surveillance.
+                                GoDojo listens only when active. It does not record video, take arbitrary screenshots without command, or perform background surveillance.
                             </p>
                         </div>
                     </div>
@@ -174,11 +159,11 @@ export const AboutSection: React.FC<AboutSectionProps> = () => {
 
 
             {/* Community Section */}
-            <div>
-                <h4 className="text-xs font-bold text-text-tertiary uppercase tracking-wider mb-2 px-1">Community</h4>
-                <div className="space-y-4">
-                    {/* 0. Official Website */}
-                    <div className="bg-bg-item-surface rounded-xl border border-border-subtle p-5 flex flex-col md:flex-row items-center justify-between gap-4">
+            {/* <div> */}
+            {/* <h4 className="text-xs font-bold text-text-tertiary uppercase tracking-wider mb-2 px-1">Community</h4> */}
+            {/* <div className="space-y-4"> */}
+            {/* 0. Official Website */}
+            {/* <div className="bg-bg-item-surface rounded-xl border border-border-subtle p-5 flex flex-col md:flex-row items-center justify-between gap-4">
                         <div className="flex items-center gap-4">
                             <div className="w-10 h-10 rounded-full bg-indigo-500/10 flex items-center justify-center text-indigo-500 shadow-sm shadow-indigo-500/5">
                                 <Globe size={18} className="opacity-80" />
@@ -195,10 +180,10 @@ export const AboutSection: React.FC<AboutSectionProps> = () => {
                             <Globe size={14} />
                             Visit Website
                         </a>
-                    </div>
+                    </div> */}
 
-                    {/* 1. Founder Profile */}
-                    <div className="bg-bg-item-surface rounded-xl p-5">
+            {/* 1. Founder Profile */}
+            {/* <div className="bg-bg-item-surface rounded-xl p-5">
                         <div className="flex flex-col gap-4">
                             <div className="flex items-start gap-4">
                                 <div className="w-12 h-12 rounded-full bg-bg-elevated border border-border-subtle flex items-center justify-center overflow-hidden shrink-0">
@@ -251,10 +236,10 @@ export const AboutSection: React.FC<AboutSectionProps> = () => {
                                 </a>
                             </div>
                         </div>
-                    </div>
+                    </div> */}
 
-                    {/* 2. Star & Report */}
-                    <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+            {/* 2. Star & Report */}
+            {/* <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
                         <a
                             href="https://github.com/evinjohnn/natively-cluely-ai-assistant"
                             onClick={(e) => handleOpenLink(e, "https://github.com/evinjohnn/natively-cluely-ai-assistant")}
@@ -282,10 +267,10 @@ export const AboutSection: React.FC<AboutSectionProps> = () => {
                                 <p className="text-xs text-text-secondary mt-0.5">Found a bug? Let us know so we can fix it.</p>
                             </div>
                         </a>
-                    </div>
+                    </div> */}
 
-                    {/* 3. Get in Touch */}
-                    <div className="bg-bg-item-surface rounded-xl border border-border-subtle p-5 flex flex-col md:flex-row items-center justify-between gap-4">
+            {/* 3. Get in Touch */}
+            {/* <div className="bg-bg-item-surface rounded-xl border border-border-subtle p-5 flex flex-col md:flex-row items-center justify-between gap-4">
                         <div className="flex items-center gap-4">
                             <div className="w-10 h-10 rounded-full bg-blue-500/10 flex items-center justify-center text-blue-500 shadow-sm shadow-blue-500/5">
                                 <Mail size={18} className="opacity-80" />
@@ -303,10 +288,10 @@ export const AboutSection: React.FC<AboutSectionProps> = () => {
                             <Mail size={14} />
                             Contact Me
                         </a>
-                    </div>
+                    </div> */}
 
-                    {/* 4. Support */}
-                    <div className="bg-bg-item-surface rounded-xl border border-border-subtle p-5 flex flex-col md:flex-row items-center justify-between gap-4">
+            {/* 4. Support */}
+            {/* <div className="bg-bg-item-surface rounded-xl border border-border-subtle p-5 flex flex-col md:flex-row items-center justify-between gap-4">
                         <div className="flex items-center gap-4">
                             <div className="w-10 h-10 rounded-full bg-pink-500/10 flex items-center justify-center text-pink-500 shadow-sm shadow-pink-500/5">
                                 <Heart size={18} fill="currentColor" className="opacity-80" />
@@ -323,7 +308,31 @@ export const AboutSection: React.FC<AboutSectionProps> = () => {
                         >
                             Support Project
                         </a>
+                    </div> */}
+            {/* </div> */}
+            {/* </div> */}
+
+            {/* Official Website */}
+            <div>
+                <h4 className="text-xs font-bold text-text-tertiary uppercase tracking-wider mb-2 px-1">Website</h4>
+                <div className="bg-bg-item-surface rounded-xl border border-border-subtle p-4 flex items-center justify-between">
+                    <div className="flex items-center gap-3">
+                        <div className="w-10 h-10 rounded-lg bg-indigo-500/10 flex items-center justify-center text-indigo-400 shrink-0">
+                            <Globe size={20} />
+                        </div>
+                        <div>
+                            <h5 className="text-sm font-bold text-text-primary">Official Website</h5>
+                            <p className="text-xs text-text-secondary mt-0.5">godojo.ai</p>
+                        </div>
                     </div>
+                    <a
+                        href="https://godojo.ai/"
+                        onClick={(e) => handleOpenLink(e, "https://godojo.ai/")}
+                        className="whitespace-nowrap px-4 py-2 bg-bg-component hover:bg-bg-elevated border border-border-subtle text-text-primary text-xs font-bold rounded-lg transition-all flex items-center gap-2"
+                    >
+                        <Globe size={14} />
+                        Visit Website
+                    </a>
                 </div>
             </div>
 

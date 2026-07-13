@@ -3,13 +3,14 @@
 #[macro_use]
 extern crate napi_derive;
 
-use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU32, AtomicUsize, Ordering};
 use std::sync::Arc;
 use std::thread;
 use std::time::Duration;
 
 use napi::bindgen_prelude::*;
 use napi::threadsafe_function::{ThreadsafeFunction, ThreadsafeFunctionCallMode};
+use once_cell::sync::Lazy;
 use ringbuf::traits::Consumer;
 
 pub mod audio_config;
@@ -17,6 +18,35 @@ pub mod license;
 pub mod microphone;
 pub mod silence_suppression;
 pub mod speaker;
+pub mod resampler;
+pub mod webrtc_aec;
+use crate::resampler::Resampler;
+use crate::webrtc_aec::{ApmCapture, ApmRender};
+
+// Shared WebRTC APM (AEC3) Processor.
+// Processor is Send + Sync; both DSP threads hold an Arc clone.
+// SystemAudioCapture owns an ApmRender (per-thread render accumulator).
+// MicrophoneCapture owns an ApmCapture (per-thread capture accumulator).
+static WEBRTC_APM: Lazy<std::sync::Arc<webrtc_audio_processing::Processor>> =
+    Lazy::new(|| webrtc_aec::create_processor());
+
+// Counts 10 ms render frames pushed to APM by SystemAudioCapture.
+// MicrophoneCapture emits silence until this reaches APM_WARMUP_FRAMES (100 ms),
+// giving AEC3 time to initialize its echo path model before processing capture.
+static APM_RENDER_FRAMES: AtomicUsize = AtomicUsize::new(0);
+const APM_WARMUP_FRAMES: usize = 10; // 10 × 10 ms = 100 ms minimum warmup
+
+// Primary echo gate: set true when speaker is actively playing, false when silent.
+// MicrophoneCapture emits silence when true so system audio cannot reach STT
+// regardless of AEC3 convergence state. The SilenceSuppressor's 300 ms hangover
+// keeps SPEAKER_ACTIVE true for 300 ms after the last audio frame, covering room
+// echo decay. AEC3 then handles any residual echo after SPEAKER_ACTIVE clears.
+//
+// Diagnostic evidence (ERLE=0.2dB over 900 frames, delay=324ms): AEC3 alone
+// cannot cancel echo here because the SCK render reference diverges from the
+// acoustic echo in the mic — SCK captures audio ~324ms before it plays, creating
+// a correlated-but-shifted reference that AEC3's linear model can't fully cancel.
+static SPEAKER_ACTIVE: AtomicBool = AtomicBool::new(false);
 
 use crate::audio_config::DSP_POLL_MS;
 use crate::silence_suppression::{FrameAction, SilenceSuppressionConfig, SilenceSuppressor};
@@ -72,6 +102,11 @@ impl SystemAudioCapture {
     }
 
     #[napi]
+    pub fn get_output_sample_rate(&self) -> u32 {
+        16000
+    }
+
+    #[napi]
     pub fn start(
         &mut self,
         callback: ThreadsafeFunction<Buffer>,
@@ -80,6 +115,11 @@ impl SystemAudioCapture {
         let tsfn = callback;
         let speech_ended_tsfn = on_speech_ended;
 
+        // DO NOT reset APM state here. SystemAudioCapture::start() is called on every
+        // VAD-lockout restart (which happens repeatedly within a single meeting).
+        // Reinitializing APM on each restart wipes the echo model every ~2s, preventing
+        // AEC3 from ever converging. The APM reset lives in MicrophoneCapture::start()
+        // which fires exactly once per meeting.
         self.stop_signal.store(false, Ordering::SeqCst);
         let stop_signal = self.stop_signal.clone();
         let device_id = self.device_id.clone();
@@ -100,6 +140,14 @@ impl SystemAudioCapture {
                             eprintln!(
                                 "[SystemAudioCapture] FATAL: All init attempts failed: {}",
                                 e2
+                            );
+                            // Propagate the error to JS so the UI can show a permission prompt.
+                            tsfn.call(
+                                Err(napi::Error::from_reason(format!(
+                                    "System audio capture failed: {}. On macOS, grant Screen Recording permission in System Settings > Privacy & Security.",
+                                    e2
+                                ))),
+                                ThreadsafeFunctionCallMode::NonBlocking,
                             );
                             return;
                         }
@@ -130,10 +178,30 @@ impl SystemAudioCapture {
                 ..SilenceSuppressionConfig::for_system_audio()
             });
 
+            // Create resampler only if the native rate differs from 16kHz
+            let mut resampler = if native_rate != 16000 {
+                match Resampler::new(native_rate as f64) {
+                    Ok(r) => {
+                        println!("[SystemAudioCapture] Resampler: {}Hz → 16000Hz", native_rate);
+                        Some(r)
+                    }
+                    Err(e) => {
+                        eprintln!("[SystemAudioCapture] Resampler creation failed: {} — sending at native rate", e);
+                        None
+                    }
+                }
+            } else {
+                println!("[SystemAudioCapture] Native rate is 16kHz — no resampling needed");
+                None
+            };
+
             // 20ms chunks at native rate (e.g. 960 samples at 48kHz)
             let chunk_size = (native_rate as usize / 1000) * 20;
             let mut frame_buffer: Vec<i16> = Vec::with_capacity(chunk_size * 4);
             let mut raw_batch: Vec<f32> = Vec::with_capacity(4096);
+
+            // Per-thread AEC3 render path accumulator (not shared — owned by this thread).
+            let mut apm_render = ApmRender::new(std::sync::Arc::clone(&WEBRTC_APM));
 
             loop {
                 if stop_signal.load(Ordering::Relaxed) {
@@ -162,22 +230,47 @@ impl SystemAudioCapture {
 
                     match action {
                         FrameAction::Send(data) => {
-                            let bytes = i16_slice_to_le_bytes(&data);
-                            tsfn.call(
-                                Ok(Buffer::from(bytes)),
-                                ThreadsafeFunctionCallMode::NonBlocking,
-                            );
+                            // Resample to 16kHz before sending to JS
+                            let resampled_16k: Vec<i16> = if let Some(ref mut rs) = resampler {
+                                let f32_data: Vec<f32> = data.iter().map(|&s| s as f32 / 32767.0).collect();
+                                match rs.resample(&f32_data) {
+                                    Ok(r) => r,
+                                    Err(e) => {
+                                        eprintln!("[SystemAudioCapture] Resample error: {} — using original", e);
+                                        data
+                                    }
+                                }
+                            } else {
+                                data
+                            };
+
+                            if !resampled_16k.is_empty() {
+                                // Primary echo gate: mark speaker active so mic mutes.
+                                SPEAKER_ACTIVE.store(true, Ordering::Release);
+                                // Feed AEC3 render path — only on real audio, never silence.
+                                // Pushing zeros during silence corrupts AEC3 echo path model.
+                                let frames = apm_render.push(&resampled_16k);
+                                APM_RENDER_FRAMES.fetch_add(frames, Ordering::Release);
+                                tsfn.call(
+                                    Ok(Buffer::from(i16_slice_to_le_bytes(&resampled_16k))),
+                                    ThreadsafeFunctionCallMode::NonBlocking,
+                                );
+                            }
                         }
                         FrameAction::SendSilence => {
-                            // Send zero-filled buffer to keep streaming APIs alive
-                            let silence = vec![0u8; chunk_size * 2];
+                            // Speaker not producing speech — unmute mic gate.
+                            // Do NOT push to APM render: pushing zeros corrupts AEC3 echo model.
+                            SPEAKER_ACTIVE.store(false, Ordering::Release);
+                            let silence_16k = if resampler.is_some() { 320usize } else { chunk_size };
+                            let silence = vec![0u8; silence_16k * 2];
                             tsfn.call(
                                 Ok(Buffer::from(silence)),
                                 ThreadsafeFunctionCallMode::NonBlocking,
                             );
                         }
                         FrameAction::Suppress => {
-                            // Do nothing — bandwidth saving
+                            // Speaker fully silent — unmute mic gate, skip APM render.
+                            SPEAKER_ACTIVE.store(false, Ordering::Release);
                         }
                     }
 
@@ -215,6 +308,22 @@ impl SystemAudioCapture {
 // Design: The MicrophoneStream (CPAL handle) is recreated on every start()
 // call. This guarantees the ring buffer consumer is always fresh, allowing
 // seamless stop→start restart cycles (e.g. between meetings).
+//
+// FIX: Added `vad_disabled` option. When the user has NO external audio
+// device (built-in mic + built-in speakers), macOS Acoustic Echo Cancellation
+// (AEC) already attenuates the microphone signal. The two-stage gate in
+// SilenceSuppressor then interprets this reduced-amplitude speech as silence
+// and suppresses it entirely — the user's voice never reaches Deepgram.
+//
+// With `vad_disabled: true`, the SilenceSuppressor bypasses both the RMS gate
+// AND the WebRTC VAD. Every captured frame is forwarded raw to JS/Deepgram,
+// which runs its own cloud-side VAD. This matches exactly what SystemAudio
+// already does (`for_system_audio()` has a very permissive threshold + the
+// caller in macos.rs passes `vadDisabled: true`).
+//
+// When an external device IS connected, macOS AEC is inactive, signal levels
+// are normal, and the local VAD provides useful noise suppression — so
+// `vad_disabled` should be false in that case (the TypeScript layer decides).
 // ============================================================================
 
 #[napi]
@@ -227,12 +336,21 @@ pub struct MicrophoneCapture {
     device_id: Option<String>,
     /// Holds the live CPAL stream. Recreated on each start().
     input: Option<microphone::MicrophoneStream>,
+    /// When true, bypass local VAD/RMS gating and forward all audio to JS.
+    /// Use this when built-in mic + built-in speakers are in use (macOS AEC
+    /// already attenuates the signal; local VAD causes full suppression).
+    vad_disabled: bool,
 }
 
 #[napi]
 impl MicrophoneCapture {
+    /// `device_id`   — CPAL device name or `None` for system default.
+    /// `vad_disabled` — set `true` when no external audio device is present
+    ///                  (built-in mic scenario) to bypass local silence gating.
     #[napi(constructor)]
-    pub fn new(device_id: Option<String>) -> napi::Result<Self> {
+    pub fn new(device_id: Option<String>, vad_disabled: Option<bool>) -> napi::Result<Self> {
+        let vad_disabled = vad_disabled.unwrap_or(false);
+
         // Eagerly create the stream to detect device errors early and read the
         // native sample rate.
         let input = match microphone::MicrophoneStream::new(device_id.clone()) {
@@ -242,8 +360,8 @@ impl MicrophoneCapture {
 
         let native_rate = input.sample_rate();
         println!(
-            "[MicrophoneCapture] Initialized. Device: {:?}, Rate: {}Hz",
-            device_id, native_rate
+            "[MicrophoneCapture] Initialized. Device: {:?}, Rate: {}Hz, vad_disabled: {}",
+            device_id, native_rate, vad_disabled
         );
 
         Ok(MicrophoneCapture {
@@ -252,12 +370,18 @@ impl MicrophoneCapture {
             sample_rate: Arc::new(AtomicU32::new(native_rate)),
             device_id,
             input: Some(input),
+            vad_disabled,
         })
     }
 
     #[napi]
     pub fn get_sample_rate(&self) -> u32 {
         self.sample_rate.load(Ordering::Acquire)
+    }
+
+    #[napi]
+    pub fn get_output_sample_rate(&self) -> u32 {
+        16000  // Resampler always outputs 16kHz (or mic is natively 16kHz)
     }
 
     #[napi]
@@ -268,6 +392,15 @@ impl MicrophoneCapture {
     ) -> napi::Result<()> {
         let tsfn = callback;
         let speech_ended_tsfn = on_speech_ended;
+        let vad_disabled = self.vad_disabled;
+
+        // Reset APM state exactly once per meeting. MicrophoneCapture::start() is called
+        // only at meeting start — unlike SystemAudioCapture::start() which is called on
+        // every VAD-lockout restart. Resetting here means SCK restarts don't wipe the
+        // AEC3 echo model mid-meeting.
+        WEBRTC_APM.reinitialize();
+        APM_RENDER_FRAMES.store(0, Ordering::SeqCst);
+        println!("[WebRtcAec] APM reset for new meeting");
 
         self.stop_signal.store(false, Ordering::SeqCst);
         let stop_signal = self.stop_signal.clone();
@@ -307,19 +440,45 @@ impl MicrophoneCapture {
             .take_consumer()
             .ok_or_else(|| napi::Error::from_reason("Failed to get consumer"))?;
 
-        // DSP thread with silence suppression + WebRTC VAD
+        // Create resampler for mic (same as SystemAudio path — always output 16kHz)
+        let mut resampler = if native_rate != 16000 {
+            match Resampler::new(native_rate as f64) {
+                Ok(r) => {
+                    println!("[MicrophoneCapture] Resampler: {}Hz → 16000Hz", native_rate);
+                    Some(r)
+                }
+                Err(e) => {
+                    eprintln!("[MicrophoneCapture] Resampler creation failed: {} — sending at native rate", e);
+                    None
+                }
+            }
+        } else {
+            println!("[MicrophoneCapture] Native rate is 16kHz — no resampling needed");
+            None
+        };
+
+        // DSP thread: conditionally applies silence suppression + WebRTC VAD.
+        // When vad_disabled=true, all frames are forwarded immediately (passthrough).
         self.capture_thread = Some(thread::spawn(move || {
+            // Build suppressor regardless — used only when vad_disabled=false.
+            // When vad_disabled=true, we skip suppressor.process() entirely.
             let mut suppressor = SilenceSuppressor::new(SilenceSuppressionConfig {
                 native_sample_rate: native_rate,
                 ..SilenceSuppressionConfig::for_microphone()
             });
+
+            // Per-thread AEC3 capture path accumulator (not shared — owned by this thread).
+            let mut apm_capture = ApmCapture::new(std::sync::Arc::clone(&WEBRTC_APM));
 
             // 20ms chunks at native rate
             let chunk_size = (native_rate as usize / 1000) * 20;
             let mut frame_buffer: Vec<i16> = Vec::with_capacity(chunk_size * 4);
             let mut raw_batch: Vec<f32> = Vec::with_capacity(4096);
 
-            println!("[MicrophoneCapture] DSP thread started (VAD + suppression active, rate={}Hz, chunk={})", native_rate, chunk_size);
+            println!(
+                "[MicrophoneCapture] DSP thread started (vad_disabled={}, rate={}Hz, chunk={})",
+                vad_disabled, native_rate, chunk_size
+            );
 
             loop {
                 if stop_signal.load(Ordering::Relaxed) {
@@ -340,35 +499,109 @@ impl MicrophoneCapture {
                     raw_batch.clear();
                 }
 
-                // 3. Process in 20ms chunks through the two-stage gate
+                // 3. Process in 20ms chunks
                 while frame_buffer.len() >= chunk_size {
                     let frame: Vec<i16> = frame_buffer.drain(0..chunk_size).collect();
 
-                    let (action, speech_ended) = suppressor.process(&frame);
+                    if vad_disabled {
+                        // ── PASSTHROUGH MODE ─────────────────────────────────
+                        // Built-in mic + built-in speakers: resample to 16 kHz,
+                        // run AEC to cancel speaker bleed, then emit.
+                        let resampled: Vec<i16> = if let Some(ref mut rs) = resampler {
+                            let f32_data: Vec<f32> = frame.iter().map(|&s| s as f32 / 32767.0).collect();
+                            match rs.resample(&f32_data) {
+                                Ok(r) if !r.is_empty() => r,
+                                Ok(_) => continue, // resampler needs more input
+                                Err(e) => {
+                                    eprintln!("[MicrophoneCapture] Resample error: {} — using original", e);
+                                    frame
+                                }
+                            }
+                        } else {
+                            frame
+                        };
 
-                    match action {
-                        FrameAction::Send(data) => {
-                            let bytes = i16_slice_to_le_bytes(&data);
-                            tsfn.call(
-                                Ok(Buffer::from(bytes)),
-                                ThreadsafeFunctionCallMode::NonBlocking,
-                            );
+                        if !resampled.is_empty() {
+                            let speaker_on = SPEAKER_ACTIVE.load(Ordering::Acquire);
+                            let warming_up = APM_RENDER_FRAMES.load(Ordering::Acquire) < APM_WARMUP_FRAMES;
+                            if speaker_on || warming_up {
+                                // Primary gate: mute mic while speaker is active, or while
+                                // AEC3 is warming up (< 100 ms of render frames received).
+                                tsfn.call(
+                                    Ok(Buffer::from(vec![0u8; resampled.len() * 2])),
+                                    ThreadsafeFunctionCallMode::NonBlocking,
+                                );
+                            } else {
+                                // Speaker silent: AEC3 cleans up any residual room echo.
+                                let cleaned = apm_capture.process(&resampled);
+                                if !cleaned.is_empty() {
+                                    tsfn.call(
+                                        Ok(Buffer::from(i16_slice_to_le_bytes(&cleaned))),
+                                        ThreadsafeFunctionCallMode::NonBlocking,
+                                    );
+                                }
+                            }
                         }
-                        FrameAction::SendSilence => {
-                            let silence = vec![0u8; chunk_size * 2];
-                            tsfn.call(
-                                Ok(Buffer::from(silence)),
-                                ThreadsafeFunctionCallMode::NonBlocking,
-                            );
-                        }
-                        FrameAction::Suppress => {
-                            // Do nothing
-                        }
-                    }
+                    } else {
+                        // ── VAD-GATED MODE ────────────────────────────────────
+                        // External device (earbuds/headphones): signal level is
+                        // normal. Apply two-stage RMS + WebRTC VAD gate, then
+                        // resample to 16kHz before emitting.
+                        let (action, speech_ended) = suppressor.process(&frame);
 
-                    if speech_ended {
-                        if let Some(ref se_tsfn) = speech_ended_tsfn {
-                            se_tsfn.call(Ok(true), ThreadsafeFunctionCallMode::NonBlocking);
+                        match action {
+                            FrameAction::Send(data) => {
+                                let resampled: Vec<i16> = if let Some(ref mut rs) = resampler {
+                                    let f32_data: Vec<f32> = data.iter().map(|&s| s as f32 / 32767.0).collect();
+                                    match rs.resample(&f32_data) {
+                                        Ok(r) if !r.is_empty() => r,
+                                        Ok(_) => continue,
+                                        Err(e) => {
+                                            eprintln!("[MicrophoneCapture] Resample error: {} — using original", e);
+                                            data
+                                        }
+                                    }
+                                } else {
+                                    data
+                                };
+
+                                if !resampled.is_empty() {
+                                    let speaker_on = SPEAKER_ACTIVE.load(Ordering::Acquire);
+                                    let warming_up = APM_RENDER_FRAMES.load(Ordering::Acquire) < APM_WARMUP_FRAMES;
+                                    if speaker_on || warming_up {
+                                        tsfn.call(
+                                            Ok(Buffer::from(vec![0u8; resampled.len() * 2])),
+                                            ThreadsafeFunctionCallMode::NonBlocking,
+                                        );
+                                    } else {
+                                        let cleaned = apm_capture.process(&resampled);
+                                        if !cleaned.is_empty() {
+                                            tsfn.call(
+                                                Ok(Buffer::from(i16_slice_to_le_bytes(&cleaned))),
+                                                ThreadsafeFunctionCallMode::NonBlocking,
+                                            );
+                                        }
+                                    }
+                                }
+                            }
+                            FrameAction::SendSilence => {
+                                // Keepalive: send zeros at 16kHz size
+                                let silence_samples = if resampler.is_some() { 320usize } else { chunk_size };
+                                let silence = vec![0u8; silence_samples * 2];
+                                tsfn.call(
+                                    Ok(Buffer::from(silence)),
+                                    ThreadsafeFunctionCallMode::NonBlocking,
+                                );
+                            }
+                            FrameAction::Suppress => {
+                                // Do nothing — local VAD filtered this frame
+                            }
+                        }
+
+                        if speech_ended {
+                            if let Some(ref se_tsfn) = speech_ended_tsfn {
+                                se_tsfn.call(Ok(true), ThreadsafeFunctionCallMode::NonBlocking);
+                            }
                         }
                     }
                 }

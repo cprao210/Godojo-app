@@ -7,6 +7,7 @@ import { Worker } from 'worker_threads';
 import path from 'path';
 import { Chunk } from './SemanticChunker';
 import { DatabaseManager } from '../db/DatabaseManager';
+import { SupabaseMirrorService } from '../db/SupabaseMirrorService';
 
 export interface StoredChunk extends Chunk {
     id: number;
@@ -149,6 +150,7 @@ export class VectorStore {
         `);
 
         const ids: number[] = [];
+        const mirrorRows: Array<Record<string, any>> = [];
 
         const insertAll = this.db.transaction(() => {
             for (const chunk of chunks) {
@@ -161,11 +163,28 @@ export class VectorStore {
                     chunk.text,
                     chunk.tokenCount
                 );
-                ids.push(result.lastInsertRowid as number);
+                const id = result.lastInsertRowid as number;
+                ids.push(id);
+                mirrorRows.push({
+                    id: Number(id),
+                    meeting_id: chunk.meetingId,
+                    chunk_index: chunk.chunkIndex,
+                    speaker: chunk.speaker,
+                    start_timestamp_ms: chunk.startMs,
+                    end_timestamp_ms: chunk.endMs,
+                    cleaned_text: chunk.text,
+                    token_count: chunk.tokenCount
+                });
             }
         });
 
         insertAll();
+
+        try {
+            if (mirrorRows.length > 0) SupabaseMirrorService.getInstance().upsertRows('chunks', mirrorRows);
+        } catch (e) {
+            console.warn('[VectorStore] Mirror enqueue failed for chunks (local save OK):', e);
+        }
         return ids;
     }
 
@@ -188,6 +207,22 @@ export class VectorStore {
             } catch (e) {
                 console.warn(`[VectorStore] Failed to insert into vec_chunks_${dim}:`, e);
             }
+        }
+
+        // Mirror vector row to Supabase (pgvector). We need the meeting_id for RLS scoping.
+        try {
+            const row = this.db.prepare('SELECT meeting_id FROM chunks WHERE id = ?').get(chunkId) as any;
+            if (row?.meeting_id) {
+                SupabaseMirrorService.getInstance().upsertVector(
+                    'chunk',
+                    chunkId,
+                    row.meeting_id,
+                    embedding.length,
+                    embedding
+                );
+            }
+        } catch (e) {
+            console.warn('[VectorStore] Mirror enqueue failed for chunk vector:', e);
         }
     }
 
@@ -400,6 +435,20 @@ export class VectorStore {
             INSERT OR REPLACE INTO chunk_summaries (meeting_id, summary_text)
             VALUES (?, ?)
         `).run(meetingId, summaryText);
+
+        // Mirror — fetch the local id so the cloud row uses the same PK.
+        try {
+            const row = this.db.prepare('SELECT id FROM chunk_summaries WHERE meeting_id = ?').get(meetingId) as any;
+            if (row?.id != null) {
+                SupabaseMirrorService.getInstance().upsertRow('chunk_summaries', {
+                    id: Number(row.id),
+                    meeting_id: meetingId,
+                    summary_text: summaryText
+                });
+            }
+        } catch (e) {
+            console.warn('[VectorStore] Mirror enqueue failed for summary save:', e);
+        }
     }
 
     /**
@@ -409,21 +458,38 @@ export class VectorStore {
         const blob = this.embeddingToBlob(embedding);
         this.db.prepare('UPDATE chunk_summaries SET embedding = ? WHERE meeting_id = ?').run(blob, meetingId);
 
-        if (this.useNativeVec) {
-            try {
-                const row = this.db.prepare(
-                    'SELECT id FROM chunk_summaries WHERE meeting_id = ?'
-                ).get(meetingId) as any;
+        let summaryId: number | null = null;
+        try {
+            const row = this.db.prepare(
+                'SELECT id FROM chunk_summaries WHERE meeting_id = ?'
+            ).get(meetingId) as any;
+            summaryId = row?.id != null ? Number(row.id) : null;
+        } catch (_) { /* ignore */ }
 
-                if (row) {
-                    const dim = embedding.length;
-                    DatabaseManager.getInstance().ensureVecTableForDim(dim);
-                    this.db.prepare(
-                        `INSERT OR REPLACE INTO vec_summaries_${dim}(summary_id, embedding) VALUES (?, ?)`
-                    ).run(BigInt(row.id), blob);
-                }
+        if (this.useNativeVec && summaryId != null) {
+            try {
+                const dim = embedding.length;
+                DatabaseManager.getInstance().ensureVecTableForDim(dim);
+                this.db.prepare(
+                    `INSERT OR REPLACE INTO vec_summaries_${dim}(summary_id, embedding) VALUES (?, ?)`
+                ).run(BigInt(summaryId), blob);
             } catch (e) {
                 console.warn('[VectorStore] Failed to insert into vec_summaries dim table:', e);
+            }
+        }
+
+        // Mirror to Supabase pgvector
+        if (summaryId != null) {
+            try {
+                SupabaseMirrorService.getInstance().upsertVector(
+                    'summary',
+                    summaryId,
+                    meetingId,
+                    embedding.length,
+                    embedding
+                );
+            } catch (e) {
+                console.warn('[VectorStore] Mirror enqueue failed for summary vector:', e);
             }
         }
     }
@@ -606,6 +672,16 @@ export class VectorStore {
      * are wiped so the new provider can embed them cleanly.
      */
     clearEmbeddingsForMeeting(meetingId: string): void {
+        // Snapshot chunk + summary ids BEFORE wiping so we can mirror the deletes.
+        let cIdsForMirror: number[] = [];
+        let sIdForMirror: number | null = null;
+        try {
+            cIdsForMirror = (this.db.prepare('SELECT id FROM chunks WHERE meeting_id = ?').all(meetingId) as any[])
+                .map(r => Number(r.id));
+            const sRowSnap = this.db.prepare('SELECT id FROM chunk_summaries WHERE meeting_id = ?').get(meetingId) as any;
+            sIdForMirror = sRowSnap?.id != null ? Number(sRowSnap.id) : null;
+        } catch (_) { /* ignore */ }
+
         // Wipe embedding blobs from chunks and summaries
         this.db.prepare('UPDATE chunks SET embedding = NULL WHERE meeting_id = ?').run(meetingId);
         this.db.prepare('UPDATE chunk_summaries SET embedding = NULL WHERE meeting_id = ?').run(meetingId);
@@ -642,6 +718,19 @@ export class VectorStore {
             } catch (e) {
                 console.warn('[VectorStore] clearEmbeddingsForMeeting: error deleting from vec0 tables:', e);
             }
+        }
+
+        // Mirror the vector deletes to Supabase
+        try {
+            const mirror = SupabaseMirrorService.getInstance();
+            if (cIdsForMirror.length > 0) {
+                mirror.deleteVectors('chunk', cIdsForMirror, DatabaseManager.KNOWN_DIMS);
+            }
+            if (sIdForMirror != null) {
+                mirror.deleteVectors('summary', [sIdForMirror], DatabaseManager.KNOWN_DIMS);
+            }
+        } catch (e) {
+            console.warn('[VectorStore] Mirror enqueue failed for clearEmbeddingsForMeeting:', e);
         }
 
         console.log(`[VectorStore] Cleared embeddings for meeting ${meetingId} (chunks preserved for re-embedding)`);

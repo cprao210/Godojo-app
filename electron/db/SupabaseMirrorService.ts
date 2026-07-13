@@ -1,0 +1,731 @@
+// electron/db/SupabaseMirrorService.ts
+// Central async mirror service: pushes every local write to Supabase without
+// blocking the main thread.  SQLite is always source-of-truth; Supabase is a
+// non-blocking copy.
+//
+// Architecture:
+//   - All public methods are fire-and-forget (they never throw).
+//   - An in-memory outbox queue retries failed ops with exponential back-off
+//     so transient network issues don't silently drop data.
+//   - Vector embeddings (Float32 BLOBs) are base64-encoded for transport and
+//     stored in Supabase as text in vector-entity tables, alongside the plain
+//     numeric array for pgvector columns.
+//
+// Supabase schema expected (run the SQL in supabase/migrations):
+//   - Relational mirror: meetings, transcripts, ai_interactions, chunks,
+//     chunk_summaries, embedding_queue, app_state, user_profile, resume_nodes
+//   - Vector entities: rag_chunk_vectors_{dim} and rag_summary_vectors_{dim}
+//     for each dimension tier (768, 1536, 3072).
+
+import { SupabaseClientManager } from './SupabaseClient';
+import { AuthManager } from '../services/AuthManager';
+import Database from 'better-sqlite3';
+
+const MAX_RETRY = 4;
+const RETRY_BASE_MS = 1_500;
+
+interface OutboxItem {
+    id: number;
+    op: 'upsert' | 'delete' | 'deleteVector' | 'upsertVector';
+    table: string;
+    payload: any;
+    retries: number;
+}
+
+export class SupabaseMirrorService {
+    private static instance: SupabaseMirrorService;
+    private outbox: OutboxItem[] = [];
+    private draining = false;
+    private counter = 0;
+    private enabled = false;
+    private db: Database.Database | null = null;
+
+    private constructor() { }
+
+    static getInstance(): SupabaseMirrorService {
+        if (!this.instance) this.instance = new SupabaseMirrorService();
+        return this.instance;
+    }
+
+    /** Called once on startup after credentials are loaded from app_state. */
+    init(db: Database.Database): void {
+        this.db = db;
+        // We enable as soon as we have a SQLite handle: the outbox is
+        // append-only and persisted locally regardless of network/auth state.
+        // The send loop (_drain → _sendItem) is what actually gates on
+        // SupabaseClientManager.isConfigured() (URL + key + signed-in user).
+        this.enabled = true;
+        this._loadOutboxFromDb();
+
+        // Drain whenever the user signs in / token refreshes — the previously
+        // queued offline writes can now be authenticated and pushed.
+        const auth = AuthManager.getInstance();
+        auth.on('signed-in', () => {
+            this._upsertCurrentUserRow();
+            if (!this.draining) this._drain();
+        });
+        auth.on('auth-changed', () => {
+            if (auth.isSignedIn() && !this.draining) this._drain();
+        });
+
+        // If a session is already active at init (e.g. silent token restore
+        // completed before mirror.init), upsert the users row and drain now.
+        if (auth.isSignedIn()) {
+            this._upsertCurrentUserRow();
+            if (!this.draining) this._drain();
+        }
+    }
+
+    /**
+     * Push a users-row upsert to the front of the outbox the first time the
+     * mirror sees a signed-in session. Idempotent — Supabase will treat repeat
+     * upserts as no-ops because firebase_uid is the conflict key.
+     */
+    private _upsertCurrentUserRow(): void {
+        const snap = AuthManager.getInstance().snapshot();
+        if (!snap.uid) return;
+
+        const payload: Record<string, any> = {
+            firebase_uid: snap.uid,
+            last_seen_at: new Date().toISOString(),
+        };
+        if (snap.email) payload.email = snap.email;
+        if (snap.displayName) payload.display_name = snap.displayName;
+        if (snap.photoURL) payload.photo_url = snap.photoURL;
+
+        this._enqueue({
+            op: 'upsert',
+            table: 'users',
+            payload,
+            retries: 0,
+        });
+    }
+
+    /** Re-check enabled state (called after credentials are saved/changed). */
+    refresh(): void {
+        // `enabled` only reflects whether the local outbox is wired up — see init().
+        // We just kick the drain loop so any in-flight credential change picks up.
+        if (this.enabled && !this.draining) this._drain();
+    }
+
+    isEnabled(): boolean {
+        return this.enabled;
+    }
+
+    /** Snapshot for the settings UI (`supabase:get-mirror-status`). */
+    getStatus(): { outboxLength: number; lastSyncAt: number | null; lastError: string | null; draining: boolean } {
+        return {
+            outboxLength: this.outbox.length,
+            lastSyncAt: this.lastSyncAt,
+            lastError: this.lastError,
+            draining: this.draining,
+        };
+    }
+
+    private lastSyncAt: number | null = null;
+    private lastError: string | null = null;
+
+    // ============================================
+    // Public fire-and-forget write API
+    //
+    // Enqueue is ALWAYS accepted (provided init() has been called).
+    // Network send is gated on (a) Supabase URL/key configured and
+    // (b) a Firebase user currently signed in. Until both are true items sit
+    // in the local outbox and replay automatically on sign-in.
+    // ============================================
+
+    /** Mirror a single row upsert to a Supabase table. */
+    upsertRow(table: string, row: Record<string, any>): void {
+        if (!this.enabled) return;
+        this._enqueue({ op: 'upsert', table, payload: row, retries: 0 });
+    }
+
+    private _conflictTargetForTable(table: string, row: Record<string, any>): string | null {
+        // NOTE: All scoped tables include `user_id` in the conflict target so that
+        // two devices belonging to different users can never silently overwrite
+        // each other if their local autoincrement IDs collide.
+        switch (table) {
+            case 'users':
+                return row.firebase_uid != null ? 'firebase_uid' : null;
+            case 'meetings':
+                return row.id != null && row.user_id != null ? 'user_id,id' : (row.id != null ? 'id' : null);
+            case 'transcripts':
+                return row.id != null && row.user_id != null ? 'user_id,id' : (row.id != null ? 'id' : null);
+            case 'ai_interactions':
+                return row.id != null && row.user_id != null ? 'user_id,id' : (row.id != null ? 'id' : null);
+            case 'chunks':
+                return row.id != null && row.user_id != null ? 'user_id,id' : (row.id != null ? 'id' : null);
+            case 'chunk_summaries':
+                if (row.user_id != null && row.meeting_id != null) return 'user_id,meeting_id';
+                return row.id != null ? 'id' : (row.meeting_id != null ? 'meeting_id' : null);
+            case 'embedding_queue':
+                if (row.user_id != null && row.meeting_id != null) return 'user_id,meeting_id,chunk_id';
+                if (row.id != null) return 'id';
+                if (row.meeting_id != null) return 'meeting_id,chunk_id';
+                return null;
+            case 'app_state':
+                return row.user_id != null && row.key != null ? 'user_id,key' : (row.key != null ? 'key' : null);
+            case 'user_profile':
+                return row.user_id != null ? 'user_id' : (row.id != null ? 'id' : null);
+            case 'resume_nodes':
+                return row.id != null && row.user_id != null ? 'user_id,id' : (row.id != null ? 'id' : null);
+            case 'company_context':
+                return row.user_id != null ? 'user_id,id' : 'id';
+            case 'company_assets':
+                return row.user_id != null ? 'user_id,id' : 'id';
+            case 'company_personas':
+                return row.user_id != null ? 'user_id,id' : 'id';
+            case 'company_competitors':
+                return row.user_id != null ? 'user_id,id' : 'id';
+            case 'company_asset_files':
+                return row.user_id != null ? 'user_id,asset_id' : 'asset_id';
+            case 'meeting_scorecards':
+                return row.user_id != null ? 'user_id,meeting_id' : 'meeting_id';
+            case 'scoring_criteria':
+                return row.user_id != null ? 'user_id,id' : 'id';
+            case 'company_asset_chunks':
+                return row.user_id != null && row.id != null ? 'user_id,id' : (row.id != null ? 'id' : null);
+            default:
+                if (table.startsWith('rag_chunk_vectors_')) {
+                    return row.user_id != null ? 'user_id,chunk_id' : 'chunk_id';
+                }
+                if (table.startsWith('rag_summary_vectors_')) {
+                    return row.user_id != null ? 'user_id,summary_id' : 'summary_id';
+                }
+                return row.id != null ? 'id' : null;
+        }
+    }
+
+    /** Mirror a row deletion (by primary key value). */
+    deleteRow(table: string, pkColumn: string, pkValue: any): void {
+        if (!this.enabled) return;
+        this._enqueue({ op: 'delete', table, payload: { pkColumn, pkValue }, retries: 0 });
+    }
+
+    /** Upsert a vector row into a per-dimension table. dim = 768|1536|3072. */
+    upsertVector(
+        type: 'chunk' | 'summary',
+        localId: number,
+        meetingId: string,
+        dim: number,
+        embedding: number[],
+        extraMeta?: Record<string, any>
+    ): void {
+        if (!this.enabled) return;
+        const table = type === 'chunk' ? `rag_chunk_vectors_${dim}` : `rag_summary_vectors_${dim}`;
+        this._enqueue({
+            op: 'upsertVector',
+            table,
+            payload: { type, local_id: localId, meeting_id: meetingId, dim, embedding, ...extraMeta },
+            retries: 0
+        });
+    }
+
+    /** Delete a vector row from all per-dimension tables for a given id. */
+    deleteVectors(type: 'chunk' | 'summary', localIds: number[], knownDims: readonly number[]): void {
+        if (!this.enabled || localIds.length === 0) return;
+        const pkCol = type === 'chunk' ? 'chunk_id' : 'summary_id';
+        for (const dim of knownDims) {
+            const table = type === 'chunk' ? `rag_chunk_vectors_${dim}` : `rag_summary_vectors_${dim}`;
+            for (const id of localIds) {
+                this._enqueue({ op: 'deleteVector', table, payload: { pkCol, id }, retries: 0 });
+            }
+        }
+    }
+
+    /** Batch upsert rows (for backfill or bulk ops). */
+    upsertRows(table: string, rows: Record<string, any>[]): void {
+        if (!this.enabled || rows.length === 0) return;
+        for (const row of rows) this._enqueue({ op: 'upsert', table, payload: row, retries: 0 });
+    }
+
+    // ============================================
+    // Private queue / drain machinery
+    // ============================================
+
+    private _enqueue(item: Omit<OutboxItem, 'id'>): void {
+        const entry: OutboxItem = { id: ++this.counter, ...item };
+        this.outbox.push(entry);
+        this._persistOutboxItem(entry);
+        if (!this.draining) this._drain();
+    }
+
+    private async _drain(): Promise<void> {
+        if (this.draining) return;
+        this.draining = true;
+        try {
+            while (this.outbox.length > 0) {
+                // Gate the entire drain loop on a usable client + signed-in user.
+                // If either is missing, leave the outbox intact and wait — we'll
+                // be re-triggered by AuthManager 'signed-in' / refresh().
+                if (!SupabaseClientManager.isConfigured()) {
+                    return;
+                }
+
+                const item = this.outbox[0];
+                const success = await this._sendItem(item);
+                if (success) {
+                    this.outbox.shift();
+                    this._deleteOutboxItem(item.id);
+                    this.lastSyncAt = Date.now();
+                    this.lastError = null;
+                } else {
+                    item.retries++;
+                    if (item.retries >= MAX_RETRY) {
+                        console.error(`[SupabaseMirrorService] Dropping op ${item.op} on ${item.table} after ${MAX_RETRY} retries`);
+                        this.lastError = `Dropped ${item.op} on ${item.table} after ${MAX_RETRY} retries`;
+                        this.outbox.shift();
+                        this._deleteOutboxItem(item.id);
+                    } else {
+                        const delay = RETRY_BASE_MS * Math.pow(2, item.retries - 1);
+                        await new Promise(r => setTimeout(r, delay));
+                    }
+                }
+            }
+        } finally {
+            this.draining = false;
+        }
+    }
+
+    private async _sendItem(item: OutboxItem): Promise<boolean> {
+        const client = SupabaseClientManager.getClient();
+        if (!client) return false;
+
+        // Resolve the current user — required for every table except 'users'
+        // itself (whose payload already carries firebase_uid).
+        const userId = SupabaseClientManager.getCurrentUserId();
+        const needsUserId = item.table !== 'users';
+        if (needsUserId && !userId) {
+            // Not signed in — drain loop will re-check on next trigger.
+            return false;
+        }
+
+        try {
+            if (item.op === 'upsert') {
+                // Stamp user_id at send time so items queued before sign-in are
+                // attributed to the eventual signed-in user.
+                const payload = needsUserId
+                    ? { user_id: userId, ...item.payload }
+                    : item.payload;
+                const conflict = this._conflictTargetForTable(item.table, payload);
+                const { error } = conflict
+                    ? await client.from(item.table).upsert(payload, { onConflict: conflict })
+                    : await client.from(item.table).insert(payload);
+                if (error) throw error;
+
+            } else if (item.op === 'delete') {
+                const { pkColumn, pkValue } = item.payload;
+                // Scope the delete to the current user so a stale local id
+                // can never reach another tenant's row (RLS would block it
+                // anyway, but belt-and-braces).
+                let q: any = client.from(item.table).delete();
+                if (needsUserId) q = q.eq('user_id', userId);
+                const { error } = await q.eq(pkColumn, pkValue);
+                if (error) throw error;
+
+            } else if (item.op === 'upsertVector') {
+                const { type, local_id, meeting_id, dim, embedding, ...rest } = item.payload;
+                const pkCol = type === 'chunk' ? 'chunk_id' : 'summary_id';
+                const row: Record<string, any> = {
+                    user_id: userId,
+                    [pkCol]: local_id,
+                    meeting_id,
+                    embedding_dimensions: dim,
+                    // Store as Postgres array string for pgvector: '[0.1,0.2,...]'
+                    embedding: `[${embedding.join(',')}]`,
+                    mirrored_at: new Date().toISOString(),
+                    ...rest
+                };
+                const { error } = await client
+                    .from(item.table)
+                    .upsert(row, { onConflict: `user_id,${pkCol}` });
+                if (error) throw error;
+
+            } else if (item.op === 'deleteVector') {
+                const { pkCol, id } = item.payload;
+                const { error } = await (client.from(item.table).delete() as any)
+                    .eq('user_id', userId)
+                    .eq(pkCol, id);
+                if (error) throw error;
+            }
+            return true;
+        } catch (err: any) {
+            const msg = err?.message || String(err);
+            this.lastError = msg;
+            console.warn(`[SupabaseMirrorService] Failed op=${item.op} table=${item.table}:`, msg);
+            return false;
+        }
+    }
+
+    // ============================================
+    // Outbox persistence (uses a dedicated SQLite table)
+    // ============================================
+
+    /** Ensure the local outbox persistence table exists. */
+    ensureOutboxTable(): void {
+        if (!this.db) return;
+        try {
+            this.db.exec(`
+                CREATE TABLE IF NOT EXISTS supabase_mirror_outbox (
+                    id   INTEGER PRIMARY KEY,
+                    op   TEXT NOT NULL,
+                    tbl  TEXT NOT NULL,
+                    payload TEXT NOT NULL,
+                    retries INTEGER DEFAULT 0,
+                    created_at TEXT DEFAULT CURRENT_TIMESTAMP
+                );
+            `);
+        } catch (e) {
+            console.warn('[SupabaseMirrorService] Could not create outbox table:', e);
+        }
+    }
+
+    private _persistOutboxItem(item: OutboxItem): void {
+        if (!this.db) return;
+        try {
+            this.db.prepare(
+                `INSERT OR IGNORE INTO supabase_mirror_outbox (id, op, tbl, payload, retries)
+                 VALUES (?, ?, ?, ?, ?)`
+            ).run(item.id, item.op, item.table, JSON.stringify(item.payload), item.retries);
+        } catch (_) { }
+    }
+
+    private _deleteOutboxItem(id: number): void {
+        if (!this.db) return;
+        try {
+            this.db.prepare('DELETE FROM supabase_mirror_outbox WHERE id = ?').run(id);
+        } catch (_) { }
+    }
+
+    private _loadOutboxFromDb(): void {
+        if (!this.db) return;
+        try {
+            this.ensureOutboxTable();
+            const rows = this.db.prepare(
+                'SELECT * FROM supabase_mirror_outbox ORDER BY created_at ASC'
+            ).all() as any[];
+            for (const row of rows) {
+                this.outbox.push({
+                    id: row.id,
+                    op: row.op,
+                    table: row.tbl,
+                    payload: JSON.parse(row.payload),
+                    retries: row.retries
+                });
+                if (row.id > this.counter) this.counter = row.id;
+            }
+            if (rows.length > 0) {
+                console.log(`[SupabaseMirrorService] Restored ${rows.length} pending outbox items from last session`);
+                this._drain();
+            }
+        } catch (e) {
+            console.warn('[SupabaseMirrorService] Could not load outbox from DB:', e);
+        }
+    }
+
+    // ============================================
+    // SQL Schema helper (call once to set up Supabase)
+    // ============================================
+
+    /**
+     * Returns the SQL that must be run once in Supabase to create mirror tables.
+     * Log this during development or expose via a settings page.
+     */
+    static getSupabaseSchemaSql(): string {
+        return `
+-- ============================================================
+-- Natively Mirror Schema for Supabase (Mode A + Firebase Auth + RLS)
+-- Run this once in the Supabase SQL editor.
+--
+-- Prerequisites in Supabase Dashboard:
+--   1. Database -> Extensions: enable "vector" (pgvector)
+--   2. Authentication -> Third-party Auth: add Firebase
+--        Issuer:   https://securetoken.google.com/<FIREBASE_PROJECT_ID>
+--        Audience: <FIREBASE_PROJECT_ID>
+--      Supabase verifies RS256 against Google's JWKS automatically.
+--
+-- All policies key off  auth.jwt() ->> 'sub'  which Firebase sets to the UID.
+-- Every scoped table carries  user_id TEXT NOT NULL REFERENCES users(firebase_uid).
+-- ============================================================
+
+CREATE EXTENSION IF NOT EXISTS vector;
+
+-- ============================================================
+-- USERS  (identity table; populated on first sign-in)
+-- ============================================================
+CREATE TABLE IF NOT EXISTS users (
+    firebase_uid  TEXT PRIMARY KEY,
+    email         TEXT,
+    display_name  TEXT,
+    photo_url     TEXT,
+    created_at    TIMESTAMPTZ DEFAULT now(),
+    last_seen_at  TIMESTAMPTZ DEFAULT now()
+);
+ALTER TABLE users ENABLE ROW LEVEL SECURITY;
+DROP POLICY IF EXISTS users_self ON users;
+CREATE POLICY users_self ON users
+    USING       (firebase_uid = auth.jwt() ->> 'sub')
+    WITH CHECK  (firebase_uid = auth.jwt() ->> 'sub');
+
+-- ============================================================
+-- CORE RELATIONAL TABLES (each carries user_id)
+-- ============================================================
+CREATE TABLE IF NOT EXISTS meetings (
+    user_id              TEXT NOT NULL REFERENCES users(firebase_uid) ON DELETE CASCADE,
+    id                   TEXT NOT NULL,
+    title                TEXT,
+    start_time           BIGINT,
+    duration_ms          BIGINT,
+    summary_json         JSONB,
+    created_at           TIMESTAMPTZ,
+    calendar_event_id    TEXT,
+    source               TEXT,
+    is_processed         INTEGER DEFAULT 1,
+    embedding_provider   TEXT,
+    embedding_dimensions INTEGER,
+    PRIMARY KEY (user_id, id)
+);
+CREATE INDEX IF NOT EXISTS idx_meetings_user ON meetings(user_id, created_at DESC);
+
+CREATE TABLE IF NOT EXISTS transcripts (
+    user_id      TEXT NOT NULL REFERENCES users(firebase_uid) ON DELETE CASCADE,
+    id           BIGINT NOT NULL,
+    meeting_id   TEXT NOT NULL,
+    speaker      TEXT,
+    content      TEXT,
+    timestamp_ms BIGINT,
+    PRIMARY KEY (user_id, id),
+    FOREIGN KEY (user_id, meeting_id) REFERENCES meetings(user_id, id) ON DELETE CASCADE
+);
+CREATE INDEX IF NOT EXISTS idx_transcripts_user_meeting ON transcripts(user_id, meeting_id);
+
+CREATE TABLE IF NOT EXISTS ai_interactions (
+    user_id       TEXT NOT NULL REFERENCES users(firebase_uid) ON DELETE CASCADE,
+    id            BIGINT NOT NULL,
+    meeting_id    TEXT NOT NULL,
+    type          TEXT,
+    timestamp     BIGINT,
+    user_query    TEXT,
+    ai_response   TEXT,
+    metadata_json JSONB,
+    PRIMARY KEY (user_id, id),
+    FOREIGN KEY (user_id, meeting_id) REFERENCES meetings(user_id, id) ON DELETE CASCADE
+);
+CREATE INDEX IF NOT EXISTS idx_ai_interactions_user_meeting ON ai_interactions(user_id, meeting_id, timestamp);
+
+CREATE TABLE IF NOT EXISTS chunks (
+    user_id            TEXT NOT NULL REFERENCES users(firebase_uid) ON DELETE CASCADE,
+    id                 BIGINT NOT NULL,
+    meeting_id         TEXT NOT NULL,
+    chunk_index        INTEGER,
+    speaker            TEXT,
+    start_timestamp_ms BIGINT,
+    end_timestamp_ms   BIGINT,
+    cleaned_text       TEXT,
+    token_count        INTEGER,
+    created_at         TIMESTAMPTZ,
+    PRIMARY KEY (user_id, id),
+    FOREIGN KEY (user_id, meeting_id) REFERENCES meetings(user_id, id) ON DELETE CASCADE
+);
+CREATE INDEX IF NOT EXISTS idx_chunks_user_meeting ON chunks(user_id, meeting_id);
+
+CREATE TABLE IF NOT EXISTS chunk_summaries (
+    user_id      TEXT NOT NULL REFERENCES users(firebase_uid) ON DELETE CASCADE,
+    id           BIGINT NOT NULL,
+    meeting_id   TEXT NOT NULL,
+    summary_text TEXT,
+    created_at   TIMESTAMPTZ,
+    PRIMARY KEY (user_id, id),
+    UNIQUE      (user_id, meeting_id),
+    FOREIGN KEY (user_id, meeting_id) REFERENCES meetings(user_id, id) ON DELETE CASCADE
+);
+
+CREATE TABLE IF NOT EXISTS embedding_queue (
+    user_id       TEXT NOT NULL REFERENCES users(firebase_uid) ON DELETE CASCADE,
+    id            BIGINT NOT NULL,
+    meeting_id    TEXT,
+    chunk_id      BIGINT,
+    status        TEXT DEFAULT 'pending',
+    retry_count   INTEGER DEFAULT 0,
+    error_message TEXT,
+    created_at    TIMESTAMPTZ,
+    processed_at  TIMESTAMPTZ,
+    PRIMARY KEY (user_id, id),
+    UNIQUE      (user_id, meeting_id, chunk_id)
+);
+
+-- app_state: composite (user_id, key) so per-device/per-user values don't collide
+CREATE TABLE IF NOT EXISTS app_state (
+    user_id TEXT NOT NULL REFERENCES users(firebase_uid) ON DELETE CASCADE,
+    key     TEXT NOT NULL,
+    value   TEXT,
+    PRIMARY KEY (user_id, key)
+);
+
+-- user_profile: one row per user (PK is user_id directly)
+CREATE TABLE IF NOT EXISTS user_profile (
+    user_id          TEXT PRIMARY KEY REFERENCES users(firebase_uid) ON DELETE CASCADE,
+    structured_json  JSONB,
+    compact_persona  TEXT,
+    intro_short      TEXT,
+    intro_interview  TEXT,
+    created_at       TIMESTAMPTZ
+);
+
+CREATE TABLE IF NOT EXISTS resume_nodes (
+    user_id          TEXT NOT NULL REFERENCES users(firebase_uid) ON DELETE CASCADE,
+    id               BIGINT NOT NULL,
+    category         TEXT,
+    title            TEXT,
+    organization     TEXT,
+    start_date       TEXT,
+    end_date         TEXT,
+    duration_months  INTEGER,
+    text_content     TEXT,
+    tags             TEXT,
+    PRIMARY KEY (user_id, id)
+);
+
+CREATE TABLE IF NOT EXISTS company_asset_chunks (
+    user_id     TEXT NOT NULL REFERENCES users(firebase_uid) ON DELETE CASCADE,
+    id          BIGINT NOT NULL,
+    asset_id    TEXT NOT NULL,
+    chunk_index INTEGER NOT NULL,
+    chunk_text  TEXT,
+    token_count INTEGER,
+    embedding   JSONB,
+    PRIMARY KEY (user_id, id)
+);
+CREATE INDEX IF NOT EXISTS idx_company_asset_chunks_asset
+    ON company_asset_chunks(user_id, asset_id);
+
+CREATE TABLE IF NOT EXISTS meeting_scorecards (
+    user_id                TEXT        NOT NULL REFERENCES users(firebase_uid) ON DELETE CASCADE,
+    meeting_id             TEXT        NOT NULL,
+    overall_score          REAL        NOT NULL DEFAULT 0,
+    detected_types         TEXT        NOT NULL DEFAULT '[]',
+    scorecard_json         JSONB       NOT NULL,
+    criteria_snapshot_json JSONB,
+    generated_at           TIMESTAMPTZ NOT NULL DEFAULT now(),
+    PRIMARY KEY (user_id, meeting_id)
+);
+CREATE INDEX IF NOT EXISTS idx_meeting_scorecards_user_meeting
+    ON meeting_scorecards(user_id, meeting_id);
+
+CREATE TABLE IF NOT EXISTS scoring_criteria (
+    user_id     TEXT        NOT NULL REFERENCES users(firebase_uid) ON DELETE CASCADE,
+    id          INTEGER     NOT NULL DEFAULT 1,
+    config_json JSONB       NOT NULL DEFAULT '{}',
+    updated_at  TIMESTAMPTZ NOT NULL DEFAULT now(),
+    PRIMARY KEY (user_id, id)
+);
+
+-- ============================================================
+-- PER-DIMENSION VECTOR TABLES (pgvector + HNSW cosine indexes)
+-- ============================================================
+CREATE TABLE IF NOT EXISTS rag_chunk_vectors_768 (
+    user_id              TEXT NOT NULL REFERENCES users(firebase_uid) ON DELETE CASCADE,
+    chunk_id             BIGINT NOT NULL,
+    meeting_id           TEXT,
+    embedding_dimensions INT DEFAULT 768,
+    embedding            vector(768),
+    mirrored_at          TIMESTAMPTZ DEFAULT now(),
+    PRIMARY KEY (user_id, chunk_id)
+);
+CREATE INDEX IF NOT EXISTS idx_rag_chunk_vectors_768_hnsw
+    ON rag_chunk_vectors_768 USING hnsw (embedding vector_cosine_ops);
+
+CREATE TABLE IF NOT EXISTS rag_summary_vectors_768 (
+    user_id              TEXT NOT NULL REFERENCES users(firebase_uid) ON DELETE CASCADE,
+    summary_id           BIGINT NOT NULL,
+    meeting_id           TEXT,
+    embedding_dimensions INT DEFAULT 768,
+    embedding            vector(768),
+    mirrored_at          TIMESTAMPTZ DEFAULT now(),
+    PRIMARY KEY (user_id, summary_id)
+);
+CREATE INDEX IF NOT EXISTS idx_rag_summary_vectors_768_hnsw
+    ON rag_summary_vectors_768 USING hnsw (embedding vector_cosine_ops);
+
+CREATE TABLE IF NOT EXISTS rag_chunk_vectors_1536 (
+    user_id              TEXT NOT NULL REFERENCES users(firebase_uid) ON DELETE CASCADE,
+    chunk_id             BIGINT NOT NULL,
+    meeting_id           TEXT,
+    embedding_dimensions INT DEFAULT 1536,
+    embedding            vector(1536),
+    mirrored_at          TIMESTAMPTZ DEFAULT now(),
+    PRIMARY KEY (user_id, chunk_id)
+);
+CREATE INDEX IF NOT EXISTS idx_rag_chunk_vectors_1536_hnsw
+    ON rag_chunk_vectors_1536 USING hnsw (embedding vector_cosine_ops);
+
+CREATE TABLE IF NOT EXISTS rag_summary_vectors_1536 (
+    user_id              TEXT NOT NULL REFERENCES users(firebase_uid) ON DELETE CASCADE,
+    summary_id           BIGINT NOT NULL,
+    meeting_id           TEXT,
+    embedding_dimensions INT DEFAULT 1536,
+    embedding            vector(1536),
+    mirrored_at          TIMESTAMPTZ DEFAULT now(),
+    PRIMARY KEY (user_id, summary_id)
+);
+CREATE INDEX IF NOT EXISTS idx_rag_summary_vectors_1536_hnsw
+    ON rag_summary_vectors_1536 USING hnsw (embedding vector_cosine_ops);
+
+-- NOTE: pgvector HNSW currently caps at 2000 dims, so vector(3072) cannot be
+-- indexed with HNSW today. Sequential scan is acceptable for the few users on
+-- text-embedding-3-large; revisit when pgvector lifts the limit.
+CREATE TABLE IF NOT EXISTS rag_chunk_vectors_3072 (
+    user_id              TEXT NOT NULL REFERENCES users(firebase_uid) ON DELETE CASCADE,
+    chunk_id             BIGINT NOT NULL,
+    meeting_id           TEXT,
+    embedding_dimensions INT DEFAULT 3072,
+    embedding            vector(3072),
+    mirrored_at          TIMESTAMPTZ DEFAULT now(),
+    PRIMARY KEY (user_id, chunk_id)
+);
+CREATE TABLE IF NOT EXISTS rag_summary_vectors_3072 (
+    user_id              TEXT NOT NULL REFERENCES users(firebase_uid) ON DELETE CASCADE,
+    summary_id           BIGINT NOT NULL,
+    meeting_id           TEXT,
+    embedding_dimensions INT DEFAULT 3072,
+    embedding            vector(3072),
+    mirrored_at          TIMESTAMPTZ DEFAULT now(),
+    PRIMARY KEY (user_id, summary_id)
+);
+
+-- ============================================================
+-- ROW LEVEL SECURITY  (applied to every scoped table)
+-- ============================================================
+-- Helper macro pattern: each table gets a uniform policy keyed on user_id.
+-- We DROP-then-CREATE so this block is idempotent on re-runs.
+
+DO $$
+DECLARE
+    tbl TEXT;
+    scoped_tables TEXT[] := ARRAY[
+        'meetings', 'transcripts', 'ai_interactions',
+        'chunks', 'chunk_summaries', 'embedding_queue',
+        'app_state', 'user_profile', 'resume_nodes',
+        'company_asset_chunks',
+        'meeting_scorecards',
+        'scoring_criteria',
+        'rag_chunk_vectors_768',   'rag_summary_vectors_768',
+        'rag_chunk_vectors_1536',  'rag_summary_vectors_1536',
+        'rag_chunk_vectors_3072',  'rag_summary_vectors_3072'
+    ];
+BEGIN
+    FOREACH tbl IN ARRAY scoped_tables
+    LOOP
+        EXECUTE format('ALTER TABLE %I ENABLE ROW LEVEL SECURITY', tbl);
+        EXECUTE format('DROP POLICY IF EXISTS %I_owner ON %I', tbl, tbl);
+        EXECUTE format(
+            'CREATE POLICY %I_owner ON %I
+                USING       (user_id = auth.jwt() ->> ''sub'')
+                WITH CHECK  (user_id = auth.jwt() ->> ''sub'')',
+            tbl, tbl
+        );
+    END LOOP;
+END $$;
+`;
+    }
+}

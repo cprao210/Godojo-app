@@ -4,12 +4,20 @@ import { app, ipcMain, shell, dialog, desktopCapturer, systemPreferences, Browse
 import { AppState } from "./main"
 import { GEMINI_FLASH_MODEL } from "./IntelligenceManager"
 import { DatabaseManager } from "./db/DatabaseManager"; // Import Database Manager
+import { SupabaseReadService } from "./db/SupabaseReadService";
 import * as path from "path";
 import * as fs from "fs";
 import { AudioDevices } from "./audio/AudioDevices";
+import { detectTavilyIntent, extractAllowedCompaniesFromAttendees } from "./services/TavilyIntentDetector";
+import { searchCompany, clearCompanyCache } from "./services/TavilyManager";
 
-
+import { buildCompanyContextBlock } from './utils/salesBriefUtils';
 import { RECOGNITION_LANGUAGES, AI_RESPONSE_LANGUAGES } from "./config/languages"
+import { LiveAnalysisData } from "../src/types/liveAnalysis";
+import {
+  buildOwnCompanyBlockFromOrchestrator,
+  hydrateOrchestratorFromContext,
+} from './utils/companyKnowledge';
 
 export function initializeIpcHandlers(appState: AppState): void {
   const safeHandle = (channel: string, listener: (event: any, ...args: any[]) => Promise<any> | any) => {
@@ -283,7 +291,6 @@ export function initializeIpcHandlers(appState: AppState): void {
     return { success: true };
   });
 
-
   // Generate suggestion from transcript - Natively-style text-only reasoning
   safeHandle("generate-suggestion", async (event, context: string, lastQuestion: string) => {
     try {
@@ -318,15 +325,31 @@ export function initializeIpcHandlers(appState: AppState): void {
 
   safeHandle("gemini-chat", async (event, message: string, imagePaths?: string[], context?: string, options?: { skipSystemPrompt?: boolean }) => {
     try {
-      const result = await appState.processingHelper.getLLMHelper().chatWithGemini(message, imagePaths, context, options?.skipSystemPrompt);
+      // Own-company context from orchestrator (seller perspective)
+      const ownCompanyBlock = buildOwnCompanyBlockFromOrchestrator(appState.getKnowledgeOrchestrator());
+      // Prospect intelligence from Tavily (prospect perspective) — unchanged
+      const prospectBlock = buildCompanyContextBlock(appState.getCompanyIntel());
+      // Combine: own context first (highest priority), then prospect, then caller-supplied context
+      let enrichedContext = context ?? '';
+      if (prospectBlock) enrichedContext = prospectBlock + (enrichedContext ? '\n\n' + enrichedContext : '');
+      if (ownCompanyBlock) enrichedContext = ownCompanyBlock + (enrichedContext ? '\n\n' + enrichedContext : '');
+      const result = await appState.processingHelper.getLLMHelper().chatWithGemini(message, imagePaths, enrichedContext, options?.skipSystemPrompt);
 
       console.log(`[IPC] gemini - chat response: `, result ? result.substring(0, 50) : "(empty)");
+      console.log("(gemini-chat) ownCompanyBlock: ", ownCompanyBlock);
+      console.log("(gemini-chat) prospectBlock: ", prospectBlock);
 
       // Don't process empty responses
       if (!result || result.trim().length === 0) {
         console.warn("[IPC] Empty response from LLM, not updating IntelligenceManager");
-        return "I apologize, but I couldn't generate a response. Please try again.";
+        throw new Error("Empty response from LLM");
       }
+
+      // // Don't process empty responses
+      // if (!result || result.trim().length === 0) {
+      //   console.warn("[IPC] Empty response from LLM, not updating IntelligenceManager");
+      //   return "I apologize, but I couldn't generate a response. Please try again.";
+      // }
 
       // Sync with IntelligenceManager so Follow-Up/Recap work
       const intelligenceManager = appState.getIntelligenceManager();
@@ -338,7 +361,8 @@ export function initializeIpcHandlers(appState: AppState): void {
         text: message,
         speaker: 'user',
         timestamp: Date.now(),
-        final: true
+        final: true,
+        source: 'chat'
       }, true);
 
       // 2. Add assistant response and set as last message
@@ -361,6 +385,16 @@ export function initializeIpcHandlers(appState: AppState): void {
   // Each new invocation increments the ID; any in-flight iteration bails as soon as it detects
   // that a newer stream has taken over.
   let _chatStreamId = 0;
+  let _analysisStreamId = 0;
+
+  /**
+   * Per-session Tavily dedup cache for gemini-chat-stream.
+   * Key: lowercased entity name → in-flight or resolved Promise.
+   * Mirrors the tavilyCache on IntelligenceEngine so rapid duplicate chat
+   * messages never fire a second Tavily request for the same entity.
+   * Cleared when the intelligence session resets (see "reset-intelligence" handler).
+   */
+  let _tavilyAllowedCompanies: Set<string> = new Set();
 
   safeHandle("gemini-chat-stream", async (event, message: string, imagePaths?: string[], context?: string, options?: { skipSystemPrompt?: boolean }) => {
     try {
@@ -376,27 +410,94 @@ export function initializeIpcHandlers(appState: AppState): void {
         text: message,
         speaker: 'user',
         timestamp: Date.now(),
-        final: true
+        final: true,
+        source: 'chat'
       }, true);
 
       let fullResponse = "";
 
+      // Own-company context (seller) — injected when knowledge mode is OFF.
+      // When knowledge mode is ON, LLMHelper.streamChat calls processQuestion()
+      // which builds a richer block (identity + retrieved asset chunks) internally.
+      // Injecting the metadata-only block here on top would duplicate identity info
+      // and push asset chunks further from the question in the context window.
+      try {
+        const orchestrator = appState.getKnowledgeOrchestrator();
+        const knowledgeModeOn = orchestrator?.isKnowledgeMode?.() ?? false;
+        if (!knowledgeModeOn) {
+          const ownCompanyBlock = buildOwnCompanyBlockFromOrchestrator(orchestrator);
+          if (ownCompanyBlock) {
+            context = context ? `${ownCompanyBlock}\n\n${context}` : ownCompanyBlock;
+          }
+        }
+        // Prospect intelligence (Tavily) — always injected regardless of knowledge mode
+        const prospectBlock = buildCompanyContextBlock(appState.getCompanyIntel());
+        if (prospectBlock) {
+          context = context ? `${prospectBlock}\n\n${context}` : prospectBlock;
+        }
+        console.log("gemini-chat-stream context block: ", context);
+      } catch (ctxErr) {
+        console.warn("[IPC] Failed to inject company context:", ctxErr);
+      }
+
       // Context Injection for "Answer" button (100s rolling window)
       if (!context) {
-        // User requested 100 seconds of context for the answer button
-        // Logic: If no explicit context provided (like from manual override), auto-inject from IntelligenceManager
         try {
-          const autoContext = intelligenceManager.getFormattedContext(100);
-          if (autoContext && autoContext.trim().length > 0) {
-            context = autoContext;
-            console.log(`[IPC] Auto - injected 100s context for gemini - chat - stream(${context.length} chars)`);
+          const fullSessionContext = intelligenceManager.getFullSessionContext();
+          if (fullSessionContext && fullSessionContext.trim().length > 0) {
+            context = fullSessionContext;
+            console.log(`[IPC] Auto-injected full session transcript for chat (${context.length} chars)`);
+          } else {
+            const autoContext = intelligenceManager.getFormattedContext(300);
+            if (autoContext && autoContext.trim().length > 0) {
+              context = autoContext;
+              console.log(`[IPC] Auto-injected 300s context fallback for chat (${context.length} chars)`);
+            }
           }
         } catch (ctxErr) {
-          console.warn("[IPC] Failed to auto-inject context:", ctxErr);
+          console.warn("[IPC] Failed to auto-inject transcript context:", ctxErr);
         }
       }
 
       try {
+        // ── Tavily enrichment ────────────────────────────────────────────────────
+        // Run intent detection synchronously (<1 ms). If the message is asking
+        // about an external company/product, fetch live data and append a compact
+        // context block BEFORE handing off to the LLM. Existing transcript context
+        // is preserved — Tavily data is only appended, never replacing it.
+        // Deduped per session: same entity within a session reuses the cached result.
+        try {
+          const intentResult = detectTavilyIntent(message, _tavilyAllowedCompanies);
+          if (intentResult.needsExternalSearch && intentResult.searchQuery && intentResult.entityName) {
+            event.sender.send('tavily-searching', { entity: intentResult.entityName });
+            const state = await searchCompany(intentResult.searchQuery, intentResult.entityName);
+            event.sender.send('tavily-search-done', { entity: intentResult.entityName, status: state.status, fromCache: state.data?.fromCache ?? false });
+            if ((state.status === 'success' || state.status === 'cached') && state.data) {
+              const companyBlock = buildCompanyContextBlock(state.data);
+              context = context ? `${context}\n\n${companyBlock}` : companyBlock;
+            } else {
+              console.warn(`[IPC] Tavily fallback for "${intentResult.entityName}": ${state.message}`);
+            }
+          } else {
+            console.log(`[IPC] Tavily skipped: ${intentResult.reason}`);
+          }
+        } catch (tavilyErr: any) {
+          // Never let Tavily failure block the response — log and continue
+          console.warn('[IPC] Tavily enrichment failed, proceeding without:', tavilyErr.message);
+        }
+        // ── End Tavily enrichment ────────────────────────────────────────────────
+
+        // Inject inferred company names so the LLM knows the allowed scope
+        if (_tavilyAllowedCompanies.size > 0) {
+          const _companyList = [..._tavilyAllowedCompanies].join(", ");
+          const _participantNote =
+            "\n\n--- MEETING PARTICIPANTS (inferred companies from professional email domains) ---\n" +
+            `Companies represented in this meeting: ${_companyList}\n` +
+            "You may answer questions about these companies using any external context provided.\n" +
+            "--- END PARTICIPANT INFO ---";
+          context = context ? `${context}${_participantNote}` : _participantNote;
+        }
+
         // USE streamChat which handles routing
         const stream = llmHelper.streamChat(message, imagePaths, context, options?.skipSystemPrompt ? "" : undefined);
 
@@ -437,7 +538,47 @@ export function initializeIpcHandlers(appState: AppState): void {
     }
   });
 
+  safeHandle("live-analysis-stream", async (event, prompt: string) => {
 
+    try {
+
+      const promptKb = (prompt.length / 1024).toFixed(1);
+      console.log(`[IPC] live-analysis-stream called — prompt: ${prompt.length} chars (${promptKb} KB)`);
+
+      const llmHelper = appState.processingHelper.getLLMHelper();
+      const myStreamId = ++_analysisStreamId;
+
+      appState.setLiveAnalysisInFlight(true);
+      let result: any;
+      try {
+        // Use the dedicated live analysis method (Gemini Flash → Claude → OpenAI, Groq excluded).
+        // This bypasses the general-purpose fallback waterfall and enforces temperature=0.1
+        // for schema-accurate extraction. Falls back to chatWithGemini if the method is absent
+        // (older LLMHelper version during hot-reload).
+        result = typeof llmHelper.generateLiveAnalysis === 'function'
+          ? await llmHelper.generateLiveAnalysis(prompt)
+          : await llmHelper.chatWithGemini(prompt, undefined, undefined, true);
+      } finally {
+        appState.setLiveAnalysisInFlight(false);
+      }
+
+      if (_analysisStreamId === myStreamId) {
+        event.sender.send('live-analysis-result', result);
+      }
+
+      return { success: true };
+    } catch (error: any) {
+      console.error('[IPC] live-analysis-stream error:', error);
+      event.sender.send('live-analysis-error', error.message || 'Analysis failed');
+      return { success: false, error: error.message };
+    }
+  });
+
+  safeHandle("update-live-analysis", async (event, data: LiveAnalysisData) => {
+    console.log('[IPC] Received live analysis:', Object.keys(data));
+    appState.setCurrentLiveAnalysis(data);
+    return { success: true };
+  });
 
   safeHandle("quit-app", () => {
     app.quit()
@@ -927,7 +1068,7 @@ export function initializeIpcHandlers(appState: AppState): void {
         hasOpenaiKey: hasKey(creds.openaiApiKey),
         hasClaudeKey: hasKey(creds.claudeApiKey),
         googleServiceAccountPath: creds.googleServiceAccountPath || null,
-        sttProvider: creds.sttProvider || 'google',
+        sttProvider: creds.sttProvider || 'azure',
         groqSttModel: creds.groqSttModel || 'whisper-large-v3-turbo',
         hasSttGroqKey: hasKey(creds.groqSttApiKey),
         hasSttOpenaiKey: hasKey(creds.openAiSttApiKey),
@@ -946,7 +1087,7 @@ export function initializeIpcHandlers(appState: AppState): void {
         claudePreferredModel: creds.claudePreferredModel || undefined,
       };
     } catch (error: any) {
-      return { hasGeminiKey: false, hasGroqKey: false, hasOpenaiKey: false, hasClaudeKey: false, googleServiceAccountPath: null, sttProvider: 'google', groqSttModel: 'whisper-large-v3-turbo', hasSttGroqKey: false, hasSttOpenaiKey: false, hasDeepgramKey: false, hasElevenLabsKey: false, hasAzureKey: false, azureRegion: 'eastus', hasIbmWatsonKey: false, ibmWatsonRegion: 'us-south', hasSonioxKey: false, hasTavilyKey: false };
+      return { hasGeminiKey: false, hasGroqKey: false, hasOpenaiKey: false, hasClaudeKey: false, googleServiceAccountPath: null, sttProvider: 'azure', groqSttModel: 'whisper-large-v3-turbo', hasSttGroqKey: false, hasSttOpenaiKey: false, hasDeepgramKey: false, hasElevenLabsKey: false, hasAzureKey: false, azureRegion: 'southeastasia', hasIbmWatsonKey: false, ibmWatsonRegion: 'us-south', hasSonioxKey: false, hasTavilyKey: false };
     }
   });
 
@@ -1525,6 +1666,12 @@ export function initializeIpcHandlers(appState: AppState): void {
   safeHandle("start-meeting", async (event, metadata?: any) => {
     try {
       await appState.startMeeting(metadata);
+      if (metadata?.attendees) {
+        const selfEmail = metadata.attendees.find((a: any) => a.self)?.email;
+        _tavilyAllowedCompanies = extractAllowedCompaniesFromAttendees(metadata.attendees, selfEmail);
+      } else {
+        _tavilyAllowedCompanies = new Set();
+      }
       return { success: true };
     } catch (error: any) {
       console.error("Error starting meeting:", error);
@@ -1532,9 +1679,9 @@ export function initializeIpcHandlers(appState: AppState): void {
     }
   });
 
-  safeHandle("end-meeting", async () => {
+  safeHandle("end-meeting", async (_, payload?: { meetingTypes?: ('discovery' | 'demo' | 'negotiation')[] }) => {
     try {
-      await appState.endMeeting();
+      await appState.endMeeting(payload?.meetingTypes);
       return { success: true };
     } catch (error: any) {
       console.error("Error ending meeting:", error);
@@ -1542,13 +1689,55 @@ export function initializeIpcHandlers(appState: AppState): void {
     }
   });
 
+  safeHandle("pause-meeting", async () => {
+    try {
+      appState.pauseMeeting();
+      return { success: true };
+    } catch (error: any) {
+      console.error("Error pausing meeting:", error);
+      return { success: false, error: error.message };
+    }
+  });
+
+  safeHandle("resume-meeting", async () => {
+    try {
+      await appState.resumeMeeting();
+      return { success: true };
+    } catch (error: any) {
+      console.error("Error resuming meeting:", error);
+      return { success: false, error: error.message };
+    }
+  });
+
+  safeHandle("get-meeting-paused", async () => {
+    return appState.getIsMeetingPaused();
+  });
+
   safeHandle("get-recent-meetings", async () => {
-    // Fetch from SQLite (limit 50)
+    if (SupabaseReadService.isAvailable()) {
+      try {
+        return await SupabaseReadService.getRecentMeetings(50);
+      } catch (e) {
+        console.warn('[ipc] get-recent-meetings: Supabase failed, falling back to SQLite:', e);
+      }
+    }
     return DatabaseManager.getInstance().getRecentMeetings(50);
   });
 
+  // Add this handler
+  safeHandle("get-display-name", async (_, role: 'user' | 'client' | 'assistant') => {
+    const intelligenceManager = appState.getIntelligenceManager();
+    return intelligenceManager.getDisplayNameForSpeaker(role);
+  });
+
   safeHandle("get-meeting-details", async (event, id) => {
-    // Helper to fetch full details
+    if (SupabaseReadService.isAvailable()) {
+      try {
+        return await SupabaseReadService.getMeetingDetails(id);
+      } catch (e) {
+        console.warn('[ipc] get-meeting-details: Supabase failed, falling back to SQLite:', e);
+      }
+    }
     return DatabaseManager.getInstance().getMeetingDetails(id);
   });
 
@@ -1556,8 +1745,78 @@ export function initializeIpcHandlers(appState: AppState): void {
     return DatabaseManager.getInstance().updateMeetingTitle(id, title);
   });
 
+  safeHandle("update-meeting-types", async (_, { id, types }: { id: string; types: ('discovery' | 'demo' | 'negotiation')[] }) => {
+    return DatabaseManager.getInstance().updateMeetingTypes(id, types);
+  });
+
   safeHandle("update-meeting-summary", async (_, { id, updates }: { id: string; updates: any }) => {
     return DatabaseManager.getInstance().updateMeetingSummary(id, updates);
+  });
+
+  safeHandle("regenerate-meeting-summary", async (_, { id }: { id: string }) => {
+
+    try {
+
+      const success = await appState.getIntelligenceManager().regenerateSummary(id);
+      if (success) {
+        // Return the fresh meeting data so UI can update immediately.
+        // Use the same Supabase-aware path as get-meeting-details so that the
+        // scorecard (and all other fields) are populated correctly regardless of
+        // whether Supabase or SQLite is the active read source.
+
+        const updated = DatabaseManager.getInstance().getMeetingDetails(id);
+
+        // let updated: any = null;
+        // if (SupabaseReadService.isAvailable()) {
+        //   try {
+        //     updated = await SupabaseReadService.getMeetingDetails(id); // ← try Supabase first
+        //   } catch (e) {
+        //     console.warn('[ipcHandlers] regenerate-meeting-summary: Supabase fetch failed, falling back to SQLite:', e);
+        //   }
+        // }
+        // if (!updated) {
+        //   updated = DatabaseManager.getInstance().getMeetingDetails(id); // ← SQLite fallback
+        // }
+        return { success: true, meeting: updated };
+      }
+      return { success: false };
+    } catch (e) {
+
+      console.error('[ipcHandlers] regenerate-meeting-summary error:', e);
+      return { success: false, error: String(e) };
+
+    }
+
+  });
+
+  safeHandle("update-speaker-names", async (_, names: { user: string; client: string }) => {
+    const intelligenceManager = appState.getIntelligenceManager();
+    // Need to add method to update speaker names in SessionTracker
+    (intelligenceManager as any).updateSpeakerNames?.(names);
+
+    // Broadcast to all windows
+    BrowserWindow.getAllWindows().forEach(win => {
+      if (!win.isDestroyed()) {
+        win.webContents.send('speaker-names-resolved', names);
+      }
+    });
+    return { success: true };
+  });
+
+  safeHandle("upload-transcript", async (_, { text, title, meetingTypes }: { text: string; title?: string; meetingTypes?: ('discovery' | 'demo' | 'negotiation')[] }) => {
+    try {
+      const meetingId = await appState.getIntelligenceManager().uploadTranscript(text, title, meetingTypes);
+      if (meetingId) return { success: true, meetingId };
+      return { success: false, error: 'Transcript too short or could not be parsed' };
+    } catch (e) {
+      console.error('[ipcHandlers] upload-transcript error:', e);
+      return { success: false, error: String(e) };
+    }
+  });
+
+  safeHandle("get-speaker-names", async () => {
+    return appState.getIntelligenceManager().getSpeakerNameMap?.()
+      ?? { user: 'Me', client: 'Them' };
   });
 
   safeHandle("seed-demo", async () => {
@@ -1796,6 +2055,9 @@ export function initializeIpcHandlers(appState: AppState): void {
     try {
       const intelligenceManager = appState.getIntelligenceManager();
       intelligenceManager.reset();
+      // Also clear the IPC-layer Tavily cache so a new session fetches fresh data
+      clearCompanyCache();
+      _tavilyAllowedCompanies = new Set();
       return { success: true };
     } catch (error: any) {
       return { success: false, error: error.message };
@@ -1876,7 +2138,17 @@ export function initializeIpcHandlers(appState: AppState): void {
 
   safeHandle("get-upcoming-events", async () => {
     const { CalendarManager } = require('./services/CalendarManager');
-    return CalendarManager.getInstance().getUpcomingEvents();
+    const { ZoomCalendarManager } = require('./services/ZoomCalendarManager');
+
+    const [google, zoom] = await Promise.all([
+      CalendarManager.getInstance().getUpcomingEvents(),
+      ZoomCalendarManager.getInstance().getUpcomingEvents(),
+    ]);
+
+    return [...google, ...zoom].sort(
+      (a, b) => new Date(a.startTime).getTime() - new Date(b.startTime).getTime()
+    );
+
   });
 
   safeHandle("calendar-refresh", async () => {
@@ -1884,6 +2156,44 @@ export function initializeIpcHandlers(appState: AppState): void {
     await CalendarManager.getInstance().refreshState();
     return { success: true };
   });
+
+  // ==========================================
+  // Zoom Calendar Integration Handlers
+  // ==========================================
+
+  safeHandle("zoom-calendar-connect", async () => {
+    try {
+      const { ZoomCalendarManager } = require('./services/ZoomCalendarManager');
+      await ZoomCalendarManager.getInstance().startAuthFlow();
+      return { success: true };
+    } catch (error) {
+      console.error("Zoom Calendar auth error:", error);
+      return { success: false, error: String(error) };
+    }
+  });
+
+  safeHandle("zoom-calendar-disconnect", async () => {
+    const { ZoomCalendarManager } = require('./services/ZoomCalendarManager');
+    await ZoomCalendarManager.getInstance().disconnect();
+    return { success: true };
+  });
+
+  safeHandle("get-zoom-calendar-status", async () => {
+    const { ZoomCalendarManager } = require('./services/ZoomCalendarManager');
+    return ZoomCalendarManager.getInstance().getConnectionStatus();
+  });
+
+  safeHandle("get-zoom-upcoming-events", async () => {
+    const { ZoomCalendarManager } = require('./services/ZoomCalendarManager');
+    return ZoomCalendarManager.getInstance().getUpcomingEvents();
+  });
+
+  safeHandle("zoom-calendar-refresh", async () => {
+    const { ZoomCalendarManager } = require('./services/ZoomCalendarManager');
+    await ZoomCalendarManager.getInstance().refreshState();
+    return { success: true };
+  });
+
 
   // ==========================================
   // Sales Meeting Brief Handler (Streaming + Cached)
@@ -1908,7 +2218,13 @@ export function initializeIpcHandlers(appState: AppState): void {
 
       // 2. Build prompt
       const contextString = buildSalesBriefContext(eventData);
-      const userMessage = `Generate a complete sales meeting brief for this meeting:\n\n${contextString}`;
+      const ownCompanyBlock = buildOwnCompanyBlockFromOrchestrator(appState.getKnowledgeOrchestrator());
+      const fullContext = ownCompanyBlock
+        ? `${ownCompanyBlock}\n\n${contextString}`
+        : contextString;
+      const userMessage = `Generate a complete sales meeting brief for this meeting:\n\n${fullContext}`;
+
+      console.log("Sales Brief PRMOPT: ", userMessage);
 
       const llmHelper = appState.processingHelper.getLLMHelper();
       const myStreamId = ++_salesBriefStreamId;
@@ -1951,11 +2267,656 @@ export function initializeIpcHandlers(appState: AppState): void {
   });
 
   // ==========================================
+  // Company Intelligence (Sales Brief v2)
+  // ==========================================
+
+  safeHandle("fetch-company-intel", async (_, payload: { companyName: string; domain?: string; forceRefresh?: boolean }) => {
+    try {
+      const { CredentialsManager } = require('./services/CredentialsManager');
+      const cm = CredentialsManager.getInstance();
+      const tavilyApiKey = cm.getTavilyApiKey();
+
+      if (!tavilyApiKey) {
+        return { success: false, error: 'No Tavily API key configured. Add one in Settings → AI Providers.' };
+      }
+
+      const { companyName, domain, forceRefresh = false } = payload;
+
+      // ── Persistence: return cached intel unless forceRefresh ─────────────
+      const cacheKey = `company_intel:${(domain || companyName).toLowerCase()}`;
+      const db = DatabaseManager.getInstance();
+      if (!forceRefresh) {
+        const cached = db.getAppState(cacheKey);
+        if (cached) {
+          try {
+            const parsed = JSON.parse(cached);
+            console.log(`[IPC] fetch-company-intel: returning cached intel for "${companyName}"`);
+            return { success: true, intel: parsed, fromCache: true };
+          } catch {
+            // corrupt cache — fall through to fresh fetch
+            db.deleteAppState(cacheKey);
+          }
+        }
+      }
+
+      // Run parallel Tavily searches for different intel categories
+      const tavilySearch = async (query: string, maxResults = 4): Promise<any[]> => {
+        const res = await fetch('https://api.tavily.com/search', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${tavilyApiKey}` },
+          body: JSON.stringify({
+            query,
+            max_results: maxResults,
+            search_depth: 'advanced',   // advanced depth gives higher-quality, more specific results
+            include_answer: true,
+            include_domains: domain ? [domain] : [],  // bias results toward the known domain when available
+          }),
+        });
+        if (!res.ok) throw new Error(`Tavily error: ${res.status}`);
+        const data = await res.json() as any;
+        return data.results || [];
+      };
+
+      // When a domain is known, anchor every query to it so same-name companies
+      // from different industries cannot bleed into the results.
+      const domainAnchor = domain ? `"${domain}"` : `"${companyName}"`;
+      const nameAndDomain = domain ? `"${companyName}" ${domain}` : `"${companyName}"`;
+
+      const linkedinSlug = domain ? domain.split('.')[0] : companyName.toLowerCase().replace(/\s+/g, '-');
+      const linkedinQuery = `site:linkedin.com/company ${linkedinSlug} "${companyName}"`;
+
+      const [overviewResults, fundingResults, newsResults, leadershipResults, competitorResults, linkedinResults] = await Promise.allSettled([
+        tavilySearch(`${nameAndDomain} company overview founded headquarters employees industry`),
+        tavilySearch(`${nameAndDomain} funding valuation investors series revenue`),
+        tavilySearch(`${nameAndDomain} latest news announcements 2024 2025`, 5),
+        tavilySearch(`${nameAndDomain} leadership CEO CRO CMO executive team`),
+        tavilySearch(`${nameAndDomain} competitors alternative products market`, 5),
+        tavilySearch(linkedinQuery, 2),
+      ]);
+
+      const extract = (r: PromiseSettledResult<any[]>) => r.status === 'fulfilled' ? r.value : [];
+
+      // Extract the LinkedIn company URL from results if found
+      const linkedinHits = extract(linkedinResults);
+      const linkedinPageUrl = linkedinHits
+        .map((r: any) => r.url as string)
+        .find((u: string) => u?.includes('linkedin.com/company/')) || null;
+
+      // Aggregate all snippets and pass to LLM for structured extraction
+      const linkedinSnippets = extract(linkedinResults).map((r: any) => r.content || r.snippet || '').filter(Boolean);
+
+      // Format each result as "[SOURCE: url]\ncontent" so the LLM can judge
+      // whether a snippet actually refers to the target company.
+      const formatResults = (results: any[]) =>
+        results
+          .filter((r: any) => (r.content || r.snippet || '').trim())
+          .map((r: any) => `[SOURCE: ${r.url || 'unknown'}]\n${(r.content || r.snippet || '').trim()}`)
+          .join('\n\n');
+
+      const allSnippets = [
+        '=== GENERAL OVERVIEW ===',
+        formatResults(extract(overviewResults)),
+        '=== FUNDING & FINANCIALS ===',
+        formatResults(extract(fundingResults)),
+        '=== RECENT NEWS ===',
+        formatResults(extract(newsResults)),
+        '=== LEADERSHIP ===',
+        formatResults(extract(leadershipResults)),
+        '=== COMPETITORS & MARKET ===',
+        formatResults(extract(competitorResults)),
+        ...(extract(linkedinResults).length
+          ? ['=== LINKEDIN (authoritative for headcount, description, founding year) ===',
+            formatResults(extract(linkedinResults))]
+          : []),
+      ].filter(Boolean).join('\n\n---\n\n');
+
+      const llmHelper = appState.processingHelper.getLLMHelper();
+
+      const extractionPrompt = `You are a company research analyst. Extract structured intelligence ONLY about the specific company identified below. Return ONLY a valid JSON object — no markdown, no explanation.
+
+      TARGET COMPANY: ${companyName}${domain ? `\nTARGET WEBSITE/DOMAIN: ${domain}` : ''}
+      
+      CRITICAL DISAMBIGUATION RULES (read before processing):
+      1. Many companies share similar names. Every data point you extract MUST be verifiable from a snippet whose [SOURCE] URL belongs to ${domain ? `"${domain}"` : `"${companyName}"`} or a known authority (LinkedIn, Crunchbase, Bloomberg, TechCrunch, Reuters, etc.) that explicitly mentions ${companyName}${domain ? ` or ${domain}` : ''}.
+      2. If a snippet's source domain does not match and does not clearly reference the TARGET company by full name, IGNORE that snippet entirely — do not extract from it.
+      3. For "competitors": list only companies that are described as direct competitors TO ${companyName} in the snippets. Do NOT list companies that merely appear in the same snippet by coincidence. If no competitors can be confirmed, return null.
+      4. For "recentNews": include only headlines that are explicitly about ${companyName}${domain ? ` (${domain})` : ''}. If the same company name could refer to multiple organizations, only include news where the snippet's source URL or content confirms it is about the target. If unsure, exclude it — null is better than wrong data.
+      5. Never infer or hallucinate. If a field cannot be directly confirmed from the provided snippets, set it to null.
+      
+      Web search snippets (each prefixed with its source URL):
+      ${allSnippets.slice(0, 10000)}
+      
+      Return this exact JSON structure (use null for unknown fields, never omit a key):
+      {
+        "companyName": string,
+        "website": string | null,
+        "foundedYear": number | null,
+        "companyAge": number | null,
+        "founders": string[] | null,
+        "headquarters": string | null,
+        "employeeCount": string | null,
+        "industry": string | null,
+        "revenue": string | null,
+        "valuation": string | null,
+        "fundingStage": string | null,
+        "latestFundingNews": string | null,
+        "investors": string[] | null,
+        "keyProducts": string[] | null,
+        "competitors": string[] | null,
+        "recentNews": [{ "headline": string, "date": string | null, "source": string | null }] | null,
+        "leadershipChanges": [{ "name": string, "role": string, "date": string | null }] | null,
+        "linkedinUrl": string | null,
+        "businessModel": string | null,
+        "geographicPresence": string[] | null,
+        "topCustomers": string[] | null
+      }
+      
+      ADDITIONAL RULES:
+      - All string[] fields MUST be JSON arrays, never comma-separated strings
+      - "recentNews[].source" should be the domain of the article URL (e.g. "techcrunch.com")
+      - Use null for any field you cannot confirm from the snippets
+      - Do not add keys beyond those listed above`;
+
+      const raw = await llmHelper.chatWithGemini(extractionPrompt, undefined, undefined, false);
+      if (!raw) return { success: false, error: 'LLM extraction failed' };
+
+      // Safely parse JSON — strip markdown fences if present
+      const clean = raw.replace(/```json|```/g, '').trim();
+      let intel: any;
+      try {
+        intel = JSON.parse(clean);
+      } catch {
+        // Try extracting first {...} block
+        const match = clean.match(/\{[\s\S]+\}/);
+        if (match) intel = JSON.parse(match[0]);
+        else return { success: false, error: 'Could not parse company intelligence' };
+      }
+
+      // Prefer the directly-found LinkedIn URL over whatever the LLM extracted
+      if (linkedinPageUrl && (!intel.linkedinUrl || !intel.linkedinUrl.includes('linkedin.com/company/'))) {
+        intel.linkedinUrl = linkedinPageUrl;
+      }
+
+      // Attach raw news snippets for the "Recent News" click-through
+      intel._newsSnippets = extract(newsResults).slice(0, 3).map((r: any) => ({
+        title: r.title,
+        url: r.url,
+        date: r.published_date || null,
+      }));
+
+      // Normalize string[] fields — the LLM occasionally returns a
+      // comma-separated string despite the prompt instruction.  Defensively
+      // coerce every known list field so the renderer never crashes on .map().
+      const LIST_FIELDS = [
+        'founders', 'investors', 'keyProducts', 'competitors',
+        'geographicPresence', 'topCustomers',
+      ] as const;
+
+      for (const field of LIST_FIELDS) {
+        const v = intel[field];
+        if (v === null || v === undefined) {
+          intel[field] = null;
+        } else if (Array.isArray(v)) {
+          // Filter nulls, trim whitespace
+          intel[field] = v
+            .filter((x: any) => typeof x === 'string' && x.trim())
+            .map((x: string) => x.trim());
+          if (intel[field].length === 0) intel[field] = null;
+        } else if (typeof v === 'string' && v.trim()) {
+          // Comma-separated fallback
+          intel[field] = v.split(',').map((s: string) => s.trim()).filter(Boolean);
+          if (intel[field].length === 0) intel[field] = null;
+        } else {
+          intel[field] = null;
+        }
+      }
+
+      // Validate object-array fields — ensure shape is correct or null them
+      if (intel.recentNews !== null && intel.recentNews !== undefined) {
+        if (!Array.isArray(intel.recentNews) ||
+          !intel.recentNews.every((n: any) => typeof n?.headline === 'string')) {
+          intel.recentNews = null;
+        }
+      }
+      if (intel.leadershipChanges !== null && intel.leadershipChanges !== undefined) {
+        if (!Array.isArray(intel.leadershipChanges) ||
+          !intel.leadershipChanges.every((n: any) => typeof n?.name === 'string' && typeof n?.role === 'string')) {
+          intel.leadershipChanges = null;
+        }
+      }
+
+      // Persist intel so re-opening doesn't re-fetch
+      try {
+        db.setAppState(cacheKey, JSON.stringify(intel));
+        console.log(`[IPC] fetch-company-intel: cached intel for "${companyName}" (key: ${cacheKey})`);
+      } catch (e) {
+        console.warn('[IPC] fetch-company-intel: failed to cache intel:', e);
+      }
+
+      // Auto-store in appState so chat assistant can access it immediately without a separate set-company-intel call
+      appState.setCompanyIntel(intel);
+      console.log(`[IPC] fetch-company-intel: auto-stored intel in appState for "${companyName}"`);
+
+      return { success: true, intel };
+    } catch (error: any) {
+      console.error('[IPC] fetch-company-intel error:', error);
+      return { success: false, error: error.message || 'Unknown error' };
+    }
+  });
+
+  // ==========================================
+  // Company Context IPC Handlers
+  // ==========================================
+
+  safeHandle('company:getContext', async () => {
+    try {
+      // Prefer DB (source of truth); fall back to SettingsManager for pre-migration data
+      const dbCtx = DatabaseManager.getInstance().getCompanyContext();
+      if (dbCtx) return dbCtx;
+      const { SettingsManager } = require('./services/SettingsManager');
+      return SettingsManager.getInstance().get('companyContext') ?? null;
+    } catch (error: any) {
+      return null;
+    }
+  });
+
+  safeHandle('company:saveContext', async (_, data: any) => {
+    try {
+      const db = DatabaseManager.getInstance();
+
+      // 1. Persist identity + value prop
+      db.saveCompanyContext(data);
+
+      // 2. Sync assets: upsert all in draft, delete removed
+      const existing = db.getCompanyContext();
+      const incomingAssetIds = new Set<string>((data.assets ?? []).map((a: any) => a.id));
+      for (const a of (existing?.assets ?? [])) {
+        if (!incomingAssetIds.has(a.id)) {
+          db.deleteAssetFiles(a.id);      // clean up files + chunks
+          db.deleteCompanyAsset(a.id);
+        }
+      }
+      for (const asset of (data.assets ?? [])) {
+        db.upsertCompanyAsset({ id: asset.id, type: asset.type, label: asset.label, status: 'processing' });
+
+        // Only process file if this is a new upload (fileData present in draft)
+        if (asset.fileData && asset.fileName && asset.mimeType) {
+          const fileBuffer = Buffer.from(asset.fileData, 'base64');
+          db.saveAssetFile(asset.id, asset.fileName, asset.mimeType, fileBuffer);
+
+          // Kick off chunking + embedding in background
+          setImmediate(async () => {
+            try {
+              const { extractTextFromBuffer } = require('./utils/documentParser');
+              const { estimateTokens } = require('./rag');
+
+              const rawText: string = await extractTextFromBuffer(fileBuffer, asset.mimeType);
+
+              const MAX_TOKENS = 400;
+              const sentences = rawText.split(/(?<=[.!?])\s+/);
+              const chunks: Array<{ index: number; text: string; tokenCount: number }> = [];
+              let current = '';
+              let idx = 0;
+              for (const sentence of sentences) {
+                const combined = current ? `${current} ${sentence}` : sentence;
+                if (estimateTokens(combined) > MAX_TOKENS && current) {
+                  chunks.push({ index: idx++, text: current.trim(), tokenCount: estimateTokens(current) });
+                  current = sentence;
+                } else {
+                  current = combined;
+                }
+              }
+              if (current.trim()) {
+                chunks.push({ index: idx, text: current.trim(), tokenCount: estimateTokens(current) });
+              }
+
+              db.saveAssetChunks(asset.id, chunks);
+
+              const ragManager = appState.getRAGManager?.();
+              if (!ragManager) {
+                // RAG pipeline not available — mark error so the UI shows the real state
+                // instead of silently lying with 'mapped'
+                db.upsertCompanyAsset({ id: asset.id, type: asset.type, label: asset.label, status: 'error' });
+                console.warn(`[IPC] company:saveContext — ragManager not available, skipping embeddings for asset ${asset.id}`);
+                // Still link chunks (text-only, no embeddings) to the orchestrator
+                try {
+                  const orchestrator = appState.getKnowledgeOrchestrator();
+                  if (orchestrator && typeof orchestrator.ingestDocument === 'function') {
+                    await orchestrator.ingestDocument({ id: asset.id, type: asset.type, label: asset.label, mimeType: asset.mimeType });
+                  }
+                } catch (_) { }
+                return;
+              }
+
+              const pipeline = ragManager.getEmbeddingPipeline();
+
+              // Bug 2 fix: wait for the pipeline to finish initializing before embedding
+              try {
+                await pipeline.waitForReady(20000);
+              } catch (readyErr: any) {
+                console.error(`[IPC] company:saveContext — embedding pipeline not ready for asset ${asset.id}:`, readyErr.message);
+                db.upsertCompanyAsset({ id: asset.id, type: asset.type, label: asset.label, status: 'error' });
+                try {
+                  const orchestrator = appState.getKnowledgeOrchestrator();
+                  if (orchestrator && typeof orchestrator.ingestDocument === 'function') {
+                    await orchestrator.ingestDocument({ id: asset.id, type: asset.type, label: asset.label, mimeType: asset.mimeType });
+                  }
+                } catch (_) { }
+                return;
+              }
+
+              let embeddingsFailed = 0;
+              const storedChunks = db.getAssetChunksWithoutEmbeddings(asset.id);
+              for (const c of storedChunks) {
+                try {
+                  const vector = await pipeline.getEmbedding(c.chunk_text);
+                  const blob = Buffer.from(new Float32Array(vector).buffer);
+                  db.saveAssetChunkEmbedding(c.id, blob);
+                } catch (embErr: any) {
+                  embeddingsFailed++;
+                  console.warn(`[IPC] company:saveContext — embedding failed for chunk ${c.id}:`, embErr.message);
+                }
+              }
+
+              // Only mark 'mapped' if all embeddings succeeded
+              const finalStatus = embeddingsFailed === 0 ? 'mapped' : 'error';
+              if (embeddingsFailed > 0) {
+                console.error(`[IPC] company:saveContext — ${embeddingsFailed}/${storedChunks.length} chunks failed to embed for asset ${asset.id}`);
+              }
+              db.upsertCompanyAsset({ id: asset.id, type: asset.type, label: asset.label, status: finalStatus });
+
+              // [NEW] Link the indexed document to the orchestrator
+              try {
+                const orchestrator = appState.getKnowledgeOrchestrator();
+                if (orchestrator && typeof orchestrator.ingestDocument === 'function') {
+                  // Do NOT pass extractedText here — chunks + embeddings are already
+                  // written to DB above. Passing extractedText triggers Mode A which
+                  // re-embeds inline and produces null embeddings if the pipeline is
+                  // momentarily busy, making all chunks invisible to semantic search.
+                  // Mode B (no extractedText) reads the already-embedded chunks from DB.
+                  await orchestrator.ingestDocument({
+                    id: asset.id,
+                    type: asset.type,        // 'sales_deck' | 'product_specs' | 'case_studies' | 'custom'
+                    label: asset.label,
+                    mimeType: asset.mimeType,
+                  });
+                  console.log(`[IPC] company:saveContext — orchestrator.ingestDocument linked for asset ${asset.id}`);
+                }
+              } catch (ingestErr: any) {
+                // Non-fatal: orchestrator link failure should not block the save flow
+                console.warn(`[IPC] company:saveContext — orchestrator.ingestDocument failed for ${asset.id}:`, ingestErr.message);
+              }
+
+              console.log(`[IPC] company:saveContext — asset ${asset.id} fully indexed`);
+            } catch (indexErr: any) {
+              console.error(`[IPC] company:saveContext — indexing failed for asset ${asset.id}:`, indexErr.message);
+              db.upsertCompanyAsset({ id: asset.id, type: asset.type, label: asset.label, status: 'error' });
+            }
+          });
+        } else {
+          // Existing asset already in DB — just keep its current status
+          // Re-upsert with 'mapped' since it was already processed before
+          db.upsertCompanyAsset({ id: asset.id, type: asset.type, label: asset.label, status: 'mapped' });
+        }
+      }
+
+      // 3. Sync targetPersonas (unchanged)
+      const incomingPersonaIds = new Set<string>((data.targetPersonas ?? []).map((p: any) => p.id));
+      for (const p of (existing?.targetPersonas ?? [])) {
+        if (!incomingPersonaIds.has(p.id)) db.deleteCompanyPersona(p.id);
+      }
+      (data.targetPersonas ?? []).forEach((p: any, i: number) => db.upsertCompanyPersona(p, i));
+
+      // 4. Sync competitors (unchanged)
+      const incomingCompetitorIds = new Set<string>((data.competitors ?? []).map((c: any) => c.id));
+      for (const c of (existing?.competitors ?? [])) {
+        if (!incomingCompetitorIds.has(c.id)) db.deleteCompanyCompetitor(c.id);
+      }
+      (data.competitors ?? []).forEach((c: any, i: number) => db.upsertCompanyCompetitor(c, i));
+
+      // 5. Mirror to SettingsManager (unchanged)
+      const { SettingsManager } = require('./services/SettingsManager');
+      SettingsManager.getInstance().set('companyContext', data);
+
+      // 6. Synchronize the updated context into the KnowledgeOrchestrator.
+      //    We re-read from DB so the orchestrator always sees the canonical persisted state
+      //    (including any asset status changes written above).
+      //    hydrateOrchestratorFromContext skips re-ingesting asset documents — those
+      //    are linked separately via orchestrator.ingestDocument in company:uploadAsset.
+      try {
+        const orchestrator = appState.getKnowledgeOrchestrator();
+        if (orchestrator) {
+          const freshCtx = DatabaseManager.getInstance().getCompanyContext();
+          hydrateOrchestratorFromContext(orchestrator, freshCtx);
+          console.log('[IPC] company:saveContext — orchestrator synchronized');
+        }
+      } catch (orchErr: any) {
+        console.warn('[IPC] company:saveContext — orchestrator sync failed (non-fatal):', orchErr.message);
+      }
+
+      return { success: true };
+    } catch (error: any) {
+      return { success: false, error: error.message };
+    }
+  });
+
+  safeHandle('company:selectFile', async () => {
+    try {
+      const result: any = await dialog.showOpenDialog({
+        properties: ['openFile'],
+        filters: [
+          { name: 'Documents', extensions: ['pdf', 'doc', 'docx', 'ppt', 'pptx'] }
+        ]
+      });
+      if (result.canceled || result.filePaths.length === 0) {
+        return { cancelled: true };
+      }
+      const fp: string = result.filePaths[0];
+      const { statSync } = require('fs');
+      const { basename } = require('path');
+      const stat = statSync(fp);
+      return { success: true, filePath: fp, fileName: basename(fp), fileSize: stat.size };
+    } catch (error: any) {
+      return { success: false, error: error.message };
+    }
+  });
+
+  safeHandle('company:uploadAsset', async (_, type: string, filePath: string) => {
+    try {
+      const fs = require('fs');
+      const path = require('path');
+
+      if (!fs.existsSync(filePath)) {
+        return { success: false, error: 'File not found. Please re-select the file.' };
+      }
+
+      const fileData: Buffer = fs.readFileSync(filePath);
+      const fileName: string = path.basename(filePath);
+      const ext = path.extname(fileName).toLowerCase().slice(1);
+      const MIME_MAP: Record<string, string> = {
+        pdf: 'application/pdf',
+        doc: 'application/msword',
+        docx: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+        ppt: 'application/vnd.ms-powerpoint',
+        pptx: 'application/vnd.openxmlformats-officedocument.presentationml.presentation',
+      };
+      const mimeType = MIME_MAP[ext] ?? 'application/octet-stream';
+
+      const LABEL_MAP: Record<string, string> = {
+        sales_deck: 'Sales Deck',
+        product_specs: 'Product Specs',
+        case_studies: 'Case Studies',
+        custom: 'Custom Asset',
+      };
+
+      const asset = {
+        id: `${type}-${Date.now()}`,
+        type,
+        label: LABEL_MAP[type] ?? type,
+        status: 'pending',           // not 'mapped' yet — saved on commit
+        lastUpdated: new Date().toISOString(),
+        // Hold file in draft as base64 — never touches DB here
+        fileData: fileData.toString('base64'),
+        fileName,
+        mimeType,
+      };
+
+      // NOTE: No DB write here. File lives in frontend draft until
+      // user clicks "Save Intelligence Base" → company:saveContext.
+      return { success: true, asset };
+    } catch (error: any) {
+      console.error('[IPC] company:uploadAsset error:', error);
+      return { success: false, error: error.message };
+    }
+  });
+
+  safeHandle('company:deleteAsset', async (_, assetId: string) => {
+    try {
+      DatabaseManager.getInstance().deleteAssetFiles(assetId);
+      return { success: true };
+    } catch (error: any) {
+      return { success: false, error: error.message };
+    }
+  });
+
+  safeHandle('company:syncAsset', async (_assetId: string) => {
+    // NOTE: No DB write here. The frontend updates the asset status in draft.
+    // The updated status is committed to DB when the user clicks "Save Intelligence Base".
+    return { success: true, status: 'mapped' };
+  });
+
+  safeHandle('company:setPersonaEngine', async (_enabled: boolean) => {
+    // NOTE: No DB write here. The toggle updates the frontend draft only.
+    // Committed to DB on "Save Intelligence Base" via company:saveContext.
+    return { success: true };
+  });
+
+  safeHandle('company:getCompleteness', async () => {
+    try {
+      const { SettingsManager } = require('./services/SettingsManager');
+      const sm = SettingsManager.getInstance();
+      const ctx = sm.get('companyContext');
+      if (!ctx) return 0;
+      const checks = [
+        !!(ctx.identity?.name && ctx.identity?.industry),
+        (ctx.coreValueProposition ?? '').trim().length > 20,
+        (ctx.assets ?? []).some((a: any) => a.status === 'mapped'),
+        !!ctx.identity?.personaEngineEnabled,
+      ];
+      return Math.round((checks.filter(Boolean).length / 4) * 100);
+    } catch {
+      return 0;
+    }
+  });
+
+  // ==========================================
+  // Meeting Scorecard Handlers
+  // ==========================================
+
+  safeHandle('meeting:getScorecard', async (_event, meetingId: string) => {
+    try {
+      // Try Supabase first; fall back to local SQLite
+      const { SupabaseClientManager } = require('./db/SupabaseClient');
+      if (SupabaseClientManager.isConfigured()) {
+        const client = SupabaseClientManager.getClient();
+        const userId = SupabaseClientManager.getCurrentUserId();
+        if (client && userId) {
+          const { data: row, error } = await client
+            .from('meeting_scorecards')
+            .select('scorecard_json')
+            .eq('user_id', userId)
+            .eq('meeting_id', meetingId)
+            .maybeSingle();
+          if (!error && row) {
+            const parsed = typeof row.scorecard_json === 'string'
+              ? JSON.parse(row.scorecard_json)
+              : row.scorecard_json;
+            return { success: true, data: parsed };
+          }
+        }
+      }
+      // Fallback: local SQLite
+      const data = DatabaseManager.getInstance().getMeetingScorecard(meetingId);
+      return { success: true, data };
+    } catch (e: any) {
+      return { success: false, error: e.message };
+    }
+  });
+
+  safeHandle('meeting:deleteScorecard', async (_event, meetingId: string) => {
+    try {
+      // Delete from local SQLite
+      DatabaseManager.getInstance().deleteMeetingScorecard(meetingId);
+      // Delete from Supabase (fire-and-forget via mirror)
+      try {
+        const { SupabaseMirrorService } = require('./db/SupabaseMirrorService');
+        SupabaseMirrorService.getInstance().deleteRow('meeting_scorecards', 'meeting_id', meetingId);
+      } catch (mirrorErr) {
+        console.warn('[IPC] meeting:deleteScorecard Supabase mirror failed (non-fatal):', mirrorErr);
+      }
+      return { success: true };
+    } catch (e: any) {
+      return { success: false, error: e.message };
+    }
+  });
+
+  // ==========================================
+  // Scoring Criteria Handlers
+  // ==========================================
+  safeHandle('scoring:getCriteria', async () => {
+    try {
+      const db = DatabaseManager.getInstance();
+      return { success: true, data: db.getScoringCriteria() };
+    } catch (e: any) {
+      return { success: false, error: e.message };
+    }
+  });
+
+  safeHandle('scoring:saveCriteria', async (_event, criteriaData: any) => {
+    try {
+      const db = DatabaseManager.getInstance();
+      db.saveScoringCriteria(criteriaData);
+      // Mirror to Supabase
+      try {
+        const { SupabaseMirrorService } = require('./db/SupabaseMirrorService');
+        SupabaseMirrorService.getInstance().upsertRow('scoring_criteria', {
+          id: 1,
+          config_json: JSON.stringify(criteriaData),
+          updated_at: new Date().toISOString(),
+        });
+      } catch (mirrorErr) {
+        console.warn('[IPC] scoring:saveCriteria Supabase mirror failed (non-fatal):', mirrorErr);
+      }
+      return { success: true };
+    } catch (e: any) {
+      return { success: false, error: e.message };
+    }
+  });
+
+  safeHandle('scoring:resetCriteria', async () => {
+    try {
+      const db = DatabaseManager.getInstance();
+      db.resetScoringCriteria();
+      // Mirror deletion to Supabase
+      try {
+        const { SupabaseMirrorService } = require('./db/SupabaseMirrorService');
+        SupabaseMirrorService.getInstance().deleteRow('scoring_criteria', 'id', 1);
+      } catch (mirrorErr) {
+        console.warn('[IPC] scoring:resetCriteria Supabase mirror failed (non-fatal):', mirrorErr);
+      }
+      return { success: true };
+    } catch (e: any) {
+      return { success: false, error: e.message };
+    }
+  });
+
+  // ==========================================
   // Follow-up Email Handlers
   // ==========================================
 
   safeHandle("generate-followup-email", async (_, input: any) => {
     try {
+
       const { FOLLOWUP_EMAIL_PROMPT, GROQ_FOLLOWUP_EMAIL_PROMPT } = require('./llm/prompts');
       const { buildFollowUpEmailPromptInput } = require('./utils/emailUtils');
 
@@ -1965,8 +2926,16 @@ export function initializeIpcHandlers(appState: AppState): void {
       const contextString = buildFollowUpEmailPromptInput(input);
 
       // Build prompts
-      const geminiPrompt = `${FOLLOWUP_EMAIL_PROMPT}\n\nMEETING DETAILS:\n${contextString}`;
-      const groqPrompt = `${GROQ_FOLLOWUP_EMAIL_PROMPT}\n\nMEETING DETAILS:\n${contextString}`;
+      const ownCompanyBlock = buildOwnCompanyBlockFromOrchestrator(appState.getKnowledgeOrchestrator());
+      const prospectBlock = buildCompanyContextBlock(appState.getCompanyIntel());
+      let enrichedContext = contextString;
+      if (prospectBlock) enrichedContext = `${prospectBlock}\n\n${enrichedContext}`;
+      if (ownCompanyBlock) enrichedContext = `${ownCompanyBlock}\n\n${enrichedContext}`;
+      const geminiPrompt = `${FOLLOWUP_EMAIL_PROMPT}\n\nMEETING DETAILS:\n${enrichedContext}`;
+      const groqPrompt = `${GROQ_FOLLOWUP_EMAIL_PROMPT}\n\nMEETING DETAILS:\n${enrichedContext}`;
+
+      console.log("=> generate follow-up email (geminiPrompt): ", geminiPrompt);
+      console.log("=> generate follow-up email (groqPrompt): ", groqPrompt);
 
       // Use chatWithGemini with alternateGroqMessage for fallback
       const emailBody = await llmHelper.chatWithGemini(geminiPrompt, undefined, undefined, true, groqPrompt);
@@ -1985,6 +2954,21 @@ export function initializeIpcHandlers(appState: AppState): void {
     } catch (error: any) {
       console.error("Error extracting emails:", error);
       return [];
+    }
+  });
+
+  safeHandle("set-company-intel", async (_, intel: Record<string, any> | null) => {
+    try {
+      appState.setCompanyIntel(intel);
+      // Broadcast to all renderer windows so NativelyInterface can update its state
+      const { BrowserWindow } = require('electron');
+      BrowserWindow.getAllWindows().forEach((win: any) => {
+        win.webContents.send('company-intel-updated', intel);
+      });
+      return { success: true };
+    } catch (error: any) {
+      console.error('[IPC] set-company-intel error:', error);
+      return { success: false, error: error.message };
     }
   });
 
@@ -2228,7 +3212,7 @@ export function initializeIpcHandlers(appState: AppState): void {
       if (!orchestrator) {
         return { success: false, error: 'Knowledge engine not initialized. Please ensure API keys are configured.' };
       }
-      const { DocType } = require('../premium/electron/knowledge/types');
+      const { DocType } = require('./premium/knowledge/types');
       const result = await orchestrator.ingestDocument(filePath, DocType.RESUME);
       return result;
     } catch (error: any) {
@@ -2257,20 +3241,26 @@ export function initializeIpcHandlers(appState: AppState): void {
     }
   });
 
+  safeHandle("profile:get-mode", async () => {
+    try {
+      const orchestrator = appState.getKnowledgeOrchestrator();
+      if (!orchestrator) return { active: false };
+      return { active: orchestrator.isKnowledgeMode() };
+    } catch {
+      return { active: false };
+    }
+  });
+
   safeHandle("profile:set-mode", async (_, enabled: boolean) => {
     try {
-      // Premium gate: only allow enabling profile mode with active license
-      if (enabled) {
-        const { LicenseManager } = require('../premium/electron/services/LicenseManager');
-        if (!LicenseManager.getInstance().isPremium()) {
-          return { success: false, error: 'Pro license required. Please activate a license key to use Profile Intelligence features.' };
-        }
-      }
       const orchestrator = appState.getKnowledgeOrchestrator();
       if (!orchestrator) {
         return { success: false, error: 'Knowledge engine not initialized' };
       }
       orchestrator.setKnowledgeMode(enabled);
+      // Persist so the toggle survives app restarts
+      const { CredentialsManager } = require('./services/CredentialsManager');
+      CredentialsManager.getInstance().setKnowledgeModeActive(enabled);
       return { success: true };
     } catch (error: any) {
       return { success: false, error: error.message };
@@ -2283,7 +3273,7 @@ export function initializeIpcHandlers(appState: AppState): void {
       if (!orchestrator) {
         return { success: false, error: 'Knowledge engine not initialized' };
       }
-      const { DocType } = require('../premium/electron/knowledge/types');
+      const { DocType } = require('./premium/knowledge/types');
       orchestrator.deleteDocumentsByType(DocType.RESUME);
       return { success: true };
     } catch (error: any) {
@@ -2326,17 +3316,11 @@ export function initializeIpcHandlers(appState: AppState): void {
 
   safeHandle("profile:upload-jd", async (_, filePath: string) => {
     try {
-      // Premium gate
-      const { LicenseManager } = require('../premium/electron/services/LicenseManager');
-      if (!LicenseManager.getInstance().isPremium()) {
-        return { success: false, error: 'Pro license required. Please activate a license key to use Profile Intelligence features.' };
-      }
-      console.log(`[IPC] profile:upload-jd called with: ${filePath}`);
       const orchestrator = appState.getKnowledgeOrchestrator();
       if (!orchestrator) {
         return { success: false, error: 'Knowledge engine not initialized. Please ensure API keys are configured.' };
       }
-      const { DocType } = require('../premium/electron/knowledge/types');
+      const { DocType } = require('./premium/knowledge/types');
       const result = await orchestrator.ingestDocument(filePath, DocType.JD);
       return result;
     } catch (error: any) {
@@ -2351,7 +3335,7 @@ export function initializeIpcHandlers(appState: AppState): void {
       if (!orchestrator) {
         return { success: false, error: 'Knowledge engine not initialized' };
       }
-      const { DocType } = require('../premium/electron/knowledge/types');
+      const { DocType } = require('./premium/knowledge/types');
       orchestrator.deleteDocumentsByType(DocType.JD);
       return { success: true };
     } catch (error: any) {
@@ -2361,11 +3345,6 @@ export function initializeIpcHandlers(appState: AppState): void {
 
   safeHandle("profile:research-company", async (_, companyName: string) => {
     try {
-      // Premium gate
-      const { LicenseManager } = require('../premium/electron/services/LicenseManager');
-      if (!LicenseManager.getInstance().isPremium()) {
-        return { success: false, error: 'Pro license required. Please activate a license key to use Profile Intelligence features.' };
-      }
       const orchestrator = appState.getKnowledgeOrchestrator();
       if (!orchestrator) {
         return { success: false, error: 'Knowledge engine not initialized' };
@@ -2377,7 +3356,7 @@ export function initializeIpcHandlers(appState: AppState): void {
       const cm = CredentialsManager.getInstance();
       const tavilyApiKey = cm.getTavilyApiKey();
       if (tavilyApiKey) {
-        const { TavilySearchProvider } = require('../premium/electron/knowledge/TavilySearchProvider');
+        const { TavilySearchProvider } = require('./premium/knowledge/TavilySearchProvider');
         engine.setSearchProvider(new TavilySearchProvider(tavilyApiKey));
       }
 
@@ -2404,11 +3383,7 @@ export function initializeIpcHandlers(appState: AppState): void {
 
   safeHandle("profile:generate-negotiation", async (_, force: boolean = false) => {
     try {
-      // Premium gate
-      const { LicenseManager } = require('../premium/electron/services/LicenseManager');
-      if (!LicenseManager.getInstance().isPremium()) {
-        return { success: false, error: 'Pro license required. Please activate a license key to use Profile Intelligence features.' };
-      }
+
       const orchestrator = appState.getKnowledgeOrchestrator();
       if (!orchestrator) {
         return { success: false, error: 'Knowledge engine not initialized' };
@@ -2491,5 +3466,179 @@ export function initializeIpcHandlers(appState: AppState): void {
     });
     return;
   });
-}
 
+  // ==========================================
+  // Firebase Auth bridge
+  // (Renderer owns the Firebase Web SDK and pushes the live ID token here.)
+  // ==========================================
+
+  // Wire AuthManager events → broadcast to renderers (one-time per process).
+  try {
+    const { AuthManager } = require('./services/AuthManager');
+    const am = AuthManager.getInstance();
+    const broadcast = () => {
+      const snap = am.snapshot();
+      BrowserWindow.getAllWindows().forEach(win => {
+        if (!win.isDestroyed()) win.webContents.send('auth:state-changed', snap);
+      });
+    };
+    am.on('signed-in', broadcast);
+    am.on('signed-out', broadcast);
+    am.on('auth-changed', broadcast);
+  } catch (e) {
+    console.warn('[ipc] AuthManager event wiring failed:', e);
+  }
+
+  safeHandle('auth:set-id-token', async (_, session: {
+    idToken: string;
+    refreshToken: string;
+    uid: string;
+    email?: string | null;
+    displayName?: string | null;
+    photoURL?: string | null;
+    expiresAt: number;
+  }) => {
+    try {
+      if (!session?.idToken || !session?.uid) {
+        return { success: false, error: 'idToken and uid required' };
+      }
+      const { AuthManager } = require('./services/AuthManager');
+      AuthManager.getInstance().setSession(session);
+      return { success: true };
+    } catch (error: any) {
+      console.error('[ipc] auth:set-id-token failed:', error);
+      return { success: false, error: error?.message ?? String(error) };
+    }
+  });
+
+  safeHandle('auth:clear', async () => {
+    try {
+      const { AuthManager } = require('./services/AuthManager');
+      AuthManager.getInstance().clearSession();
+      return { success: true };
+    } catch (error: any) {
+      return { success: false, error: error?.message ?? String(error) };
+    }
+  });
+
+  safeHandle('auth:get-state', async () => {
+    try {
+      const { AuthManager } = require('./services/AuthManager');
+      return AuthManager.getInstance().snapshot();
+    } catch (_) {
+      return { signedIn: false };
+    }
+  });
+
+  safeHandle('auth:get-persisted-refresh-token', async () => {
+    try {
+      const { AuthManager } = require('./services/AuthManager');
+      const persisted = AuthManager.getInstance().getPersistedIdentity();
+      return {
+        refreshToken: persisted?.refreshToken ?? null,
+        uid: persisted?.uid ?? null
+      };
+    } catch (_) {
+      return { refreshToken: null, uid: null };
+    }
+  });
+
+  // ==========================================
+  // Supabase mirror config & status
+  // ==========================================
+
+  safeHandle('supabase:set-credentials', async (_, args: { url: string; anonKey: string }) => {
+    try {
+      if (!args?.url || !args?.anonKey) {
+        return { success: false, error: 'url and anonKey required' };
+      }
+      const { CredentialsManager } = require('./services/CredentialsManager');
+      CredentialsManager.getInstance().setSupabaseCredentials(args.url, args.anonKey);
+      const { SupabaseClientManager } = require('./db/SupabaseClient');
+      SupabaseClientManager.configure(args.url, args.anonKey);
+      return { success: true };
+    } catch (error: any) {
+      console.error('[ipc] supabase:set-credentials failed:', error);
+      return { success: false, error: error?.message ?? String(error) };
+    }
+  });
+
+  safeHandle('supabase:get-mirror-status', async () => {
+    try {
+      const { SupabaseMirrorService } = require('./db/SupabaseMirrorService');
+      const { SupabaseClientManager } = require('./db/SupabaseClient');
+      const mirror = SupabaseMirrorService.getInstance();
+      const status = typeof mirror.getStatus === 'function'
+        ? mirror.getStatus()
+        : { outboxLength: 0, lastSyncAt: null, lastError: null };
+      return {
+        configured: SupabaseClientManager.hasCredentials?.() ?? false,
+        signedIn: !!SupabaseClientManager.getCurrentUserId?.(),
+        outboxLength: status.outboxLength ?? 0,
+        lastSyncAt: status.lastSyncAt ?? null,
+        lastError: status.lastError ?? null
+      };
+    } catch (error: any) {
+      return { configured: false, signedIn: false, outboxLength: 0, lastSyncAt: null, lastError: error?.message };
+    }
+  });
+
+  // Force a fresh historical backfill. Clears the 'supabase_backfill_done'
+  // checkpoint AND the per-table cursors, then re-runs SupabaseBackfill.run().
+  // Useful for development / re-syncing after schema changes. No-op if the
+  // mirror isn't configured or no user is signed in.
+  safeHandle('supabase:force-backfill', async () => {
+    try {
+      const { SupabaseBackfill } = require('./db/SupabaseBackfill');
+      const { DatabaseManager } = require('./db/DatabaseManager');
+      const { SupabaseClientManager } = require('./db/SupabaseClient');
+      if (!SupabaseClientManager.isConfigured?.()) {
+        return { success: false, error: 'Supabase not configured or not signed in' };
+      }
+      const db = DatabaseManager.getInstance().getDb();
+      if (!db) return { success: false, error: 'SQLite not ready' };
+
+      // Wipe the "done" flag and all per-table cursors so backfill restarts.
+      try {
+        db.prepare("DELETE FROM app_state WHERE key = 'supabase_backfill_done'").run();
+        db.prepare("DELETE FROM app_state WHERE key LIKE 'supabase_backfill_cursor_%'").run();
+      } catch (e) {
+        console.warn('[ipc] supabase:force-backfill — failed to clear checkpoints:', e);
+      }
+
+      // Fire-and-forget the run; UI can poll supabase:get-mirror-status.
+      SupabaseBackfill.run(db).catch((err: any) => {
+        console.warn('[ipc] supabase:force-backfill run error:', err);
+      });
+      return { success: true };
+    } catch (error: any) {
+      console.error('[ipc] supabase:force-backfill failed:', error);
+      return { success: false, error: error?.message ?? String(error) };
+    }
+  });
+
+  // Fire-and-forget reconciliation pass: compares local SQLite rows against
+  // their Supabase mirror and re-enqueues anything missing/divergent. Runs in
+  // the background; the UI polls supabase:get-mirror-status for progress.
+  safeHandle('supabase:sync-audit', async () => {
+    try {
+      const { SupabaseSyncAudit } = require('./db/SupabaseSyncAudit');
+      const { DatabaseManager } = require('./db/DatabaseManager');
+      const { SupabaseClientManager } = require('./db/SupabaseClient');
+      if (!SupabaseClientManager.isConfigured?.()) {
+        return { success: false, error: 'Supabase not configured or not signed in' };
+      }
+      const db = DatabaseManager.getInstance().getDb();
+      if (!db) return { success: false, error: 'SQLite not ready' };
+
+      // Fire-and-forget; UI can poll supabase:get-mirror-status.
+      SupabaseSyncAudit.run(db).catch((err: any) => {
+        console.warn('[ipc] supabase:sync-audit run error:', err);
+      });
+      return { success: true };
+    } catch (error: any) {
+      console.error('[ipc] supabase:sync-audit failed:', error);
+      return { success: false, error: error?.message ?? String(error) };
+    }
+  });
+}

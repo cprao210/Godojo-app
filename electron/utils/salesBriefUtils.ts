@@ -98,43 +98,48 @@ export function inferMeetingType(title: string): MeetingClassification {
 }
 
 /**
- * Build a structured context string for the LLM prompt from calendar event data.
+ * Builds a compact company context block for LLM prompt injection.
+ * Used by ipcHandlers (chat, followup email) and MeetingPersistence (post-call summary).
  */
-export function buildSalesBriefContext(event: {
-    title: string;
-    startTime: string;
-    endTime: string;
-    attendees?: Array<{ email: string; name?: string }>;
-    organizer?: string;
-    description?: string;
-}): string {
-    const attendees = event.attendees || [];
-    const organizer = event.organizer || '';
-    const { internal, external } = classifyAttendees(attendees, organizer);
-    const meetingType = inferMeetingType(event.title);
-
-    const prospectCompanies = [...new Set(
-        external.map(a => a.company).filter(Boolean)
-    )];
+export function buildCompanyContextBlock(intel: Record<string, any> | null): string {
+    if (!intel) return '';
+    const v = (x: any) => x && x !== 'null' && x !== 'N/A' ? x : null;
 
     const lines: string[] = [
-        `Meeting Title: ${event.title}`,
-        `Meeting Type (inferred): ${meetingType.label}`,
-        `Date & Time: ${new Date(event.startTime).toLocaleString()} – ${new Date(event.endTime).toLocaleTimeString()}`,
-        `Organizer: ${organizer}`,
-        '',
-        '--- Attendees ---',
-        `Internal participants (${internal.length}):`,
-        ...internal.map(a => `  - ${a.name || a.email} (${a.email})`),
-        `External / Prospect participants (${external.length}):`,
-        ...external.map(a => `  - ${a.name || a.email} (${a.email})${a.company ? ` — Company: ${a.company}` : ''}`),
-        '',
-        `Prospect companies: ${prospectCompanies.length > 0 ? prospectCompanies.join(', ') : 'Unknown (generic email domains)'}`,
+        '═══════════════════════════════════════',
+        'PROSPECT COMPANY INTELLIGENCE (pre-call research — use to personalise your analysis)',
+        '═══════════════════════════════════════',
     ];
 
-    if (event.description) {
-        lines.push('', '--- Meeting Description / Notes ---', event.description);
+    if (v(intel.companyName)) lines.push(`Company:        ${intel.companyName}`);
+    if (v(intel.industry)) lines.push(`Industry:       ${intel.industry}`);
+    if (v(intel.businessModel)) lines.push(`Business Model: ${intel.businessModel}`);
+    if (v(intel.employeeCount)) lines.push(`Employees:      ${intel.employeeCount}`);
+    if (v(intel.headquarters)) lines.push(`HQ:             ${intel.headquarters}`);
+    if (v(intel.revenue)) lines.push(`Revenue:        ${intel.revenue}`);
+    if (v(intel.fundingStage)) lines.push(`Funding Stage:  ${intel.fundingStage}`);
+    if (v(intel.valuation)) lines.push(`Valuation:      ${intel.valuation}`);
+    if (v(intel.latestFundingNews)) lines.push(`Latest Funding: ${intel.latestFundingNews}`);
+    if (intel.founders?.length) lines.push(`Founders:       ${intel.founders.join(', ')}`);
+    if (intel.investors?.length) lines.push(`Investors:      ${intel.investors.slice(0, 3).join(', ')}`);
+    if (intel.keyProducts?.length) lines.push(`Products:       ${intel.keyProducts.slice(0, 4).join(', ')}`);
+    if (intel.competitors?.length) lines.push(`Competitors:    ${intel.competitors.slice(0, 4).join(', ')}`);
+    if (intel.topCustomers?.length) lines.push(`Top Customers:  ${intel.topCustomers.slice(0, 3).join(', ')}`);
+    if (intel.geographicPresence?.length) lines.push(`Geography:      ${intel.geographicPresence.join(', ')}`);
+
+    if (intel.recentNews?.length) {
+        lines.push('Recent News:');
+        intel.recentNews.slice(0, 2).forEach((n: any) =>
+            lines.push(`  • ${n.headline}${n.date ? ` (${n.date})` : ''}`)
+        );
+    }
+    if (intel.leadershipChanges?.length) {
+        lines.push('Leadership Changes:');
+        intel.leadershipChanges.slice(0, 2).forEach((l: any) =>
+            lines.push(`  • ${l.name} → ${l.role}${l.date ? ` (${l.date})` : ''}`)
+        );
     }
 
+    lines.push('═══════════════════════════════════════');
     return lines.join('\n');
 }

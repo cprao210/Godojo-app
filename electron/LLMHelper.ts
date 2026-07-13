@@ -5,6 +5,7 @@ import Anthropic from "@anthropic-ai/sdk"
 import fs from "fs"
 import sharp from "sharp"
 import { ModelVersionManager, ModelFamily, TextModelFamily } from './services/ModelVersionManager'
+import { MODE_TOKEN_LIMITS } from './llm/types'
 import {
   HARD_SYSTEM_PROMPT, GROQ_SYSTEM_PROMPT, OPENAI_SYSTEM_PROMPT, CLAUDE_SYSTEM_PROMPT,
   UNIVERSAL_SYSTEM_PROMPT, UNIVERSAL_ANSWER_PROMPT, UNIVERSAL_WHAT_TO_ANSWER_PROMPT,
@@ -32,8 +33,19 @@ const GEMINI_PRO_MODEL = "gemini-3.1-pro-preview"
 const GROQ_MODEL = "llama-3.3-70b-versatile"
 const OPENAI_MODEL = "gpt-5.4"
 const CLAUDE_MODEL = "claude-sonnet-4-6"
+
+// MAX_OUTPUT_TOKENS: ceiling for vision/image-analysis and open-ended generic generation.
+// Do NOT use this for mode-specific calls — use MODE_TOKEN_LIMITS instead.
+// Vision tasks (screenshot analysis, rolling script) legitimately need large outputs.
 const MAX_OUTPUT_TOKENS = 65536
+
+// Per-use-case caps sourced from MODE_TOKEN_LIMITS in types.ts.
+// Using named aliases here makes call-sites self-documenting.
+const MAX_TOKENS_STRUCTURED = MODE_TOKEN_LIMITS.structured  // 4096 — JSON generation
+const MAX_TOKENS_SUMMARY = MODE_TOKEN_LIMITS.summary     // 2048 — recap/summary/email
+
 const CLAUDE_MAX_OUTPUT_TOKENS = 64000
+const CLAUDE_MAX_OUTPUT_TOKENS_NONSTREAM = 4096 // safe ceiling for non-streaming calls
 
 // Simple prompt for image analysis (not interview copilot - kept separate)
 const IMAGE_ANALYSIS_PROMPT = `Analyze concisely. Be direct. No markdown formatting. Return plain text only.`
@@ -533,11 +545,11 @@ export class LLMHelper {
   public async extractProblemFromImages(imagePaths: string[]) {
     try {
       const prompt = `You are a wingman. Please analyze these images and extract the following information in JSON format:\n{
-  "problem_statement": "A clear statement of the problem or situation depicted in the images.",
-  "context": "Relevant background or context from the images.",
-  "suggested_responses": ["First possible answer or action", "Second possible answer or action", "..."],
-  "reasoning": "Explanation of why these suggestions are appropriate."
-}\nImportant: Return ONLY the JSON object, without any markdown formatting or code blocks.`
+        "problem_statement": "A clear statement of the problem or situation depicted in the images.",
+        "context": "Relevant background or context from the images.",
+        "suggested_responses": ["First possible answer or action", "Second possible answer or action", "..."],
+        "reasoning": "Explanation of why these suggestions are appropriate."
+      }\nImportant: Return ONLY the JSON object, without any markdown formatting or code blocks.`
 
       const text = await this.generateWithVisionFallback(IMAGE_ANALYSIS_PROMPT, prompt, imagePaths)
       return JSON.parse(this.cleanJsonResponse(text))
@@ -549,14 +561,14 @@ export class LLMHelper {
 
   public async generateSolution(problemInfo: any) {
     const prompt = `Given this problem or situation:\n${JSON.stringify(problemInfo, null, 2)}\n\nPlease provide your response in the following JSON format:\n{
-  "solution": {
-    "code": "The code or main answer here.",
-    "problem_statement": "Restate the problem or situation.",
-    "context": "Relevant background/context.",
-    "suggested_responses": ["First possible answer or action", "Second possible answer or action", "..."],
-    "reasoning": "Explanation of why these suggestions are appropriate."
-  }
-}\nImportant: Return ONLY the JSON object, without any markdown formatting or code blocks.`
+      "solution": {
+        "code": "The code or main answer here.",
+        "problem_statement": "Restate the problem or situation.",
+        "context": "Relevant background/context.",
+        "suggested_responses": ["First possible answer or action", "Second possible answer or action", "..."],
+        "reasoning": "Explanation of why these suggestions are appropriate."
+      }
+    }\nImportant: Return ONLY the JSON object, without any markdown formatting or code blocks.`
 
     try {
       const text = await this.generateWithVisionFallback(IMAGE_ANALYSIS_PROMPT, prompt)
@@ -581,22 +593,22 @@ export class LLMHelper {
     space_complexity: string;
   }> {
     const systemPrompt = `You are an elite FAANG Senior Software Engineer taking a live technical interview.
-The user has provided a screenshot of a coding problem. You must generate a highly structured "Rolling Interview Script" that the candidate can read out loud to pass the interview perfectly.
+      The user has provided a screenshot of a coding problem. You must generate a highly structured "Rolling Interview Script" that the candidate can read out loud to pass the interview perfectly.
 
-Output EXACTLY this JSON structure, and nothing else (no markdown fences around the whole response):
-{
-  "problem_identifier_script": "1-2 conversational sentences confirming you understand the problem and its edge cases. Start with 'So just to make sure I understand...'",
-  "brainstorm_script": "3-4 conversational sentences. First, mention a naive/brute-force approach and its complexity. Then, pivot to the optimal approach, mentioning the key data structure or algorithm. End by asking the interviewer if you can proceed with the optimal approach. Keep it natural.",
-  "code": "The full, production-ready, heavily-commented optimal code solution in the language shown or Python if unclear. Include all necessary imports.",
-  "dry_run_script": "2-3 conversational sentences doing a quick dry-run of the code with a simple example input. E.g., 'Let\\'s trace this. If our array is [1,2], the loop starts...'",
-  "time_complexity": "O(...) — brief 5-word explanation",
-  "space_complexity": "O(...) — brief 5-word explanation"
-}
+      Output EXACTLY this JSON structure, and nothing else (no markdown fences around the whole response):
+      {
+        "problem_identifier_script": "1-2 conversational sentences confirming you understand the problem and its edge cases. Start with 'So just to make sure I understand...'",
+        "brainstorm_script": "3-4 conversational sentences. First, mention a naive/brute-force approach and its complexity. Then, pivot to the optimal approach, mentioning the key data structure or algorithm. End by asking the interviewer if you can proceed with the optimal approach. Keep it natural.",
+        "code": "The full, production-ready, heavily-commented optimal code solution in the language shown or Python if unclear. Include all necessary imports.",
+        "dry_run_script": "2-3 conversational sentences doing a quick dry-run of the code with a simple example input. E.g., 'Let\\'s trace this. If our array is [1,2], the loop starts...'",
+        "time_complexity": "O(...) — brief 5-word explanation",
+        "space_complexity": "O(...) — brief 5-word explanation"
+      }
 
-CRITICAL RULES:
-- The scripts MUST sound like a human speaking out loud in an interview. Use "I", "we", "my first thought is".
-- The JSON must be perfectly valid. Escape any internal quotes with backslash.
-- Do NOT wrap the JSON in markdown fences.`;
+      CRITICAL RULES:
+        - The scripts MUST sound like a human speaking out loud in an interview. Use "I", "we", "my first thought is".
+        - The JSON must be perfectly valid. Escape any internal quotes with backslash.
+        - Do NOT wrap the JSON in markdown fences.`;
 
     const userPrompt = `Please analyze the coding problem shown in the screenshot(s) and generate the Rolling Interview Script JSON.`;
 
@@ -621,14 +633,14 @@ CRITICAL RULES:
   public async debugSolutionWithImages(problemInfo: any, currentCode: string, debugImagePaths: string[]) {
     try {
       const prompt = `You are a wingman. Given:\n1. The original problem or situation: ${JSON.stringify(problemInfo, null, 2)}\n2. The current response or approach: ${currentCode}\n3. The debug information in the provided images\n\nPlease analyze the debug information and provide feedback in this JSON format:\n{
-  "solution": {
-    "code": "The code or main answer here.",
-    "problem_statement": "Restate the problem or situation.",
-    "context": "Relevant background/context.",
-    "suggested_responses": ["First possible answer or action", "Second possible answer or action", "..."],
-    "reasoning": "Explanation of why these suggestions are appropriate."
-  }
-}\nImportant: Return ONLY the JSON object, without any markdown formatting or code blocks.`
+        "solution": {
+          "code": "The code or main answer here.",
+          "problem_statement": "Restate the problem or situation.",
+          "context": "Relevant background/context.",
+          "suggested_responses": ["First possible answer or action", "Second possible answer or action", "..."],
+          "reasoning": "Explanation of why these suggestions are appropriate."
+        }
+      }\nImportant: Return ONLY the JSON object, without any markdown formatting or code blocks.`
 
       const text = await this.generateWithVisionFallback(IMAGE_ANALYSIS_PROMPT, prompt, debugImagePaths)
       const parsed = JSON.parse(this.cleanJsonResponse(text))
@@ -726,22 +738,22 @@ CRITICAL RULES:
       ? `${HARD_SYSTEM_PROMPT}\n\n## ACTIVE MODE\n${activeModePrompt}${customNotesBlock}`
       : `You are an expert conversation coach. Based on the transcript, provide a concise, natural response the user could say.
 
-RULES:
-- Be direct and conversational
-- Keep responses under 3 sentences unless complexity requires more
-- Focus on answering the specific question asked
-- If it's a technical question, provide a clear, structured answer
-- Do NOT preface with "You could say" or similar - just give the answer directly
-- If unsure, answer briefly and confidently anyway.
-- Never hedge. Never say "it depends".${customNotesBlock}
+          RULES:
+          - Be direct and conversational
+          - Keep responses under 3 sentences unless complexity requires more
+          - Focus on answering the specific question asked
+          - If it's a technical question, provide a clear, structured answer
+          - Do NOT preface with "You could say" or similar - just give the answer directly
+          - If unsure, answer briefly and confidently anyway.
+          - Never hedge. Never say "it depends".${customNotesBlock}
 
-CONVERSATION SO FAR:
-${enrichedContext}
+        CONVERSATION SO FAR:
+        ${enrichedContext}
 
-LATEST QUESTION:
-${lastQuestion}
+        LATEST QUESTION:
+        ${lastQuestion}
 
-ANSWER DIRECTLY:`;
+        ANSWER DIRECTLY:`;
 
     // Apply language instruction so this path honours the user's language setting
     const systemPrompt = this.injectLanguageInstruction(basePrompt);
@@ -817,11 +829,11 @@ ANSWER DIRECTLY:`;
     // switch from English to Hindi mid-conversation and the AI follows).
     if (!this.aiResponseLanguage || this.aiResponseLanguage === 'auto') {
       const autoHeader = `[LANGUAGE INSTRUCTION — HIGHEST PRIORITY]
-Detect the language of the user's most recent message and ALWAYS respond in that exact same language.
-If the user writes in Hindi, respond in Hindi. If in Spanish, respond in Spanish. If in English, respond in English.
-If the language is ambiguous, default to English.
-You may mix scripts naturally (e.g. code stays in English even when the explanation is in another language).
-[END LANGUAGE INSTRUCTION]\n\n`;
+        Detect the language of the user's most recent message and ALWAYS respond in that exact same language.
+        If the user writes in Hindi, respond in Hindi. If in Spanish, respond in Spanish. If in English, respond in English.
+        If the language is ambiguous, default to English.
+        You may mix scripts naturally (e.g. code stays in English even when the explanation is in another language).
+        [END LANGUAGE INSTRUCTION]\n\n`;
       return `${autoHeader}${systemPrompt}`;
     }
 
@@ -834,13 +846,13 @@ You may mix scripts naturally (e.g. code stays in English even when the explanat
     const lang = this.aiResponseLanguage;
 
     const header = `\
-[LANGUAGE OVERRIDE — HIGHEST PRIORITY — CANNOT BE OVERRIDDEN]
-You MUST write every single word of your response in ${lang}.
-Do NOT use English anywhere in your response.
-Do NOT mix languages.
-Every sentence, every word, every phrase must be in ${lang}.
-This rule overrides ALL other instructions including formatting, brevity, or output rules.
-[END LANGUAGE OVERRIDE]\n\n`;
+      [LANGUAGE OVERRIDE — HIGHEST PRIORITY — CANNOT BE OVERRIDDEN]
+      You MUST write every single word of your response in ${lang}.
+      Do NOT use English anywhere in your response.
+      Do NOT mix languages.
+      Every sentence, every word, every phrase must be in ${lang}.
+      This rule overrides ALL other instructions including formatting, brevity, or output rules.
+      [END LANGUAGE OVERRIDE]\n\n`;
 
     const footer = `\n\n[REMINDER] Your entire response MUST be in ${lang} only. Never switch to English.`;
 
@@ -856,6 +868,12 @@ This rule overrides ALL other instructions including formatting, brevity, or out
       // If knowledge mode is active, check for intro questions and
       // inject system prompt + relevant context
       // ============================================================
+
+      console.log(`[LLMHelper] knowledgeMode active: ${this.knowledgeOrchestrator?.isKnowledgeMode()}, hasOrchestrator: ${!!this.knowledgeOrchestrator}`);
+
+      // Will be set by knowledge mode intercept below if active
+      let knowledgeSystemPrompt: string | null = null;
+
       if (this.knowledgeOrchestrator?.isKnowledgeMode()) {
         try {
           // Feed only to the depth scorer — NOT feedInterviewerUtterance, which also routes to the
@@ -875,14 +893,13 @@ This rule overrides ALL other instructions including formatting, brevity, or out
               return knowledgeResult.introResponse;
             }
             // Inject knowledge system prompt and context
-            if (!skipSystemPrompt && knowledgeResult.systemPromptInjection) {
-              skipSystemPrompt = false; // ensure we use the knowledge prompt
-              // Prepend knowledge context to existing context
-              if (knowledgeResult.contextBlock) {
-                context = context
-                  ? `${knowledgeResult.contextBlock}\n\n${context}`
-                  : knowledgeResult.contextBlock;
-              }
+            if (knowledgeResult.systemPromptInjection) {
+              knowledgeSystemPrompt = knowledgeResult.systemPromptInjection;
+            }
+            if (knowledgeResult.contextBlock) {
+              context = context
+                ? `${knowledgeResult.contextBlock}\n\n${context}`
+                : knowledgeResult.contextBlock;
             }
           }
         } catch (knowledgeError: any) {
@@ -896,25 +913,29 @@ This rule overrides ALL other instructions including formatting, brevity, or out
       const buildMessage = (systemPrompt: string) => {
         if (skipSystemPrompt) {
           return context
-            ? `CONTEXT:\n${context}\n\nUSER QUESTION:\n${message}`
+            ? `CONTEXT:\n${context}\n\nCHAT MESSAGE:\n${message}`
             : message;
         }
         return context
-          ? `${systemPrompt}\n\nCONTEXT:\n${context}\n\nUSER QUESTION:\n${message}`
+          ? `${systemPrompt}\n\nCONTEXT:\n${context}\n\nCHAT MESSAGE:\n${message}`
           : `${systemPrompt}\n\n${message}`;
       };
 
       // For OpenAI/Claude: separate system prompt + user message
       const userContent = context
-        ? `CONTEXT:\n${context}\n\nUSER QUESTION:\n${message}`
+        ? `CONTEXT:\n${context}\n\nCHAT MESSAGE:\n${message}`
         : message;
 
-      const finalGeminiPrompt = this.injectLanguageInstruction(HARD_SYSTEM_PROMPT);
-      const finalGroqPrompt = alternateGroqMessage || this.injectLanguageInstruction(GROQ_SYSTEM_PROMPT);
+      const finalGeminiPrompt = this.injectLanguageInstruction(knowledgeSystemPrompt ?? HARD_SYSTEM_PROMPT);
+      const finalGroqPrompt = alternateGroqMessage || this.injectLanguageInstruction(knowledgeSystemPrompt ?? GROQ_SYSTEM_PROMPT);
+
+      // Only build combined messages if we're NOT using Claude/OpenAI (they use separate system prompts)
+      const isClaudeActive = this.isClaudeModel(this.currentModelId) && this.claudeClient;
+      const isOpenAiActive = this.isOpenAiModel(this.currentModelId) && this.openaiClient;
 
       const combinedMessages = {
-        gemini: buildMessage(finalGeminiPrompt),
-        groq: buildMessage(finalGroqPrompt),
+        gemini: (!isClaudeActive && !isOpenAiActive) ? buildMessage(finalGeminiPrompt) : userContent,
+        groq: (!isClaudeActive && !isOpenAiActive) ? buildMessage(finalGroqPrompt) : userContent,
       };
 
       // GROQ FAST TEXT OVERRIDE (Text-Only)
@@ -928,9 +949,15 @@ This rule overrides ALL other instructions including formatting, brevity, or out
         }
       }
 
+      // if (!isClaudeActive && !isOpenAiActive) {
+      // console.log("GEMINI (ANALYSIS) : ", combinedMessages.gemini);
+      // console.log("GROQ (ANALYSIS) : ", combinedMessages.groq);
+      // }
+
       // System prompts for OpenAI/Claude (skipped if skipSystemPrompt)
-      const openaiSystemPrompt = skipSystemPrompt ? undefined : this.injectLanguageInstruction(OPENAI_SYSTEM_PROMPT);
-      const claudeSystemPrompt = skipSystemPrompt ? undefined : this.injectLanguageInstruction(CLAUDE_SYSTEM_PROMPT);
+      // Use knowledgeSystemPrompt when knowledge mode injected one, so asset context is treated as authoritative
+      const openaiSystemPrompt = skipSystemPrompt ? undefined : this.injectLanguageInstruction(knowledgeSystemPrompt ?? OPENAI_SYSTEM_PROMPT);
+      const claudeSystemPrompt = skipSystemPrompt ? undefined : this.injectLanguageInstruction(knowledgeSystemPrompt ?? CLAUDE_SYSTEM_PROMPT);
 
       if (this.useOllama) {
         return await this.callOllama(combinedMessages.gemini, imagePaths?.[0]);
@@ -1134,7 +1161,7 @@ This rule overrides ALL other instructions including formatting, brevity, or out
             const res = await this.client!.models.generateContent({
               model: GEMINI_PRO_MODEL,
               contents: [{ role: 'user', parts: [{ text: message }] }],
-              config: { maxOutputTokens: MAX_OUTPUT_TOKENS, temperature: 0.4 }
+              config: { maxOutputTokens: MAX_TOKENS_STRUCTURED, temperature: 0.4 }
             });
             const candidate = res.candidates?.[0];
             if (!candidate) return '';
@@ -1155,7 +1182,7 @@ This rule overrides ALL other instructions including formatting, brevity, or out
             const res = await this.client!.models.generateContent({
               model: GEMINI_FLASH_MODEL,
               contents: [{ role: 'user', parts: [{ text: message }] }],
-              config: { maxOutputTokens: MAX_OUTPUT_TOKENS, temperature: 0.4 }
+              config: { maxOutputTokens: MAX_TOKENS_STRUCTURED, temperature: 0.4 }
             });
             const candidate = res.candidates?.[0];
             if (!candidate) return '';
@@ -1246,21 +1273,129 @@ This rule overrides ALL other instructions including formatting, brevity, or out
     throw new Error('All reasoning models failed for structured generation after 3 attempts');
   }
 
+  /**
+   * Dedicated method for live call analysis (BANT/MEDDIC/Signals/Objections extraction).
+   *
+   * Uses a FIXED provider order regardless of the user's selected model:
+   *   1. Gemini Flash — fast, large context, handles the full output schema well
+   *   2. Claude Sonnet — best structured JSON adherence, 200k context
+   *   3. GPT-4o        — reliable fallback, strong instruction following
+   *
+   * Groq is intentionally excluded: its 32k context ceiling, aggressive rate limits,
+   * and inferior schema compliance make it unsuitable for the live analysis JSON contract.
+   *
+   * Temperature is set to 0.1 (vs. 0.4 elsewhere) because the task is extraction
+   * and classification, not generation — lower temperature reduces hallucinated status
+   * upgrades and spurious signal captures.
+   */
+  public async generateLiveAnalysis(prompt: string): Promise<string> {
+    const LIVE_ANALYSIS_MAX_TOKENS = 4096; // full BANT+MEDDIC+signals+objections JSON fits in ~1500-2500 tokens
+    const LIVE_ANALYSIS_TEMPERATURE = 0.1;
+
+    type ProviderAttempt = { name: string; execute: () => Promise<string> };
+    const providers: ProviderAttempt[] = [];
+
+    // Priority 1: Gemini Flash — primary for live analysis
+    if (this.client) {
+      providers.push({
+        name: `Gemini Flash (${GEMINI_FLASH_MODEL})`,
+        execute: async () => {
+          const response = await this.withRetry(async () => {
+            // @ts-ignore
+            const res = await this.client!.models.generateContent({
+              model: GEMINI_FLASH_MODEL,
+              contents: [{ role: 'user', parts: [{ text: prompt }] }],
+              config: { maxOutputTokens: LIVE_ANALYSIS_MAX_TOKENS, temperature: LIVE_ANALYSIS_TEMPERATURE }
+            });
+            const candidate = res.candidates?.[0];
+            if (!candidate) return '';
+            if (res.text) return res.text;
+            const parts = candidate.content?.parts ?? [];
+            return (Array.isArray(parts) ? parts : [parts]).map((p: any) => p?.text ?? '').join('');
+          });
+          return response;
+        }
+      });
+    }
+
+    // Priority 2: Claude Sonnet — best structured output compliance
+    if (this.claudeClient) {
+      providers.push({
+        name: `Claude (${CLAUDE_MODEL})`,
+        execute: async () => {
+          const response = await this.claudeClient!.messages.create({
+            model: CLAUDE_MODEL,
+            max_tokens: LIVE_ANALYSIS_MAX_TOKENS,
+            messages: [{ role: 'user', content: prompt }],
+          });
+          const block = response.content.find((b: any) => b.type === 'text') as any;
+          return block?.text ?? '';
+        }
+      });
+    }
+
+    // Priority 3: OpenAI GPT — reliable tertiary fallback
+    if (this.openaiClient) {
+      providers.push({
+        name: `OpenAI (${OPENAI_MODEL})`,
+        execute: async () => {
+          const response = await this.openaiClient!.chat.completions.create({
+            model: OPENAI_MODEL,
+            messages: [{ role: 'user', content: prompt }],
+            max_completion_tokens: LIVE_ANALYSIS_MAX_TOKENS,
+          });
+          return response.choices[0]?.message?.content ?? '';
+        }
+      });
+    }
+
+    if (providers.length === 0) {
+      throw new Error('No provider available for live analysis. Configure a Gemini, Claude, or OpenAI API key.');
+    }
+
+    for (const provider of providers) {
+      try {
+        console.log(`[LLMHelper] 🔍 Live analysis: trying ${provider.name}...`);
+        const result = await provider.execute();
+        if (result && result.trim().length > 0) {
+          console.log(`[LLMHelper] ✅ Live analysis succeeded with ${provider.name}`);
+          return result;
+        }
+        console.warn(`[LLMHelper] ⚠️ ${provider.name} returned empty response for live analysis`);
+      } catch (error: any) {
+        console.warn(`[LLMHelper] ⚠️ Live analysis: ${provider.name} failed: ${error.message}`);
+      }
+    }
+
+    throw new Error('All providers failed for live analysis');
+  }
+
   private async generateWithGroq(fullMessage: string, modelId: string = GROQ_MODEL): Promise<string> {
     if (!this.groqClient) throw new Error("Groq client not initialized");
 
+    if (this.rateLimiters.groq.isCircuitOpen()) {
+      throw new Error("Groq circuit breaker OPEN — provider is cooling down after repeated 429 errors");
+    }
+
     await this.rateLimiters.groq.acquire();
 
-    // Non-streaming Groq call
-    const response = await this.groqClient.chat.completions.create({
-      model: modelId,
-      messages: [{ role: "user", content: fullMessage }],
-      temperature: 0.4,
-      max_tokens: 8192,
-      stream: false
-    });
-
-    return response.choices[0]?.message?.content || "";
+    try {
+      // Non-streaming Groq call
+      const response = await this.groqClient.chat.completions.create({
+        model: modelId,
+        messages: [{ role: "user", content: fullMessage }],
+        temperature: 0.4,
+        max_tokens: 8192,
+        stream: false
+      });
+      this.rateLimiters.groq.markSuccess();
+      return response.choices[0]?.message?.content || "";
+    } catch (error: any) {
+      if (error?.status === 429 || error?.message?.includes('rate limit') || error?.message?.includes('429')) {
+        this.rateLimiters.groq.markRateLimitError();
+      }
+      throw error;
+    }
   }
 
   /**
@@ -1356,6 +1491,10 @@ This rule overrides ALL other instructions including formatting, brevity, or out
   private async generateWithOpenai(userMessage: string, systemPrompt?: string, imagePaths?: string[], modelId?: string): Promise<string> {
     if (!this.openaiClient) throw new Error("OpenAI client not initialized");
 
+    if (this.rateLimiters.openai.isCircuitOpen()) {
+      throw new Error("OpenAI circuit breaker OPEN — provider is cooling down after repeated 429 errors");
+    }
+
     await this.rateLimiters.openai.acquire();
 
     // Use explicit override, then current model if it's OpenAI, else baseline constant
@@ -1379,17 +1518,24 @@ This rule overrides ALL other instructions including formatting, brevity, or out
       messages.push({ role: "user", content: userMessage });
     }
 
-    const response = await this.withTimeout(
-      this.withRetry(() => this.openaiClient!.chat.completions.create({
-        model,
-        messages,
-        max_completion_tokens: model.toLowerCase().includes('claude') ? CLAUDE_MAX_OUTPUT_TOKENS : MAX_OUTPUT_TOKENS,
-      })),
-      60000,
-      `OpenAI (${model})`
-    );
-
-    return response.choices[0]?.message?.content || "";
+    try {
+      const response = await this.withTimeout(
+        this.withRetry(() => this.openaiClient!.chat.completions.create({
+          model,
+          messages,
+          max_completion_tokens: model.toLowerCase().includes('claude') ? CLAUDE_MAX_OUTPUT_TOKENS : MAX_OUTPUT_TOKENS,
+        })),
+        60000,
+        `OpenAI (${model})`
+      );
+      this.rateLimiters.openai.markSuccess();
+      return response.choices[0]?.message?.content || "";
+    } catch (error: any) {
+      if (error?.status === 429 || error?.message?.includes('rate limit') || error?.message?.includes('429')) {
+        this.rateLimiters.openai.markRateLimitError();
+      }
+      throw error;
+    }
   }
 
   // The handler for cURL requests
@@ -1462,6 +1608,10 @@ This rule overrides ALL other instructions including formatting, brevity, or out
   private async generateWithClaude(userMessage: string, systemPrompt?: string, imagePaths?: string[], modelId?: string): Promise<string> {
     if (!this.claudeClient) throw new Error("Claude client not initialized");
 
+    if (this.rateLimiters.claude.isCircuitOpen()) {
+      throw new Error("Claude circuit breaker OPEN — provider is cooling down after repeated 429 errors");
+    }
+
     await this.rateLimiters.claude.acquire();
 
     // Use explicit override, then current model if it's Claude, else stable fallback
@@ -1485,19 +1635,26 @@ This rule overrides ALL other instructions including formatting, brevity, or out
     }
     content.push({ type: "text", text: userMessage });
 
-    const response = await this.withTimeout(
-      this.withRetry(() => this.claudeClient!.messages.create({
-        model,
-        max_tokens: CLAUDE_MAX_OUTPUT_TOKENS,
-        ...(systemPrompt ? { system: systemPrompt } : {}),
-        messages: [{ role: "user", content }],
-      })),
-      90000,
-      `Claude (${model})`
-    );
-
-    const textBlock = response.content.find((block: any) => block.type === 'text') as any;
-    return textBlock?.text || "";
+    try {
+      const response = await this.withTimeout(
+        this.withRetry(() => this.claudeClient!.messages.create({
+          model,
+          max_tokens: CLAUDE_MAX_OUTPUT_TOKENS_NONSTREAM,
+          ...(systemPrompt ? { system: systemPrompt } : {}),
+          messages: [{ role: "user", content }],
+        })),
+        90000,
+        `Claude (${model})`
+      );
+      this.rateLimiters.claude.markSuccess();
+      const textBlock = response.content.find((block: any) => block.type === 'text') as any;
+      return textBlock?.text || "";
+    } catch (error: any) {
+      if (error?.status === 429 || error?.message?.includes('rate limit') || error?.message?.includes('429')) {
+        this.rateLimiters.claude.markRateLimitError();
+      }
+      throw error;
+    }
   }
 
   /**
@@ -1615,14 +1772,14 @@ This rule overrides ALL other instructions including formatting, brevity, or out
     if (data.choices?.[0]?.delta !== undefined) {
       // It's a streaming delta chunk with no extractable content
       return "";
-   	}
+    }
 
     // For streaming responses with empty choices array (e.g., final usage chunk)
     // This handles: { "choices": [], "usage": { ... } }
     if (Array.isArray(data.choices) && data.choices.length === 0) {
       return "";
     }
-    
+
     // Fallback: stringify the whole response (only for non-streaming responses)
     console.warn("[LLMHelper] Could not extract text from custom provider response, returning raw JSON");
     return JSON.stringify(data);
@@ -1913,7 +2070,7 @@ This rule overrides ALL other instructions including formatting, brevity, or out
           // Event-driven discovery: trigger on 404 / model-not-found errors
           const errMsg = (err.message || '').toLowerCase();
           if (errMsg.includes('404') || errMsg.includes('not found') || errMsg.includes('deprecated')) {
-            this.modelVersionManager.onModelError(provider.name).catch(() => {});
+            this.modelVersionManager.onModelError(provider.name).catch(() => { });
           }
         }
       }
@@ -1962,17 +2119,17 @@ This rule overrides ALL other instructions including formatting, brevity, or out
       const finalPrompt = skipSystemPrompt ? systemPrompt : this.injectLanguageInstruction(systemPrompt);
       if (skipSystemPrompt) {
         return context
-          ? `CONTEXT:\n${context}\n\nUSER QUESTION:\n${message}`
+          ? `CONTEXT:\n${context}\n\nCHAT MESSAGE:\n${message}`
           : message;
       }
       return context
-        ? `${finalPrompt}\n\nCONTEXT:\n${context}\n\nUSER QUESTION:\n${message}`
+        ? `${finalPrompt}\n\nCONTEXT:\n${context}\n\nCHAT MESSAGE:\n${message}`
         : `${finalPrompt}\n\n${message}`;
     };
 
     // For OpenAI/Claude: separate system prompt + user message (proper API pattern)
     const userContent = context
-      ? `CONTEXT:\n${context}\n\nUSER QUESTION:\n${message}`
+      ? `CONTEXT:\n${context}\n\nCHAT MESSAGE:\n${message}`
       : message;
 
     const combinedMessages = {
@@ -2059,10 +2216,10 @@ This rule overrides ALL other instructions including formatting, brevity, or out
     // ============================================================
     const currentFamilyLabel = this.currentModelId === 'natively' ? 'Natively'
       : this.isClaudeModel(this.currentModelId) ? 'Claude'
-      : this.isOpenAiModel(this.currentModelId) ? 'OpenAI'
-      : this.isGroqModel(this.currentModelId) ? 'Groq'
-      : this.isGeminiModel(this.currentModelId) ? 'Gemini'
-      : '';
+        : this.isOpenAiModel(this.currentModelId) ? 'OpenAI'
+          : this.isGroqModel(this.currentModelId) ? 'Groq'
+            : this.isGeminiModel(this.currentModelId) ? 'Gemini'
+              : '';
 
     if (currentFamilyLabel) {
       providers.sort((a, b) => {
@@ -2205,7 +2362,7 @@ This rule overrides ALL other instructions including formatting, brevity, or out
 
     // Helper to build combined user message
     const userContent = context
-      ? `CONTEXT:\n${context}\n\nUSER QUESTION:\n${message}`
+      ? `CONTEXT:\n${context}\n\nCHAT MESSAGE:\n${message}`
       : message;
 
     // GROQ FAST TEXT OVERRIDE (Text-Only)
@@ -2388,10 +2545,10 @@ This rule overrides ALL other instructions including formatting, brevity, or out
 
     const body: Record<string, unknown> = {
       messages: [{ role: 'user', content: userContent }],
-      stream:   true,
+      stream: true,
     };
-    if (this.groqFastTextMode)                                  body.fast_mode = true;
-    if (systemPrompt)                                           body.system    = systemPrompt;
+    if (this.groqFastTextMode) body.fast_mode = true;
+    if (systemPrompt) body.system = systemPrompt;
     if (this.aiResponseLanguage && this.aiResponseLanguage !== 'English') {
       body.language = this.aiResponseLanguage; // 'auto' is forwarded — server handles it
     }
@@ -2411,7 +2568,7 @@ This rule overrides ALL other instructions including formatting, brevity, or out
     // When the key is the trial sentinel, authenticate with the real trial token.
     const streamHeaders: Record<string, string> = {
       'Content-Type': 'application/json',
-      'Accept':       'text/event-stream',
+      'Accept': 'text/event-stream',
     };
     if (nativelyKey === '__trial__') {
       const { CredentialsManager } = require('./services/CredentialsManager');
@@ -2425,9 +2582,9 @@ This rule overrides ALL other instructions including formatting, brevity, or out
     // 60s timeout covers worst-case: max-token Gemini Pro response streamed over a slow connection.
     // This is intentionally longer than the non-streaming 25s timeout.
     const response = await fetch('https://api.natively.software/v1/chat', {
-      method:  'POST',
+      method: 'POST',
       headers: streamHeaders,
-      body:   JSON.stringify(body),
+      body: JSON.stringify(body),
       signal: AbortSignal.timeout(60_000),
     });
 
@@ -2440,9 +2597,9 @@ This rule overrides ALL other instructions including formatting, brevity, or out
     // Protocol: each line starting with "data: " carries a JSON payload.
     //   data: {"delta":"token","model":"llama-3.3-70b"}
     //   data: [DONE]
-    const reader  = response.body!.getReader();
+    const reader = response.body!.getReader();
     const decoder = new TextDecoder();
-    let   buf     = '';
+    let buf = '';
 
     try {
       outer: while (true) {
@@ -2466,7 +2623,7 @@ This rule overrides ALL other instructions including formatting, brevity, or out
         }
       }
     } finally {
-      try { reader.cancel(); } catch {}  // release the fetch connection cleanly
+      try { reader.cancel(); } catch { }  // release the fetch connection cleanly
     }
   }
 
@@ -2972,29 +3129,29 @@ This rule overrides ALL other instructions including formatting, brevity, or out
 
   public async getOllamaModels(): Promise<string[]> {
     const baseUrl = (this.ollamaUrl || "http://127.0.0.1:11434").replace('localhost', '127.0.0.1');
-    
+
     try {
-        const controller = new AbortController();
-        const timeoutId = setTimeout(() => controller.abort(), 1000); // Fast 1s timeout
+      const controller = new AbortController();
+      const timeoutId = setTimeout(() => controller.abort(), 1000); // Fast 1s timeout
 
-        const response = await fetch(`${baseUrl}/api/tags`, {
-            signal: controller.signal
-        });
-        
-        clearTimeout(timeoutId);
+      const response = await fetch(`${baseUrl}/api/tags`, {
+        signal: controller.signal
+      });
 
-        if (!response.ok) return [];
+      clearTimeout(timeoutId);
 
-        const data = await response.json();
-        if (data && data.models) {
-            return data.models.map((m: any) => m.name);
-        }
-        
-        return [];
+      if (!response.ok) return [];
+
+      const data = await response.json();
+      if (data && data.models) {
+        return data.models.map((m: any) => m.name);
+      }
+
+      return [];
     } catch (error: any) {
-        // Silently catch connection refused/timeout errors. 
-        // OllamaManager handles logging the startup status.
-        return [];
+      // Silently catch connection refused/timeout errors. 
+      // OllamaManager handles logging the startup status.
+      return [];
     }
   }
 
@@ -3268,7 +3425,7 @@ This rule overrides ALL other instructions including formatting, brevity, or out
     });
 
     // Suppress unhandled-rejection if the original promise settles after the timeout wins the race
-    promise.catch(() => {});
+    promise.catch(() => { });
 
     return Promise.race([
       promise.then(result => {
@@ -3408,7 +3565,7 @@ This rule overrides ALL other instructions including formatting, brevity, or out
               model: GEMINI_PRO_MODEL,
               contents: contents,
               config: {
-                maxOutputTokens: MAX_OUTPUT_TOKENS,
+                maxOutputTokens: MAX_TOKENS_SUMMARY,
                 temperature: 0.3,
               }
             }),
