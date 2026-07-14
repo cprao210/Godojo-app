@@ -11,6 +11,62 @@ if (!app.isPackaged) {
 process.stdout?.on?.('error', () => { });
 process.stderr?.on?.('error', () => { });
 
+// ---------------------------------------------------------------------------
+// Deep link handling (team invites): godojo://invite?token=... and, once the
+// domain association files are hosted, https://app.godojo.ai/invite?token=...
+// The token itself is just an opaque lookup key — all real validation
+// (expiry, email match, single-use) happens server-side in tenantsApi calls
+// made from the renderer, so we never trust this value beyond parsing it.
+// ---------------------------------------------------------------------------
+const INVITE_PROTOCOL = 'godojo';
+let pendingInviteToken: string | null = null;
+
+function extractInviteToken(url: string): string | null {
+  try {
+    const parsed = new URL(url);
+    // Supports both godojo://invite?token=xxx and
+    // https://app.godojo.ai/invite?token=xxx
+    return parsed.searchParams.get('token');
+  } catch (e) {
+    console.warn('[Main] Failed to parse deep link URL:', url, e);
+    return null;
+  }
+}
+
+/**
+ * Relay an invite deep link to the renderer. If the main window doesn't
+ * exist yet (cold start still booting), stash the token and it'll be
+ * flushed once the window finishes loading (see 'did-finish-load' below).
+ */
+function handleInviteDeepLink(url: string) {
+  const token = extractInviteToken(url);
+  if (!token) {
+    console.warn('[Main] Received deep link with no token:', url);
+    return;
+  }
+
+  const appState = AppState.getInstance();
+  const win = appState.getMainWindow();
+
+  if (win && !win.isDestroyed()) {
+    if (!appState.isVisible()) {
+      appState.toggleMainWindow();
+    }
+    win.focus();
+    win.webContents.send('invite-deep-link', { token });
+  } else {
+    pendingInviteToken = token;
+  }
+}
+
+// macOS: fired for godojo:// (and, once configured, associated https://)
+// links — including cold starts, as long as this listener is registered
+// before app.whenReady() resolves, which it is here (module load time).
+app.on('open-url', (event, url) => {
+  event.preventDefault();
+  handleInviteDeepLink(url);
+});
+
 process.on('uncaughtException', (err) => {
   logToFile('[CRITICAL] Uncaught Exception: ' + (err.stack || err.message || err));
 });
@@ -2916,6 +2972,50 @@ async function initializeApp() {
     return;
   }
 
+  // Windows/Linux deliver the deep link as an argv entry to the already-
+  // running instance via 'second-instance' (macOS uses 'open-url' above).
+  // This also covers the ordinary "user double-clicked the app again while
+  // it's already open" case, so we still focus/restore the window even
+  // when no deep link is present.
+  app.on('second-instance', (_event, argv) => {
+    const deepLinkArg = argv.find(
+      (a) => a.startsWith(`${INVITE_PROTOCOL}://`) || a.includes('/invite?token=')
+    );
+    if (deepLinkArg) {
+      handleInviteDeepLink(deepLinkArg);
+    } else {
+      const appState = AppState.getInstance();
+      const win = appState.getMainWindow();
+      if (win) {
+        if (!appState.isVisible()) appState.toggleMainWindow();
+        win.focus();
+      }
+    }
+  });
+
+  // Register this app as the OS handler for godojo:// links.
+  if (process.defaultApp) {
+    if (process.argv.length >= 2) {
+      app.setAsDefaultProtocolClient(INVITE_PROTOCOL, process.execPath, [
+        path.resolve(process.argv[1]),
+      ]);
+    }
+  } else {
+    app.setAsDefaultProtocolClient(INVITE_PROTOCOL);
+  }
+
+  // Cold start on Windows/Linux: the OS launches a fresh process with the
+  // deep link URL as an argv entry instead of firing 'second-instance'.
+  // macOS cold starts are handled by the 'open-url' listener registered at
+  // module load time above.
+  const coldStartDeepLinkArg = process.argv.find(
+    (a) => a.startsWith(`${INVITE_PROTOCOL}://`) || a.includes('/invite?token=')
+  );
+  if (coldStartDeepLinkArg) {
+    const token = extractInviteToken(coldStartDeepLinkArg);
+    if (token) pendingInviteToken = token;
+  }
+
   // 2. Wait for app to be ready
   await app.whenReady()
 
@@ -3069,6 +3169,18 @@ async function initializeApp() {
   console.log("App is ready")
 
   appState.createWindow()
+
+  // If a deep link arrived before the window existed (cold start), deliver
+  // it now that the renderer is up and listening.
+  const mainWindowForDeepLink = appState.getMainWindow();
+  if (mainWindowForDeepLink) {
+    mainWindowForDeepLink.webContents.once('did-finish-load', () => {
+      if (pendingInviteToken) {
+        mainWindowForDeepLink.webContents.send('invite-deep-link', { token: pendingInviteToken });
+        pendingInviteToken = null;
+      }
+    });
+  }
 
   // Apply initial stealth state based on isUndetectable setting.
   // NOTE: app.dock.hide() was already called pre-emptively before createWindow()

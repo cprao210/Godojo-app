@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from 'react';
-import { Zap, Calendar, ArrowRight, ArrowLeft, MoreHorizontal, ChevronRight, Settings, RefreshCw, Ghost, Trash2, Download, DownloadCloud, CheckCircle, AlertCircle, Briefcase, Upload, X, ChevronUp, Sparkles } from 'lucide-react';
+import { Zap, Calendar, ArrowRight, ArrowLeft, MoreHorizontal, ChevronRight, Settings, RefreshCw, Ghost, Trash2, Download, DownloadCloud, CheckCircle, AlertCircle, Briefcase, Upload, X, ChevronUp, Sparkles, LayoutDashboard } from 'lucide-react';
 import { generateMeetingPDF } from '../utils/pdfGenerator';
 import ConnectCalendarButton from './ui/ConnectCalendarButton';
 import MeetingDetails from './MeetingDetails';
@@ -21,12 +21,14 @@ import { loadUserProfile } from './settings/UserProfileTab';
 import { useQuery, useMutation, useQueryClient } from 'react-query';
 import { meetingsApi } from '../lib/meetingsApi';
 import type { Meeting } from '../types/meeting';
+import { ApiError } from '../lib/apiClient';
 
 // Meeting type is imported from ../types/meeting (shared with MeetingDetails + meetingsApi).
 
 interface LauncherProps {
     onStartMeeting: (calendarEvent?: any) => void;
     onOpenSettings: (tab?: string) => void;
+    onOpenManagerDashboard?: () => void;
     onPageChange?: (isMain: boolean) => void;
     ollamaPullStatus?: 'idle' | 'downloading' | 'complete' | 'failed';
     ollamaPullPercent?: number;
@@ -60,7 +62,7 @@ const formatTime = (dateStr: string) => {
     return date.toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit', hour12: true }).toLowerCase();
 };
 
-const Launcher: React.FC<LauncherProps> = ({ onStartMeeting, onOpenSettings, onPageChange, ollamaPullStatus = 'idle', ollamaPullPercent = 0, ollamaPullMessage = '', authUser, onSignOut }) => {
+const Launcher: React.FC<LauncherProps> = ({ onStartMeeting, onOpenSettings, onOpenManagerDashboard, onPageChange, ollamaPullStatus = 'idle', ollamaPullPercent = 0, ollamaPullMessage = '', authUser, onSignOut }) => {
     const queryClient = useQueryClient();
     const { data: meetings = [] } = useQuery<Meeting[]>(["meetings"], meetingsApi.list, {
         // Poll only while a meeting is still processing (replaces the manual setInterval).
@@ -377,25 +379,35 @@ const Launcher: React.FC<LauncherProps> = ({ onStartMeeting, onOpenSettings, onP
         });
 
         try {
-            const result = await window.electronAPI.uploadTranscript(
-                uploadText.trim(),
-                uploadTitle.trim() || undefined,
-                uploadMeetingTypes
+            // const result = await window.electronAPI.uploadTranscript(
+            //     uploadText.trim(),
+            //     uploadTitle.trim() || undefined,
+            //     uploadMeetingTypes
+            // );
+            // if (result?.success) {
+            //     setIsUploadOpen(false);
+            //     setUploadText('');
+            //     setUploadTitle('');
+            //     setUploadMeetingTypes(['discovery']);
+            //     fetchMeetings(); // replaces placeholder with real entry
+            // } else {
+            //     // Remove the placeholder on failure
+            //     queryClient.setQueryData<Meeting[]>(["meetings"], (prev = []) => prev.filter(m => m.id !== optimisticId));
+            //     setUploadError(result?.error || 'Upload failed');
+            // }
+            const result = await meetingsApi.uploadTranscript(
+                uploadTitle.trim() || 'Untitled',
+                uploadText.trim()
             );
-            if (result?.success) {
-                setIsUploadOpen(false);
-                setUploadText('');
-                setUploadTitle('');
-                setUploadMeetingTypes(['discovery']);
-                fetchMeetings(); // replaces placeholder with real entry
-            } else {
-                // Remove the placeholder on failure
-                queryClient.setQueryData<Meeting[]>(["meetings"], (prev = []) => prev.filter(m => m.id !== optimisticId));
-                setUploadError(result?.error || 'Upload failed');
-            }
+            setIsUploadOpen(false);
+            setUploadText('');
+            setUploadTitle('');
+            setUploadMeetingTypes(['discovery']);
+            fetchMeetings();
+
         } catch (e) {
             queryClient.setQueryData<Meeting[]>(["meetings"], (prev = []) => prev.filter(m => m.id !== optimisticId));
-            setUploadError('Something went wrong');
+            setUploadError(e instanceof ApiError ? e.message : 'Something went wrong');
         } finally {
             setIsUploading(false);
         }
@@ -553,8 +565,25 @@ const Launcher: React.FC<LauncherProps> = ({ onStartMeeting, onOpenSettings, onP
                     />
                 </div>
 
-                {/* Right: Settings + Profile */}
+                {/* Right: Dashboard + Settings + Profile */}
                 <div className={`flex items-center gap-2 no-drag shrink-0 ${isMac ? 'mr-1' : ''}`}>
+
+                    {/* Manager Dashboard */}
+                    {onOpenManagerDashboard && (
+                        <button
+                            onClick={onOpenManagerDashboard}
+                            className={[
+                                "inline-flex items-center justify-center rounded-full transition-all no-drag",
+                                isMac ? "h-9 w-9" : "h-7 w-7",
+                                isLight
+                                    ? "border border-border-muted bg-bg-elevated/80 text-text-secondary hover:bg-bg-elevated hover:text-text-primary"
+                                    : "border border-border-subtle bg-bg-item-surface text-text-secondary hover:bg-white/[0.08] hover:text-white",
+                            ].join(" ")}
+                            aria-label="Manager Dashboard"
+                        >
+                            <LayoutDashboard size={15} />
+                        </button>
+                    )}
 
                     {/* Settings */}
                     <button

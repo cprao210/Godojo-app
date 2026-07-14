@@ -7,6 +7,7 @@ import Launcher from "./components/Launcher"
 import ModelSelectorWindow from "./components/ModelSelectorWindow"
 import SettingsOverlay from "./components/SettingsOverlay"
 import StartupSequence from "./components/StartupSequence"
+import ManagerDashboard from "./components/ManagerDashboard"
 import { AnimatePresence, motion } from "framer-motion"
 import UpdateBanner from "./components/UpdateBanner"
 import { SupportToaster } from "./components/SupportToaster"
@@ -26,6 +27,8 @@ import { SignIn } from "./_pages/SignIn"
 import { subscribeAuthState, signOut as fbSignOut, verifySessionIsActive, installSessionGuard } from "./lib/firebase";
 import { apiFetch, ApiError, notifyInvalidSession, setInvalidSessionHandler } from "./lib/apiClient";
 import { EmailVerification } from "./_pages/EmailVerification";
+import { tenantsApi } from "./lib/tenantsApi";
+import { InviteAccountMismatchBanner } from "./components/InviteAccountMismatchBanner";
 import type { User } from "firebase/auth"
 
 // Route HTTP auth failures (a terminal 401 from apiClient, surfaced through React
@@ -96,7 +99,10 @@ const App: React.FC = () => {
   // State
   const [showStartup, setShowStartup] = useState(true);
   const [isSettingsOpen, setIsSettingsOpen] = useState(false);
+  const [isManagerDashboardOpen, setIsManagerDashboardOpen] = useState(false);
   const [settingsInitialTab, setSettingsInitialTab] = useState('general');
+  const [deepLinkInviteToken, setDeepLinkInviteToken] = useState<string | null>(null);
+  const [inviteMismatchEmail, setInviteMismatchEmail] = useState<string | null>(null);
   const [showPremiumModal, setShowPremiumModal] = useState(false);
   const [isPremiumActive, setIsPremiumActive] = useState(false);
 
@@ -184,6 +190,57 @@ const App: React.FC = () => {
     return () => unsub?.();
   }, []);
 
+  // Team invite deep link: main process relays the token from
+  // godojo://invite?token=... via this event. We only stash the token
+  // here — the actual account check + routing to Settings happens in
+  // the resolver effect below, since it needs to react to authUser
+  // changes too (e.g. after a forced sign-out/sign-in).
+  useEffect(() => {
+    if (!window.electronAPI?.onInviteDeepLink) return;
+    const unsub = window.electronAPI.onInviteDeepLink(({ token }) => {
+      setDeepLinkInviteToken(token);
+    });
+    return () => unsub?.();
+  }, []);
+
+  // Resolves a pending invite deep link token against whoever is currently
+  // signed in. If the invite was sent to a different email than the
+  // signed-in account, force a sign-out instead of showing the Accept/
+  // Reject prompt to the wrong person — re-runs once the right account
+  // signs in (or does nothing if no one is signed in yet).
+  useEffect(() => {
+    const token = deepLinkInviteToken;
+    if (!token || !authUser) return;
+
+    let cancelled = false;
+    (async () => {
+      try {
+        const preview = await tenantsApi.previewInvitation(token);
+        if (cancelled) return;
+
+        const invitedEmail = preview.email?.toLowerCase();
+        const currentEmail = authUser.email?.toLowerCase();
+
+        if (invitedEmail && currentEmail && invitedEmail !== currentEmail) {
+          setInviteMismatchEmail(preview.email);
+          await fbSignOut().catch(() => { });
+          return;
+        }
+
+        setInviteMismatchEmail(null);
+        setSettingsInitialTab('user-roles-permissions');
+        setIsSettingsOpen(true);
+      } catch (err) {
+        if (cancelled) return;
+        console.warn('[App] Failed to preview invitation for account check:', err);
+        setSettingsInitialTab('user-roles-permissions');
+        setIsSettingsOpen(true);
+      }
+    })();
+
+    return () => { cancelled = true; };
+  }, [deepLinkInviteToken, authUser]);
+
   // Overlay opacity — only meaningful when isOverlayWindow, but stored centrally
   // so it can be initialized once from localStorage and updated via IPC.
   const [overlayOpacity, setOverlayOpacity] = useState<number>(() => {
@@ -224,7 +281,7 @@ const App: React.FC = () => {
   // Re-index State
   const [incompatibleWarning, setIncompatibleWarning] = useState<{ count: number; oldProvider: string; newProvider: string } | null>(null);
 
-  const isAppReady = !isSettingsWindow && !isOverlayWindow && !isModelSelectorWindow && !showStartup && !isSettingsOpen && isLauncherMainView;
+  const isAppReady = !isSettingsWindow && !isOverlayWindow && !isModelSelectorWindow && !showStartup && !isSettingsOpen && !isManagerDashboardOpen && isLauncherMainView;
   const { activeAd, dismissAd } = useAdCampaigns(
     isPremiumActive,
     hasProfile,
@@ -526,7 +583,12 @@ const App: React.FC = () => {
                           onStartMeeting={(event?: any) => handleStartMeeting(event)}
                           onOpenSettings={(tab = 'general') => {
                             setSettingsInitialTab(tab);
+                            setIsManagerDashboardOpen(false); // switching to Settings closes Dashboard
                             setIsSettingsOpen(true);
+                          }}
+                          onOpenManagerDashboard={() => {
+                            setIsSettingsOpen(false);         // switching to Dashboard closes Settings
+                            setIsManagerDashboardOpen((open) => !open); // toggle: click again to close
                           }}
                           onPageChange={setIsLauncherMainView}
                           ollamaPullStatus={ollamaPullStatus}
@@ -543,6 +605,12 @@ const App: React.FC = () => {
                           window.dispatchEvent(new CustomEvent('settings-closed'));
                         }}
                         initialTab={settingsInitialTab}
+                        deepLinkInviteToken={deepLinkInviteToken}
+                        onDeepLinkTokenConsumed={() => setDeepLinkInviteToken(null)}
+                      />
+                      <ManagerDashboard
+                        isOpen={isManagerDashboardOpen}
+                        onClose={() => setIsManagerDashboardOpen(false)}
                       />
                       <ToastViewport />
                     </ToastProvider>
@@ -592,6 +660,12 @@ const App: React.FC = () => {
             {/* <UpdateBanner /> */}
             {/* <SupportToaster /> */}
 
+            {inviteMismatchEmail && (
+              <InviteAccountMismatchBanner
+                invitedEmail={inviteMismatchEmail}
+                onDismiss={() => setInviteMismatchEmail(null)}
+              />
+            )}
 
             {isLauncherMainView && !isSettingsOpen && (
               <>

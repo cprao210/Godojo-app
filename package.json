@@ -26,6 +26,14 @@
     "appId": "com.electron.meeting-notes",
     "afterPack": "./scripts/ad-hoc-sign.js",
     "productName": "GoDojo AI",
+    "protocols": [
+      {
+        "name": "GoDojo Invite Link",
+        "schemes": [
+          "godojo"
+        ]
+      }
+    ],
     "files": [
       "dist",
       "dist-electron",

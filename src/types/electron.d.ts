@@ -73,6 +73,7 @@ export interface ElectronAPI {
   getOpenAtLogin: () => Promise<boolean>
   onSettingsVisibilityChange: (callback: (isVisible: boolean) => void) => () => void
   toggleSettingsWindow: (coords?: { x: number; y: number }) => Promise<void>
+  onInviteDeepLink: (callback: (data: { token: string }) => void) => () => void
   closeSettingsWindow: () => Promise<void>
   toggleAdvancedSettings: () => Promise<void>
   closeAdvancedSettings: () => Promise<void>

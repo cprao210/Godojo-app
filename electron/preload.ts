@@ -159,6 +159,9 @@ interface ElectronAPI {
   // Settings Window
   toggleSettingsWindow: (coords?: { x: number; y: number }) => Promise<void>
 
+  // Team invite deep link (godojo://invite?token=...)
+  onInviteDeepLink: (callback: (data: { token: string }) => void) => () => void
+
   // Groq Fast Text Mode
   getGroqFastTextMode: () => Promise<{ enabled: boolean }>
   setGroqFastTextMode: (enabled: boolean) => Promise<{ success: boolean; error?: string }>
@@ -928,6 +931,15 @@ contextBridge.exposeInMainWorld("electronAPI", {
 
   // Settings Window
   toggleSettingsWindow: (coords?: { x: number; y: number }) => ipcRenderer.invoke('toggle-settings-window', coords),
+
+  // Team invite deep link
+  onInviteDeepLink: (callback: (data: { token: string }) => void) => {
+    const subscription = (_: any, data: { token: string }) => callback(data)
+    ipcRenderer.on('invite-deep-link', subscription)
+    return () => {
+      ipcRenderer.removeListener('invite-deep-link', subscription)
+    }
+  },
 
   // Groq Fast Text Mode
   getGroqFastTextMode: () => ipcRenderer.invoke('get-groq-fast-text-mode'),
