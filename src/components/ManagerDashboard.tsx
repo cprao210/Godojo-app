@@ -36,7 +36,7 @@ import { dashboardApi } from '../lib/dashboardApi';
 import { ApiError } from '../lib/apiClient';
 import { getFirebaseAuth } from '../lib/firebase';
 import type { Tenant, TenantMember } from '../types/tenant';
-import type { DashboardPeriod, DashboardResponse } from '../types/dashboard';
+import type { DashboardActiveMember, DashboardPeriod, DashboardResponse } from '../types/dashboard';
 
 interface Objection {
     label: string;
@@ -462,42 +462,11 @@ export const ManagerDashboard: React.FC<ManagerDashboardProps> = ({ isOpen }) =>
         };
     }, [isOpen, tenant, isAdmin, period]);
 
-    // ── 3. All AEs (GET /tenants/:tenant_id/members?role=admin&page=1&limit=8) ──
-    const [allAes, setAllAes] = useState<TenantMember[]>([]);
-    const [isLoadingAes, setIsLoadingAes] = useState(false);
-    const [aesError, setAesError] = useState<string | null>(null);
-
-    useEffect(() => {
-        if (!isOpen || !tenant || !isAdmin) return;
-        let cancelled = false;
-        setIsLoadingAes(true);
-        setAesError(null);
-        tenantsApi
-            .listMembers(tenant.id, { role: 'admin', page: 1, limit: 8 })
-            .then((res) => {
-                if (cancelled) return;
-                // res.data can legitimately be [] — handled as an empty table below.
-                const members = (res?.data ?? []).filter(
-                    (m): m is TenantMember => m.type === 'team_member',
-                );
-                setAllAes(members);
-            })
-            .catch((err: unknown) => {
-                if (cancelled) return;
-                setAesError(err instanceof ApiError ? err.message : 'Failed to load AEs.');
-            })
-            .finally(() => {
-                if (!cancelled) setIsLoadingAes(false);
-            });
-        return () => {
-            cancelled = true;
-        };
-    }, [isOpen, tenant, isAdmin]);
-
     // ── Map API shapes → the presentational props these components already expect ──
     const activeReps = dashboard?.active_members_count ?? 0;
     const totalCalls = dashboard?.total_calls ?? 0;
     const teamAvgScore = dashboard?.team_avg_score ?? 0;
+    const allAes: DashboardActiveMember[] = (dashboard?.active_members ?? []).filter((m) => m.role !== 'admin');
 
     const teamScoreTrend = (dashboard?.trend ?? []).map((t) => ({
         label: t.label,
@@ -525,11 +494,11 @@ export const ManagerDashboard: React.FC<ManagerDashboardProps> = ({ isOpen }) =>
 
     const allAeRows: AeEntry[] = allAes.map((m) => ({
         userId: m.user_id,
-        name: m.user?.display_name || m.user?.email || 'Unknown',
+        name: m.name || m.email || 'Unknown',
         role: m.role === 'admin' ? 'Admin' : 'Member',
-        calls: (m as TenantMember & { meetings_count?: number }).meetings_count ?? 0,
-        score: Math.round((m as TenantMember & { avg_score?: number }).avg_score ?? 0),
-    })).filter((ae) => ae.role !== 'Admin'); // Only show AEs, not other admins (themselves) in the "All AEs" table.
+        calls: m.calls,
+        score: Math.round(m.avg_score),
+    }))
 
     console.log(allAeRows);
     const periodLabel = PERIOD_OPTIONS.find((p) => p.value === period)?.label ?? 'Select period';
@@ -726,8 +695,8 @@ export const ManagerDashboard: React.FC<ManagerDashboardProps> = ({ isOpen }) =>
                                         subtitle="Click any row to view full performance + create coaching"
                                         cardCls={cardCls}
                                     >
-                                        {aesError ? (
-                                            <p className="text-sm font-semibold text-red-400 py-4 text-center">{aesError}</p>
+                                        {dashboardError ? (
+                                            <p className="text-sm font-semibold text-red-400 py-4 text-center">{dashboardError}</p>
                                         ) : allAeRows.length > 0 ? (
                                             <AllAEsTable
                                                 aes={allAeRows}
@@ -736,7 +705,7 @@ export const ManagerDashboard: React.FC<ManagerDashboardProps> = ({ isOpen }) =>
                                             />
                                         ) : (
                                             <p className="text-sm text-text-tertiary py-8 text-center">
-                                                {isLoadingAes ? 'Loading…' : 'No AEs found.'}
+                                                {isLoadingDashboard ? 'Loading…' : 'No AEs found.'}
                                             </p>
                                         )}
                                     </SectionCard>

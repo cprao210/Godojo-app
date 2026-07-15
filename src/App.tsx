@@ -29,6 +29,7 @@ import { apiFetch, ApiError, notifyInvalidSession, setInvalidSessionHandler } fr
 import { EmailVerification } from "./_pages/EmailVerification";
 import { tenantsApi } from "./lib/tenantsApi";
 import { InviteAccountMismatchBanner } from "./components/InviteAccountMismatchBanner";
+import { meetingsApi, type TranscriptSegmentInput } from "./lib/meetingsApi";
 import type { User } from "firebase/auth"
 
 // Route HTTP auth failures (a terminal 401 from apiClient, surfaced through React
@@ -49,6 +50,28 @@ const App: React.FC = () => {
   const isOverlayWindow = new URLSearchParams(window.location.search).get('window') === 'overlay';
   const isModelSelectorWindow = new URLSearchParams(window.location.search).get('window') === 'model-selector';
   const isCropperWindow = new URLSearchParams(window.location.search).get('window') === 'cropper';
+
+  // Backend (HTTP API) meeting session state — separate from the Electron IPC
+  // session. meetingIdRef tracks the id returned by meetingsApi.start; segmentsRef
+  // buffers transcript turns so we can submit them all at once in handleEndMeeting,
+  // per the backend contract (submit once, at end-of-meeting).
+  const backendMeetingIdRef = React.useRef<string | null>(null);
+  const transcriptSegmentsRef = React.useRef<TranscriptSegmentInput[]>([]);
+
+  // Buffer transcript turns while a backend meeting session is active.
+  useEffect(() => {
+    const cleanup = window.electronAPI?.onNativeAudioTranscript?.((t) => {
+      if (!backendMeetingIdRef.current) return;
+      transcriptSegmentsRef.current.push({
+        speaker: (t.speaker as TranscriptSegmentInput["speaker"]) ?? "client",
+        text: t.text,
+        timestamp: t.timestamp ?? Date.now(),
+        final: t.final,
+        confidence: t.confidence,
+      });
+    });
+    return () => cleanup?.();
+  }, []);
 
   // Default to launcher if not specified (dev mode safety)
   const isDefault = !isSettingsWindow && !isOverlayWindow && !isModelSelectorWindow && !isCropperWindow;
@@ -410,18 +433,35 @@ const App: React.FC = () => {
         })
       };
 
-      const result = await window.electronAPI.startMeeting(meetingMetadata);
-      if (result.success) {
-        analytics.trackMeetingStarted();
-        // Switch to Overlay Mode via IPC
-        // The main process handles window switching, but we can reinforce it or just trust main.
-        // Actually, main process startMeeting triggers nothing UI-wise unless we tell it to switch window
-        // But we configured main.ts to not auto-switch?
-        // Let's explicitly request mode change.
-        await window.electronAPI.setWindowMode('overlay');
-      } else {
-        console.error("Failed to start meeting:", result.error);
+      // Start the corresponding backend session (Phase-1 HTTP API). This runs
+      // alongside the existing IPC session — failures here are logged but don't
+      // block the meeting, since audio capture/STT stay client-side regardless.
+      transcriptSegmentsRef.current = [];
+      try {
+        const startResp = await meetingsApi.start({
+          title: calendarEvent?.title,
+          attendees: calendarEvent?.attendees,
+          audio: { input_device_id: inputDeviceId, output_device_id: outputDeviceId },
+          calendar_event_id: calendarEvent?.id,
+        });
+        backendMeetingIdRef.current = startResp.meeting_id;
+      } catch (err) {
+        console.error("[App] meetingsApi.start failed:", err);
+        backendMeetingIdRef.current = null;
       }
+
+      // const result = await window.electronAPI.startMeeting(meetingMetadata);
+      // if (result.success) {
+      //   analytics.trackMeetingStarted();
+      //   // Switch to Overlay Mode via IPC
+      //   // The main process handles window switching, but we can reinforce it or just trust main.
+      //   // Actually, main process startMeeting triggers nothing UI-wise unless we tell it to switch window
+      //   // But we configured main.ts to not auto-switch?
+      //   // Let's explicitly request mode change.
+      await window.electronAPI.setWindowMode('overlay');
+      // } else {
+      //   console.error("Failed to start meeting:", result.error);
+      // }
     } catch (err) {
       console.error("Failed to start meeting:", err);
     }
@@ -449,9 +489,30 @@ const App: React.FC = () => {
     // means the placeholder card is visible as soon as Launcher mounts and
     // receives the onMeetingsUpdated event, instead of only after the full IPC
     // round-trip completes.
-    window.electronAPI.endMeeting(meetingTypes).catch(err =>
-      console.error("Failed to end meeting:", err)
-    );
+    // window.electronAPI.endMeeting(meetingTypes).catch(err =>
+    //   console.error("Failed to end meeting:", err)
+    // );
+
+    // Submit the buffered transcript then close out the backend session. Fired
+    // without blocking the window-mode switch, same rationale as the IPC endMeeting
+    // above — this shouldn't hold up returning to the launcher.
+    const backendMeetingId = backendMeetingIdRef.current;
+    if (backendMeetingId) {
+      const segments = transcriptSegmentsRef.current;
+      (async () => {
+        try {
+          if (segments.length > 0) {
+            await meetingsApi.submitTranscript(backendMeetingId, segments);
+          }
+          await meetingsApi.end(backendMeetingId, meetingTypes ?? []);
+        } catch (err) {
+          console.error("[App] Failed to submit transcript / end backend meeting:", err);
+        } finally {
+          backendMeetingIdRef.current = null;
+          transcriptSegmentsRef.current = [];
+        }
+      })();
+    }
 
     try {
       await window.electronAPI.setWindowMode('launcher');

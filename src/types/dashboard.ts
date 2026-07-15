@@ -2,7 +2,7 @@ export type DashboardPeriod =
     | "last_1_day" | "last_5_days" | "last_week" | "last_2_weeks"
     | "last_30_days" | "last_quarter" | "last_year";
 
-export interface DashboardActiveMember { user_id: string; role: string; status: string; joined_at: string; }
+export interface DashboardActiveMember { user_id: string; name: string; email: string; image: string; role: string; status: string; joined_at: string; calls: number; avg_score: number; }
 export interface DashboardRecentCall { meeting_id: string; user_id: string; title: string; start_time: number; duration_ms: number; }
 export interface DashboardTrendPoint { label: string; avg_score: number; }
 export interface DashboardObjection { category: string; count: number; }
