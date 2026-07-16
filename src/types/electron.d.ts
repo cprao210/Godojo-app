@@ -415,6 +415,11 @@ export interface ElectronAPI {
     callback: (state: { signedIn: boolean; uid?: string; email?: string | null; displayName?: string | null; photoURL?: string | null }) => void
   ) => () => void;
 
+  // ===== Tenant ID (cross-window) =====
+  setCurrentTenantId: (tenantId: string | null) => Promise<{ success: boolean }>;
+  getCurrentTenantId: () => Promise<string | null>;
+  onTenantStateChanged: (callback: (tenantId: string | null) => void) => () => void;
+
   // ===== Supabase mirror =====
   supabaseSetCredentials: (url: string, anonKey: string) => Promise<{ success: boolean; error?: string }>;
   supabaseGetMirrorStatus: () => Promise<{

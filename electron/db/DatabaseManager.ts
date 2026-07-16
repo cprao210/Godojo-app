@@ -1431,6 +1431,7 @@ export class DatabaseManager {
                     summary_json: summaryJson,
                     created_at: meeting.date,
                     calendar_event_id: meeting.calendarEventId || null,
+                    tenant_id: meeting.tenantId || null,
                     source: meeting.source || 'manual',
                     is_processed: meeting.isProcessed ? 1 : 0
                 });

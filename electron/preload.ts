@@ -1324,6 +1324,17 @@ contextBridge.exposeInMainWorld("electronAPI", {
     }
   },
 
+  // ===== Tenant ID (cross-window) =====
+  setCurrentTenantId: (tenantId: string | null) => ipcRenderer.invoke('tenant:set-current', tenantId),
+  getCurrentTenantId: () => ipcRenderer.invoke('tenant:get-current'),
+  onTenantStateChanged: (callback: (tenantId: string | null) => void) => {
+    const subscription = (_: Electron.IpcRendererEvent, tenantId: string | null) => callback(tenantId)
+    ipcRenderer.on('tenant:state-changed', subscription)
+    return () => {
+      ipcRenderer.removeListener('tenant:state-changed', subscription)
+    }
+  },
+
   // ===== Supabase mirror =====
   supabaseSetCredentials: (url: string, anonKey: string) =>
     ipcRenderer.invoke('supabase:set-credentials', { url, anonKey }),

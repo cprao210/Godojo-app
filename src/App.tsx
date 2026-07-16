@@ -138,17 +138,55 @@ const App: React.FC = () => {
 
   const [tenantId, setTenantId] = useState<string | null>(null);
 
-
+  // Only the default/launcher window runs the Firebase auth subscription
+  // (see the isLauncherWindow || isDefault guard below), so it's the only
+  // window that can actually resolve a tenant via tenantsApi.listMine().
+  // The overlay window (where the "End Meeting" button lives) is a totally
+  // separate renderer process/React tree — it can never see this window's
+  // state directly. Once resolved here, push it to the main process so it
+  // can broadcast to every window, including the overlay.
   useEffect(() => {
+
+    // Guard: tenantsApi.listMine() attaches the Firebase ID token, so calling
+    // it before auth resolves (or when signed out) either 401s or races the
+    // token being set. Previously this ran once on mount with no dependency
+    // on auth state, so on a cold launch it could fire before authUser was
+    // set, fail silently (caught below), and never retry — leaving tenantId
+    // permanently null for the whole session, which is why meetings saved
+    // with an empty tenant_id.
+    if (!(isLauncherWindow || isDefault)) return;
+    if (!authUser) return;
 
     const getTenantId = async () => {
 
       const tenants = await tenantsApi.listMine();
-      setTenantId(tenants[0]?.id ?? null);
+      console.log('[App.tsx] tenantsApi.listMine() resolved:', tenants);
+      const resolved = tenants[0]?.id ?? null;
+      setTenantId(resolved);
+      // Publish to the main process so every window (esp. the overlay,
+      // which owns the End Meeting button) picks it up via tenant:state-changed.
+      window.electronAPI.setCurrentTenantId(resolved).catch(err =>
+        console.error('[App.tsx] Failed to publish tenantId to main process:', err)
+      );
     }
 
     getTenantId().catch(err => console.error("Failed to fetch tenant ID:", err));
 
+  }, [authUser, isLauncherWindow, isDefault]);
+
+  // Every window (including the overlay) subscribes to the broadcast tenantId
+  // and also asks for whatever value the main process already has cached,
+  // in case this window mounted after the default window already resolved it.
+  useEffect(() => {
+    window.electronAPI.getCurrentTenantId()
+      .then(id => { if (id) setTenantId(id); })
+      .catch(err => console.error('[App.tsx] Failed to read cached tenantId:', err));
+
+    const unsub = window.electronAPI.onTenantStateChanged((id) => {
+      console.log('[App.tsx] tenant:state-changed received:', id ?? '(null)');
+      setTenantId(id);
+    });
+    return () => unsub();
   }, []);
 
   useEffect(() => {
@@ -506,6 +544,7 @@ const App: React.FC = () => {
     // means the placeholder card is visible as soon as Launcher mounts and
     // receives the onMeetingsUpdated event, instead of only after the full IPC
     // round-trip completes.
+    console.log('[App.tsx] handleEndMeeting: tenantId at IPC call =', tenantId ?? '(null)');
     window.electronAPI.endMeeting(meetingTypes, tenantId).catch(err =>
       console.error("Failed to end meeting:", err)
     );

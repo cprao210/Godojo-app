@@ -3520,6 +3520,28 @@ export function initializeIpcHandlers(appState: AppState): void {
     console.warn('[ipc] AuthManager event wiring failed:', e);
   }
 
+  // ==========================================
+  // Tenant ID bridge (cross-window)
+  // ==========================================
+  // The current tenant is resolved once, in the main/launcher window, via
+  // tenantsApi.listMine() (needs the Firebase token owned by that window's
+  // renderer). The overlay window — where "End Meeting" actually lives — is
+  // a *separate* renderer process with its own React tree and its own
+  // (always-null) local state, so it can never see that value on its own.
+  // We cache the resolved tenantId here in the main process and broadcast it
+  // to every window, the same way auth:state-changed already works.
+  let currentTenantId: string | null = null;
+
+  safeHandle('tenant:set-current', async (_, tenantId: string | null) => {
+    currentTenantId = tenantId ?? null;
+    BrowserWindow.getAllWindows().forEach(win => {
+      if (!win.isDestroyed()) win.webContents.send('tenant:state-changed', currentTenantId);
+    });
+    return { success: true };
+  });
+
+  safeHandle('tenant:get-current', async () => currentTenantId);
+
   safeHandle('auth:set-id-token', async (_, session: {
     idToken: string;
     refreshToken: string;
