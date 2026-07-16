@@ -660,6 +660,19 @@ export class DatabaseManager {
             this.db.pragma('user_version = 15');
         }
 
+        // Version 15 → 16: meetings.tenant_id
+        // saveMeeting() has been inserting a tenant_id value into `meetings` for a while,
+        // but the column was never added to the schema, so those writes were silently
+        // failing on existing DBs. Backfilling as NULL is safe; SupabaseMirrorService
+        // reconciles the real value on next sync.
+        if (version < 16) {
+            console.log('[DatabaseManager] Applying migration v15 → v16: meetings.tenant_id');
+            try { this.db.exec(`ALTER TABLE meetings ADD COLUMN tenant_id TEXT`); }
+            catch (e) { /* Column already exists */ }
+            try { this.db.exec(`CREATE INDEX IF NOT EXISTS idx_meetings_tenant ON meetings(tenant_id)`); }
+            catch (e) { /* Index already exists */ }
+            this.db.pragma('user_version = 16');
+        }
         console.log('[DatabaseManager] Migrations completed.');
     }
 

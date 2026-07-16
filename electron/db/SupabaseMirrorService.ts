@@ -479,6 +479,7 @@ CREATE TABLE IF NOT EXISTS meetings (
     summary_json         JSONB,
     created_at           TIMESTAMPTZ,
     calendar_event_id    TEXT,
+    tenant_id            TEXT,
     source               TEXT,
     is_processed         INTEGER DEFAULT 1,
     embedding_provider   TEXT,
@@ -486,6 +487,11 @@ CREATE TABLE IF NOT EXISTS meetings (
     PRIMARY KEY (user_id, id)
 );
 CREATE INDEX IF NOT EXISTS idx_meetings_user ON meetings(user_id, created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_meetings_tenant ON meetings(tenant_id);
+
+-- If this table already exists in your Supabase project, run instead:
+-- ALTER TABLE meetings ADD COLUMN IF NOT EXISTS tenant_id TEXT;
+-- CREATE INDEX IF NOT EXISTS idx_meetings_tenant ON meetings(tenant_id);
 
 CREATE TABLE IF NOT EXISTS transcripts (
     user_id      TEXT NOT NULL REFERENCES users(firebase_uid) ON DELETE CASCADE,
