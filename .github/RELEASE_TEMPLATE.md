@@ -16,7 +16,6 @@ Short one-line description of the release.
 
 ## Fixes
 
-- Fixed issue with stealth activation
 - Resolved crash on startup
 - Corrected UI alignment issue
 
@@ -25,30 +24,36 @@ Short one-line description of the release.
 - Dependency updates
 - Refactored updater logic
 
-## ⚠️macOS Installation (Unsigned Build)
+<!--
+NOTE: The installation sections below apply only to UNSIGNED interim builds.
+Once Developer ID signing + notarization (macOS) and Azure Trusted Signing
+(Windows) are in place, DELETE both sections — signed builds install normally.
+-->
 
-Download the correct architecture .zip or .dmg file for your device (Apple Silicon or Intel).
+## ⚠️ macOS Installation (Unsigned interim build)
+
+Download the correct architecture .zip or .dmg for your device (Apple Silicon or Intel).
 
 If you see "App is damaged":
 
 - **For .zip downloads:**
   1. Move the app to your Applications folder.
-  2. Open Terminal and run: `xattr -cr /Applications/Natively.app`
+  2. Open Terminal and run: `xattr -cr "/Applications/GoDojo AI.app"`
 
 - **For .dmg downloads:**
-  1. Open Terminal and run:
+  1. Open Terminal and run (match your architecture):
      ```bash
-     xattr -cr ~/Downloads/Natively-2.0.2-arm64.dmg
+     xattr -cr ~/Downloads/godojo-ai-*-arm64-mac.dmg
      # Or for Intel Macs:
-     xattr -cr ~/Downloads/Natively-2.0.2-x64.dmg
+     xattr -cr ~/Downloads/godojo-ai-*-x64-mac.dmg
      ```
-  2. Install the natively.dmg
-  3. Open Terminal and run: `xattr -cr /Applications/Natively.app`
+  2. Open the .dmg and drag GoDojo AI to Applications.
+  3. Open Terminal and run: `xattr -cr "/Applications/GoDojo AI.app"`
 
-## ⚠️Windows Installation (Unsigned Build)
+## ⚠️ Windows Installation (Unsigned interim build)
 
-When running the installer on Windows, you might see a "Windows protected your PC" warning from Microsoft Defender SmartScreen saying it prevented an unrecognized app from starting. 
+When running the installer on Windows, you might see a "Windows protected your PC"
+warning from Microsoft Defender SmartScreen about an unrecognized app.
 
-Since this is an unsigned build, this is expected. You can safely ignore it by clicking **More info** and then **Run anyway**.
-
-\\ refer to change.md for detailed changes
+Since this is an unsigned interim build, this is expected. You can proceed by
+clicking **More info** and then **Run anyway**.
