@@ -167,16 +167,6 @@ const Launcher: React.FC<LauncherProps> = ({ onStartMeeting, onOpenSettings, onO
     }, []);
 
 
-    useEffect(() => {
-        if (!window.electronAPI) return;
-        Promise.all([
-            window.electronAPI.getCalendarStatus(),
-            window.electronAPI.getZoomCalendarStatus(),
-        ]).then(([google, zoom]) => {
-            setIsCalendarConnected(google.connected || zoom.connected);
-        });
-    }, []);
-
     // Keybinds
     const { isShortcutPressed } = useShortcuts();
     const isLight = useResolvedTheme() === 'light';

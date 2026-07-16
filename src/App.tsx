@@ -436,32 +436,34 @@ const App: React.FC = () => {
       // Start the corresponding backend session (Phase-1 HTTP API). This runs
       // alongside the existing IPC session — failures here are logged but don't
       // block the meeting, since audio capture/STT stay client-side regardless.
-      transcriptSegmentsRef.current = [];
-      try {
-        const startResp = await meetingsApi.start({
-          title: calendarEvent?.title,
-          attendees: calendarEvent?.attendees,
-          audio: { input_device_id: inputDeviceId, output_device_id: outputDeviceId },
-          calendar_event_id: calendarEvent?.id,
-        });
-        backendMeetingIdRef.current = startResp.meeting_id;
-      } catch (err) {
-        console.error("[App] meetingsApi.start failed:", err);
-        backendMeetingIdRef.current = null;
-      }
-
-      // const result = await window.electronAPI.startMeeting(meetingMetadata);
-      // if (result.success) {
-      //   analytics.trackMeetingStarted();
-      //   // Switch to Overlay Mode via IPC
-      //   // The main process handles window switching, but we can reinforce it or just trust main.
-      //   // Actually, main process startMeeting triggers nothing UI-wise unless we tell it to switch window
-      //   // But we configured main.ts to not auto-switch?
-      //   // Let's explicitly request mode change.
-      await window.electronAPI.setWindowMode('overlay');
-      // } else {
-      //   console.error("Failed to start meeting:", result.error);
+      // transcriptSegmentsRef.current = [];
+      // try {
+      //   const startResp = await meetingsApi.start({
+      //     title: calendarEvent?.title,
+      //     attendees: calendarEvent?.attendees,
+      //     audio: { input_device_id: inputDeviceId, output_device_id: outputDeviceId },
+      //     calendar_event_id: calendarEvent?.id,
+      //   });
+      //   backendMeetingIdRef.current = startResp.meeting_id;
+      // } catch (err) {
+      //   console.error("[App] meetingsApi.start failed:", err);
+      //   backendMeetingIdRef.current = null;
       // }
+
+      // await window.electronAPI.setWindowMode('overlay');
+
+      const result = await window.electronAPI.startMeeting(meetingMetadata);
+      if (result.success) {
+        analytics.trackMeetingStarted();
+        // Switch to Overlay Mode via IPC
+        // The main process handles window switching, but we can reinforce it or just trust main.
+        // Actually, main process startMeeting triggers nothing UI-wise unless we tell it to switch window
+        // But we configured main.ts to not auto-switch?
+        // Let's explicitly request mode change.
+        await window.electronAPI.setWindowMode('overlay');
+      } else {
+        console.error("Failed to start meeting:", result.error);
+      }
     } catch (err) {
       console.error("Failed to start meeting:", err);
     }
@@ -489,30 +491,30 @@ const App: React.FC = () => {
     // means the placeholder card is visible as soon as Launcher mounts and
     // receives the onMeetingsUpdated event, instead of only after the full IPC
     // round-trip completes.
-    // window.electronAPI.endMeeting(meetingTypes).catch(err =>
-    //   console.error("Failed to end meeting:", err)
-    // );
+    window.electronAPI.endMeeting(meetingTypes).catch(err =>
+      console.error("Failed to end meeting:", err)
+    );
 
     // Submit the buffered transcript then close out the backend session. Fired
     // without blocking the window-mode switch, same rationale as the IPC endMeeting
     // above — this shouldn't hold up returning to the launcher.
-    const backendMeetingId = backendMeetingIdRef.current;
-    if (backendMeetingId) {
-      const segments = transcriptSegmentsRef.current;
-      (async () => {
-        try {
-          if (segments.length > 0) {
-            await meetingsApi.submitTranscript(backendMeetingId, segments);
-          }
-          await meetingsApi.end(backendMeetingId, meetingTypes ?? []);
-        } catch (err) {
-          console.error("[App] Failed to submit transcript / end backend meeting:", err);
-        } finally {
-          backendMeetingIdRef.current = null;
-          transcriptSegmentsRef.current = [];
-        }
-      })();
-    }
+    // const backendMeetingId = backendMeetingIdRef.current;
+    // if (backendMeetingId) {
+    //   const segments = transcriptSegmentsRef.current;
+    //   (async () => {
+    //     try {
+    //       if (segments.length > 0) {
+    //         await meetingsApi.submitTranscript(backendMeetingId, segments);
+    //       }
+    //       await meetingsApi.end(backendMeetingId, meetingTypes ?? []);
+    //     } catch (err) {
+    //       console.error("[App] Failed to submit transcript / end backend meeting:", err);
+    //     } finally {
+    //       backendMeetingIdRef.current = null;
+    //       transcriptSegmentsRef.current = [];
+    //     }
+    //   })();
+    // }
 
     try {
       await window.electronAPI.setWindowMode('launcher');
