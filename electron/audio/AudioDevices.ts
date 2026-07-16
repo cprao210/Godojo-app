@@ -63,6 +63,17 @@ export class AudioDevices {
         inputDeviceId?: string | null,
         outputDeviceId?: string | null
     ): boolean {
+        // This built-in-only heuristic exists to disable the local mic VAD gate in
+        // the macOS built-in-mic/speaker scenario (where the echo pipeline needs raw
+        // audio). The rationale is macOS-specific, and the name patterns below (e.g.
+        // /internal/) can spuriously match real Windows device names ("Internal
+        // Microphone"), wrongly disabling VAD there. Scope the whole heuristic to
+        // macOS: on every other platform the mic VAD stays active (return false).
+        if (process.platform !== 'darwin') {
+            console.log('[AudioDevices] isBuiltinOnly: non-darwin — VAD remains active on mic');
+            return false;
+        }
+
         const BUILTIN_PATTERNS = /built.?in|macbook|internal|speaker.*mac|mac.*speaker/i;
         const isDefaultOrEmpty = (id?: string | null) =>
             !id || id === 'default' || id.trim() === '';

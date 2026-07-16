@@ -122,12 +122,21 @@ export class MicrophoneCapture extends EventEmitter {
     }
 
     public getOutputSampleRate(): number {
-        const native = this.getSampleRate();
-        if (this.monitor && typeof this.monitor.get_output_sample_rate === 'function') {
-            return this.monitor.get_output_sample_rate();
-        }
+        // Touch getSampleRate() so its native-rate log stays consistent.
+        this.getSampleRate();
+        // Return 0 if monitor hasn't started yet so the startMeeting settle poll
+        // knows the rate is not yet available.
         if (!this.monitor) return 0;
-        return native === 48000 ? 16000 : native;
+        // napi-rs exposes Rust's get_output_sample_rate() as camelCase
+        // getOutputSampleRate() (native-module/index.d.ts). The old snake_case check
+        // never matched and fell through to `native === 48000 ? 16000 : native`,
+        // which leaked non-48000 native rates (e.g. WASAPI 44100 on Windows) as the
+        // declared Deepgram sample_rate even though the Rust DSP always outputs 16kHz.
+        if (typeof this.monitor.getOutputSampleRate === 'function') {
+            return this.monitor.getOutputSampleRate();
+        }
+        // Fallback for older native builds: DSP always resamples output to 16kHz.
+        return 16000;
     }
 
     /**
@@ -241,7 +250,12 @@ export class MicrophoneCapture extends EventEmitter {
                     if (!this.isRecording) return;
                     const rate = this.monitor?.getSampleRate?.();
                     if (rate) {
-                        const outputRate = rate === 48000 ? 16000 : rate;
+                        // Use getOutputSampleRate() — the Rust DSP always resamples to
+                        // 16kHz regardless of native rate. The old `rate === 48000 ? 16000
+                        // : rate` leaked non-48000 native rates (e.g. WASAPI 44100 on
+                        // Windows) as the emitted output rate, misconfiguring the user STT
+                        // channel (setSampleRate(44100) on 16kHz audio → garbled transcripts).
+                        const outputRate = this.getOutputSampleRate() || 16000;
                         console.log(
                             `[MicrophoneCapture] Native: ${rate}Hz → Output: ${outputRate}Hz (${label})`
                         );
