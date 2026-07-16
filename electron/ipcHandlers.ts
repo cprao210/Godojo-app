@@ -1710,9 +1710,9 @@ export function initializeIpcHandlers(appState: AppState): void {
     }
   });
 
-  safeHandle("end-meeting", async (_, payload?: { meetingTypes?: ('discovery' | 'demo' | 'negotiation')[] }) => {
+  safeHandle("end-meeting", async (_, payload?: { meetingTypes?: ('discovery' | 'demo' | 'negotiation')[], tenantId?: string | null }) => {
     try {
-      await appState.endMeeting(payload?.meetingTypes);
+      await appState.endMeeting(payload?.meetingTypes, payload?.tenantId);
       return { success: true };
     } catch (error: any) {
       console.error("Error ending meeting:", error);

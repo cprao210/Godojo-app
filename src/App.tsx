@@ -136,6 +136,21 @@ const App: React.FC = () => {
   const [pendingVerificationUser, setPendingVerificationUser] = useState<User | null>(null);
   const [sessionExpiredMessage, setSessionExpiredMessage] = useState<string | null>(null);
 
+  const [tenantId, setTenantId] = useState<string | null>(null);
+
+
+  useEffect(() => {
+
+    const getTenantId = async () => {
+
+      const tenants = await tenantsApi.listMine();
+      setTenantId(tenants[0]?.id ?? null);
+    }
+
+    getTenantId().catch(err => console.error("Failed to fetch tenant ID:", err));
+
+  }, []);
+
   useEffect(() => {
     if (!(isLauncherWindow || isDefault)) {
       setAuthChecked(true);
@@ -491,7 +506,7 @@ const App: React.FC = () => {
     // means the placeholder card is visible as soon as Launcher mounts and
     // receives the onMeetingsUpdated event, instead of only after the full IPC
     // round-trip completes.
-    window.electronAPI.endMeeting(meetingTypes).catch(err =>
+    window.electronAPI.endMeeting(meetingTypes, tenantId).catch(err =>
       console.error("Failed to end meeting:", err)
     );
 

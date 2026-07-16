@@ -257,7 +257,7 @@ export class MeetingPersistence {
      *   Forwarded as the scorecard's `hintMeetingTypes` so auto-detection respects the
      *   rep's explicit selection instead of guessing from the transcript alone.
      */
-    public async stopMeeting(meetingTypes?: ('discovery' | 'demo' | 'negotiation')[]): Promise<string | null> {
+    public async stopMeeting(meetingTypes?: ('discovery' | 'demo' | 'negotiation')[], tenantId?: string | null): Promise<string | null> {
         console.log('[MeetingPersistence] Stopping meeting and queueing save...');
 
         // 0. Force-save any pending interim transcript
@@ -286,7 +286,7 @@ export class MeetingPersistence {
             usage: [...this.session.getFullUsage()],
             startTime: this.session.getSessionStartTime(),
             durationMs: durationMs,
-            context: this.session.getFullSessionContext()
+            context: this.session.getFullSessionContext(),
         };
 
         // BUG-04 fix: snapshot metadata BEFORE reset() clears it so the
@@ -305,7 +305,8 @@ export class MeetingPersistence {
             liveAnalysisData,
             speakerNamesSnapshot,
             undefined,      // companyIntel — not captured at stop time for live calls
-            meetingTypes    // ← rep's live selection, was previously dropped (always undefined)
+            meetingTypes,    // ← rep's live selection, was previously dropped (always undefined)
+            tenantId || null
         ).catch(err => {
             console.error('[MeetingPersistence] Background processing failed:', err);
         });
@@ -321,6 +322,7 @@ export class MeetingPersistence {
             detailedSummary: { actionItems: [], keyPoints: [] },
             transcript: [],
             usage: [],
+            tenantId: tenantId || null,
             isProcessed: false
         };
 
@@ -346,7 +348,8 @@ export class MeetingPersistence {
         liveAnalysisData?: LiveAnalysisData | null,
         speakerNames?: { user: string; client: string },
         companyIntel?: Record<string, any> | null,
-        hintMeetingTypes?: ('discovery' | 'demo' | 'negotiation')[]
+        hintMeetingTypes?: ('discovery' | 'demo' | 'negotiation')[],
+        tenantId?: string | null
     ): Promise<void> {
         let title = "Untitled Session";
         let summaryData: { actionItems: string[], keyPoints: string[], liveAnalysis?: LiveAnalysisData, speakerNames?: { user: string, client: string } } = { actionItems: [], keyPoints: [] };
@@ -552,7 +555,8 @@ export class MeetingPersistence {
                 usage: data.usage,
                 calendarEventId: calendarEventId,
                 source: source,
-                isProcessed: true
+                isProcessed: true,
+                tenantId: tenantId || null
             };
 
             DatabaseManager.getInstance().saveMeeting(meetingData, data.startTime, data.durationMs);

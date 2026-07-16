@@ -1750,7 +1750,7 @@ export class AppState {
     }, 0); // Defer to next event loop tick — ensures IPC response reaches renderer before audio init
   }
 
-  public async endMeeting(meetingTypes?: ('discovery' | 'demo' | 'negotiation')[]): Promise<void> {
+  public async endMeeting(meetingTypes?: ('discovery' | 'demo' | 'negotiation')[], tenantId?: string | null): Promise<void> {
     console.log('[Main] Ending Meeting...');
     this.isMeetingActive = false; // Block new data immediately
     this.isMeetingPaused = false; // Reset pause flag — clean slate for next meeting
@@ -1774,7 +1774,7 @@ export class AppState {
     // Capture the meetingId NOW so the background IIFE uses a deterministic ID
     // rather than getRecentMeetings(1) which could return a different meeting if the
     // user starts a new session before background processing finishes.
-    const meetingId = await this.intelligenceManager.stopMeeting(meetingTypes);
+    const meetingId = await this.intelligenceManager.stopMeeting(meetingTypes, tenantId);
     // If an analysis call is currently in-flight, record the meetingId so
     // setCurrentLiveAnalysis() can patch the DB when the result arrives.
     if (this._liveAnalysisInFlight) {

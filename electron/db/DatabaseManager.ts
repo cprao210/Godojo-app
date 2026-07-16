@@ -129,6 +129,7 @@ export interface Meeting {
     calendarEventId?: string;
     source?: 'manual' | 'calendar';
     meetingTypes?: ('discovery' | 'demo' | 'negotiation')[];
+    tenantId?: string | null;
 }
 
 export class DatabaseManager {
