@@ -73,6 +73,9 @@ export interface StoredCredentials {
     diarizeClientEnabled?: boolean;
     // Word-timestamp echo filter in the main process (free, inert without word data)
     echoWordFilterEnabled?: boolean;
+    // Converged AEC alignment offsets per output route (keyed by route name).
+    // Seeds the native echo canceller on the next meeting with the same route.
+    echoAlignSeeds?: { [routeKey: string]: { seedMs: number; backend: string } };
 }
 
 export class CredentialsManager {
@@ -320,9 +323,14 @@ export class CredentialsManager {
         console.log(`[CredentialsManager] Knowledge mode persisted: ${enabled}`);
     }
 
-    /** Echo pipeline mode for the native gate. Env var wins for field debugging. */
+    /**
+     * Echo pipeline mode for the native gate. Env var wins for field debugging.
+     * Default full_duplex (Phase 2): delay-aligned AEC3 + convergence-tracked
+     * soft gate — mic stays open during far-end speech once AEC3 converges.
+     * 'phase1' (hard gate + headphone bypass) and 'legacy' remain as rollbacks.
+     */
     public getEchoPipelineMode(): string {
-        return process.env.NATIVELY_ECHO_MODE || this.credentials.echoPipelineMode || 'phase1';
+        return process.env.NATIVELY_ECHO_MODE || this.credentials.echoPipelineMode || 'full_duplex';
     }
 
     public setEchoPipelineMode(mode: string): void {
@@ -351,6 +359,20 @@ export class CredentialsManager {
         this.credentials.echoWordFilterEnabled = enabled;
         this.saveCredentials();
         console.log(`[CredentialsManager] Echo word filter persisted: ${enabled}`);
+    }
+
+    /** Persisted AEC alignment seed (SIGNED ms) for an output route, if any. */
+    public getEchoAlignSeed(key: string): number | undefined {
+        return this.credentials.echoAlignSeeds?.[key]?.seedMs;
+    }
+
+    public setEchoAlignSeed(key: string, seedMs: number, backend: string): void {
+        if (!this.credentials.echoAlignSeeds) {
+            this.credentials.echoAlignSeeds = {};
+        }
+        this.credentials.echoAlignSeeds[key] = { seedMs, backend };
+        this.saveCredentials();
+        console.log(`[CredentialsManager] Echo align seed persisted: route="${key}" seedMs=${seedMs} backend=${backend}`);
     }
 
     public setDefaultModel(model: string): void {

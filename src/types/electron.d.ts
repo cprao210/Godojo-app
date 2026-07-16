@@ -115,7 +115,7 @@ export interface ElectronAPI {
   onSpeakerNamesResolved: (callback: (names: { user: string; client: string }) => void) => () => void;
 
   // Native Audio Service Events
-  onNativeAudioTranscript: (callback: (transcript: { speaker: string; displayName?: string; text: string; timestamp?: number; final: boolean; confidence?: number; speakerIndex?: number }) => void) => () => void
+  onNativeAudioTranscript: (callback: (transcript: { speaker: string; displayName?: string; text: string; timestamp?: number; final: boolean; confidence?: number; speakerIndex?: number; retract?: boolean }) => void) => () => void
   onNativeAudioSuggestion: (callback: (suggestion: { context: string; lastQuestion: string; confidence: number }) => void) => () => void
   onNativeAudioConnected: (callback: () => void) => () => void
   onNativeAudioDisconnected: (callback: () => void) => () => void

@@ -47,4 +47,33 @@ describe('intelligenceApi.analyzeLive', () => {
     expect(body.mode).toBe('deep');
     expect(body.meeting_types).toEqual(['demo']);
   });
+
+  it('sends the delta transcript + previous_analysis on incremental calls', async () => {
+    const prev = {
+      bant: {
+        budget: {
+          emoji: '✅',
+          status: 'confirmed',
+          evidence: 'our budget is 80k',
+          suggested_question: '',
+        },
+      },
+      objections: [],
+      signals: [],
+    } as any;
+    await intelligenceApi.analyzeLive(
+      [{ speaker: 'client', text: "let's meet Tuesday" }],
+      null,
+      { previousAnalysis: prev },
+    );
+    const body = bodyOfCall();
+    // `transcript` carries ONLY the delta turn, not the whole call.
+    expect(body.transcript).toBe("PROSPECT: let's meet Tuesday");
+    expect(body.previous_analysis).toEqual(prev);
+  });
+
+  it('omits previous_analysis on fresh (first-run) calls', async () => {
+    await intelligenceApi.analyzeLive([{ speaker: 'client', text: 'x' }]);
+    expect(bodyOfCall()).not.toHaveProperty('previous_analysis');
+  });
 });

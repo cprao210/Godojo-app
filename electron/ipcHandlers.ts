@@ -1161,7 +1161,7 @@ export function initializeIpcHandlers(appState: AppState): void {
       const { CredentialsManager } = require('./services/CredentialsManager');
       return CredentialsManager.getInstance().getEchoPipelineMode();
     } catch {
-      return 'phase1';
+      return 'full_duplex';
     }
   });
 

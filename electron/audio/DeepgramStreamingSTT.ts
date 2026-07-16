@@ -360,10 +360,15 @@ export class DeepgramStreamingSTT extends EventEmitter {
                         }
                     } else {
                         // Interim result — live display only, will be revised.
+                        // Words are parsed here too: the echo filter judges mic
+                        // interims and uses client interims as provisional
+                        // reference. Stripped before IPC like final words.
+                        const words = this._parseWords(alternative?.words);
                         this.emit('transcript', {
                             text: transcript,
                             isFinal: false,
                             confidence: alternative?.confidence ?? 1.0,
+                            words: words.length > 0 ? words : undefined,
                         });
                     }
                 });

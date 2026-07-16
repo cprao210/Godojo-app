@@ -22,7 +22,16 @@ use crate::audio_config::RING_BUFFER_SAMPLES;
 pub fn list_input_devices() -> Result<Vec<(String, String)>> {
     let host = cpal::default_host();
     let mut list = Vec::new();
-    list.push(("default".to_string(), "Default Microphone".to_string()));
+    // Name the 'default' pseudo-entry after the device the system default
+    // actually resolves to, so JS-side name heuristics (e.g. the
+    // loopback-input guard in AudioDevices.detectLoopbackInput) can inspect
+    // the effective device even when no explicit selection was made.
+    let default_label = host
+        .default_input_device()
+        .and_then(|d| d.name().ok())
+        .map(|n| format!("Default Microphone ({})", n))
+        .unwrap_or_else(|| "Default Microphone".to_string());
+    list.push(("default".to_string(), default_label));
 
     if let Ok(devices) = host.input_devices() {
         for device in devices {

@@ -43,6 +43,15 @@ impl SpeakerInput {
         })
     }
 
+    /// Stable identifier of the active render backend, reported via
+    /// echo_control::set_render_backend for stats + alignment seeding.
+    pub fn backend_name(&self) -> &'static str {
+        match &self.backend {
+            BackendInput::CoreAudio(_) => "core_audio_tap",
+            BackendInput::Sck(_) => "sck",
+        }
+    }
+
     pub fn stream(self) -> SpeakerStream {
         match self.backend {
             BackendInput::CoreAudio(input) => {

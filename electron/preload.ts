@@ -78,7 +78,7 @@ interface ElectronAPI {
   testSttConnection: (provider: 'groq' | 'openai' | 'deepgram' | 'elevenlabs' | 'azure' | 'ibmwatson' | 'soniox', apiKey: string, region?: string) => Promise<{ success: boolean; error?: string }>
 
   // Native Audio Service Events
-  onNativeAudioTranscript: (callback: (transcript: { speaker: string; text: string; final: boolean }) => void) => () => void
+  onNativeAudioTranscript: (callback: (transcript: { speaker: string; text: string; final: boolean; retract?: boolean }) => void) => () => void
   onNativeAudioSuggestion: (callback: (suggestion: { context: string; lastQuestion: string; confidence: number }) => void) => () => void
   onNativeAudioConnected: (callback: () => void) => () => void
   onNativeAudioDisconnected: (callback: () => void) => () => void
@@ -657,7 +657,7 @@ contextBridge.exposeInMainWorld("electronAPI", {
   getOutputRoute: () => ipcRenderer.invoke("get-output-route"),
 
   // Native Audio Service Events
-  onNativeAudioTranscript: (callback: (transcript: { speaker: string; displayName?: string; text: string; timestamp?: number; final: boolean; confidence?: number; speakerIndex?: number }) => void) => {
+  onNativeAudioTranscript: (callback: (transcript: { speaker: string; displayName?: string; text: string; timestamp?: number; final: boolean; confidence?: number; speakerIndex?: number; retract?: boolean }) => void) => {
     const subscription = (_: any, data: any) => callback(data)
     ipcRenderer.on("native-audio-transcript", subscription)
     return () => {

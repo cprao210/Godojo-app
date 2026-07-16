@@ -586,6 +586,42 @@ const mergeWithPrior = (
   };
 };
 
+// ─── Stable-id stamp + dedupe (backend path only) ─────────────────────────────
+// The backend now performs the incremental merge itself (BANT/MEDDIC status ratchet
+// with an evidence-backed downgrade escape hatch, objection/signal dedupe-and-append,
+// guaranteed suggested_questions, and quote-grounding that exempts quotes carried
+// verbatim from the prior analysis). So the renderer trusts the backend's merged
+// result directly on this path — it does NOT run mergeWithPrior, whose status guard
+// has no escape hatch and would revert the backend's legitimate downgrades.
+//
+// Two gaps in the backend response are closed here:
+//   • Stable ids — the backend schema has no `id` field, so it's dropped on every
+//     round-trip. Re-stamp it deterministically from the quote (stableId is a pure
+//     function of the text), so dismiss/checked UI state keyed by id survives refreshes.
+//   • Dedupe safety net — the backend dedupes by prompt but not deterministically, so
+//     drop any exact id collision, keeping the first (newest, since the backend orders
+//     newly-detected items first).
+const stampIds = (data: LiveAnalysisData): LiveAnalysisData => {
+  const dedupeStamp = <T extends { id?: string; quote: string }>(items: T[]): T[] => {
+    const seen = new Set<string>();
+    const out: T[] = [];
+    for (const item of items) {
+      const id = item.id ?? stableId(item.quote);
+      if (seen.has(id)) continue;
+      seen.add(id);
+      out.push({ ...item, id });
+    }
+    return out;
+  };
+  return {
+    bant: data.bant,
+    meddic: data.meddic,
+    objections: dedupeStamp(data.objections),
+    signals: dedupeStamp(data.signals),
+    dealOptimizer: dedupeStamp(data.dealOptimizer ?? []),
+  };
+};
+
 export const useLiveAnalysis = (
   transcriptRef: React.MutableRefObject<Array<{ speaker: string; displayName?: string; text: string; timestamp: number }>>,
   isMeetingPaused: boolean,
@@ -768,26 +804,35 @@ export const useLiveAnalysis = (
       }
 
       // ── Backend path (renderer-direct via axios) ─────────────────────
-      // The renderer owns the transcript + Firebase token, so it POSTs the raw
-      // turns straight to /intelligence/live-analysis (no IPC round-trip through
-      // the main-process GodojoClient). The backend builds the prompt server-side,
-      // so `livePrompt` is only used by the Anthropic fallback below.
+      // The renderer owns the transcript + Firebase token, so it POSTs straight to
+      // /intelligence/live-analysis (no IPC round-trip through the main-process
+      // GodojoClient). Incremental contract: on a refresh run we send ONLY the delta
+      // turns (new since the cursor) plus the prior analysis, and the backend merges;
+      // on the first run priorState is null → send the full transcript, no prior state.
+      // The backend builds the prompt server-side, so `livePrompt` is only used by the
+      // Anthropic fallback below.
       // electronAPI is undefined in the web/dev environment despite its non-optional
       // global type; alias through a nullable local so the else (Anthropic) branch
       // stays reachable without narrowing the global the rest of the app relies on.
       const electronAPI: typeof window.electronAPI | undefined = window.electronAPI;
       if (electronAPI) {
-        const turns: LiveAnalysisTurn[] = humanTurns
+        // The cursor indexes humanTurns, so slice humanTurns (then narrow to the two
+        // real speakers) to keep the delta aligned with currentEndIndex.
+        const deltaTurns = priorState
+          ? humanTurns.slice(adjustedDeltaStartIndex)
+          : humanTurns;
+        const turns: LiveAnalysisTurn[] = deltaTurns
           .filter(t => (t.speaker === 'user' || t.speaker === 'client') && t.text?.trim())
           .map(t => ({ speaker: t.speaker, text: t.text }));
 
         const parsed = await intelligenceApi.analyzeLive(turns, null, {
           meetingTypes: meetingTypesRef.current,
+          // null on the first run → backend analyses `turns` as the full call.
+          previousAnalysis: priorState,
         });
 
-        // Client-side merge: ensures prior objections/signals are never lost even if
-        // the LLM dropped them (model switch, context truncation, etc.)
-        const merged = mergeWithPrior(parsed, priorState);
+        // Backend already merged (see stampIds note); just re-stamp stable ids + dedupe.
+        const merged = stampIds(parsed);
 
         // Advance cursor so next delta run only processes new turns
         lastAnalyzedIndexRef.current = currentEndIndex;
@@ -800,6 +845,8 @@ export const useLiveAnalysis = (
         );
       } else {
         // ── Anthropic API fallback (web / dev environment) ────────────
+        // No backend merge on this path — livePrompt asks the LLM to merge, and
+        // mergeWithPrior is the deterministic safety net on top (append guard + ids).
         const parsed = await runAnalysisViaAnthropicAPI(livePrompt);
         const merged = mergeWithPrior(parsed, priorState);
         lastAnalyzedIndexRef.current = currentEndIndex;

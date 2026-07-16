@@ -40,6 +40,17 @@ export interface CaptureOptions {
   echoMode?: string
   /** Bypass the local RMS+VAD gate (see MicrophoneCapture docs). */
   vadDisabled?: boolean
+  /**
+   * Persisted echo-alignment seed from a previous session on this machine
+   * (ms, signed EFFECTIVE offset: positive = render delayed, negative =
+   * capture delayed) — pass back the applied_align_offset_ms value from
+   * getAudioPipelineStats(). Omitted/undefined = no seed for the current
+   * route (the session starts unseeded / on the backend default); 0 is a
+   * REAL seed meaning "converged with no alignment applied". Consumed by
+   * MicrophoneCapture only; applied on the next mic-session start
+   * (full_duplex only — legacy/phase1 always run with zero delay targets).
+   */
+  echoAlignSeedMs?: number
 }
 
 /**

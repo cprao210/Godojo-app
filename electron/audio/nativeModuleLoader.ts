@@ -10,6 +10,12 @@ export interface NativeCaptureOptions {
   /** Echo pipeline mode: 'legacy' | 'phase1' | 'full_duplex'. */
   echoMode?: string;
   vadDisabled?: boolean;
+  /**
+   * Persisted AEC alignment seed (SIGNED ms: positive = render delayed,
+   * negative = capture delayed) from a previous converged session on the
+   * same output route. Ignored by pre-rework .node binaries.
+   */
+  echoAlignSeedMs?: number;
 }
 
 export interface OutputRouteInfo {

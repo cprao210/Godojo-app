@@ -85,6 +85,12 @@ impl SpeakerInput {
         Ok(Self { device_id })
     }
 
+    /// Stable identifier of the active render backend, reported via
+    /// echo_control::set_render_backend for stats + alignment seeding.
+    pub fn backend_name(&self) -> &'static str {
+        "wasapi_loopback"
+    }
+
     pub fn stream(self) -> SpeakerStream {
         let rb = HeapRb::<f32>::new(RING_BUFFER_SAMPLES);
         let (producer, consumer) = rb.split();
