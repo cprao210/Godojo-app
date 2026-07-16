@@ -1299,8 +1299,8 @@ export class DatabaseManager {
         }
 
         const insertMeeting = this.db.prepare(`
-            INSERT OR REPLACE INTO meetings (id, title, start_time, duration_ms, summary_json, created_at, calendar_event_id, source, is_processed)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+            INSERT OR REPLACE INTO meetings (id, title, start_time, duration_ms, summary_json, created_at, calendar_event_id, tenant_id, source, is_processed)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         `);
 
         const insertTranscript = this.db.prepare(`
@@ -1334,6 +1334,7 @@ export class DatabaseManager {
                 summaryJson,
                 meeting.date, // Using the ISO string as created_at for sorting simply
                 meeting.calendarEventId || null,
+                meeting.tenantId || null,
                 meeting.source || 'manual',
                 meeting.isProcessed ? 1 : 0
             );
