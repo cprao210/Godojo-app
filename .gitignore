@@ -169,6 +169,8 @@ release/
 target/
 native-module/target/
 native-module/*.node
+!native-module/index.darwin-x64.node
+!native-module/index.win32-x64-msvc.node
 
 .github/RepoGuide.md
 
