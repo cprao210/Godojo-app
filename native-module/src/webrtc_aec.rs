@@ -1,8 +1,6 @@
 use std::sync::Arc;
-use webrtc_audio_processing::{
-    config::{Config, EchoCanceller},
-    Processor, Stats,
-};
+// APM types come from crate::apm (real crate off-Windows, no-op stub on Windows).
+use crate::apm::{Config, EchoCanceller, Processor, Stats};
 
 const SAMPLE_RATE_HZ: u32 = 16_000;
 const FRAME_SAMPLES: usize = 160; // 10 ms at 16 kHz  (sample_rate / 100)

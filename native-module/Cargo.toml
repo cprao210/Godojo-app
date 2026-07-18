@@ -21,6 +21,12 @@ machine-uid = "0.5"
 reqwest = { version = "0.12", features = ["blocking"] }
 serde_json = "1.0"
 webrtc-vad = "0.4"
+
+# webrtc-audio-processing (bundled) builds a WebRTC C++ library and only supports
+# Unix/GNU toolchains — it does not build on Windows/MSVC. It is therefore pulled
+# in for non-Windows targets only; on Windows the APM is replaced by the no-op
+# stub in src/apm_stub.rs (AEC disabled — see src/apm.rs re-export).
+[target.'cfg(not(target_os = "windows"))'.dependencies]
 webrtc-audio-processing = { version = "2", features = ["bundled"] }
 
 [target.'cfg(target_os = "macos")'.dependencies]
@@ -35,6 +41,8 @@ windows = { version = "0.52.0", features = [
     # output_route.rs: endpoint form-factor query (headphone detection)
     "Win32_UI_Shell_PropertiesSystem",
     "Win32_System_Com_StructuredStorage",
+    # output_route.rs: PROPVARIANT + PropVariant* helpers and IPropertyStore::GetValue
+    "Win32_System_Variant",
     "Win32_Foundation",
     "Win32_Devices_FunctionDiscovery",
 ] }

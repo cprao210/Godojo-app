@@ -32,7 +32,7 @@ use std::thread;
 use std::time::{Duration, Instant};
 
 use once_cell::sync::Lazy;
-use webrtc_audio_processing::Processor;
+use crate::apm::Processor;
 use webrtc_vad::{SampleRate as VadSampleRate, Vad, VadMode};
 
 use crate::echo_align;
@@ -80,11 +80,20 @@ impl EchoMode {
     }
 }
 
+// Default echo mode when NATIVELY_ECHO_MODE is unset. Windows has no WebRTC APM
+// (AEC disabled — see src/apm_stub.rs), and FullDuplex relies on APM convergence
+// stats that the stub never produces, so Windows defaults to the Processor-free
+// Phase1 hard-gate (headphone bypass + speaker-recently-active mute) instead.
+#[cfg(not(target_os = "windows"))]
+const DEFAULT_ECHO_MODE: EchoMode = EchoMode::FullDuplex;
+#[cfg(target_os = "windows")]
+const DEFAULT_ECHO_MODE: EchoMode = EchoMode::Phase1;
+
 static MODE: Lazy<AtomicU8> = Lazy::new(|| {
     let m = std::env::var("NATIVELY_ECHO_MODE")
         .ok()
         .and_then(|v| EchoMode::parse(&v))
-        .unwrap_or(EchoMode::FullDuplex);
+        .unwrap_or(DEFAULT_ECHO_MODE);
     println!("[EchoControl] mode={}", m.as_str());
     AtomicU8::new(m as u8)
 });

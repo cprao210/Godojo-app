@@ -23,6 +23,10 @@ pub mod silence_suppression;
 pub mod speaker;
 pub mod resampler;
 pub mod webrtc_aec;
+// Per-platform APM type selection (real crate off-Windows, no-op stub on Windows).
+mod apm;
+#[cfg(target_os = "windows")]
+mod apm_stub;
 use crate::resampler::Resampler;
 use crate::webrtc_aec::{ApmCapture, ApmRender};
 
@@ -30,7 +34,7 @@ use crate::webrtc_aec::{ApmCapture, ApmRender};
 // Processor is Send + Sync; both DSP threads hold an Arc clone.
 // SystemAudioCapture owns an ApmRender (per-thread render accumulator).
 // MicrophoneCapture owns an ApmCapture (per-thread capture accumulator).
-static WEBRTC_APM: Lazy<std::sync::Arc<webrtc_audio_processing::Processor>> =
+static WEBRTC_APM: Lazy<std::sync::Arc<crate::apm::Processor>> =
     Lazy::new(webrtc_aec::create_processor);
 
 // Echo gating policy lives in echo_control (mode flag, headphone bypass,
