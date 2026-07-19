@@ -21,7 +21,7 @@ import { useResolvedTheme } from '../../hooks/useResolvedTheme';
 import { tenantsApi } from '../../lib/tenantsApi';
 import { ApiError } from '../../lib/apiClient';
 import { getFirebaseAuth } from '../../lib/firebase';
-import type { Tenant, TenantMember, TenantRole, MemberOrInvitation } from '../../types/tenant';
+import type { Tenant, TenantMember, TenantRole, MemberOrInvitation, InvitationAcceptResult } from '../../types/tenant';
 
 import type { MyPendingInvitation } from '../../types/tenant';
 import { InvitationResponseModal } from './InvitationResponseModal';
@@ -785,7 +785,7 @@ export const UserRolesPermissionsTab: React.FC<UserRolesPermissionsTabProps> = (
         return () => { cancelled = true; };
     }, [deepLinkInviteToken]);
 
-    const hasTeam = tenant !== null;
+    const hasTeam = tenant != null && typeof tenant.id === 'string';
 
     const handleCreateTeam = async (teamName: string) => {
         const created = await tenantsApi.create(teamName);
@@ -793,16 +793,24 @@ export const UserRolesPermissionsTab: React.FC<UserRolesPermissionsTabProps> = (
         setIsCreateTeamOpen(false);
     };
 
-    const handleInvitationAccepted = async (tenantId: string) => {
+    const handleInvitationAccepted = async (result: InvitationAcceptResult) => {
         setPendingInvitation(null);
         onDeepLinkTokenConsumed?.();
-        // Refresh the tenant from the server rather than trusting the
-        // accept-response shape 1:1 — keeps this in sync with listMine().
+        // Accept response now includes the full tenant row (see backend
+        // accept_invitation) — use it directly instead of racing a second
+        // /tenants/me call right after the accept response comes back.
+        // Fall back to a fresh fetch if it's ever missing, rather than
+        // setting tenant to undefined (which used to slip past the
+        // `hasTeam` check below and crash MembersTable).
+        if (result.tenant) {
+            setTenant(result.tenant);
+            return;
+        }
         try {
             const tenants = await tenantsApi.listMine();
-            setTenant(tenants.find((t) => t.id === tenantId) ?? tenants[0] ?? null);
-        } catch {
-            // non-fatal — the member table below will show its own load error if needed
+            setTenant(tenants[0] ?? null);
+        } catch (err) {
+            setLoadError(err instanceof ApiError ? err.message : 'Failed to load your team.');
         }
     };
 

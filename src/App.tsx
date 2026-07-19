@@ -28,6 +28,7 @@ import { subscribeAuthState, signOut as fbSignOut, verifySessionIsActive, instal
 import { apiFetch, ApiError, notifyInvalidSession, setInvalidSessionHandler } from "./lib/apiClient";
 import { EmailVerification } from "./_pages/EmailVerification";
 import { tenantsApi } from "./lib/tenantsApi";
+import type { Tenant } from "./types/tenant";
 import { InviteAccountMismatchBanner } from "./components/InviteAccountMismatchBanner";
 import { meetingsApi, type TranscriptSegmentInput } from "./lib/meetingsApi";
 import type { User } from "firebase/auth"
@@ -138,6 +139,14 @@ const App: React.FC = () => {
 
   const [tenantId, setTenantId] = useState<string | null>(null);
 
+  // Full tenant object (not just id) so we can check tenant.owner_id against
+  // the signed-in uid — same "is admin" check ManagerDashboard/UserRolesPermissionsTab
+  // use internally, hoisted here so App can gate the Dashboard button + default view.
+  const [tenant, setTenant] = useState<Tenant | null>(null);
+  // Only auto-open the Dashboard once per sign-in, so an admin who
+  // deliberately closes it isn't dumped back into it on every re-render.
+  const hasAutoOpenedDashboardRef = React.useRef(false);
+
   // Only the default/launcher window runs the Firebase auth subscription
   // (see the isLauncherWindow || isDefault guard below), so it's the only
   // window that can actually resolve a tenant via tenantsApi.listMine().
@@ -161,8 +170,9 @@ const App: React.FC = () => {
 
       const tenants = await tenantsApi.listMine();
       console.log('[App.tsx] tenantsApi.listMine() resolved:', tenants);
-      const resolved = tenants[0]?.id ?? null;
-      setTenantId(resolved);
+      const resolvedTenant = tenants[0] ?? null;
+      const resolved = resolvedTenant?.id ?? null;
+      setTenant(resolvedTenant);
       // Publish to the main process so every window (esp. the overlay,
       // which owns the End Meeting button) picks it up via tenant:state-changed.
       window.electronAPI.setCurrentTenantId(resolved).catch(err =>
@@ -343,6 +353,26 @@ const App: React.FC = () => {
   // Profile state for ad targeting
   const [hasProfile, setHasProfile] = useState(false);
   const [isLauncherMainView, setIsLauncherMainView] = useState(true);
+
+  // "admin" == the tenant owner (same rule ManagerDashboard/UserRolesPermissionsTab
+  // use). Members (non-owners), and anyone with no resolved tenant yet, are false.
+  const isAdmin = !!(tenant && authUser && tenant.owner_id === authUser.uid);
+
+  // Default screen on login: admins land on the Manager Dashboard, members
+  // land on the normal Launcher (which is already the default state).
+  useEffect(() => {
+    if (!authUser) {
+      // Signed out (or switched accounts) — allow the next admin login to
+      // auto-open the dashboard again.
+      hasAutoOpenedDashboardRef.current = false;
+      return;
+    }
+    if (!tenant || hasAutoOpenedDashboardRef.current) return;
+    if (isAdmin) {
+      setIsManagerDashboardOpen(true);
+    }
+    hasAutoOpenedDashboardRef.current = true;
+  }, [authUser, tenant, isAdmin]);
 
   // Initialize Ads Campaign Manager
   const [appStartTime] = useState<number>(Date.now());
@@ -703,10 +733,10 @@ const App: React.FC = () => {
                             setIsManagerDashboardOpen(false); // switching to Settings closes Dashboard
                             setIsSettingsOpen(true);
                           }}
-                          onOpenManagerDashboard={() => {
+                          onOpenManagerDashboard={isAdmin ? () => {
                             setIsSettingsOpen(false);         // switching to Dashboard closes Settings
                             setIsManagerDashboardOpen((open) => !open); // toggle: click again to close
-                          }}
+                          } : undefined}
                           onPageChange={setIsLauncherMainView}
                           ollamaPullStatus={ollamaPullStatus}
                           ollamaPullPercent={ollamaPullPercent}

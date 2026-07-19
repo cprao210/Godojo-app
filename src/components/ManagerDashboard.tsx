@@ -133,6 +133,64 @@ const StatCard: React.FC<StatCardProps> = ({ icon, iconBg, label, value, cardCls
     </div>
 );
 
+// ─── Skeleton loaders ────────────────────────────────────────────────────────
+// Shown in place of "No data" / '—' copy while isLoadingDashboard is true, so
+// the dashboard reads as "still fetching" rather than "there's nothing here".
+
+export const Skeleton: React.FC<{ className?: string; isLight: boolean; style?: React.CSSProperties }> = ({ className = '', isLight, style }) => (
+    <div
+        className={`animate-pulse rounded-md ${isLight ? 'bg-slate-200' : 'bg-white/10'} ${className}`}
+        style={style}
+    />
+);
+
+const StatCardSkeleton: React.FC<{ icon: React.ReactNode; iconBg: string; label: string; cardCls: string; isLight: boolean }> = ({ icon, iconBg, label, cardCls, isLight }) => (
+    <div className={`flex-1 rounded-2xl border px-5 py-4 flex items-center gap-3.5 ${cardCls}`}>
+        <div className={`w-10 h-10 rounded-xl flex items-center justify-center shrink-0 ${iconBg} opacity-60`}>
+            {icon}
+        </div>
+        <div className="min-w-0 flex-1">
+            <p className="text-sm text-text-secondary truncate">{label}</p>
+            <Skeleton isLight={isLight} className="h-6 w-16 mt-1" />
+        </div>
+    </div>
+);
+
+const ChartSkeleton: React.FC<{ isLight: boolean }> = ({ isLight }) => (
+    <div className="flex items-end gap-2 h-[180px] py-2">
+        {[45, 70, 55, 85, 60, 95, 50].map((h, i) => (
+            <Skeleton key={i} isLight={isLight} className="flex-1" style={{ height: `${h}%` } as React.CSSProperties} />
+        ))}
+    </div>
+);
+
+const ListSkeleton: React.FC<{ isLight: boolean; rows?: number }> = ({ isLight, rows = 4 }) => (
+    <div className="space-y-3 py-1">
+        {Array.from({ length: rows }).map((_, i) => (
+            <div key={i} className="flex items-center gap-3">
+                <Skeleton isLight={isLight} className="w-8 h-8 rounded-full shrink-0" />
+                <div className="flex-1 min-w-0 space-y-1.5">
+                    <Skeleton isLight={isLight} className="h-3 w-2/3" />
+                    <Skeleton isLight={isLight} className="h-2.5 w-1/3" />
+                </div>
+            </div>
+        ))}
+    </div>
+);
+
+const TableSkeleton: React.FC<{ isLight: boolean; rows?: number }> = ({ isLight, rows = 6 }) => (
+    <div className="space-y-2.5 py-1">
+        {Array.from({ length: rows }).map((_, i) => (
+            <div key={i} className="flex items-center gap-3">
+                <Skeleton isLight={isLight} className="w-7 h-7 rounded-full shrink-0" />
+                <Skeleton isLight={isLight} className="h-3 flex-1" />
+                <Skeleton isLight={isLight} className="h-3 w-12 shrink-0" />
+                <Skeleton isLight={isLight} className="h-3 w-12 shrink-0" />
+            </div>
+        ))}
+    </div>
+);
+
 // ─── Team score line chart (lightweight inline SVG, no chart dependency) ────
 
 interface TeamScoreChartProps {
@@ -301,8 +359,8 @@ const RankedRepList: React.FC<RankedRepListProps> = ({ reps, rankTheme, isLight,
 // who's in the list: ≥80 strong (green), ≥65 building (amber), else at-risk (red).
 
 function scoreTheme(score: number): { bar: string; text: string } {
-    if (score >= 80) return { bar: 'bg-emerald-500', text: 'text-emerald-400' };
-    if (score >= 65) return { bar: 'bg-amber-500', text: 'text-amber-400' };
+    if (score >= 70) return { bar: 'bg-emerald-500', text: 'text-emerald-400' };
+    if (score >= 40) return { bar: 'bg-amber-500', text: 'text-amber-400' };
     return { bar: 'bg-red-500', text: 'text-red-400' };
 }
 
@@ -434,7 +492,7 @@ export const ManagerDashboard: React.FC<ManagerDashboardProps> = ({ isOpen }) =>
     }, [isOpen]);
 
     // ── 2. Dashboard data (GET /dashboard?tenant_id=...&period=...) ─────────
-    const [period, setPeriod] = useState<DashboardPeriod>('last_30_days');
+    const [period, setPeriod] = useState<DashboardPeriod>('last_week');
     const [dashboard, setDashboard] = useState<DashboardResponse | null>(null);
     const [isLoadingDashboard, setIsLoadingDashboard] = useState(false);
     const [dashboardError, setDashboardError] = useState<string | null>(null);
@@ -465,7 +523,7 @@ export const ManagerDashboard: React.FC<ManagerDashboardProps> = ({ isOpen }) =>
     // ── Map API shapes → the presentational props these components already expect ──
     const activeReps = dashboard?.active_members_count ?? 0;
     const totalCalls = dashboard?.total_calls ?? 0;
-    const teamAvgScore = dashboard?.team_avg_score ?? 0;
+    const teamAvgScore = (dashboard?.team_avg_score ?? 0).toFixed(1);
     const allAes: DashboardActiveMember[] = (dashboard?.active_members ?? []).filter((m) => m.role !== 'admin');
 
     const teamScoreTrend = (dashboard?.trend ?? []).map((t) => ({
@@ -603,27 +661,37 @@ export const ManagerDashboard: React.FC<ManagerDashboardProps> = ({ isOpen }) =>
 
                                 {/* Stat cards */}
                                 <div className="flex items-stretch gap-4 mb-4 flex-wrap">
-                                    <StatCard
-                                        cardCls={cardCls}
-                                        icon={<Users size={18} className="text-violet-400" />}
-                                        iconBg="bg-violet-500/15"
-                                        label="Active AEs"
-                                        value={isLoadingDashboard ? '—' : activeReps}
-                                    />
-                                    <StatCard
-                                        cardCls={cardCls}
-                                        icon={<Phone size={18} className="text-blue-400" />}
-                                        iconBg="bg-blue-500/15"
-                                        label="Total Calls"
-                                        value={isLoadingDashboard ? '—' : totalCalls}
-                                    />
-                                    <StatCard
-                                        cardCls={cardCls}
-                                        icon={<Target size={18} className="text-emerald-400" />}
-                                        iconBg="bg-emerald-500/15"
-                                        label="Team Average Score"
-                                        value={isLoadingDashboard ? '—' : teamAvgScore}
-                                    />
+                                    {isLoadingDashboard ? (
+                                        <>
+                                            <StatCardSkeleton cardCls={cardCls} isLight={isLight} icon={<Users size={18} className="text-violet-400" />} iconBg="bg-violet-500/15" label="Active AEs" />
+                                            <StatCardSkeleton cardCls={cardCls} isLight={isLight} icon={<Phone size={18} className="text-blue-400" />} iconBg="bg-blue-500/15" label="Total Calls" />
+                                            <StatCardSkeleton cardCls={cardCls} isLight={isLight} icon={<Target size={18} className="text-emerald-400" />} iconBg="bg-emerald-500/15" label="Team Average Score" />
+                                        </>
+                                    ) : (
+                                        <>
+                                            <StatCard
+                                                cardCls={cardCls}
+                                                icon={<Users size={18} className="text-violet-400" />}
+                                                iconBg="bg-violet-500/15"
+                                                label="Active AEs"
+                                                value={activeReps}
+                                            />
+                                            <StatCard
+                                                cardCls={cardCls}
+                                                icon={<Phone size={18} className="text-blue-400" />}
+                                                iconBg="bg-blue-500/15"
+                                                label="Total Calls"
+                                                value={totalCalls}
+                                            />
+                                            <StatCard
+                                                cardCls={cardCls}
+                                                icon={<Target size={18} className="text-emerald-400" />}
+                                                iconBg="bg-emerald-500/15"
+                                                label="Team Average Score"
+                                                value={teamAvgScore}
+                                            />
+                                        </>
+                                    )}
                                 </div>
 
                                 {/* Team score trend + Top objections */}
@@ -633,11 +701,13 @@ export const ManagerDashboard: React.FC<ManagerDashboardProps> = ({ isOpen }) =>
                                         subtitle="Rolling average score across all reps"
                                         cardCls={cardCls}
                                     >
-                                        {teamScoreTrend.length > 0 ? (
+                                        {isLoadingDashboard ? (
+                                            <ChartSkeleton isLight={isLight} />
+                                        ) : teamScoreTrend.length > 0 ? (
                                             <TeamScoreChart data={teamScoreTrend} isLight={isLight} />
                                         ) : (
                                             <p className="text-sm text-text-tertiary py-8 text-center">
-                                                {isLoadingDashboard ? 'Loading…' : 'No trend data for this period.'}
+                                                No trend data for this period.
                                             </p>
                                         )}
                                     </SectionCard>
@@ -647,11 +717,13 @@ export const ManagerDashboard: React.FC<ManagerDashboardProps> = ({ isOpen }) =>
                                         subtitle="Based on calls in selected time period"
                                         cardCls={cardCls}
                                     >
-                                        {objections.length > 0 ? (
+                                        {isLoadingDashboard ? (
+                                            <ListSkeleton isLight={isLight} rows={4} />
+                                        ) : objections.length > 0 ? (
                                             <TopObjectionsList objections={objections} isLight={isLight} />
                                         ) : (
                                             <p className="text-sm text-text-tertiary py-8 text-center">
-                                                {isLoadingDashboard ? 'Loading…' : 'No objections recorded for this period.'}
+                                                No objections recorded for this period.
                                             </p>
                                         )}
                                     </SectionCard>
@@ -664,11 +736,13 @@ export const ManagerDashboard: React.FC<ManagerDashboardProps> = ({ isOpen }) =>
                                         icon={<Trophy size={15} className="text-emerald-400" />}
                                         cardCls={cardCls}
                                     >
-                                        {topPerformers.length > 0 ? (
+                                        {isLoadingDashboard ? (
+                                            <ListSkeleton isLight={isLight} rows={4} />
+                                        ) : topPerformers.length > 0 ? (
                                             <RankedRepList reps={topPerformers} rankTheme="positive" isLight={isLight} onSelectRep={openAeFromRep} />
                                         ) : (
                                             <p className="text-sm text-text-tertiary py-8 text-center">
-                                                {isLoadingDashboard ? 'Loading…' : 'No performers to show yet.'}
+                                                No performers to show yet.
                                             </p>
                                         )}
                                     </SectionCard>
@@ -678,11 +752,13 @@ export const ManagerDashboard: React.FC<ManagerDashboardProps> = ({ isOpen }) =>
                                         icon={<AlertTriangle size={15} className="text-red-400" />}
                                         cardCls={cardCls}
                                     >
-                                        {needsCoaching.length > 0 ? (
+                                        {isLoadingDashboard ? (
+                                            <ListSkeleton isLight={isLight} rows={4} />
+                                        ) : needsCoaching.length > 0 ? (
                                             <RankedRepList reps={needsCoaching} rankTheme="attention" isLight={isLight} onSelectRep={openAeFromRep} />
                                         ) : (
                                             <p className="text-sm text-text-tertiary py-8 text-center">
-                                                {isLoadingDashboard ? 'Loading…' : 'No one needs coaching right now.'}
+                                                No one needs coaching right now.
                                             </p>
                                         )}
                                     </SectionCard>
@@ -697,6 +773,8 @@ export const ManagerDashboard: React.FC<ManagerDashboardProps> = ({ isOpen }) =>
                                     >
                                         {dashboardError ? (
                                             <p className="text-sm font-semibold text-red-400 py-4 text-center">{dashboardError}</p>
+                                        ) : isLoadingDashboard ? (
+                                            <TableSkeleton isLight={isLight} rows={6} />
                                         ) : allAeRows.length > 0 ? (
                                             <AllAEsTable
                                                 aes={allAeRows}
@@ -705,7 +783,7 @@ export const ManagerDashboard: React.FC<ManagerDashboardProps> = ({ isOpen }) =>
                                             />
                                         ) : (
                                             <p className="text-sm text-text-tertiary py-8 text-center">
-                                                {isLoadingDashboard ? 'Loading…' : 'No AEs found.'}
+                                                No AEs found.
                                             </p>
                                         )}
                                     </SectionCard>

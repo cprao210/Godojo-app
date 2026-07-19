@@ -14,12 +14,12 @@ import React, { useState } from 'react';
 import { Users, X, Check } from 'lucide-react';
 import { tenantsApi } from '../../lib/tenantsApi';
 import { ApiError } from '../../lib/apiClient';
-import type { MyPendingInvitation } from '../../types/tenant';
+import type { InvitationAcceptResult, MyPendingInvitation } from '../../types/tenant';
 
 interface InvitationResponseModalProps {
     invitation: MyPendingInvitation;
     isLight: boolean;
-    onAccepted: (tenantId: string) => void;
+    onAccepted: (result: InvitationAcceptResult) => void;
     onDeclined: () => void;
     /** Called if the user dismisses without deciding (e.g. clicks the backdrop). */
     onDismiss: () => void;
@@ -40,7 +40,7 @@ export const InvitationResponseModal: React.FC<InvitationResponseModalProps> = (
         setIsSubmitting('accept');
         try {
             const result = await tenantsApi.acceptInvitation(invitation.token);
-            onAccepted(result.tenant_id);
+            onAccepted(result);
         } catch (err) {
             setError(err instanceof ApiError ? err.message : 'Failed to accept invitation. Please try again.');
             setIsSubmitting(null);
@@ -111,8 +111,8 @@ export const InvitationResponseModal: React.FC<InvitationResponseModalProps> = (
                         onClick={handleReject}
                         disabled={isSubmitting !== null}
                         className={`flex-1 px-4 py-2.5 rounded-lg text-sm font-semibold transition-colors flex items-center justify-center gap-2 ${isSubmitting !== null
-                                ? 'opacity-50 cursor-not-allowed'
-                                : 'text-text-secondary hover:text-text-primary hover:bg-bg-item-active/50'
+                            ? 'opacity-50 cursor-not-allowed'
+                            : 'text-text-secondary hover:text-text-primary hover:bg-bg-item-active/50'
                             } border ${isLight ? 'border-slate-200' : 'border-border-subtle'}`}
                     >
                         <X size={15} />
@@ -122,8 +122,8 @@ export const InvitationResponseModal: React.FC<InvitationResponseModalProps> = (
                         onClick={handleAccept}
                         disabled={isSubmitting !== null}
                         className={`flex-1 px-4 py-2.5 rounded-lg text-sm font-semibold transition-colors flex items-center justify-center gap-2 ${isSubmitting !== null
-                                ? 'bg-blue-600/50 cursor-not-allowed text-white'
-                                : 'bg-blue-600 hover:bg-blue-500 text-white'
+                            ? 'bg-blue-600/50 cursor-not-allowed text-white'
+                            : 'bg-blue-600 hover:bg-blue-500 text-white'
                             }`}
                     >
                         <Check size={15} />

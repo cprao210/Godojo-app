@@ -36,6 +36,7 @@ import { ApiError } from '../lib/apiClient';
 import type { MemberDetail, MemberDetailRadarScores, MemberDetailRecentCall } from '../types/tenant';
 import MeetingDetails from './MeetingDetails';
 import type { Meeting } from '../types/meeting';
+import { Skeleton } from './ManagerDashboard';
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -69,6 +70,46 @@ interface RecentCall {
     highlight: string; // short green/teal label, e.g. "Economic Buyer"
     score: number;
 }
+
+// ─── AE detail skeletons ─────────────────────────────────────────────────────
+// Shape-matched placeholders shown while isLoadingDetail is true, so the panel
+// reads as "this rep's data is loading" rather than a bare "Loading…" string.
+
+const DimensionGaugeSkeleton: React.FC<{ isLight: boolean }> = ({ isLight }) => (
+    <div className="flex flex-col items-center py-4">
+        <Skeleton isLight={isLight} className="w-48 h-24 rounded-t-full rounded-b-none" />
+        <div className="flex items-center gap-3 mt-5">
+            {Array.from({ length: 5 }).map((_, i) => (
+                <Skeleton key={i} isLight={isLight} className="h-3 w-10" />
+            ))}
+        </div>
+    </div>
+);
+
+const StrengthsAndGapsSkeleton: React.FC<{ isLight: boolean }> = ({ isLight }) => (
+    <div className="flex flex-col gap-3 py-1">
+        {Array.from({ length: 4 }).map((_, i) => (
+            <div key={i} className="flex items-center gap-2.5">
+                <Skeleton isLight={isLight} className="w-6 h-6 rounded-full shrink-0" />
+                <Skeleton isLight={isLight} className="h-3.5 flex-1" style={{ maxWidth: `${70 - i * 8}%` }} />
+            </div>
+        ))}
+    </div>
+);
+
+const RecentCallsSkeleton: React.FC<{ isLight: boolean }> = ({ isLight }) => (
+    <div className="flex flex-col gap-3 py-1">
+        {Array.from({ length: 3 }).map((_, i) => (
+            <div key={i} className="flex items-center justify-between gap-4">
+                <div className="flex flex-col gap-1.5 flex-1">
+                    <Skeleton isLight={isLight} className="h-3.5 w-1/2" />
+                    <Skeleton isLight={isLight} className="h-3 w-1/3" />
+                </div>
+                <Skeleton isLight={isLight} className="h-6 w-10 shrink-0" />
+            </div>
+        ))}
+    </div>
+);
 
 // ─── Dimension metadata (icon/color per radar_scores key) ──────────────────
 // Order here drives the order the segments are drawn in on the gauge.
@@ -524,7 +565,7 @@ export const AeDetailView: React.FC<AeDetailViewProps> = ({ ae, tenantId, onBack
                                             How {displayName.split(' ')[0] || 'this rep'} is performing across key sales dimensions
                                         </p>
                                         {isLoadingDetail ? (
-                                            <p className="text-sm text-text-tertiary py-16 text-center">Loading…</p>
+                                            <DimensionGaugeSkeleton isLight={isLight} />
                                         ) : dimensions.length > 0 ? (
                                             <DimensionGauge
                                                 dimensions={dimensions}
@@ -543,7 +584,7 @@ export const AeDetailView: React.FC<AeDetailViewProps> = ({ ae, tenantId, onBack
                                             What {displayName.split(' ')[0] || 'this rep'} does well and where they can improve
                                         </p>
                                         {isLoadingDetail ? (
-                                            <p className="text-sm text-text-tertiary py-6 text-center">Loading…</p>
+                                            <RecentCallsSkeleton isLight={isLight} />
                                         ) : (
                                             <StrengthsAndGapsList items={strengthsAndGaps} isLight={isLight} />
                                         )}

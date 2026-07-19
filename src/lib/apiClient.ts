@@ -68,6 +68,23 @@ http.interceptors.request.use(async (config: RetryConfig) => {
   if (!user) throw new ApiError(401, "unauthorized", "Not signed in");
   const token = await user.getIdToken(Boolean(config._retry));
   config.headers.set("Authorization", `Bearer ${token}`);
+
+  // Attach the active tenant so the backend can scope RLS/admin-visibility
+  // checks (e.g. an admin viewing a member's meeting). Sourced from the main
+  // process cache — the same value App.tsx resolves via tenantsApi.listMine()
+  // and broadcasts to every window (including this one, e.g. the overlay,
+  // which never runs that resolution effect itself).
+  try {
+    const tenantId = await window.electronAPI?.getCurrentTenantId?.();
+    if (tenantId) {
+      config.headers.set("X-Tenant-Id", tenantId);
+    }
+  } catch (err) {
+    // Best-effort — a missing tenant header just means the backend falls
+    // back to owner-only access; it shouldn't block the request entirely.
+    console.warn("[apiClient] Failed to read current tenant id:", err);
+  }
+
   return config;
 });
 

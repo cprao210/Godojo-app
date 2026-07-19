@@ -26,11 +26,28 @@ const RETRY_BASE_MS = 1_500;
 
 interface OutboxItem {
     id: number;
-    op: 'upsert' | 'delete' | 'deleteVector' | 'upsertVector';
+    op: 'upsert' | 'delete' | 'deleteVector' | 'upsertVector' | 'upsertBatch';
     table: string;
     payload: any;
     retries: number;
+    // Captured once, at enqueue time. Related rows (e.g. a meeting + its
+    // transcript batch, enqueued together in the same saveMeeting() call)
+    // MUST share the same user_id even if the drain loop sends them at
+    // different moments and the resolved uid shifts in between (token
+    // refresh, re-auth, tenant switch) — otherwise one row lands under one
+    // user_id and its FK-dependent sibling lands under another, and the
+    // foreign key check fails permanently. Resolving fresh per-send (the
+    // previous behavior) is what let that happen.
+    ownerUid: string | null;
 }
+
+// Tables whose upserts should jump the queue ahead of everything else
+// (besides 'users', which _upsertCurrentUserRow already prioritizes).
+// 'meetings' specifically: it's the one row the UI is actively polling for
+// right after a meeting ends, so it shouldn't sit behind a batch of
+// transcript lines / ai_interactions / chunks that the user isn't staring
+// at a spinner for.
+const PRIORITY_TABLES = new Set(['meetings']);
 
 export class SupabaseMirrorService {
     private static instance: SupabaseMirrorService;
@@ -233,21 +250,56 @@ export class SupabaseMirrorService {
         }
     }
 
-    /** Batch upsert rows (for backfill or bulk ops). */
+    /**
+     * Batch upsert rows in a SINGLE outbox item / single network request.
+     * Previously this enqueued one item per row, meaning a 50-line meeting
+     * transcript meant 50 sequential round trips (drain() sends one item at
+     * a time) sitting in front of whatever was enqueued after — including,
+     * on a later call within the same saveMeeting(), nothing, but on any
+     * subsequent meeting the outbox could still have a prior meeting's
+     * leftover transcript items ahead of it. A single batched upsert call
+     * is both faster (one request) and can't block later items for long.
+     */
     upsertRows(table: string, rows: Record<string, any>[]): void {
         if (!this.enabled || rows.length === 0) return;
-        for (const row of rows) this._enqueue({ op: 'upsert', table, payload: row, retries: 0 });
+        this._enqueue({ op: 'upsertBatch', table, payload: rows, retries: 0 });
     }
 
     // ============================================
     // Private queue / drain machinery
     // ============================================
 
-    private _enqueue(item: Omit<OutboxItem, 'id'>): void {
-        const entry: OutboxItem = { id: ++this.counter, ...item };
+    private _enqueue(item: Omit<OutboxItem, 'id' | 'ownerUid'>): void {
+        const entry: OutboxItem = {
+            id: ++this.counter,
+            ownerUid: item.table === 'users' ? null : SupabaseClientManager.getCurrentUserId(),
+            ...item,
+        };
         this.outbox.push(entry);
         this._persistOutboxItem(entry);
         if (!this.draining) this._drain();
+    }
+
+    /**
+     * Pick the next item to send. A pending 'users' or PRIORITY_TABLES
+     * (currently just 'meetings') upsert always wins over plain FIFO order:
+     * every other mirrored table either FKs to users.firebase_uid, or is
+     * bulk data (transcripts/ai_interactions/chunks) the UI isn't blocked
+     * on, whereas the meetings row is exactly what the Launcher's list is
+     * polling for right after "End Meeting". This is resolved at drain time
+     * rather than enqueue time because outbox order after a restart comes
+     * from _loadOutboxFromDb's created_at ASC, which doesn't know about
+     * this priority either.
+     */
+    private _nextItem(): OutboxItem | undefined {
+        const usersIdx = this.outbox.findIndex(i => i.table === 'users' && i.op === 'upsert');
+        if (usersIdx > 0) return this.outbox[usersIdx];
+        if (usersIdx === 0) return this.outbox[0];
+
+        const priorityIdx = this.outbox.findIndex(i => PRIORITY_TABLES.has(i.table));
+        if (priorityIdx > 0) return this.outbox[priorityIdx];
+
+        return this.outbox[0];
     }
 
     private async _drain(): Promise<void> {
@@ -262,19 +314,38 @@ export class SupabaseMirrorService {
                     return;
                 }
 
-                const item = this.outbox[0];
+                const item = this._nextItem();
+                if (!item) return;
                 const success = await this._sendItem(item);
                 if (success) {
-                    this.outbox.shift();
+                    const idx = this.outbox.indexOf(item);
+                    if (idx !== -1) this.outbox.splice(idx, 1);
                     this._deleteOutboxItem(item.id);
                     this.lastSyncAt = Date.now();
                     this.lastError = null;
                 } else {
                     item.retries++;
                     if (item.retries >= MAX_RETRY) {
-                        console.error(`[SupabaseMirrorService] Dropping op ${item.op} on ${item.table} after ${MAX_RETRY} retries`);
+                        const isParentTable = item.table === 'users' || PRIORITY_TABLES.has(item.table);
+                        if (isParentTable) {
+                            // A dropped users/meetings upsert isn't just one lost row — every
+                            // transcripts/ai_interactions/meeting_scorecards row that FKs to it
+                            // will now fail too, and those failures are far more numerous and
+                            // easy to mistake for the actual root cause. Flag this one loudly.
+                            console.error(
+                                `[SupabaseMirrorService] ⚠️ PARENT ROW DROPPED: ${item.op} on ${item.table} ` +
+                                `(payload id/meeting_id=${(item.payload as any)?.id ?? (item.payload as any)?.meeting_id}) ` +
+                                `after ${MAX_RETRY} retries. Any transcripts/scorecard rows referencing this ` +
+                                `will now fail their FK check and be dropped too — check Supabase for the ` +
+                                `actual cause (e.g. missing users.firebase_uid row) rather than chasing the ` +
+                                `downstream failures alone.`
+                            );
+                        } else {
+                            console.error(`[SupabaseMirrorService] Dropping op ${item.op} on ${item.table} after ${MAX_RETRY} retries`);
+                        }
                         this.lastError = `Dropped ${item.op} on ${item.table} after ${MAX_RETRY} retries`;
-                        this.outbox.shift();
+                        const idx = this.outbox.indexOf(item);
+                        if (idx !== -1) this.outbox.splice(idx, 1);
                         this._deleteOutboxItem(item.id);
                     } else {
                         const delay = RETRY_BASE_MS * Math.pow(2, item.retries - 1);
@@ -291,9 +362,12 @@ export class SupabaseMirrorService {
         const client = SupabaseClientManager.getClient();
         if (!client) return false;
 
-        // Resolve the current user — required for every table except 'users'
-        // itself (whose payload already carries firebase_uid).
-        const userId = SupabaseClientManager.getCurrentUserId();
+        // Prefer the uid captured when this item (and its FK-related siblings,
+        // e.g. a meeting + its transcript batch) was originally enqueued —
+        // guarantees they all share one user_id even if the drain loop sends
+        // them at different moments. Only fall back to resolving fresh here
+        // for the "queued before anyone was signed in yet" case.
+        const userId = item.ownerUid ?? SupabaseClientManager.getCurrentUserId();
         const needsUserId = item.table !== 'users';
         if (needsUserId && !userId) {
             // Not signed in — drain loop will re-check on next trigger.
@@ -311,6 +385,22 @@ export class SupabaseMirrorService {
                 const { error } = conflict
                     ? await client.from(item.table).upsert(payload, { onConflict: conflict })
                     : await client.from(item.table).insert(payload);
+                if (error) throw error;
+
+            } else if (item.op === 'upsertBatch') {
+                // item.payload is an array of rows for the same table (see
+                // upsertRows). Stamp user_id onto every row, then send as one
+                // request instead of one-per-row — cuts N round trips to 1 and
+                // stops a large transcript batch from blocking a later
+                // higher-priority item (see _nextItem) for as long.
+                const rows: Record<string, any>[] = (item.payload as Record<string, any>[]).map(row =>
+                    needsUserId ? { user_id: userId, ...row } : row
+                );
+                if (rows.length === 0) return true;
+                const conflict = this._conflictTargetForTable(item.table, rows[0]);
+                const { error } = conflict
+                    ? await client.from(item.table).upsert(rows, { onConflict: conflict })
+                    : await client.from(item.table).insert(rows);
                 if (error) throw error;
 
             } else if (item.op === 'delete') {
@@ -372,9 +462,14 @@ export class SupabaseMirrorService {
                     tbl  TEXT NOT NULL,
                     payload TEXT NOT NULL,
                     retries INTEGER DEFAULT 0,
+                    owner_uid TEXT,
                     created_at TEXT DEFAULT CURRENT_TIMESTAMP
                 );
             `);
+            // Upgrade path for DBs created before owner_uid existed.
+            try {
+                this.db.exec(`ALTER TABLE supabase_mirror_outbox ADD COLUMN owner_uid TEXT;`);
+            } catch (_) { /* column already exists — fine */ }
         } catch (e) {
             console.warn('[SupabaseMirrorService] Could not create outbox table:', e);
         }
@@ -384,9 +479,9 @@ export class SupabaseMirrorService {
         if (!this.db) return;
         try {
             this.db.prepare(
-                `INSERT OR IGNORE INTO supabase_mirror_outbox (id, op, tbl, payload, retries)
-                 VALUES (?, ?, ?, ?, ?)`
-            ).run(item.id, item.op, item.table, JSON.stringify(item.payload), item.retries);
+                `INSERT OR IGNORE INTO supabase_mirror_outbox (id, op, tbl, payload, retries, owner_uid)
+                 VALUES (?, ?, ?, ?, ?, ?)`
+            ).run(item.id, item.op, item.table, JSON.stringify(item.payload), item.retries, item.ownerUid);
         } catch (_) { }
     }
 
@@ -410,7 +505,11 @@ export class SupabaseMirrorService {
                     op: row.op,
                     table: row.tbl,
                     payload: JSON.parse(row.payload),
-                    retries: row.retries
+                    retries: row.retries,
+                    // Older rows saved before this column existed will be
+                    // NULL — _sendItem falls back to resolving fresh in
+                    // that case, same as the pre-fix behavior.
+                    ownerUid: row.owner_uid ?? null,
                 });
                 if (row.id > this.counter) this.counter = row.id;
             }

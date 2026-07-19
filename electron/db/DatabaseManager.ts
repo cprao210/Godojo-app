@@ -1306,6 +1306,8 @@ export class DatabaseManager {
 
     public saveMeeting(meeting: Meeting, startTimeMs: number, durationMs: number) {
 
+        console.log("--> saveMeeting: ", meeting)
+
         if (!this.db) {
             console.error('[DatabaseManager] DB not initialized');
             return;
@@ -1326,10 +1328,15 @@ export class DatabaseManager {
             VALUES (?, ?, ?, ?, ?, ?)
         `);
 
-        const summaryJson = JSON.stringify({
+        // Keep the object form for the Supabase mirror (jsonb column — must receive
+        // an object, not a pre-stringified string, or it gets stored as a quoted
+        // JSON-string scalar instead of a real jsonb object). Stringify separately
+        // for the local SQLite column, which has no native JSON type and needs TEXT.
+        const summaryObj = {
             legacySummary: meeting.summary,
             detailedSummary: meeting.detailedSummary
-        });
+        };
+        const summaryJson = JSON.stringify(summaryObj);
 
         // Mirror payloads collected inside the transaction. We only enqueue them at the
         // mirror AFTER the transaction commits — never enqueue cloud writes for data that
@@ -1428,7 +1435,7 @@ export class DatabaseManager {
                     title: meeting.title,
                     start_time: startTimeMs,
                     duration_ms: durationMs,
-                    summary_json: summaryJson,
+                    summary_json: summaryObj,
                     created_at: meeting.date,
                     calendar_event_id: meeting.calendarEventId || null,
                     tenant_id: meeting.tenantId || null,

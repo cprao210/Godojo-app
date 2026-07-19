@@ -92,8 +92,10 @@ export interface InvitationPreview {
 }
 
 export interface InvitationAcceptResult {
-    status: "accepted";
+    invitation_status: "accepted";
     tenant_id: string;
+    member_status: "active";
+    tenant: Tenant & { role: TenantRole };
 }
 
 export interface InvitationDeclineResult {

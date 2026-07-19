@@ -647,9 +647,9 @@ export class MeetingPersistence {
             SupabaseMirrorService.getInstance().upsertRow('meeting_scorecards', {
                 meeting_id: meetingId,
                 overall_score: scorecardResult.overallWeightedScore ?? 0,
-                detected_types: JSON.stringify(scorecardResult.detectedTypes ?? []),
-                scorecard_json: JSON.stringify(scorecardResult),
-                criteria_snapshot_json: customScoringCriteria ? JSON.stringify(customScoringCriteria) : null,
+                detected_types: scorecardResult.detectedTypes ?? [],
+                scorecard_json: scorecardResult,
+                criteria_snapshot_json: customScoringCriteria ?? null,
                 generated_at: new Date().toISOString(),
             });
         } catch (mirrorErr) {
