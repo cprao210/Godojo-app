@@ -643,7 +643,7 @@ export const FloatingIntelligencePanel: React.FC<FloatingIntelligencePanelProps>
             )} */}
 
             {/* Tab bar — only shown when there is live data */}
-            {displayData && !isLoading && (
+            {displayData && (!isLoading || isRefreshRun) && (
                 <div
                     className="shrink-0 overflow-x-auto"
                     style={{ borderBottom: '1px solid rgba(255,255,255,0.06)', scrollbarWidth: 'none' }}

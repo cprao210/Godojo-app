@@ -208,9 +208,12 @@ const TeamScoreChart: React.FC<TeamScoreChartProps> = ({ data, isLight }) => {
     const plotW = width - padL - padR;
     const plotH = height - padT - padB;
 
-    const yMin = 50;
-    const yMax = 100;
-    const yTicks = [50, 60, 70, 80, 90, 100];
+    const scores = data.map((d) => d.score);
+    const dataMin = scores.length ? Math.min(...scores) : 50;
+    const dataMax = scores.length ? Math.max(...scores) : 100;
+    const yMin = Math.max(0, Math.floor(Math.min(50, dataMin) / 10) * 10);
+    const yMax = Math.min(100, Math.ceil(Math.max(100, dataMax) / 10) * 10);
+    const yTicks = Array.from({ length: (yMax - yMin) / 10 + 1 }, (_, i) => yMin + i * 10);
 
     const xFor = (i: number) => (data.length <= 1 ? padL : padL + (i / (data.length - 1)) * plotW);
     const yFor = (score: number) => padT + (1 - (score - yMin) / (yMax - yMin)) * plotH;

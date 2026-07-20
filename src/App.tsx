@@ -365,12 +365,11 @@ const App: React.FC = () => {
       // Signed out (or switched accounts) — allow the next admin login to
       // auto-open the dashboard again.
       hasAutoOpenedDashboardRef.current = false;
+      setIsManagerDashboardOpen(false);
       return;
     }
     if (!tenant || hasAutoOpenedDashboardRef.current) return;
-    if (isAdmin) {
-      setIsManagerDashboardOpen(true);
-    }
+    setIsManagerDashboardOpen(isAdmin);
     hasAutoOpenedDashboardRef.current = true;
   }, [authUser, tenant, isAdmin]);
 

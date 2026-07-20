@@ -793,22 +793,15 @@ export const UserRolesPermissionsTab: React.FC<UserRolesPermissionsTabProps> = (
         setIsCreateTeamOpen(false);
     };
 
-    const handleInvitationAccepted = async (result: InvitationAcceptResult) => {
+    const handleInvitationAccepted = async (_result: InvitationAcceptResult) => {
         setPendingInvitation(null);
         onDeepLinkTokenConsumed?.();
-        // Accept response now includes the full tenant row (see backend
-        // accept_invitation) — use it directly instead of racing a second
-        // /tenants/me call right after the accept response comes back.
-        // Fall back to a fresh fetch if it's ever missing, rather than
-        // setting tenant to undefined (which used to slip past the
-        // `hasTeam` check below and crash MembersTable).
-        if (result.tenant) {
-            setTenant(result.tenant);
-            return;
-        }
+
         try {
             const tenants = await tenantsApi.listMine();
-            setTenant(tenants[0] ?? null);
+            const resolvedTenant = tenants[0] ?? null;
+            setTenant(resolvedTenant);
+            await window.electronAPI?.setCurrentTenantId?.(resolvedTenant?.id ?? null);
         } catch (err) {
             setLoadError(err instanceof ApiError ? err.message : 'Failed to load your team.');
         }
