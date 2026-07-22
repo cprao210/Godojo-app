@@ -475,7 +475,7 @@ export const AeDetailView: React.FC<AeDetailViewProps> = ({ ae, tenantId, onBack
     const displayName = detail?.name ?? ae?.name ?? '';
     const displayRole = ae?.role ?? (detail?.role === 'admin' ? 'Admin' : 'Member');
     const displayCalls = detail?.calls_total ?? ae?.calls ?? 0;
-    const displayScore = Math.round(detail?.avg_score ?? ae?.score ?? 0);
+    const displayScore = detail?.avg_score ?? ae?.score ?? 0;
 
     const dimensions = detail ? dimensionsFromRadarScores(detail.radar_scores) : [];
     const strengthsAndGaps = detail ? strengthsAndGapsFrom(detail) : [];

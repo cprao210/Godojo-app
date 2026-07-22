@@ -526,7 +526,7 @@ export const ManagerDashboard: React.FC<ManagerDashboardProps> = ({ isOpen }) =>
     // ── Map API shapes → the presentational props these components already expect ──
     const activeReps = dashboard?.active_members_count ?? 0;
     const totalCalls = dashboard?.total_calls ?? 0;
-    const teamAvgScore = (dashboard?.team_avg_score ?? 0).toFixed(1);
+    const teamAvgScore = dashboard?.team_avg_score ?? 0;
     const allAes: DashboardActiveMember[] = (dashboard?.active_members ?? []).filter((m) => m.role !== 'admin');
 
     const teamScoreTrend = (dashboard?.trend ?? []).map((t) => ({
@@ -543,14 +543,14 @@ export const ManagerDashboard: React.FC<ManagerDashboardProps> = ({ isOpen }) =>
         userId: p.user_id,
         name: p.name,
         role: `${p.call_count} call${p.call_count === 1 ? '' : 's'}`,
-        score: Math.round(p.avg_score),
+        score: p.avg_score,
     }));
 
     const needsCoaching: RepEntry[] = (dashboard?.lowest_performers ?? []).map((p) => ({
         userId: p.user_id,
         name: p.name,
         role: `${p.call_count} call${p.call_count === 1 ? '' : 's'}`,
-        score: Math.round(p.avg_score),
+        score: p.avg_score,
     }));
 
     const allAeRows: AeEntry[] = allAes.map((m) => ({
@@ -558,7 +558,7 @@ export const ManagerDashboard: React.FC<ManagerDashboardProps> = ({ isOpen }) =>
         name: m.name || m.email || 'Unknown',
         role: m.role === 'admin' ? 'Admin' : 'Member',
         calls: m.calls,
-        score: Math.round(m.avg_score),
+        score: m.avg_score,
     }))
 
     console.log(allAeRows);

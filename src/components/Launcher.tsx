@@ -386,7 +386,7 @@ const Launcher: React.FC<LauncherProps> = ({ onStartMeeting, onOpenSettings, onO
             //     setUploadError(result?.error || 'Upload failed');
             // }
             const result = await meetingsApi.uploadTranscript(
-                uploadTitle.trim() || 'Untitled',
+                uploadTitle.trim() || 'Processing...',
                 uploadText.trim()
             );
             setIsUploadOpen(false);
