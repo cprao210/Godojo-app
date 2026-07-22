@@ -91,6 +91,7 @@ interface FloatingIntelligencePanelProps {
     isUserSpeaking: boolean;
     speakerNames: { user: string; client: string };
     panelFirstOpenedAt: number | null; // timestamp when intelligence panel was first opened
+    noAnalysisCaptured?: boolean; // true when the countdown ended without enough transcript to analyse
     meetingTypes: MeetingType[];
     onMeetingTypesChange: (types: MeetingType[]) => void;
 }
@@ -228,6 +229,28 @@ const WaitingPlaceholder: React.FC = () => (
                     transition={{ duration: 2.4, repeat: Infinity, delay: i * 0.18, ease: 'easeInOut' }}
                 />
             ))}
+        </div>
+    </div>
+);
+
+// Shown when the auto-refresh countdown reached zero without enough
+// transcript captured to run an analysis. Does not auto-retry — a new
+// analysis cycle only starts on interval change, resume, or a new session.
+const NoAnalysisCapturedPlaceholder: React.FC = () => (
+    <div className="flex flex-col items-center justify-center h-full px-6 py-12 gap-5">
+        <div
+            className="w-14 h-14 rounded-2xl flex items-center justify-center"
+            style={{ background: 'rgba(148,163,184,0.10)', border: '1px solid rgba(148,163,184,0.18)' }}
+        >
+            <Radio size={26} className="text-white/30" strokeWidth={1.5} />
+        </div>
+
+        <div className="text-center flex flex-col gap-2">
+            <p className="text-[13px] font-semibold text-white/60 tracking-wide">No analysis captured</p>
+            <p className="text-[11px] text-white/30 leading-relaxed max-w-[220px]">
+                Not enough transcript was captured in this window. Hit{' '}
+                <span className="text-blue-400/70 font-semibold">Refresh</span> once there's more to analyse.
+            </p>
         </div>
     </div>
 );
@@ -424,6 +447,7 @@ export const FloatingIntelligencePanel: React.FC<FloatingIntelligencePanelProps>
     isUserSpeaking,
     speakerNames,
     panelFirstOpenedAt,
+    noAnalysisCaptured,
     isOpen,
     meetingTypes,
     onMeetingTypesChange,
@@ -642,7 +666,12 @@ export const FloatingIntelligencePanel: React.FC<FloatingIntelligencePanelProps>
                 <DealHealthScore analysisData={displayData} isRefreshRun={isRefreshRun} />
             )} */}
 
-            {/* Tab bar — only shown when there is live data */}
+            {/* Tab bar — shown whenever there is live data, including while a
+                background refresh of that data is in flight. Only hide it
+                for the initial/no-data loading state (matches the content
+                area's isLoading && !isRefreshRun check below), otherwise a
+                refresh would unmount the tabs even though displayData is
+                still valid. */}
             {displayData && (!isLoading || isRefreshRun) && (
                 <div
                     className="shrink-0 overflow-x-auto"
@@ -736,7 +765,9 @@ export const FloatingIntelligencePanel: React.FC<FloatingIntelligencePanelProps>
                         </button>
                     </div>
                 ) : displayData === null ? (
-                    panelFirstOpenedAt && autoRefreshInterval ? (
+                    noAnalysisCaptured ? (
+                        <NoAnalysisCapturedPlaceholder />
+                    ) : panelFirstOpenedAt && autoRefreshInterval ? (
                         <CountdownPlaceholder openedAt={panelFirstOpenedAt} intervalMins={autoRefreshInterval} isPaused={isMeetingPaused} />
                     ) : (
                         <WaitingPlaceholder />

@@ -148,43 +148,82 @@ export const FloatingDock: React.FC<FloatingDockProps> = ({
     // Auto-refresh interval owned here (not in the panel) so the timer survives
     // panel close/open cycles and responds correctly to isMeetingPaused changes.
     const [autoRefreshInterval, setAutoRefreshInterval] = useState<number | null>(2);
-    const autoRefreshTimerRef = useRef<ReturnType<typeof setInterval> | null>(null);
+    const autoRefreshTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+    const earlyTriggerPollRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
-    // Timestamp of when the meeting started (FloatingDock mount) — used to
+    // Timestamp of when the current countdown cycle started — used to
     // synchronise the countdown display with the actual auto-refresh timer.
     const [intelligencePanelFirstOpenedAt, setIntelligencePanelFirstOpenedAt] = useState<number | null>(null);
 
+    // True when the countdown reached zero without enough transcript to analyse.
+    // Cleared whenever a new cycle starts (new session, resume, interval change).
+    const [noAnalysisCaptured, setNoAnalysisCaptured] = useState(false);
+
+    // Bumped on every session-reset so the timer effect below always re-runs
+    // and re-anchors intelligencePanelFirstOpenedAt to "now" — even when
+    // autoRefreshInterval/isMeetingPaused haven't changed across the reset.
+    // Without this, the countdown origin from the ENDED meeting survived into
+    // the new one, so the display could open showing an arbitrary leftover
+    // value (e.g. "0:10") instead of the full configured duration.
+    const [sessionKey, setSessionKey] = useState(0);
+
+    // Minimum number of prospect turns considered "enough transcript" to
+    // generate an analysis from — used both to fire early (before the
+    // countdown finishes) and to decide the zero-countdown outcome.
+    const MIN_PROSPECT_TURNS = 2;
+    const hasEnoughTranscript = () => {
+        const turns = transcriptRef.current ?? [];
+        return turns.filter(t => !['system', 'ai', 'assistant', 'model'].includes(t.speaker?.toLowerCase())).length >= MIN_PROSPECT_TURNS;
+    };
+
     // Manage the auto-refresh timer in FloatingDock so it lives independent of
     // FloatingIntelligencePanel mount/unmount cycles.
-    // Re-runs whenever: interval changes, meeting is paused/resumed.
-    // When paused — timer is cleared and NOT restarted until resumed.
-    // When interval changes mid-countdown — timer resets from NOW, and
-    // intelligencePanelFirstOpenedAt is updated so the countdown display realigns.
+    //
+    // Runs ONCE per cycle (single-shot, not recurring):
+    //   - If enough transcript is captured before the countdown finishes,
+    //     analysis fires immediately and the cycle ends there.
+    //   - If the countdown reaches zero with enough transcript, analysis fires.
+    //   - If the countdown reaches zero WITHOUT enough transcript, the timer
+    //     stops and `noAnalysisCaptured` is set instead of silently restarting.
+    // A new cycle only begins when: the interval changes, the meeting is
+    // resumed after a pause, or a new live-analysis session starts (sessionKey).
     useEffect(() => {
-        if (autoRefreshTimerRef.current) {
-            clearInterval(autoRefreshTimerRef.current);
-            autoRefreshTimerRef.current = null;
-        }
+        const clearAll = () => {
+            if (autoRefreshTimeoutRef.current) {
+                clearTimeout(autoRefreshTimeoutRef.current);
+                autoRefreshTimeoutRef.current = null;
+            }
+            if (earlyTriggerPollRef.current) {
+                clearInterval(earlyTriggerPollRef.current);
+                earlyTriggerPollRef.current = null;
+            }
+        };
+
+        clearAll();
         // Don't run timer while paused or when auto-refresh is off
         if (autoRefreshInterval === null || isMeetingPaused) return;
 
-        // Align the countdown origin to NOW so the countdown display
-        // always matches how long until the next real refresh fires.
+        // Fresh cycle — reset origin and any stale "no analysis" state.
         setIntelligencePanelFirstOpenedAt(Date.now());
+        setNoAnalysisCaptured(false);
 
-        autoRefreshTimerRef.current = setInterval(() => {
-            runAnalysisRef.current(false);
-            // Reset countdown origin after each fire so the next cycle is accurate
-            setIntelligencePanelFirstOpenedAt(Date.now());
-        }, autoRefreshInterval * 60 * 1000);
+        const durationMs = autoRefreshInterval * 60 * 1000;
 
-        return () => {
-            if (autoRefreshTimerRef.current) {
-                clearInterval(autoRefreshTimerRef.current);
-                autoRefreshTimerRef.current = null;
-            }
+        const finishCycle = (didFire: boolean) => {
+            clearAll();
+            if (didFire) runAnalysisRef.current(false);
+            else setNoAnalysisCaptured(true);
+            // Intentionally single-shot: no rescheduling here. The countdown
+            // only runs again if this effect re-runs (interval/pause/session change).
         };
-    }, [autoRefreshInterval, isMeetingPaused]);
+
+        // Countdown's final deadline.
+        autoRefreshTimeoutRef.current = setTimeout(() => {
+            finishCycle(hasEnoughTranscript());
+        }, durationMs);
+
+        return clearAll;
+    }, [autoRefreshInterval, isMeetingPaused, sessionKey]);
 
     // Reset all state when a new meeting starts (IPC session-reset event)
     useEffect(() => {
@@ -195,6 +234,7 @@ export const FloatingDock: React.FC<FloatingDockProps> = ({
             setChatMessages([]);          // clears chat history
             setActivePanel(null);         // close any open panel
             setMeetingTypes(['discovery']);   // reset to default — Discovery pre-checked
+            setSessionKey(k => k + 1);    // forces the countdown timer effect to restart fresh
         });
         return () => unsubscribe();
     }, [resetAnalysis]);
@@ -260,6 +300,7 @@ export const FloatingDock: React.FC<FloatingDockProps> = ({
                         onAutoRefreshIntervalChange={setAutoRefreshInterval}
                         isRefreshRun={isRefreshRun}
                         panelFirstOpenedAt={intelligencePanelFirstOpenedAt}
+                        noAnalysisCaptured={noAnalysisCaptured}
                         meetingTypes={meetingTypes}
                         onMeetingTypesChange={setMeetingTypes}
                     />
