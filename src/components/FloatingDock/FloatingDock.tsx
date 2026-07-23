@@ -200,12 +200,23 @@ export const FloatingDock: React.FC<FloatingDockProps> = ({
         };
 
         clearAll();
-        // Don't run timer while paused or when auto-refresh is off
-        if (autoRefreshInterval === null || isMeetingPaused) return;
 
-        // Fresh cycle — reset origin and any stale "no analysis" state.
+        // Reset origin and any stale "no analysis" state unconditionally, even if
+        // this run is about to bail out on the paused check below. isMeetingPaused
+        // is a prop driven by a separate IPC/pause channel, not something this
+        // effect owns — it isn't guaranteed to have settled back to false by the
+        // instant a new meeting's session-reset bumps sessionKey. Gating this reset
+        // behind the pause check meant a fast end→restart could land while
+        // isMeetingPaused still briefly read true, leaving the ENDED meeting's
+        // origin timestamp in place — CountdownPlaceholder then rendered a decayed
+        // countdown against the new session instead of a fresh 2:00.
         setIntelligencePanelFirstOpenedAt(Date.now());
         setNoAnalysisCaptured(false);
+
+        // Don't schedule the timer while paused or when auto-refresh is off — but
+        // the origin above is still reset, so the countdown displays correctly
+        // once unpaused instead of resuming from a leftover session's progress.
+        if (autoRefreshInterval === null || isMeetingPaused) return;
 
         const durationMs = autoRefreshInterval * 60 * 1000;
 

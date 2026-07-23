@@ -267,31 +267,39 @@ const CountdownPlaceholder: React.FC<{
 }> = ({ openedAt, intervalMins, isPaused }) => {
     const totalMs = intervalMins * 60 * 1000;
 
-    // `frozenAt` captures the elapsed time when the meeting is paused so the
-    // countdown ring doesn't move while paused.
-    const frozenElapsedRef = useRef<number>(0);
-    const pauseStartRef = useRef<number | null>(null);
+    // Elapsed time frozen at the moment the meeting was paused; null while running,
+    // in which case elapsed is always derived live from `openedAt` (not a ref).
+    //
+    // Previously this used a `useRef(0)` for the running-elapsed baseline, which
+    // reset to 0 on every mount — since this component fully unmounts/remounts
+    // whenever the panel swaps to the loading skeleton and back (e.g. checking
+    // "Negotiation" triggers an immediate analysis run → brief skeleton → back to
+    // this component), the countdown was silently restarting from the full
+    // duration on every such swap, discarding real elapsed time. Deriving
+    // directly from the `openedAt` prop (which FloatingDock owns and does NOT
+    // reset on remount) fixes that regardless of how often this component itself
+    // gets torn down and recreated.
+    const frozenElapsedAtPauseRef = useRef<number | null>(null);
+    const computeElapsed = () =>
+        frozenElapsedAtPauseRef.current !== null ? frozenElapsedAtPauseRef.current : Date.now() - openedAt;
 
-    const [remaining, setRemaining] = useState(() => totalMs);
+    const [remaining, setRemaining] = useState(() => Math.max(0, totalMs - computeElapsed()));
 
     useEffect(() => {
-        // When pausing: snapshot elapsed so far
+        // When pausing: snapshot elapsed so far and freeze the ring/digits.
         if (isPaused) {
-            pauseStartRef.current = Date.now();
-            // Compute elapsed up to this moment
-            frozenElapsedRef.current = Date.now() - openedAt;
+            frozenElapsedAtPauseRef.current = Date.now() - openedAt;
+            setRemaining(Math.max(0, totalMs - frozenElapsedAtPauseRef.current));
             return;
         }
 
-        // When resuming (or on first mount): adjust openedAt equivalent so elapsed
-        // picks up from where it left off.
-        // We recalculate a virtual `startedAt` = now - frozenElapsed
-        const startedAt = Date.now() - frozenElapsedRef.current;
-        pauseStartRef.current = null;
+        // Running (including resuming, or a fresh/re-mount): always compute
+        // elapsed straight from `openedAt`, the one value that's actually
+        // stable across this component's mount/unmount cycles.
+        frozenElapsedAtPauseRef.current = null;
 
         const tick = () => {
-            const elapsed = Date.now() - startedAt;
-            setRemaining(Math.max(0, totalMs - elapsed));
+            setRemaining(Math.max(0, totalMs - (Date.now() - openedAt)));
         };
 
         tick(); // immediate paint
@@ -742,7 +750,16 @@ export const FloatingIntelligencePanel: React.FC<FloatingIntelligencePanelProps>
 
             {/* Content */}
             <div className="overflow-y-auto flex-1" style={{ scrollbarWidth: 'thin', scrollbarColor: 'rgba(255,255,255,0.1) transparent' }}>
-                {isLoading && !isRefreshRun ? (
+                {isLoading && !isRefreshRun && displayData === null ? (
+                    // displayData === null added: isRefreshRun is meant to keep existing
+                    // content visible during a forced re-run (e.g. checking "Negotiation"
+                    // calls runAnalysis(true) immediately so Deal Alert populates without
+                    // waiting for the next auto-refresh tick), but it's a second piece of
+                    // state that has to land in the same render as isLoading to work. If
+                    // there's already data to show, never drop back to the skeleton (or,
+                    // by falling through, the countdown placeholder) regardless of that
+                    // timing — the existing tabs/content should stay up the whole time a
+                    // background refresh is in flight.
                     <IntelligenceSkeleton />
                 ) : analysisError && displayData === null ? (
                     <div className="flex flex-col items-center justify-center h-full px-6 py-10 gap-4">
