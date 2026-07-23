@@ -15,6 +15,7 @@ interface FloatingDockProps {
     isMeetingPaused: boolean;
     onPauseResume: () => void;
     onEndCall: (meetingTypes?: MeetingType[]) => void;
+    meetingId: string | null;
 
     // Feature states
     isUndetectable: boolean;
@@ -55,6 +56,7 @@ export const FloatingDock: React.FC<FloatingDockProps> = ({
     isMeetingPaused,
     onPauseResume,
     onEndCall,
+    meetingId,
     isUndetectable,
     onToggleGhost,
     transcriptRef,
@@ -341,6 +343,7 @@ export const FloatingDock: React.FC<FloatingDockProps> = ({
                         <FloatingChatPanel
                             transcriptRef={transcriptRef}
                             isMeetingPaused={isMeetingPaused}
+                            meetingId={meetingId}
                             rollingTranscriptUser={rollingTranscriptUser}
                             rollingTranscriptClient={rollingTranscriptClient}
                             isClientSpeaking={isClientSpeaking}

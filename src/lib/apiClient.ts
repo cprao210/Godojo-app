@@ -22,6 +22,11 @@ import { getFirebaseAuth } from "./firebase";
 const BASE =
   (import.meta.env.VITE_API_BASE_URL as string | undefined) ?? "http://127.0.0.1:8000";
 
+/** `${BASE}/api/v1` — exported so callers building raw `fetch` requests
+ * (streaming endpoints, which can't go through the axios instance below)
+ * don't have to re-derive it. */
+export const API_BASE = `${BASE}/api/v1`;
+
 /** Typed error carrying the backend envelope's code + optional details. */
 export class ApiError extends Error {
   constructor(
@@ -49,6 +54,30 @@ export function setInvalidSessionHandler(fn: ((code?: string) => void) | null): 
 
 export function notifyInvalidSession(code?: string): void {
   invalidSessionHandler?.(code);
+}
+
+/**
+ * Build the same Authorization + X-Tenant-Id headers the axios request
+ * interceptor attaches below, for callers that need a raw `fetch` instead of
+ * the `http` instance — namely chatApi's SSE streams, which need direct
+ * access to `res.body` (axios buffers the whole response).
+ */
+export async function getAuthHeaders(): Promise<Record<string, string>> {
+  const user = getFirebaseAuth().currentUser;
+  if (!user) throw new ApiError(401, "unauthorized", "Not signed in");
+
+  const headers: Record<string, string> = {
+    Authorization: `Bearer ${await user.getIdToken()}`,
+  };
+
+  try {
+    const tenantId = await window.electronAPI?.getCurrentTenantId?.();
+    if (tenantId) headers["X-Tenant-Id"] = tenantId;
+  } catch (err) {
+    console.warn("[apiClient] Failed to read current tenant id:", err);
+  }
+
+  return headers;
 }
 
 // Per-request config flag: set once a 401 has triggered a force-refresh retry,

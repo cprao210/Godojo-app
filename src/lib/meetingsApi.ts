@@ -76,6 +76,13 @@ export interface EndMeetingResponse {
   duration_ms: number;
 }
 
+export interface ChunkMeetingResponse {
+  meeting_id: string;
+  duration_ms: number;
+  ingested: boolean;
+  is_processed: number;
+}
+
 export const meetingsApi = {
   list: async (): Promise<Meeting[]> => {
     const rows = await apiFetch<any[]>("/meetings");
@@ -152,6 +159,12 @@ export const meetingsApi = {
       method: "POST",
       body: JSON.stringify({ meeting_id: meetingId, meeting_types: meetingTypes }),
     }),
+
+  // Chunks + ingests the meeting transcript for RAG (chat/rag/query/meeting and
+  // the global chat both depend on this having run). Call once, right after
+  // `end` — the backend can't chunk a meeting still marked active.
+  chunk: (meetingId: string): Promise<ChunkMeetingResponse> =>
+    apiFetch(`/meetings/${meetingId}/chunking`, { method: "POST" }),
 
   // NOTE: upload stays on the IPC path until Phase 2 (the Phase-1 backend has no LLM,
   // so an HTTP upload would store an un-summarized meeting). Kept here for completeness;

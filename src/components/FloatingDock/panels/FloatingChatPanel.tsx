@@ -4,6 +4,8 @@ import { Brain, ArrowRight, Copy, Check, RotateCcw, Search, Send } from 'lucide-
 import ReactMarkdown from 'react-markdown';
 import { guardSession } from '../../../lib/firebase';
 import remarkGfm from 'remark-gfm';
+import { useStreamBuffer } from '../../../hooks/useStreamBuffer';
+import { chatApi, type ChatHistoryTurn, type LiveTranscriptSegment, type StreamHandle } from '../../../lib/chatApi';
 
 interface Message {
     id: string;
@@ -83,6 +85,9 @@ interface FloatingChatPanelProps {
     isMeetingPaused: boolean;
     messages: Message[];
     onMessagesChange: (updater: Message[] | ((prev: Message[]) => Message[])) => void;
+    // Backend meeting id for POST /chat/live — null until the backend session
+    // has started; sending is disabled until this is available (see handleSend).
+    meetingId: string | null;
 }
 
 const TypingDots: React.FC = () => (
@@ -198,6 +203,7 @@ const MessageBubble: React.FC<{ msg: Message }> = ({ msg }) => {
 };
 
 export const FloatingChatPanel: React.FC<FloatingChatPanelProps> = ({
+    transcriptRef,
     rollingTranscriptUser,
     rollingTranscriptClient,
     isClientSpeaking,
@@ -207,13 +213,18 @@ export const FloatingChatPanel: React.FC<FloatingChatPanelProps> = ({
     speakerNames,
     messages,
     onMessagesChange,
+    meetingId,
 }) => {
     const setMessages = onMessagesChange;
     const [inputValue, setInputValue] = useState('');
     const [isProcessing, setIsProcessing] = useState(false);
+    const [errorMessage, setErrorMessage] = useState<string | null>(null);
     const messagesEndRef = useRef<HTMLDivElement>(null);
     const inputRef = useRef<HTMLTextAreaElement>(null);
-    const [tavilySearchingFor, setTavilySearchingFor] = useState<string | null>(null);
+    // const [tavilySearchingFor, setTavilySearchingFor] = useState<string | null>(null);
+    const streamBuffer = useStreamBuffer();
+    const activeStreamRef = useRef<StreamHandle | null>(null);
+    const pendingQuestionRef = useRef<string | null>(null);
 
     // Auto-scroll
     useEffect(() => {
@@ -221,93 +232,98 @@ export const FloatingChatPanel: React.FC<FloatingChatPanelProps> = ({
     }, [messages]);
 
     // Stream event listeners
+    // useEffect(() => {
+    //     const cleanups: (() => void)[] = [];
+
+    //     // ── Gemini free-form chat stream (onGeminiStreamToken / onGeminiStreamDone) ──
+    //     if (window.electronAPI?.onGeminiStreamToken) {
+    //         cleanups.push(window.electronAPI.onGeminiStreamToken((token: string) => {
+    //             setMessages(prev => {
+    //                 const last = prev[prev.length - 1];
+    //                 if (last?.isStreaming && last.role === 'system' && !last.intent) {
+    //                     const updated = [...prev];
+    //                     updated[prev.length - 1] = { ...last, text: last.text + token };
+    //                     return updated;
+    //                 }
+    //                 return [...prev, { id: Date.now().toString(), role: 'system', text: token, isStreaming: true }];
+    //             });
+    //         }));
+    //     }
+
+    //     if (window.electronAPI?.onGeminiStreamDone) {
+    //         cleanups.push(window.electronAPI.onGeminiStreamDone(() => {
+    //             setIsProcessing(false);
+    //             setMessages(prev => {
+    //                 const last = prev[prev.length - 1];
+    //                 if (last?.isStreaming && !last.intent) {
+    //                     return [...prev.slice(0, -1), { ...last, isStreaming: false }];
+    //                 }
+    //                 return prev;
+    //             });
+    //         }));
+    //     }
+
+    //     if (window.electronAPI?.onGeminiStreamError) {
+    //         cleanups.push(window.electronAPI.onGeminiStreamError((error: string) => {
+    //             setIsProcessing(false);
+    //             setMessages(prev => {
+    //                 // Remove the empty streaming placeholder and add error
+    //                 const last = prev[prev.length - 1];
+    //                 if (last?.isStreaming) {
+    //                     return [...prev.slice(0, -1), { id: Date.now().toString(), role: 'system', text: `❌ ${error}` }];
+    //                 }
+    //                 return [...prev, { id: Date.now().toString(), role: 'system', text: `❌ ${error}` }];
+    //             });
+    //         }));
+    //     }
+
+    //     // ── RAG stream (used when ragQueryLive handles the question) ──
+    //     if (window.electronAPI?.onRAGStreamChunk) {
+    //         cleanups.push(window.electronAPI.onRAGStreamChunk((data) => {
+    //             setMessages(prev => {
+    //                 const last = prev[prev.length - 1];
+    //                 if (last?.isStreaming && last.role === 'system' && !last.intent) {
+    //                     const updated = [...prev];
+    //                     updated[prev.length - 1] = { ...last, text: last.text + data.chunk };
+    //                     return updated;
+    //                 }
+    //                 return prev;
+    //             });
+    //         }));
+    //     }
+
+    //     if (window.electronAPI?.onRAGStreamComplete) {
+    //         cleanups.push(window.electronAPI.onRAGStreamComplete(() => {
+    //             setIsProcessing(false);
+    //             setMessages(prev => {
+    //                 const last = prev[prev.length - 1];
+    //                 if (last?.isStreaming && !last.intent) {
+    //                     return [...prev.slice(0, -1), { ...last, isStreaming: false }];
+    //                 }
+    //                 return prev;
+    //             });
+    //         }));
+    //     }
+
+    //     if (window.electronAPI?.onTavilySearching) {
+    //         cleanups.push(window.electronAPI.onTavilySearching((data) => {
+    //             setTavilySearchingFor(data.entity);
+    //         }));
+    //     }
+
+    //     if (window.electronAPI?.onTavilySearchDone) {
+    //         cleanups.push(window.electronAPI.onTavilySearchDone(() => {
+    //             setTavilySearchingFor(null);
+    //         }));
+    //     }
+
+    //     return () => cleanups.forEach(fn => fn());
+
+    // }, []);
+
+    // Abort any in-flight stream on unmount (panel switch, meeting end)
     useEffect(() => {
-        const cleanups: (() => void)[] = [];
-
-        // ── Gemini free-form chat stream (onGeminiStreamToken / onGeminiStreamDone) ──
-        if (window.electronAPI?.onGeminiStreamToken) {
-            cleanups.push(window.electronAPI.onGeminiStreamToken((token: string) => {
-                setMessages(prev => {
-                    const last = prev[prev.length - 1];
-                    if (last?.isStreaming && last.role === 'system' && !last.intent) {
-                        const updated = [...prev];
-                        updated[prev.length - 1] = { ...last, text: last.text + token };
-                        return updated;
-                    }
-                    return [...prev, { id: Date.now().toString(), role: 'system', text: token, isStreaming: true }];
-                });
-            }));
-        }
-
-        if (window.electronAPI?.onGeminiStreamDone) {
-            cleanups.push(window.electronAPI.onGeminiStreamDone(() => {
-                setIsProcessing(false);
-                setMessages(prev => {
-                    const last = prev[prev.length - 1];
-                    if (last?.isStreaming && !last.intent) {
-                        return [...prev.slice(0, -1), { ...last, isStreaming: false }];
-                    }
-                    return prev;
-                });
-            }));
-        }
-
-        if (window.electronAPI?.onGeminiStreamError) {
-            cleanups.push(window.electronAPI.onGeminiStreamError((error: string) => {
-                setIsProcessing(false);
-                setMessages(prev => {
-                    // Remove the empty streaming placeholder and add error
-                    const last = prev[prev.length - 1];
-                    if (last?.isStreaming) {
-                        return [...prev.slice(0, -1), { id: Date.now().toString(), role: 'system', text: `❌ ${error}` }];
-                    }
-                    return [...prev, { id: Date.now().toString(), role: 'system', text: `❌ ${error}` }];
-                });
-            }));
-        }
-
-        // ── RAG stream (used when ragQueryLive handles the question) ──
-        if (window.electronAPI?.onRAGStreamChunk) {
-            cleanups.push(window.electronAPI.onRAGStreamChunk((data) => {
-                setMessages(prev => {
-                    const last = prev[prev.length - 1];
-                    if (last?.isStreaming && last.role === 'system' && !last.intent) {
-                        const updated = [...prev];
-                        updated[prev.length - 1] = { ...last, text: last.text + data.chunk };
-                        return updated;
-                    }
-                    return prev;
-                });
-            }));
-        }
-
-        if (window.electronAPI?.onRAGStreamComplete) {
-            cleanups.push(window.electronAPI.onRAGStreamComplete(() => {
-                setIsProcessing(false);
-                setMessages(prev => {
-                    const last = prev[prev.length - 1];
-                    if (last?.isStreaming && !last.intent) {
-                        return [...prev.slice(0, -1), { ...last, isStreaming: false }];
-                    }
-                    return prev;
-                });
-            }));
-        }
-
-        if (window.electronAPI?.onTavilySearching) {
-            cleanups.push(window.electronAPI.onTavilySearching((data) => {
-                setTavilySearchingFor(data.entity);
-            }));
-        }
-
-        if (window.electronAPI?.onTavilySearchDone) {
-            cleanups.push(window.electronAPI.onTavilySearchDone(() => {
-                setTavilySearchingFor(null);
-            }));
-        }
-
-        return () => cleanups.forEach(fn => fn());
-
+        return () => activeStreamRef.current?.abort();
     }, []);
 
     // Auto-resize textarea
@@ -318,43 +334,126 @@ export const FloatingChatPanel: React.FC<FloatingChatPanelProps> = ({
         el.style.height = `${Math.min(el.scrollHeight, 96)}px`; // max ~4 lines
     }, [inputValue]);
 
-    const addUserMessage = (text: string) => {
-        setMessages(prev => [...prev, { id: Date.now().toString(), role: 'user', text }]);
-        setMessages(prev => [...prev, { id: (Date.now() + 1).toString(), role: 'system', text: '', isStreaming: true }]);
+    // const addUserMessage = (text: string) => {
+    //     setMessages(prev => [...prev, { id: Date.now().toString(), role: 'user', text }]);
+    //     setMessages(prev => [...prev, { id: (Date.now() + 1).toString(), role: 'system', text: '', isStreaming: true }]);
+    //     setIsProcessing(true);
+    // };
+
+    // const handleSend = async () => {
+    //     const text = inputValue.trim();
+    //     if (!text || isProcessing) return;
+    //     setInputValue('');
+    //     addUserMessage(text);
+    //     try {
+
+    //         const sessionActive = await guardSession();
+    //         if (!sessionActive) {
+    //             setIsProcessing(false);
+    //             return;
+    //         }
+
+    //         // Try RAG first (context-aware live query)
+    //         const ragResult = await window.electronAPI?.ragQueryLive?.(text);
+    //         if (ragResult?.success) {
+    //             // Response streams via onRAGStreamChunk / onRAGStreamComplete
+    //             return;
+    //         }
+    //         // Fallback to direct Gemini chat
+    //         await window.electronAPI?.streamGeminiChat(text, undefined, undefined, undefined);
+    //     } catch (err: any) {
+    //         setIsProcessing(false);
+    //         setMessages(prev => {
+    //             const last = prev[prev.length - 1];
+    //             if (last?.isStreaming) {
+    //                 return [...prev.slice(0, -1), { id: Date.now().toString(), role: 'system', text: `❌ Error: ${err?.message}` }];
+    //             }
+    //             return [...prev, { id: Date.now().toString(), role: 'system', text: `❌ Error: ${err?.message}` }];
+    //         });
+    //     }
+    // };
+
+    // Build the {role, content} history the endpoint expects from our local
+    // Message[] shape. 'client' rows are rolling-transcript display only —
+    // not chat turns — so they're excluded.
+    const buildHistory = (msgs: Message[]): ChatHistoryTurn[] =>
+        msgs
+            .filter(m => (m.role === 'user' || m.role === 'system') && m.text)
+            .map(m => ({ role: m.role === 'user' ? 'user' : 'assistant', content: m.text }));
+
+    const buildTranscript = (): LiveTranscriptSegment[] =>
+        (transcriptRef?.current ?? []).map((t, i) => ({
+            text: t.text,
+            speaker: t.speaker,
+            timestamp: t.timestamp,
+            meeting_id: meetingId ?? '',
+            chunk_index: i,
+        }));
+
+    const submitQuestion = async (question: string) => {
+        if (!question.trim()) return;
+        if (isProcessing) {
+            pendingQuestionRef.current = question; // queue, don't drop
+            return;
+        }
+        if (!meetingId) {
+            setErrorMessage("Live chat isn't ready yet — the meeting session hasn't started.");
+            return;
+        }
+
+        const sessionActive = await guardSession();
+        if (!sessionActive) return;
+
+        setErrorMessage(null);
         setIsProcessing(true);
+        const userMessage: Message = { id: `user-${Date.now()}`, role: 'user', text: question };
+        const assistantId = `assistant-${Date.now()}`;
+        setMessages(prev => [...prev, userMessage, { id: assistantId, role: 'system', text: '', isStreaming: true }]);
+
+        const historyBeforeThisTurn = buildHistory(messages);
+        streamBuffer.reset();
+
+        activeStreamRef.current = chatApi.queryLive(
+            question,
+            meetingId,
+            historyBeforeThisTurn,
+            buildTranscript(),
+            {
+                onToken: (chunk) => {
+                    streamBuffer.appendToken(chunk, (content) => {
+                        setMessages(prev => prev.map(m => m.id === assistantId ? { ...m, text: content } : m));
+                    });
+                },
+                onDone: () => {
+                    setMessages(prev => prev.map(m =>
+                        m.id === assistantId ? { ...m, text: streamBuffer.getBufferedContent(), isStreaming: false } : m
+                    ));
+                    setIsProcessing(false);
+                    streamBuffer.reset();
+                    activeStreamRef.current = null;
+                    if (pendingQuestionRef.current) {
+                        const next = pendingQuestionRef.current;
+                        pendingQuestionRef.current = null;
+                        setTimeout(() => submitQuestion(next), 50);
+                    }
+                },
+                onError: (error) => {
+                    console.error('[FloatingChatPanel] live chat stream error:', error);
+                    setMessages(prev => prev.filter(m => m.id !== assistantId));
+                    setErrorMessage(error);
+                    setIsProcessing(false);
+                    streamBuffer.reset();
+                    activeStreamRef.current = null;
+                },
+            },
+        );
     };
 
-    const handleSend = async () => {
+    const handleSend = () => {
         const text = inputValue.trim();
         if (!text || isProcessing) return;
         setInputValue('');
-        addUserMessage(text);
-        try {
-
-            const sessionActive = await guardSession();
-            if (!sessionActive) {
-                setIsProcessing(false);
-                return;
-            }
-
-            // Try RAG first (context-aware live query)
-            const ragResult = await window.electronAPI?.ragQueryLive?.(text);
-            if (ragResult?.success) {
-                // Response streams via onRAGStreamChunk / onRAGStreamComplete
-                return;
-            }
-            // Fallback to direct Gemini chat
-            await window.electronAPI?.streamGeminiChat(text, undefined, undefined, undefined);
-        } catch (err: any) {
-            setIsProcessing(false);
-            setMessages(prev => {
-                const last = prev[prev.length - 1];
-                if (last?.isStreaming) {
-                    return [...prev.slice(0, -1), { id: Date.now().toString(), role: 'system', text: `❌ Error: ${err?.message}` }];
-                }
-                return [...prev, { id: Date.now().toString(), role: 'system', text: `❌ Error: ${err?.message}` }];
-            });
-        }
+        submitQuestion(text);
     };
 
     const handleKeyDown = (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
@@ -480,7 +579,7 @@ export const FloatingChatPanel: React.FC<FloatingChatPanelProps> = ({
                 <div ref={messagesEndRef} />
             </div>
 
-            {tavilySearchingFor && (
+            {/* {tavilySearchingFor && (
                 <div
                     className="px-5 py-2 shrink-0 flex items-center gap-2"
                     style={{ borderTop: '1px solid rgba(255,255,255,0.05)', background: 'rgba(139,92,246,0.05)' }}
@@ -490,6 +589,14 @@ export const FloatingChatPanel: React.FC<FloatingChatPanelProps> = ({
                         Searching company information for{' '}
                         <span className="font-semibold text-violet-300">{tavilySearchingFor}</span>…
                     </span>
+                </div>
+            )} */}
+            {errorMessage && (
+                <div
+                    className="px-5 py-2 shrink-0 text-[12px] text-[#FF6B6B]"
+                    style={{ borderTop: '1px solid rgba(255,255,255,0.05)' }}
+                >
+                    {errorMessage}
                 </div>
             )}
 
