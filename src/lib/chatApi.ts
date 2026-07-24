@@ -168,10 +168,9 @@ export const chatApi = {
     /** In-call chat — FloatingChatPanel. Needs the live transcript + prior turns. */
     queryLive: (
         query: string,
-        meetingId: string,
         history: ChatHistoryTurn[],
         transcript: LiveTranscriptSegment[],
         handlers: ChatStreamHandlers,
     ): StreamHandle =>
-        streamSSE("/chat/live", { query, meeting_id: meetingId, history, transcript }, handlers),
+        streamSSE("/chat/live", { query, history, transcript }, handlers),
 };

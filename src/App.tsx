@@ -581,23 +581,23 @@ const App: React.FC = () => {
     // Submit the buffered transcript then close out the backend session. Fired
     // without blocking the window-mode switch, same rationale as the IPC endMeeting
     // above — this shouldn't hold up returning to the launcher.
-    // const backendMeetingId = backendMeetingIdRef.current;
-    // if (backendMeetingId) {
-    //   const segments = transcriptSegmentsRef.current;
-    //   (async () => {
-    //     try {
-    //       if (segments.length > 0) {
-    //         await meetingsApi.submitTranscript(backendMeetingId, segments);
-    //       }
-    //       await meetingsApi.end(backendMeetingId, meetingTypes ?? []);
-    //     } catch (err) {
-    //       console.error("[App] Failed to submit transcript / end backend meeting:", err);
-    //     } finally {
-    //       backendMeetingIdRef.current = null;
-    //       transcriptSegmentsRef.current = [];
-    //     }
-    //   })();
-    // }
+    const backendMeetingId = backendMeetingIdRef.current;
+    if (backendMeetingId) {
+      const segments = transcriptSegmentsRef.current;
+      (async () => {
+        try {
+          if (segments.length > 0) {
+            await meetingsApi.submitTranscript(backendMeetingId, segments);
+          }
+          await meetingsApi.end(backendMeetingId, meetingTypes ?? []);
+        } catch (err) {
+          console.error("[App] Failed to submit transcript / end backend meeting:", err);
+        } finally {
+          backendMeetingIdRef.current = null;
+          transcriptSegmentsRef.current = [];
+        }
+      })();
+    }
 
     try {
       await window.electronAPI.setWindowMode('launcher');

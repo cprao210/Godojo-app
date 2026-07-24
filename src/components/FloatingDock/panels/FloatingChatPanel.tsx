@@ -13,6 +13,7 @@ interface Message {
     text: string;
     isStreaming?: boolean;
     intent?: string;
+    ragAnswer?: { confidence: number; sourceCount: number };
 }
 
 // ── Film-roll transcript — text streams right-to-left like a ticker ──────────
@@ -85,9 +86,6 @@ interface FloatingChatPanelProps {
     isMeetingPaused: boolean;
     messages: Message[];
     onMessagesChange: (updater: Message[] | ((prev: Message[]) => Message[])) => void;
-    // Backend meeting id for POST /chat/live — null until the backend session
-    // has started; sending is disabled until this is available (see handleSend).
-    meetingId: string | null;
 }
 
 const TypingDots: React.FC = () => (
@@ -181,6 +179,14 @@ const MessageBubble: React.FC<{ msg: Message }> = ({ msg }) => {
                                 <ReactMarkdown remarkPlugins={[remarkGfm]}>
                                     {msg.text}
                                 </ReactMarkdown>
+                                {msg.ragAnswer && (
+                                    <div className="mt-2 text-[10px] text-white/35 flex items-center gap-2">
+                                        <span>{Math.round(msg.ragAnswer.confidence * 100)}% confidence</span>
+                                        {msg.ragAnswer.sourceCount > 0 && (
+                                            <span>· {msg.ragAnswer.sourceCount} source{msg.ragAnswer.sourceCount > 1 ? 's' : ''}</span>
+                                        )}
+                                    </div>
+                                )}
                             </div>
                             {!msg.isStreaming && (
                                 <button
@@ -213,7 +219,6 @@ export const FloatingChatPanel: React.FC<FloatingChatPanelProps> = ({
     speakerNames,
     messages,
     onMessagesChange,
-    meetingId,
 }) => {
     const setMessages = onMessagesChange;
     const [inputValue, setInputValue] = useState('');
@@ -386,7 +391,7 @@ export const FloatingChatPanel: React.FC<FloatingChatPanelProps> = ({
             text: t.text,
             speaker: t.speaker,
             timestamp: t.timestamp,
-            meeting_id: meetingId ?? '',
+            meeting_id: '',
             chunk_index: i,
         }));
 
@@ -396,10 +401,10 @@ export const FloatingChatPanel: React.FC<FloatingChatPanelProps> = ({
             pendingQuestionRef.current = question; // queue, don't drop
             return;
         }
-        if (!meetingId) {
-            setErrorMessage("Live chat isn't ready yet — the meeting session hasn't started.");
-            return;
-        }
+        // if (!meetingId) {
+        //     setErrorMessage("Live chat isn't ready yet — the meeting session hasn't started.");
+        //     return;
+        // }
 
         const sessionActive = await guardSession();
         if (!sessionActive) return;
@@ -411,32 +416,52 @@ export const FloatingChatPanel: React.FC<FloatingChatPanelProps> = ({
         setMessages(prev => [...prev, userMessage, { id: assistantId, role: 'system', text: '', isStreaming: true }]);
 
         const historyBeforeThisTurn = buildHistory(messages);
-        streamBuffer.reset();
+
+        // Local to THIS call — not shared with any other question, so there's
+        // no way for a concurrent/overlapping/duplicate call, or leftover
+        // state from a prior turn, to reset or overwrite this turn's text.
+        let localBuffer = '';
+        let rafId: number | null = null;
+        const flush = () => {
+            rafId = null;
+            setMessages(prev => prev.map(m => m.id === assistantId ? { ...m, text: localBuffer } : m));
+        };
 
         activeStreamRef.current = chatApi.queryLive(
             question,
-            meetingId,
             historyBeforeThisTurn,
             buildTranscript(),
             {
                 onToken: (chunk) => {
-                    streamBuffer.appendToken(chunk, (content) => {
-                        setMessages(prev => prev.map(m => m.id === assistantId ? { ...m, text: content } : m));
-                    });
+                    localBuffer += chunk;
+                    if (rafId === null) rafId = requestAnimationFrame(flush);
                 },
-                onRagAnswer: (ragAnswer) => {
-                    setMessages(prev => prev.map(msg =>
-                        msg.id === assistantId
-                            ? { ...msg, content: ragAnswer.answer, isStreaming: false }
-                            : msg
+                onRagAnswer: (rag) => {
+                    // Structured answer arrives whole — render as a complete
+                    // bubble immediately, don't wait for `done` to stop the
+                    // streaming cursor since no `token` frames are coming.
+                    setMessages(prev => prev.map(m =>
+                        m.id === assistantId
+                            ? {
+                                ...m,
+                                text: rag.answer,
+                                isStreaming: false,
+                                ragAnswer: { confidence: rag.confidence ?? 0, sourceCount: rag.sources?.length ?? 0 },
+                            }
+                            : m
                     ));
                 },
                 onDone: () => {
+                    if (rafId !== null) { cancelAnimationFrame(rafId); rafId = null; }
                     setMessages(prev => prev.map(m =>
-                        m.id === assistantId && m.isStreaming ? { ...m, text: streamBuffer.getBufferedContent(), isStreaming: false } : m
+                        // Don't clobber a rag_answer bubble that already set its
+                        // final text — only finalize from the token buffer if
+                        // this turn actually streamed tokens.
+                        m.id === assistantId && !m.ragAnswer
+                            ? { ...m, text: localBuffer, isStreaming: false }
+                            : m
                     ));
                     setIsProcessing(false);
-                    streamBuffer.reset();
                     activeStreamRef.current = null;
                     if (pendingQuestionRef.current) {
                         const next = pendingQuestionRef.current;
@@ -445,11 +470,11 @@ export const FloatingChatPanel: React.FC<FloatingChatPanelProps> = ({
                     }
                 },
                 onError: (error) => {
+                    if (rafId !== null) { cancelAnimationFrame(rafId); rafId = null; }
                     console.error('[FloatingChatPanel] live chat stream error:', error);
                     setMessages(prev => prev.filter(m => m.id !== assistantId));
                     setErrorMessage(error);
                     setIsProcessing(false);
-                    streamBuffer.reset();
                     activeStreamRef.current = null;
                 },
             },
