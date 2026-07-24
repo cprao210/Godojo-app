@@ -1,6 +1,6 @@
 {
   "name": "godojo-ai",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "main": "dist-electron/electron/main.js",
   "description": "GoDojo AI is an AI sales copilot that listens to your calls live, tracks deal intelligence like MEDDICC and BANT in real time, and writes your meeting notes for you.",
   "scripts": {
@@ -64,6 +64,10 @@
       {
         "from": "resources/models/",
         "to": "models/"
+      },
+      {
+        "from": ".env",
+        "to": ".env"
       }
     ],
     "mac": {
@@ -108,6 +112,7 @@
       "requestedExecutionLevel": "asInvoker"
     },
     "linux": {
+      "maintainer": "GoDojo AI <contact@godojo.ai>",
       "target": [
         {
           "target": "AppImage",
@@ -166,7 +171,6 @@
     "autoprefixer": "^10.4.20",
     "concurrently": "^9.1.0",
     "cross-env": "^7.0.3",
-    "dotenv": "^17.3.1",
     "electron": "^33.2.0",
     "electron-builder": "^26.8.1",
     "electron-is-dev": "^3.0.1",
@@ -203,6 +207,7 @@
     "class-variance-authority": "^0.7.0",
     "clsx": "^2.1.1",
     "diff": "^7.0.0",
+    "dotenv": "^17.3.1",
     "electron-store": "^8.1.0",
     "electron-updater": "^6.7.3",
     "firebase": "^10.13.2",

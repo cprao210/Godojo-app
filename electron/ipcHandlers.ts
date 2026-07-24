@@ -1776,10 +1776,6 @@ export function initializeIpcHandlers(appState: AppState): void {
     return DatabaseManager.getInstance().updateMeetingTitle(id, title);
   });
 
-  safeHandle("update-meeting-types", async (_, { id, types }: { id: string; types: ('discovery' | 'demo' | 'negotiation')[] }) => {
-    return DatabaseManager.getInstance().updateMeetingTypes(id, types);
-  });
-
   safeHandle("update-meeting-summary", async (_, { id, updates }: { id: string; updates: any }) => {
     return DatabaseManager.getInstance().updateMeetingSummary(id, updates);
   });

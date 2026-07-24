@@ -27,16 +27,45 @@ pub use windows::SpeakerStream;
 #[cfg(not(any(target_os = "macos", target_os = "windows")))]
 pub mod fallback {
     use anyhow::Result;
-    pub struct SpeakerInput;
-    impl SpeakerInput {
-        pub fn new(_device_id: Option<String>) -> Result<Self> {
-            Err(anyhow::anyhow!("Unsupported platform"))
+
+    // A zero-sized consumer that satisfies the trait bounds lib.rs needs at
+    // compile time. On Linux this code path is never reached at runtime because
+    // SpeakerInput::new() always returns Err, so the thread exits before
+    // take_consumer() / try_pop() are ever called.
+    pub struct DummyConsumer;
+
+    impl DummyConsumer {
+        pub fn try_pop(&mut self) -> Option<f32> {
+            None
         }
 
         pub fn backend_name(&self) -> &'static str {
             "none"
         }
     }
+
+    pub struct SpeakerStream;
+
+    impl SpeakerStream {
+        pub fn take_consumer(&mut self) -> Option<DummyConsumer> {
+            None  // triggers the `None =>` early-return in lib.rs:161-164
+        }
+        pub fn sample_rate(&self) -> u32 {
+            48000
+        }
+    }
+
+    pub struct SpeakerInput;
+
+    impl SpeakerInput {
+        pub fn new(_device_id: Option<String>) -> Result<Self> {
+            Err(anyhow::anyhow!("Speaker capture is not supported on this platform"))
+        }
+        pub fn stream(self) -> SpeakerStream {
+            SpeakerStream
+        }
+    }
+
     pub fn list_output_devices() -> Result<Vec<(String, String)>> {
         Ok(Vec::new())
     }
@@ -45,3 +74,5 @@ pub mod fallback {
 pub use fallback::list_output_devices;
 #[cfg(not(any(target_os = "macos", target_os = "windows")))]
 pub use fallback::SpeakerInput;
+#[cfg(not(any(target_os = "macos", target_os = "windows")))]
+pub use fallback::SpeakerStream;

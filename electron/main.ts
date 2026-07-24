@@ -2,9 +2,20 @@ import { app, BrowserWindow, Tray, Menu, nativeImage, ipcMain, shell, systemPref
 import path from "path"
 import fs from "fs"
 import { autoUpdater } from "electron-updater"
-if (!app.isPackaged) {
-  require('dotenv').config();
-}
+// Load app-level config (Supabase, Google/Zoom OAuth client credentials, Firebase).
+// In dev this reads the repo-root `.env`. In a packaged build it reads the `.env`
+// shipped via `extraResources` (written by CI from GitHub Actions secrets — see
+// release.yml). This must run unconditionally — previously gated to `!app.isPackaged`,
+// which meant packaged builds NEVER loaded these values, no matter what the CI
+// job's own environment contained.
+//
+// IMPORTANT: never put user BYOK provider keys (Gemini/Groq/Claude/OpenAI/Deepgram/
+// etc.) in this file — those are supplied per-user via Settings > AI Providers and
+// stored through CredentialsManager. This file is the same for every install.
+const runtimeEnvPath = app.isPackaged
+  ? path.join(process.resourcesPath, '.env')
+  : path.join(app.getAppPath(), '.env');
+require('dotenv').config({ path: runtimeEnvPath }); // no-ops safely if the file is missing
 
 // Handle stdout/stderr errors at the process level to prevent EIO crashes
 // This is critical for Electron apps that may have their terminal detached

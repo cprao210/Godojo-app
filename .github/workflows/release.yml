@@ -1,0 +1,263 @@
+name: Release — Build & Publish
+
+on:
+  push:
+    tags:
+      - 'v*.*.*'
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Version tag (e.g. v2.1.0)'
+        required: true
+        default: 'v0.0.0-test'
+
+jobs:
+  # ─── macOS: .dmg + .zip for x64 and arm64 ───────────────────────────────────
+  build-macos:
+    name: Build macOS (x64 + arm64)
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      # build-native.js uses rustup + napi-rs to compile the native Rust module
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: x86_64-apple-darwin,aarch64-apple-darwin
+
+      - name: Install Meson & Ninja
+        run: brew install meson ninja
+
+      - name: Install dependencies
+        env:
+          SHARP_IGNORE_GLOBAL_LIBVIPS: "1"
+          SKIP_DOWNLOAD_MODELS: "1"
+        run: npm ci
+      
+      - name: Write app-level runtime config
+        shell: bash
+        run: |
+          cat > .env << EOF
+          VITE_FIREBASE_API_KEY=${{ secrets.VITE_FIREBASE_API_KEY }}
+          VITE_FIREBASE_AUTH_DOMAIN=${{ secrets.VITE_FIREBASE_AUTH_DOMAIN }}
+          VITE_FIREBASE_PROJECT_ID=${{ secrets.VITE_FIREBASE_PROJECT_ID }}
+          VITE_FIREBASE_STORAGE_BUCKET=${{ secrets.VITE_FIREBASE_STORAGE_BUCKET }}
+          VITE_FIREBASE_MESSAGING_SENDER_ID=${{ secrets.VITE_FIREBASE_MESSAGING_SENDER_ID }}
+          VITE_FIREBASE_APP_ID=${{ secrets.VITE_FIREBASE_APP_ID }}
+          VITE_FIREBASE_MEASUREMENT_ID=${{ secrets.VITE_FIREBASE_MEASUREMENT_ID }}
+          SUPABASE_URL=${{ secrets.SUPABASE_URL }}
+          SUPABASE_KEY=${{ secrets.SUPABASE_KEY }}
+          SUPABASE_SERVICE_KEY=${{ secrets.SUPABASE_SERVICE_KEY }}
+          SUPABASE_ANON_KEY=${{ secrets.SUPABASE_ANON_KEY }}
+          GOOGLE_CLIENT_ID=${{ secrets.GOOGLE_CLIENT_ID }}
+          GOOGLE_CLIENT_SECRET=${{ secrets.GOOGLE_CLIENT_SECRET }}
+          ZOOM_CLIENT_ID=${{ secrets.ZOOM_CLIENT_ID }}
+          ZOOM_CLIENT_SECRET=${{ secrets.ZOOM_CLIENT_SECRET }}
+          EOF
+
+      - name: Build renderer + electron
+        run: |
+          npm run build
+          npm run build:electron
+
+      - name: Build native Rust module (x64 + arm64)
+        # NATIVELY_BUILD_ALL_MAC_ARCHES=1 tells build-native.js to compile both arches
+        env:
+          NATIVELY_BUILD_ALL_MAC_ARCHES: "1"
+        run: npm run build:native
+
+      - name: Package with electron-builder (macOS)
+        # ad-hoc-sign.js runs automatically as afterPack hook via package.json
+        # identity: null in package.json = unsigned, no CSC secrets needed
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: npx electron-builder --mac --publish never
+
+      - name: Upload macOS artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: mac-release
+          path: |
+            release/*.dmg
+            release/*.zip
+          if-no-files-found: error
+
+  # ─── Windows: .exe installer (nsis) + portable ───────────────────────────────
+  build-windows:
+    name: Build Windows (x64 + ia32)
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Install dependencies
+        env:
+          SHARP_IGNORE_GLOBAL_LIBVIPS: "1"
+          SKIP_DOWNLOAD_MODELS: "1"
+        run: npm ci
+
+      - name: Write app-level runtime config
+        shell: bash
+        run: |
+          cat > .env << EOF
+          VITE_FIREBASE_API_KEY=${{ secrets.VITE_FIREBASE_API_KEY }}
+          VITE_FIREBASE_AUTH_DOMAIN=${{ secrets.VITE_FIREBASE_AUTH_DOMAIN }}
+          VITE_FIREBASE_PROJECT_ID=${{ secrets.VITE_FIREBASE_PROJECT_ID }}
+          VITE_FIREBASE_STORAGE_BUCKET=${{ secrets.VITE_FIREBASE_STORAGE_BUCKET }}
+          VITE_FIREBASE_MESSAGING_SENDER_ID=${{ secrets.VITE_FIREBASE_MESSAGING_SENDER_ID }}
+          VITE_FIREBASE_APP_ID=${{ secrets.VITE_FIREBASE_APP_ID }}
+          VITE_FIREBASE_MEASUREMENT_ID=${{ secrets.VITE_FIREBASE_MEASUREMENT_ID }}
+          SUPABASE_URL=${{ secrets.SUPABASE_URL }}
+          SUPABASE_KEY=${{ secrets.SUPABASE_KEY }}
+          SUPABASE_SERVICE_KEY=${{ secrets.SUPABASE_SERVICE_KEY }}
+          SUPABASE_ANON_KEY=${{ secrets.SUPABASE_ANON_KEY }}
+          GOOGLE_CLIENT_ID=${{ secrets.GOOGLE_CLIENT_ID }}
+          GOOGLE_CLIENT_SECRET=${{ secrets.GOOGLE_CLIENT_SECRET }}
+          ZOOM_CLIENT_ID=${{ secrets.ZOOM_CLIENT_ID }}
+          ZOOM_CLIENT_SECRET=${{ secrets.ZOOM_CLIENT_SECRET }}
+          EOF
+
+      - name: Build renderer + electron
+        run: |
+          npm run build
+          npm run build:electron
+
+      - name: Build native module (Windows)
+        # webrtc-audio-processing is cfg-gated to non-Windows in Cargo.toml,
+        # so Meson/Ninja/abseil are never invoked here.
+        run: npm run build:native
+
+      - name: Package with electron-builder (Windows)
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: npx electron-builder --win --publish never
+
+      - name: Upload Windows artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: win-release
+          path: release/*.exe
+          if-no-files-found: error
+
+  # ─── Linux: .AppImage + .deb ─────────────────────────────────────────────────
+  build-linux:
+    name: Build Linux (x64)
+    # Pinned (not ubuntu-latest): the ALSA dev package name is Ubuntu-version-
+    # sensitive (libasound2-dev historically, libasound-dev on 24.04). Letting
+    # this alias roll to a future release risks silently breaking apt-get install
+    # again — the exact class of failure this job was just fixed for.
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Install system packages required by electron-builder
+        run: |
+          sudo apt-get update -y
+          sudo apt-get install -y \
+            rpm libarchive-tools pkg-config meson ninja-build \
+            libasound-dev \
+            libclang-dev clang \
+            libssl-dev
+
+      - name: Install dependencies
+        env:
+          SHARP_IGNORE_GLOBAL_LIBVIPS: "1"
+          SKIP_DOWNLOAD_MODELS: "1"
+        run: npm ci
+
+      - name: Write app-level runtime config
+        shell: bash
+        run: |
+          cat > .env << EOF
+          VITE_FIREBASE_API_KEY=${{ secrets.VITE_FIREBASE_API_KEY }}
+          VITE_FIREBASE_AUTH_DOMAIN=${{ secrets.VITE_FIREBASE_AUTH_DOMAIN }}
+          VITE_FIREBASE_PROJECT_ID=${{ secrets.VITE_FIREBASE_PROJECT_ID }}
+          VITE_FIREBASE_STORAGE_BUCKET=${{ secrets.VITE_FIREBASE_STORAGE_BUCKET }}
+          VITE_FIREBASE_MESSAGING_SENDER_ID=${{ secrets.VITE_FIREBASE_MESSAGING_SENDER_ID }}
+          VITE_FIREBASE_APP_ID=${{ secrets.VITE_FIREBASE_APP_ID }}
+          VITE_FIREBASE_MEASUREMENT_ID=${{ secrets.VITE_FIREBASE_MEASUREMENT_ID }}
+          SUPABASE_URL=${{ secrets.SUPABASE_URL }}
+          SUPABASE_KEY=${{ secrets.SUPABASE_KEY }}
+          SUPABASE_SERVICE_KEY=${{ secrets.SUPABASE_SERVICE_KEY }}
+          SUPABASE_ANON_KEY=${{ secrets.SUPABASE_ANON_KEY }}
+          GOOGLE_CLIENT_ID=${{ secrets.GOOGLE_CLIENT_ID }}
+          GOOGLE_CLIENT_SECRET=${{ secrets.GOOGLE_CLIENT_SECRET }}
+          ZOOM_CLIENT_ID=${{ secrets.ZOOM_CLIENT_ID }}
+          ZOOM_CLIENT_SECRET=${{ secrets.ZOOM_CLIENT_SECRET }}
+          EOF
+
+      - name: Build renderer + electron
+        run: |
+          npm run build
+          npm run build:electron
+
+      - name: Build native module (Linux x64)
+        run: npm run build:native
+
+      - name: Package with electron-builder (Linux)
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: npx electron-builder --linux --publish never
+
+      - name: Upload Linux artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: linux-release
+          path: |
+            release/*.AppImage
+            release/*.deb
+          if-no-files-found: error
+
+  # ─── Publish: collect all artifacts → create draft GitHub Release ────────────
+  publish:
+    name: Publish GitHub Release
+    runs-on: ubuntu-latest
+    needs: [build-macos, build-windows, build-linux]
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Download all build artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts/
+
+      - name: List artifacts
+        run: find artifacts/ -type f | sort
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ github.ref_name || inputs.tag }}
+          name: GoDojo AI ${{ github.ref_name || inputs.tag }}
+          body_path: .github/RELEASE_TEMPLATE.md
+          draft: true        # set to false to auto-publish on tag push
+          prerelease: false
+          generate_release_notes: true
+          files: |
+            artifacts/mac-release/*
+            artifacts/win-release/*
+            artifacts/linux-release/*
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

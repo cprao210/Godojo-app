@@ -1,0 +1,77 @@
+name: Sync to Public Repository
+
+on:
+  push:
+    branches:
+      - main
+      - master
+
+jobs:
+  sync:
+    name: Strip Premium & Sync to Public Repo
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Install dependencies (skip postinstall)
+        run: npm ci --ignore-scripts
+
+      - name: Type check renderer
+        run: npx tsc --noEmit
+
+      - name: Type check electron
+        run: npx tsc -p electron/tsconfig.json --noEmit
+
+      - name: Build renderer (verify open-source build compiles cleanly)
+        run: npx vite build
+
+      - name: Remove premium features and secrets
+        run: |
+          echo "Purging premium features and secrets..."
+          rm -rf premium/
+          rm -f .env .env.local .env.production .env.development
+
+      - name: Sync to public repository
+        env:
+          PUBLIC_REPO_PAT: ${{ secrets.PUBLIC_REPO_PAT }}
+          COMMIT_MESSAGE: ${{ github.event.head_commit.message }}
+        run: |
+          if [ -z "$PUBLIC_REPO_PAT" ]; then
+            echo "ERROR: PUBLIC_REPO_PAT secret is missing."
+            echo "Go to Settings → Secrets → Actions and add it."
+            exit 1
+          fi
+
+          git config --global user.name "github-actions[bot]"
+          git config --global user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+          git clone https://$PUBLIC_REPO_PAT@github.com/evinjohnn/natively-cluely-ai-assistant.git public-repo
+
+          rsync -av --delete \
+            --exclude '.git' \
+            --exclude 'public-repo' \
+            --exclude 'node_modules' \
+            --exclude 'dist' \
+            --exclude 'dist-electron' \
+            --exclude 'release' \
+            --exclude 'native-module/target' \
+            --exclude 'native-module/src' \
+            --exclude 'native-module/.cargo' \
+            --exclude '.github/workflows/public-sync.yml' \
+            ./ public-repo/
+
+          cd public-repo
+
+          git add .
+          if git diff --staged --quiet; then
+            echo "No changes to sync — skipping commit."
+          else
+            git commit -m "$COMMIT_MESSAGE" -m "Auto-sync from private repo: ${{ github.sha }}"
+            git push --force origin HEAD:main
+            echo "Successfully synced to public repository."
+          fi

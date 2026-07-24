@@ -64,7 +64,13 @@ if (os.platform() === 'darwin') {
     console.log(`[build-native] Pre-built Windows artifact found (${prebuilt}), skipping Rust compilation.`);
   } else {
     console.log(`Building for current platform: ${os.platform()}`);
+
+    // webrtc-audio-processing is cfg-gated to non-Windows in Cargo.toml, so this
+    // napi build does not invoke Meson/Ninja/abseil on Windows at all.
     runCommand('npx napi build --platform --release');
+
+    // Verify the artifact was produced
+    verifyArtifacts([prebuiltMap[os.arch()]])
   }
 } else {
   console.log(`Building for current platform: ${os.platform()}`);
