@@ -1,5 +1,5 @@
 use std::sync::Arc;
-use webrtc_audio_processing::{
+use crate::apm_shim::{
     config::{Config, EchoCanceller},
     Processor, Stats,
 };

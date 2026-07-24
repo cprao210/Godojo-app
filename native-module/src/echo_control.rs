@@ -32,7 +32,7 @@ use std::thread;
 use std::time::{Duration, Instant};
 
 use once_cell::sync::Lazy;
-use webrtc_audio_processing::Processor;
+use crate::apm_shim::Processor;
 use webrtc_vad::{SampleRate as VadSampleRate, Vad, VadMode};
 
 use crate::echo_align;

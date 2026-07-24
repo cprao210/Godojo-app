@@ -67,6 +67,19 @@ export declare function getHardwareId(): string
 
 export declare function getInputDevices(): Array<AudioDeviceInfo>
 
+/**
+ * Capability probe for the JS layer. Older binaries lack this export, so JS
+ * treats the level as 0. Bump when the native audio contract changes in a way
+ * JS needs to detect at runtime.
+ *   0 (implicit, older binaries) — no continuity guarantee.
+ *   2 — the capture layer keeps the sample ring continuously fed during silence:
+ *       the macOS tap streams silence natively, and the Windows WASAPI loopback
+ *       synthesizes silence during render-idle instead of stalling. Lets the JS
+ *       capture-stall watchdog relax to a long last-resort window rather than
+ *       aggressively restarting capture (which interrupts the STT stream).
+ */
+export declare function getNativeFeatureLevel(): number
+
 export declare function getOutputDevices(): Array<AudioDeviceInfo>
 
 /**

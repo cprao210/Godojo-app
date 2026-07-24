@@ -13,6 +13,7 @@ use napi::threadsafe_function::{ThreadsafeFunction, ThreadsafeFunctionCallMode};
 use once_cell::sync::Lazy;
 use ringbuf::traits::Consumer;
 
+pub mod apm_shim;
 pub mod audio_config;
 pub mod echo_align;
 pub mod echo_control;
@@ -30,7 +31,7 @@ use crate::webrtc_aec::{ApmCapture, ApmRender};
 // Processor is Send + Sync; both DSP threads hold an Arc clone.
 // SystemAudioCapture owns an ApmRender (per-thread render accumulator).
 // MicrophoneCapture owns an ApmCapture (per-thread capture accumulator).
-static WEBRTC_APM: Lazy<std::sync::Arc<webrtc_audio_processing::Processor>> =
+static WEBRTC_APM: Lazy<std::sync::Arc<crate::apm_shim::Processor>> =
     Lazy::new(webrtc_aec::create_processor);
 
 // Echo gating policy lives in echo_control (mode flag, headphone bypass,

@@ -166,11 +166,12 @@ fn current_output_route_impl() -> OutputRouteInfo {
     use windows::Win32::Media::Audio::{
         eConsole, eRender, IMMDeviceEnumerator, MMDeviceEnumerator, PKEY_AudioEndpoint_FormFactor,
     };
-    use windows::Win32::System::Com::StructuredStorage::{PropVariantClear, PropVariantToUInt32};
+    use windows::Win32::System::Com::StructuredStorage::{
+        PropVariantClear, PropVariantToStringAlloc, PropVariantToUInt32,
+    };
     use windows::Win32::System::Com::{
         CoCreateInstance, CoInitializeEx, CLSCTX_ALL, COINIT_MULTITHREADED, STGM_READ,
     };
-    use windows::Win32::UI::Shell::PropertiesSystem::PropVariantToStringAlloc;
 
     unsafe {
         // S_FALSE / RPC_E_CHANGED_MODE just mean COM is already initialized on
@@ -197,7 +198,7 @@ fn current_output_route_impl() -> OutputRouteInfo {
             Ok(mut v) => {
                 let s = PropVariantToStringAlloc(&v)
                     .ok()
-                    .and_then(|p| {
+                    .and_then(|p: windows::core::PWSTR| {
                         let s = p.to_string().ok();
                         windows::Win32::System::Com::CoTaskMemFree(Some(p.0 as _));
                         s

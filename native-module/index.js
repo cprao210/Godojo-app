@@ -581,6 +581,7 @@ module.exports.SystemAudioCapture = nativeBinding.SystemAudioCapture
 module.exports.getAudioPipelineStats = nativeBinding.getAudioPipelineStats
 module.exports.getHardwareId = nativeBinding.getHardwareId
 module.exports.getInputDevices = nativeBinding.getInputDevices
+module.exports.getNativeFeatureLevel = nativeBinding.getNativeFeatureLevel
 module.exports.getOutputDevices = nativeBinding.getOutputDevices
 module.exports.getOutputRoute = nativeBinding.getOutputRoute
 module.exports.verifyGumroadKey = nativeBinding.verifyGumroadKey
