@@ -179,6 +179,10 @@ export class SupabaseMirrorService {
                 return row.user_id != null ? 'user_id,id' : 'id';
             case 'company_asset_files':
                 return row.user_id != null ? 'user_id,asset_id' : 'asset_id';
+            case 'meeting_scorecards':
+                return row.user_id != null ? 'user_id,meeting_id' : 'meeting_id';
+            case 'scoring_criteria':
+                return row.user_id != null ? 'user_id,id' : 'id';
             case 'company_asset_chunks':
                 return row.user_id != null && row.id != null ? 'user_id,id' : (row.id != null ? 'id' : null);
             default:
@@ -595,6 +599,27 @@ CREATE TABLE IF NOT EXISTS company_asset_chunks (
 CREATE INDEX IF NOT EXISTS idx_company_asset_chunks_asset
     ON company_asset_chunks(user_id, asset_id);
 
+CREATE TABLE IF NOT EXISTS meeting_scorecards (
+    user_id                TEXT        NOT NULL REFERENCES users(firebase_uid) ON DELETE CASCADE,
+    meeting_id             TEXT        NOT NULL,
+    overall_score          REAL        NOT NULL DEFAULT 0,
+    detected_types         TEXT        NOT NULL DEFAULT '[]',
+    scorecard_json         JSONB       NOT NULL,
+    criteria_snapshot_json JSONB,
+    generated_at           TIMESTAMPTZ NOT NULL DEFAULT now(),
+    PRIMARY KEY (user_id, meeting_id)
+);
+CREATE INDEX IF NOT EXISTS idx_meeting_scorecards_user_meeting
+    ON meeting_scorecards(user_id, meeting_id);
+
+CREATE TABLE IF NOT EXISTS scoring_criteria (
+    user_id     TEXT        NOT NULL REFERENCES users(firebase_uid) ON DELETE CASCADE,
+    id          INTEGER     NOT NULL DEFAULT 1,
+    config_json JSONB       NOT NULL DEFAULT '{}',
+    updated_at  TIMESTAMPTZ NOT NULL DEFAULT now(),
+    PRIMARY KEY (user_id, id)
+);
+
 -- ============================================================
 -- PER-DIMENSION VECTOR TABLES (pgvector + HNSW cosine indexes)
 -- ============================================================
@@ -682,6 +707,8 @@ DECLARE
         'chunks', 'chunk_summaries', 'embedding_queue',
         'app_state', 'user_profile', 'resume_nodes',
         'company_asset_chunks',
+        'meeting_scorecards',
+        'scoring_criteria',
         'rag_chunk_vectors_768',   'rag_summary_vectors_768',
         'rag_chunk_vectors_1536',  'rag_summary_vectors_1536',
         'rag_chunk_vectors_3072',  'rag_summary_vectors_3072'

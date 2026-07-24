@@ -14,7 +14,7 @@ interface FloatingDockProps {
     // Meeting state
     isMeetingPaused: boolean;
     onPauseResume: () => void;
-    onEndCall: () => void;
+    onEndCall: (meetingTypes?: MeetingType[]) => void;
 
     // Feature states
     isUndetectable: boolean;
@@ -217,7 +217,7 @@ export const FloatingDock: React.FC<FloatingDockProps> = ({
                         scale: activePanel === 'intelligence' ? 1 : 0.96,
                     }}
                     transition={{ type: 'spring', damping: 28, stiffness: 380, mass: 0.8 }}
-                    className="fixed bottom-[76px] left-[65px]"
+                    className="fixed bottom-0 left-[65px]"
                     style={{
                         position: 'fixed',
                         pointerEvents: activePanel === 'intelligence' ? 'auto' : 'none',
@@ -260,7 +260,7 @@ export const FloatingDock: React.FC<FloatingDockProps> = ({
                             scale: activePanel === 'chat' ? 1 : 0.96,
                         }}
                         transition={{ type: 'spring', damping: 28, stiffness: 380, mass: 0.8 }}
-                        className="fixed bottom-[76px] left-[65px]"
+                        className="fixed bottom-0 left-[65px]"
                         style={{
                             position: 'fixed',
                             pointerEvents: activePanel === 'chat' ? 'auto' : 'none',
@@ -297,7 +297,7 @@ export const FloatingDock: React.FC<FloatingDockProps> = ({
                             animate={{ opacity: dockOpacity, y: 0, scale: 1 }}
                             exit={{ opacity: 0, y: 12, scale: 0.97 }}
                             transition={{ type: 'spring', damping: 28, stiffness: 380, mass: 0.8 }}
-                            className="fixed top-[110px] left-[65px]"
+                            className="fixed top-[106px] left-[65px]"
                             style={{ position: 'fixed' }}
                         >
                             {isFrozen && (
@@ -418,7 +418,7 @@ export const FloatingDock: React.FC<FloatingDockProps> = ({
                             isActive={false}
                             dangerColor
                             frozen={isFrozen}
-                            onClick={onEndCall}
+                            onClick={() => onEndCall(meetingTypes)}
                         />
 
                         {/* Settings */}

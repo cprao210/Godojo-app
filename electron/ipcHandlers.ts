@@ -1679,9 +1679,9 @@ export function initializeIpcHandlers(appState: AppState): void {
     }
   });
 
-  safeHandle("end-meeting", async () => {
+  safeHandle("end-meeting", async (_, payload?: { meetingTypes?: ('discovery' | 'demo' | 'negotiation')[] }) => {
     try {
-      await appState.endMeeting();
+      await appState.endMeeting(payload?.meetingTypes);
       return { success: true };
     } catch (error: any) {
       console.error("Error ending meeting:", error);
@@ -1755,12 +1755,27 @@ export function initializeIpcHandlers(appState: AppState): void {
 
       const success = await appState.getIntelligenceManager().regenerateSummary(id);
       if (success) {
-        // Return the fresh meeting data so UI can update immediately
+        // Return the fresh meeting data so UI can update immediately.
+        // Use the same Supabase-aware path as get-meeting-details so that the
+        // scorecard (and all other fields) are populated correctly regardless of
+        // whether Supabase or SQLite is the active read source.
+
         const updated = DatabaseManager.getInstance().getMeetingDetails(id);
+
+        // let updated: any = null;
+        // if (SupabaseReadService.isAvailable()) {
+        //   try {
+        //     updated = await SupabaseReadService.getMeetingDetails(id); // ← try Supabase first
+        //   } catch (e) {
+        //     console.warn('[ipcHandlers] regenerate-meeting-summary: Supabase fetch failed, falling back to SQLite:', e);
+        //   }
+        // }
+        // if (!updated) {
+        //   updated = DatabaseManager.getInstance().getMeetingDetails(id); // ← SQLite fallback
+        // }
         return { success: true, meeting: updated };
       }
       return { success: false };
-
     } catch (e) {
 
       console.error('[ipcHandlers] regenerate-meeting-summary error:', e);
@@ -1784,9 +1799,9 @@ export function initializeIpcHandlers(appState: AppState): void {
     return { success: true };
   });
 
-  safeHandle("upload-transcript", async (_, { text, title }: { text: string; title?: string }) => {
+  safeHandle("upload-transcript", async (_, { text, title, meetingTypes }: { text: string; title?: string; meetingTypes?: ('discovery' | 'demo' | 'negotiation')[] }) => {
     try {
-      const meetingId = await appState.getIntelligenceManager().uploadTranscript(text, title);
+      const meetingId = await appState.getIntelligenceManager().uploadTranscript(text, title, meetingTypes);
       if (meetingId) return { success: true, meetingId };
       return { success: false, error: 'Transcript too short or could not be parsed' };
     } catch (e) {
@@ -2787,6 +2802,107 @@ export function initializeIpcHandlers(appState: AppState): void {
       return Math.round((checks.filter(Boolean).length / 4) * 100);
     } catch {
       return 0;
+    }
+  });
+
+  // ==========================================
+  // Meeting Scorecard Handlers
+  // ==========================================
+
+  safeHandle('meeting:getScorecard', async (_event, meetingId: string) => {
+    try {
+      // Try Supabase first; fall back to local SQLite
+      const { SupabaseClientManager } = require('./db/SupabaseClient');
+      if (SupabaseClientManager.isConfigured()) {
+        const client = SupabaseClientManager.getClient();
+        const userId = SupabaseClientManager.getCurrentUserId();
+        if (client && userId) {
+          const { data: row, error } = await client
+            .from('meeting_scorecards')
+            .select('scorecard_json')
+            .eq('user_id', userId)
+            .eq('meeting_id', meetingId)
+            .maybeSingle();
+          if (!error && row) {
+            const parsed = typeof row.scorecard_json === 'string'
+              ? JSON.parse(row.scorecard_json)
+              : row.scorecard_json;
+            return { success: true, data: parsed };
+          }
+        }
+      }
+      // Fallback: local SQLite
+      const data = DatabaseManager.getInstance().getMeetingScorecard(meetingId);
+      return { success: true, data };
+    } catch (e: any) {
+      return { success: false, error: e.message };
+    }
+  });
+
+  safeHandle('meeting:deleteScorecard', async (_event, meetingId: string) => {
+    try {
+      // Delete from local SQLite
+      DatabaseManager.getInstance().deleteMeetingScorecard(meetingId);
+      // Delete from Supabase (fire-and-forget via mirror)
+      try {
+        const { SupabaseMirrorService } = require('./db/SupabaseMirrorService');
+        SupabaseMirrorService.getInstance().deleteRow('meeting_scorecards', 'meeting_id', meetingId);
+      } catch (mirrorErr) {
+        console.warn('[IPC] meeting:deleteScorecard Supabase mirror failed (non-fatal):', mirrorErr);
+      }
+      return { success: true };
+    } catch (e: any) {
+      return { success: false, error: e.message };
+    }
+  });
+
+  // ==========================================
+  // Scoring Criteria Handlers
+  // ==========================================
+  safeHandle('scoring:getCriteria', async () => {
+    try {
+      const db = DatabaseManager.getInstance();
+      return { success: true, data: db.getScoringCriteria() };
+    } catch (e: any) {
+      return { success: false, error: e.message };
+    }
+  });
+
+  safeHandle('scoring:saveCriteria', async (_event, criteriaData: any) => {
+    try {
+      const db = DatabaseManager.getInstance();
+      db.saveScoringCriteria(criteriaData);
+      // Mirror to Supabase
+      try {
+        const { SupabaseMirrorService } = require('./db/SupabaseMirrorService');
+        SupabaseMirrorService.getInstance().upsertRow('scoring_criteria', {
+          id: 1,
+          config_json: JSON.stringify(criteriaData),
+          updated_at: new Date().toISOString(),
+        });
+      } catch (mirrorErr) {
+        console.warn('[IPC] scoring:saveCriteria Supabase mirror failed (non-fatal):', mirrorErr);
+      }
+      return { success: true };
+    } catch (e: any) {
+      return { success: false, error: e.message };
+    }
+  });
+
+  safeHandle('scoring:resetCriteria', async () => {
+    try {
+      const db = DatabaseManager.getInstance();
+      db.resetScoringCriteria();
+      // Mirror deletion to Supabase
+      try {
+        const { SupabaseMirrorService } = require('./db/SupabaseMirrorService');
+        SupabaseMirrorService.getInstance().deleteRow('scoring_criteria', 'id', 1);
+      } catch (mirrorErr) {
+        console.warn('[IPC] scoring:resetCriteria Supabase mirror failed (non-fatal):', mirrorErr);
+      }
+      return { success: true };
+    } catch (e: any) {
+      return { success: false, error: e.message };
     }
   });
 
