@@ -547,10 +547,21 @@ const MeetingChatOverlay: React.FC<MeetingChatOverlayProps> = ({
                     ));
                 });
             },
+            // Backend decided this was a factual/RAG query and returned the
+            // complete answer in one frame — render it directly, skip the
+            // token buffer entirely (no `token` frames will follow).
+            onRagAnswer: (ragAnswer) => {
+                onMessagesChange(prev => prev.map(msg =>
+                    msg.id === assistantMessageId
+                        ? { ...msg, content: ragAnswer.answer, isStreaming: false, sources }
+                        : msg
+                ));
+                setChatState('idle');
+            },
             onDone: () => {
                 const finalContent = streamBuffer.getBufferedContent();
                 onMessagesChange(prev => prev.map(msg =>
-                    msg.id === assistantMessageId
+                    msg.id === assistantMessageId && msg.isStreaming
                         ? { ...msg, content: finalContent, isStreaming: false, sources }
                         : msg
                 ));

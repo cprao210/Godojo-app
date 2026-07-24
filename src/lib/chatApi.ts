@@ -14,9 +14,23 @@ export interface ChatSources {
     assetIds: string[];
 }
 
+/** Payload of a `rag_answer` frame — a complete, non-streamed answer the
+ * backend chose to return in one shot (factual/RAG-style queries) instead of
+ * token-by-token (conversational queries). */
+export interface RagAnswer {
+    answer: string;
+    sources: unknown[];
+    confidence?: number;
+}
+
 export interface ChatStreamHandlers {
     /** Fired for every `token` frame — `chunk` is the incremental text to append. */
     onToken: (chunk: string) => void;
+    /** Fired once for a `rag_answer` frame — the backend decided to return a
+     * complete structured answer instead of streaming tokens. When this fires,
+     * `onToken` will NOT fire for this response — render `answer` directly as
+     * the finished message rather than appending. */
+    onRagAnswer?: (answer: RagAnswer) => void;
     /** Fired once, usually before the first token, with the retrieved chunk ids. */
     onSources?: (sources: ChatSources) => void;
     /** Fired once the stream has fully closed (after the `done` frame). */
@@ -123,14 +137,19 @@ function dispatchFrame(frame: string, handlers: ChatStreamHandlers): void {
             handlers.onSources?.({ sourceIds: parsed.ids ?? [], assetIds: parsed.asset_ids ?? [] });
             break;
         }
+        case "rag_answer": {
+            const parsed = JSON.parse(data) as RagAnswer;
+            handlers.onRagAnswer?.(parsed);
+            break;
+        }
         case "error": {
             const parsed = JSON.parse(data) as { error?: string };
             handlers.onError(parsed.error ?? "Something went wrong.");
             break;
         }
         case "done":
-            // No payload to act on — the stream closing (handled in streamSSE's
-            // read loop) is what actually drives onDone().
+            // `{}` — no payload to act on. The stream closing (handled in
+            // streamSSE's read loop) is what actually drives onDone().
             break;
         default:
             break;

@@ -424,9 +424,16 @@ export const FloatingChatPanel: React.FC<FloatingChatPanelProps> = ({
                         setMessages(prev => prev.map(m => m.id === assistantId ? { ...m, text: content } : m));
                     });
                 },
+                onRagAnswer: (ragAnswer) => {
+                    setMessages(prev => prev.map(msg =>
+                        msg.id === assistantId
+                            ? { ...msg, content: ragAnswer.answer, isStreaming: false }
+                            : msg
+                    ));
+                },
                 onDone: () => {
                     setMessages(prev => prev.map(m =>
-                        m.id === assistantId ? { ...m, text: streamBuffer.getBufferedContent(), isStreaming: false } : m
+                        m.id === assistantId && m.isStreaming ? { ...m, text: streamBuffer.getBufferedContent(), isStreaming: false } : m
                     ));
                     setIsProcessing(false);
                     streamBuffer.reset();
