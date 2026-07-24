@@ -15,7 +15,6 @@ interface FloatingDockProps {
     isMeetingPaused: boolean;
     onPauseResume: () => void;
     onEndCall: (meetingTypes?: MeetingType[]) => void;
-    meetingId: string | null;
 
     // Feature states
     isUndetectable: boolean;
