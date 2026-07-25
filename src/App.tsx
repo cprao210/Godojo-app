@@ -574,20 +574,7 @@ const App: React.FC = () => {
     // receives the onMeetingsUpdated event, instead of only after the full IPC
     // round-trip completes.
     console.log('[App.tsx] handleEndMeeting: tenantId at IPC call =', tenantId ?? '(null)');
-    window.electronAPI.endMeeting(meetingTypes, tenantId).then((result) => {
-      // We start/end meetings via Electron (not meetingsApi.start/end below —
-      // that FastAPI migration isn't wired up yet), so `result.meetingId` —
-      // the id electron just persisted the meeting under — is the only id
-      // we have. Kick off backend chunking/ingestion for RAG with it,
-      // best-effort, same fire-and-forget rationale as endMeeting itself.
-
-      console.log(`endmeeting called... and result is: `, result);
-      if (result?.meetingId) {
-        meetingsApi.chunk(result.meetingId).catch(err =>
-          console.error("Failed to chunk meeting for RAG:", err)
-        );
-      }
-    }).catch(err =>
+    window.electronAPI.endMeeting(meetingTypes, tenantId).catch(err =>
       console.error("Failed to end meeting:", err)
     );
 
