@@ -64,6 +64,9 @@ pub mod fallback {
         pub fn stream(self) -> SpeakerStream {
             SpeakerStream
         }
+        pub fn backend_name(&self) -> &'static str {
+            "none"
+        }
     }
 
     pub fn list_output_devices() -> Result<Vec<(String, String)>> {
