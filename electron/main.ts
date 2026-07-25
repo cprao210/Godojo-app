@@ -1761,7 +1761,7 @@ export class AppState {
     }, 0); // Defer to next event loop tick — ensures IPC response reaches renderer before audio init
   }
 
-  public async endMeeting(meetingTypes?: ('discovery' | 'demo' | 'negotiation')[], tenantId?: string | null): Promise<void> {
+  public async endMeeting(meetingTypes?: ('discovery' | 'demo' | 'negotiation')[], tenantId?: string | null): Promise<string | null> {
     console.log('[Main] Ending Meeting...');
     this.isMeetingActive = false; // Block new data immediately
     this.isMeetingPaused = false; // Reset pause flag — clean slate for next meeting
@@ -1845,6 +1845,12 @@ export class AppState {
       }
     }
     // ─────────────────────────────────────────────────────────────────────────
+
+    // Renderer needs this to call the FastAPI /meetings/:id/chunking endpoint
+    // once the meeting is over (electron does its own local RAG chunking above
+    // via processCompletedMeetingForRAG — this is a separate, backend-side ingest).
+    return meetingId;
+
   }
 
   /**

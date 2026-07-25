@@ -574,30 +574,43 @@ const App: React.FC = () => {
     // receives the onMeetingsUpdated event, instead of only after the full IPC
     // round-trip completes.
     console.log('[App.tsx] handleEndMeeting: tenantId at IPC call =', tenantId ?? '(null)');
-    window.electronAPI.endMeeting(meetingTypes, tenantId).catch(err =>
+    window.electronAPI.endMeeting(meetingTypes, tenantId).then((result) => {
+      // We start/end meetings via Electron (not meetingsApi.start/end below —
+      // that FastAPI migration isn't wired up yet), so `result.meetingId` —
+      // the id electron just persisted the meeting under — is the only id
+      // we have. Kick off backend chunking/ingestion for RAG with it,
+      // best-effort, same fire-and-forget rationale as endMeeting itself.
+
+      console.log(`endmeeting called... and result is: `, result);
+      if (result?.meetingId) {
+        meetingsApi.chunk(result.meetingId).catch(err =>
+          console.error("Failed to chunk meeting for RAG:", err)
+        );
+      }
+    }).catch(err =>
       console.error("Failed to end meeting:", err)
     );
 
     // Submit the buffered transcript then close out the backend session. Fired
     // without blocking the window-mode switch, same rationale as the IPC endMeeting
     // above — this shouldn't hold up returning to the launcher.
-    const backendMeetingId = backendMeetingIdRef.current;
-    if (backendMeetingId) {
-      const segments = transcriptSegmentsRef.current;
-      (async () => {
-        try {
-          if (segments.length > 0) {
-            await meetingsApi.submitTranscript(backendMeetingId, segments);
-          }
-          await meetingsApi.end(backendMeetingId, meetingTypes ?? []);
-        } catch (err) {
-          console.error("[App] Failed to submit transcript / end backend meeting:", err);
-        } finally {
-          backendMeetingIdRef.current = null;
-          transcriptSegmentsRef.current = [];
-        }
-      })();
-    }
+    // const backendMeetingId = backendMeetingIdRef.current;
+    // if (backendMeetingId) {
+    //   const segments = transcriptSegmentsRef.current;
+    //   (async () => {
+    //     try {
+    //       if (segments.length > 0) {
+    //         await meetingsApi.submitTranscript(backendMeetingId, segments);
+    //       }
+    //       await meetingsApi.end(backendMeetingId, meetingTypes ?? []);
+    //     } catch (err) {
+    //       console.error("[App] Failed to submit transcript / end backend meeting:", err);
+    //     } finally {
+    //       backendMeetingIdRef.current = null;
+    //       transcriptSegmentsRef.current = [];
+    //     }
+    //   })();
+    // }
 
     try {
       await window.electronAPI.setWindowMode('launcher');

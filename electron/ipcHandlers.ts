@@ -1712,8 +1712,8 @@ export function initializeIpcHandlers(appState: AppState): void {
 
   safeHandle("end-meeting", async (_, payload?: { meetingTypes?: ('discovery' | 'demo' | 'negotiation')[], tenantId?: string | null }) => {
     try {
-      await appState.endMeeting(payload?.meetingTypes, payload?.tenantId);
-      return { success: true };
+      const meetingId = await appState.endMeeting(payload?.meetingTypes, payload?.tenantId);
+      return { success: true, meetingId };
     } catch (error: any) {
       console.error("Error ending meeting:", error);
       return { success: false, error: error.message };
