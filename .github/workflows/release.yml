@@ -30,6 +30,12 @@ jobs:
         with:
           targets: x86_64-apple-darwin,aarch64-apple-darwin
 
+      - name: Cache Rust build
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: native-module -> target
+          key: macos-universal
+
       - name: Install Meson & Ninja
         run: brew install meson ninja
 
@@ -70,7 +76,11 @@ jobs:
         # NATIVELY_BUILD_ALL_MAC_ARCHES=1 tells build-native.js to compile both arches
         env:
           NATIVELY_BUILD_ALL_MAC_ARCHES: "1"
-        run: npm run build:native
+        run: |
+          start=$(date +%s)
+          npm run build:native
+          end=$(date +%s)
+          echo "::notice title=Native build duration (macOS)::$((end - start))s"
 
       - name: Package with electron-builder (macOS)
         # ad-hoc-sign.js runs automatically as afterPack hook via package.json
@@ -102,6 +112,12 @@ jobs:
 
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache Rust build
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: native-module -> target
+          key: windows
 
       - name: Install dependencies
         env:
@@ -139,7 +155,12 @@ jobs:
       - name: Build native module (Windows)
         # webrtc-audio-processing is cfg-gated to non-Windows in Cargo.toml,
         # so Meson/Ninja/abseil are never invoked here.
-        run: npm run build:native
+        shell: bash
+        run: |
+          start=$(date +%s)
+          npm run build:native
+          end=$(date +%s)
+          echo "::notice title=Native build duration (Windows)::$((end - start))s"
 
       - name: Package with electron-builder (Windows)
         env:
@@ -171,6 +192,12 @@ jobs:
 
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache Rust build
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: native-module -> target
+          key: linux
 
       - name: Install system packages required by electron-builder
         run: |
@@ -215,7 +242,11 @@ jobs:
           npm run build:electron
 
       - name: Build native module (Linux x64)
-        run: npm run build:native
+        run: |
+          start=$(date +%s)
+          npm run build:native
+          end=$(date +%s)
+          echo "::notice title=Native build duration (Linux)::$((end - start))s"
 
       - name: Package with electron-builder (Linux)
         env:
