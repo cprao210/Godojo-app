@@ -5,6 +5,7 @@ import {
     BookOpen, Presentation, FlaskConical, Plus, ExternalLink,
     Users, Swords, MoreVertical, Edit2, Save, Zap, Info,
 } from 'lucide-react';
+import { intelligenceApi } from '../../lib/intelligenceApi';
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -581,6 +582,15 @@ export const CompanyContextTab: React.FC<CompanyContextTabProps> = ({
                 }));
                 setIsDirty(true);
                 await window.electronAPI?.profileSetMode?.(true);
+
+                // Let the backend know the asset set changed so it re-indexes for
+                // RAG. Best-effort — the upload itself already succeeded (it's an
+                // Electron-local operation), so a reindex failure shouldn't surface
+                // as an upload error to the user, just get logged.
+                intelligenceApi.reindexCompanyAssets().catch(err =>
+                    console.error('[CompanyContextTab] Failed to reindex company assets:', err)
+                );
+
             } else {
                 setDraft(prev => ({ ...prev, assets: prev.assets.filter(a => a.id !== tempId) }));
                 setCompanyError(result?.error || 'Upload failed');

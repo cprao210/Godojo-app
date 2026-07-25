@@ -65,4 +65,15 @@ export const intelligenceApi = {
           : {}),
       }),
     }),
+
+  /**
+   * Tells the backend to re-index company knowledge assets (the docs uploaded
+   * in Settings → Company Context) for RAG. The upload itself is still handled
+   * entirely by Electron (companySelectFile / companyUploadAsset write the file
+   * and register it locally) — this call just lets the backend know it should
+   * pick up the new/changed asset set. Fire-and-forget from the caller's side;
+   * the response has no fields the UI needs to act on.
+   */
+  reindexCompanyAssets: (): Promise<void> =>
+    apiFetch<void>("/intelligence/company-assets/reindex", { method: "POST" }),
 };
