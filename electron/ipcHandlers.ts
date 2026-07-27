@@ -18,6 +18,11 @@ import {
   buildOwnCompanyBlockFromOrchestrator,
   hydrateOrchestratorFromContext,
 } from './utils/companyKnowledge';
+import { AuthManager } from './services/AuthManager';
+
+function getAuthToken(): string | null {
+  return AuthManager.getInstance().getIdToken();
+}
 
 export function initializeIpcHandlers(appState: AppState): void {
   const safeHandle = (channel: string, listener: (event: any, ...args: any[]) => Promise<any> | any) => {
@@ -2574,114 +2579,146 @@ export function initializeIpcHandlers(appState: AppState): void {
           // Chunk + embed synchronously (awaited) so the caller (handleSave) can
           // be certain embeddings are actually written before it returns success —
           // this is what /reindex depends on downstream.
-          await (async () => {
-            try {
-              const { extractTextFromBuffer } = require('./utils/documentParser');
-              const { estimateTokens } = require('./rag');
+          // await (async () => {
+          //   try {
+          //     const { extractTextFromBuffer } = require('./utils/documentParser');
+          //     const { estimateTokens } = require('./rag');
 
-              const rawText: string = await extractTextFromBuffer(fileBuffer, asset.mimeType);
+          //     const rawText: string = await extractTextFromBuffer(fileBuffer, asset.mimeType);
 
-              const MAX_TOKENS = 400;
-              const sentences = rawText.split(/(?<=[.!?])\s+/);
-              const chunks: Array<{ index: number; text: string; tokenCount: number }> = [];
-              let current = '';
-              let idx = 0;
-              for (const sentence of sentences) {
-                const combined = current ? `${current} ${sentence}` : sentence;
-                if (estimateTokens(combined) > MAX_TOKENS && current) {
-                  chunks.push({ index: idx++, text: current.trim(), tokenCount: estimateTokens(current) });
-                  current = sentence;
-                } else {
-                  current = combined;
-                }
-              }
-              if (current.trim()) {
-                chunks.push({ index: idx, text: current.trim(), tokenCount: estimateTokens(current) });
-              }
+          //     const MAX_TOKENS = 400;
+          //     const sentences = rawText.split(/(?<=[.!?])\s+/);
+          //     const chunks: Array<{ index: number; text: string; tokenCount: number }> = [];
+          //     let current = '';
+          //     let idx = 0;
+          //     for (const sentence of sentences) {
+          //       const combined = current ? `${current} ${sentence}` : sentence;
+          //       if (estimateTokens(combined) > MAX_TOKENS && current) {
+          //         chunks.push({ index: idx++, text: current.trim(), tokenCount: estimateTokens(current) });
+          //         current = sentence;
+          //       } else {
+          //         current = combined;
+          //       }
+          //     }
+          //     if (current.trim()) {
+          //       chunks.push({ index: idx, text: current.trim(), tokenCount: estimateTokens(current) });
+          //     }
 
-              db.saveAssetChunks(asset.id, chunks);
+          //     db.saveAssetChunks(asset.id, chunks);
 
-              const ragManager = appState.getRAGManager?.();
-              if (!ragManager) {
-                // RAG pipeline not available — mark error so the UI shows the real state
-                // instead of silently lying with 'mapped'
-                db.upsertCompanyAsset({ id: asset.id, type: asset.type, label: asset.label, status: 'error' });
-                console.warn(`[IPC] company:saveContext — ragManager not available, skipping embeddings for asset ${asset.id}`);
-                // Still link chunks (text-only, no embeddings) to the orchestrator
-                try {
-                  const orchestrator = appState.getKnowledgeOrchestrator();
-                  if (orchestrator && typeof orchestrator.ingestDocument === 'function') {
-                    await orchestrator.ingestDocument({ id: asset.id, type: asset.type, label: asset.label, mimeType: asset.mimeType });
-                  }
-                } catch (_) { }
-                return;
-              }
+          //     const ragManager = appState.getRAGManager?.();
+          //     if (!ragManager) {
+          //       // RAG pipeline not available — mark error so the UI shows the real state
+          //       // instead of silently lying with 'mapped'
+          //       db.upsertCompanyAsset({ id: asset.id, type: asset.type, label: asset.label, status: 'error' });
+          //       console.warn(`[IPC] company:saveContext — ragManager not available, skipping embeddings for asset ${asset.id}`);
+          //       // Still link chunks (text-only, no embeddings) to the orchestrator
+          //       try {
+          //         const orchestrator = appState.getKnowledgeOrchestrator();
+          //         if (orchestrator && typeof orchestrator.ingestDocument === 'function') {
+          //           await orchestrator.ingestDocument({ id: asset.id, type: asset.type, label: asset.label, mimeType: asset.mimeType });
+          //         }
+          //       } catch (_) { }
+          //       return;
+          //     }
 
-              const pipeline = ragManager.getEmbeddingPipeline();
+          //     const pipeline = ragManager.getEmbeddingPipeline();
 
-              // Bug 2 fix: wait for the pipeline to finish initializing before embedding
-              try {
-                await pipeline.waitForReady(20000);
-              } catch (readyErr: any) {
-                console.error(`[IPC] company:saveContext — embedding pipeline not ready for asset ${asset.id}:`, readyErr.message);
-                db.upsertCompanyAsset({ id: asset.id, type: asset.type, label: asset.label, status: 'error' });
-                try {
-                  const orchestrator = appState.getKnowledgeOrchestrator();
-                  if (orchestrator && typeof orchestrator.ingestDocument === 'function') {
-                    await orchestrator.ingestDocument({ id: asset.id, type: asset.type, label: asset.label, mimeType: asset.mimeType });
-                  }
-                } catch (_) { }
-                return;
-              }
+          //     // Bug 2 fix: wait for the pipeline to finish initializing before embedding
+          //     try {
+          //       await pipeline.waitForReady(20000);
+          //     } catch (readyErr: any) {
+          //       console.error(`[IPC] company:saveContext — embedding pipeline not ready for asset ${asset.id}:`, readyErr.message);
+          //       db.upsertCompanyAsset({ id: asset.id, type: asset.type, label: asset.label, status: 'error' });
+          //       try {
+          //         const orchestrator = appState.getKnowledgeOrchestrator();
+          //         if (orchestrator && typeof orchestrator.ingestDocument === 'function') {
+          //           await orchestrator.ingestDocument({ id: asset.id, type: asset.type, label: asset.label, mimeType: asset.mimeType });
+          //         }
+          //       } catch (_) { }
+          //       return;
+          //     }
 
-              let embeddingsFailed = 0;
-              const storedChunks = db.getAssetChunksWithoutEmbeddings(asset.id);
-              for (const c of storedChunks) {
-                try {
-                  const vector = await pipeline.getEmbedding(c.chunk_text);
-                  const blob = Buffer.from(new Float32Array(vector).buffer);
-                  db.saveAssetChunkEmbedding(c.id, blob);
-                } catch (embErr: any) {
-                  embeddingsFailed++;
-                  console.warn(`[IPC] company:saveContext — embedding failed for chunk ${c.id}:`, embErr.message);
-                }
-              }
+          //     let embeddingsFailed = 0;
+          //     const storedChunks = db.getAssetChunksWithoutEmbeddings(asset.id);
+          //     for (const c of storedChunks) {
+          //       try {
+          //         const vector = await pipeline.getEmbedding(c.chunk_text);
+          //         const blob = Buffer.from(new Float32Array(vector).buffer);
+          //         db.saveAssetChunkEmbedding(c.id, blob);
+          //       } catch (embErr: any) {
+          //         embeddingsFailed++;
+          //         console.warn(`[IPC] company:saveContext — embedding failed for chunk ${c.id}:`, embErr.message);
+          //       }
+          //     }
 
-              // Only mark 'mapped' if all embeddings succeeded
-              const finalStatus = embeddingsFailed === 0 ? 'mapped' : 'error';
-              if (embeddingsFailed > 0) {
-                console.error(`[IPC] company:saveContext — ${embeddingsFailed}/${storedChunks.length} chunks failed to embed for asset ${asset.id}`);
-              }
-              db.upsertCompanyAsset({ id: asset.id, type: asset.type, label: asset.label, status: finalStatus });
+          //     // Only mark 'mapped' if all embeddings succeeded
+          //     const finalStatus = embeddingsFailed === 0 ? 'mapped' : 'error';
+          //     if (embeddingsFailed > 0) {
+          //       console.error(`[IPC] company:saveContext — ${embeddingsFailed}/${storedChunks.length} chunks failed to embed for asset ${asset.id}`);
+          //     }
+          //     db.upsertCompanyAsset({ id: asset.id, type: asset.type, label: asset.label, status: finalStatus });
 
-              // [NEW] Link the indexed document to the orchestrator
-              try {
-                const orchestrator = appState.getKnowledgeOrchestrator();
-                if (orchestrator && typeof orchestrator.ingestDocument === 'function') {
-                  // Do NOT pass extractedText here — chunks + embeddings are already
-                  // written to DB above. Passing extractedText triggers Mode A which
-                  // re-embeds inline and produces null embeddings if the pipeline is
-                  // momentarily busy, making all chunks invisible to semantic search.
-                  // Mode B (no extractedText) reads the already-embedded chunks from DB.
-                  await orchestrator.ingestDocument({
-                    id: asset.id,
-                    type: asset.type,        // 'sales_deck' | 'product_specs' | 'case_studies' | 'custom'
-                    label: asset.label,
-                    mimeType: asset.mimeType,
-                  });
-                  console.log(`[IPC] company:saveContext — orchestrator.ingestDocument linked for asset ${asset.id}`);
-                }
-              } catch (ingestErr: any) {
-                // Non-fatal: orchestrator link failure should not block the save flow
-                console.warn(`[IPC] company:saveContext — orchestrator.ingestDocument failed for ${asset.id}:`, ingestErr.message);
-              }
+          //     // [NEW] Link the indexed document to the orchestrator
+          //     try {
+          //       const orchestrator = appState.getKnowledgeOrchestrator();
+          //       if (orchestrator && typeof orchestrator.ingestDocument === 'function') {
+          //         // Do NOT pass extractedText here — chunks + embeddings are already
+          //         // written to DB above. Passing extractedText triggers Mode A which
+          //         // re-embeds inline and produces null embeddings if the pipeline is
+          //         // momentarily busy, making all chunks invisible to semantic search.
+          //         // Mode B (no extractedText) reads the already-embedded chunks from DB.
+          //         await orchestrator.ingestDocument({
+          //           id: asset.id,
+          //           type: asset.type,        // 'sales_deck' | 'product_specs' | 'case_studies' | 'custom'
+          //           label: asset.label,
+          //           mimeType: asset.mimeType,
+          //         });
+          //         console.log(`[IPC] company:saveContext — orchestrator.ingestDocument linked for asset ${asset.id}`);
+          //       }
+          //     } catch (ingestErr: any) {
+          //       // Non-fatal: orchestrator link failure should not block the save flow
+          //       console.warn(`[IPC] company:saveContext — orchestrator.ingestDocument failed for ${asset.id}:`, ingestErr.message);
+          //     }
 
-              console.log(`[IPC] company:saveContext — asset ${asset.id} fully indexed`);
-            } catch (indexErr: any) {
-              console.error(`[IPC] company:saveContext — indexing failed for asset ${asset.id}:`, indexErr.message);
+          //     console.log(`[IPC] company:saveContext — asset ${asset.id} fully indexed`);
+          //   } catch (indexErr: any) {
+          //     console.error(`[IPC] company:saveContext — indexing failed for asset ${asset.id}:`, indexErr.message);
+          //     db.upsertCompanyAsset({ id: asset.id, type: asset.type, label: asset.label, status: 'error' });
+          //   }
+          // })();
+
+          try {
+            const form = new FormData();
+            form.append('file', new Blob([fileBuffer], { type: asset.mimeType }), asset.fileName);
+            form.append('asset_id', asset.id);
+            form.append('label', asset.label);
+            form.append('asset_type', asset.type);
+
+            const token = getAuthToken();
+            if (!token) {
               db.upsertCompanyAsset({ id: asset.id, type: asset.type, label: asset.label, status: 'error' });
+              console.error(`[IPC] no auth token available — user not signed in?`);
+              return;
             }
-          })();
+
+            // const resp = await fetch(`${BACKEND_URL}/intelligence/company-assets/upload`, {
+            const resp = await fetch(`http://127.0.0.1:8000/api/v1/intelligence/company-assets/upload`, {
+              method: 'POST',
+              headers: { Authorization: `Bearer ${token}` },
+              body: form,
+            });
+
+            const result = await resp.json();
+            console.log("SAVE_CONTEXT UPLOAD RESULT: ", result);
+            db.upsertCompanyAsset({
+              id: asset.id, type: asset.type, label: asset.label,
+              status: result.status === 'indexed' ? 'mapped' : 'error',
+            });
+          } catch (uploadErr: any) {
+            console.error(`[IPC] upload failed for asset ${asset.id}:`, uploadErr.message);
+            db.upsertCompanyAsset({ id: asset.id, type: asset.type, label: asset.label, status: 'error' });
+          }
         } else {
           // Existing asset already in DB — just keep its current status
           // Re-upsert with 'mapped' since it was already processed before
