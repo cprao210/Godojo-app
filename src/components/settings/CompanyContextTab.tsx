@@ -517,6 +517,13 @@ export const CompanyContextTab: React.FC<CompanyContextTabProps> = ({
                 setCompanyContext(draft);
                 savedSnapshot.current = draft;
                 setIsDirty(false);
+
+                // Chunks + local embeddings are now guaranteed written (saveContext
+                // awaits the embedding pipeline). Safe to trigger the backend
+                // reindex now — best-effort, failure shouldn't block the save UX.
+                intelligenceApi.reindexCompanyAssets().catch(err =>
+                    console.error('[CompanyContextTab] Failed to reindex company assets:', err)
+                );
             } else {
                 setCompanyError(result?.error || 'Save failed');
             }
@@ -582,14 +589,6 @@ export const CompanyContextTab: React.FC<CompanyContextTabProps> = ({
                 }));
                 setIsDirty(true);
                 await window.electronAPI?.profileSetMode?.(true);
-
-                // Let the backend know the asset set changed so it re-indexes for
-                // RAG. Best-effort — the upload itself already succeeded (it's an
-                // Electron-local operation), so a reindex failure shouldn't surface
-                // as an upload error to the user, just get logged.
-                intelligenceApi.reindexCompanyAssets().catch(err =>
-                    console.error('[CompanyContextTab] Failed to reindex company assets:', err)
-                );
 
             } else {
                 setDraft(prev => ({ ...prev, assets: prev.assets.filter(a => a.id !== tempId) }));

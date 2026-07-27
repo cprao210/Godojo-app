@@ -2571,8 +2571,10 @@ export function initializeIpcHandlers(appState: AppState): void {
           const fileBuffer = Buffer.from(asset.fileData, 'base64');
           db.saveAssetFile(asset.id, asset.fileName, asset.mimeType, fileBuffer);
 
-          // Kick off chunking + embedding in background
-          setImmediate(async () => {
+          // Chunk + embed synchronously (awaited) so the caller (handleSave) can
+          // be certain embeddings are actually written before it returns success —
+          // this is what /reindex depends on downstream.
+          await (async () => {
             try {
               const { extractTextFromBuffer } = require('./utils/documentParser');
               const { estimateTokens } = require('./rag');
@@ -2679,7 +2681,7 @@ export function initializeIpcHandlers(appState: AppState): void {
               console.error(`[IPC] company:saveContext — indexing failed for asset ${asset.id}:`, indexErr.message);
               db.upsertCompanyAsset({ id: asset.id, type: asset.type, label: asset.label, status: 'error' });
             }
-          });
+          })();
         } else {
           // Existing asset already in DB — just keep its current status
           // Re-upsert with 'mapped' since it was already processed before
