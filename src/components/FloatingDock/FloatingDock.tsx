@@ -105,6 +105,27 @@ export const FloatingDock: React.FC<FloatingDockProps> = ({
     };
     // const dragControls = useDragControls();
     const constraintsRef = useRef<HTMLDivElement>(null);
+    const dockRef = useRef<HTMLDivElement>(null);
+
+    // Gap between the panel's bottom edge and the top of the dock — kept as a
+    // single source of truth so every panel (intelligence, chat, settings)
+    // sits the same distance above the dock, regardless of platform DPI or
+    // future dock size changes.
+    const PANEL_DOCK_GAP = 65;
+    const [dockHeight, setDockHeight] = useState(64); // sensible fallback before first measure
+
+    useEffect(() => {
+        const el = dockRef.current;
+        if (!el) return;
+        const observer = new ResizeObserver(entries => {
+            const h = entries[0]?.contentRect.height;
+            if (h) setDockHeight(h);
+        });
+        observer.observe(el);
+        return () => observer.disconnect();
+    }, []);
+
+    const panelTopOffset = dockHeight + PANEL_DOCK_GAP;
 
     // ── Lifted state: survives panel switches ──────────────────────────────────
     // Analysis state is owned here so FloatingIntelligencePanel never loses it on remount.
@@ -282,9 +303,10 @@ export const FloatingDock: React.FC<FloatingDockProps> = ({
                         scale: activePanel === 'intelligence' ? 1 : 0.96,
                     }}
                     transition={{ type: 'spring', damping: 28, stiffness: 380, mass: 0.8 }}
-                    className="fixed bottom-[76px] left-[65px]"
+                    className="fixed left-[65px]"
                     style={{
                         position: 'fixed',
+                        top: panelTopOffset,
                         pointerEvents: activePanel === 'intelligence' ? 'auto' : 'none',
                     }}
                 >
@@ -320,15 +342,17 @@ export const FloatingDock: React.FC<FloatingDockProps> = ({
                 {/* Chat panel — always mounted once first opened */}
                 {chatMessages.length > 0 || activePanel === 'chat' ? (
                     <motion.div
+                        initial={{ opacity: 0, y: 20, scale: 0.96 }}
                         animate={{
                             opacity: activePanel === 'chat' ? dockOpacity : 0,
                             y: activePanel === 'chat' ? 0 : 20,
                             scale: activePanel === 'chat' ? 1 : 0.96,
                         }}
                         transition={{ type: 'spring', damping: 28, stiffness: 380, mass: 0.8 }}
-                        className="fixed bottom-0 left-[65px]"
+                        className="fixed left-[65px]"
                         style={{
                             position: 'fixed',
+                            top: panelTopOffset,
                             pointerEvents: activePanel === 'chat' ? 'auto' : 'none',
                         }}
                     >
@@ -363,8 +387,8 @@ export const FloatingDock: React.FC<FloatingDockProps> = ({
                             animate={{ opacity: dockOpacity, y: 0, scale: 1 }}
                             exit={{ opacity: 0, y: 12, scale: 0.97 }}
                             transition={{ type: 'spring', damping: 28, stiffness: 380, mass: 0.8 }}
-                            className="fixed top-[106px] left-[65px]"
-                            style={{ position: 'fixed' }}
+                            className="fixed left-[65px]"
+                            style={{ position: 'fixed', top: panelTopOffset }}
                         >
                             {isFrozen && (
                                 <div
@@ -394,6 +418,7 @@ export const FloatingDock: React.FC<FloatingDockProps> = ({
                 >
                     {/* The Dock */}
                     <motion.div
+                        ref={dockRef}
                         className={`flex items-center gap-2.5 px-3 py-3 rounded-2xl relative select-none draggable-area`}
                         style={{
                             background: `rgba(18, 22, 34, ${dockOpacity})`,

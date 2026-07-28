@@ -6,6 +6,7 @@ import { guardSession } from '../../../lib/firebase';
 import remarkGfm from 'remark-gfm';
 import { useStreamBuffer } from '../../../hooks/useStreamBuffer';
 import { chatApi, type ChatHistoryTurn, type LiveTranscriptSegment, type StreamHandle } from '../../../lib/chatApi';
+import { chatMarkdownComponents } from '../../../lib/markdownComponents';
 
 interface Message {
     id: string;
@@ -175,8 +176,8 @@ const MessageBubble: React.FC<{ msg: Message }> = ({ msg }) => {
                         <TypingDots />
                     ) : (
                         <>
-                            <div className="markdown-content prose prose-invert prose-sm max-w-none">
-                                <ReactMarkdown remarkPlugins={[remarkGfm]}>
+                            <div className="markdown-content">
+                                <ReactMarkdown remarkPlugins={[remarkGfm]} components={chatMarkdownComponents}>
                                     {msg.text}
                                 </ReactMarkdown>
                                 {msg.ragAnswer && (

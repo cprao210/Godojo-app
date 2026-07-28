@@ -78,19 +78,73 @@ export class SupabaseMirrorService {
         // queued offline writes can now be authenticated and pushed.
         const auth = AuthManager.getInstance();
         auth.on('signed-in', () => {
-            this._upsertCurrentUserRow();
-            if (!this.draining) this._drain();
+            // this._upsertCurrentUserRow();
+            // if (!this.draining) this._drain();
+            this._verifyThenUpsertCurrentUserRow();
         });
         auth.on('auth-changed', () => {
-            if (auth.isSignedIn() && !this.draining) this._drain();
+            if (!auth.isSignedIn()) return;
+            // A signed-in session's profile can change after the initial
+            // 'signed-in' event fires — most notably during sign-up, where
+            // updateProfile(displayName) + a forced token refresh happen
+            // *after* the first onIdTokenChanged (which carries a null
+            // displayName). Re-upsert here so that corrected data actually
+            // reaches Supabase instead of being silently dropped.
+            this._upsertCurrentUserRow();
+            if (!this.draining) this._drain();
         });
 
         // If a session is already active at init (e.g. silent token restore
         // completed before mirror.init), upsert the users row and drain now.
         if (auth.isSignedIn()) {
-            this._upsertCurrentUserRow();
-            if (!this.draining) this._drain();
+            // this._upsertCurrentUserRow();
+            // if (!this.draining) this._drain();
+            this._verifyThenUpsertCurrentUserRow();
         }
+    }
+
+    /**
+     * Confirms the current Firebase session is actually valid — not just
+     * "we received a token object" — before writing a users row to Supabase.
+     *
+     * A silently-restored session from a stale/persisted refresh token
+     * (app launch restore, see AuthManager.getPersistedIdentity) can fire
+     * 'signed-in' even when the underlying account has since been disabled
+     * or deleted; installSessionGuard only catches that *afterward*, on its
+     * own async cycle. This does the same check first, so we never create a
+     * Supabase user row for a session that's about to be invalidated.
+     */
+    private async _verifyThenUpsertCurrentUserRow(): Promise<void> {
+        const auth = AuthManager.getInstance();
+        const snap = auth.snapshot();
+        const refreshToken = auth.getRefreshToken();
+        if (!snap.uid || !refreshToken) return;
+
+        try {
+            const apiKey = process.env.VITE_FIREBASE_API_KEY;
+            if (!apiKey) {
+                console.warn('[SupabaseMirrorService] VITE_FIREBASE_API_KEY not set — skipping session verification, proceeding as-is');
+            } else {
+                const resp = await fetch(
+                    `https://securetoken.googleapis.com/v1/token?key=${apiKey}`,
+                    {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+                        body: `grant_type=refresh_token&refresh_token=${encodeURIComponent(refreshToken)}`,
+                    }
+                );
+                if (!resp.ok) {
+                    console.warn('[SupabaseMirrorService] Session failed verification (account disabled/deleted/revoked) — skipping users row creation');
+                    return;
+                }
+            }
+        } catch (e) {
+            console.warn('[SupabaseMirrorService] Session verification request failed — skipping users row creation:', e);
+            return;
+        }
+
+        this._upsertCurrentUserRow();
+        if (!this.draining) this._drain();
     }
 
     /**
@@ -385,7 +439,22 @@ export class SupabaseMirrorService {
                 const { error } = conflict
                     ? await client.from(item.table).upsert(payload, { onConflict: conflict })
                     : await client.from(item.table).insert(payload);
-                if (error) throw error;
+                // if (error) throw error;
+                if (error) {
+                    if (item.table === 'users' && error.code === '23505' && error.message?.includes('users_email_unique')) {
+                        // A different firebase_uid already owns this email — not a
+                        // transient failure, retrying won't help. Drop it and log
+                        // loudly since this indicates a real identity conflict
+                        // (e.g. account recreated with the same email) worth
+                        // investigating, not routine outbox noise.
+                        console.error(
+                            `[SupabaseMirrorService] users row for firebase_uid=${payload.firebase_uid} ` +
+                            `blocked — email "${payload.email}" is already owned by a different user. Not retrying.`
+                        );
+                        return true; // treat as "handled", remove from outbox
+                    }
+                    throw error;
+                }
 
             } else if (item.op === 'upsertBatch') {
                 // item.payload is an array of rows for the same table (see

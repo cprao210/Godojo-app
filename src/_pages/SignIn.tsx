@@ -57,8 +57,8 @@ export const SignIn: React.FC<SignInProps> = ({ bannerMessage, onBannerDismiss }
 
     const fields: FieldValuesType[] = mode === 'sign-up' ? [
         { icon: User, type: "text", name: "displayName", placeholder: "Full name" },
-        { icon: Phone, type: "tel", name: "phoneNumber", placeholder: "Phone number (optional)" },
         { icon: Mail, type: "email", name: "email", placeholder: "you@example.com" },
+        { icon: Phone, type: "tel", name: "phoneNumber", placeholder: "Phone number (optional)" },
     ] : [
         { icon: Mail, type: "email", name: "email", placeholder: "you@example.com" },
     ];

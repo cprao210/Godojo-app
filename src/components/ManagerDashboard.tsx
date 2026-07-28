@@ -36,11 +36,12 @@ import { dashboardApi } from '../lib/dashboardApi';
 import { ApiError } from '../lib/apiClient';
 import { getFirebaseAuth } from '../lib/firebase';
 import type { Tenant, TenantMember } from '../types/tenant';
-import type { DashboardActiveMember, DashboardPeriod, DashboardResponse } from '../types/dashboard';
+import type { DashboardActiveMember, DashboardPeriod, DashboardResponse, DashboardObjectionQuote } from '../types/dashboard';
 
 interface Objection {
     label: string;
     count: number;
+    latest: DashboardObjectionQuote[];
 }
 
 interface RepEntry {
@@ -199,6 +200,7 @@ interface TeamScoreChartProps {
 }
 
 const TeamScoreChart: React.FC<TeamScoreChartProps> = ({ data, isLight }) => {
+    const [hoveredIndex, setHoveredIndex] = React.useState<number | null>(null);
     const width = 560;
     const height = 220;
     const padL = 34;
@@ -225,6 +227,11 @@ const TeamScoreChart: React.FC<TeamScoreChartProps> = ({ data, isLight }) => {
     const axisTextColor = isLight ? '#94a3b8' : 'rgba(255,255,255,0.35)';
     const lineColor = '#8b5cf6'; // violet-500, matches the reference screenshot
     const areaFillId = 'team-score-area-fill';
+    const hovered = hoveredIndex !== null ? data[hoveredIndex] : null;
+    const tooltipFill = isLight ? '#ffffff' : '#0b0e13';
+    const tooltipBorder = isLight ? 'rgba(15,23,42,0.12)' : lineColor;
+    const tooltipLabelColor = isLight ? '#64748b' : axisTextColor;
+    const tooltipValueColor = isLight ? '#0f172a' : '#ffffff';
 
     return (
         <svg viewBox={`0 0 ${width} ${height}`} className="w-full h-auto" role="img" aria-label="Team score trend over the last 7 weeks">
@@ -261,8 +268,77 @@ const TeamScoreChart: React.FC<TeamScoreChartProps> = ({ data, isLight }) => {
 
             {/* Points */}
             {data.map((d, i) => (
-                <circle key={d.label} cx={xFor(i)} cy={yFor(d.score)} r={3.5} fill={lineColor} stroke={isLight ? '#fff' : '#141820'} strokeWidth={1.5} />
+                <circle
+                    key={d.label}
+                    cx={xFor(i)}
+                    cy={yFor(d.score)}
+                    r={hoveredIndex === i ? 5 : 3.5}
+                    fill={lineColor}
+                    stroke={isLight ? '#fff' : '#141820'}
+                    strokeWidth={1.5}
+                    style={{ transition: 'r 100ms ease' }}
+                />
             ))}
+
+            {/* Invisible hit-targets — wider than the visible dots so hover is
+                easy to trigger without needing pixel-perfect aim */}
+            {data.map((d, i) => (
+                <circle
+                    key={`hit-${d.label}`}
+                    cx={xFor(i)}
+                    cy={yFor(d.score)}
+                    r={12}
+                    fill="transparent"
+                    onMouseEnter={() => setHoveredIndex(i)}
+                    onMouseLeave={() => setHoveredIndex((cur) => (cur === i ? null : cur))}
+                    style={{ cursor: 'pointer' }}
+                />
+            ))}
+
+            {/* Vertical guide line under the hovered point */}
+            {hovered && (
+                <line
+                    x1={xFor(hoveredIndex!)}
+                    x2={xFor(hoveredIndex!)}
+                    y1={padT}
+                    y2={padT + plotH}
+                    stroke={lineColor}
+                    strokeOpacity={0.25}
+                    strokeWidth={1}
+                    strokeDasharray="3 3"
+                />
+            )}
+
+            {/* Tooltip */}
+            {hovered && (() => {
+                const tx = xFor(hoveredIndex!);
+                const ty = yFor(hovered.score);
+                const boxW = 64;
+                const boxH = 34;
+                const boxX = tx + boxW + 8 > width ? tx - boxW - 8 : tx + 8;
+                const boxY = Math.max(padT, ty - boxH - 8);
+                return (
+                    <g style={{ pointerEvents: 'none' }}>
+                        <rect
+                            x={boxX}
+                            y={boxY}
+                            width={boxW}
+                            height={boxH}
+                            rx={6}
+                            fill={tooltipFill}
+                            stroke={tooltipBorder}
+                            strokeWidth={1}
+                            style={isLight ? { filter: 'drop-shadow(0 2px 6px rgba(15,23,42,0.15))' } : undefined}
+                        />
+                        <text x={boxX + boxW / 2} y={boxY + 14} textAnchor="middle" fontSize={9} fill={tooltipLabelColor}>
+                            {hovered.label}
+                        </text>
+                        <text x={boxX + boxW / 2} y={boxY + 27} textAnchor="middle" fontSize={12} fontWeight={700} fill={tooltipValueColor}>
+                            {hovered.score}
+                        </text>
+                    </g>
+                );
+            })()}
 
             {/* X-axis labels */}
             {data.map((d, i) => (
@@ -279,16 +355,26 @@ const TeamScoreChart: React.FC<TeamScoreChartProps> = ({ data, isLight }) => {
 interface TopObjectionsListProps {
     objections: Objection[];
     isLight: boolean;
+    onSelect: (objection: Objection) => void;
 }
 
-const TopObjectionsList: React.FC<TopObjectionsListProps> = ({ objections, isLight }) => {
+const TopObjectionsList: React.FC<TopObjectionsListProps> = ({ objections, isLight, onSelect }) => {
     const max = Math.max(...objections.map((o) => o.count), 1);
     const axisMax = Math.ceil((max + 2) / 5) * 5; // round up to a friendly tick
 
     return (
         <div className="flex flex-col gap-3.5">
             {objections.map((o) => (
-                <div key={o.label} className="grid grid-cols-[110px_1fr_28px] items-center gap-3">
+                <button
+                    key={o.label}
+                    type="button"
+                    onClick={() => onSelect(o)}
+                    disabled={o.latest.length === 0}
+                    className={`grid grid-cols-[110px_1fr_28px] items-center gap-3 text-left rounded-md -mx-1 px-1 py-0.5 transition-colors ${o.latest.length > 0
+                        ? `cursor-pointer ${isLight ? 'hover:bg-slate-100' : 'hover:bg-white/5'}`
+                        : 'cursor-default'
+                        }`}
+                >
                     <span className="text-sm text-text-secondary truncate">{o.label}</span>
                     <div className={`h-2.5 rounded-full overflow-hidden ${isLight ? 'bg-slate-100' : 'bg-white/5'}`}>
                         <div
@@ -297,7 +383,7 @@ const TopObjectionsList: React.FC<TopObjectionsListProps> = ({ objections, isLig
                         />
                     </div>
                     <span className="text-sm font-semibold text-text-primary text-right tabular-nums">{o.count}</span>
-                </div>
+                </button>
             ))}
             {/* Axis ticks */}
             <div className="grid grid-cols-[110px_1fr_28px] gap-3">
@@ -501,6 +587,8 @@ export const ManagerDashboard: React.FC<ManagerDashboardProps> = ({ isOpen }) =>
     const [dashboardError, setDashboardError] = useState<string | null>(null);
     const [isPeriodMenuOpen, setIsPeriodMenuOpen] = useState(false);
 
+    const [selectedObjection, setSelectedObjection] = useState<Objection | null>(null);
+
     useEffect(() => {
         if (!isOpen || !tenant || !isAdmin) return;
         let cancelled = false;
@@ -537,6 +625,7 @@ export const ManagerDashboard: React.FC<ManagerDashboardProps> = ({ isOpen }) =>
     const objections: Objection[] = (dashboard?.top_objections ?? []).map((o) => ({
         label: o.category,
         count: o.count,
+        latest: o.latest ?? [],
     }));
 
     const topPerformers: RepEntry[] = (dashboard?.top_performers ?? []).map((p) => ({
@@ -571,233 +660,284 @@ export const ManagerDashboard: React.FC<ManagerDashboardProps> = ({ isOpen }) =>
         : 'bg-bg-input border-border-subtle text-text-primary hover:bg-bg-elevated';
 
     return (
-        <AnimatePresence>
-            {isOpen && (
-                <motion.div
-                    initial={{ opacity: 0 }}
-                    animate={{ opacity: 1 }}
-                    exit={{ opacity: 0 }}
-                    transition={{ duration: 0.2 }}
-                    className={`fixed inset-0 z-50 my-4 overflow-y-auto ${isLight ? 'bg-[#F8FAFC]' : 'bg-bg-main'}`}
-                >
-                    <div className="max-w-6xl mx-auto px-10 py-10">
-                        {/* Header */}
-                        <div className="flex items-start justify-between gap-4 mb-6 flex-wrap">
-                            <div>
-                                <div className="flex items-center gap-2 mb-1">
-                                    {/* <button
+        <>
+            <AnimatePresence>
+                {isOpen && (
+                    <motion.div
+                        initial={{ opacity: 0 }}
+                        animate={{ opacity: 1 }}
+                        exit={{ opacity: 0 }}
+                        transition={{ duration: 0.2 }}
+                        className={`fixed inset-0 z-50 my-4 overflow-y-auto ${isLight ? 'bg-[#F8FAFC]' : 'bg-bg-main'}`}
+                    >
+                        <div className="max-w-6xl mx-auto px-10 py-10">
+                            {/* Header */}
+                            <div className="flex items-start justify-between gap-4 mb-6 flex-wrap">
+                                <div>
+                                    <div className="flex items-center gap-2 mb-1">
+                                        {/* <button
                                         onClick={onClose}
                                         aria-label="Close Manager Dashboard"
                                         className="w-7 h-7 -ml-1 rounded-lg flex items-center justify-center text-text-tertiary hover:text-text-primary hover:bg-bg-item-active/60 transition-colors"
                                     >
                                         <X size={15} />
                                     </button> */}
-                                    <h2 className="text-xl font-bold text-text-primary">Manager Dashboard</h2>
-                                </div>
-                                <p className="text-sm text-text-secondary">
-                                    Track team performance, spot opportunities and coach your team to win more deals.
-                                </p>
-                            </div>
-                            <div className="flex items-center gap-2.5 relative">
-                                <button
-                                    onClick={() => setIsPeriodMenuOpen((o) => !o)}
-                                    className={`inline-flex items-center gap-2 px-3.5 py-2 rounded-lg text-sm font-medium border transition-colors ${pillBtnCls}`}
-                                >
-                                    <Calendar size={14} />
-                                    {periodLabel}
-                                    <ChevronDown size={14} className="text-text-tertiary" />
-                                </button>
-                                {isPeriodMenuOpen && (
-                                    <div className={`absolute right-0 top-full mt-1 z-10 w-44 rounded-lg border shadow-lg overflow-hidden ${cardCls}`}>
-                                        {PERIOD_OPTIONS.map((opt) => (
-                                            <button
-                                                key={opt.value}
-                                                onClick={() => {
-                                                    setPeriod(opt.value);
-                                                    setIsPeriodMenuOpen(false);
-                                                }}
-                                                className={`w-full text-left px-3 py-2 text-sm transition-colors ${opt.value === period ? 'font-semibold text-text-primary' : 'text-text-secondary'} ${isLight ? 'hover:bg-slate-50' : 'hover:bg-white/[0.03]'}`}
-                                            >
-                                                {opt.label}
-                                            </button>
-                                        ))}
+                                        <h2 className="text-xl font-bold text-text-primary">Manager Dashboard</h2>
                                     </div>
-                                )}
-                                {/* <button className={`inline-flex items-center gap-2 px-3.5 py-2 rounded-lg text-sm font-medium border transition-colors ${pillBtnCls}`}>
+                                    <p className="text-sm text-text-secondary">
+                                        Track team performance, spot opportunities and coach your team to win more deals.
+                                    </p>
+                                </div>
+                                <div className="flex items-center gap-2.5 relative">
+                                    <button
+                                        onClick={() => setIsPeriodMenuOpen((o) => !o)}
+                                        className={`inline-flex items-center gap-2 px-3.5 py-2 rounded-lg text-sm font-medium border transition-colors ${pillBtnCls}`}
+                                    >
+                                        <Calendar size={14} />
+                                        {periodLabel}
+                                        <ChevronDown size={14} className="text-text-tertiary" />
+                                    </button>
+                                    {isPeriodMenuOpen && (
+                                        <div className={`absolute right-0 top-full mt-1 z-10 w-44 rounded-lg border shadow-lg overflow-hidden ${cardCls}`}>
+                                            {PERIOD_OPTIONS.map((opt) => (
+                                                <button
+                                                    key={opt.value}
+                                                    onClick={() => {
+                                                        setPeriod(opt.value);
+                                                        setIsPeriodMenuOpen(false);
+                                                    }}
+                                                    className={`w-full text-left px-3 py-2 text-sm transition-colors ${opt.value === period ? 'font-semibold text-text-primary' : 'text-text-secondary'} ${isLight ? 'hover:bg-slate-50' : 'hover:bg-white/[0.03]'}`}
+                                                >
+                                                    {opt.label}
+                                                </button>
+                                            ))}
+                                        </div>
+                                    )}
+                                    {/* <button className={`inline-flex items-center gap-2 px-3.5 py-2 rounded-lg text-sm font-medium border transition-colors ${pillBtnCls}`}>
                                     <SlidersHorizontal size={14} />
                                     Filters
                                 </button> */}
+                                </div>
                             </div>
-                        </div>
 
-                        {!hasTenant && !isLoadingTenant && !tenantError && (
-                            <div className={`rounded-2xl border px-6 py-10 text-center ${cardCls}`}>
-                                <p className="text-sm font-semibold text-text-primary">No team yet</p>
-                                <p className="text-sm text-text-secondary mt-1">
-                                    Create a team from Settings → Roles &amp; Permissions to unlock the dashboard.
-                                </p>
-                            </div>
-                        )}
+                            {!hasTenant && !isLoadingTenant && !tenantError && (
+                                <div className={`rounded-2xl border px-6 py-10 text-center ${cardCls}`}>
+                                    <p className="text-sm font-semibold text-text-primary">No team yet</p>
+                                    <p className="text-sm text-text-secondary mt-1">
+                                        Create a team from Settings → Roles &amp; Permissions to unlock the dashboard.
+                                    </p>
+                                </div>
+                            )}
 
-                        {hasTenant && !isAdmin && (
-                            <div className={`rounded-2xl border px-6 py-10 text-center ${cardCls}`}>
-                                <p className="text-sm font-semibold text-text-primary">Admins only</p>
-                                <p className="text-sm text-text-secondary mt-1">
-                                    Only the team owner can view the Manager Dashboard.
-                                </p>
-                            </div>
-                        )}
+                            {hasTenant && !isAdmin && (
+                                <div className={`rounded-2xl border px-6 py-10 text-center ${cardCls}`}>
+                                    <p className="text-sm font-semibold text-text-primary">Admins only</p>
+                                    <p className="text-sm text-text-secondary mt-1">
+                                        Only the team owner can view the Manager Dashboard.
+                                    </p>
+                                </div>
+                            )}
 
-                        {tenantError && (
-                            <div className={`rounded-2xl border px-6 py-10 text-center ${cardCls}`}>
-                                <p className="text-sm font-semibold text-red-400">{tenantError}</p>
-                            </div>
-                        )}
+                            {tenantError && (
+                                <div className={`rounded-2xl border px-6 py-10 text-center ${cardCls}`}>
+                                    <p className="text-sm font-semibold text-red-400">{tenantError}</p>
+                                </div>
+                            )}
 
-                        {hasTenant && isAdmin && (
-                            <>
-                                {dashboardError && (
-                                    <div className={`rounded-2xl border px-6 py-4 mb-4 ${cardCls}`}>
-                                        <p className="text-sm font-semibold text-red-400">{dashboardError}</p>
-                                    </div>
-                                )}
-
-                                {/* Stat cards */}
-                                <div className="flex items-stretch gap-4 mb-4 flex-wrap">
-                                    {isLoadingDashboard ? (
-                                        <>
-                                            <StatCardSkeleton cardCls={cardCls} isLight={isLight} icon={<Users size={18} className="text-violet-400" />} iconBg="bg-violet-500/15" label="Active AEs" />
-                                            <StatCardSkeleton cardCls={cardCls} isLight={isLight} icon={<Phone size={18} className="text-blue-400" />} iconBg="bg-blue-500/15" label="Total Calls" />
-                                            <StatCardSkeleton cardCls={cardCls} isLight={isLight} icon={<Target size={18} className="text-emerald-400" />} iconBg="bg-emerald-500/15" label="Team Average Score" />
-                                        </>
-                                    ) : (
-                                        <>
-                                            <StatCard
-                                                cardCls={cardCls}
-                                                icon={<Users size={18} className="text-violet-400" />}
-                                                iconBg="bg-violet-500/15"
-                                                label="Active AEs"
-                                                value={activeReps}
-                                            />
-                                            <StatCard
-                                                cardCls={cardCls}
-                                                icon={<Phone size={18} className="text-blue-400" />}
-                                                iconBg="bg-blue-500/15"
-                                                label="Total Calls"
-                                                value={totalCalls}
-                                            />
-                                            <StatCard
-                                                cardCls={cardCls}
-                                                icon={<Target size={18} className="text-emerald-400" />}
-                                                iconBg="bg-emerald-500/15"
-                                                label="Team Average Score"
-                                                value={teamAvgScore}
-                                            />
-                                        </>
+                            {hasTenant && isAdmin && (
+                                <>
+                                    {dashboardError && (
+                                        <div className={`rounded-2xl border px-6 py-4 mb-4 ${cardCls}`}>
+                                            <p className="text-sm font-semibold text-red-400">{dashboardError}</p>
+                                        </div>
                                     )}
-                                </div>
 
-                                {/* Team score trend + Top objections */}
-                                <div className="grid grid-cols-1 lg:grid-cols-[1.3fr_1fr] gap-4 mb-4">
-                                    <SectionCard
-                                        title={`Team Score – ${periodLabel}`}
-                                        subtitle="Rolling average score across all reps"
-                                        cardCls={cardCls}
-                                    >
+                                    {/* Stat cards */}
+                                    <div className="flex items-stretch gap-4 mb-4 flex-wrap">
                                         {isLoadingDashboard ? (
-                                            <ChartSkeleton isLight={isLight} />
-                                        ) : teamScoreTrend.length > 0 ? (
-                                            <TeamScoreChart data={teamScoreTrend} isLight={isLight} />
+                                            <>
+                                                <StatCardSkeleton cardCls={cardCls} isLight={isLight} icon={<Users size={18} className="text-violet-400" />} iconBg="bg-violet-500/15" label="Active AEs" />
+                                                <StatCardSkeleton cardCls={cardCls} isLight={isLight} icon={<Phone size={18} className="text-blue-400" />} iconBg="bg-blue-500/15" label="Total Calls" />
+                                                <StatCardSkeleton cardCls={cardCls} isLight={isLight} icon={<Target size={18} className="text-emerald-400" />} iconBg="bg-emerald-500/15" label="Team Average Score" />
+                                            </>
                                         ) : (
-                                            <p className="text-sm text-text-tertiary py-8 text-center">
-                                                No trend data for this period.
-                                            </p>
+                                            <>
+                                                <StatCard
+                                                    cardCls={cardCls}
+                                                    icon={<Users size={18} className="text-violet-400" />}
+                                                    iconBg="bg-violet-500/15"
+                                                    label="Active AEs"
+                                                    value={activeReps}
+                                                />
+                                                <StatCard
+                                                    cardCls={cardCls}
+                                                    icon={<Phone size={18} className="text-blue-400" />}
+                                                    iconBg="bg-blue-500/15"
+                                                    label="Total Calls"
+                                                    value={totalCalls}
+                                                />
+                                                <StatCard
+                                                    cardCls={cardCls}
+                                                    icon={<Target size={18} className="text-emerald-400" />}
+                                                    iconBg="bg-emerald-500/15"
+                                                    label="Team Average Score"
+                                                    value={teamAvgScore}
+                                                />
+                                            </>
                                         )}
-                                    </SectionCard>
+                                    </div>
 
-                                    <SectionCard
-                                        title="Top Objections"
-                                        subtitle="Based on calls in selected time period"
-                                        cardCls={cardCls}
-                                    >
-                                        {isLoadingDashboard ? (
-                                            <ListSkeleton isLight={isLight} rows={4} />
-                                        ) : objections.length > 0 ? (
-                                            <TopObjectionsList objections={objections} isLight={isLight} />
-                                        ) : (
-                                            <p className="text-sm text-text-tertiary py-8 text-center">
-                                                No objections recorded for this period.
-                                            </p>
-                                        )}
-                                    </SectionCard>
-                                </div>
+                                    {/* Team score trend + Top objections */}
+                                    <div className="grid grid-cols-1 lg:grid-cols-[1.3fr_1fr] gap-4 mb-4">
+                                        <SectionCard
+                                            title={`Team Score – ${periodLabel}`}
+                                            subtitle="Rolling average score across all reps"
+                                            cardCls={cardCls}
+                                        >
+                                            {isLoadingDashboard ? (
+                                                <ChartSkeleton isLight={isLight} />
+                                            ) : teamScoreTrend.length > 0 ? (
+                                                <TeamScoreChart data={teamScoreTrend} isLight={isLight} />
+                                            ) : (
+                                                <p className="text-sm text-text-tertiary py-8 text-center">
+                                                    No trend data for this period.
+                                                </p>
+                                            )}
+                                        </SectionCard>
 
-                                {/* Top performers + Needs coaching */}
-                                <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
-                                    <SectionCard
-                                        title="Top Performers"
-                                        icon={<Trophy size={15} className="text-emerald-400" />}
-                                        cardCls={cardCls}
-                                    >
-                                        {isLoadingDashboard ? (
-                                            <ListSkeleton isLight={isLight} rows={4} />
-                                        ) : topPerformers.length > 0 ? (
-                                            <RankedRepList reps={topPerformers} rankTheme="positive" isLight={isLight} onSelectRep={openAeFromRep} />
-                                        ) : (
-                                            <p className="text-sm text-text-tertiary py-8 text-center">
-                                                No performers to show yet.
-                                            </p>
-                                        )}
-                                    </SectionCard>
+                                        <SectionCard
+                                            title="Top Objections"
+                                            subtitle="Based on calls in selected time period"
+                                            cardCls={cardCls}
+                                        >
+                                            {isLoadingDashboard ? (
+                                                <ListSkeleton isLight={isLight} rows={4} />
+                                            ) : objections.length > 0 ? (
+                                                <TopObjectionsList objections={objections} isLight={isLight} onSelect={setSelectedObjection} />
+                                            ) : (
+                                                <p className="text-sm text-text-tertiary py-8 text-center">
+                                                    No objections recorded for this period.
+                                                </p>
+                                            )}
+                                        </SectionCard>
+                                    </div>
 
-                                    <SectionCard
-                                        title="Needs Coaching"
-                                        icon={<AlertTriangle size={15} className="text-red-400" />}
-                                        cardCls={cardCls}
-                                    >
-                                        {isLoadingDashboard ? (
-                                            <ListSkeleton isLight={isLight} rows={4} />
-                                        ) : needsCoaching.length > 0 ? (
-                                            <RankedRepList reps={needsCoaching} rankTheme="attention" isLight={isLight} onSelectRep={openAeFromRep} />
-                                        ) : (
-                                            <p className="text-sm text-text-tertiary py-8 text-center">
-                                                No one needs coaching right now.
-                                            </p>
-                                        )}
-                                    </SectionCard>
-                                </div>
+                                    {/* Top performers + Needs coaching */}
+                                    <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
+                                        <SectionCard
+                                            title="Top Performers"
+                                            icon={<Trophy size={15} className="text-emerald-400" />}
+                                            cardCls={cardCls}
+                                        >
+                                            {isLoadingDashboard ? (
+                                                <ListSkeleton isLight={isLight} rows={4} />
+                                            ) : topPerformers.length > 0 ? (
+                                                <RankedRepList reps={topPerformers} rankTheme="positive" isLight={isLight} onSelectRep={openAeFromRep} />
+                                            ) : (
+                                                <p className="text-sm text-text-tertiary py-8 text-center">
+                                                    No performers to show yet.
+                                                </p>
+                                            )}
+                                        </SectionCard>
 
-                                {/* All AEs */}
-                                <div className="mt-4">
-                                    <SectionCard
-                                        title="All AEs"
-                                        subtitle="Click any row to view full performance + create coaching"
-                                        cardCls={cardCls}
+                                        <SectionCard
+                                            title="Needs Coaching"
+                                            icon={<AlertTriangle size={15} className="text-red-400" />}
+                                            cardCls={cardCls}
+                                        >
+                                            {isLoadingDashboard ? (
+                                                <ListSkeleton isLight={isLight} rows={4} />
+                                            ) : needsCoaching.length > 0 ? (
+                                                <RankedRepList reps={needsCoaching} rankTheme="attention" isLight={isLight} onSelectRep={openAeFromRep} />
+                                            ) : (
+                                                <p className="text-sm text-text-tertiary py-8 text-center">
+                                                    No one needs coaching right now.
+                                                </p>
+                                            )}
+                                        </SectionCard>
+                                    </div>
+
+                                    {/* All AEs */}
+                                    <div className="mt-4">
+                                        <SectionCard
+                                            title="All AEs"
+                                            subtitle="Click any row to view full performance + create coaching"
+                                            cardCls={cardCls}
+                                        >
+                                            {dashboardError ? (
+                                                <p className="text-sm font-semibold text-red-400 py-4 text-center">{dashboardError}</p>
+                                            ) : isLoadingDashboard ? (
+                                                <TableSkeleton isLight={isLight} rows={6} />
+                                            ) : allAeRows.length > 0 ? (
+                                                <AllAEsTable
+                                                    aes={allAeRows}
+                                                    isLight={isLight}
+                                                    onSelectAe={openAeFromRow}
+                                                />
+                                            ) : (
+                                                <p className="text-sm text-text-tertiary py-8 text-center">
+                                                    No AEs found.
+                                                </p>
+                                            )}
+                                        </SectionCard>
+                                    </div>
+                                </>
+                            )}
+                        </div>
+                    </motion.div>
+                )}
+                <AeDetailView ae={selectedAe} tenantId={tenant?.id ?? null} onBack={() => setSelectedAe(null)} />
+            </AnimatePresence>
+            <AnimatePresence>
+                {selectedObjection && (
+                    <motion.div
+                        initial={{ opacity: 0 }}
+                        animate={{ opacity: 1 }}
+                        exit={{ opacity: 0 }}
+                        className="fixed inset-0 z-[60] flex items-center justify-center bg-black/50 p-4"
+                        onClick={() => setSelectedObjection(null)}
+                    >
+                        <motion.div
+                            initial={{ opacity: 0, scale: 0.96, y: 8 }}
+                            animate={{ opacity: 1, scale: 1, y: 0 }}
+                            exit={{ opacity: 0, scale: 0.96, y: 8 }}
+                            onClick={(e) => e.stopPropagation()}
+                            className={`w-full max-w-md rounded-xl border p-5 shadow-xl ${isLight ? 'bg-white border-slate-200' : 'bg-bg-main border-white/10'
+                                }`}
+                        >
+                            <div className="flex items-start justify-between gap-4 mb-3">
+                                <h3 className="text-sm font-semibold text-text-primary capitalize">
+                                    {selectedObjection.label.replace(/_/g, ' ')}
+                                </h3>
+                                <button
+                                    type="button"
+                                    onClick={() => setSelectedObjection(null)}
+                                    className="text-text-tertiary hover:text-text-primary transition-colors"
+                                    aria-label="Close"
+                                >
+                                    <X size={18} />
+                                </button>
+                            </div>
+                            <div className="flex flex-col gap-3 max-h-[60vh] overflow-y-auto">
+                                {selectedObjection.latest.map((q, i) => (
+                                    <div
+                                        key={i}
+                                        className={`rounded-lg p-3 text-sm ${isLight ? 'bg-slate-50' : 'bg-white/5'
+                                            }`}
                                     >
-                                        {dashboardError ? (
-                                            <p className="text-sm font-semibold text-red-400 py-4 text-center">{dashboardError}</p>
-                                        ) : isLoadingDashboard ? (
-                                            <TableSkeleton isLight={isLight} rows={6} />
-                                        ) : allAeRows.length > 0 ? (
-                                            <AllAEsTable
-                                                aes={allAeRows}
-                                                isLight={isLight}
-                                                onSelectAe={openAeFromRow}
-                                            />
-                                        ) : (
-                                            <p className="text-sm text-text-tertiary py-8 text-center">
-                                                No AEs found.
-                                            </p>
-                                        )}
-                                    </SectionCard>
-                                </div>
-                            </>
-                        )}
-                    </div>
-                </motion.div>
-            )}
-            <AeDetailView ae={selectedAe} tenantId={tenant?.id ?? null} onBack={() => setSelectedAe(null)} />
-        </AnimatePresence>
+                                        <p className="text-text-primary italic">"{q.quote}"</p>
+                                        <p className="text-xs text-text-tertiary mt-2">
+                                            {q.owner} · {q.status} ·{' '}
+                                            {new Date(q.meeting_date).toLocaleDateString()}
+                                        </p>
+                                    </div>
+                                ))}
+                            </div>
+                        </motion.div>
+                    </motion.div>
+                )}
+            </AnimatePresence>
+        </>
     );
 };
 

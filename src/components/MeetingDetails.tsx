@@ -13,7 +13,7 @@ import FollowUpEmailModal from './FollowUpEmailModal';
 import { LiveAnalysisContent } from './LiveAnalysisContent';
 import { useQuery, useMutation, useQueryClient } from 'react-query';
 import { meetingsApi } from '../lib/meetingsApi';
-import type { Meeting, MeetingTranscriptLine } from '../types/meeting';
+import type { Meeting, MeetingTranscriptLine, MeetingUsageEntry } from '../types/meeting';
 import { guardSession } from '../lib/firebase';
 import { DealHealthScore } from './DealHealthScore';
 import { MeetingScorecardPanel } from './MeetingScoreCard';
@@ -262,6 +262,31 @@ const MeetingDetails: React.FC<MeetingDetailsProps> = ({ meeting: initialMeeting
     const [pendingQuery, setPendingQuery] = useState<{ text: string; id: number } | null>(null);
     const [chatMessages, setChatMessages] = useState<Message[]>([]);
     const [isTalktimeOpen, setIsTalktimeOpen] = useState(false);
+
+    // Merge persisted usage history with the live in-session chat so the
+    // "Ask Dojo" tab reflects questions asked during the current meeting,
+    // not just what's been persisted to `meeting.usage`.
+    const combinedUsage = React.useMemo(() => {
+        const persisted = meeting.usage ?? [];
+
+        // Pair up user/assistant messages from the live chat into
+        // MeetingUsageEntry-shaped records.
+        const liveEntries: MeetingUsageEntry[] = [];
+        for (let i = 0; i < chatMessages.length; i++) {
+            const msg = chatMessages[i];
+            if (msg.role !== 'user') continue;
+            const next = chatMessages[i + 1];
+            const answer = next && next.role === 'assistant' ? next : undefined;
+            liveEntries.push({
+                type: 'chat',
+                timestamp: Date.now(),
+                question: msg.content,
+                answer: answer?.content,
+            });
+        }
+
+        return [...persisted, ...liveEntries];
+    }, [meeting.usage, chatMessages]);
 
     const speakerNames = (meeting.detailedSummary as any)?.speakerNames as
         { user: string; client: string } | undefined;
@@ -1762,7 +1787,7 @@ const MeetingDetails: React.FC<MeetingDetailsProps> = ({ meeting: initialMeeting
                                         </div>
                                     ))
                                 ) : (
-                                    meeting.usage?.map((interaction, i) => (
+                                    combinedUsage.map((interaction, i) => (
                                         <div key={i} className="space-y-4">
                                             {/* User Question */}
                                             {interaction.question && (
@@ -1845,7 +1870,7 @@ const MeetingDetails: React.FC<MeetingDetailsProps> = ({ meeting: initialMeeting
                                             )}
                                         </div>
                                     )))}
-                                {!isLoadingMeetingDetail && !meeting.usage?.length && (
+                                {!isLoadingMeetingDetail && !combinedUsage.length && (
                                     <div className={`flex flex-col items-center justify-center py-16 gap-4 rounded-2xl border border-dashed ${isLight ? 'border-slate-200 bg-slate-50/50' : 'border-white/[0.07] bg-white/[0.02]'}`}>
                                         <div className={`w-12 h-12 rounded-2xl flex items-center justify-center ${isLight ? 'bg-slate-100' : 'bg-white/[0.05]'}`}>
                                             <MessagesSquareIcon size={22} strokeWidth={1.5} className={isLight ? 'text-slate-400' : 'text-white/25'} />

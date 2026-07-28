@@ -5,6 +5,13 @@ import { motion, AnimatePresence } from 'framer-motion';
 import nativelyIcon from './icon.png';
 import { chatApi, type ChatSources, type StreamHandle } from '../lib/chatApi';
 
+import ReactMarkdown from 'react-markdown';
+import remarkGfm from 'remark-gfm';
+import remarkMath from 'remark-math';
+import rehypeKatex from 'rehype-katex';
+import 'katex/dist/katex.min.css';
+import { chatMarkdownComponents } from '../lib/markdownComponents';
+
 // ============================================
 // Types
 // ============================================
@@ -85,7 +92,15 @@ const AssistantMessage: React.FC<{ content: string; isStreaming?: boolean; sourc
             className="flex flex-col items-start mb-6"
         >
             <div className="text-text-primary text-[15px] leading-relaxed max-w-[85%]">
-                {content}
+                <div className="markdown-content">
+                    <ReactMarkdown
+                        remarkPlugins={[remarkGfm, remarkMath]}
+                        rehypePlugins={[rehypeKatex]}
+                        components={chatMarkdownComponents}
+                    >
+                        {content}
+                    </ReactMarkdown>
+                </div>
                 {isStreaming && (
                     <motion.span
                         className="inline-block w-0.5 h-4 bg-text-secondary ml-0.5 align-middle"

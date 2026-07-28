@@ -2777,7 +2777,7 @@ export function initializeIpcHandlers(appState: AppState): void {
   safeHandle('company:selectFile', async () => {
     try {
       const result: any = await dialog.showOpenDialog({
-        properties: ['openFile'],
+        properties: ['openFile', 'multiSelections'],
         filters: [
           { name: 'Documents', extensions: ['pdf', 'doc', 'docx', 'ppt', 'pptx'] }
         ]
@@ -2785,11 +2785,17 @@ export function initializeIpcHandlers(appState: AppState): void {
       if (result.canceled || result.filePaths.length === 0) {
         return { cancelled: true };
       }
-      const fp: string = result.filePaths[0];
-      const { statSync } = require('fs');
-      const { basename } = require('path');
-      const stat = statSync(fp);
-      return { success: true, filePath: fp, fileName: basename(fp), fileSize: stat.size };
+      // const fp: string = result.filePaths[0];
+      // const { statSync } = require('fs');
+      // const { basename } = require('path');
+      // const stat = statSync(fp);
+      // return { success: true, filePath: fp, fileName: basename(fp), fileSize: stat.size };
+
+      const files = result.filePaths.map((filePath: string) => {
+        const stat = fs.statSync(filePath);
+        return { filePath, fileName: path.basename(filePath), fileSize: stat.size };
+      });
+      return { cancelled: false, files };
     } catch (error: any) {
       return { success: false, error: error.message };
     }

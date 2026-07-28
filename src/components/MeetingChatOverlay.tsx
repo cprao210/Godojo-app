@@ -12,6 +12,7 @@ import rehypeKatex from 'rehype-katex';
 import 'katex/dist/katex.min.css';
 import { Prism as SyntaxHighlighter } from 'react-syntax-highlighter';
 import { vscDarkPlus } from 'react-syntax-highlighter/dist/esm/styles/prism';
+import { chatMarkdownComponents } from '../lib/markdownComponents';
 
 // ============================================
 // Types 
@@ -111,51 +112,7 @@ const AssistantMessage: React.FC<{ content: string; isStreaming?: boolean; sourc
                     <ReactMarkdown
                         remarkPlugins={[remarkGfm, remarkMath]}
                         rehypePlugins={[rehypeKatex]}
-                        components={{
-                            p: ({ node, ...props }: any) => <p className="mb-2 last:mb-0 whitespace-pre-wrap" {...props} />,
-                            a: ({ node, ...props }: any) => <a className="text-blue-500 hover:underline" {...props} />,
-                            pre: ({ children }: any) => <div className="not-prose mb-4">{children}</div>,
-                            code: ({ node, inline, className, children, ...props }: any) => {
-                                const match = /language-(\w+)/.exec(className || '');
-                                const isInline = inline ?? false;
-                                const lang = match ? match[1] : '';
-
-                                return !isInline ? (
-                                    <div className="my-3 rounded-xl overflow-hidden border border-white/[0.08] shadow-lg bg-zinc-800/60 backdrop-blur-md">
-                                        <div className="bg-white/[0.04] px-3 py-1.5 border-b border-white/[0.08]">
-                                            <span className="text-[10px] uppercase tracking-widest font-semibold text-white/40 font-mono">
-                                                {lang || 'CODE'}
-                                            </span>
-                                        </div>
-                                        <div className="bg-transparent">
-                                            <SyntaxHighlighter
-                                                language={lang || 'text'}
-                                                style={vscDarkPlus}
-                                                customStyle={{
-                                                    margin: 0,
-                                                    borderRadius: 0,
-                                                    fontSize: '13px',
-                                                    lineHeight: '1.6',
-                                                    background: 'transparent',
-                                                    padding: '16px',
-                                                    fontFamily: 'ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace'
-                                                }}
-                                                wrapLongLines={true}
-                                                showLineNumbers={true}
-                                                lineNumberStyle={{ minWidth: '2.5em', paddingRight: '1.2em', color: 'rgba(255,255,255,0.2)', textAlign: 'right', fontSize: '11px' }}
-                                                {...props}
-                                            >
-                                                {String(children).replace(/\n$/, '')}
-                                            </SyntaxHighlighter>
-                                        </div>
-                                    </div>
-                                ) : (
-                                    <code className="bg-bg-tertiary px-1.5 py-0.5 rounded text-[13px] font-mono text-text-primary border border-border-subtle whitespace-pre-wrap" {...props}>
-                                        {children}
-                                    </code>
-                                );
-                            },
-                        }}
+                        components={chatMarkdownComponents}
                     >
                         {content}
                     </ReactMarkdown>

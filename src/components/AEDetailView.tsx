@@ -539,7 +539,7 @@ export const AeDetailView: React.FC<AeDetailViewProps> = ({ ae, tenantId, onBack
                                         </div>
                                     </div>
                                     <div className="flex items-center gap-5 shrink-0">
-                                        <MiniSparkline data={sparkline} color="#8b5cf6" />
+                                        {/* <MiniSparkline data={sparkline} color="#8b5cf6" /> */}
                                         <div className="text-right">
                                             <p className="text-3xl font-bold text-text-primary tabular-nums leading-none">{displayScore}</p>
                                             <p className="text-xs text-text-tertiary mt-1">avg score</p>

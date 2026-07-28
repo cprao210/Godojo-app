@@ -5,7 +5,19 @@ export type DashboardPeriod =
 export interface DashboardActiveMember { user_id: string; name: string; email: string; image: string; role: string; status: string; joined_at: string; calls: number; avg_score: number; }
 export interface DashboardRecentCall { meeting_id: string; user_id: string; title: string; start_time: number; duration_ms: number; }
 export interface DashboardTrendPoint { label: string; avg_score: number; }
-export interface DashboardObjection { category: string; count: number; }
+export interface DashboardObjectionQuote {
+    quote: string;
+    owner: string;
+    status: string;
+    type: string;
+    meeting_date: string;
+}
+
+export interface DashboardObjection {
+    category: string;
+    count: number;
+    latest: DashboardObjectionQuote[];
+}
 export interface DashboardPerformer { user_id: string; name: string; image: string | null; avg_score: number; call_count: number; }
 
 export interface DashboardResponse {
