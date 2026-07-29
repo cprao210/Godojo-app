@@ -9,15 +9,15 @@
 import { getAuthHeaders, API_BASE, ApiError } from "./apiClient";
 
 // A single retrieved source shown in UI - a meeting or a company asset
-export interface ChatSourceItem {
+export interface SourceRef {
     id: string;
     title: string;
 }
 
 /** Emitted once via the `source_ids` SSE event — lets the UI show "Sources". */
 export interface ChatSources {
-    meetings: ChatSourceItem[];
-    assets: ChatSourceItem[];
+    meetings: SourceRef[];
+    assets: SourceRef[];
 }
 
 /** Payload of a `rag_answer` frame — a complete, non-streamed answer the
@@ -139,8 +139,18 @@ function dispatchFrame(frame: string, handlers: ChatStreamHandlers): void {
             break;
         }
         case "source_ids": {
-            const parsed = JSON.parse(data) as { sources?: { meetings?: ChatSourceItem[]; assets?: ChatSourceItem[] } };
-            handlers.onSources?.({ meetings: parsed.sources?.meetings ?? [], assets: parsed.sources?.assets ?? [] });
+            const parsed = JSON.parse(data) as {
+                sources?: { id: string; title: string; type: string }[];
+            };
+            const all = parsed.sources ?? [];
+            handlers.onSources?.({
+                meetings: all
+                    .filter((s) => s.type === "meeting")
+                    .map(({ id, title }) => ({ id, title })),
+                assets: all
+                    .filter((s) => s.type !== "meeting")
+                    .map(({ id, title }) => ({ id, title })),
+            });
             break;
         }
         case "rag_answer": {
