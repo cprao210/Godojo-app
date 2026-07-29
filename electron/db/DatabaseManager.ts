@@ -4,6 +4,7 @@ import { app } from 'electron';
 import fs from 'fs';
 import * as sqliteVec from 'sqlite-vec';
 import { SupabaseMirrorService } from './SupabaseMirrorService';
+import { AuthManager } from '../services/AuthManager';
 import { LiveAnalysisData } from '../../src/types/liveAnalysis';
 
 /**
@@ -673,6 +674,67 @@ export class DatabaseManager {
             this.db.pragma('user_version = 16');
         }
         console.log('[DatabaseManager] Migrations completed.');
+
+        // Version 16 → 17: Scope company_context/assets/personas/competitors by
+        // user_id. These were previously single global rows/tables with no
+        // account isolation at all — any signed-in user on this machine saw
+        // whichever account last wrote to them. Legacy unscoped rows are
+        // dropped (their true owner is unrecoverable) rather than migrated to
+        // whoever happens to be signed in during the upgrade; each account's
+        // data will re-populate from Supabase on next sync.
+        if (version < 17) {
+            console.log('[DatabaseManager] Applying migration v16 → v17: Scope company_* tables by user_id');
+            this.db.exec(`
+                DROP TABLE IF EXISTS company_context;
+                CREATE TABLE company_context (
+                    user_id TEXT NOT NULL,
+                    id INTEGER NOT NULL DEFAULT 1,
+                    name TEXT DEFAULT '',
+                    website TEXT DEFAULT '',
+                    industry TEXT DEFAULT '',
+                    persona_engine_enabled INTEGER DEFAULT 0,
+                    core_value_proposition TEXT DEFAULT '',
+                    data_completeness INTEGER DEFAULT 0,
+                    updated_at TEXT DEFAULT CURRENT_TIMESTAMP,
+                    PRIMARY KEY (user_id, id)
+                );
+
+                DROP TABLE IF EXISTS company_assets;
+                CREATE TABLE company_assets (
+                    user_id TEXT NOT NULL,
+                    id TEXT NOT NULL,
+                    type TEXT NOT NULL,
+                    label TEXT,
+                    status TEXT DEFAULT 'processing',
+                    file_path TEXT,
+                    file_name TEXT,
+                    last_updated TEXT DEFAULT CURRENT_TIMESTAMP,
+                    PRIMARY KEY (user_id, id)
+                );
+
+                DROP TABLE IF EXISTS company_personas;
+                CREATE TABLE company_personas (
+                    user_id TEXT NOT NULL,
+                    id TEXT NOT NULL,
+                    role TEXT NOT NULL,
+                    description TEXT DEFAULT '',
+                    sort_order INTEGER DEFAULT 0,
+                    PRIMARY KEY (user_id, id)
+                );
+
+                DROP TABLE IF EXISTS company_competitors;
+                CREATE TABLE company_competitors (
+                    user_id TEXT NOT NULL,
+                    id TEXT NOT NULL,
+                    name TEXT NOT NULL,
+                    moat TEXT DEFAULT '',
+                    win_rate REAL DEFAULT 0,
+                    sort_order INTEGER DEFAULT 0,
+                    PRIMARY KEY (user_id, id)
+                );
+            `);
+            this.db.pragma('user_version = 17');
+        }
     }
 
     // ============================================
@@ -731,20 +793,22 @@ export class DatabaseManager {
 
     public getCompanyContext(): any | null {
         if (!this.db) return null;
+        const uid = AuthManager.getInstance().getUid();
+        if (!uid) return null; // no signed-in user — nothing to scope this to
         try {
-            const identity = this.db.prepare('SELECT * FROM company_context WHERE id = 1').get() as any;
+            const identity = this.db.prepare('SELECT * FROM company_context WHERE user_id = ? AND id = 1').get(uid) as any;
             if (!identity) return null;
 
             const assets = (() => {
-                try { return this.db!.prepare('SELECT * FROM company_assets ORDER BY last_updated DESC').all() as any[]; }
+                try { return this.db!.prepare('SELECT * FROM company_assets WHERE user_id = ? ORDER BY last_updated DESC').all(uid) as any[]; }
                 catch { return []; }
             })();
             const personas = (() => {
-                try { return this.db!.prepare('SELECT * FROM company_personas ORDER BY sort_order ASC').all() as any[]; }
+                try { return this.db!.prepare('SELECT * FROM company_personas WHERE user_id = ? ORDER BY sort_order ASC').all(uid) as any[]; }
                 catch { return []; }
             })();
             const competitors = (() => {
-                try { return this.db!.prepare('SELECT * FROM company_competitors ORDER BY sort_order ASC').all() as any[]; }
+                try { return this.db!.prepare('SELECT * FROM company_competitors WHERE user_id = ? ORDER BY sort_order ASC').all(uid) as any[]; }
                 catch { return []; }
             })();
 
@@ -790,6 +854,11 @@ export class DatabaseManager {
 
     public saveCompanyContext(data: any): void {
         if (!this.db) return;
+        const uid = AuthManager.getInstance().getUid();
+        if (!uid) {
+            console.warn('[DatabaseManager] saveCompanyContext called with no signed-in user — refusing to write');
+            return;
+        }
         try {
             const identity = data.identity ?? {};
             const checks = [
@@ -801,9 +870,10 @@ export class DatabaseManager {
             const completeness = Math.round((checks.filter(Boolean).length / 4) * 100);
             this.db.prepare(`
                 INSERT OR REPLACE INTO company_context
-                    (id, name, website, industry, persona_engine_enabled, core_value_proposition, data_completeness, updated_at)
-                VALUES (1, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+                    (user_id, id, name, website, industry, persona_engine_enabled, core_value_proposition, data_completeness, updated_at)
+                VALUES (?, 1, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
             `).run(
+                uid,
                 identity.name ?? '',
                 identity.website ?? '',
                 identity.industry ?? '',
@@ -812,8 +882,12 @@ export class DatabaseManager {
                 completeness,
             );
             // Mirror to Supabase — no-op if unauthenticated, queued otherwise.
+            // Including user_id here is what lets SupabaseMirrorService's
+            // _conflictTargetForTable pick the correct 'user_id,id' upsert
+            // target instead of colliding on a bare 'id' across accounts.
             try {
                 SupabaseMirrorService.getInstance().upsertRow('company_context', {
+                    user_id: uid,
                     id: 1,
                     name: identity.name ?? '',
                     website: identity.website ?? '',
@@ -926,14 +1000,21 @@ export class DatabaseManager {
     public upsertCompanyAsset(asset: { id: string; type: string; label: string; status: string }): void {
 
         if (!this.db) return;
+        const uid = AuthManager.getInstance().getUid();
+
+        if (!uid) {
+            console.warn('[DatabaseManager] upsertCompanyAsset called with no signed-in user — refusing to write');
+            return;
+        }
 
         try {
             this.db.prepare(`
-                INSERT OR REPLACE INTO company_assets (id, type, label, status, last_updated)
-                VALUES (?, ?, ?, ?, CURRENT_TIMESTAMP)
-            `).run(asset.id, asset.type, asset.label, asset.status);
+                INSERT OR REPLACE INTO company_assets (user_id, id, type, label, status, last_updated)
+                VALUES (?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+            `).run(uid, asset.id, asset.type, asset.label, asset.status);
             try {
                 SupabaseMirrorService.getInstance().upsertRow('company_assets', {
+                    user_id: uid,
                     id: asset.id,
                     type: asset.type,
                     label: asset.label,
@@ -1085,14 +1166,17 @@ export class DatabaseManager {
 
     public upsertCompanyPersona(persona: { id: string; role: string; description: string }, sortOrder: number = 0): void {
         if (!this.db) return;
+        const uid = AuthManager.getInstance().getUid();
+        if (!uid) { console.warn('[DatabaseManager] upsertCompanyPersona called with no signed-in user — refusing to write'); return; }
         try {
             this.db.prepare(`
-                INSERT OR REPLACE INTO company_personas (id, role, description, sort_order)
-                VALUES (?, ?, ?, ?)
-            `).run(persona.id, persona.role, persona.description ?? '', sortOrder);
+                INSERT OR REPLACE INTO company_personas (user_id, id, role, description, sort_order)
+                VALUES (?, ?, ?, ?, ?)
+            `).run(uid, persona.id, persona.role, persona.description ?? '', sortOrder);
             // Mirror to Supabase.
             try {
                 SupabaseMirrorService.getInstance().upsertRow('company_personas', {
+                    user_id: uid,
                     id: persona.id,
                     role: persona.role,
                     description: persona.description ?? '',
@@ -1108,8 +1192,10 @@ export class DatabaseManager {
 
     public deleteCompanyPersona(personaId: string): void {
         if (!this.db) return;
+        const uid = AuthManager.getInstance().getUid();
+        if (!uid) return;
         try {
-            this.db.prepare('DELETE FROM company_personas WHERE id = ?').run(personaId);
+            this.db.prepare('DELETE FROM company_personas WHERE user_id = ? AND id = ?').run(uid, personaId);
             // Mirror to Supabase.
             try {
                 SupabaseMirrorService.getInstance().deleteRow('company_personas', 'id', personaId);
@@ -1123,14 +1209,17 @@ export class DatabaseManager {
 
     public upsertCompanyCompetitor(competitor: { id: string; name: string; moat: string; winRate: number }, sortOrder: number = 0): void {
         if (!this.db) return;
+        const uid = AuthManager.getInstance().getUid();
+        if (!uid) { console.warn('[DatabaseManager] upsertCompanyCompetitor called with no signed-in user — refusing to write'); return; }
         try {
             this.db.prepare(`
-                INSERT OR REPLACE INTO company_competitors (id, name, moat, win_rate, sort_order)
-                VALUES (?, ?, ?, ?, ?)
-            `).run(competitor.id, competitor.name, competitor.moat ?? '', competitor.winRate ?? 0, sortOrder);
+                INSERT OR REPLACE INTO company_competitors (user_id, id, name, moat, win_rate, sort_order)
+                VALUES (?, ?, ?, ?, ?, ?)
+            `).run(uid, competitor.id, competitor.name, competitor.moat ?? '', competitor.winRate ?? 0, sortOrder);
             // Mirror to Supabase.
             try {
                 SupabaseMirrorService.getInstance().upsertRow('company_competitors', {
+                    user_id: uid,
                     id: competitor.id,
                     name: competitor.name,
                     moat: competitor.moat ?? '',
@@ -1147,8 +1236,10 @@ export class DatabaseManager {
 
     public deleteCompanyCompetitor(competitorId: string): void {
         if (!this.db) return;
+        const uid = AuthManager.getInstance().getUid();
+        if (!uid) return;
         try {
-            this.db.prepare('DELETE FROM company_competitors WHERE id = ?').run(competitorId);
+            this.db.prepare('DELETE FROM company_competitors WHERE user_id = ? AND id = ?').run(uid, competitorId);
             // Mirror to Supabase.
             try {
                 SupabaseMirrorService.getInstance().deleteRow('company_competitors', 'id', competitorId);

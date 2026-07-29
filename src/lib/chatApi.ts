@@ -8,10 +8,16 @@
 
 import { getAuthHeaders, API_BASE, ApiError } from "./apiClient";
 
+// A single retrieved source shown in UI - a meeting or a company asset
+export interface ChatSourceItem {
+    id: string;
+    title: string;
+}
+
 /** Emitted once via the `source_ids` SSE event — lets the UI show "Sources". */
 export interface ChatSources {
-    sourceIds: string[];
-    assetIds: string[];
+    meetings: ChatSourceItem[];
+    assets: ChatSourceItem[];
 }
 
 /** Payload of a `rag_answer` frame — a complete, non-streamed answer the
@@ -133,8 +139,8 @@ function dispatchFrame(frame: string, handlers: ChatStreamHandlers): void {
             break;
         }
         case "source_ids": {
-            const parsed = JSON.parse(data) as { ids: string[]; asset_ids: string[] };
-            handlers.onSources?.({ sourceIds: parsed.ids ?? [], assetIds: parsed.asset_ids ?? [] });
+            const parsed = JSON.parse(data) as { sources?: { meetings?: ChatSourceItem[]; assets?: ChatSourceItem[] } };
+            handlers.onSources?.({ meetings: parsed.sources?.meetings ?? [], assets: parsed.sources?.assets ?? [] });
             break;
         }
         case "rag_answer": {

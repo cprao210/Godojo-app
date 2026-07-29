@@ -13,7 +13,7 @@ import FollowUpEmailModal from './FollowUpEmailModal';
 import { LiveAnalysisContent } from './LiveAnalysisContent';
 import { useQuery, useMutation, useQueryClient } from 'react-query';
 import { meetingsApi } from '../lib/meetingsApi';
-import type { Meeting, MeetingTranscriptLine, MeetingUsageEntry } from '../types/meeting';
+import type { Meeting, MeetingTranscriptLine } from '../types/meeting';
 import { guardSession } from '../lib/firebase';
 import { DealHealthScore } from './DealHealthScore';
 import { MeetingScorecardPanel } from './MeetingScoreCard';
@@ -253,6 +253,18 @@ const MeetingDetails: React.FC<MeetingDetailsProps> = ({ meeting: initialMeeting
         },
     );
     const [activeTab, setActiveTab] = useState<'summary' | 'transcript' | 'usage' | 'analysis'>('summary');
+
+    // Persisted "Ask Dojo" Q&A history — fetched lazily the first time the
+    // user opens this tab (enabled gate), not bundled into the initial
+    // meeting payload since most sessions on a meeting never open it.
+    const { data: aiInteractionsData, isLoading: isLoadingAiInteractions } = useQuery(
+        ['ai-interactions', meeting?.id],
+        () => meetingsApi.getAiInteractions(meeting!.id),
+        {
+            enabled: activeTab === 'usage' && !!meeting?.id,
+            staleTime: 30_000,
+        }
+    );
     const [query, setQuery] = useState('');
     const [isCopied, setIsCopied] = useState(false);
     const [isRegenerating, setIsRegenerating] = useState(false);
@@ -262,31 +274,6 @@ const MeetingDetails: React.FC<MeetingDetailsProps> = ({ meeting: initialMeeting
     const [pendingQuery, setPendingQuery] = useState<{ text: string; id: number } | null>(null);
     const [chatMessages, setChatMessages] = useState<Message[]>([]);
     const [isTalktimeOpen, setIsTalktimeOpen] = useState(false);
-
-    // Merge persisted usage history with the live in-session chat so the
-    // "Ask Dojo" tab reflects questions asked during the current meeting,
-    // not just what's been persisted to `meeting.usage`.
-    const combinedUsage = React.useMemo(() => {
-        const persisted = meeting.usage ?? [];
-
-        // Pair up user/assistant messages from the live chat into
-        // MeetingUsageEntry-shaped records.
-        const liveEntries: MeetingUsageEntry[] = [];
-        for (let i = 0; i < chatMessages.length; i++) {
-            const msg = chatMessages[i];
-            if (msg.role !== 'user') continue;
-            const next = chatMessages[i + 1];
-            const answer = next && next.role === 'assistant' ? next : undefined;
-            liveEntries.push({
-                type: 'chat',
-                timestamp: Date.now(),
-                question: msg.content,
-                answer: answer?.content,
-            });
-        }
-
-        return [...persisted, ...liveEntries];
-    }, [meeting.usage, chatMessages]);
 
     const speakerNames = (meeting.detailedSummary as any)?.speakerNames as
         { user: string; client: string } | undefined;
@@ -1779,7 +1766,7 @@ const MeetingDetails: React.FC<MeetingDetailsProps> = ({ meeting: initialMeeting
 
                         {activeTab === 'usage' && (
                             <motion.section initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }} className="space-y-8 pb-10">
-                                {isLoadingMeetingDetail ? (
+                                {isLoadingMeetingDetail || isLoadingAiInteractions ? (
                                     Array.from({ length: 3 }).map((_, i) => (
                                         <div key={i} className="space-y-3">
                                             <Skeleton className="h-10 w-2/3" />
@@ -1787,19 +1774,19 @@ const MeetingDetails: React.FC<MeetingDetailsProps> = ({ meeting: initialMeeting
                                         </div>
                                     ))
                                 ) : (
-                                    combinedUsage.map((interaction, i) => (
-                                        <div key={i} className="space-y-4">
+                                    (aiInteractionsData?.items ?? []).map((interaction) => (
+                                        <div key={interaction.id} className="space-y-4">
                                             {/* User Question */}
-                                            {interaction.question && (
+                                            {interaction.user_query && (
                                                 <div className="flex justify-end">
                                                     <div className="bg-accent-primary text-white px-5 py-2.5 rounded-2xl rounded-tr-sm max-w-[80%] text-[15px] leading-relaxed shadow-sm">
-                                                        {interaction.question}
+                                                        {interaction.user_query}
                                                     </div>
                                                 </div>
                                             )}
 
                                             {/* AI Answer */}
-                                            {interaction.answer && (
+                                            {interaction.ai_response && (
                                                 <div className="flex items-start gap-4">
                                                     <div className="mt-1 w-6 h-6 rounded-full bg-bg-input flex items-center justify-center border border-border-subtle shrink-0">
                                                         <img src={NativelyLogo} alt="AI" className="w-4 h-4 opacity-50 object-contain force-black-icon" />
@@ -1862,7 +1849,7 @@ const MeetingDetails: React.FC<MeetingDetailsProps> = ({ meeting: initialMeeting
                                                                     }
                                                                 }}
                                                             >
-                                                                {cleanMarkdown(interaction.answer || '')}
+                                                                {cleanMarkdown(interaction.ai_response || '')}
                                                             </ReactMarkdown>
                                                         </div>
                                                     </div>
@@ -1870,7 +1857,7 @@ const MeetingDetails: React.FC<MeetingDetailsProps> = ({ meeting: initialMeeting
                                             )}
                                         </div>
                                     )))}
-                                {!isLoadingMeetingDetail && !combinedUsage.length && (
+                                {!isLoadingMeetingDetail && !isLoadingAiInteractions && !(aiInteractionsData?.items?.length) && (
                                     <div className={`flex flex-col items-center justify-center py-16 gap-4 rounded-2xl border border-dashed ${isLight ? 'border-slate-200 bg-slate-50/50' : 'border-white/[0.07] bg-white/[0.02]'}`}>
                                         <div className={`w-12 h-12 rounded-2xl flex items-center justify-center ${isLight ? 'bg-slate-100' : 'bg-white/[0.05]'}`}>
                                             <MessagesSquareIcon size={22} strokeWidth={1.5} className={isLight ? 'text-slate-400' : 'text-white/25'} />

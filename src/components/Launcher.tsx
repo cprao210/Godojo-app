@@ -1222,6 +1222,13 @@ const Launcher: React.FC<LauncherProps> = ({ onStartMeeting, onOpenSettings, onO
                     setSubmittedGlobalQuery('');
                 }}
                 initialQuery={submittedGlobalQuery}
+                onOpenMeeting={(meetingId) => {
+                    const meeting = meetings.find(m => m.id === meetingId);
+                    if (meeting) {
+                        handleOpenMeeting(meeting);
+                        analytics.trackCommandExecuted('open_meeting_from_chat_source');
+                    }
+                }}
             />
             {/* Sales Brief Panel */}
             <AnimatePresence>

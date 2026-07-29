@@ -1,16 +1,47 @@
 import React, { useState, useEffect, useRef, useCallback } from 'react';
 import { useStreamBuffer } from '../hooks/useStreamBuffer';
-import { X, Copy, Check, Globe, ArrowUp, FileText } from 'lucide-react';
+import { X, Copy, Check, Globe, ArrowUp, FileText, ExternalLink } from 'lucide-react';
 import { motion, AnimatePresence } from 'framer-motion';
 import nativelyIcon from './icon.png';
 import { chatApi, type ChatSources, type StreamHandle } from '../lib/chatApi';
 
-import ReactMarkdown from 'react-markdown';
-import remarkGfm from 'remark-gfm';
-import remarkMath from 'remark-math';
-import rehypeKatex from 'rehype-katex';
-import 'katex/dist/katex.min.css';
-import { chatMarkdownComponents } from '../lib/markdownComponents';
+// Renders retrieved sources under an assistant message — nothing if there are
+// none, a clickable chip with the real title for exactly one meeting source,
+// or plain non-clickable "First Title +N" text for anything more (mirrors
+// MeetingChatOverlay's SourcesDisplay so both chat surfaces stay consistent).
+const SourcesDisplay: React.FC<{ sources: ChatSources; onOpenMeeting?: (meetingId: string) => void }> = ({ sources, onOpenMeeting }) => {
+    const { meetings, assets } = sources;
+    const totalCount = meetings.length + assets.length;
+    if (totalCount === 0) return null;
+
+    if (meetings.length === 1 && assets.length === 0) {
+        const meeting = meetings[0];
+        const isClickable = !!onOpenMeeting;
+        const Tag: any = isClickable ? 'button' : 'span';
+        return (
+            <Tag
+                {...(isClickable ? { onClick: () => onOpenMeeting!(meeting.id) } : {})}
+                className={`flex items-center gap-1.5 text-[13px] text-text-tertiary max-w-[280px] ${isClickable ? 'hover:text-text-secondary hover:underline transition-colors cursor-pointer' : ''}`}
+                title={meeting.title}
+            >
+                <FileText size={13} className="shrink-0" />
+                <span className="truncate">{meeting.title}</span>
+                {isClickable && <ExternalLink size={11} className="shrink-0" />}
+            </Tag>
+        );
+    }
+
+    const firstTitle = meetings[0]?.title ?? assets[0]?.title ?? '';
+    const extraCount = totalCount - 1;
+    return (
+        <span className="flex items-center gap-1.5 text-[13px] text-text-tertiary max-w-[320px]" title={[...meetings, ...assets].map(s => s.title).join(', ')}>
+            <FileText size={13} className="shrink-0" />
+            <span className="truncate">
+                {firstTitle}{extraCount > 0 ? ` +${extraCount}` : ''}
+            </span>
+        </span>
+    );
+};
 
 // ============================================
 // Types
@@ -28,6 +59,10 @@ interface GlobalChatOverlayProps {
     isOpen: boolean;
     onClose: () => void;
     initialQuery?: string;
+    /** Opens a different meeting's details — used when the person clicks a
+     * single-source chip under an assistant answer. Omit to render the chip
+     * as plain (non-clickable) text instead. */
+    onOpenMeeting?: (meetingId: string) => void;
 }
 
 // ============================================
@@ -71,7 +106,7 @@ const UserMessage: React.FC<{ content: string }> = ({ content }) => (
     </motion.div>
 );
 
-const AssistantMessage: React.FC<{ content: string; isStreaming?: boolean; sources?: ChatSources }> = ({ content, isStreaming, sources }) => {
+const AssistantMessage: React.FC<{ content: string; isStreaming?: boolean; sources?: ChatSources; onOpenMeeting?: (meetingId: string) => void }> = ({ content, isStreaming, sources, onOpenMeeting }) => {
     const [copied, setCopied] = useState(false);
 
     const handleCopy = async () => {
@@ -92,15 +127,7 @@ const AssistantMessage: React.FC<{ content: string; isStreaming?: boolean; sourc
             className="flex flex-col items-start mb-6"
         >
             <div className="text-text-primary text-[15px] leading-relaxed max-w-[85%]">
-                <div className="markdown-content">
-                    <ReactMarkdown
-                        remarkPlugins={[remarkGfm, remarkMath]}
-                        rehypePlugins={[rehypeKatex]}
-                        components={chatMarkdownComponents}
-                    >
-                        {content}
-                    </ReactMarkdown>
-                </div>
+                {content}
                 {isStreaming && (
                     <motion.span
                         className="inline-block w-0.5 h-4 bg-text-secondary ml-0.5 align-middle"
@@ -118,12 +145,7 @@ const AssistantMessage: React.FC<{ content: string; isStreaming?: boolean; sourc
                         {copied ? <Check size={14} className="text-emerald-500" /> : <Copy size={14} />}
                         {copied ? 'Copied' : 'Copy message'}
                     </button>
-                    {sources && sources.sourceIds.length > 0 && (
-                        <span className="flex items-center gap-1.5 text-[13px] text-text-tertiary">
-                            <FileText size={13} />
-                            {sources.sourceIds.length} source{sources.sourceIds.length > 1 ? 's' : ''}
-                        </span>
-                    )}
+                    {sources && <SourcesDisplay sources={sources} onOpenMeeting={onOpenMeeting} />}
                 </div>
             )}
         </motion.div>
@@ -139,7 +161,8 @@ type ChatState = 'idle' | 'waiting_for_llm' | 'streaming_response' | 'error';
 const GlobalChatOverlay: React.FC<GlobalChatOverlayProps> = ({
     isOpen,
     onClose,
-    initialQuery = ''
+    initialQuery = '',
+    onOpenMeeting
 }) => {
     const [messages, setMessages] = useState<Message[]>([]);
     const [chatState, setChatState] = useState<ChatState>('idle');
@@ -441,7 +464,7 @@ const GlobalChatOverlay: React.FC<GlobalChatOverlayProps> = ({
                             {messages.map((msg) => (
                                 msg.role === 'user'
                                     ? <UserMessage key={msg.id} content={msg.content} />
-                                    : <AssistantMessage key={msg.id} content={msg.content} isStreaming={msg.isStreaming} sources={msg.sources} />
+                                    : <AssistantMessage key={msg.id} content={msg.content} isStreaming={msg.isStreaming} sources={msg.sources} onOpenMeeting={onOpenMeeting} />
                             ))}
 
                             {chatState === 'waiting_for_llm' && <TypingIndicator />}

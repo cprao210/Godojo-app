@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useRef, useCallback } from 'react';
 import { useStreamBuffer } from '../hooks/useStreamBuffer';
-import { X, Copy, Check, FileText } from 'lucide-react';
+import { X, Copy, Check, FileText, ExternalLink } from 'lucide-react';
 import { motion, AnimatePresence } from 'framer-motion';
 import nativelyIcon from './icon.png';
 import { chatApi, type ChatSources, type StreamHandle } from '../lib/chatApi';
@@ -12,7 +12,6 @@ import rehypeKatex from 'rehype-katex';
 import 'katex/dist/katex.min.css';
 import { Prism as SyntaxHighlighter } from 'react-syntax-highlighter';
 import { vscDarkPlus } from 'react-syntax-highlighter/dist/esm/styles/prism';
-import { chatMarkdownComponents } from '../lib/markdownComponents';
 
 // ============================================
 // Types 
@@ -42,6 +41,10 @@ interface MeetingChatOverlayProps {
     initialQuery?: { text: string; id: number } | null;
     messages: Message[];
     onMessagesChange: React.Dispatch<React.SetStateAction<Message[]>>;
+    /** Opens a different meeting's details — used when the person clicks a
+     * single-source chip under an assistant answer. Omit to render the chip
+     * as plain (non-clickable) text instead. */
+    onOpenMeeting?: (meetingId: string) => void;
 }
 
 type ChatState = 'idle' | 'opening' | 'waiting_for_llm' | 'streaming_response' | 'error' | 'closing';
@@ -87,7 +90,55 @@ const UserMessage: React.FC<{ content: string }> = ({ content }) => (
     </motion.div>
 );
 
-const AssistantMessage: React.FC<{ content: string; isStreaming?: boolean; sources?: ChatSources }> = ({ content, isStreaming, sources }) => {
+// ============================================
+// Sources Display
+// ============================================
+// Renders retrieved meeting sources under an assistant message, mirroring the
+// "Sources" affordance of most RAG chat apps:
+//  - Nothing rendered at all if there are no sources.
+//  - Exactly one meeting source: shown as a clickable chip (opens that meeting).
+//  - Multiple meeting sources: shown as plain (non-clickable) text —
+//    "Title of First +N" — since there's no single obvious place to navigate.
+// Asset sources (company knowledge base docs) are counted but not clickable,
+// since there's no meeting to open for them.
+const SourcesDisplay: React.FC<{ sources: ChatSources; onOpenMeeting?: (meetingId: string) => void }> = ({ sources, onOpenMeeting }) => {
+    const { meetings, assets } = sources;
+    const totalCount = meetings.length + assets.length;
+    if (totalCount === 0) return null;
+
+    // Single meeting, no assets → clickable chip with the real title.
+    if (meetings.length === 1 && assets.length === 0) {
+        const meeting = meetings[0];
+        const isClickable = !!onOpenMeeting;
+        const Tag: any = isClickable ? 'button' : 'span';
+        return (
+            <Tag
+                {...(isClickable ? { onClick: () => onOpenMeeting!(meeting.id) } : {})}
+                className={`flex items-center gap-1.5 text-[13px] text-text-tertiary max-w-[280px] ${isClickable ? 'hover:text-text-secondary hover:underline transition-colors cursor-pointer' : ''}`}
+                title={meeting.title}
+            >
+                <FileText size={13} className="shrink-0" />
+                <span className="truncate">{meeting.title}</span>
+                {isClickable && <ExternalLink size={11} className="shrink-0" />}
+            </Tag>
+        );
+    }
+
+    // Multiple sources (any mix of meetings/assets) → plain text summary,
+    // "First Title +N" — not clickable, since there's no single destination.
+    const firstTitle = meetings[0]?.title ?? assets[0]?.title ?? '';
+    const extraCount = totalCount - 1;
+    return (
+        <span className="flex items-center gap-1.5 text-[13px] text-text-tertiary max-w-[320px]" title={[...meetings, ...assets].map(s => s.title).join(', ')}>
+            <FileText size={13} className="shrink-0" />
+            <span className="truncate">
+                {firstTitle}{extraCount > 0 ? ` +${extraCount}` : ''}
+            </span>
+        </span>
+    );
+};
+
+const AssistantMessage: React.FC<{ content: string; isStreaming?: boolean; sources?: ChatSources; onOpenMeeting?: (meetingId: string) => void }> = ({ content, isStreaming, sources, onOpenMeeting }) => {
     const [copied, setCopied] = useState(false);
 
     const handleCopy = async () => {
@@ -112,7 +163,51 @@ const AssistantMessage: React.FC<{ content: string; isStreaming?: boolean; sourc
                     <ReactMarkdown
                         remarkPlugins={[remarkGfm, remarkMath]}
                         rehypePlugins={[rehypeKatex]}
-                        components={chatMarkdownComponents}
+                        components={{
+                            p: ({ node, ...props }: any) => <p className="mb-2 last:mb-0 whitespace-pre-wrap" {...props} />,
+                            a: ({ node, ...props }: any) => <a className="text-blue-500 hover:underline" {...props} />,
+                            pre: ({ children }: any) => <div className="not-prose mb-4">{children}</div>,
+                            code: ({ node, inline, className, children, ...props }: any) => {
+                                const match = /language-(\w+)/.exec(className || '');
+                                const isInline = inline ?? false;
+                                const lang = match ? match[1] : '';
+
+                                return !isInline ? (
+                                    <div className="my-3 rounded-xl overflow-hidden border border-white/[0.08] shadow-lg bg-zinc-800/60 backdrop-blur-md">
+                                        <div className="bg-white/[0.04] px-3 py-1.5 border-b border-white/[0.08]">
+                                            <span className="text-[10px] uppercase tracking-widest font-semibold text-white/40 font-mono">
+                                                {lang || 'CODE'}
+                                            </span>
+                                        </div>
+                                        <div className="bg-transparent">
+                                            <SyntaxHighlighter
+                                                language={lang || 'text'}
+                                                style={vscDarkPlus}
+                                                customStyle={{
+                                                    margin: 0,
+                                                    borderRadius: 0,
+                                                    fontSize: '13px',
+                                                    lineHeight: '1.6',
+                                                    background: 'transparent',
+                                                    padding: '16px',
+                                                    fontFamily: 'ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace'
+                                                }}
+                                                wrapLongLines={true}
+                                                showLineNumbers={true}
+                                                lineNumberStyle={{ minWidth: '2.5em', paddingRight: '1.2em', color: 'rgba(255,255,255,0.2)', textAlign: 'right', fontSize: '11px' }}
+                                                {...props}
+                                            >
+                                                {String(children).replace(/\n$/, '')}
+                                            </SyntaxHighlighter>
+                                        </div>
+                                    </div>
+                                ) : (
+                                    <code className="bg-bg-tertiary px-1.5 py-0.5 rounded text-[13px] font-mono text-text-primary border border-border-subtle whitespace-pre-wrap" {...props}>
+                                        {children}
+                                    </code>
+                                );
+                            },
+                        }}
                     >
                         {content}
                     </ReactMarkdown>
@@ -134,12 +229,7 @@ const AssistantMessage: React.FC<{ content: string; isStreaming?: boolean; sourc
                         {copied ? <Check size={14} className="text-emerald-500" /> : <Copy size={14} />}
                         {copied ? 'Copied' : 'Copy message'}
                     </button>
-                    {sources && sources.sourceIds.length > 0 && (
-                        <span className="flex items-center gap-1.5 text-[13px] text-text-tertiary">
-                            <FileText size={13} />
-                            {sources.sourceIds.length} source{sources.sourceIds.length > 1 ? 's' : ''}
-                        </span>
-                    )}
+                    {sources && <SourcesDisplay sources={sources} onOpenMeeting={onOpenMeeting} />}
                 </div>
             )}
         </motion.div>
@@ -157,6 +247,7 @@ const MeetingChatOverlay: React.FC<MeetingChatOverlayProps> = ({
     messages,
     meetingContext,
     initialQuery,
+    onOpenMeeting,
 }) => {
     const [chatState, setChatState] = useState<ChatState>('idle');
     const [errorMessage, setErrorMessage] = useState<string | null>(null);
@@ -599,7 +690,7 @@ const MeetingChatOverlay: React.FC<MeetingChatOverlayProps> = ({
                             {messages.map((msg) => (
                                 msg.role === 'user'
                                     ? <UserMessage key={msg.id} content={msg.content} />
-                                    : <AssistantMessage key={msg.id} content={msg.content} isStreaming={msg.isStreaming} sources={msg.sources} />
+                                    : <AssistantMessage key={msg.id} content={msg.content} isStreaming={msg.isStreaming} sources={msg.sources} onOpenMeeting={onOpenMeeting} />
                             ))}
 
                             {chatState === 'waiting_for_llm' && <TypingIndicator />}

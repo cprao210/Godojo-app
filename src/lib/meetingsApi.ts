@@ -76,6 +76,27 @@ export interface EndMeetingResponse {
   duration_ms: number;
 }
 
+export interface AiInteractionMetadata {
+  rag_used?: boolean;
+  asset_chunks?: number;
+  meeting_chunks?: number;
+  [key: string]: unknown;
+}
+
+export interface AiInteractionItem {
+  id: number;
+  type: string;
+  timestamp: number;
+  user_query: string;
+  ai_response: string;
+  metadata_json: AiInteractionMetadata;
+}
+
+export interface AiInteractionsResponse {
+  meeting_id: string;
+  items: AiInteractionItem[];
+}
+
 export interface ChunkMeetingResponse {
   meeting_id: string;
   duration_ms: number;
@@ -99,6 +120,11 @@ export const meetingsApi = {
     const row = await apiFetch<any>(`/meetings/${id}`);
     return mapMeetingDetail(row);
   },
+
+  // Persisted "Ask Dojo" Q&A history for a meeting — fetched lazily when the
+  // user opens the tab, rather than bundled into the main meeting payload.
+  getAiInteractions: (meetingId: string): Promise<AiInteractionsResponse> =>
+    apiFetch(`/meetings/${meetingId}/ai-interactions`),
 
   updateTitle: (id: string, title: string): Promise<unknown> =>
     apiFetch(`/meetings/${id}/title`, {
