@@ -5,7 +5,7 @@ import ReactMarkdown from 'react-markdown';
 import { guardSession } from '../../../lib/firebase';
 import remarkGfm from 'remark-gfm';
 import { useStreamBuffer } from '../../../hooks/useStreamBuffer';
-import { chatApi, type ChatHistoryTurn, type LiveTranscriptSegment, type StreamHandle } from '../../../lib/chatApi';
+import { chatApi, statusLabel, type ChatHistoryTurn, type LiveTranscriptSegment, type StreamHandle } from '../../../lib/chatApi';
 import { chatMarkdownComponents } from '../../../lib/markdownComponents';
 
 interface Message {
@@ -15,6 +15,10 @@ interface Message {
     isStreaming?: boolean;
     intent?: string;
     ragAnswer?: { confidence: number; sourceCount: number };
+    /** Latest backend status label ("Searching meetings…", etc.) while this
+     * message is still streaming with no text yet. Cleared once the first
+     * token/rag_answer arrives. */
+    status?: string;
 }
 
 // ── Film-roll transcript — text streams right-to-left like a ticker ──────────
@@ -89,17 +93,31 @@ interface FloatingChatPanelProps {
     onMessagesChange: (updater: Message[] | ((prev: Message[]) => Message[])) => void;
 }
 
-const TypingDots: React.FC = () => (
-    <div className="flex items-center gap-1 py-2">
-        {[0, 1, 2].map(i => (
-            <motion.div
-                key={i}
-                className="w-1.5 h-1.5 rounded-full"
-                style={{ background: 'rgba(255,255,255,0.3)' }}
-                animate={{ opacity: [0.3, 1, 0.3] }}
-                transition={{ duration: 0.7, repeat: Infinity, delay: i * 0.15, ease: 'easeInOut' }}
-            />
-        ))}
+const TypingDots: React.FC<{ label?: string }> = ({ label }) => (
+    <div className="flex items-center gap-2 py-2">
+        <div className="flex items-center gap-1">
+            {[0, 1, 2].map(i => (
+                <motion.div
+                    key={i}
+                    className="w-1.5 h-1.5 rounded-full"
+                    style={{ background: 'rgba(255,255,255,0.3)' }}
+                    animate={{ opacity: [0.3, 1, 0.3] }}
+                    transition={{ duration: 0.7, repeat: Infinity, delay: i * 0.15, ease: 'easeInOut' }}
+                />
+            ))}
+        </div>
+        {label && (
+            <motion.span
+                key={label}
+                initial={{ opacity: 0, y: 2 }}
+                animate={{ opacity: 1, y: 0 }}
+                transition={{ duration: 0.15 }}
+                className="text-[12px]"
+                style={{ color: 'rgba(255,255,255,0.4)' }}
+            >
+                {label}
+            </motion.span>
+        )}
     </div>
 );
 
@@ -173,7 +191,7 @@ const MessageBubble: React.FC<{ msg: Message }> = ({ msg }) => {
                     }}
                 >
                     {msg.isStreaming && msg.text === '' ? (
-                        <TypingDots />
+                        <TypingDots label={msg.status} />
                     ) : (
                         <>
                             <div className="markdown-content">
@@ -433,9 +451,17 @@ export const FloatingChatPanel: React.FC<FloatingChatPanelProps> = ({
             historyBeforeThisTurn,
             buildTranscript(),
             {
+                onStatus: (status) => {
+                    const label = statusLabel(status);
+                    setMessages(prev => prev.map(m => m.id === assistantId ? { ...m, status: label } : m));
+                },
                 onToken: (chunk) => {
                     localBuffer += chunk;
                     if (rafId === null) rafId = requestAnimationFrame(flush);
+                    // First token has arrived — clear the status label so the
+                    // dots/status row is replaced by real content, not shown
+                    // alongside it.
+                    setMessages(prev => prev.map(m => (m.id === assistantId && m.status) ? { ...m, status: undefined } : m));
                 },
                 onRagAnswer: (rag) => {
                     // Structured answer arrives whole — render as a complete
@@ -447,6 +473,7 @@ export const FloatingChatPanel: React.FC<FloatingChatPanelProps> = ({
                                 ...m,
                                 text: rag.answer,
                                 isStreaming: false,
+                                status: undefined,
                                 ragAnswer: { confidence: rag.confidence ?? 0, sourceCount: rag.sources?.length ?? 0 },
                             }
                             : m

@@ -1917,7 +1917,22 @@ const MeetingDetails: React.FC<MeetingDetailsProps> = ({ meeting: initialMeeting
             </main>
 
             {/* Floating Footer (Ask Bar) */}
-            <div className={`absolute bottom-0 left-0 right-0 p-6 flex justify-center pointer-events-none ${isChatOpen ? 'z-50' : 'z-20'}`}>
+            <div className={`absolute bottom-0 left-0 right-0 p-6 flex flex-col items-center gap-2 pointer-events-none ${isChatOpen ? 'z-50' : 'z-20'}`}>
+                {/* History affordance — only shown when there's a past conversation
+                    and the overlay is currently closed, so it's clear there's
+                    something to go back to without needing to type first. */}
+                {!isChatOpen && chatMessages.length > 0 && (
+                    <button
+                        onClick={() => setIsChatOpen(true)}
+                        className={`pointer-events-auto flex items-center gap-1.5 px-3 py-1.5 rounded-full text-[12px] font-medium backdrop-blur-[24px] backdrop-saturate-[140%] transition-colors ${isLight
+                            ? 'bg-white/80 border border-slate-200 text-slate-600 hover:bg-white shadow-[0_8px_30px_rgba(0,0,0,0.08)]'
+                            : 'bg-white/[0.06] border border-white/20 text-white/70 hover:bg-white/[0.1] shadow-[0_8px_30px_rgb(0,0,0,0.12)]'
+                            }`}
+                    >
+                        <MessageSquare size={12} />
+                        {chatMessages.length} {chatMessages.length === 1 ? 'message' : 'messages'} · View conversation
+                    </button>
+                )}
                 <div className="w-full max-w-[440px] relative group pointer-events-auto">
                     {/* Dark Glass Effect Input (Matching Reference) */}
                     <input
@@ -1925,6 +1940,12 @@ const MeetingDetails: React.FC<MeetingDetailsProps> = ({ meeting: initialMeeting
                         value={query}
                         onChange={(e) => setQuery(e.target.value)}
                         onKeyDown={handleInputKeyDown}
+                        // Clicking/focusing the input opens the panel immediately —
+                        // if there's existing history it's visible right away,
+                        // without first having to type and submit a new question.
+                        onFocus={() => {
+                            if (!isChatOpen) setIsChatOpen(true);
+                        }}
                         placeholder="Ask about this meeting..."
                         className={`w-full pl-5 pr-12 py-3 backdrop-blur-[24px] backdrop-saturate-[140%] focus:outline-none transition-shadow duration-200 rounded-full text-sm text-text-primary placeholder-text-tertiary/70 ${isLight ? 'bg-white/80 border border-slate-200 shadow-[0_8px_30px_rgba(0,0,0,0.08)]' : 'bg-transparent border border-white/20 shadow-[0_8px_30px_rgb(0,0,0,0.12)]'}`}
                     />

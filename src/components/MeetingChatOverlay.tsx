@@ -3,15 +3,14 @@ import { useStreamBuffer } from '../hooks/useStreamBuffer';
 import { X, Copy, Check, FileText, ExternalLink } from 'lucide-react';
 import { motion, AnimatePresence } from 'framer-motion';
 import nativelyIcon from './icon.png';
-import { chatApi, type ChatSources, type StreamHandle } from '../lib/chatApi';
+import { chatApi, statusLabel, type ChatSources, type StreamHandle } from '../lib/chatApi';
 
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import remarkMath from 'remark-math';
 import rehypeKatex from 'rehype-katex';
 import 'katex/dist/katex.min.css';
-import { Prism as SyntaxHighlighter } from 'react-syntax-highlighter';
-import { vscDarkPlus } from 'react-syntax-highlighter/dist/esm/styles/prism';
+import { chatMarkdownComponents } from '../lib/markdownComponents';
 
 // ============================================
 // Types 
@@ -53,23 +52,25 @@ type ChatState = 'idle' | 'opening' | 'waiting_for_llm' | 'streaming_response' |
 // Typing Indicator Component
 // ============================================
 
-const TypingIndicator: React.FC = () => (
-    <div className="flex items-center gap-1 py-4">
-        <div className="flex items-center gap-1">
-            {[0, 1, 2].map((i) => (
-                <motion.div
-                    key={i}
-                    className="w-2 h-2 rounded-full bg-text-tertiary"
-                    animate={{ opacity: [0.4, 1, 0.4] }}
-                    transition={{
-                        duration: 0.6,
-                        repeat: Infinity,
-                        delay: i * 0.15,
-                        ease: "easeInOut"
-                    }}
-                />
-            ))}
-        </div>
+const TypingIndicator: React.FC<{ label?: string }> = ({ label }) => (
+    <div className="flex items-center py-4">
+        <motion.span
+            className="w-2 h-2 rounded-full bg-accent-primary mr-2.5 shrink-0"
+            animate={{ opacity: [0.35, 1, 0.35] }}
+            transition={{ duration: 1.1, repeat: Infinity, ease: "easeInOut" }}
+        />
+        <AnimatePresence mode="wait">
+            <motion.span
+                key={label ?? 'thinking'}
+                initial={{ opacity: 0, y: 2 }}
+                animate={{ opacity: 1, y: 0 }}
+                exit={{ opacity: 0, y: -2 }}
+                transition={{ duration: 0.15 }}
+                className="text-[13px] text-text-tertiary whitespace-nowrap"
+            >
+                {label ?? 'Thinking…'}
+            </motion.span>
+        </AnimatePresence>
     </div>
 );
 
@@ -141,6 +142,13 @@ const SourcesDisplay: React.FC<{ sources: ChatSources; onOpenMeeting?: (meetingI
 const AssistantMessage: React.FC<{ content: string; isStreaming?: boolean; sources?: ChatSources; onOpenMeeting?: (meetingId: string) => void }> = ({ content, isStreaming, sources, onOpenMeeting }) => {
     const [copied, setCopied] = useState(false);
 
+    // While waiting for the first frame the assistant placeholder has no
+    // content yet — render nothing here and let the single TypingIndicator
+    // (rendered by the parent list) own the "thinking" state. Without this,
+    // an empty bubble + blinking cursor would show *alongside* the 3-dot
+    // indicator, which is the "two loaders" bug.
+    if (isStreaming && !content) return null;
+
     const handleCopy = async () => {
         try {
             await navigator.clipboard.writeText(content);
@@ -163,51 +171,7 @@ const AssistantMessage: React.FC<{ content: string; isStreaming?: boolean; sourc
                     <ReactMarkdown
                         remarkPlugins={[remarkGfm, remarkMath]}
                         rehypePlugins={[rehypeKatex]}
-                        components={{
-                            p: ({ node, ...props }: any) => <p className="mb-2 last:mb-0 whitespace-pre-wrap" {...props} />,
-                            a: ({ node, ...props }: any) => <a className="text-blue-500 hover:underline" {...props} />,
-                            pre: ({ children }: any) => <div className="not-prose mb-4">{children}</div>,
-                            code: ({ node, inline, className, children, ...props }: any) => {
-                                const match = /language-(\w+)/.exec(className || '');
-                                const isInline = inline ?? false;
-                                const lang = match ? match[1] : '';
-
-                                return !isInline ? (
-                                    <div className="my-3 rounded-xl overflow-hidden border border-white/[0.08] shadow-lg bg-zinc-800/60 backdrop-blur-md">
-                                        <div className="bg-white/[0.04] px-3 py-1.5 border-b border-white/[0.08]">
-                                            <span className="text-[10px] uppercase tracking-widest font-semibold text-white/40 font-mono">
-                                                {lang || 'CODE'}
-                                            </span>
-                                        </div>
-                                        <div className="bg-transparent">
-                                            <SyntaxHighlighter
-                                                language={lang || 'text'}
-                                                style={vscDarkPlus}
-                                                customStyle={{
-                                                    margin: 0,
-                                                    borderRadius: 0,
-                                                    fontSize: '13px',
-                                                    lineHeight: '1.6',
-                                                    background: 'transparent',
-                                                    padding: '16px',
-                                                    fontFamily: 'ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace'
-                                                }}
-                                                wrapLongLines={true}
-                                                showLineNumbers={true}
-                                                lineNumberStyle={{ minWidth: '2.5em', paddingRight: '1.2em', color: 'rgba(255,255,255,0.2)', textAlign: 'right', fontSize: '11px' }}
-                                                {...props}
-                                            >
-                                                {String(children).replace(/\n$/, '')}
-                                            </SyntaxHighlighter>
-                                        </div>
-                                    </div>
-                                ) : (
-                                    <code className="bg-bg-tertiary px-1.5 py-0.5 rounded text-[13px] font-mono text-text-primary border border-border-subtle whitespace-pre-wrap" {...props}>
-                                        {children}
-                                    </code>
-                                );
-                            },
-                        }}
+                        components={chatMarkdownComponents}
                     >
                         {content}
                     </ReactMarkdown>
@@ -251,6 +215,7 @@ const MeetingChatOverlay: React.FC<MeetingChatOverlayProps> = ({
 }) => {
     const [chatState, setChatState] = useState<ChatState>('idle');
     const [errorMessage, setErrorMessage] = useState<string | null>(null);
+    const [statusText, setStatusText] = useState<string | null>(null);
 
     const messagesEndRef = useRef<HTMLDivElement>(null);
     const chatWindowRef = useRef<HTMLDivElement>(null);
@@ -569,6 +534,7 @@ const MeetingChatOverlay: React.FC<MeetingChatOverlayProps> = ({
         onMessagesChange((prev) => [...prev, userMessage]);
         setChatState('waiting_for_llm');
         setErrorMessage(null);
+        setStatusText(null);
 
         const assistantMessageId = `assistant-${Date.now()}`;
 
@@ -586,9 +552,11 @@ const MeetingChatOverlay: React.FC<MeetingChatOverlayProps> = ({
         let sources: ChatSources | undefined;
 
         activeStreamRef.current = chatApi.queryMeeting(meetingContext.id, question, {
+            onStatus: (status) => setStatusText(statusLabel(status)),
             onSources: (s) => { sources = s; },
             onToken: (chunk) => {
                 setChatState('streaming_response');
+                setStatusText(null);
                 streamBuffer.appendToken(chunk, (content) => {
                     onMessagesChange(prev => prev.map(msg =>
                         msg.id === assistantMessageId ? { ...msg, content } : msg
@@ -605,6 +573,7 @@ const MeetingChatOverlay: React.FC<MeetingChatOverlayProps> = ({
                         : msg
                 ));
                 setChatState('idle');
+                setStatusText(null);
             },
             onDone: () => {
                 const finalContent = streamBuffer.getBufferedContent();
@@ -614,6 +583,7 @@ const MeetingChatOverlay: React.FC<MeetingChatOverlayProps> = ({
                         : msg
                 ));
                 setChatState('idle');
+                setStatusText(null);
                 streamBuffer.reset();
                 activeStreamRef.current = null;
                 if (pendingQuestionRef.current) {
@@ -627,6 +597,7 @@ const MeetingChatOverlay: React.FC<MeetingChatOverlayProps> = ({
                 onMessagesChange(prev => prev.filter(msg => msg.id !== assistantMessageId));
                 setErrorMessage("Couldn't get a response. Please try again.");
                 setChatState('error');
+                setStatusText(null);
                 streamBuffer.reset();
                 activeStreamRef.current = null;
                 if (pendingQuestionRef.current) {
@@ -693,7 +664,7 @@ const MeetingChatOverlay: React.FC<MeetingChatOverlayProps> = ({
                                     : <AssistantMessage key={msg.id} content={msg.content} isStreaming={msg.isStreaming} sources={msg.sources} onOpenMeeting={onOpenMeeting} />
                             ))}
 
-                            {chatState === 'waiting_for_llm' && <TypingIndicator />}
+                            {chatState === 'waiting_for_llm' && <TypingIndicator label={statusText ?? undefined} />}
 
                             {errorMessage && (
                                 <motion.div

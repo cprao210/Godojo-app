@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useRef, useCallback, useMemo } from 'react';
 import { createPortal } from 'react-dom';
-import { Search, Sparkles, FileText } from 'lucide-react';
+import { Search, FileText } from 'lucide-react';
 import { motion, AnimatePresence } from 'framer-motion';
 
 // ============================================
@@ -26,8 +26,6 @@ interface SearchResult {
 
 interface TopSearchPillProps {
     meetings: Meeting[];
-    onAIQuery: (query: string) => void;
-    onLiteralSearch: (query: string) => void;
     onOpenMeeting: (meetingId: string) => void;
     onExpansionChange?: (isExpanded: boolean) => void;
 }
@@ -88,8 +86,6 @@ function searchMeetings(meetings: Meeting[], query: string): SearchResult[] {
 
 const TopSearchPill: React.FC<TopSearchPillProps> = ({
     meetings,
-    onAIQuery,
-    onLiteralSearch,
     onOpenMeeting,
     onExpansionChange
 }) => {
@@ -111,8 +107,8 @@ const TopSearchPill: React.FC<TopSearchPillProps> = ({
         return searchMeetings(meetings, query);
     }, [meetings, query, state]);
 
-    // Total selectable items: 2 (Explore section) + sessions
-    const totalItems = 2 + sessionResults.length;
+    // Total selectable items: meeting results only
+    const totalItems = sessionResults.length;
 
     // State transitions
     const open = useCallback(() => {
@@ -143,24 +139,12 @@ const TopSearchPill: React.FC<TopSearchPillProps> = ({
     }, []);
 
     const handleSelect = useCallback((index: number) => {
-        if (index === 0) {
-            // AI Query
-            onAIQuery(query);
+        const result = sessionResults[index];
+        if (result) {
+            onOpenMeeting(result.meetingId);
             close();
-        } else if (index === 1) {
-            // Literal search
-            onLiteralSearch(query);
-            close();
-        } else {
-            // Session result
-            const sessionIndex = index - 2;
-            const result = sessionResults[sessionIndex];
-            if (result) {
-                onOpenMeeting(result.meetingId);
-                close();
-            }
         }
-    }, [query, sessionResults, onAIQuery, onLiteralSearch, onOpenMeeting, close]);
+    }, [sessionResults, onOpenMeeting, close]);
 
     // Keyboard handling
     useEffect(() => {
@@ -297,7 +281,7 @@ const TopSearchPill: React.FC<TopSearchPillProps> = ({
                                         focus:outline-none
                                         ${state === 'idle' ? 'cursor-default' : 'cursor-text'}
                                     `}
-                                        placeholder="Search or ask anything..."
+                                        placeholder="Search meetings..."
                                     />
                                 </div>
 
@@ -318,66 +302,12 @@ const TopSearchPill: React.FC<TopSearchPillProps> = ({
                                         >
                                             <div className="w-[480px]">
                                                 <div className="border-t border-border-muted py-2">
-                                                    {/* Explore Section */}
-                                                    <div className="px-3 py-1">
-                                                        <div className="text-[10px] font-semibold text-text-tertiary uppercase tracking-wider mb-1">
-                                                            Explore
-                                                        </div>
 
-                                                        {/* AI Query Option */}
-                                                        <motion.button
-                                                            initial={{ opacity: 0, scale: 0.95 }}
-                                                            animate={{ opacity: 1, scale: 1 }}
-                                                            transition={{ duration: 0.2 }}
-                                                            className={`
-                                                            w-full flex items-center gap-3 px-2 py-1.5 rounded-lg text-left
-                                                            transition-colors duration-100
-                                                            ${selectedIndex === 0
-                                                                    ? 'bg-bg-item-active'
-                                                                    : 'hover:bg-bg-item-surface'
-                                                                }
-                                                        `}
-                                                            onClick={() => handleSelect(0)}
-                                                            onMouseEnter={() => setSelectedIndex(0)}
-                                                        >
-                                                            <div className="w-6 h-6 rounded-md bg-gradient-to-br from-purple-500 to-pink-500 flex items-center justify-center shrink-0">
-                                                                <Sparkles size={12} className="text-white" />
-                                                            </div>
-                                                            <span className="text-[13px] text-text-primary truncate">
-                                                                {query}
-                                                            </span>
-                                                        </motion.button>
-
-                                                        {/* Literal Search Option */}
-                                                        <motion.button
-                                                            initial={{ opacity: 0, scale: 0.95 }}
-                                                            animate={{ opacity: 1, scale: 1 }}
-                                                            transition={{ duration: 0.2 }}
-                                                            className={`
-                                                            w-full flex items-center gap-3 px-2 py-1.5 rounded-lg text-left
-                                                            transition-colors duration-100
-                                                            ${selectedIndex === 1
-                                                                    ? 'bg-bg-item-active'
-                                                                    : 'hover:bg-bg-item-surface'
-                                                                }
-                                                        `}
-                                                            onClick={() => handleSelect(1)}
-                                                            onMouseEnter={() => setSelectedIndex(1)}
-                                                        >
-                                                            <div className="w-6 h-6 rounded-md bg-bg-item-surface flex items-center justify-center shrink-0">
-                                                                <Search size={12} className="text-text-secondary" />
-                                                            </div>
-                                                            <span className="text-[13px] text-text-secondary">
-                                                                Search for <span className="text-text-primary">"{query}"</span>
-                                                            </span>
-                                                        </motion.button>
-                                                    </div>
-
-                                                    {/* Sessions Section */}
-                                                    {sessionResults.length > 0 && (
-                                                        <div className="px-3 py-1 mt-1">
+                                                    {/* Meeting results — this pill is meeting search only */}
+                                                    {sessionResults.length > 0 ? (
+                                                        <div className="px-3 py-1">
                                                             <div className="text-[10px] font-semibold text-text-tertiary uppercase tracking-wider mb-1">
-                                                                Sessions
+                                                                Meetings
                                                             </div>
 
                                                             <AnimatePresence initial={false} mode="popLayout">
@@ -392,13 +322,13 @@ const TopSearchPill: React.FC<TopSearchPillProps> = ({
                                                                         className={`
                                                                         w-full flex items-center gap-3 px-2 py-1.5 rounded-lg text-left
                                                                         transition-colors duration-100
-                                                                        ${selectedIndex === index + 2
+                                                                        ${selectedIndex === index
                                                                                 ? 'bg-bg-item-active'
                                                                                 : 'hover:bg-bg-item-surface'
                                                                             }
                                                                     `}
-                                                                        onClick={() => handleSelect(index + 2)}
-                                                                        onMouseEnter={() => setSelectedIndex(index + 2)}
+                                                                        onClick={() => handleSelect(index)}
+                                                                        onMouseEnter={() => setSelectedIndex(index)}
                                                                     >
                                                                         <div className="w-6 h-6 rounded-md bg-bg-item-surface flex items-center justify-center shrink-0">
                                                                             <FileText size={12} className="text-text-secondary" />
@@ -416,6 +346,10 @@ const TopSearchPill: React.FC<TopSearchPillProps> = ({
                                                                     </motion.button>
                                                                 ))}
                                                             </AnimatePresence>
+                                                        </div>
+                                                    ) : (
+                                                        <div className="px-5 py-4 text-[13px] text-text-tertiary text-center">
+                                                            No meetings found for "{query}"
                                                         </div>
                                                     )}
                                                 </div>

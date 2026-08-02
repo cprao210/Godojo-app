@@ -6,6 +6,7 @@ import MeetingDetails from './MeetingDetails';
 import SalesBriefPanel from './SalesBriefPanel';
 import TopSearchPill from './TopSearchPill';
 import GlobalChatOverlay from './GlobalChatOverlay';
+import FloatingChatButton from './FloatingChatButton';
 import { motion, AnimatePresence } from 'framer-motion';
 import { analytics } from '../lib/analytics/analytics.service'; // Added analytics import
 import { useShortcuts } from '../hooks/useShortcuts';
@@ -464,6 +465,49 @@ const Launcher: React.FC<LauncherProps> = ({ onStartMeeting, onOpenSettings, onO
         }
     }, [selectedMeeting, isGlobalChatOpen, onPageChange]);
 
+    // Keyboard shortcut: Cmd+Space (mac) / Ctrl+Space (win/linux) opens the
+    // floating AI chat — same as clicking the FAB. Scoped to this Launcher
+    // screen only: it's a no-op once a meeting is open (the chat overlay has
+    // its own focus/typing context and shouldn't have this listener re-fire
+    // underneath it), and it ignores the keystroke while the person is
+    // typing in any input/textarea/contentEditable field.
+    useEffect(() => {
+        const handleShortcut = (e: KeyboardEvent) => {
+            if (e.code !== 'Space' || !(e.metaKey || e.ctrlKey)) return;
+            if (selectedMeeting) return; // only on the Launcher view, not inside a meeting
+
+            // The isTyping guard only matters when the shortcut would OPEN the
+            // chat (avoid hijacking Cmd/Ctrl+Space while typing elsewhere on the
+            // page). Once the chat is already open, its own input is focused —
+            // that focus would otherwise make every "close" press look like
+            // "typing" and get ignored, so the shortcut could open the chat but
+            // never close it. Closing should always work regardless of focus.
+            if (!isGlobalChatOpen) {
+                const target = e.target as HTMLElement | null;
+                const isTyping = !!target && (
+                    target.tagName === 'INPUT' ||
+                    target.tagName === 'TEXTAREA' ||
+                    target.isContentEditable
+                );
+                if (isTyping) return;
+            }
+
+            e.preventDefault();
+            setIsGlobalChatOpen(prev => {
+                const next = !prev;
+                if (next) {
+                    analytics.trackCommandExecuted('open_global_chat_shortcut');
+                } else {
+                    setSubmittedGlobalQuery('');
+                }
+                return next;
+            });
+        };
+
+        window.addEventListener('keydown', handleShortcut);
+        return () => window.removeEventListener('keydown', handleShortcut);
+    }, [selectedMeeting, isGlobalChatOpen]);
+
     const handleOpenMeeting = (meeting: Meeting) => {
         setForwardMeeting(null); // Clear forward history on new navigation
         analytics.trackCommandExecuted('open_meeting_details');
@@ -569,18 +613,6 @@ const Launcher: React.FC<LauncherProps> = ({ onStartMeeting, onOpenSettings, onO
                     {/* Center: Spotlight-style Search Pill */}
                     <TopSearchPill
                         meetings={meetings}
-                        onAIQuery={(query) => {
-                            analytics.trackCommandExecuted('ai_query_search');
-                            setSubmittedGlobalQuery(query);
-                            setIsGlobalChatOpen(true);
-                        }}
-                        onLiteralSearch={(query) => {
-                            // For now, also use AI query for literal search
-                            // Could be enhanced to do fuzzy filtering in the UI
-                            analytics.trackCommandExecuted('literal_search');
-                            setSubmittedGlobalQuery(query);
-                            setIsGlobalChatOpen(true);
-                        }}
                         onOpenMeeting={(meetingId) => {
                             const meeting = meetings.find(m => m.id === meetingId);
                             if (meeting) {
@@ -1213,6 +1245,23 @@ const Launcher: React.FC<LauncherProps> = ({ onStartMeeting, onOpenSettings, onO
                     </motion.div>
                 )}
             </AnimatePresence>
+
+            {/* Floating Global Chat launcher — bottom-right, real "chat bot" style entry point.
+                Hidden once a meeting is open so it doesn't collide with per-meeting chat. */}
+            {!selectedMeeting && (
+                <FloatingChatButton
+                    isOpen={isGlobalChatOpen}
+                    onClick={() => {
+                        if (isGlobalChatOpen) {
+                            setIsGlobalChatOpen(false);
+                            setSubmittedGlobalQuery('');
+                        } else {
+                            analytics.trackCommandExecuted('open_global_chat_fab');
+                            setIsGlobalChatOpen(true);
+                        }
+                    }}
+                />
+            )}
 
             {/* Global Chat Overlay */}
             <GlobalChatOverlay

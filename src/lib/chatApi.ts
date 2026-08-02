@@ -1,4 +1,3 @@
-
 // Streaming wrappers over the FastAPI chat/RAG routes. Unlike apiClient's axios
 // instance (which buffers the whole response as JSON), these endpoints stream
 // Server-Sent Events — `event: token|source_ids|done` frames, each followed by
@@ -39,6 +38,12 @@ export interface ChatStreamHandlers {
     onRagAnswer?: (answer: RagAnswer) => void;
     /** Fired once, usually before the first token, with the retrieved chunk ids. */
     onSources?: (sources: ChatSources) => void;
+    /** Fired for each `status` frame — backend progress updates ("connected",
+     * "searching", "generating", ...) sent before/while the answer is being
+     * produced. Use to show the person what's happening instead of a static
+     * "thinking" indicator. Raw status string is passed through; map it to a
+     * label with `statusLabel()` below. */
+    onStatus?: (status: string) => void;
     /** Fired once the stream has fully closed (after the `done` frame). */
     onDone?: () => void;
     onError: (error: string) => void;
@@ -138,6 +143,11 @@ function dispatchFrame(frame: string, handlers: ChatStreamHandlers): void {
             handlers.onToken(parsed.chunk);
             break;
         }
+        case "status": {
+            const parsed = JSON.parse(data) as { status: string };
+            handlers.onStatus?.(parsed.status);
+            break;
+        }
         case "source_ids": {
             const parsed = JSON.parse(data) as {
                 sources?: { id: string; title: string; type: string }[];
@@ -169,6 +179,24 @@ function dispatchFrame(frame: string, handlers: ChatStreamHandlers): void {
             break;
         default:
             break;
+    }
+}
+
+/** Maps a raw `status` frame value to the label shown in the UI while the
+ * assistant is working. Applied identically across GlobalChatOverlay,
+ * MeetingChatOverlay, and FloatingChatPanel so status text reads the same
+ * everywhere. Unknown/future status values fall back to a generic label
+ * rather than showing nothing. */
+export function statusLabel(status: string): string {
+    switch (status) {
+        case "connected":
+            return "Connecting…";
+        case "searching":
+            return "Searching meetings…";
+        case "generating":
+            return "Generating response…";
+        default:
+            return "Thinking…";
     }
 }
 
