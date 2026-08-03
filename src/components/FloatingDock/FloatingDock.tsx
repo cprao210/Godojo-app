@@ -280,6 +280,8 @@ export const FloatingDock: React.FC<FloatingDockProps> = ({
         setIsFrozen(prev => !prev);
     };
 
+    const isPanelActive = activePanel === "chat" || activePanel === "intelligence" || activePanel === "settings";
+
 
     return (
         <>
@@ -287,7 +289,7 @@ export const FloatingDock: React.FC<FloatingDockProps> = ({
             <motion.div
                 ref={constraintsRef}
                 className={`relative w-[480px] mx-auto h-fit bg-transparent max-w-full rounded-2xl items-center flex flex-col min-h-0 ${overlayPanelClass}`}
-                style={{ height: '735px' }}
+                style={{ height: isPanelActive ? '735px' : '130px' }}
             >
 
                 {/* Overlay Panels — all three stay mounted so internal state (countdown
