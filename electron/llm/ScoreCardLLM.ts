@@ -2,12 +2,8 @@
 // Generates the LLM prompt for multi-type meeting scorecard analysis.
 // Called from MeetingPersistence.ts after transcript is available.
 
-import {
-    MeetingType,
-    CategoryConfig,
-    ScoringCriteriaSettings,
-    resolveEffectiveScorecardConfig,
-} from '../../src/types/score-card';
+import { MeetingType, CategoryConfig, ScoringCriteriaSettings } from '../../src/types';
+import { resolveEffectiveScorecardConfig } from "../../src/lib/utils"
 
 function buildCategoryBlock(cat: CategoryConfig): string {
     return `    "${cat.key}": {
@@ -25,7 +21,7 @@ function buildCategoryBlock(cat: CategoryConfig): string {
 function buildScorecardBlock(type: MeetingType, customSettings: ScoringCriteriaSettings | null): string {
     const cfg = resolveEffectiveScorecardConfig(type, customSettings);
     if (!cfg) return '';
-    const catKeys = cfg.categories.map(c => buildCategoryBlock(c)).join(',\n');
+    const catKeys = cfg.categories.map((c: any) => buildCategoryBlock(c)).join(',\n');
     return `  "${type}": {
     "meetingType": "${type}",
     "overallScore": <0–100 weighted>,
@@ -49,7 +45,7 @@ export function buildScorecardPrompt(
 
     const categoryDocs = (['discovery', 'demo', 'negotiation'] as MeetingType[]).map(type => {
         const cfg = resolveEffectiveScorecardConfig(type, customSettings);
-        const cats = cfg.categories.map(c => {
+        const cats = cfg.categories.map((c: any) => {
             const checkpointLine = c.checkpoints.length
                 ? `Checkpoints: ${c.checkpoints.join(', ')}`
                 : 'No specific checkpoints defined — use judgment.';

@@ -1,10 +1,5 @@
+import { CurlValidationResult } from "@/types";
 import curl2Json from "@bany/curl-to-json";
-
-export interface CurlValidationResult {
-    isValid: boolean;
-    message?: string;
-    json?: any;
-}
 
 export const validateCurl = (curl: string): CurlValidationResult => {
     if (!curl || !curl.trim()) {

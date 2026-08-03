@@ -1,5 +1,5 @@
 import { contextBridge, ipcRenderer } from "electron"
-import { LiveAnalysisData } from "../src/types/liveAnalysis"
+import { LiveAnalysisData } from "../src/types"
 import { CalendarEvent } from "services/CalendarManager"
 
 // Types for the exposed Electron API

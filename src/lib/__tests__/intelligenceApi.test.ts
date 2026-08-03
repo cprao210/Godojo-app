@@ -3,12 +3,12 @@
 
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 
-vi.mock('../apiClient', () => ({
+vi.mock('@/lib/apiClient', () => ({
   apiFetch: vi.fn().mockResolvedValue({}),
 }));
 
-import { apiFetch } from '../apiClient';
-import { intelligenceApi } from '../intelligenceApi';
+import { apiFetch } from '@/lib/apiClient';
+import { intelligenceApi } from '@/api';
 
 const mockedApiFetch = vi.mocked(apiFetch);
 

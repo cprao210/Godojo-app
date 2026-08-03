@@ -242,7 +242,7 @@ import { SettingsManager } from "./services/SettingsManager"
 import { setVerboseLoggingFlag } from "./verboseLog"
 import { ReleaseNotesManager } from "./update/ReleaseNotesManager"
 import { OllamaManager } from './services/OllamaManager'
-import { LiveAnalysisData } from "../src/types/liveAnalysis";
+import { LiveAnalysisData } from "../src/types";
 
 export class AppState {
   private static instance: AppState | null = null
@@ -2686,8 +2686,8 @@ export class AppState {
     // Potential paths for tray icon
     const templatePath = path.join(resourcesPath, 'assets', 'iconTemplate.png');
     const defaultIconPath = app.isPackaged
-      ? path.join(resourcesPath, 'src/components/icon.png')
-      : path.join(app.getAppPath(), 'src/components/icon.png');
+      ? path.join(resourcesPath, 'src/icons/icon_64x64.png')
+      : path.join(app.getAppPath(), 'src/icons/icon_64x64.png');
 
     let iconToUse = defaultIconPath;
 
@@ -3037,7 +3037,7 @@ export class AppState {
             : path.join(app.getAppPath(), "assets/icons/win/icon.ico");
         } else {
           iconPath = app.isPackaged
-            ? path.join(process.resourcesPath, "icon.png")
+            ? path.join(process.resourcesPath, "src/icons/icon_64x64.png")
             : path.join(app.getAppPath(), "assets/icon.png");
         }
         break;

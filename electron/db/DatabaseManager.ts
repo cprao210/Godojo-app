@@ -5,7 +5,7 @@ import fs from 'fs';
 import * as sqliteVec from 'sqlite-vec';
 import { SupabaseMirrorService } from './SupabaseMirrorService';
 import { AuthManager } from '../services/AuthManager';
-import { LiveAnalysisData } from '../../src/types/liveAnalysis';
+import { LiveAnalysisData } from '../../src/types';
 
 /**
  * Allow-list of app_state keys that are safe to mirror to the cloud.
@@ -58,7 +58,7 @@ export interface Meeting {
 
         speakerNames?: { user: string; client: string };
         liveAnalysis?: LiveAnalysisData;
-        scorecard?: import('../../src/types/score-card').MeetingScorecardResult;
+        scorecard?: import('../../src/types').MeetingScorecardResult;
 
         // New sales fields
         dealStatus?: {
@@ -909,8 +909,8 @@ export class DatabaseManager {
 
     public saveMeetingScorecard(
         meetingId: string,
-        result: import('../../src/types/score-card').MeetingScorecardResult,
-        criteriaSnapshot?: import('../../src/types/score-card').ScoringCriteriaSettings | null
+        result: import('../../src/types').MeetingScorecardResult,
+        criteriaSnapshot?: import('../../src/types').ScoringCriteriaSettings | null
     ): void {
         if (!this.db) return;
         try {
@@ -933,7 +933,7 @@ export class DatabaseManager {
 
     public getMeetingScorecard(
         meetingId: string
-    ): import('../../src/types/score-card').MeetingScorecardResult | null {
+    ): import('../../src/types').MeetingScorecardResult | null {
         if (!this.db) return null;
         try {
             const row = this.db
@@ -960,7 +960,7 @@ export class DatabaseManager {
     // Scoring Criteria (custom per-org)
     // ============================================
 
-    public getScoringCriteria(): import('../../src/types/score-card').ScoringCriteriaSettings | null {
+    public getScoringCriteria(): import('../../src/types').ScoringCriteriaSettings | null {
         if (!this.db) return null;
         try {
             const row = this.db
@@ -974,7 +974,7 @@ export class DatabaseManager {
         }
     }
 
-    public saveScoringCriteria(settings: import('../../src/types/score-card').ScoringCriteriaSettings): void {
+    public saveScoringCriteria(settings: import('../../src/types').ScoringCriteriaSettings): void {
         if (!this.db) return;
         try {
             this.db.prepare(`

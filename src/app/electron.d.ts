@@ -1,0 +1,486 @@
+import { LiveAnalysisData } from "@/types";
+
+export interface ElectronAPI {
+  // ===========================================================================
+  // Window Management
+  // ===========================================================================
+  updateContentDimensions: (dimensions: { width: number; height: number }) => Promise<void>
+  onToggleExpand: (callback: () => void) => () => void
+  onResetView: (callback: () => void) => () => void
+  moveWindowLeft: () => Promise<void>
+  moveWindowRight: () => Promise<void>
+  moveWindowUp: () => Promise<void>
+  moveWindowDown: () => Promise<void>
+  windowMinimize: () => Promise<void>
+  windowMaximize: () => Promise<void>
+  windowClose: () => Promise<void>
+  windowIsMaximized: () => Promise<boolean>
+  onWindowMaximizedChanged: (callback: (isMaximized: boolean) => void) => () => void
+  onEnsureExpanded: (callback: () => void) => () => void
+  quitApp: () => Promise<void>
+  toggleWindow: () => Promise<void>
+  showWindow: (inactive?: boolean) => Promise<void>
+  hideWindow: () => Promise<void>
+  showOverlay: () => Promise<void>
+  hideOverlay: () => Promise<void>
+  setWindowMode: (mode: 'launcher' | 'overlay', inactive?: boolean) => Promise<void>
+  openExternal: (url: string) => Promise<void>
+  getArch: () => Promise<string>
+  platform: NodeJS.Platform
+
+  // ===========================================================================
+  // Screenshots
+  // ===========================================================================
+  getScreenshots: () => Promise<Array<{ path: string; preview: string }>>
+  deleteScreenshot: (path: string) => Promise<{ success: boolean; error?: string }>
+  onScreenshotTaken: (callback: (data: { path: string; preview: string }) => void) => () => void
+  onScreenshotAttached: (callback: (data: { path: string; preview: string }) => void) => () => void
+  onCaptureAndProcess: (callback: (data: { path: string; preview: string }) => void) => () => void
+  takeScreenshot: () => Promise<{ path: string; preview: string }>
+  takeSelectiveScreenshot: () => Promise<{ path: string; preview: string; cancelled?: boolean }>
+  analyzeImageFile: (path: string) => Promise<void>
+  onProcessingNoScreenshots: (callback: () => void) => () => void
+  onProblemExtracted: (callback: (data: any) => void) => () => void
+  onSolutionsReady: (callback: (solutions: string) => void) => () => void
+  onSolutionStart: (callback: () => void) => () => void
+  onSolutionSuccess: (callback: (data: any) => void) => () => void
+  onSolutionError: (callback: (error: string) => void) => () => void
+  onDebugStart: (callback: () => void) => () => void
+  onDebugSuccess: (callback: (data: any) => void) => () => void
+  onDebugError: (callback: (error: string) => void) => () => void
+  onUnauthorized: (callback: () => void) => () => void
+
+  // ===========================================================================
+  // Undetectable / Disguise / Overlay Behavior
+  // ===========================================================================
+  setUndetectable: (state: boolean) => Promise<{ success: boolean; error?: string }>
+  getUndetectable: () => Promise<boolean>
+  onUndetectableChanged: (callback: (state: boolean) => void) => () => void
+  setOverlayMousePassthrough: (enabled: boolean) => Promise<{ success: boolean }>
+  toggleOverlayMousePassthrough: () => Promise<{ success: boolean; enabled: boolean }>
+  getOverlayMousePassthrough: () => Promise<boolean>
+  onOverlayMousePassthroughChanged: (callback: (enabled: boolean) => void) => () => void
+  setDisguise: (mode: 'terminal' | 'settings' | 'activity' | 'none') => Promise<{ success: boolean; error?: string }>
+  getDisguise: () => Promise<'none' | 'terminal' | 'settings' | 'activity'>
+  onDisguiseChanged: (callback: (mode: 'terminal' | 'settings' | 'activity' | 'none') => void) => () => void
+  setOverlayOpacity: (opacity: number) => Promise<void>
+  onOverlayOpacityChanged: (callback: (opacity: number) => void) => () => void
+
+  // ===========================================================================
+  // App Preferences
+  // ===========================================================================
+  setOpenAtLogin: (open: boolean) => Promise<{ success: boolean; error?: string }>
+  getOpenAtLogin: () => Promise<boolean>
+  getVerboseLogging: () => Promise<boolean>
+  setVerboseLogging: (enabled: boolean) => Promise<{ success: boolean }>
+  flushDatabase: () => Promise<{ success: boolean }>
+
+  // ===========================================================================
+  // Settings & Advanced Settings Windows
+  // ===========================================================================
+  onSettingsVisibilityChange: (callback: (isVisible: boolean) => void) => () => void
+  toggleSettingsWindow: (coords?: { x: number; y: number }) => Promise<void>
+  closeSettingsWindow: () => Promise<void>
+  toggleAdvancedSettings: () => Promise<void>
+  closeAdvancedSettings: () => Promise<void>
+  onInviteDeepLink: (callback: (data: { token: string }) => void) => () => void
+
+  // ===========================================================================
+  // LLM Model Management
+  // ===========================================================================
+  getCurrentLlmConfig: () => Promise<{ provider: "ollama" | "gemini"; model: string; isOllama: boolean }>
+  getAvailableOllamaModels: () => Promise<string[]>
+  switchToOllama: (model?: string, url?: string) => Promise<{ success: boolean; error?: string }>
+  switchToGemini: (apiKey?: string, modelId?: string) => Promise<{ success: boolean; error?: string }>
+  testLlmConnection: (provider: 'gemini' | 'groq' | 'openai' | 'claude', apiKey?: string) => Promise<{ success: boolean; error?: string }>
+  selectServiceAccount: () => Promise<{ success: boolean; path?: string; cancelled?: boolean; error?: string }>
+  getDefaultModel: () => Promise<{ model: string }>
+  setModel: (modelId: string) => Promise<{ success: boolean; error?: string }>
+  setDefaultModel: (modelId: string) => Promise<{ success: boolean; error?: string }>
+  toggleModelSelector: (coords: { x: number; y: number }) => Promise<void>
+  forceRestartOllama: () => Promise<void>
+  onModelChanged: (callback: (modelId: string) => void) => () => void
+  onOllamaPullProgress: (callback: (data: { status: string; percent: number }) => void) => () => void
+  onOllamaPullComplete: (callback: () => void) => () => void
+  fetchProviderModels: (provider: 'gemini' | 'groq' | 'openai' | 'claude', apiKey: string) => Promise<{ success: boolean; models?: { id: string, label: string }[]; error?: string }>
+  setProviderPreferredModel: (provider: 'gemini' | 'groq' | 'openai' | 'claude', modelId: string) => Promise<void>
+  getGroqFastTextMode: () => Promise<{ enabled: boolean }>
+  setGroqFastTextMode: (enabled: boolean) => Promise<{ success: boolean; error?: string }>
+  onGroqFastTextChanged: (callback: (enabled: boolean) => void) => () => void
+  onIncompatibleProviderWarning: (callback: (data: { count: number, oldProvider: string, newProvider: string }) => void) => () => void
+  reindexIncompatibleMeetings: () => Promise<void>
+
+  // ===========================================================================
+  // API Key Management (LLM Providers)
+  // ===========================================================================
+  setGeminiApiKey: (apiKey: string) => Promise<{ success: boolean; error?: string }>
+  setGroqApiKey: (apiKey: string) => Promise<{ success: boolean; error?: string }>
+  setOpenaiApiKey: (apiKey: string) => Promise<{ success: boolean; error?: string }>
+  setClaudeApiKey: (apiKey: string) => Promise<{ success: boolean; error?: string }>
+  setTavilyApiKey: (apiKey: string) => Promise<{ success: boolean; error?: string }>
+  getStoredCredentials: () => Promise<{
+    hasGeminiKey: boolean
+    hasGroqKey: boolean
+    hasOpenaiKey: boolean
+    hasClaudeKey: boolean
+    googleServiceAccountPath: string | null
+    sttProvider: 'google' | 'groq' | 'openai' | 'deepgram' | 'elevenlabs' | 'azure' | 'ibmwatson' | 'soniox'
+    hasSttGroqKey: boolean
+    hasSttOpenaiKey: boolean
+    hasDeepgramKey: boolean
+    hasElevenLabsKey: boolean
+    hasAzureKey: boolean
+    azureRegion: string
+    hasIbmWatsonKey: boolean
+    ibmWatsonRegion: string
+    groqSttModel?: string
+    hasSonioxKey?: boolean
+    hasTavilyKey?: boolean
+    geminiPreferredModel?: string
+    groqPreferredModel?: string
+    openaiPreferredModel?: string
+    claudePreferredModel?: string
+  }>
+
+  // ===========================================================================
+  // Custom Providers
+  // ===========================================================================
+  saveCustomProvider: (provider: any) => Promise<{ success: boolean; id?: string; error?: string }>
+  getCustomProviders: () => Promise<any[]>
+  deleteCustomProvider: (id: string) => Promise<{ success: boolean; error?: string }>
+
+  // ===========================================================================
+  // Speech-to-Text (STT) Provider Management
+  // ===========================================================================
+  setSttProvider: (provider: 'google' | 'groq' | 'openai' | 'deepgram' | 'elevenlabs' | 'azure' | 'ibmwatson' | 'soniox') => Promise<{ success: boolean; error?: string }>
+  getSttProvider: () => Promise<string>
+  setGroqSttApiKey: (apiKey: string) => Promise<{ success: boolean; error?: string }>
+  setOpenAiSttApiKey: (apiKey: string) => Promise<{ success: boolean; error?: string }>
+  setDeepgramApiKey: (apiKey: string) => Promise<{ success: boolean; error?: string }>
+  setElevenLabsApiKey: (apiKey: string) => Promise<{ success: boolean; error?: string }>
+  setAzureApiKey: (apiKey: string) => Promise<{ success: boolean; error?: string }>
+  setAzureRegion: (region: string) => Promise<{ success: boolean; error?: string }>
+  setIbmWatsonApiKey: (apiKey: string) => Promise<{ success: boolean; error?: string }>
+  setGroqSttModel: (model: string) => Promise<{ success: boolean; error?: string }>
+  setSonioxApiKey: (apiKey: string) => Promise<{ success: boolean; error?: string }>
+  testSttConnection: (provider: 'groq' | 'openai' | 'deepgram' | 'elevenlabs' | 'azure' | 'ibmwatson' | 'soniox', apiKey: string, region?: string) => Promise<{ success: boolean; error?: string }>
+  setDiarizeClientEnabled: (enabled: boolean) => Promise<{ success: boolean; error?: string }>
+  getDiarizeClientEnabled: () => Promise<boolean>
+  getAudioPipelineStats: () => Promise<Record<string, unknown> | null>
+  getOutputRoute: () => Promise<{ kind: string; transport: string; name: string } | null>
+  getRecognitionLanguages: () => Promise<Record<string, any>>
+  setRecognitionLanguage: (key: string) => Promise<{ success: boolean; error?: string }>
+  getSttLanguage: () => Promise<string>
+  getAiResponseLanguages: () => Promise<Array<{ label: string; code: string }>>
+  setAiResponseLanguage: (language: string) => Promise<{ success: boolean; error?: string }>
+  getAiResponseLanguage: () => Promise<string>
+  getDisplayName: (role: 'user' | 'client' | 'assistant') => Promise<string>
+  getSpeakerNames: () => Promise<{ user: string; client: string }>
+  onSpeakerNamesResolved: (callback: (names: { user: string; client: string }) => void) => () => void
+  getInputDevices: () => Promise<Array<{ id: string; name: string }>>
+  getOutputDevices: () => Promise<Array<{ id: string; name: string }>>
+
+  // ===========================================================================
+  // Native Audio Service Events
+  // ===========================================================================
+  onNativeAudioTranscript: (callback: (transcript: { speaker: string; displayName?: string; text: string; timestamp?: number; final: boolean; confidence?: number; speakerIndex?: number; retract?: boolean }) => void) => () => void
+  onNativeAudioSuggestion: (callback: (suggestion: { context: string; lastQuestion: string; confidence: number }) => void) => () => void
+  onNativeAudioConnected: (callback: () => void) => () => void
+  onNativeAudioDisconnected: (callback: () => void) => () => void
+  onMeetingAudioWarning: (callback: (message: string) => void) => () => void
+  getNativeAudioStatus: () => Promise<{ connected: boolean }>
+  startAudioTest: (deviceId?: string) => Promise<{ success: boolean }>
+  stopAudioTest: () => Promise<{ success: boolean }>
+  onAudioTestLevel: (callback: (level: number) => void) => () => void
+
+  // ===========================================================================
+  // Intelligence Mode (Assist / What-To-Say / Clarify / Hints / Recap / etc.)
+  // ===========================================================================
+  generateAssist: () => Promise<{ insight: string | null }>
+  generateWhatToSay: (question?: string, imagePaths?: string[]) => Promise<{ answer: string | null; question?: string; error?: string }>
+  generateClarify: () => Promise<{ clarification: string | null }>
+  generateCodeHint: (imagePaths?: string[], problemStatement?: string) => Promise<{ hint: string | null }>
+  generateBrainstorm: (imagePaths?: string[], problemStatement?: string) => Promise<{ script: string | null }>
+  generateFollowUp: (intent: string, userRequest?: string) => Promise<{ refined: string | null; intent: string }>
+  generateFollowUpQuestions: () => Promise<{ questions: string | null }>
+  generateRecap: () => Promise<{ summary: string | null }>
+  submitManualQuestion: (question: string) => Promise<{ answer: string | null; question: string }>
+  getIntelligenceContext: () => Promise<{ context: string; lastAssistantMessage: string | null; activeMode: string }>
+  resetIntelligence: () => Promise<{ success: boolean; error?: string }>
+  generateSuggestion: (context: string, lastQuestion: string) => Promise<{ suggestion: string }>
+  onSuggestionGenerated: (callback: (data: { question: string; suggestion: string; confidence: number }) => void) => () => void
+  onSuggestionProcessingStart: (callback: () => void) => () => void
+  onSuggestionError: (callback: (error: { error: string }) => void) => () => void
+
+  // Dynamic Action Button Mode
+  getActionButtonMode: () => Promise<'recap' | 'brainstorm'>
+  setActionButtonMode: (mode: 'recap' | 'brainstorm') => Promise<{ success: boolean }>
+  onActionButtonModeChanged: (callback: (mode: 'recap' | 'brainstorm') => void) => () => void
+
+  // What Am I Missing
+  generateWhatAmIMissing: () => Promise<string | null>
+  onWhatAmIMissingToken: (callback: (data: { token: string }) => void) => () => void
+  onWhatAmIMissing: (callback: (data: { answer: string }) => void) => () => void
+
+  // Discovery Mode
+  generateDiscovery: () => Promise<string | null>
+  onDiscoveryToken: (callback: (data: { token: string }) => void) => () => void
+  onDiscovery: (callback: (data: { answer: string }) => void) => () => void
+
+  // Objection Handler Mode
+  generateObjectionHandler: () => Promise<string | null>
+  onObjectionHandlerToken: (callback: (data: { token: string }) => void) => () => void
+  onObjectionHandler: (callback: (data: { answer: string }) => void) => () => void
+
+  // Intelligence Streaming Events
+  onIntelligenceAssistUpdate: (callback: (data: { insight: string }) => void) => () => void
+  onIntelligenceSuggestedAnswerToken: (callback: (data: { token: string; question: string; confidence: number }) => void) => () => void
+  onIntelligenceSuggestedAnswer: (callback: (data: { answer: string; question: string; confidence: number }) => void) => () => void
+  onIntelligenceRefinedAnswerToken: (callback: (data: { token: string; intent: string }) => void) => () => void
+  onIntelligenceRefinedAnswer: (callback: (data: { answer: string; intent: string }) => void) => () => void
+  onIntelligenceFollowUpQuestionsUpdate: (callback: (data: { questions: string }) => void) => () => void
+  onIntelligenceFollowUpQuestionsToken: (callback: (data: { token: string }) => void) => () => void
+  onIntelligenceRecap: (callback: (data: { summary: string }) => void) => () => void
+  onIntelligenceRecapToken: (callback: (data: { token: string }) => void) => () => void
+  onIntelligenceClarify: (callback: (data: { clarification: string }) => void) => () => void
+  onIntelligenceClarifyToken: (callback: (data: { token: string }) => void) => () => void
+  onIntelligenceManualStarted: (callback: () => void) => () => void
+  onIntelligenceManualResult: (callback: (data: { answer: string; question: string }) => void) => () => void
+  onIntelligenceModeChanged: (callback: (data: { mode: string }) => void) => () => void
+  onIntelligenceError: (callback: (data: { error: string, mode: string }) => void) => () => void
+  onSessionReset: (callback: () => void) => () => void
+
+  // Live Analysis
+  updateLiveAnalysis: (data: LiveAnalysisData) => Promise<{ success: boolean }>
+
+  // ===========================================================================
+  // Chat (Gemini Streaming)
+  // ===========================================================================
+  streamGeminiChat: (message: string, imagePaths?: string[], context?: string, options?: { skipSystemPrompt?: boolean }) => Promise<void>
+  chatWithGemini: (message: string, imagePaths?: string[], context?: string, skipSystemPrompt?: boolean) => Promise<string>
+  onGeminiStreamToken: (callback: (token: string) => void) => () => void
+  onGeminiStreamDone: (callback: () => void) => () => void
+  onGeminiStreamError: (callback: (error: string) => void) => () => void
+
+  // ===========================================================================
+  // Meeting Lifecycle
+  // ===========================================================================
+  getMeetingActive: () => Promise<boolean>
+  onMeetingStateChanged: (callback: (data: { isActive: boolean }) => void) => () => void
+  getMeetingPaused: () => Promise<boolean>
+  pauseMeeting: () => Promise<{ success: boolean; error?: string }>
+  resumeMeeting: () => Promise<{ success: boolean; error?: string }>
+  onMeetingPauseStateChanged: (callback: (data: { isPaused: boolean }) => void) => () => void
+  startMeeting: (metadata?: any) => Promise<{ success: boolean; error?: string }>
+  endMeeting: (meetingTypes?: ('discovery' | 'demo' | 'negotiation')[], tenantId?: string | null) => Promise<{ success: boolean; meetingId?: string | null; error?: string }>
+  finalizeMicSTT: () => Promise<void>
+  getRecentMeetings: () => Promise<Array<{ id: string; title: string; date: string; duration: string; summary: string }>>
+  getMeetingDetails: (id: string) => Promise<any>
+  updateMeetingTitle: (id: string, title: string) => Promise<boolean>
+  updateMeetingSummary: (id: string, updates: { overview?: string, actionItems?: string[], keyPoints?: string[], actionItemsTitle?: string, keyPointsTitle?: string }) => Promise<boolean>
+  regenerateMeetingSummary: (id: string) => Promise<any>
+  uploadTranscript: (text: string, title?: string, meetingTypes?: ('discovery' | 'demo' | 'negotiation')[]) => Promise<{ success: boolean; meetingId?: string; error?: string }>
+  deleteMeeting: (id: string) => Promise<boolean>
+  onMeetingsUpdated: (callback: () => void) => () => void
+
+  // Meeting Scorecards
+  meetingGetScorecard: (meetingId: string) => Promise<{ success: boolean; data?: any; error?: string }>
+  meetingDeleteScorecard: (meetingId: string) => Promise<{ success: boolean; error?: string }>
+  scoringGetCriteria: () => Promise<{ success: boolean; data?: any; error?: string }>
+  scoringSaveCriteria: (settings: any) => Promise<{ success: boolean; error?: string }>
+  scoringResetCriteria: () => Promise<{ success: boolean; error?: string }>
+
+  // Follow-up Email
+  generateFollowupEmail: (input: any) => Promise<string>
+  extractEmailsFromTranscript: (transcript: Array<{ text: string }>) => Promise<string[]>
+  getCalendarAttendees: (eventId: string) => Promise<Array<{ email: string; name: string }>>
+  openMailto: (params: { to: string; subject: string; body: string }) => Promise<{ success: boolean; error?: string }>
+
+  // ===========================================================================
+  // RAG (Retrieval-Augmented Generation)
+  // ===========================================================================
+  ragQueryMeeting: (meetingId: string, query: string) => Promise<{ success?: boolean; fallback?: boolean; error?: string }>
+  ragQueryLive: (query: string) => Promise<{ success?: boolean; fallback?: boolean; error?: string }>
+  ragQueryGlobal: (query: string) => Promise<{ success?: boolean; fallback?: boolean; error?: string }>
+  ragCancelQuery: (options: { meetingId?: string; global?: boolean }) => Promise<{ success: boolean }>
+  ragIsMeetingProcessed: (meetingId: string) => Promise<boolean>
+  ragGetQueueStatus: () => Promise<{ pending: number; processing: number; completed: number; failed: number }>
+  ragRetryEmbeddings: () => Promise<{ success: boolean }>
+  onRAGStreamChunk: (callback: (data: { meetingId?: string; global?: boolean; chunk: string }) => void) => () => void
+  onRAGStreamComplete: (callback: (data: { meetingId?: string; global?: boolean }) => void) => () => void
+  onRAGStreamError: (callback: (data: { meetingId?: string; global?: boolean; error: string }) => void) => () => void
+
+  // ===========================================================================
+  // Company Intelligence & Tavily Search
+  // ===========================================================================
+  fetchCompanyIntel: (payload: { companyName: string; domain?: string; forceRefresh?: boolean }) => Promise<{ success: boolean; intel?: any; fromCache?: boolean; error?: string }>
+  setCompanyIntel: (intel: Record<string, any> | null) => Promise<{ success: boolean; error?: string }>
+  onCompanyIntelUpdated: (callback: (intel: Record<string, any> | null) => void) => (() => void)
+  onTavilySearching: (callback: (data: { entity: string }) => void) => () => void
+  onTavilySearchDone: (callback: (data: { entity: string | null; status: string; fromCache: boolean }) => void) => () => void
+
+  // Company Context (Persona Engine)
+  companyGetContext: () => Promise<any>
+  companySaveContext: (data: any) => Promise<{ success: boolean; error?: string }>
+  companyUploadAsset: (type: string, filePath: string) => Promise<{
+    success: boolean
+    asset?: {
+      id: string
+      type: string
+      label: string
+      status: string
+      lastUpdated: string
+      fileData: string       // base64 — held in frontend draft only
+      fileName: string
+      mimeType: string
+    }
+    error?: string
+  }>
+  companyDeleteAsset: (assetId: string) => Promise<{ success: boolean; error?: string }>
+  companySyncAsset: (assetId: string) => Promise<{ success: boolean; status?: string; error?: string }>
+  companySetPersonaEngine: (enabled: boolean) => Promise<{ success: boolean; error?: string }>
+  companySelectFile: () => Promise<{ filePath?: string; fileName?: string; fileSize?: number; cancelled?: boolean; success?: boolean; error?: string }>
+  companyGetCompleteness: () => Promise<number>
+
+  // ===========================================================================
+  // Profile Engine (Resume, JD & Negotiation)
+  // ===========================================================================
+  profileUploadResume: (filePath: string) => Promise<{ success: boolean; error?: string }>
+  profileGetStatus: () => Promise<{ hasProfile: boolean; profileMode: boolean; name?: string; role?: string; totalExperienceYears?: number }>
+  profileGetMode: () => Promise<{ active: boolean }>
+  profileSetMode: (enabled: boolean) => Promise<{ success: boolean; error?: string }>
+  profileDelete: () => Promise<{ success: boolean; error?: string }>
+  profileGetProfile: () => Promise<any>
+  profileSelectFile: () => Promise<{ success?: boolean; cancelled?: boolean; filePath?: string; error?: string }>
+  profileUploadJD: (filePath: string) => Promise<{ success: boolean; error?: string }>
+  profileDeleteJD: () => Promise<{ success: boolean; error?: string }>
+  profileResearchCompany: (companyName: string) => Promise<{ success: boolean; dossier?: any; error?: string }>
+  profileGenerateNegotiation: (force?: boolean) => Promise<{ success: boolean; script?: any; error?: string }>
+  profileGetNegotiationState: () => Promise<{ success: boolean; state?: any; isActive?: boolean; error?: string }>
+  profileResetNegotiation: () => Promise<{ success: boolean; error?: string }>
+
+  // ===========================================================================
+  // Calendar
+  // ===========================================================================
+  getZoomCalendarStatus(): any
+  zoomCalendarConnect(): any
+  zoomCalendarDisconnect: () => Promise<{ success: boolean; error?: string }>
+  calendarConnect: () => Promise<{ success: boolean; error?: string }>
+  calendarDisconnect: () => Promise<{ success: boolean; error?: string }>
+  getCalendarStatus: () => Promise<{ connected: boolean; email?: string }>
+  getUpcomingEvents: () => Promise<Array<{ id: string; title: string; startTime: string; endTime: string; link?: string; source: 'google' }>>
+  calendarRefresh: () => Promise<{ success: boolean; error?: string }>
+  streamSalesBrief: (eventData: any) => Promise<{ success: boolean; cached?: boolean; error?: string }>
+  onSalesBriefStreamToken: (callback: (token: string) => void) => () => void
+  onSalesBriefStreamDone: (callback: () => void) => () => void
+  onSalesBriefStreamError: (callback: (error: string) => void) => () => void
+
+  // ===========================================================================
+  // Theme
+  // ===========================================================================
+  getThemeMode: () => Promise<{ mode: 'system' | 'light' | 'dark', resolved: 'light' | 'dark' }>
+  setThemeMode: (mode: 'system' | 'light' | 'dark') => Promise<void>
+  onThemeChanged: (callback: (data: { mode: 'system' | 'light' | 'dark', resolved: 'light' | 'dark' }) => void) => () => void
+
+  // ===========================================================================
+  // Auto-Update
+  // ===========================================================================
+  onUpdateAvailable: (callback: (info: any) => void) => () => void
+  onUpdateDownloaded: (callback: (info: any) => void) => () => void
+  onUpdateChecking: (callback: () => void) => () => void
+  onUpdateNotAvailable: (callback: (info: any) => void) => () => void
+  onUpdateError: (callback: (err: string) => void) => () => void
+  onDownloadProgress: (callback: (progressObj: any) => void) => () => void
+  restartAndInstall: () => Promise<void>
+  checkForUpdates: () => Promise<void>
+  downloadUpdate: () => Promise<void>
+  testReleaseFetch: () => Promise<{ success: boolean; error?: string }>
+
+  // ===========================================================================
+  // Donation
+  // ===========================================================================
+  getDonationStatus: () => Promise<{ shouldShow: boolean; hasDonated: boolean; lifetimeShows: number }>
+  markDonationToastShown: () => Promise<{ success: boolean }>
+  setDonationComplete: () => Promise<{ success: boolean }>
+
+  // ===========================================================================
+  // Keybind Management
+  // ===========================================================================
+  getKeybinds: () => Promise<Array<{ id: string; label: string; accelerator: string; isGlobal: boolean; defaultAccelerator: string }>>
+  setKeybind: (id: string, accelerator: string) => Promise<boolean>
+  resetKeybinds: () => Promise<Array<{ id: string; label: string; accelerator: string; isGlobal: boolean; defaultAccelerator: string }>>
+  onKeybindsUpdate: (callback: (keybinds: Array<any>) => void) => () => void
+  onGlobalShortcut: (callback: (data: { action: string }) => void) => () => void
+
+  // ===========================================================================
+  // Cropper
+  // ===========================================================================
+  cropperConfirmed: (bounds: { x: number; y: number; width: number; height: number }) => void
+  cropperCancelled: () => void
+  onResetCropper: (callback: (data: { hudPosition: { x: number; y: number } }) => void) => () => void
+
+  // ===========================================================================
+  // Firebase Auth
+  // ===========================================================================
+  authSetIdToken: (session: {
+    idToken: string
+    refreshToken: string
+    uid: string
+    email?: string | null
+    displayName?: string | null
+    photoURL?: string | null
+    expiresAt: number
+  }) => Promise<{ success: boolean; error?: string }>
+  authClear: () => Promise<{ success: boolean }>
+  authGetState: () => Promise<{
+    signedIn: boolean
+    uid?: string
+    email?: string | null
+    displayName?: string | null
+    photoURL?: string | null
+  }>
+  authGetPersistedRefreshToken: () => Promise<{ refreshToken: string | null; uid: string | null }>
+  onAuthStateChanged: (
+    callback: (state: { signedIn: boolean; uid?: string; email?: string | null; displayName?: string | null; photoURL?: string | null }) => void
+  ) => () => void
+
+  // ===========================================================================
+  // Tenant ID (cross-window)
+  // ===========================================================================
+  setCurrentTenantId: (tenantId: string | null) => Promise<{ success: boolean }>
+  getCurrentTenantId: () => Promise<string | null>
+  onTenantStateChanged: (callback: (tenantId: string | null) => void) => () => void
+
+  // ===========================================================================
+  // Supabase Mirror
+  // ===========================================================================
+  supabaseSetCredentials: (url: string, anonKey: string) => Promise<{ success: boolean; error?: string }>
+  supabaseGetMirrorStatus: () => Promise<{
+    configured: boolean
+    signedIn: boolean
+    outboxLength: number
+    lastSyncAt: number | null
+    lastError?: string | null
+  }>
+  supabaseForceBackfill: () => Promise<{ success: boolean; error?: string }>
+  supabaseSyncAudit: () => Promise<{ success: boolean; error?: string }>
+
+  // ===========================================================================
+  // License Management
+  // ===========================================================================
+  licenseActivate: (key: string) => Promise<{ success: boolean; error?: string }>
+  licenseCheckPremium: () => Promise<boolean>
+  licenseDeactivate: () => Promise<void>
+  licenseGetHardwareId: () => Promise<string>
+
+  // ===========================================================================
+  // Demo / Seed Data
+  // ===========================================================================
+  seedDemo: () => Promise<{ success: boolean }>
+}
+
+declare global {
+  interface Window {
+    electronAPI: ElectronAPI
+  }
+}

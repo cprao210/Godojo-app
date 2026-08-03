@@ -1,0 +1,341 @@
+import React, { useState } from "react";
+import { AnimatePresence, motion } from "framer-motion";
+import { QueryClient, QueryClientProvider, QueryCache, MutationCache } from "react-query";
+
+// ---------------------------------------------------------------------------
+// lib — infra / service wrappers
+// ---------------------------------------------------------------------------
+import { ApiError, notifyInvalidSession } from "@/lib/apiClient";
+
+// ---------------------------------------------------------------------------
+// hooks — core app logic, extracted out of App.tsx
+// ---------------------------------------------------------------------------
+import { useWindowRoute, useAppAnalytics, useFirebaseAuth, useTenant, useAutoOpenDashboardForAdmins } from "@/hooks";
+import { useTeamInvite, useOverlayOpacity, useAppLifecycleListeners, useMeetingSession } from "@/hooks";
+
+// ---------------------------------------------------------------------------
+// features
+// ---------------------------------------------------------------------------
+import { ManagerDashboard } from "@/features/dashboard";
+import { InviteAccountMismatchBanner } from "@/features/tenant";
+import { SettingsPopup, SettingsOverlay } from "@/features/settings"; // Keeping for legacy/specific window support if needed
+import { StartupSequence } from "@/features/onboarding";
+// import UpdateBanner from "../features/updates/UpdateBanner";
+
+// ---------------------------------------------------------------------------
+// components — generic UI kit + shared/common
+// ---------------------------------------------------------------------------
+import { ToastProvider, ToastViewport } from "@/features/ui/toast";
+import { ModelSelectorWindow, NativelyInterface, Launcher, ErrorBoundary } from "@/features/common";
+import { IncompatibleProviderBanner, AdCampaignToasters } from "@/features/common";
+// import { SupportToaster } from "@/features/common";
+
+// ---------------------------------------------------------------------------
+// pages
+// ---------------------------------------------------------------------------
+import { EmailVerification, SignIn } from "@/pages";
+
+// ---------------------------------------------------------------------------
+// premium
+// ---------------------------------------------------------------------------
+import { PremiumUpgradeModal, useAdCampaigns } from "../premium";
+
+// Route HTTP auth failures (a terminal 401 from apiClient, surfaced through React
+// Query) into the same session-expired flow as the Firebase guard. The QueryClient
+// lives at module scope so it can't close over React state — it hands off via the
+// apiClient bridge (notifyInvalidSession), which useFirebaseAuth's session guard
+// effect wires up to its own handleInvalidSession.
+const handleApiError = (error: any) => {
+  if (error instanceof ApiError && error.status === 401) notifyInvalidSession(error.code);
+};
+
+const queryClient = new QueryClient({
+  queryCache: new QueryCache({ onError: handleApiError }),
+  mutationCache: new MutationCache({ onError: handleApiError }),
+});
+
+const App: React.FC = () => {
+  // --- Window identity -------------------------------------------------
+  const { isSettingsWindow, isLauncherWindow, isOverlayWindow, isModelSelectorWindow, isCropperWindow, isDefault } =
+    useWindowRoute();
+
+  // --- Cross-cutting app logic, lifted into hooks -----------------------
+  useAppAnalytics(isLauncherWindow, isOverlayWindow, isDefault);
+
+  const {
+    authUser,
+    authChecked,
+    pendingVerificationUser,
+    sessionExpiredMessage,
+    setSessionExpiredMessage,
+    completeEmailVerification,
+    signOut,
+  } = useFirebaseAuth(isLauncherWindow, isDefault, isOverlayWindow);
+
+  const { tenantId, tenant, isAdmin } = useTenant(authUser, isLauncherWindow, isDefault);
+
+  const [overlayOpacity] = useOverlayOpacity(isOverlayWindow);
+
+  const {
+    hasProfile,
+    isPremiumActive,
+    setIsPremiumActive,
+    isProcessingMeeting,
+    setIsProcessingMeeting,
+    lastMeetingEndTime,
+    appStartTime,
+    ollamaPull,
+    incompatibleWarning,
+    dismissIncompatibleWarning,
+    reindexIncompatibleMeetings,
+  } = useAppLifecycleListeners();
+
+  const { handleStartMeeting, handleEndMeeting } = useMeetingSession(tenantId, setIsProcessingMeeting);
+
+  // --- Local UI state ----------------------------------------------------
+  const [showStartup, setShowStartup] = useState(true);
+  const [isSettingsOpen, setIsSettingsOpen] = useState(false);
+  const [isManagerDashboardOpen, setIsManagerDashboardOpen] = useState(false);
+  const [settingsInitialTab, setSettingsInitialTab] = useState("general");
+  const [showPremiumModal, setShowPremiumModal] = useState(false);
+  const [isLauncherMainView, setIsLauncherMainView] = useState(true);
+
+  useAutoOpenDashboardForAdmins(authUser, tenant, isAdmin, setIsManagerDashboardOpen);
+
+  const openInviteSettingsTab = () => {
+    setSettingsInitialTab("user-roles-permissions");
+    setIsSettingsOpen(true);
+  };
+  const { deepLinkInviteToken, clearDeepLinkInviteToken, inviteMismatchEmail, dismissInviteMismatch } = useTeamInvite(
+    authUser,
+    openInviteSettingsTab
+  );
+
+  const isAppReady =
+    !isSettingsWindow && !isOverlayWindow && !isModelSelectorWindow && !showStartup && !isSettingsOpen && !isManagerDashboardOpen && isLauncherMainView;
+  const { activeAd, dismissAd } = useAdCampaigns(
+    isPremiumActive,
+    hasProfile,
+    isAppReady,
+    appStartTime,
+    lastMeetingEndTime,
+    isProcessingMeeting
+  );
+
+  // --- Render --------------------------------------------------------------
+
+  if (isCropperWindow) {
+    const Cropper = React.lazy(() => import("../features/common/Cropper"));
+    return (
+      <React.Suspense fallback={<div className="w-screen h-screen bg-transparent" />}>
+        <Cropper />
+      </React.Suspense>
+    );
+  }
+
+  if (isSettingsWindow) {
+    return (
+      <ErrorBoundary context="SettingsPopup">
+        <div className="h-full min-h-0 w-full">
+          <QueryClientProvider client={queryClient}>
+            <ToastProvider>
+              <SettingsPopup />
+              <ToastViewport />
+            </ToastProvider>
+          </QueryClientProvider>
+        </div>
+      </ErrorBoundary>
+    );
+  }
+
+  if (isModelSelectorWindow) {
+    return (
+      <ErrorBoundary context="ModelSelector">
+        <div className="h-full min-h-0 w-full overflow-hidden">
+          <QueryClientProvider client={queryClient}>
+            <ToastProvider>
+              <ModelSelectorWindow />
+              <ToastViewport />
+            </ToastProvider>
+          </QueryClientProvider>
+        </div>
+      </ErrorBoundary>
+    );
+  }
+
+  // --- OVERLAY WINDOW (Meeting Interface) ---
+  if (isOverlayWindow) {
+    return (
+      <ErrorBoundary context="Overlay">
+        <div className="w-[550px] relative bg-transparent">
+          <QueryClientProvider client={queryClient}>
+            <ToastProvider>
+              <div
+                style={{
+                  ["--overlay-opacity" as "--overlay-opacity"]: String(overlayOpacity),
+                  transition: "background-color 75ms ease, border-color 75ms ease, box-shadow 75ms ease",
+                } as React.CSSProperties}
+              >
+                <NativelyInterface onEndMeeting={handleEndMeeting} overlayOpacity={overlayOpacity} />
+              </div>
+              <ToastViewport />
+            </ToastProvider>
+          </QueryClientProvider>
+        </div>
+      </ErrorBoundary>
+    );
+  }
+
+  // --- LAUNCHER WINDOW (Default) ---
+  // Renders if window=launcher OR no param
+  return (
+    <ErrorBoundary context="Launcher">
+      <div className="h-full min-h-0 w-full relative bg-[#000000]">
+        {/* Auth gate: while we don't know yet, render nothing (avoids SignIn flash).
+            Once known, if no user is signed in show the SignIn page instead of the
+            launcher. The SignIn component triggers onIdTokenChanged on success, which
+            updates `authUser` below and unmounts itself. */}
+        {!authChecked ? (
+          <div className="h-full w-full" />
+        ) : pendingVerificationUser ? (
+          <QueryClientProvider client={queryClient}>
+            <ToastProvider>
+              <EmailVerification
+                user={pendingVerificationUser}
+                onVerified={() => completeEmailVerification(pendingVerificationUser)}
+              />
+              <ToastViewport />
+            </ToastProvider>
+          </QueryClientProvider>
+        ) : !authUser ? (
+          <QueryClientProvider client={queryClient}>
+            <ToastProvider>
+              <SignIn
+                onSignedIn={() => {
+                  /* auth state listener will flip the gate */
+                }}
+                bannerMessage={sessionExpiredMessage}
+                onBannerDismiss={() => setSessionExpiredMessage(null)}
+              />
+              <ToastViewport />
+            </ToastProvider>
+          </QueryClientProvider>
+        ) : (
+          <>
+            <AnimatePresence>
+              {showStartup ? (
+                <motion.div
+                  key="startup"
+                  initial={{ opacity: 1 }}
+                  exit={{ opacity: 0, scale: 1.1, pointerEvents: "none", transition: { duration: 0.6, ease: "easeInOut" } }}
+                >
+                  <StartupSequence onComplete={() => setShowStartup(false)} />
+                </motion.div>
+              ) : (
+                <motion.div
+                  key="main"
+                  className="h-full w-full"
+                  initial={{ opacity: 0, scale: 0.98, y: 15 }} // "Linear" style entry: slightly down and scaled down
+                  animate={{ opacity: 1, scale: 1, y: 0 }} // Slide up and snap to place
+                  transition={{
+                    duration: 0.8,
+                    ease: [0.19, 1, 0.22, 1], // Expo-out: snappy start, smooth landing
+                    delay: 0.1,
+                  }}
+                >
+                  <QueryClientProvider client={queryClient}>
+                    <ToastProvider>
+                      <div id="launcher-container" className="h-full w-full relative">
+                        <Launcher
+                          onStartMeeting={(event?: any) => handleStartMeeting(event)}
+                          onOpenSettings={(tab = "general") => {
+                            setSettingsInitialTab(tab);
+                            setIsManagerDashboardOpen(false); // switching to Settings closes Dashboard
+                            setIsSettingsOpen(true);
+                          }}
+                          onOpenManagerDashboard={
+                            isAdmin
+                              ? () => {
+                                setIsSettingsOpen(false); // switching to Dashboard closes Settings
+                                setIsManagerDashboardOpen((open) => !open); // toggle: click again to close
+                              }
+                              : undefined
+                          }
+                          onPageChange={setIsLauncherMainView}
+                          ollamaPullStatus={ollamaPull.status}
+                          ollamaPullPercent={ollamaPull.percent}
+                          ollamaPullMessage={ollamaPull.message}
+                          authUser={authUser}
+                          onSignOut={signOut}
+                        />
+                      </div>
+                      <SettingsOverlay
+                        isOpen={isSettingsOpen}
+                        onClose={() => {
+                          setIsSettingsOpen(false);
+                          window.dispatchEvent(new CustomEvent("settings-closed"));
+                        }}
+                        initialTab={settingsInitialTab}
+                        deepLinkInviteToken={deepLinkInviteToken}
+                        onDeepLinkTokenConsumed={clearDeepLinkInviteToken}
+                      />
+                      <ManagerDashboard isOpen={isManagerDashboardOpen} onClose={() => setIsManagerDashboardOpen(false)} />
+                      <ToastViewport />
+                    </ToastProvider>
+                  </QueryClientProvider>
+                </motion.div>
+              )}
+            </AnimatePresence>
+
+            <IncompatibleProviderBanner
+              warning={incompatibleWarning}
+              visible={isDefault}
+              onDismiss={dismissIncompatibleWarning}
+              onReindex={reindexIncompatibleMeetings}
+            />
+
+            {/* <UpdateBanner /> */}
+            {/* <SupportToaster /> */}
+
+            {inviteMismatchEmail && (
+              <InviteAccountMismatchBanner invitedEmail={inviteMismatchEmail} onDismiss={dismissInviteMismatch} />
+            )}
+
+            <AdCampaignToasters
+              visible={isLauncherMainView && !isSettingsOpen}
+              activeAd={activeAd}
+              dismissAd={dismissAd}
+              onSetupProfile={() => {
+                setSettingsInitialTab("profile");
+                setIsSettingsOpen(true);
+              }}
+              onSetupJD={() => {
+                setSettingsInitialTab("profile");
+                setIsSettingsOpen(true);
+              }}
+              onUpgrade={() => setShowPremiumModal(true)}
+            />
+
+            <PremiumUpgradeModal
+              isOpen={showPremiumModal}
+              onClose={() => setShowPremiumModal(false)}
+              isPremium={isPremiumActive}
+              onActivated={() => {
+                setIsPremiumActive(true);
+                setShowPremiumModal(false);
+                // After activation, open settings to Profile Intelligence
+                setTimeout(() => {
+                  setSettingsInitialTab("profile");
+                  setIsSettingsOpen(true);
+                }, 300);
+              }}
+              onDeactivated={() => setIsPremiumActive(false)}
+            />
+          </>
+        )}
+      </div>
+    </ErrorBoundary>
+  );
+};
+
+export default App;
