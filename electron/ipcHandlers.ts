@@ -13,8 +13,11 @@ import { searchCompany, clearCompanyCache } from "./services/TavilyManager";
 
 import { buildCompanyContextBlock } from './utils/salesBriefUtils';
 import { RECOGNITION_LANGUAGES, AI_RESPONSE_LANGUAGES } from "./config/languages"
-import { LiveAnalysisData } from "../src/types";
-import { buildOwnCompanyBlockFromOrchestrator, hydrateOrchestratorFromContext } from './utils/companyKnowledge';
+import { LiveAnalysisData } from "../src/types/liveAnalysis";
+import {
+  buildOwnCompanyBlockFromOrchestrator,
+  hydrateOrchestratorFromContext,
+} from './utils/companyKnowledge';
 import { AuthManager } from './services/AuthManager';
 
 function getAuthToken(): string | null {
@@ -2539,7 +2542,19 @@ export function initializeIpcHandlers(appState: AppState): void {
 
   safeHandle('company:getContext', async () => {
     try {
-      // Prefer DB (source of truth); fall back to SettingsManager for pre-migration data
+      // Supabase is the source of truth for this screen — the local SQLite
+      // cache only ever syncs one-way (local -> Supabase), so it can't see
+      // deletions/edits made directly against the cloud table. Read live
+      // whenever we have a configured, signed-in client; fall back to the
+      // local cache only when Supabase is unreachable (offline, etc.).
+      if (SupabaseReadService.isAvailable()) {
+        try {
+          return await SupabaseReadService.getCompanyContext();
+        } catch (supabaseErr) {
+          console.warn('[IPC] company:getContext: Supabase read failed, falling back to local cache:', supabaseErr);
+        }
+      }
+      // Fall back to local DB (source of truth for pre-migration/offline data)
       const dbCtx = DatabaseManager.getInstance().getCompanyContext();
       if (dbCtx) return dbCtx;
       const { SettingsManager } = require('./services/SettingsManager');
@@ -2765,15 +2780,33 @@ export function initializeIpcHandlers(appState: AppState): void {
         console.warn('[IPC] company:saveContext — orchestrator sync failed (non-fatal):', orchErr.message);
       }
 
+      // 7. Wait for the just-queued deletes/upserts to actually reach
+      //    Supabase before returning. company:getContext now reads Supabase
+      //    as the source of truth (see earlier fix), so if we returned
+      //    success while the delete was still sitting in the async mirror
+      //    outbox, switching tabs right after Save would re-fetch the old
+      //    row from Supabase and the "deleted" asset would pop back in.
+      try {
+        const { SupabaseMirrorService } = require('./db/SupabaseMirrorService');
+        await SupabaseMirrorService.getInstance().flush();
+      } catch (flushErr: any) {
+        console.warn('[IPC] company:saveContext — mirror flush failed (non-fatal, will retry in background):', flushErr.message);
+      }
+
       return { success: true };
     } catch (error: any) {
       return { success: false, error: error.message };
     }
   });
 
-  safeHandle('company:selectFile', async () => {
+  safeHandle('company:selectFile', async (event) => {
     try {
-      const result: any = await dialog.showOpenDialog({
+      // On macOS, an unparented dialog isn't attached as a sheet to any
+      // window, which is what causes it to appear "stuck" — not properly
+      // dismissing/returning focus to the Settings window after a file is
+      // chosen. Passing the owning BrowserWindow fixes that.
+      const win = BrowserWindow.fromWebContents(event.sender);
+      const result: any = await dialog.showOpenDialog(win!, {
         properties: ['openFile', 'multiSelections'],
         filters: [
           { name: 'Documents', extensions: ['pdf', 'doc', 'docx', 'ppt', 'pptx'] }

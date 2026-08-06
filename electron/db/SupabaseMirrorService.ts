@@ -255,7 +255,9 @@ export class SupabaseMirrorService {
             case 'scoring_criteria':
                 return row.user_id != null ? 'user_id,id' : 'id';
             case 'company_asset_chunks':
-                return row.user_id != null && row.id != null ? 'user_id,id' : (row.id != null ? 'id' : null);
+                return row.user_id != null && row.asset_id != null && row.chunk_index != null
+                    ? 'user_id,asset_id,chunk_index'
+                    : (row.id != null ? 'id' : null);
             default:
                 if (table.startsWith('rag_chunk_vectors_')) {
                     return row.user_id != null ? 'user_id,chunk_id' : 'chunk_id';
@@ -332,6 +334,31 @@ export class SupabaseMirrorService {
         this.outbox.push(entry);
         this._persistOutboxItem(entry);
         if (!this.draining) this._drain();
+    }
+
+    /**
+     * Wait for all currently-queued mirror ops to actually reach Supabase.
+     *
+     * The outbox is normally fire-and-forget (by design, so local writes
+     * never block on network). But some callers persist a change locally and
+     * then immediately turn around and read it back FROM Supabase (e.g.
+     * company:saveContext deleting an asset, followed by the Company
+     * Context tab re-fetching on next tab switch via SupabaseReadService).
+     * For those, the caller must await this after the local write so the
+     * delete/upsert has actually landed before anything reads the cloud
+     * copy again.
+     *
+     * Resolves once the outbox is empty, or after `timeoutMs` — we never want
+     * to hang indefinitely (e.g. offline); the outbox keeps retrying on its
+     * own regardless of whether anyone awaited this.
+     */
+    async flush(timeoutMs: number = 8000): Promise<void> {
+        if (this.outbox.length === 0 && !this.draining) return;
+        const start = Date.now();
+        if (!this.draining) this._drain();
+        while ((this.outbox.length > 0 || this.draining) && Date.now() - start < timeoutMs) {
+            await new Promise(r => setTimeout(r, 100));
+        }
     }
 
     /**
@@ -479,8 +506,23 @@ export class SupabaseMirrorService {
                 // anyway, but belt-and-braces).
                 let q: any = client.from(item.table).delete();
                 if (needsUserId) q = q.eq('user_id', userId);
-                const { error } = await q.eq(pkColumn, pkValue);
+                // Request the deleted rows back. Supabase-js returns NO error
+                // when a delete matches zero rows (whether because the row
+                // is already gone, or — critically — because an RLS policy
+                // silently excludes it from the DELETE). Without .select(),
+                // that "0 rows affected" case is indistinguishable from a
+                // real success, so a permission problem never surfaces —
+                // it just looks like the row is stuck forever on the client.
+                const { data, error } = await q.eq(pkColumn, pkValue).select('*');
                 if (error) throw error;
+                if (!data || data.length === 0) {
+                    console.warn(
+                        `[SupabaseMirrorService] delete on ${item.table} (${pkColumn}=${pkValue}, user_id=${userId}) ` +
+                        `matched 0 rows. If the row is visible in the Supabase dashboard, this is almost ` +
+                        `certainly a missing/incorrect RLS DELETE policy on "${item.table}", not a bug in ` +
+                        `this client — the request succeeded but the database silently declined to remove anything.`
+                    );
+                }
 
             } else if (item.op === 'upsertVector') {
                 const { type, local_id, meeting_id, dim, embedding, ...rest } = item.payload;
