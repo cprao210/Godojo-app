@@ -46,11 +46,13 @@ export const FloatingDock: React.FC<FloatingDockProps> = ({
 
     const panelSpring = { type: 'spring', damping: 28, stiffness: 380, mass: 0.8 } as const;
 
+    const isPanelActive = activePanel === "chat" || activePanel === "intelligence" || activePanel === "settings";
+
     return (
         <>
             <motion.div
                 className={`relative w-[480px] mx-auto h-fit bg-transparent max-w-full rounded-2xl items-center flex flex-col min-h-0 ${overlayPanelClass}`}
-                style={{ height: '735px' }}
+                style={{ height: isPanelActive ? '735px' : '130px' }}
             >
                 {/* Overlay Panels — all three stay mounted so internal state (countdown
                     timers, chat history, scroll position) is never lost on panel switch.

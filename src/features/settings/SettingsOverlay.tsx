@@ -316,7 +316,11 @@ const SettingsOverlay: React.FC<SettingsOverlayProps> = ({ isOpen, onClose, init
             }
 
             if (initialTab === 'company-context') {
-                window.electronAPI?.companyGetContext?.().then(setCompanyContext).catch(() => { });
+                setCompanyLoading(true);
+                window.electronAPI?.companyGetContext?.()
+                    .then(setCompanyContext)
+                    .catch(() => { })
+                    .finally(() => setCompanyLoading(false));
             }
         }
     }, [isOpen, initialTab]);
@@ -1276,7 +1280,11 @@ const SettingsOverlay: React.FC<SettingsOverlayProps> = ({ isOpen, onClose, init
                                         <button
                                             onClick={() => {
                                                 setActiveTab('company-context');
-                                                window.electronAPI?.companyGetContext?.().then(setCompanyContext).catch(() => { });
+                                                setCompanyLoading(true);
+                                                window.electronAPI?.companyGetContext?.()
+                                                    .then(setCompanyContext)
+                                                    .catch(() => { })
+                                                    .finally(() => setCompanyLoading(false));
                                             }}
                                             className={`w-full text-left px-3 py-2 rounded-lg text-sm font-medium transition-colors flex items-center gap-3 ${activeTab === 'company-context' ? 'bg-bg-item-active text-text-primary' : 'text-text-secondary hover:text-text-primary hover:bg-bg-item-active/50'}`}
                                         >

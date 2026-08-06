@@ -7,7 +7,6 @@ import { CompanyContextData, CompanyContextTabProps, CompanyIdentity, Competitor
 import { CompetitorModalProps, KnowledgeAsset, MeatballMenuProps, PersonaModalProps, TargetPersona } from '@/types';
 
 // ─── Completeness Ring ────────────────────────────────────────────────────────
-
 const CompletenessRing = ({ percentage }: { percentage: number }) => {
     const r = 22;
     const circ = 2 * Math.PI * r;
@@ -41,12 +40,10 @@ const STATUS_BADGE: Record<KnowledgeAsset['status'], { label: string; className:
 
 
 // ── Asset upload ──────────────────────────────────────────────────────────
-
 const ALLOWED_EXTENSIONS = ['.pdf', '.doc', '.docx', '.ppt', '.pptx'];
 const MAX_FILE_SIZE_BYTES = 5 * 1024 * 1024; // 5 MB
 
 // ─── Asset type config ────────────────────────────────────────────────────────
-
 const ASSET_CONFIG: Record<KnowledgeAsset['type'], {
     label: string; icon: React.ReactNode; accent: string; accentBg: string; accentBorder: string;
 }> = {
@@ -336,12 +333,51 @@ const CompetitorModal: React.FC<CompetitorModalProps> = ({ competitor, onSave, o
     );
 };
 
-// ─── Main Component ───────────────────────────────────────────────────────────
+// ─── Placeholder loader ───────────────────────────────────────────────────────
+const SkeletonBlock: React.FC<{ className?: string; isLight: boolean }> = ({ className = '', isLight }) => (
+    <div
+        className={`animate-pulse rounded-lg ${isLight ? 'bg-slate-200' : 'bg-bg-input'} ${className}`}
+    />
+);
 
+const CompanyContextSkeleton: React.FC<{ isLight: boolean }> = ({ isLight }) => {
+    const card = isLight ? 'bg-white border-slate-200/80' : 'bg-bg-item-surface border-border-subtle';
+    return (
+        <div className="space-y-6 animated fadeIn pb-10" aria-busy="true" aria-label="Loading company context">
+            <div className="mb-5 space-y-2">
+                <SkeletonBlock isLight={isLight} className="h-4 w-40" />
+                <SkeletonBlock isLight={isLight} className="h-3 w-72" />
+            </div>
+            <div className={`${card} rounded-xl border p-5 space-y-4`}>
+                <div className="flex items-center gap-4">
+                    <SkeletonBlock isLight={isLight} className="w-10 h-10 rounded-full" />
+                    <div className="space-y-2 flex-1">
+                        <SkeletonBlock isLight={isLight} className="h-3.5 w-32" />
+                        <SkeletonBlock isLight={isLight} className="h-3 w-24" />
+                    </div>
+                </div>
+                <div className="grid grid-cols-2 gap-3">
+                    <SkeletonBlock isLight={isLight} className="h-9" />
+                    <SkeletonBlock isLight={isLight} className="h-9" />
+                </div>
+                <SkeletonBlock isLight={isLight} className="h-9" />
+            </div>
+            <div className={`${card} rounded-xl border p-5 space-y-3`}>
+                <SkeletonBlock isLight={isLight} className="h-3.5 w-36" />
+                <SkeletonBlock isLight={isLight} className="h-20" />
+            </div>
+            {[0, 1, 2].map(i => (
+                <SkeletonBlock key={i} isLight={isLight} className="h-16" />
+            ))}
+        </div>
+    );
+};
+
+// ─── Main Component ───────────────────────────────────────────────────────────
 export const CompanyContextTab: React.FC<CompanyContextTabProps> = ({
     companyContext,
     setCompanyContext,
-    // companyLoading,
+    companyLoading,
     // setCompanyLoading,
     companySaving,
     setCompanySaving,
@@ -578,6 +614,13 @@ export const CompanyContextTab: React.FC<CompanyContextTabProps> = ({
     const inputCls = isLight
         ? 'bg-slate-50 border-slate-200 text-slate-900 placeholder-slate-400 focus:ring-blue-500/30 focus:border-blue-400'
         : 'bg-bg-input border-border-subtle text-text-primary placeholder-text-tertiary focus:ring-accent-primary/20 focus:border-accent-primary/50';
+
+    // Only show the full-screen skeleton on the *initial* fetch — once we
+    // have data, a background refresh (e.g. reopening the tab) shouldn't
+    // yank the form out from under the user.
+    if (companyLoading && !companyContext) {
+        return <CompanyContextSkeleton isLight={isLight} />;
+    }
 
     return (
         <>

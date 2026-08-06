@@ -735,6 +735,29 @@ export class DatabaseManager {
             `);
             this.db.pragma('user_version = 17');
         }
+
+        // Version 17 → 18: Fix "foreign key mismatch" on every company_assets
+        // write since v17. That migration changed company_assets' primary key
+        // from a plain `id TEXT PRIMARY KEY` to a composite `(user_id, id)`,
+        // but company_asset_files / company_asset_chunks still declare
+        // `FOREIGN KEY(asset_id) REFERENCES company_assets(id)` from v13 —
+        // and SQLite requires the referenced column(s) to exactly match an
+        // existing UNIQUE index or PK. `id` alone stopped being unique on its
+        // own the moment the PK became composite, so that FK has been invalid
+        // (and every insert touching it has been throwing "foreign key
+        // mismatch") for any install that went through v17.
+        //
+        // Fix: add a standalone UNIQUE index on company_assets(id). Asset ids
+        // are already effectively globally unique (type+timestamp+random), so
+        // this is safe, non-destructive, and needs no data migration or
+        // changes to the child tables' FK declarations.
+        if (version < 18) {
+            console.log('[DatabaseManager] Applying migration v17 → v18: Restore unique index on company_assets(id) for FK validity');
+            this.db.exec(`
+                CREATE UNIQUE INDEX IF NOT EXISTS idx_company_assets_id_unique ON company_assets(id);
+            `);
+            this.db.pragma('user_version = 18');
+        }
     }
 
     // ============================================
