@@ -2799,9 +2799,14 @@ export function initializeIpcHandlers(appState: AppState): void {
     }
   });
 
-  safeHandle('company:selectFile', async () => {
+  safeHandle('company:selectFile', async (event) => {
     try {
-      const result: any = await dialog.showOpenDialog({
+      // On macOS, an unparented dialog isn't attached as a sheet to any
+      // window, which is what causes it to appear "stuck" — not properly
+      // dismissing/returning focus to the Settings window after a file is
+      // chosen. Passing the owning BrowserWindow fixes that.
+      const win = BrowserWindow.fromWebContents(event.sender);
+      const result: any = await dialog.showOpenDialog(win!, {
         properties: ['openFile', 'multiSelections'],
         filters: [
           { name: 'Documents', extensions: ['pdf', 'doc', 'docx', 'ppt', 'pptx'] }

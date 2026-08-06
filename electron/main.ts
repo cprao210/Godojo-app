@@ -180,7 +180,7 @@ console.error = (...args: any[]) => {
 };
 
 import { initializeIpcHandlers } from "./ipcHandlers"
-import { WindowHelper } from "./WindowHelper"
+import { WindowHelper, initRendererUrl } from "./WindowHelper"
 import { SettingsWindowHelper } from "./SettingsWindowHelper"
 import { ModelSelectorWindowHelper } from "./ModelSelectorWindowHelper"
 import { CropperWindowHelper } from "./CropperWindowHelper"
@@ -3357,6 +3357,8 @@ async function initializeApp() {
   }
 
   console.log("App is ready")
+
+  await initRendererUrl()
 
   appState.createWindow()
 

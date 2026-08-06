@@ -638,6 +638,7 @@ const Launcher: React.FC<LauncherProps> = ({ onStartMeeting, onOpenSettings, onO
                                     : "border border-border-subtle bg-bg-item-surface text-text-secondary hover:bg-white/[0.08] hover:text-white",
                             ].join(" ")}
                             aria-label="Manager Dashboard"
+                            title="Dashboard"
                         >
                             <LayoutDashboard size={15} />
                         </button>
@@ -656,6 +657,7 @@ const Launcher: React.FC<LauncherProps> = ({ onStartMeeting, onOpenSettings, onO
                                 : "border border-border-subtle bg-bg-item-surface text-text-secondary hover:bg-white/[0.08] hover:text-white",
                         ].join(" ")}
                         aria-label="Settings"
+                        title="Settings"
                     >
                         <Settings size={15} />
                     </button>
@@ -1035,7 +1037,7 @@ const Launcher: React.FC<LauncherProps> = ({ onStartMeeting, onOpenSettings, onO
                                             <div className="flex items-center gap-2">
 
                                                 {/* Upload Transcript */}
-                                                {(
+                                                {/* {(
                                                     <button
                                                         onClick={() => setIsUploadOpen(true)}
                                                         className={[
@@ -1048,7 +1050,7 @@ const Launcher: React.FC<LauncherProps> = ({ onStartMeeting, onOpenSettings, onO
                                                         <Upload size={11} />
                                                         Upload Transcript
                                                     </button>
-                                                )}
+                                                )} */}
 
                                                 {/* Expand / Collapse */}
                                                 <motion.button
