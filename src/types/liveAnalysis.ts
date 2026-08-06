@@ -34,6 +34,17 @@ export interface Signal {
     id?: string;
 }
 
+/** A single transcript turn sent to the backend live-analysis endpoint.
+ *  Mirrors the electron-side GodojoClient.LiveAnalysisTurn request shape. */
+export interface LiveAnalysisTurn {
+    speaker: string;
+    text: string;
+}
+
+/** Meeting types selected in the intelligence panel (multi-select). Sent to the backend
+ *  as `meeting_types`; the Deal Optimizer is produced only when 'negotiation' is included. */
+export type MeetingType = 'discovery' | 'demo' | 'negotiation';
+
 export type DealTrigger =
     | 'pricing_objection'
     | 'discount_request'

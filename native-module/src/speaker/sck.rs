@@ -1,6 +1,10 @@
 // ScreenCaptureKit-based system audio capture
 // Uses cidre 0.11.10 API with correct class registration and inner state
 
+// cidre's define_obj_type! macro expands to a reference→pointer transmute we
+// cannot rewrite from here.
+#![allow(clippy::useless_transmute, clippy::transmutes_expressible_as_ptr_casts)]
+
 use anyhow::Result;
 use cidre::sc::StreamOutput;
 use cidre::{arc, cm, define_obj_type, dispatch, ns, objc, sc};
@@ -66,7 +70,7 @@ impl sc::stream::OutputImpl for AudioHandler {
                     let byte_count = buffer.data_bytes_size as usize;
 
                     // Validate sample format (must be f32 aligned)
-                    if byte_count == 0 || byte_count % 4 != 0 {
+                    if byte_count == 0 || !byte_count.is_multiple_of(4) {
                         continue;
                     }
 
@@ -108,6 +112,10 @@ impl SpeakerInput {
             Arc,
         };
 
+        // Arc<UnsafeCell> is deliberate: the SCK completion block writes once,
+        // the polling loop below reads after the ready flag flips (release/
+        // acquire ordering on content_ready is the synchronization).
+        #[allow(clippy::arc_with_non_send_sync)]
         let content_cell: Arc<UnsafeCell<Option<arc::R<sc::ShareableContent>>>> =
             Arc::new(UnsafeCell::new(None));
         let content_ready = Arc::new(AtomicBool::new(false));

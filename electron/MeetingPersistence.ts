@@ -257,7 +257,7 @@ export class MeetingPersistence {
      *   Forwarded as the scorecard's `hintMeetingTypes` so auto-detection respects the
      *   rep's explicit selection instead of guessing from the transcript alone.
      */
-    public async stopMeeting(meetingTypes?: ('discovery' | 'demo' | 'negotiation')[]): Promise<string | null> {
+    public async stopMeeting(meetingTypes?: ('discovery' | 'demo' | 'negotiation')[], tenantId?: string | null): Promise<string | null> {
         console.log('[MeetingPersistence] Stopping meeting and queueing save...');
 
         // 0. Force-save any pending interim transcript
@@ -286,7 +286,7 @@ export class MeetingPersistence {
             usage: [...this.session.getFullUsage()],
             startTime: this.session.getSessionStartTime(),
             durationMs: durationMs,
-            context: this.session.getFullSessionContext()
+            context: this.session.getFullSessionContext(),
         };
 
         // BUG-04 fix: snapshot metadata BEFORE reset() clears it so the
@@ -305,7 +305,8 @@ export class MeetingPersistence {
             liveAnalysisData,
             speakerNamesSnapshot,
             undefined,      // companyIntel — not captured at stop time for live calls
-            meetingTypes    // ← rep's live selection, was previously dropped (always undefined)
+            meetingTypes,    // ← rep's live selection, was previously dropped (always undefined)
+            tenantId || null
         ).catch(err => {
             console.error('[MeetingPersistence] Background processing failed:', err);
         });
@@ -321,6 +322,7 @@ export class MeetingPersistence {
             detailedSummary: { actionItems: [], keyPoints: [] },
             transcript: [],
             usage: [],
+            tenantId: tenantId || null,
             isProcessed: false
         };
 
@@ -346,7 +348,8 @@ export class MeetingPersistence {
         liveAnalysisData?: LiveAnalysisData | null,
         speakerNames?: { user: string; client: string },
         companyIntel?: Record<string, any> | null,
-        hintMeetingTypes?: ('discovery' | 'demo' | 'negotiation')[]
+        hintMeetingTypes?: ('discovery' | 'demo' | 'negotiation')[],
+        tenantId?: string | null
     ): Promise<void> {
         let title = "Untitled Session";
         let summaryData: { actionItems: string[], keyPoints: string[], liveAnalysis?: LiveAnalysisData, speakerNames?: { user: string, client: string } } = { actionItems: [], keyPoints: [] };
@@ -366,12 +369,25 @@ export class MeetingPersistence {
         // 10,000 chars which silently cuts off the second half of longer calls.
         // Average ~60 chars per turn × 1500 turns = 90,000 chars — well within
         // Gemini/Claude/GPT context windows. Groq has a 100k token guard already.
+        //
+        // When diarization identified 2+ far-end speakers, label prospect turns
+        // "PROSPECT (Speaker n)" so the summary LLM can attribute statements.
+        const clientIndices = new Set(
+            data.transcript
+                .filter(t => t.speaker !== 'user' && (t as any).speakerIndex !== undefined)
+                .map(t => (t as any).speakerIndex as number)
+        );
+        const multiClientSpeakers = clientIndices.size >= 2;
         const fullTranscriptText = data.transcript
             .filter(t => !['system', 'ai', 'assistant', 'model'].includes(t.speaker?.toLowerCase()))
             .map(t => {
-                const role = t.speaker === 'user'
+                let role = t.speaker === 'user'
                     ? (speakerNames?.user || 'REP')
                     : (speakerNames?.client || 'PROSPECT');
+                const idx = (t as any).speakerIndex;
+                if (t.speaker !== 'user' && multiClientSpeakers && idx !== undefined) {
+                    role = `${role} (Speaker ${idx + 1})`;
+                }
                 return `${role}: ${t.text}`;
             })
             .join('\n');
@@ -539,7 +555,8 @@ export class MeetingPersistence {
                 usage: data.usage,
                 calendarEventId: calendarEventId,
                 source: source,
-                isProcessed: true
+                isProcessed: true,
+                tenantId: tenantId || null
             };
 
             DatabaseManager.getInstance().saveMeeting(meetingData, data.startTime, data.durationMs);
@@ -630,9 +647,9 @@ export class MeetingPersistence {
             SupabaseMirrorService.getInstance().upsertRow('meeting_scorecards', {
                 meeting_id: meetingId,
                 overall_score: scorecardResult.overallWeightedScore ?? 0,
-                detected_types: JSON.stringify(scorecardResult.detectedTypes ?? []),
-                scorecard_json: JSON.stringify(scorecardResult),
-                criteria_snapshot_json: customScoringCriteria ? JSON.stringify(customScoringCriteria) : null,
+                detected_types: scorecardResult.detectedTypes ?? [],
+                scorecard_json: scorecardResult,
+                criteria_snapshot_json: customScoringCriteria ?? null,
                 generated_at: new Date().toISOString(),
             });
         } catch (mirrorErr) {

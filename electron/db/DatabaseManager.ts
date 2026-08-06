@@ -4,6 +4,7 @@ import { app } from 'electron';
 import fs from 'fs';
 import * as sqliteVec from 'sqlite-vec';
 import { SupabaseMirrorService } from './SupabaseMirrorService';
+import { AuthManager } from '../services/AuthManager';
 import { LiveAnalysisData } from '../../src/types/liveAnalysis';
 
 /**
@@ -116,6 +117,8 @@ export interface Meeting {
         timestamp: number;
         final?: boolean;
         confidence?: number;
+        /** Diarized far-end speaker index (client stream, Deepgram only). */
+        speakerIndex?: number;
     }>;
     usage?: Array<{
         type: 'assist' | 'followup' | 'chat' | 'followup_questions';
@@ -127,6 +130,7 @@ export interface Meeting {
     calendarEventId?: string;
     source?: 'manual' | 'calendar';
     meetingTypes?: ('discovery' | 'demo' | 'negotiation')[];
+    tenantId?: string | null;
 }
 
 export class DatabaseManager {
@@ -395,7 +399,6 @@ export class DatabaseManager {
             const columnsToAdd = [
                 "ALTER TABLE meetings ADD COLUMN embedding_provider TEXT",
                 "ALTER TABLE meetings ADD COLUMN embedding_dimensions INTEGER",
-                "ALTER TABLE meetings ADD COLUMN meeting_types TEXT"   // JSON array: ["discovery","demo"]
             ];
             for (const sql of columnsToAdd) {
                 try { this.db.exec(sql); } catch (e) { /* Column already exists */ }
@@ -646,7 +649,115 @@ export class DatabaseManager {
             this.db.pragma('user_version = 14');
         }
 
+        // Version 14 → 15: transcripts.speaker_index (diarization)
+        // Split into its own version so installs already at v14 (scorecards)
+        // still receive this column. NULL for non-diarized segments
+        // (mic, diarize off, older meetings). Guarded so re-runs are safe.
+        if (version < 15) {
+            console.log('[DatabaseManager] Applying migration v14 → v15: transcripts.speaker_index (diarization)');
+            try { this.db.exec(`ALTER TABLE transcripts ADD COLUMN speaker_index INTEGER`); }
+            catch (e) { /* Column already exists (e.g. dev DB that ran the old combined v14) */ }
+            this.db.pragma('user_version = 15');
+        }
+
+        // Version 15 → 16: meetings.tenant_id
+        // saveMeeting() has been inserting a tenant_id value into `meetings` for a while,
+        // but the column was never added to the schema, so those writes were silently
+        // failing on existing DBs. Backfilling as NULL is safe; SupabaseMirrorService
+        // reconciles the real value on next sync.
+        if (version < 16) {
+            console.log('[DatabaseManager] Applying migration v15 → v16: meetings.tenant_id');
+            try { this.db.exec(`ALTER TABLE meetings ADD COLUMN tenant_id TEXT`); }
+            catch (e) { /* Column already exists */ }
+            try { this.db.exec(`CREATE INDEX IF NOT EXISTS idx_meetings_tenant ON meetings(tenant_id)`); }
+            catch (e) { /* Index already exists */ }
+            this.db.pragma('user_version = 16');
+        }
         console.log('[DatabaseManager] Migrations completed.');
+
+        // Version 16 → 17: Scope company_context/assets/personas/competitors by
+        // user_id. These were previously single global rows/tables with no
+        // account isolation at all — any signed-in user on this machine saw
+        // whichever account last wrote to them. Legacy unscoped rows are
+        // dropped (their true owner is unrecoverable) rather than migrated to
+        // whoever happens to be signed in during the upgrade; each account's
+        // data will re-populate from Supabase on next sync.
+        if (version < 17) {
+            console.log('[DatabaseManager] Applying migration v16 → v17: Scope company_* tables by user_id');
+            this.db.exec(`
+                DROP TABLE IF EXISTS company_context;
+                CREATE TABLE company_context (
+                    user_id TEXT NOT NULL,
+                    id INTEGER NOT NULL DEFAULT 1,
+                    name TEXT DEFAULT '',
+                    website TEXT DEFAULT '',
+                    industry TEXT DEFAULT '',
+                    persona_engine_enabled INTEGER DEFAULT 0,
+                    core_value_proposition TEXT DEFAULT '',
+                    data_completeness INTEGER DEFAULT 0,
+                    updated_at TEXT DEFAULT CURRENT_TIMESTAMP,
+                    PRIMARY KEY (user_id, id)
+                );
+
+                DROP TABLE IF EXISTS company_assets;
+                CREATE TABLE company_assets (
+                    user_id TEXT NOT NULL,
+                    id TEXT NOT NULL,
+                    type TEXT NOT NULL,
+                    label TEXT,
+                    status TEXT DEFAULT 'processing',
+                    file_path TEXT,
+                    file_name TEXT,
+                    last_updated TEXT DEFAULT CURRENT_TIMESTAMP,
+                    PRIMARY KEY (user_id, id)
+                );
+
+                DROP TABLE IF EXISTS company_personas;
+                CREATE TABLE company_personas (
+                    user_id TEXT NOT NULL,
+                    id TEXT NOT NULL,
+                    role TEXT NOT NULL,
+                    description TEXT DEFAULT '',
+                    sort_order INTEGER DEFAULT 0,
+                    PRIMARY KEY (user_id, id)
+                );
+
+                DROP TABLE IF EXISTS company_competitors;
+                CREATE TABLE company_competitors (
+                    user_id TEXT NOT NULL,
+                    id TEXT NOT NULL,
+                    name TEXT NOT NULL,
+                    moat TEXT DEFAULT '',
+                    win_rate REAL DEFAULT 0,
+                    sort_order INTEGER DEFAULT 0,
+                    PRIMARY KEY (user_id, id)
+                );
+            `);
+            this.db.pragma('user_version = 17');
+        }
+
+        // Version 17 → 18: Fix "foreign key mismatch" on every company_assets
+        // write since v17. That migration changed company_assets' primary key
+        // from a plain `id TEXT PRIMARY KEY` to a composite `(user_id, id)`,
+        // but company_asset_files / company_asset_chunks still declare
+        // `FOREIGN KEY(asset_id) REFERENCES company_assets(id)` from v13 —
+        // and SQLite requires the referenced column(s) to exactly match an
+        // existing UNIQUE index or PK. `id` alone stopped being unique on its
+        // own the moment the PK became composite, so that FK has been invalid
+        // (and every insert touching it has been throwing "foreign key
+        // mismatch") for any install that went through v17.
+        //
+        // Fix: add a standalone UNIQUE index on company_assets(id). Asset ids
+        // are already effectively globally unique (type+timestamp+random), so
+        // this is safe, non-destructive, and needs no data migration or
+        // changes to the child tables' FK declarations.
+        if (version < 18) {
+            console.log('[DatabaseManager] Applying migration v17 → v18: Restore unique index on company_assets(id) for FK validity');
+            this.db.exec(`
+                CREATE UNIQUE INDEX IF NOT EXISTS idx_company_assets_id_unique ON company_assets(id);
+            `);
+            this.db.pragma('user_version = 18');
+        }
     }
 
     // ============================================
@@ -705,20 +816,22 @@ export class DatabaseManager {
 
     public getCompanyContext(): any | null {
         if (!this.db) return null;
+        const uid = AuthManager.getInstance().getUid();
+        if (!uid) return null; // no signed-in user — nothing to scope this to
         try {
-            const identity = this.db.prepare('SELECT * FROM company_context WHERE id = 1').get() as any;
+            const identity = this.db.prepare('SELECT * FROM company_context WHERE user_id = ? AND id = 1').get(uid) as any;
             if (!identity) return null;
 
             const assets = (() => {
-                try { return this.db!.prepare('SELECT * FROM company_assets ORDER BY last_updated DESC').all() as any[]; }
+                try { return this.db!.prepare('SELECT * FROM company_assets WHERE user_id = ? ORDER BY last_updated DESC').all(uid) as any[]; }
                 catch { return []; }
             })();
             const personas = (() => {
-                try { return this.db!.prepare('SELECT * FROM company_personas ORDER BY sort_order ASC').all() as any[]; }
+                try { return this.db!.prepare('SELECT * FROM company_personas WHERE user_id = ? ORDER BY sort_order ASC').all(uid) as any[]; }
                 catch { return []; }
             })();
             const competitors = (() => {
-                try { return this.db!.prepare('SELECT * FROM company_competitors ORDER BY sort_order ASC').all() as any[]; }
+                try { return this.db!.prepare('SELECT * FROM company_competitors WHERE user_id = ? ORDER BY sort_order ASC').all(uid) as any[]; }
                 catch { return []; }
             })();
 
@@ -764,6 +877,11 @@ export class DatabaseManager {
 
     public saveCompanyContext(data: any): void {
         if (!this.db) return;
+        const uid = AuthManager.getInstance().getUid();
+        if (!uid) {
+            console.warn('[DatabaseManager] saveCompanyContext called with no signed-in user — refusing to write');
+            return;
+        }
         try {
             const identity = data.identity ?? {};
             const checks = [
@@ -775,9 +893,10 @@ export class DatabaseManager {
             const completeness = Math.round((checks.filter(Boolean).length / 4) * 100);
             this.db.prepare(`
                 INSERT OR REPLACE INTO company_context
-                    (id, name, website, industry, persona_engine_enabled, core_value_proposition, data_completeness, updated_at)
-                VALUES (1, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+                    (user_id, id, name, website, industry, persona_engine_enabled, core_value_proposition, data_completeness, updated_at)
+                VALUES (?, 1, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
             `).run(
+                uid,
                 identity.name ?? '',
                 identity.website ?? '',
                 identity.industry ?? '',
@@ -786,8 +905,12 @@ export class DatabaseManager {
                 completeness,
             );
             // Mirror to Supabase — no-op if unauthenticated, queued otherwise.
+            // Including user_id here is what lets SupabaseMirrorService's
+            // _conflictTargetForTable pick the correct 'user_id,id' upsert
+            // target instead of colliding on a bare 'id' across accounts.
             try {
                 SupabaseMirrorService.getInstance().upsertRow('company_context', {
+                    user_id: uid,
                     id: 1,
                     name: identity.name ?? '',
                     website: identity.website ?? '',
@@ -900,14 +1023,21 @@ export class DatabaseManager {
     public upsertCompanyAsset(asset: { id: string; type: string; label: string; status: string }): void {
 
         if (!this.db) return;
+        const uid = AuthManager.getInstance().getUid();
+
+        if (!uid) {
+            console.warn('[DatabaseManager] upsertCompanyAsset called with no signed-in user — refusing to write');
+            return;
+        }
 
         try {
             this.db.prepare(`
-                INSERT OR REPLACE INTO company_assets (id, type, label, status, last_updated)
-                VALUES (?, ?, ?, ?, CURRENT_TIMESTAMP)
-            `).run(asset.id, asset.type, asset.label, asset.status);
+                INSERT OR REPLACE INTO company_assets (user_id, id, type, label, status, last_updated)
+                VALUES (?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+            `).run(uid, asset.id, asset.type, asset.label, asset.status);
             try {
                 SupabaseMirrorService.getInstance().upsertRow('company_assets', {
+                    user_id: uid,
                     id: asset.id,
                     type: asset.type,
                     label: asset.label,
@@ -1059,14 +1189,17 @@ export class DatabaseManager {
 
     public upsertCompanyPersona(persona: { id: string; role: string; description: string }, sortOrder: number = 0): void {
         if (!this.db) return;
+        const uid = AuthManager.getInstance().getUid();
+        if (!uid) { console.warn('[DatabaseManager] upsertCompanyPersona called with no signed-in user — refusing to write'); return; }
         try {
             this.db.prepare(`
-                INSERT OR REPLACE INTO company_personas (id, role, description, sort_order)
-                VALUES (?, ?, ?, ?)
-            `).run(persona.id, persona.role, persona.description ?? '', sortOrder);
+                INSERT OR REPLACE INTO company_personas (user_id, id, role, description, sort_order)
+                VALUES (?, ?, ?, ?, ?)
+            `).run(uid, persona.id, persona.role, persona.description ?? '', sortOrder);
             // Mirror to Supabase.
             try {
                 SupabaseMirrorService.getInstance().upsertRow('company_personas', {
+                    user_id: uid,
                     id: persona.id,
                     role: persona.role,
                     description: persona.description ?? '',
@@ -1082,8 +1215,10 @@ export class DatabaseManager {
 
     public deleteCompanyPersona(personaId: string): void {
         if (!this.db) return;
+        const uid = AuthManager.getInstance().getUid();
+        if (!uid) return;
         try {
-            this.db.prepare('DELETE FROM company_personas WHERE id = ?').run(personaId);
+            this.db.prepare('DELETE FROM company_personas WHERE user_id = ? AND id = ?').run(uid, personaId);
             // Mirror to Supabase.
             try {
                 SupabaseMirrorService.getInstance().deleteRow('company_personas', 'id', personaId);
@@ -1097,14 +1232,17 @@ export class DatabaseManager {
 
     public upsertCompanyCompetitor(competitor: { id: string; name: string; moat: string; winRate: number }, sortOrder: number = 0): void {
         if (!this.db) return;
+        const uid = AuthManager.getInstance().getUid();
+        if (!uid) { console.warn('[DatabaseManager] upsertCompanyCompetitor called with no signed-in user — refusing to write'); return; }
         try {
             this.db.prepare(`
-                INSERT OR REPLACE INTO company_competitors (id, name, moat, win_rate, sort_order)
-                VALUES (?, ?, ?, ?, ?)
-            `).run(competitor.id, competitor.name, competitor.moat ?? '', competitor.winRate ?? 0, sortOrder);
+                INSERT OR REPLACE INTO company_competitors (user_id, id, name, moat, win_rate, sort_order)
+                VALUES (?, ?, ?, ?, ?, ?)
+            `).run(uid, competitor.id, competitor.name, competitor.moat ?? '', competitor.winRate ?? 0, sortOrder);
             // Mirror to Supabase.
             try {
                 SupabaseMirrorService.getInstance().upsertRow('company_competitors', {
+                    user_id: uid,
                     id: competitor.id,
                     name: competitor.name,
                     moat: competitor.moat ?? '',
@@ -1121,8 +1259,10 @@ export class DatabaseManager {
 
     public deleteCompanyCompetitor(competitorId: string): void {
         if (!this.db) return;
+        const uid = AuthManager.getInstance().getUid();
+        if (!uid) return;
         try {
-            this.db.prepare('DELETE FROM company_competitors WHERE id = ?').run(competitorId);
+            this.db.prepare('DELETE FROM company_competitors WHERE user_id = ? AND id = ?').run(uid, competitorId);
             // Mirror to Supabase.
             try {
                 SupabaseMirrorService.getInstance().deleteRow('company_competitors', 'id', competitorId);
@@ -1279,19 +1419,21 @@ export class DatabaseManager {
 
     public saveMeeting(meeting: Meeting, startTimeMs: number, durationMs: number) {
 
+        console.log("--> saveMeeting: ", meeting)
+
         if (!this.db) {
             console.error('[DatabaseManager] DB not initialized');
             return;
         }
 
         const insertMeeting = this.db.prepare(`
-            INSERT OR REPLACE INTO meetings (id, title, start_time, duration_ms, summary_json, created_at, calendar_event_id, source, is_processed)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+            INSERT OR REPLACE INTO meetings (id, title, start_time, duration_ms, summary_json, created_at, calendar_event_id, tenant_id, source, is_processed)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         `);
 
         const insertTranscript = this.db.prepare(`
-            INSERT INTO transcripts (meeting_id, speaker, content, timestamp_ms)
-            VALUES (?, ?, ?, ?)
+            INSERT INTO transcripts (meeting_id, speaker, content, timestamp_ms, speaker_index)
+            VALUES (?, ?, ?, ?, ?)
         `);
 
         const insertInteraction = this.db.prepare(`
@@ -1299,10 +1441,15 @@ export class DatabaseManager {
             VALUES (?, ?, ?, ?, ?, ?)
         `);
 
-        const summaryJson = JSON.stringify({
+        // Keep the object form for the Supabase mirror (jsonb column — must receive
+        // an object, not a pre-stringified string, or it gets stored as a quoted
+        // JSON-string scalar instead of a real jsonb object). Stringify separately
+        // for the local SQLite column, which has no native JSON type and needs TEXT.
+        const summaryObj = {
             legacySummary: meeting.summary,
             detailedSummary: meeting.detailedSummary
-        });
+        };
+        const summaryJson = JSON.stringify(summaryObj);
 
         // Mirror payloads collected inside the transaction. We only enqueue them at the
         // mirror AFTER the transaction commits — never enqueue cloud writes for data that
@@ -1320,6 +1467,7 @@ export class DatabaseManager {
                 summaryJson,
                 meeting.date, // Using the ISO string as created_at for sorting simply
                 meeting.calendarEventId || null,
+                meeting.tenantId || null,
                 meeting.source || 'manual',
                 meeting.isProcessed ? 1 : 0
             );
@@ -1331,8 +1479,13 @@ export class DatabaseManager {
                         meeting.id,
                         segment.speaker,
                         segment.text,
-                        segment.timestamp
+                        segment.timestamp,
+                        segment.speakerIndex ?? null
                     );
+                    // NOTE: speaker_index is deliberately EXCLUDED from the mirror
+                    // payload until the Supabase transcripts table gains the column —
+                    // an unknown column fails the whole cloud upsert. TODO(supabase):
+                    // migrate cloud schema, then add speaker_index here.
                     transcriptMirror.push({
                         id: Number(info.lastInsertRowid),
                         meeting_id: meeting.id,
@@ -1395,9 +1548,10 @@ export class DatabaseManager {
                     title: meeting.title,
                     start_time: startTimeMs,
                     duration_ms: durationMs,
-                    summary_json: summaryJson,
+                    summary_json: summaryObj,
                     created_at: meeting.date,
                     calendar_event_id: meeting.calendarEventId || null,
+                    tenant_id: meeting.tenantId || null,
                     source: meeting.source || 'manual',
                     is_processed: meeting.isProcessed ? 1 : 0
                 });
@@ -1472,17 +1626,6 @@ export class DatabaseManager {
             return info.changes > 0;
         } catch (error) {
             console.error(`[DatabaseManager] Failed to update title for meeting ${id}:`, error);
-            return false;
-        }
-    }
-
-    public updateMeetingTypes(id: string, types: ('discovery' | 'demo' | 'negotiation')[]): boolean {
-        try {
-            const stmt = this.db.prepare('UPDATE meetings SET meeting_types = ? WHERE id = ?');
-            stmt.run(JSON.stringify(types), id);
-            return true;
-        } catch (e) {
-            console.error('[DatabaseManager] updateMeetingTypes failed:', e);
             return false;
         }
     }
@@ -1605,7 +1748,8 @@ export class DatabaseManager {
         const transcript = transcriptRows.map(row => ({
             speaker: row.speaker,
             text: row.content,
-            timestamp: row.timestamp_ms
+            timestamp: row.timestamp_ms,
+            speakerIndex: row.speaker_index ?? undefined
         }));
 
         const usage = usageRows.map(row => {

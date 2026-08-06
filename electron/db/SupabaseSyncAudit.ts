@@ -20,6 +20,17 @@ import { SupabaseMirrorService } from './SupabaseMirrorService';
 
 const PAGE = 1000;
 
+// Columns that exist locally (SQLite) but not yet in the Supabase schema.
+// Kept in sync with SupabaseBackfill.ts's LOCAL_ONLY_COLUMNS — both files
+// read full local rows via SELECT * and must strip the same columns before
+// forwarding to PostgREST, which rejects an entire upsert if any column is
+// unrecognized (PGRST204). TODO(supabase): delete an entry here once that
+// column is added to the cloud schema.
+const LOCAL_ONLY_COLUMNS: Record<string, string[]> = {
+    meetings: ['meeting_types'],
+    transcripts: ['speaker_index'],
+};
+
 export interface SyncAuditResult {
     table: string;
     localCount: number;
@@ -66,8 +77,8 @@ export class SupabaseSyncAudit {
         // PK is `user_id` (Firebase UID) — they can't be set-diffed, so we do a
         // presence check instead.
         const specs: TableSpec[] = [
-            { table: 'meetings', pkCol: 'id', transform: this._sanitizeRow },
-            { table: 'transcripts', pkCol: 'id', transform: this._sanitizeRow },
+            { table: 'meetings', pkCol: 'id', transform: (r) => this._stripLocalOnly('meetings', this._sanitizeRow(r)) },
+            { table: 'transcripts', pkCol: 'id', transform: (r) => this._stripLocalOnly('transcripts', this._sanitizeRow(r)) },
             { table: 'ai_interactions', pkCol: 'id', transform: this._sanitizeRow },
             { table: 'chunks', pkCol: 'id', transform: this._transformChunk },
             { table: 'chunk_summaries', pkCol: 'id', transform: this._transformSummary },
@@ -165,6 +176,14 @@ export class SupabaseSyncAudit {
         }
 
         return remoteIds;
+    }
+
+    private static _stripLocalOnly(table: string, row: Record<string, any>): Record<string, any> {
+        const drop = LOCAL_ONLY_COLUMNS[table];
+        if (!drop) return row;
+        const clean = { ...row };
+        for (const col of drop) delete clean[col];
+        return clean;
     }
 
     /**

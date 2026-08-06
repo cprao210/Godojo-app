@@ -5,6 +5,7 @@ import {
     BookOpen, Presentation, FlaskConical, Plus, ExternalLink,
     Users, Swords, MoreVertical, Edit2, Save, Zap, Info,
 } from 'lucide-react';
+import { intelligenceApi } from '../../lib/intelligenceApi';
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -65,6 +66,47 @@ interface CompanyContextTabProps {
     setIsPremiumModalOpen?: (v: boolean) => void;
     isLight: boolean;
 }
+
+// ─── Placeholder loader ───────────────────────────────────────────────────────
+
+const SkeletonBlock: React.FC<{ className?: string; isLight: boolean }> = ({ className = '', isLight }) => (
+    <div
+        className={`animate-pulse rounded-lg ${isLight ? 'bg-slate-200' : 'bg-bg-input'} ${className}`}
+    />
+);
+
+const CompanyContextSkeleton: React.FC<{ isLight: boolean }> = ({ isLight }) => {
+    const card = isLight ? 'bg-white border-slate-200/80' : 'bg-bg-item-surface border-border-subtle';
+    return (
+        <div className="space-y-6 animated fadeIn pb-10" aria-busy="true" aria-label="Loading company context">
+            <div className="mb-5 space-y-2">
+                <SkeletonBlock isLight={isLight} className="h-4 w-40" />
+                <SkeletonBlock isLight={isLight} className="h-3 w-72" />
+            </div>
+            <div className={`${card} rounded-xl border p-5 space-y-4`}>
+                <div className="flex items-center gap-4">
+                    <SkeletonBlock isLight={isLight} className="w-10 h-10 rounded-full" />
+                    <div className="space-y-2 flex-1">
+                        <SkeletonBlock isLight={isLight} className="h-3.5 w-32" />
+                        <SkeletonBlock isLight={isLight} className="h-3 w-24" />
+                    </div>
+                </div>
+                <div className="grid grid-cols-2 gap-3">
+                    <SkeletonBlock isLight={isLight} className="h-9" />
+                    <SkeletonBlock isLight={isLight} className="h-9" />
+                </div>
+                <SkeletonBlock isLight={isLight} className="h-9" />
+            </div>
+            <div className={`${card} rounded-xl border p-5 space-y-3`}>
+                <SkeletonBlock isLight={isLight} className="h-3.5 w-36" />
+                <SkeletonBlock isLight={isLight} className="h-20" />
+            </div>
+            {[0, 1, 2].map(i => (
+                <SkeletonBlock key={i} isLight={isLight} className="h-16" />
+            ))}
+        </div>
+    );
+};
 
 // ─── Completeness Ring ────────────────────────────────────────────────────────
 
@@ -426,7 +468,7 @@ const CompetitorModal: React.FC<CompetitorModalProps> = ({ competitor, onSave, o
 export const CompanyContextTab: React.FC<CompanyContextTabProps> = ({
     companyContext,
     setCompanyContext,
-    // companyLoading,
+    companyLoading,
     // setCompanyLoading,
     companySaving,
     setCompanySaving,
@@ -516,6 +558,13 @@ export const CompanyContextTab: React.FC<CompanyContextTabProps> = ({
                 setCompanyContext(draft);
                 savedSnapshot.current = draft;
                 setIsDirty(false);
+
+                // Chunks + local embeddings are now guaranteed written (saveContext
+                // awaits the embedding pipeline). Safe to trigger the backend
+                // reindex now — best-effort, failure shouldn't block the save UX.
+                intelligenceApi.reindexCompanyAssets().catch(err =>
+                    console.error('[CompanyContextTab] Failed to reindex company assets:', err)
+                );
             } else {
                 setCompanyError(result?.error || 'Save failed');
             }
@@ -539,51 +588,46 @@ export const CompanyContextTab: React.FC<CompanyContextTabProps> = ({
         // if (!isPremium) { setIsPremiumModalOpen(true); return; }
         try {
             const fileResult = await (window as any).electronAPI?.companySelectFile?.();
-            if (fileResult?.cancelled || !fileResult?.filePath) return;
+            if (fileResult?.cancelled || !fileResult?.files?.length) return;
 
-            // ── Validate format ───────────────────────────────────────────────
-            const filePath: string = fileResult.filePath;
-            const fileName: string = fileResult.fileName ?? filePath.split(/[\\/]/).pop() ?? '';
-            const ext = fileName.slice(fileName.lastIndexOf('.')).toLowerCase();
+            for (const file of fileResult.files as { filePath: string; fileName: string; fileSize: number }[]) {
+                const ext = file.fileName.slice(file.fileName.lastIndexOf('.')).toLowerCase();
+                if (!ALLOWED_EXTENSIONS.includes(ext)) {
+                    setCompanyError(`Unsupported file type "${ext}" in "${file.fileName}". Please upload PDF, Word, or PowerPoint files.`);
+                    continue;
+                }
+                if (file.fileSize > MAX_FILE_SIZE_BYTES) {
+                    const mb = (file.fileSize / (1024 * 1024)).toFixed(1);
+                    setCompanyError(`"${file.fileName}" is too large (${mb} MB). Maximum allowed size is 5 MB.`);
+                    continue;
+                }
 
-            if (!ALLOWED_EXTENSIONS.includes(ext)) {
-                setCompanyError(`Unsupported file type "${ext}". Please upload a PDF, Word (.doc / .docx), or PowerPoint (.ppt / .pptx) file.`);
-                return;
-            }
+                const tempId = `${type}-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`;
+                setAssetUploading(tempId);
 
-            // ── Validate size ─────────────────────────────────────────────────
-            // fileResult.fileSize is populated by the Electron file-picker IPC handler.
-            // If the backend doesn't return it yet, fall back to a fetch-based check.
-            const fileSize: number | undefined = fileResult.fileSize;
-            if (fileSize !== undefined && fileSize > MAX_FILE_SIZE_BYTES) {
-                const mb = (fileSize / (1024 * 1024)).toFixed(1);
-                setCompanyError(`File is too large (${mb} MB). Maximum allowed size is 5 MB.`);
-                return;
-            }
+                const placeholder: KnowledgeAsset = {
+                    id: tempId, type, label: file.fileName,
+                    status: 'processing', lastUpdated: new Date().toISOString(),
+                };
+                // Multiple assets per type now allowed — append, don't replace same-type assets
+                setDraft(prev => ({ ...prev, assets: [...prev.assets, placeholder] }));
 
-            // ── Proceed with upload ───────────────────────────────────────────
-            const tempId = `${type}-${Date.now()}`;
-            setAssetUploading(tempId);
-
-            const placeholder: KnowledgeAsset = {
-                id: tempId, type, label: ASSET_CONFIG[type].label,
-                status: 'processing', lastUpdated: new Date().toISOString(),
-            };
-            setDraft(prev => ({ ...prev, assets: [...prev.assets.filter(a => a.type !== type), placeholder] }));
-
-            const result = await (window as any).electronAPI?.companyUploadAsset?.(type, filePath);
-            if (result?.success && result.asset) {
-                // Mark as 'mapped' immediately so the Knowledge Mode toggle is enabled
-                const mappedAsset = { ...result.asset, status: 'mapped' as const };
-                setDraft(prev => ({
-                    ...prev,
-                    assets: prev.assets.map(a => a.id === tempId ? mappedAsset : a),
-                }));
-                setIsDirty(true);
-                await window.electronAPI?.profileSetMode?.(true);
-            } else {
-                setDraft(prev => ({ ...prev, assets: prev.assets.filter(a => a.id !== tempId) }));
-                setCompanyError(result?.error || 'Upload failed');
+                const result = await (window as any).electronAPI?.companyUploadAsset?.(type, file.filePath);
+                if (result?.success && result.asset) {
+                    const mappedAsset = { ...result.asset, label: file.fileName, status: 'mapped' as const };
+                    setDraft(prev => ({
+                        ...prev,
+                        assets: prev.assets.map(a => a.id === tempId ? mappedAsset : a),
+                    }));
+                    setIsDirty(true);
+                    await window.electronAPI?.profileSetMode?.(true);
+                    intelligenceApi.reindexCompanyAssets().catch(err =>
+                        console.error('[CompanyContextTab] Failed to reindex company assets:', err)
+                    );
+                } else {
+                    setDraft(prev => ({ ...prev, assets: prev.assets.filter(a => a.id !== tempId) }));
+                    setCompanyError(result?.error || `Upload failed for "${file.fileName}"`);
+                }
             }
         } catch (e: any) {
             setCompanyError(e.message || 'Upload failed');
@@ -596,6 +640,13 @@ export const CompanyContextTab: React.FC<CompanyContextTabProps> = ({
         if (!confirm('Remove this knowledge asset?')) return;
         // Draft-only: committed to DB on "Save Intelligence Base"
         setDraft(prev => ({ ...prev, assets: prev.assets.filter(a => a.id !== assetId) }));
+        setIsDirty(true);
+    };
+
+    const handleDeleteAllForType = (type: KnowledgeAsset['type']) => {
+        const cfgLabel = ASSET_CONFIG[type].label;
+        if (!confirm(`Remove all ${cfgLabel} files?`)) return;
+        setDraft(prev => ({ ...prev, assets: prev.assets.filter(a => a.type !== type) }));
         setIsDirty(true);
     };
 
@@ -654,6 +705,13 @@ export const CompanyContextTab: React.FC<CompanyContextTabProps> = ({
     const inputCls = isLight
         ? 'bg-slate-50 border-slate-200 text-slate-900 placeholder-slate-400 focus:ring-blue-500/30 focus:border-blue-400'
         : 'bg-bg-input border-border-subtle text-text-primary placeholder-text-tertiary focus:ring-accent-primary/20 focus:border-accent-primary/50';
+
+    // Only show the full-screen skeleton on the *initial* fetch — once we
+    // have data, a background refresh (e.g. reopening the tab) shouldn't
+    // yank the form out from under the user.
+    if (companyLoading && !companyContext) {
+        return <CompanyContextSkeleton isLight={isLight} />;
+    }
 
     return (
         <>
@@ -803,89 +861,116 @@ export const CompanyContextTab: React.FC<CompanyContextTabProps> = ({
                             const isUploading = assetUploading === (asset?.id ?? `${type}-uploading`);
                             const badge = asset ? STATUS_BADGE[asset.status] : null;
 
+                            const assetsForType = draft.assets.filter(a => a.type === type);
+                            const hasAssets = assetsForType.length > 0;
+                            const isCategoryUploading = assetsForType.some(a => a.id === assetUploading);
+
                             return (
                                 <div
                                     key={type}
-                                    className={`rounded-xl border transition-all ${isUploading ? 'ring-1' : ''}`}
+                                    className={`rounded-xl border transition-all ${isCategoryUploading ? 'ring-1' : ''}`}
                                     style={{
-                                        background: asset ? cfg.accentBg : (isLight ? '#fff' : 'var(--bg-item-surface)'),
-                                        borderColor: asset ? cfg.accentBorder : (isLight ? 'rgba(0,0,0,0.1)' : 'var(--border-subtle)'),
-                                        ...(isUploading ? { boxShadow: `0 0 0 1px ${cfg.accentBorder}` } : {}),
+                                        background: hasAssets ? cfg.accentBg : (isLight ? '#fff' : 'var(--bg-item-surface)'),
+                                        borderColor: hasAssets ? cfg.accentBorder : (isLight ? 'rgba(0,0,0,0.1)' : 'var(--border-subtle)'),
+                                        ...(isCategoryUploading ? { boxShadow: `0 0 0 1px ${cfg.accentBorder}` } : {}),
                                     }}
                                 >
+                                    {/* ── Category header — always just an upload trigger now ── */}
                                     <div className="p-4 flex items-center justify-between gap-4">
                                         <div className="flex items-center gap-4 min-w-0">
                                             <div
                                                 className="w-10 h-10 rounded-lg flex items-center justify-center shrink-0"
                                                 style={{ background: cfg.accentBg, border: `1px solid ${cfg.accentBorder}`, color: cfg.accent }}
                                             >
-                                                {isUploading ? <RefreshCw size={18} className="animate-spin" /> : cfg.icon}
+                                                {isCategoryUploading ? <RefreshCw size={18} className="animate-spin" /> : cfg.icon}
                                             </div>
                                             <div className="min-w-0">
-                                                <div className="flex items-center gap-2">
-                                                    <h5 className="text-sm font-bold text-text-primary">{cfg.label}</h5>
-                                                    {badge && (
-                                                        <span className={`text-[9px] font-bold px-1.5 py-0.5 rounded border ${badge.className}`}>
-                                                            {badge.label}
-                                                        </span>
-                                                    )}
-                                                </div>
-                                                {isUploading ? (
-                                                    <div className="flex items-center gap-2 mt-1">
-                                                        <div className="h-[3px] w-24 bg-bg-input rounded-full overflow-hidden">
-                                                            <div className="h-full rounded-full animate-pulse" style={{ background: cfg.accent, width: '60%' }} />
-                                                        </div>
-                                                        <span className="text-[10px] text-text-tertiary">Processing…</span>
-                                                    </div>
-                                                ) : asset ? (
-                                                    <p className="text-[10px] text-text-secondary mt-0.5 truncate">
-                                                        {asset.lastUpdated ? `Updated ${new Date(asset.lastUpdated).toLocaleDateString()}` : 'Asset loaded'}
-                                                    </p>
-                                                ) : (
-                                                    <p className="text-[10px] text-text-tertiary mt-0.5">
-                                                        Upload to enable AI-powered context injection
-                                                    </p>
-                                                )}
+                                                <h5 className="text-sm font-bold text-text-primary">{cfg.label}</h5>
+                                                <p className="text-[10px] text-text-tertiary mt-0.5">
+                                                    {isCategoryUploading
+                                                        ? 'Processing…'
+                                                        : hasAssets
+                                                            ? `${assetsForType.length} file${assetsForType.length > 1 ? 's' : ''} uploaded`
+                                                            : 'Upload to enable AI-powered context injection'}
+                                                </p>
                                             </div>
                                         </div>
 
                                         <div className="flex items-center gap-1.5 shrink-0">
-                                            {asset && (
-                                                <>
-                                                    <button
-                                                        onClick={() => handleSyncAsset(asset.id)}
-                                                        disabled={!!assetUploading}
-                                                        title="Re-process asset"
-                                                        className="w-7 h-7 rounded-lg flex items-center justify-center text-text-tertiary hover:text-text-primary hover:bg-bg-input transition-all border border-border-subtle disabled:opacity-50"
-                                                    >
-                                                        <RefreshCw size={13} className={assetUploading === asset.id ? 'animate-spin' : ''} />
-                                                    </button>
-                                                    <button
-                                                        onClick={() => handleDeleteAsset(asset.id)}
-                                                        title="Remove asset"
-                                                        className="w-7 h-7 rounded-lg flex items-center justify-center text-text-tertiary hover:text-red-400 hover:bg-red-500/10 transition-all border border-border-subtle"
-                                                    >
-                                                        <Trash2 size={13} />
-                                                    </button>
-                                                </>
+                                            {hasAssets && (
+                                                <button
+                                                    onClick={() => handleDeleteAllForType(type)}
+                                                    disabled={!!assetUploading}
+                                                    title={`Remove all ${cfg.label} files`}
+                                                    className="w-7 h-7 rounded-lg flex items-center justify-center text-text-tertiary hover:text-red-400 hover:bg-red-500/10 transition-all border border-border-subtle disabled:opacity-50"
+                                                >
+                                                    <Trash2 size={13} />
+                                                </button>
                                             )}
                                             <button
                                                 onClick={() => handleUploadAsset(type)}
                                                 disabled={!!assetUploading}
                                                 className="px-3 py-1.5 rounded-full text-xs font-medium transition-all disabled:opacity-50 disabled:cursor-wait whitespace-nowrap"
-                                                style={asset
+                                                style={hasAssets
                                                     ? { background: cfg.accentBg, color: cfg.accent, border: `1px solid ${cfg.accentBorder}` }
                                                     : { background: isLight ? '#f3f6ff' : '#18202e', color: isLight ? 'var(--bg-bg-item-surface)' : '#495166', opacity: 1 }
                                                 }
                                             >
-                                                {asset ? 'Replace' : (
-                                                    <span className="flex items-center gap-1">
-                                                        <Plus size={11} /> Upload
-                                                    </span>
-                                                )}
+                                                <span className="flex items-center gap-1">
+                                                    <Plus size={11} /> Upload
+                                                </span>
                                             </button>
                                         </div>
+
                                     </div>
+                                    {/* ── List of every uploaded file for this category ── */}
+                                    {hasAssets && (
+                                        <div className="px-4 pb-4 space-y-1.5 max-h-[180px] overflow-y-auto">
+                                            {assetsForType.map(asset => {
+                                                const isUploading = assetUploading === asset.id;
+                                                const badge = STATUS_BADGE[asset.status];
+                                                return (
+                                                    <div
+                                                        key={asset.id}
+                                                        className="flex items-center justify-between gap-3 rounded-lg px-3 py-2 border"
+                                                        style={{
+                                                            background: isLight ? '#fff' : 'var(--bg-item-surface)',
+                                                            borderColor: isLight ? 'rgba(0,0,0,0.08)' : 'var(--border-subtle)',
+                                                        }}
+                                                    >
+                                                        <div className="flex items-center gap-2 min-w-0">
+                                                            {isUploading
+                                                                ? <RefreshCw size={12} className="animate-spin text-text-tertiary shrink-0" />
+                                                                : <FileText size={12} className="text-text-tertiary shrink-0" />}
+                                                            <span className="text-xs text-text-primary truncate">{asset.label}</span>
+                                                            {badge && (
+                                                                <span className={`text-[9px] font-bold px-1.5 py-0.5 rounded border shrink-0 ${badge.className}`}>
+                                                                    {badge.label}
+                                                                </span>
+                                                            )}
+                                                        </div>
+                                                        <div className="flex items-center gap-1 shrink-0">
+                                                            <button
+                                                                onClick={() => handleSyncAsset(asset.id)}
+                                                                disabled={!!assetUploading}
+                                                                title="Re-process file"
+                                                                className="w-6 h-6 rounded-md flex items-center justify-center text-text-tertiary hover:text-text-primary hover:bg-bg-input transition-all disabled:opacity-50"
+                                                            >
+                                                                <RefreshCw size={11} />
+                                                            </button>
+                                                            <button
+                                                                onClick={() => handleDeleteAsset(asset.id)}
+                                                                title="Remove file"
+                                                                className="w-6 h-6 rounded-md flex items-center justify-center text-text-tertiary hover:text-red-400 hover:bg-red-500/10 transition-all"
+                                                            >
+                                                                <Trash2 size={11} />
+                                                            </button>
+                                                        </div>
+                                                    </div>
+                                                );
+                                            })}
+                                        </div>
+                                    )}
                                 </div>
                             );
                         })}

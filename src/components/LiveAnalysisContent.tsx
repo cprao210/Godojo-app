@@ -262,7 +262,7 @@ const FieldRow: React.FC<FieldRowProps> = ({ label, field, themed = false, isLig
 interface LiveAnalysisContentProps {
     analysisData: LiveAnalysisData;
     aiInsight?: string;
-    hideBar?: 'MEDDICC Details' | 'BANT Details' | 'Missing Details' | 'Buying Signals' | 'Objections' | 'AI Insights' | null;
+    hideBar?: 'MEDDICC Details' | 'BANT Details' | 'Missing Details' | 'Buying Signals' | 'Objections' | 'AI Insights' | 'Deal Alert' | null;
     /** Pass true when rendered inside the Call Analysis tab (MeetingDetails).
      *  Enables full theme awareness (light/dark). Overlay callers omit this. */
     calledFromAnalysisTab?: boolean;
@@ -378,6 +378,10 @@ export const LiveAnalysisContent: React.FC<LiveAnalysisContentProps> = ({
     const objectionsBadge = isLight
         ? 'bg-slate-100 text-slate-600 border border-slate-200'
         : 'bg-white/10 text-white/40';
+
+    const dealAlertBadge = isLight
+        ? 'bg-amber-100 text-amber-700 border border-amber-200'
+        : 'bg-amber-500/15 text-amber-400';
 
     // ── Shared signal list renderer ───────────────────────────────────────────
     // Used in both the tabbed overlay (activeTab='signals') and the accordion
@@ -598,7 +602,7 @@ export const LiveAnalysisContent: React.FC<LiveAnalysisContentProps> = ({
 
                                 {/* Moves */}
                                 <div className="space-y-1.5 mb-2">
-                                    {alert.moves.map((move, i) => (
+                                    {(alert.moves ?? []).map((move, i) => (
                                         <div key={i} className="flex items-start gap-2">
                                             <span
                                                 className="text-[9px] font-bold w-4 h-4 rounded-full flex items-center justify-center shrink-0 mt-0.5"
@@ -968,6 +972,23 @@ export const LiveAnalysisContent: React.FC<LiveAnalysisContentProps> = ({
                                 );
                             })}
                         </div>
+                    </SectionToggle>
+                    <Divider />
+                </>
+            )}
+
+            {/* ── Deal Alert (negotiation triggers) ── */}
+            {(analysisData.dealOptimizer?.length ?? 0) > 0 && hideBar !== 'Deal Alert' && (
+                <>
+                    <SectionToggle
+                        icon={<TrendingUp size={13} />}
+                        title="Deal Alert"
+                        badge={`${analysisData.dealOptimizer!.length}`}
+                        badgeColor={dealAlertBadge}
+                        themed={calledFromAnalysisTab}
+                        isLight={isLight}
+                    >
+                        {renderDealOptimizer()}
                     </SectionToggle>
                     <Divider />
                 </>

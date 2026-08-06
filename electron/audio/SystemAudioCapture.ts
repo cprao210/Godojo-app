@@ -13,15 +13,15 @@ export class SystemAudioCapture extends EventEmitter {
     private detectedSampleRate: number = 48000;
     private monitor: any = null;
     private _chunkCount: number = 0;
-    private _vadResetTimer: NodeJS.Timeout | null = null;
-    private _vadInnerTimer: NodeJS.Timeout | null = null; // BUG FIX: track inner timer so stop() can cancel it
-    private _vadDisabled: boolean = false;
+    private _stallOuterTimer: NodeJS.Timeout | null = null;
+    private _stallInnerTimer: NodeJS.Timeout | null = null; // tracked so stop() can cancel it
     private _sampleRateEmitted: boolean = false;
+    private _echoMode: string | undefined;
 
-    constructor(deviceId?: string | null, options?: { disableVad?: boolean }) {
+    constructor(deviceId?: string | null, options?: { echoMode?: string }) {
         super();
         this.deviceId = deviceId || null;
-        this._vadDisabled = options?.disableVad ?? false;
+        this._echoMode = options?.echoMode;
         if (!RustAudioCapture) {
             console.error('[SystemAudioCapture] Rust class implementation not found.');
         } else {
@@ -46,16 +46,22 @@ export class SystemAudioCapture extends EventEmitter {
     // The Rust SilenceSuppressor decimates by 3x (48000 → 16000).
     // Deepgram must be configured with THIS rate, not the native hardware rate.
     public getOutputSampleRate(): number {
-        const native = this.getSampleRate();
-        if (this.monitor && typeof this.monitor.get_output_sample_rate === 'function') {
-            return this.monitor.get_output_sample_rate();
-        }
-        // Fallback: infer from the known 3x decimation the Rust DSP applies at 48000Hz.
-        // If native is 16000Hz (some devices) no decimation is needed.
+        // Touch getSampleRate() so detectedSampleRate stays current for logging.
+        this.getSampleRate();
         // Return 0 if monitor hasn't started yet so callers (poll in startMeeting)
-        // know the rate is not settled. Once started, native will be non-zero.
+        // know the rate is not settled.
         if (!this.monitor) return 0;
-        return native === 48000 ? 16000 : native;
+        // The napi-rs binding exposes Rust's get_output_sample_rate() as camelCase
+        // getOutputSampleRate() (see native-module/index.d.ts). The old snake_case
+        // check never matched, so this always fell through to the buggy fallback
+        // below — which leaked WASAPI's 44100 mix rate on Windows and declared the
+        // wrong sample_rate to Deepgram (macOS's 48000 masked it via the ternary).
+        if (typeof this.monitor.getOutputSampleRate === 'function') {
+            return this.monitor.getOutputSampleRate();
+        }
+        // Fallback for older native builds without the method: the Rust DSP always
+        // resamples output to 16kHz regardless of native rate, so 16000 is correct.
+        return 16000;
     }
 
     /**
@@ -76,9 +82,10 @@ export class SystemAudioCapture extends EventEmitter {
         if (!this.monitor) {
             console.log('[SystemAudioCapture] Creating native monitor (lazy init)...');
             try {
-                // Pass null VAD threshold to disable silence suppression for system audio
-                // System audio is clean speaker output — VAD causes false suppression
-                this.monitor = new RustAudioCapture(this.deviceId, { vadDisabled: true });
+                // System audio is clean speaker output — the Rust side always runs
+                // the permissive for_system_audio() suppressor; echoMode selects the
+                // mic-gate pipeline (CaptureOptions is shared by both constructors).
+                this.monitor = new RustAudioCapture(this.deviceId, { vadDisabled: true, echoMode: this._echoMode });
             } catch (e) {
                 console.error('[SystemAudioCapture] Failed to create native monitor:', e);
                 this.emit('error', e);
@@ -117,19 +124,31 @@ export class SystemAudioCapture extends EventEmitter {
                 this.emit('speech_ended');
             });
 
-            // VAD reset watchdog: if chunks stop flowing for >2s after DSP started,
-            // the SilenceSuppressor has locked into suppression. Restart to reset VAD state.
-            const scheduleVadCheck = () => {
-                this._vadResetTimer = setTimeout(() => {
-                    this._vadResetTimer = null;
+            // Capture-stall watchdog: if the native layer stops emitting chunks,
+            // restart capture. The recovery target is a dead native capture thread —
+            // on Windows the WASAPI event-driven loopback thread can exit during
+            // far-end silence on older native builds. It is ALWAYS armed (a healthy
+            // pipeline emits SendSilence keepalives continuously, so this only fires on
+            // genuine capture death). The window is chosen by native feature level:
+            // binaries that synthesize silence during render-idle (level >= 2) keep
+            // chunks flowing, so a long last-resort window suffices; older binaries
+            // keep the aggressive default so recovery stays fast.
+            const featureLevel = (typeof NativeModule?.getNativeFeatureLevel === 'function')
+                ? (NativeModule.getNativeFeatureLevel() ?? 0)
+                : 0;
+            const stallWindowMs = featureLevel >= 2 ? 10000 : 2000;
+            console.log(`[SystemAudioCapture] Capture-stall watchdog armed (featureLevel=${featureLevel} window=${stallWindowMs}ms)`);
+            const scheduleStallCheck = () => {
+                this._stallOuterTimer = setTimeout(() => {
+                    this._stallOuterTimer = null;
                     if (!this.isRecording) return;
                     const countSnapshot = this._chunkCount;
-                    this._vadInnerTimer = setTimeout(() => {
-                        this._vadInnerTimer = null;
-                        if (!this.isRecording) return; // BUG FIX: guard stale callback after stop()
+                    this._stallInnerTimer = setTimeout(() => {
+                        this._stallInnerTimer = null;
+                        if (!this.isRecording) return; // guard stale callback after stop()
                         if (this._chunkCount === countSnapshot) {
-                            // No new chunks in 2s — VAD is suppressing. Restart capture.
-                            console.warn('[SystemAudioCapture] VAD lockout detected — restarting capture to reset state');
+                            // No new chunks in the window — native capture has stalled/died. Restart.
+                            console.warn(`[SystemAudioCapture] Capture stall detected (no chunks in ${stallWindowMs}ms, featureLevel=${featureLevel}) — restarting capture`);
                             try { this.monitor?.stop(); } catch { }
                             this.isRecording = false;
                             this._chunkCount = 0;
@@ -139,17 +158,13 @@ export class SystemAudioCapture extends EventEmitter {
                                 }
                             }, 150);
                         } else {
-                            // VAD watchdog is only needed when WebRTC VAD is active.
-                            // With vad_disabled:true, lockout is impossible — skip the watchdog
-                            // entirely to prevent spurious restarts that break the Deepgram connection.
-                            if (!this._vadDisabled) {
-                                scheduleVadCheck();
-                            }
+                            // Chunks still flowing — keep watching (always re-arm).
+                            scheduleStallCheck();
                         }
-                    }, 2000);
-                }, 3000); // First check at 3s after DSP init
+                    }, stallWindowMs);
+                }, 3000); // First check 3s after DSP init
             };
-            scheduleVadCheck();
+            scheduleStallCheck();
 
             // getSampleRate MUST be called AFTER start() — background init updates
             // the atomic once SCK/CoreAudio initialises (~5-7s). Reading before start()
@@ -197,8 +212,8 @@ export class SystemAudioCapture extends EventEmitter {
     public stop(): void {
         if (!this.isRecording) return;
         this._shouldBeRecording = false;
-        if (this._vadResetTimer) { clearTimeout(this._vadResetTimer); this._vadResetTimer = null; }
-        if (this._vadInnerTimer) { clearTimeout(this._vadInnerTimer); this._vadInnerTimer = null; } // BUG FIX
+        if (this._stallOuterTimer) { clearTimeout(this._stallOuterTimer); this._stallOuterTimer = null; }
+        if (this._stallInnerTimer) { clearTimeout(this._stallInnerTimer); this._stallInnerTimer = null; }
 
         console.log('[SystemAudioCapture] Stopping capture...');
         try {
@@ -224,8 +239,8 @@ export class SystemAudioCapture extends EventEmitter {
     public destroy(): void {
         this._shouldBeRecording = false;
         this._sampleRateEmitted = false;
-        if (this._vadResetTimer) { clearTimeout(this._vadResetTimer); this._vadResetTimer = null; }
-        if (this._vadInnerTimer) { clearTimeout(this._vadInnerTimer); this._vadInnerTimer = null; } // BUG FIX
+        if (this._stallOuterTimer) { clearTimeout(this._stallOuterTimer); this._stallOuterTimer = null; }
+        if (this._stallInnerTimer) { clearTimeout(this._stallInnerTimer); this._stallInnerTimer = null; }
         this.stop();
         // Clear listeners BEFORE nulling monitor. In-flight Rust callbacks (e.g., data
         // or speech_ended delivered via napi scheduler) must not fire after disposal.

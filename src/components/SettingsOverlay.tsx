@@ -15,7 +15,8 @@ import {
     Pause,
     StopCircle,
     GripVertical,
-    BarChart2
+    BarChart2,
+    Users
 } from 'lucide-react';
 import { analytics } from '../lib/analytics/analytics.service';
 import { AboutSection } from './AboutSection';
@@ -35,6 +36,7 @@ import { ProfileVisualizer, PremiumUpgradeModal } from '../premium';
 import { CompanyContextTab } from './settings/CompanyContextTab';
 import { ScoringCriteriaTab } from './settings/ScoringCriteriaTab';
 import { UserProfileTab } from './settings/UserProfileTab';
+import { UserRolesPermissionsTab } from './settings/UserRolesPermissionsTab';
 import icon from './icon.png';
 
 // ---------------------------------------------------------------------------
@@ -368,9 +370,11 @@ interface SettingsOverlayProps {
     isOpen: boolean;
     onClose: () => void;
     initialTab?: string;
+    deepLinkInviteToken?: string | null;
+    onDeepLinkTokenConsumed?: () => void;
 }
 
-const SettingsOverlay: React.FC<SettingsOverlayProps> = ({ isOpen, onClose, initialTab = 'general' }) => {
+const SettingsOverlay: React.FC<SettingsOverlayProps> = ({ isOpen, onClose, initialTab = 'general', deepLinkInviteToken = null, onDeepLinkTokenConsumed }) => {
 
     const OPACITY_KEY = 'gd_dock_opacity';
 
@@ -392,7 +396,11 @@ const SettingsOverlay: React.FC<SettingsOverlayProps> = ({ isOpen, onClose, init
             }
 
             if (initialTab === 'company-context') {
-                window.electronAPI?.companyGetContext?.().then(setCompanyContext).catch(() => { });
+                setCompanyLoading(true);
+                window.electronAPI?.companyGetContext?.()
+                    .then(setCompanyContext)
+                    .catch(() => { })
+                    .finally(() => setCompanyLoading(false));
             }
         }
     }, [isOpen, initialTab]);
@@ -831,6 +839,7 @@ const SettingsOverlay: React.FC<SettingsOverlayProps> = ({ isOpen, onClose, init
 
     // STT Provider settings
     const [sttProvider, setSttProvider] = useState<'google' | 'groq' | 'openai' | 'deepgram' | 'elevenlabs' | 'azure' | 'ibmwatson' | 'soniox'>('google');
+    const [diarizeClientEnabled, setDiarizeClientEnabled] = useState(false);
     const [groqSttModel, setGroqSttModel] = useState('whisper-large-v3-turbo');
     const [sttGroqKey, setSttGroqKey] = useState('');
     const [sttOpenaiKey, setSttOpenaiKey] = useState('');
@@ -888,12 +897,26 @@ const SettingsOverlay: React.FC<SettingsOverlayProps> = ({ isOpen, onClose, init
                     setHasStoredSonioxKey(creds.hasSonioxKey || false);
                     setHasStoredTavilyKey(creds.hasTavilyKey || false);
                 }
+                const diarize = await window.electronAPI?.getDiarizeClientEnabled?.();
+                setDiarizeClientEnabled(!!diarize);
             } catch (e) {
                 console.error('Failed to load STT settings:', e);
             }
         };
         if (isOpen) loadSttSettings();
     }, [isOpen]);
+
+    const handleDiarizeToggle = async () => {
+        const next = !diarizeClientEnabled;
+        setDiarizeClientEnabled(next); // optimistic
+        try {
+            const res = await window.electronAPI?.setDiarizeClientEnabled?.(next);
+            if (res && res.success === false) setDiarizeClientEnabled(!next);
+        } catch (e) {
+            console.error('Failed to set diarization:', e);
+            setDiarizeClientEnabled(!next);
+        }
+    };
 
     const handleSttProviderChange = async (provider: 'google' | 'groq' | 'openai' | 'deepgram' | 'elevenlabs' | 'azure' | 'ibmwatson' | 'soniox') => {
         setSttProvider(provider);
@@ -1242,20 +1265,20 @@ const SettingsOverlay: React.FC<SettingsOverlayProps> = ({ isOpen, onClose, init
                     exit={{ opacity: 0 }}
                     transition={{ duration: 0.2 }}
                     id="settings-backdrop"
-                    className={`fixed inset-0 z-50 flex items-center justify-center p-8 transition-colors duration-150 ${isPreviewingOpacity ? 'bg-transparent backdrop-blur-none' : isLight ? 'bg-black/30 backdrop-blur-sm' : 'bg-black/60 backdrop-blur-sm'}`}
+                    className={`fixed top-6 inset-0 z-50 transition-colors duration-150 ${isPreviewingOpacity ? 'bg-transparent backdrop-blur-none' : isLight ? 'bg-[#F8FAFC]' : 'bg-bg-main'}`}
                 >
                     <motion.div
                         id="settings-panel-wrapper"
-                        initial={{ scale: 0.94, opacity: 0, y: 20 }}
-                        animate={{ scale: 1, opacity: 1, y: 0 }}
-                        exit={{ scale: 0.94, opacity: 0, y: 20 }}
+                        initial={{ opacity: 0, y: 12 }}
+                        animate={{ opacity: 1, y: 0 }}
+                        exit={{ opacity: 0, y: 12 }}
                         transition={{
                             type: "spring",
                             stiffness: 400,
                             damping: 32,
                             mass: 1
                         }}
-                        className={`w-full max-w-4xl h-[80vh] rounded-2xl overflow-hidden relative ${isLight ? 'bg-white border border-slate-200/80 shadow-[0_20px_60px_rgba(0,0,0,0.10),0_6px_16px_rgba(0,0,0,0.06),0_0_0_1px_rgba(0,0,0,0.05)]' : 'bg-bg-elevated border border-border-subtle shadow-2xl'}`}
+                        className={`w-full h-full overflow-hidden relative ${isLight ? 'bg-white' : 'bg-bg-elevated'}`}
                     >
                         <div
                             id="settings-panel"
@@ -1263,9 +1286,18 @@ const SettingsOverlay: React.FC<SettingsOverlayProps> = ({ isOpen, onClose, init
                             style={{ visibility: isPreviewingOpacity ? 'hidden' : 'visible' }}
                         >
                             {/* Sidebar */}
-                            <div className={`w-64 flex flex-col border-r ${isLight ? 'bg-white border-slate-200/70' : 'bg-bg-sidebar border-border-subtle'}`}>
+                            <div className={`w-72 shrink-0 flex flex-col border-r ${isLight ? 'bg-white border-slate-200/70' : 'bg-bg-sidebar border-border-subtle'}`}>
                                 <div className="p-6">
-                                    <h2 className="font-semibold text-text-tertiary text-xs uppercase tracking-wider mb-2">Settings</h2>
+                                    <div className="flex items-center justify-between mb-4">
+                                        <h2 className="font-semibold text-text-tertiary text-xs uppercase tracking-wider">Settings</h2>
+                                        {/* <button
+                                            onClick={onClose}
+                                            aria-label="Close settings"
+                                            className="w-7 h-7 rounded-lg flex items-center justify-center text-text-tertiary hover:text-text-primary hover:bg-bg-item-active/60 transition-colors"
+                                        >
+                                            <X size={15} />
+                                        </button> */}
+                                    </div>
                                     <nav className="space-y-1">
 
                                         <button
@@ -1328,7 +1360,11 @@ const SettingsOverlay: React.FC<SettingsOverlayProps> = ({ isOpen, onClose, init
                                         <button
                                             onClick={() => {
                                                 setActiveTab('company-context');
-                                                window.electronAPI?.companyGetContext?.().then(setCompanyContext).catch(() => { });
+                                                setCompanyLoading(true);
+                                                window.electronAPI?.companyGetContext?.()
+                                                    .then(setCompanyContext)
+                                                    .catch(() => { })
+                                                    .finally(() => setCompanyLoading(false));
                                             }}
                                             className={`w-full text-left px-3 py-2 rounded-lg text-sm font-medium transition-colors flex items-center gap-3 ${activeTab === 'company-context' ? 'bg-bg-item-active text-text-primary' : 'text-text-secondary hover:text-text-primary hover:bg-bg-item-active/50'}`}
                                         >
@@ -1341,6 +1377,14 @@ const SettingsOverlay: React.FC<SettingsOverlayProps> = ({ isOpen, onClose, init
                                         >
                                             <BarChart2 size={16} className="shrink-0" />
                                             Scoring Criteria
+                                        </button>
+
+                                        <button
+                                            onClick={() => setActiveTab('user-roles-permissions')}
+                                            className={`w-full text-left px-3 py-2 rounded-lg text-sm font-medium transition-colors flex items-center gap-3 ${activeTab === 'user-roles-permissions' ? 'bg-bg-item-active text-text-primary' : 'text-text-secondary hover:text-text-primary hover:bg-bg-item-active/50'}`}
+                                        >
+                                            <Users size={16} className="shrink-0" />
+                                            Roles &amp; Management
                                         </button>
 
                                         <button
@@ -1360,257 +1404,258 @@ const SettingsOverlay: React.FC<SettingsOverlayProps> = ({ isOpen, onClose, init
                                         <LogOut size={16} /> Quit GoDojo
                                     </button>
                                     <button onClick={onClose} className="group mt-2 w-full text-left px-3 py-2 rounded-lg text-sm font-medium text-text-secondary hover:text-text-primary hover:bg-bg-item-active/50 transition-colors flex items-center gap-3">
-                                        <X size={18} className="group-hover:text-red-500 transition-colors" /> Close
+                                        <ArrowLeft size={16} className="group-hover:text-accent-primary transition-colors" /> Back to GoDojo
                                     </button>
                                 </div>
                             </div>
 
                             {/* Content */}
-                            <div className={`flex-1 overflow-y-auto p-8 ${isLight ? 'bg-[#F8FAFC]' : 'bg-bg-main'}`}>
-                                {activeTab === 'general' && (
-                                    <div className="space-y-6 animated fadeIn">
-                                        <div className="space-y-3.5">
-                                            {/* UndetectableToggle */}
-                                            <div className={`${isLight ? 'bg-white border-slate-200/80' : 'bg-bg-item-surface border-border-subtle'} rounded-xl p-5 border flex items-center justify-between transition-all ${isUndetectable ? 'shadow-lg shadow-blue-500/10' : ''}`}>
-                                                <div className="flex flex-col gap-1">
-                                                    <div className="flex items-center gap-2">
-                                                        {isUndetectable ? (
-                                                            <svg
-                                                                width="18"
-                                                                height="18"
-                                                                viewBox="0 0 24 24"
-                                                                fill="none"
-                                                                stroke="currentColor"
-                                                                strokeWidth="2"
-                                                                strokeLinecap="round"
-                                                                strokeLinejoin="round"
-                                                                className="text-text-primary"
-                                                            >
-                                                                <path d="M12 2a8 8 0 0 0-8 8v12l3-3 2.5 2.5L12 19l2.5 2.5L17 19l3 3V10a8 8 0 0 0-8-8z" fill="currentColor" stroke="currentColor" />
-                                                                <path d="M9 10h.01" stroke="var(--bg-item-surface)" strokeWidth="2.5" />
-                                                                <path d="M15 10h.01" stroke="var(--bg-item-surface)" strokeWidth="2.5" />
-                                                            </svg>
-                                                        ) : (
-                                                            <Ghost size={18} className="text-text-primary" />
-                                                        )}
-                                                        <h3 className="text-lg font-bold text-text-primary">{isUndetectable ? 'Ghost Mode ON' : 'Ghost Mode OFF'}</h3>
-                                                    </div>
-                                                    <p className="text-xs text-text-secondary">
-                                                        GoDojo is currently {isUndetectable ? 'undetectable' : 'detectable'} by screen-sharing.
-                                                    </p>
-                                                </div>
-                                                <div
-                                                    onClick={() => {
-                                                        const newState = !isUndetectable;
-                                                        setIsUndetectable(newState);
-                                                        window.electronAPI?.setUndetectable(newState);
-                                                        // Analytics: Undetectable Mode Toggle
-                                                        analytics.trackModeSelected(newState ? 'undetectable' : 'overlay');
-                                                    }}
-                                                    className={`w-11 h-6 rounded-full relative transition-colors ${isUndetectable ? 'bg-accent-primary' : 'bg-bg-toggle-switch border border-border-muted'}`}
-                                                >
-                                                    <div className={`absolute top-1 left-1 w-4 h-4 rounded-full bg-white transition-transform ${isUndetectable ? 'translate-x-5' : 'translate-x-0'}`} />
-                                                </div>
-                                            </div>
-
-                                            {/* Mouse Passthrough Toggle — Adapted from public PR #113 */}
-                                            <div className={`${isLight ? 'bg-white border-slate-200/80' : 'bg-bg-item-surface border-border-subtle'} rounded-xl p-5 border flex items-center justify-between transition-all ${isMousePassthrough ? 'shadow-lg shadow-sky-500/10' : ''}`}>
-                                                <div className="flex flex-col gap-1">
-                                                    <div className="flex items-center gap-2">
-                                                        <PointerOff size={18} className={isMousePassthrough ? 'text-sky-400' : 'text-text-primary'} />
-                                                        <h3 className="text-lg font-bold text-text-primary">Mouse Passthrough</h3>
-                                                    </div>
-                                                    <p className="text-xs text-text-secondary">
-                                                        Overlay stays visible but lets all mouse clicks pass through to the app beneath.
-                                                    </p>
-                                                </div>
-                                                <div
-                                                    onClick={() => {
-                                                        const newState = !isMousePassthrough;
-                                                        setIsMousePassthrough(newState);
-                                                        window.electronAPI?.setOverlayMousePassthrough(newState);
-                                                    }}
-                                                    className={`w-11 h-6 rounded-full relative transition-colors cursor-pointer ${isMousePassthrough ? 'bg-sky-500' : 'bg-bg-toggle-switch border border-border-muted'}`}
-                                                >
-                                                    <div className={`absolute top-1 left-1 w-4 h-4 rounded-full bg-white transition-transform ${isMousePassthrough ? 'translate-x-5' : 'translate-x-0'}`} />
-                                                </div>
-                                            </div>
-
-                                            <div>
-                                                <h3 className="text-lg font-bold text-text-primary mb-1">General settings</h3>
-                                                <p className="text-xs text-text-secondary mb-2">Customize how GoDojo works for you</p>
-
-                                                <div className={`rounded-xl border ${isLight ? 'bg-white border-slate-200/80 divide-y divide-slate-100' : 'bg-transparent border-transparent divide-y divide-border-subtle/20'}`}>
-                                                    <div className="space-y-0">
-                                                        {/* Open at Login */}
-                                                        <div className="flex items-center justify-between px-4 py-3">
-                                                            <div className="flex items-center gap-4">
-                                                                <div className="w-10 h-10 bg-bg-item-surface rounded-lg border border-border-subtle flex items-center justify-center text-text-tertiary">
-                                                                    <Power size={20} />
-                                                                </div>
-                                                                <div>
-                                                                    <h3 className="text-sm font-bold text-text-primary">Open GoDojo when you log in</h3>
-                                                                    <p className="text-xs text-text-secondary mt-0.5">GoDojo will open automatically when you log in to your computer</p>
-                                                                </div>
-                                                            </div>
-                                                            <div
-                                                                onClick={() => {
-                                                                    const newState = !openOnLogin;
-                                                                    setOpenOnLogin(newState);
-                                                                    window.electronAPI?.setOpenAtLogin(newState);
-                                                                }}
-                                                                className={`w-11 h-6 rounded-full relative transition-colors ${openOnLogin ? 'bg-accent-primary' : 'bg-bg-toggle-switch border border-border-muted'}`}
-                                                            >
-                                                                <div className={`absolute top-1 left-1 w-4 h-4 rounded-full bg-white transition-transform ${openOnLogin ? 'translate-x-5' : 'translate-x-0'}`} />
-                                                            </div>
-                                                        </div>
-
-                                                        {/* Debug Logging */}
-                                                        <div className="flex items-center justify-between px-4 py-3">
-                                                            <div className="flex items-center gap-4">
-                                                                <div className={`w-10 h-10 bg-bg-item-surface rounded-lg border flex items-center justify-center transition-colors ${verboseLogging ? 'border-amber-500/40 text-amber-400' : 'border-border-subtle text-text-tertiary'}`}>
-                                                                    <Terminal size={20} />
-                                                                </div>
-                                                                <div>
-                                                                    <h3 className="text-sm font-bold text-text-primary">Verbose debug logging</h3>
-                                                                    <p className="text-xs text-text-secondary mt-0.5">Print detailed audio, STT, and pipeline diagnostics to the terminal</p>
-                                                                </div>
-                                                            </div>
-                                                            <div
-                                                                onClick={() => {
-                                                                    const newState = !verboseLogging;
-                                                                    setVerboseLogging(newState);
-                                                                    window.electronAPI?.setVerboseLogging?.(newState);
-                                                                }}
-                                                                className={`w-11 h-6 rounded-full relative transition-colors ${verboseLogging ? 'bg-amber-500' : 'bg-bg-toggle-switch border border-border-muted'}`}
-                                                            >
-                                                                <div className={`absolute top-1 left-1 w-4 h-4 rounded-full bg-white transition-transform ${verboseLogging ? 'translate-x-5' : 'translate-x-0'}`} />
-                                                            </div>
-                                                        </div>
-
-                                                        {/* Meeting Transcript */}
-                                                        <div className="flex items-center justify-between px-4 py-3">
-                                                            <div className="flex items-center gap-4">
-                                                                <div className="w-10 h-10 bg-bg-item-surface rounded-lg border border-border-subtle flex items-center justify-center text-text-tertiary">
-                                                                    <MessageSquare size={20} />
-                                                                </div>
-                                                                <div>
-                                                                    <h3 className="text-sm font-bold text-text-primary">Meeting Transcript</h3>
-                                                                    <p className="text-xs text-text-secondary mt-0.5">Show real-time transcription of all meeting participants</p>
-                                                                </div>
-                                                            </div>
-                                                            <div
-                                                                onClick={() => {
-                                                                    const newState = !showTranscript;
-                                                                    setShowTranscript(newState);
-                                                                    localStorage.setItem('natively_interviewer_transcript', String(newState));
-                                                                    window.dispatchEvent(new StorageEvent('storage', { key: 'natively_interviewer_transcript', newValue: String(newState) }));
-                                                                }}
-                                                                className={`w-11 h-6 rounded-full relative transition-colors ${showTranscript ? 'bg-accent-primary' : 'bg-bg-toggle-switch border border-border-muted'}`}
-                                                            >
-                                                                <div className={`absolute top-1 left-1 w-4 h-4 rounded-full bg-white transition-transform ${showTranscript ? 'translate-x-5' : 'translate-x-0'}`} />
-                                                            </div>
-                                                        </div>
-
-
-                                                        {/* Theme */}
-                                                        <div className="flex items-center justify-between px-4 py-3">
-                                                            <div className="flex items-center gap-4">
-                                                                <div className="w-10 h-10 bg-bg-item-surface rounded-lg border border-border-subtle flex items-center justify-center text-text-tertiary">
-                                                                    <Palette size={20} />
-                                                                </div>
-                                                                <div>
-                                                                    <h3 className="text-sm font-bold text-text-primary">Theme</h3>
-                                                                    <p className="text-xs text-text-secondary mt-0.5">Customize how GoDojo looks on your device</p>
-                                                                </div>
-                                                            </div>
-
-                                                            <div className="relative" ref={themeDropdownRef}>
-                                                                <button
-                                                                    onClick={() => setIsThemeDropdownOpen(!isThemeDropdownOpen)}
-                                                                    className="bg-bg-component hover:bg-bg-elevated border border-border-subtle text-text-primary px-3 py-1.5 rounded-lg text-xs font-medium transition-colors flex items-center gap-2 min-w-[110px] justify-between"
+                            <div className={`flex-1 overflow-y-auto ${isLight ? 'bg-[#F8FAFC]' : 'bg-bg-main'}`}>
+                                <div className="max-w-5xl mx-auto px-10 py-10">
+                                    {activeTab === 'general' && (
+                                        <div className="space-y-6 animated fadeIn">
+                                            <div className="space-y-3.5">
+                                                {/* UndetectableToggle */}
+                                                <div className={`${isLight ? 'bg-white border-slate-200/80' : 'bg-bg-item-surface border-border-subtle'} rounded-xl p-5 border flex items-center justify-between transition-all ${isUndetectable ? 'shadow-lg shadow-blue-500/10' : ''}`}>
+                                                    <div className="flex flex-col gap-1">
+                                                        <div className="flex items-center gap-2">
+                                                            {isUndetectable ? (
+                                                                <svg
+                                                                    width="18"
+                                                                    height="18"
+                                                                    viewBox="0 0 24 24"
+                                                                    fill="none"
+                                                                    stroke="currentColor"
+                                                                    strokeWidth="2"
+                                                                    strokeLinecap="round"
+                                                                    strokeLinejoin="round"
+                                                                    className="text-text-primary"
                                                                 >
-                                                                    <div className="flex items-center gap-2 overflow-hidden">
-                                                                        <span className="text-text-secondary shrink-0">
-                                                                            {themeMode === 'system' && <Monitor size={14} />}
-                                                                            {themeMode === 'light' && <Sun size={14} />}
-                                                                            {themeMode === 'dark' && <Moon size={14} />}
+                                                                    <path d="M12 2a8 8 0 0 0-8 8v12l3-3 2.5 2.5L12 19l2.5 2.5L17 19l3 3V10a8 8 0 0 0-8-8z" fill="currentColor" stroke="currentColor" />
+                                                                    <path d="M9 10h.01" stroke="var(--bg-item-surface)" strokeWidth="2.5" />
+                                                                    <path d="M15 10h.01" stroke="var(--bg-item-surface)" strokeWidth="2.5" />
+                                                                </svg>
+                                                            ) : (
+                                                                <Ghost size={18} className="text-text-primary" />
+                                                            )}
+                                                            <h3 className="text-lg font-bold text-text-primary">{isUndetectable ? 'Ghost Mode ON' : 'Ghost Mode OFF'}</h3>
+                                                        </div>
+                                                        <p className="text-xs text-text-secondary">
+                                                            GoDojo is currently {isUndetectable ? 'undetectable' : 'detectable'} by screen-sharing.
+                                                        </p>
+                                                    </div>
+                                                    <div
+                                                        onClick={() => {
+                                                            const newState = !isUndetectable;
+                                                            setIsUndetectable(newState);
+                                                            window.electronAPI?.setUndetectable(newState);
+                                                            // Analytics: Undetectable Mode Toggle
+                                                            analytics.trackModeSelected(newState ? 'undetectable' : 'overlay');
+                                                        }}
+                                                        className={`w-11 h-6 rounded-full relative transition-colors ${isUndetectable ? 'bg-accent-primary' : 'bg-bg-toggle-switch border border-border-muted'}`}
+                                                    >
+                                                        <div className={`absolute top-1 left-1 w-4 h-4 rounded-full bg-white transition-transform ${isUndetectable ? 'translate-x-5' : 'translate-x-0'}`} />
+                                                    </div>
+                                                </div>
+
+                                                {/* Mouse Passthrough Toggle — Adapted from public PR #113 */}
+                                                <div className={`${isLight ? 'bg-white border-slate-200/80' : 'bg-bg-item-surface border-border-subtle'} rounded-xl p-5 border flex items-center justify-between transition-all ${isMousePassthrough ? 'shadow-lg shadow-sky-500/10' : ''}`}>
+                                                    <div className="flex flex-col gap-1">
+                                                        <div className="flex items-center gap-2">
+                                                            <PointerOff size={18} className={isMousePassthrough ? 'text-sky-400' : 'text-text-primary'} />
+                                                            <h3 className="text-lg font-bold text-text-primary">Mouse Passthrough</h3>
+                                                        </div>
+                                                        <p className="text-xs text-text-secondary">
+                                                            Overlay stays visible but lets all mouse clicks pass through to the app beneath.
+                                                        </p>
+                                                    </div>
+                                                    <div
+                                                        onClick={() => {
+                                                            const newState = !isMousePassthrough;
+                                                            setIsMousePassthrough(newState);
+                                                            window.electronAPI?.setOverlayMousePassthrough(newState);
+                                                        }}
+                                                        className={`w-11 h-6 rounded-full relative transition-colors cursor-pointer ${isMousePassthrough ? 'bg-sky-500' : 'bg-bg-toggle-switch border border-border-muted'}`}
+                                                    >
+                                                        <div className={`absolute top-1 left-1 w-4 h-4 rounded-full bg-white transition-transform ${isMousePassthrough ? 'translate-x-5' : 'translate-x-0'}`} />
+                                                    </div>
+                                                </div>
+
+                                                <div>
+                                                    <h3 className="text-lg font-bold text-text-primary mb-1">General settings</h3>
+                                                    <p className="text-xs text-text-secondary mb-2">Customize how GoDojo works for you</p>
+
+                                                    <div className={`rounded-xl border ${isLight ? 'bg-white border-slate-200/80 divide-y divide-slate-100' : 'bg-transparent border-transparent divide-y divide-border-subtle/20'}`}>
+                                                        <div className="space-y-0">
+                                                            {/* Open at Login */}
+                                                            <div className="flex items-center justify-between px-4 py-3">
+                                                                <div className="flex items-center gap-4">
+                                                                    <div className="w-10 h-10 bg-bg-item-surface rounded-lg border border-border-subtle flex items-center justify-center text-text-tertiary">
+                                                                        <Power size={20} />
+                                                                    </div>
+                                                                    <div>
+                                                                        <h3 className="text-sm font-bold text-text-primary">Open GoDojo when you log in</h3>
+                                                                        <p className="text-xs text-text-secondary mt-0.5">GoDojo will open automatically when you log in to your computer</p>
+                                                                    </div>
+                                                                </div>
+                                                                <div
+                                                                    onClick={() => {
+                                                                        const newState = !openOnLogin;
+                                                                        setOpenOnLogin(newState);
+                                                                        window.electronAPI?.setOpenAtLogin(newState);
+                                                                    }}
+                                                                    className={`w-11 h-6 rounded-full relative transition-colors ${openOnLogin ? 'bg-accent-primary' : 'bg-bg-toggle-switch border border-border-muted'}`}
+                                                                >
+                                                                    <div className={`absolute top-1 left-1 w-4 h-4 rounded-full bg-white transition-transform ${openOnLogin ? 'translate-x-5' : 'translate-x-0'}`} />
+                                                                </div>
+                                                            </div>
+
+                                                            {/* Debug Logging */}
+                                                            <div className="flex items-center justify-between px-4 py-3">
+                                                                <div className="flex items-center gap-4">
+                                                                    <div className={`w-10 h-10 bg-bg-item-surface rounded-lg border flex items-center justify-center transition-colors ${verboseLogging ? 'border-amber-500/40 text-amber-400' : 'border-border-subtle text-text-tertiary'}`}>
+                                                                        <Terminal size={20} />
+                                                                    </div>
+                                                                    <div>
+                                                                        <h3 className="text-sm font-bold text-text-primary">Verbose debug logging</h3>
+                                                                        <p className="text-xs text-text-secondary mt-0.5">Print detailed audio, STT, and pipeline diagnostics to the terminal</p>
+                                                                    </div>
+                                                                </div>
+                                                                <div
+                                                                    onClick={() => {
+                                                                        const newState = !verboseLogging;
+                                                                        setVerboseLogging(newState);
+                                                                        window.electronAPI?.setVerboseLogging?.(newState);
+                                                                    }}
+                                                                    className={`w-11 h-6 rounded-full relative transition-colors ${verboseLogging ? 'bg-amber-500' : 'bg-bg-toggle-switch border border-border-muted'}`}
+                                                                >
+                                                                    <div className={`absolute top-1 left-1 w-4 h-4 rounded-full bg-white transition-transform ${verboseLogging ? 'translate-x-5' : 'translate-x-0'}`} />
+                                                                </div>
+                                                            </div>
+
+                                                            {/* Meeting Transcript */}
+                                                            <div className="flex items-center justify-between px-4 py-3">
+                                                                <div className="flex items-center gap-4">
+                                                                    <div className="w-10 h-10 bg-bg-item-surface rounded-lg border border-border-subtle flex items-center justify-center text-text-tertiary">
+                                                                        <MessageSquare size={20} />
+                                                                    </div>
+                                                                    <div>
+                                                                        <h3 className="text-sm font-bold text-text-primary">Meeting Transcript</h3>
+                                                                        <p className="text-xs text-text-secondary mt-0.5">Show real-time transcription of all meeting participants</p>
+                                                                    </div>
+                                                                </div>
+                                                                <div
+                                                                    onClick={() => {
+                                                                        const newState = !showTranscript;
+                                                                        setShowTranscript(newState);
+                                                                        localStorage.setItem('natively_interviewer_transcript', String(newState));
+                                                                        window.dispatchEvent(new StorageEvent('storage', { key: 'natively_interviewer_transcript', newValue: String(newState) }));
+                                                                    }}
+                                                                    className={`w-11 h-6 rounded-full relative transition-colors ${showTranscript ? 'bg-accent-primary' : 'bg-bg-toggle-switch border border-border-muted'}`}
+                                                                >
+                                                                    <div className={`absolute top-1 left-1 w-4 h-4 rounded-full bg-white transition-transform ${showTranscript ? 'translate-x-5' : 'translate-x-0'}`} />
+                                                                </div>
+                                                            </div>
+
+
+                                                            {/* Theme */}
+                                                            <div className="flex items-center justify-between px-4 py-3">
+                                                                <div className="flex items-center gap-4">
+                                                                    <div className="w-10 h-10 bg-bg-item-surface rounded-lg border border-border-subtle flex items-center justify-center text-text-tertiary">
+                                                                        <Palette size={20} />
+                                                                    </div>
+                                                                    <div>
+                                                                        <h3 className="text-sm font-bold text-text-primary">Theme</h3>
+                                                                        <p className="text-xs text-text-secondary mt-0.5">Customize how GoDojo looks on your device</p>
+                                                                    </div>
+                                                                </div>
+
+                                                                <div className="relative" ref={themeDropdownRef}>
+                                                                    <button
+                                                                        onClick={() => setIsThemeDropdownOpen(!isThemeDropdownOpen)}
+                                                                        className="bg-bg-component hover:bg-bg-elevated border border-border-subtle text-text-primary px-3 py-1.5 rounded-lg text-xs font-medium transition-colors flex items-center gap-2 min-w-[110px] justify-between"
+                                                                    >
+                                                                        <div className="flex items-center gap-2 overflow-hidden">
+                                                                            <span className="text-text-secondary shrink-0">
+                                                                                {themeMode === 'system' && <Monitor size={14} />}
+                                                                                {themeMode === 'light' && <Sun size={14} />}
+                                                                                {themeMode === 'dark' && <Moon size={14} />}
+                                                                            </span>
+                                                                            <span className="capitalize text-ellipsis overflow-hidden whitespace-nowrap">{themeMode}</span>
+                                                                        </div>
+                                                                        <ChevronDown size={12} className={`shrink-0 transition-transform ${isThemeDropdownOpen ? 'rotate-180' : ''}`} />
+                                                                    </button>
+
+                                                                    {/* Dropdown Menu */}
+                                                                    {isThemeDropdownOpen && (
+                                                                        <div className="absolute right-0 top-full mt-1 min-w-full w-max bg-bg-elevated border border-border-subtle rounded-lg shadow-xl overflow-hidden z-20 p-1 animated fadeIn select-none">
+                                                                            {[
+                                                                                { mode: 'system', label: 'System', icon: <Monitor size={14} /> },
+                                                                                { mode: 'light', label: 'Light', icon: <Sun size={14} /> },
+                                                                                { mode: 'dark', label: 'Dark', icon: <Moon size={14} /> }
+                                                                            ].map((option) => (
+                                                                                <button
+                                                                                    key={option.mode}
+                                                                                    onClick={() => {
+                                                                                        handleSetTheme(option.mode as any);
+                                                                                        setIsThemeDropdownOpen(false);
+                                                                                    }}
+                                                                                    className={`w-full text-left px-2 py-1.5 rounded-md text-xs flex items-center gap-2 transition-colors ${themeMode === option.mode ? 'text-text-primary bg-bg-item-active/50' : 'text-text-secondary hover:bg-bg-input hover:text-text-primary'}`}
+                                                                                >
+                                                                                    <span className={themeMode === option.mode ? 'text-text-primary' : 'text-text-secondary group-hover:text-text-primary'}>{option.icon}</span>
+                                                                                    <span className="font-medium">{option.label}</span>
+                                                                                </button>
+                                                                            ))}
+                                                                        </div>
+                                                                    )}
+                                                                </div>
+                                                            </div>
+
+                                                            {/* AI Response Language */}
+                                                            <div className="flex items-center justify-between px-4 py-3">
+                                                                <div className="flex items-center gap-4">
+                                                                    <div className="w-10 h-10 bg-bg-item-surface rounded-lg border border-border-subtle flex items-center justify-center text-text-tertiary">
+                                                                        <Globe size={20} />
+                                                                    </div>
+                                                                    <div>
+                                                                        <h3 className="text-sm font-bold text-text-primary">AI Response Language</h3>
+                                                                        <p className="text-xs text-text-secondary mt-0.5">Language for AI suggestions and notes</p>
+                                                                    </div>
+                                                                </div>
+
+                                                                <div className="relative" ref={aiLangDropdownRef}>
+                                                                    <button
+                                                                        onClick={() => setIsAiLangDropdownOpen(!isAiLangDropdownOpen)}
+                                                                        className="bg-bg-component hover:bg-bg-elevated border border-border-subtle text-text-primary pl-4 pr-3 py-1.5 rounded-lg text-xs font-medium transition-colors flex items-center gap-2 min-w-[110px] justify-between"
+                                                                    >
+                                                                        <span className="capitalize text-ellipsis overflow-hidden whitespace-nowrap">
+                                                                            {aiResponseLanguage}
                                                                         </span>
-                                                                        <span className="capitalize text-ellipsis overflow-hidden whitespace-nowrap">{themeMode}</span>
-                                                                    </div>
-                                                                    <ChevronDown size={12} className={`shrink-0 transition-transform ${isThemeDropdownOpen ? 'rotate-180' : ''}`} />
-                                                                </button>
+                                                                        <ChevronDown size={12} className={`shrink-0 transition-transform ${isAiLangDropdownOpen ? 'rotate-180' : ''}`} />
+                                                                    </button>
 
-                                                                {/* Dropdown Menu */}
-                                                                {isThemeDropdownOpen && (
-                                                                    <div className="absolute right-0 top-full mt-1 min-w-full w-max bg-bg-elevated border border-border-subtle rounded-lg shadow-xl overflow-hidden z-20 p-1 animated fadeIn select-none">
-                                                                        {[
-                                                                            { mode: 'system', label: 'System', icon: <Monitor size={14} /> },
-                                                                            { mode: 'light', label: 'Light', icon: <Sun size={14} /> },
-                                                                            { mode: 'dark', label: 'Dark', icon: <Moon size={14} /> }
-                                                                        ].map((option) => (
-                                                                            <button
-                                                                                key={option.mode}
-                                                                                onClick={() => {
-                                                                                    handleSetTheme(option.mode as any);
-                                                                                    setIsThemeDropdownOpen(false);
-                                                                                }}
-                                                                                className={`w-full text-left px-2 py-1.5 rounded-md text-xs flex items-center gap-2 transition-colors ${themeMode === option.mode ? 'text-text-primary bg-bg-item-active/50' : 'text-text-secondary hover:bg-bg-input hover:text-text-primary'}`}
-                                                                            >
-                                                                                <span className={themeMode === option.mode ? 'text-text-primary' : 'text-text-secondary group-hover:text-text-primary'}>{option.icon}</span>
-                                                                                <span className="font-medium">{option.label}</span>
-                                                                            </button>
-                                                                        ))}
-                                                                    </div>
-                                                                )}
-                                                            </div>
-                                                        </div>
-
-                                                        {/* AI Response Language */}
-                                                        <div className="flex items-center justify-between px-4 py-3">
-                                                            <div className="flex items-center gap-4">
-                                                                <div className="w-10 h-10 bg-bg-item-surface rounded-lg border border-border-subtle flex items-center justify-center text-text-tertiary">
-                                                                    <Globe size={20} />
-                                                                </div>
-                                                                <div>
-                                                                    <h3 className="text-sm font-bold text-text-primary">AI Response Language</h3>
-                                                                    <p className="text-xs text-text-secondary mt-0.5">Language for AI suggestions and notes</p>
+                                                                    {/* Dropdown Menu */}
+                                                                    {isAiLangDropdownOpen && (
+                                                                        <div className="absolute right-0 top-full mt-1 min-w-full w-max bg-bg-elevated border border-border-subtle rounded-lg shadow-xl overflow-hidden z-20 p-1 animated fadeIn select-none max-h-60 overflow-y-auto custom-scrollbar">
+                                                                            {availableAiLanguages.map((option) => (
+                                                                                <button
+                                                                                    key={option.code}
+                                                                                    onClick={() => {
+                                                                                        handleAiLanguageChange(option.code);
+                                                                                        setIsAiLangDropdownOpen(false);
+                                                                                    }}
+                                                                                    className={`w-full text-left px-2 py-1.5 rounded-md text-xs flex items-center gap-2 transition-colors ${aiResponseLanguage === option.code ? 'text-text-primary bg-bg-item-active/50' : 'text-text-secondary hover:bg-bg-input hover:text-text-primary'}`}
+                                                                                >
+                                                                                    <span className="font-medium">{option.label}</span>
+                                                                                </button>
+                                                                            ))}
+                                                                        </div>
+                                                                    )}
                                                                 </div>
                                                             </div>
 
-                                                            <div className="relative" ref={aiLangDropdownRef}>
-                                                                <button
-                                                                    onClick={() => setIsAiLangDropdownOpen(!isAiLangDropdownOpen)}
-                                                                    className="bg-bg-component hover:bg-bg-elevated border border-border-subtle text-text-primary pl-4 pr-3 py-1.5 rounded-lg text-xs font-medium transition-colors flex items-center gap-2 min-w-[110px] justify-between"
-                                                                >
-                                                                    <span className="capitalize text-ellipsis overflow-hidden whitespace-nowrap">
-                                                                        {aiResponseLanguage}
-                                                                    </span>
-                                                                    <ChevronDown size={12} className={`shrink-0 transition-transform ${isAiLangDropdownOpen ? 'rotate-180' : ''}`} />
-                                                                </button>
-
-                                                                {/* Dropdown Menu */}
-                                                                {isAiLangDropdownOpen && (
-                                                                    <div className="absolute right-0 top-full mt-1 min-w-full w-max bg-bg-elevated border border-border-subtle rounded-lg shadow-xl overflow-hidden z-20 p-1 animated fadeIn select-none max-h-60 overflow-y-auto custom-scrollbar">
-                                                                        {availableAiLanguages.map((option) => (
-                                                                            <button
-                                                                                key={option.code}
-                                                                                onClick={() => {
-                                                                                    handleAiLanguageChange(option.code);
-                                                                                    setIsAiLangDropdownOpen(false);
-                                                                                }}
-                                                                                className={`w-full text-left px-2 py-1.5 rounded-md text-xs flex items-center gap-2 transition-colors ${aiResponseLanguage === option.code ? 'text-text-primary bg-bg-item-active/50' : 'text-text-secondary hover:bg-bg-input hover:text-text-primary'}`}
-                                                                            >
-                                                                                <span className="font-medium">{option.label}</span>
-                                                                            </button>
-                                                                        ))}
-                                                                    </div>
-                                                                )}
-                                                            </div>
-                                                        </div>
-
-                                                        {/* Version */}
-                                                        {/* <div className="flex items-start justify-between gap-4 px-4 py-3">
+                                                            {/* Version */}
+                                                            {/* <div className="flex items-start justify-between gap-4 px-4 py-3">
                                                             <div className="flex items-start gap-4">
                                                                 <div className="w-10 h-10 bg-bg-item-surface rounded-lg border border-border-subtle flex items-center justify-center text-text-tertiary shrink-0">
                                                                     <BadgeCheck size={20} />
@@ -1672,117 +1717,117 @@ const SettingsOverlay: React.FC<SettingsOverlayProps> = ({ isOpen, onClose, init
                                                                 )}
                                                             </button>
                                                         </div> */}
-                                                    </div>
-                                                </div>
-
-                                                {/* ------------------------------------------------------------------ */}
-                                                {/* Interface Opacity (Stealth Mode)                                   */}
-                                                {/* ------------------------------------------------------------------ */}
-                                                <div
-                                                    id="opacity-slider-card"
-                                                    style={isPreviewingOpacity ? { visibility: 'visible', position: 'relative', zIndex: 9999 } : {}}
-                                                    className={`${isLight ? 'bg-white border-slate-200/80' : 'bg-bg-item-surface border-border-subtle'} rounded-xl p-5 border mt-4`}
-                                                >
-                                                    <div className="flex items-center justify-between mb-3">
-                                                        <label className="flex items-center gap-2 text-xs font-medium text-text-secondary uppercase tracking-wide">
-                                                            <Eye size={13} className="text-text-secondary" />
-                                                            Interface Opacity
-                                                        </label>
-                                                        <span className="opacity-percent-label text-xs font-semibold text-text-primary tabular-nums">
-                                                            {Math.round(overlayOpacity * 100)}%
-                                                        </span>
-                                                    </div>
-
-                                                    <input
-                                                        type="range"
-                                                        id="main-opacity-slider"
-                                                        min={OVERLAY_OPACITY_MIN}
-                                                        max={1.0}
-                                                        step={0.01}
-                                                        defaultValue={overlayOpacity}
-                                                        onChange={(e) => handleOpacityChange(parseFloat(e.target.value))}
-                                                        onPointerUp={() => setOverlayOpacity(latestOpacityRef.current)}
-                                                        className="w-full h-1.5 rounded-full appearance-none bg-slate-500/10 dark:bg-bg-input accent-accent-primary"
-                                                        style={{ WebkitAppearance: 'none' } as React.CSSProperties}
-                                                    />
-
-                                                    <div className="flex justify-between mt-1.5">
-                                                        <span className="text-[10px] text-text-tertiary">More Stealth</span>
-                                                        <span className="text-[10px] text-text-tertiary">Fully Visible</span>
-                                                    </div>
-
-                                                    <div className={`mt-4 rounded-xl p-4 flex items-end justify-center ${isLight ? 'bg-slate-100/80' : 'bg-black/30'}`}
-                                                        style={{ minHeight: 200 }}>
-                                                        <MockupDock opacity={previewOverlayOpacity} />
-                                                    </div>
-                                                </div>
-
-                                            </div>
-
-                                        </div>
-
-                                        {/* Process Disguise */}
-                                        {/* Process Disguise */}
-                                        <div className={`${isLight ? 'bg-white border-slate-200/80' : 'bg-bg-item-surface border-border-subtle'} rounded-xl p-5 border`}>
-                                            <div className="flex flex-col gap-1 mb-3">
-                                                <div className="flex items-center gap-2">
-                                                    <h3 className="text-lg font-bold text-text-primary">Process Disguise</h3>
-                                                </div>
-                                                <p className="text-xs text-text-secondary">
-                                                    Disguise GoDojo as another application to prevent detection during screen sharing.
-                                                    <span className="block mt-1 text-text-tertiary">
-                                                        Select a disguise to be automatically applied when Undetectable mode is on.
-                                                    </span>
-                                                </p>
-                                            </div>
-
-                                            <div className={`grid grid-cols-2 gap-3 ${isUndetectable ? 'opacity-50 pointer-events-none' : ''}`}>
-                                                {isUndetectable && (
-                                                    <p className="col-span-2 text-xs text-yellow-500/80 -mt-1 mb-1">
-                                                        ⚠️ Disable Undetectable mode first to change disguise.
-                                                    </p>
-                                                )}
-                                                {[
-                                                    { id: 'none', label: 'None (Default)', icon: <Layout size={14} /> },
-                                                    { id: 'terminal', label: 'Terminal', icon: <Terminal size={14} /> },
-                                                    { id: 'settings', label: 'System Settings', icon: <Settings size={14} /> },
-                                                    { id: 'activity', label: 'Activity Monitor', icon: <Activity size={14} /> }
-                                                ].map((option) => (
-                                                    <button
-                                                        key={option.id}
-                                                        disabled={isUndetectable}
-                                                        onClick={() => {
-                                                            if (isUndetectable) return;
-                                                            // @ts-ignore
-                                                            setDisguiseMode(option.id);
-                                                            // @ts-ignore
-                                                            window.electronAPI?.setDisguise(option.id);
-                                                            // Analytics
-                                                            analytics.trackModeSelected(`disguise_${option.id}`);
-                                                        }}
-                                                        className={`p-3 rounded-lg border text-left flex items-center gap-3 transition-all ${disguiseMode === option.id
-                                                            ? 'bg-accent-primary border-accent-primary text-white shadow-lg shadow-blue-500/20'
-                                                            : 'bg-bg-input border-border-subtle text-text-secondary hover:text-text-primary hover:bg-bg-item-surface'
-                                                            } ${isUndetectable ? 'cursor-not-allowed' : ''}`}
-                                                    >
-                                                        <div className={`w-8 h-8 rounded-md flex items-center justify-center shrink-0 ${disguiseMode === option.id ? 'bg-white/20 text-white' : 'bg-bg-item-surface text-text-secondary'
-                                                            }`}>
-                                                            {option.icon}
                                                         </div>
-                                                        <span className="text-xs font-medium">{option.label}</span>
-                                                    </button>
-                                                ))}
+                                                    </div>
+
+                                                    {/* ------------------------------------------------------------------ */}
+                                                    {/* Interface Opacity (Stealth Mode)                                   */}
+                                                    {/* ------------------------------------------------------------------ */}
+                                                    <div
+                                                        id="opacity-slider-card"
+                                                        style={isPreviewingOpacity ? { visibility: 'visible', position: 'relative', zIndex: 9999 } : {}}
+                                                        className={`${isLight ? 'bg-white border-slate-200/80' : 'bg-bg-item-surface border-border-subtle'} rounded-xl p-5 border mt-4`}
+                                                    >
+                                                        <div className="flex items-center justify-between mb-3">
+                                                            <label className="flex items-center gap-2 text-xs font-medium text-text-secondary uppercase tracking-wide">
+                                                                <Eye size={13} className="text-text-secondary" />
+                                                                Interface Opacity
+                                                            </label>
+                                                            <span className="opacity-percent-label text-xs font-semibold text-text-primary tabular-nums">
+                                                                {Math.round(overlayOpacity * 100)}%
+                                                            </span>
+                                                        </div>
+
+                                                        <input
+                                                            type="range"
+                                                            id="main-opacity-slider"
+                                                            min={OVERLAY_OPACITY_MIN}
+                                                            max={1.0}
+                                                            step={0.01}
+                                                            defaultValue={overlayOpacity}
+                                                            onChange={(e) => handleOpacityChange(parseFloat(e.target.value))}
+                                                            onPointerUp={() => setOverlayOpacity(latestOpacityRef.current)}
+                                                            className="w-full h-1.5 rounded-full appearance-none bg-slate-500/10 dark:bg-bg-input accent-accent-primary"
+                                                            style={{ WebkitAppearance: 'none' } as React.CSSProperties}
+                                                        />
+
+                                                        <div className="flex justify-between mt-1.5">
+                                                            <span className="text-[10px] text-text-tertiary">More Stealth</span>
+                                                            <span className="text-[10px] text-text-tertiary">Fully Visible</span>
+                                                        </div>
+
+                                                        <div className={`mt-4 rounded-xl p-4 flex items-end justify-center ${isLight ? 'bg-slate-100/80' : 'bg-black/30'}`}
+                                                            style={{ minHeight: 200 }}>
+                                                            <MockupDock opacity={previewOverlayOpacity} />
+                                                        </div>
+                                                    </div>
+
+                                                </div>
+
                                             </div>
+
+                                            {/* Process Disguise */}
+                                            {/* Process Disguise */}
+                                            <div className={`${isLight ? 'bg-white border-slate-200/80' : 'bg-bg-item-surface border-border-subtle'} rounded-xl p-5 border`}>
+                                                <div className="flex flex-col gap-1 mb-3">
+                                                    <div className="flex items-center gap-2">
+                                                        <h3 className="text-lg font-bold text-text-primary">Process Disguise</h3>
+                                                    </div>
+                                                    <p className="text-xs text-text-secondary">
+                                                        Disguise GoDojo as another application to prevent detection during screen sharing.
+                                                        <span className="block mt-1 text-text-tertiary">
+                                                            Select a disguise to be automatically applied when Undetectable mode is on.
+                                                        </span>
+                                                    </p>
+                                                </div>
+
+                                                <div className={`grid grid-cols-2 gap-3 ${isUndetectable ? 'opacity-50 pointer-events-none' : ''}`}>
+                                                    {isUndetectable && (
+                                                        <p className="col-span-2 text-xs text-yellow-500/80 -mt-1 mb-1">
+                                                            ⚠️ Disable Undetectable mode first to change disguise.
+                                                        </p>
+                                                    )}
+                                                    {[
+                                                        { id: 'none', label: 'None (Default)', icon: <Layout size={14} /> },
+                                                        { id: 'terminal', label: 'Terminal', icon: <Terminal size={14} /> },
+                                                        { id: 'settings', label: 'System Settings', icon: <Settings size={14} /> },
+                                                        { id: 'activity', label: 'Activity Monitor', icon: <Activity size={14} /> }
+                                                    ].map((option) => (
+                                                        <button
+                                                            key={option.id}
+                                                            disabled={isUndetectable}
+                                                            onClick={() => {
+                                                                if (isUndetectable) return;
+                                                                // @ts-ignore
+                                                                setDisguiseMode(option.id);
+                                                                // @ts-ignore
+                                                                window.electronAPI?.setDisguise(option.id);
+                                                                // Analytics
+                                                                analytics.trackModeSelected(`disguise_${option.id}`);
+                                                            }}
+                                                            className={`p-3 rounded-lg border text-left flex items-center gap-3 transition-all ${disguiseMode === option.id
+                                                                ? 'bg-accent-primary border-accent-primary text-white shadow-lg shadow-blue-500/20'
+                                                                : 'bg-bg-input border-border-subtle text-text-secondary hover:text-text-primary hover:bg-bg-item-surface'
+                                                                } ${isUndetectable ? 'cursor-not-allowed' : ''}`}
+                                                        >
+                                                            <div className={`w-8 h-8 rounded-md flex items-center justify-center shrink-0 ${disguiseMode === option.id ? 'bg-white/20 text-white' : 'bg-bg-item-surface text-text-secondary'
+                                                                }`}>
+                                                                {option.icon}
+                                                            </div>
+                                                            <span className="text-xs font-medium">{option.label}</span>
+                                                        </button>
+                                                    ))}
+                                                </div>
+                                            </div>
+
                                         </div>
+                                    )}
 
-                                    </div>
-                                )}
+                                    {activeTab === 'user-profile' && (
+                                        <UserProfileTab isLight={isLight} />
+                                    )}
 
-                                {activeTab === 'user-profile' && (
-                                    <UserProfileTab isLight={isLight} />
-                                )}
-
-                                {/* {activeTab === 'profile' && (
+                                    {/* {activeTab === 'profile' && (
                                     <div className="space-y-6 animated fadeIn">
                                         <div className="mb-5">
                                             <div className="flex items-center justify-between mb-1">
@@ -2510,795 +2555,823 @@ const SettingsOverlay: React.FC<SettingsOverlayProps> = ({ isOpen, onClose, init
                                     </div>
                                 )} */}
 
-                                {activeTab === 'ai-providers' && (
-                                    <AIProvidersSettings
-                                        tavilyApiKey={tavilyApiKey}
-                                        hasStoredTavilyKey={hasStoredTavilyKey}
-                                        handleRemoveTavilyKey={handleRemoveTavilyKey}
-                                        handleAddTavilyKey={handleAddTavilyKey}
-                                        handleSaveTavilyKey={handleSaveTavilyKey}
-                                        tavilySaving={tavilySaving}
-                                        tavilyError={tavilyError}
-                                    />
-                                )}
+                                    {activeTab === 'ai-providers' && (
+                                        <AIProvidersSettings
+                                            tavilyApiKey={tavilyApiKey}
+                                            hasStoredTavilyKey={hasStoredTavilyKey}
+                                            handleRemoveTavilyKey={handleRemoveTavilyKey}
+                                            handleAddTavilyKey={handleAddTavilyKey}
+                                            handleSaveTavilyKey={handleSaveTavilyKey}
+                                            tavilySaving={tavilySaving}
+                                            tavilyError={tavilyError}
+                                        />
+                                    )}
 
-                                {activeTab === 'keybinds' && (
-                                    <div className="space-y-5 animated fadeIn select-text pb-4">
-                                        <div className="flex items-start justify-between">
-                                            <div>
-                                                <h3 className="text-lg font-bold text-text-primary mb-1">Keyboard shortcuts</h3>
-                                                <p className="text-xs text-text-secondary">GoDojo works with these easy to remember commands.</p>
-                                            </div>
-                                            <button
-                                                onClick={resetShortcuts}
-                                                className="flex items-center gap-2 px-4 py-1.5 rounded-full border border-border-subtle bg-bg-subtle/30 hover:bg-bg-subtle hover:border-green-500/30 transition-all duration-200 text-xs font-medium text-text-secondary hover:text-green-500 active:scale-95 mt-1"
-                                            >
-                                                <RotateCcw size={13} strokeWidth={2.5} />
-                                                Restore Default
-                                            </button>
-                                        </div>
-
-                                        <div className="grid gap-6">
-                                            {/* General Category */}
-                                            <div>
-                                                <h4 className="text-sm font-bold text-text-primary mb-3">General</h4>
-                                                <div className="space-y-1">
-                                                    <div className="flex items-center justify-between py-1.5 group">
-                                                        <div className="flex items-center gap-3">
-                                                            <span className="text-text-tertiary group-hover:text-text-primary transition-colors w-5 flex justify-center"><Eye size={14} /></span>
-                                                            <span className="text-sm text-text-secondary font-medium group-hover:text-text-primary transition-colors">Toggle Visibility</span>
-                                                        </div>
-                                                        <KeyRecorder
-                                                            currentKeys={shortcuts.toggleVisibility}
-                                                            onSave={(keys) => updateShortcut('toggleVisibility', keys)}
-                                                        />
-                                                    </div>
-                                                    <div className="flex items-center justify-between py-1.5 group">
-                                                        <div className="flex items-center gap-3">
-                                                            <span className="text-text-tertiary group-hover:text-text-primary transition-colors w-5 flex justify-center"><PointerOff size={14} /></span>
-                                                            <span className="text-sm text-text-secondary font-medium group-hover:text-text-primary transition-colors">Toggle Mouse Passthrough</span>
-                                                        </div>
-                                                        <KeyRecorder
-                                                            currentKeys={shortcuts.toggleMousePassthrough}
-                                                            onSave={(keys) => updateShortcut('toggleMousePassthrough', keys)}
-                                                        />
-                                                    </div>
-                                                    <div className="flex items-center justify-between py-1.5 group">
-                                                        <div className="flex items-center gap-3">
-                                                            <span className="text-text-tertiary group-hover:text-text-primary transition-colors w-5 flex justify-center"><MessageSquare size={14} /></span>
-                                                            <span className="text-sm text-text-secondary font-medium group-hover:text-text-primary transition-colors">Process Screenshots</span>
-                                                        </div>
-                                                        <KeyRecorder
-                                                            currentKeys={shortcuts.processScreenshots}
-                                                            onSave={(keys) => updateShortcut('processScreenshots', keys)}
-                                                        />
-                                                    </div>
-                                                    <div className="flex items-center justify-between py-1.5 group">
-                                                        <div className="flex items-center gap-3">
-                                                            <span className="text-text-tertiary group-hover:text-text-primary transition-colors w-5 flex justify-center"><Sparkles size={14} /></span>
-                                                            <span className="text-sm text-text-secondary font-medium group-hover:text-text-primary transition-colors">Capture Screen & Ask AI</span>
-                                                        </div>
-                                                        <KeyRecorder
-                                                            currentKeys={shortcuts.captureAndProcess}
-                                                            onSave={(keys) => updateShortcut('captureAndProcess', keys)}
-                                                        />
-                                                    </div>
-                                                    <div className="flex items-center justify-between py-1.5 group">
-                                                        <div className="flex items-center gap-3">
-                                                            <span className="text-text-tertiary group-hover:text-text-primary transition-colors w-5 flex justify-center"><RotateCcw size={14} /></span>
-                                                            <span className="text-sm text-text-secondary font-medium group-hover:text-text-primary transition-colors">Reset / Cancel</span>
-                                                        </div>
-                                                        <KeyRecorder
-                                                            currentKeys={shortcuts.resetCancel}
-                                                            onSave={(keys) => updateShortcut('resetCancel', keys)}
-                                                        />
-                                                    </div>
-                                                    <div className="flex items-center justify-between py-1.5 group">
-                                                        <div className="flex items-center gap-3">
-                                                            <span className="text-text-tertiary group-hover:text-text-primary transition-colors w-5 flex justify-center"><Camera size={14} /></span>
-                                                            <span className="text-sm text-text-secondary font-medium group-hover:text-text-primary transition-colors">Take Screenshot</span>
-                                                        </div>
-                                                        <KeyRecorder
-                                                            currentKeys={shortcuts.takeScreenshot}
-                                                            onSave={(keys) => updateShortcut('takeScreenshot', keys)}
-                                                        />
-                                                    </div>
-                                                    <div className="flex items-center justify-between py-1.5 group">
-                                                        <div className="flex items-center gap-3">
-                                                            <span className="text-text-tertiary group-hover:text-text-primary transition-colors w-5 flex justify-center"><Crop size={14} /></span>
-                                                            <span className="text-sm text-text-secondary font-medium group-hover:text-text-primary transition-colors">Selective Screenshot</span>
-                                                        </div>
-                                                        <KeyRecorder
-                                                            currentKeys={shortcuts.selectiveScreenshot}
-                                                            onSave={(keys) => updateShortcut('selectiveScreenshot', keys)}
-                                                        />
-                                                    </div>
+                                    {activeTab === 'keybinds' && (
+                                        <div className="space-y-5 animated fadeIn select-text pb-4">
+                                            <div className="flex items-start justify-between">
+                                                <div>
+                                                    <h3 className="text-lg font-bold text-text-primary mb-1">Keyboard shortcuts</h3>
+                                                    <p className="text-xs text-text-secondary">GoDojo works with these easy to remember commands.</p>
                                                 </div>
+                                                <button
+                                                    onClick={resetShortcuts}
+                                                    className="flex items-center gap-2 px-4 py-1.5 rounded-full border border-border-subtle bg-bg-subtle/30 hover:bg-bg-subtle hover:border-green-500/30 transition-all duration-200 text-xs font-medium text-text-secondary hover:text-green-500 active:scale-95 mt-1"
+                                                >
+                                                    <RotateCcw size={13} strokeWidth={2.5} />
+                                                    Restore Default
+                                                </button>
                                             </div>
 
-                                            {/* Chat Category */}
-                                            <div>
-                                                <div className="mb-3">
-                                                    <h4 className="text-sm font-bold text-text-primary">Chat</h4>
-                                                </div>
-                                                <div className="space-y-1">
-                                                    {[
-                                                        { id: 'whatToAnswer', label: 'What to Answer', icon: <Sparkles size={14} /> },
-                                                        { id: 'clarify', label: 'Clarify', icon: <MessageSquare size={14} /> },
-                                                        { id: 'followUp', label: 'Follow Up', icon: <MessageSquare size={14} /> },
-                                                        { id: 'dynamicAction4', label: 'Recap / Brainstorm', icon: <RefreshCw size={14} /> },
-                                                        { id: 'answer', label: 'Answer / Record', icon: <Mic size={14} /> },
-                                                        { id: 'codeHint', label: 'Get Code Hint', icon: <Zap size={14} /> },
-                                                        { id: 'brainstorm', label: 'Brainstorm Approaches', icon: <Zap size={14} /> },
-                                                        { id: 'scrollUp', label: 'Scroll Up', icon: <ArrowUp size={14} /> },
-                                                        { id: 'scrollDown', label: 'Scroll Down', icon: <ArrowDown size={14} /> },
-                                                    ].map((item, i) => (
-                                                        <div key={i} className="flex items-center justify-between py-1.5 group">
+                                            <div className="grid gap-6">
+                                                {/* General Category */}
+                                                <div>
+                                                    <h4 className="text-sm font-bold text-text-primary mb-3">General</h4>
+                                                    <div className="space-y-1">
+                                                        <div className="flex items-center justify-between py-1.5 group">
                                                             <div className="flex items-center gap-3">
-                                                                <span className="text-text-tertiary group-hover:text-text-primary transition-colors w-5 flex justify-center">{item.icon}</span>
-                                                                <span className="text-sm text-text-secondary font-medium group-hover:text-text-primary transition-colors">{item.label}</span>
+                                                                <span className="text-text-tertiary group-hover:text-text-primary transition-colors w-5 flex justify-center"><Eye size={14} /></span>
+                                                                <span className="text-sm text-text-secondary font-medium group-hover:text-text-primary transition-colors">Toggle Visibility</span>
                                                             </div>
                                                             <KeyRecorder
-                                                                currentKeys={shortcuts[item.id as keyof typeof shortcuts]}
-                                                                onSave={(keys) => updateShortcut(item.id as any, keys)}
+                                                                currentKeys={shortcuts.toggleVisibility}
+                                                                onSave={(keys) => updateShortcut('toggleVisibility', keys)}
                                                             />
                                                         </div>
-                                                    ))}
-                                                </div>
-                                            </div>
-
-                                            {/* Window Category */}
-                                            <div>
-                                                <h4 className="text-sm font-bold text-text-primary mb-3">Window</h4>
-                                                <div className="space-y-1">
-                                                    {[
-                                                        { id: 'moveWindowUp', label: 'Move Window Up', icon: <ArrowUp size={14} /> },
-                                                        { id: 'moveWindowDown', label: 'Move Window Down', icon: <ArrowDown size={14} /> },
-                                                        { id: 'moveWindowLeft', label: 'Move Window Left', icon: <ArrowLeft size={14} /> },
-                                                        { id: 'moveWindowRight', label: 'Move Window Right', icon: <ArrowRight size={14} /> }
-                                                    ].map((item, i) => (
-                                                        <div key={i} className="flex items-center justify-between py-1.5 group">
+                                                        <div className="flex items-center justify-between py-1.5 group">
                                                             <div className="flex items-center gap-3">
-                                                                <span className="text-text-tertiary group-hover:text-text-primary transition-colors w-5 flex justify-center">{item.icon}</span>
-                                                                <span className="text-sm text-text-secondary font-medium group-hover:text-text-primary transition-colors">{item.label}</span>
+                                                                <span className="text-text-tertiary group-hover:text-text-primary transition-colors w-5 flex justify-center"><PointerOff size={14} /></span>
+                                                                <span className="text-sm text-text-secondary font-medium group-hover:text-text-primary transition-colors">Toggle Mouse Passthrough</span>
                                                             </div>
                                                             <KeyRecorder
-                                                                currentKeys={shortcuts[item.id as keyof typeof shortcuts]}
-                                                                onSave={(keys) => updateShortcut(item.id as any, keys)}
+                                                                currentKeys={shortcuts.toggleMousePassthrough}
+                                                                onSave={(keys) => updateShortcut('toggleMousePassthrough', keys)}
                                                             />
                                                         </div>
-                                                    ))}
-                                                </div>
-                                            </div>
-                                        </div>
-                                    </div>
-                                )}
-
-                                {activeTab === 'audio' && (
-                                    <div className="space-y-6 animated fadeIn">
-                                        {/* ── Speech Provider Section ── */}
-                                        <div>
-                                            <h3 className="text-lg font-bold text-text-primary mb-1">Speech Provider</h3>
-                                            <p className="text-xs text-text-secondary mb-5">Choose the engine that transcribes audio to text.</p>
-
-                                            <div className="space-y-4">
-                                                <div className={`${isLight ? "bg-white border-slate-200/80" : "bg-bg-item-surface border-border-subtle"} rounded-xl border p-4 space-y-3`}>
-                                                    <label className="text-xs font-medium text-text-secondary block">Speech Provider</label>
-                                                    <div className="relative">
-                                                        <ProviderSelect
-                                                            value={sttProvider}
-                                                            onChange={(val) => handleSttProviderChange(val as any)}
-                                                            options={[
-                                                                { id: 'google', label: 'Google Cloud', badge: googleServiceAccountPath ? 'Saved' : null, recommended: true, desc: 'gRPC streaming via Service Account', color: 'blue', icon: <Mic size={14} /> },
-                                                                { id: 'groq', label: 'Groq Whisper', badge: hasStoredSttGroqKey ? 'Saved' : null, recommended: true, desc: 'Ultra-fast REST transcription', color: 'orange', icon: <Mic size={14} /> },
-                                                                { id: 'openai', label: 'OpenAI Whisper', badge: hasStoredSttOpenaiKey ? 'Saved' : null, desc: 'OpenAI-compatible Whisper API', color: 'green', icon: <Mic size={14} /> },
-                                                                { id: 'deepgram', label: 'Deepgram Nova-3', badge: hasStoredDeepgramKey ? 'Saved' : null, recommended: true, desc: 'High-accuracy REST transcription', color: 'purple', icon: <Mic size={14} /> },
-                                                                { id: 'elevenlabs', label: 'ElevenLabs Scribe', badge: hasStoredElevenLabsKey ? 'Saved' : null, desc: 'Scribe v2 Realtime API', color: 'teal', icon: <Mic size={14} /> },
-                                                                { id: 'azure', label: 'Azure Speech', badge: hasStoredAzureKey ? 'Saved' : null, desc: 'Microsoft Cognitive Services STT', color: 'cyan', icon: <Mic size={14} /> },
-                                                                { id: 'ibmwatson', label: 'IBM Watson', badge: hasStoredIbmWatsonKey ? 'Saved' : null, desc: 'IBM Watson cloud STT service', color: 'indigo', icon: <Mic size={14} /> },
-                                                                { id: 'soniox', label: 'Soniox', badge: hasStoredSonioxKey ? 'Saved' : null, recommended: true, desc: '60+ languages, multilingual, domain context', color: 'cyan', icon: <Mic size={14} /> },
-                                                            ]}
-                                                        />
+                                                        <div className="flex items-center justify-between py-1.5 group">
+                                                            <div className="flex items-center gap-3">
+                                                                <span className="text-text-tertiary group-hover:text-text-primary transition-colors w-5 flex justify-center"><MessageSquare size={14} /></span>
+                                                                <span className="text-sm text-text-secondary font-medium group-hover:text-text-primary transition-colors">Process Screenshots</span>
+                                                            </div>
+                                                            <KeyRecorder
+                                                                currentKeys={shortcuts.processScreenshots}
+                                                                onSave={(keys) => updateShortcut('processScreenshots', keys)}
+                                                            />
+                                                        </div>
+                                                        <div className="flex items-center justify-between py-1.5 group">
+                                                            <div className="flex items-center gap-3">
+                                                                <span className="text-text-tertiary group-hover:text-text-primary transition-colors w-5 flex justify-center"><Sparkles size={14} /></span>
+                                                                <span className="text-sm text-text-secondary font-medium group-hover:text-text-primary transition-colors">Capture Screen & Ask AI</span>
+                                                            </div>
+                                                            <KeyRecorder
+                                                                currentKeys={shortcuts.captureAndProcess}
+                                                                onSave={(keys) => updateShortcut('captureAndProcess', keys)}
+                                                            />
+                                                        </div>
+                                                        <div className="flex items-center justify-between py-1.5 group">
+                                                            <div className="flex items-center gap-3">
+                                                                <span className="text-text-tertiary group-hover:text-text-primary transition-colors w-5 flex justify-center"><RotateCcw size={14} /></span>
+                                                                <span className="text-sm text-text-secondary font-medium group-hover:text-text-primary transition-colors">Reset / Cancel</span>
+                                                            </div>
+                                                            <KeyRecorder
+                                                                currentKeys={shortcuts.resetCancel}
+                                                                onSave={(keys) => updateShortcut('resetCancel', keys)}
+                                                            />
+                                                        </div>
+                                                        <div className="flex items-center justify-between py-1.5 group">
+                                                            <div className="flex items-center gap-3">
+                                                                <span className="text-text-tertiary group-hover:text-text-primary transition-colors w-5 flex justify-center"><Camera size={14} /></span>
+                                                                <span className="text-sm text-text-secondary font-medium group-hover:text-text-primary transition-colors">Take Screenshot</span>
+                                                            </div>
+                                                            <KeyRecorder
+                                                                currentKeys={shortcuts.takeScreenshot}
+                                                                onSave={(keys) => updateShortcut('takeScreenshot', keys)}
+                                                            />
+                                                        </div>
+                                                        <div className="flex items-center justify-between py-1.5 group">
+                                                            <div className="flex items-center gap-3">
+                                                                <span className="text-text-tertiary group-hover:text-text-primary transition-colors w-5 flex justify-center"><Crop size={14} /></span>
+                                                                <span className="text-sm text-text-secondary font-medium group-hover:text-text-primary transition-colors">Selective Screenshot</span>
+                                                            </div>
+                                                            <KeyRecorder
+                                                                currentKeys={shortcuts.selectiveScreenshot}
+                                                                onSave={(keys) => updateShortcut('selectiveScreenshot', keys)}
+                                                            />
+                                                        </div>
                                                     </div>
                                                 </div>
 
-                                                {/* Groq Model Selector */}
-                                                {sttProvider === 'groq' && (
-                                                    <div className={`${isLight ? "bg-white border-slate-200/80" : "bg-bg-item-surface border-border-subtle"} rounded-xl border p-4`}>
-                                                        <label className="text-xs font-medium text-text-secondary mb-2.5 block">Whisper Model</label>
-                                                        <div className="grid grid-cols-2 gap-2">
-                                                            {[
-                                                                { id: 'whisper-large-v3-turbo', label: 'V3 Turbo', desc: 'Fastest' },
-                                                                { id: 'whisper-large-v3', label: 'V3', desc: 'Most Accurate' },
-                                                            ].map((m) => (
+                                                {/* Chat Category */}
+                                                <div>
+                                                    <div className="mb-3">
+                                                        <h4 className="text-sm font-bold text-text-primary">Chat</h4>
+                                                    </div>
+                                                    <div className="space-y-1">
+                                                        {[
+                                                            { id: 'whatToAnswer', label: 'What to Answer', icon: <Sparkles size={14} /> },
+                                                            { id: 'clarify', label: 'Clarify', icon: <MessageSquare size={14} /> },
+                                                            { id: 'followUp', label: 'Follow Up', icon: <MessageSquare size={14} /> },
+                                                            { id: 'dynamicAction4', label: 'Recap / Brainstorm', icon: <RefreshCw size={14} /> },
+                                                            { id: 'answer', label: 'Answer / Record', icon: <Mic size={14} /> },
+                                                            { id: 'codeHint', label: 'Get Code Hint', icon: <Zap size={14} /> },
+                                                            { id: 'brainstorm', label: 'Brainstorm Approaches', icon: <Zap size={14} /> },
+                                                            { id: 'scrollUp', label: 'Scroll Up', icon: <ArrowUp size={14} /> },
+                                                            { id: 'scrollDown', label: 'Scroll Down', icon: <ArrowDown size={14} /> },
+                                                        ].map((item, i) => (
+                                                            <div key={i} className="flex items-center justify-between py-1.5 group">
+                                                                <div className="flex items-center gap-3">
+                                                                    <span className="text-text-tertiary group-hover:text-text-primary transition-colors w-5 flex justify-center">{item.icon}</span>
+                                                                    <span className="text-sm text-text-secondary font-medium group-hover:text-text-primary transition-colors">{item.label}</span>
+                                                                </div>
+                                                                <KeyRecorder
+                                                                    currentKeys={shortcuts[item.id as keyof typeof shortcuts]}
+                                                                    onSave={(keys) => updateShortcut(item.id as any, keys)}
+                                                                />
+                                                            </div>
+                                                        ))}
+                                                    </div>
+                                                </div>
+
+                                                {/* Window Category */}
+                                                <div>
+                                                    <h4 className="text-sm font-bold text-text-primary mb-3">Window</h4>
+                                                    <div className="space-y-1">
+                                                        {[
+                                                            { id: 'moveWindowUp', label: 'Move Window Up', icon: <ArrowUp size={14} /> },
+                                                            { id: 'moveWindowDown', label: 'Move Window Down', icon: <ArrowDown size={14} /> },
+                                                            { id: 'moveWindowLeft', label: 'Move Window Left', icon: <ArrowLeft size={14} /> },
+                                                            { id: 'moveWindowRight', label: 'Move Window Right', icon: <ArrowRight size={14} /> }
+                                                        ].map((item, i) => (
+                                                            <div key={i} className="flex items-center justify-between py-1.5 group">
+                                                                <div className="flex items-center gap-3">
+                                                                    <span className="text-text-tertiary group-hover:text-text-primary transition-colors w-5 flex justify-center">{item.icon}</span>
+                                                                    <span className="text-sm text-text-secondary font-medium group-hover:text-text-primary transition-colors">{item.label}</span>
+                                                                </div>
+                                                                <KeyRecorder
+                                                                    currentKeys={shortcuts[item.id as keyof typeof shortcuts]}
+                                                                    onSave={(keys) => updateShortcut(item.id as any, keys)}
+                                                                />
+                                                            </div>
+                                                        ))}
+                                                    </div>
+                                                </div>
+                                            </div>
+                                        </div>
+                                    )}
+
+                                    {activeTab === 'audio' && (
+                                        <div className="space-y-6 animated fadeIn">
+                                            {/* ── Speech Provider Section ── */}
+                                            <div>
+                                                <h3 className="text-lg font-bold text-text-primary mb-1">Speech Provider</h3>
+                                                <p className="text-xs text-text-secondary mb-5">Choose the engine that transcribes audio to text.</p>
+
+                                                <div className="space-y-4">
+                                                    <div className={`${isLight ? "bg-white border-slate-200/80" : "bg-bg-item-surface border-border-subtle"} rounded-xl border p-4 space-y-3`}>
+                                                        <label className="text-xs font-medium text-text-secondary block">Speech Provider</label>
+                                                        <div className="relative">
+                                                            <ProviderSelect
+                                                                value={sttProvider}
+                                                                onChange={(val) => handleSttProviderChange(val as any)}
+                                                                options={[
+                                                                    { id: 'google', label: 'Google Cloud', badge: googleServiceAccountPath ? 'Saved' : null, recommended: true, desc: 'gRPC streaming via Service Account', color: 'blue', icon: <Mic size={14} /> },
+                                                                    { id: 'groq', label: 'Groq Whisper', badge: hasStoredSttGroqKey ? 'Saved' : null, recommended: true, desc: 'Ultra-fast REST transcription', color: 'orange', icon: <Mic size={14} /> },
+                                                                    { id: 'openai', label: 'OpenAI Whisper', badge: hasStoredSttOpenaiKey ? 'Saved' : null, desc: 'OpenAI-compatible Whisper API', color: 'green', icon: <Mic size={14} /> },
+                                                                    { id: 'deepgram', label: 'Deepgram Nova-3', badge: hasStoredDeepgramKey ? 'Saved' : null, recommended: true, desc: 'High-accuracy REST transcription', color: 'purple', icon: <Mic size={14} /> },
+                                                                    { id: 'elevenlabs', label: 'ElevenLabs Scribe', badge: hasStoredElevenLabsKey ? 'Saved' : null, desc: 'Scribe v2 Realtime API', color: 'teal', icon: <Mic size={14} /> },
+                                                                    { id: 'azure', label: 'Azure Speech', badge: hasStoredAzureKey ? 'Saved' : null, desc: 'Microsoft Cognitive Services STT', color: 'cyan', icon: <Mic size={14} /> },
+                                                                    { id: 'ibmwatson', label: 'IBM Watson', badge: hasStoredIbmWatsonKey ? 'Saved' : null, desc: 'IBM Watson cloud STT service', color: 'indigo', icon: <Mic size={14} /> },
+                                                                    { id: 'soniox', label: 'Soniox', badge: hasStoredSonioxKey ? 'Saved' : null, recommended: true, desc: '60+ languages, multilingual, domain context', color: 'cyan', icon: <Mic size={14} /> },
+                                                                ]}
+                                                            />
+                                                        </div>
+                                                    </div>
+
+                                                    {/* Deepgram: far-end speaker diarization */}
+                                                    {sttProvider === 'deepgram' && (
+                                                        <div className={`${isLight ? "bg-white border-slate-200/80" : "bg-bg-item-surface border-border-subtle"} rounded-xl border p-4`}>
+                                                            <div className="flex items-center justify-between gap-3">
+                                                                <div className="min-w-0">
+                                                                    <label className="text-xs font-medium text-text-primary block">Identify multiple far-end speakers</label>
+                                                                    <p className="text-[10px] text-text-tertiary mt-1 leading-relaxed">
+                                                                        Labels different people on the other side as Speaker 1, Speaker 2.
+                                                                        Deepgram only — billed by Deepgram as a streaming add-on (~$0.002/min).
+                                                                    </p>
+                                                                </div>
                                                                 <button
-                                                                    key={m.id}
+                                                                    role="switch"
+                                                                    aria-checked={diarizeClientEnabled}
+                                                                    onClick={handleDiarizeToggle}
+                                                                    className={`relative shrink-0 w-10 h-[22px] rounded-full transition-colors duration-200 ${diarizeClientEnabled ? 'bg-blue-600' : isLight ? 'bg-slate-300' : 'bg-bg-input'}`}
+                                                                >
+                                                                    <span className={`absolute top-[3px] left-[3px] w-4 h-4 rounded-full bg-white shadow transition-transform duration-200 ${diarizeClientEnabled ? 'translate-x-[18px]' : ''}`} />
+                                                                </button>
+                                                            </div>
+                                                        </div>
+                                                    )}
+
+                                                    {/* Groq Model Selector */}
+                                                    {sttProvider === 'groq' && (
+                                                        <div className={`${isLight ? "bg-white border-slate-200/80" : "bg-bg-item-surface border-border-subtle"} rounded-xl border p-4`}>
+                                                            <label className="text-xs font-medium text-text-secondary mb-2.5 block">Whisper Model</label>
+                                                            <div className="grid grid-cols-2 gap-2">
+                                                                {[
+                                                                    { id: 'whisper-large-v3-turbo', label: 'V3 Turbo', desc: 'Fastest' },
+                                                                    { id: 'whisper-large-v3', label: 'V3', desc: 'Most Accurate' },
+                                                                ].map((m) => (
+                                                                    <button
+                                                                        key={m.id}
+                                                                        onClick={async () => {
+                                                                            setGroqSttModel(m.id);
+                                                                            try {
+                                                                                // @ts-ignore
+                                                                                await window.electronAPI?.setGroqSttModel?.(m.id);
+                                                                            } catch (e) {
+                                                                                console.error('Failed to set Groq model:', e);
+                                                                            }
+                                                                        }}
+                                                                        className={`rounded-lg px-3 py-2.5 text-left transition-all duration-200 ease-in-out active:scale-[0.98] ${groqSttModel === m.id
+                                                                            ? 'bg-blue-600 text-white shadow-md'
+                                                                            : 'bg-bg-input hover:bg-bg-elevated text-text-primary'
+                                                                            }`}
+                                                                    >
+                                                                        <span className="text-sm font-medium block">{m.label}</span>
+                                                                        <span className={`text-[11px] transition-colors ${groqSttModel === m.id ? 'text-white/70' : 'text-text-tertiary'
+                                                                            }`}>{m.desc}</span>
+                                                                    </button>
+                                                                ))}
+                                                            </div>
+                                                        </div>
+                                                    )}
+
+                                                    {/* Google Cloud Service Account */}
+                                                    {sttProvider === 'google' && (
+                                                        <div className={`${isLight ? "bg-white border-slate-200/80" : "bg-bg-item-surface border-border-subtle"} rounded-xl border p-4`}>
+                                                            <label className="text-xs font-medium text-text-secondary mb-2 block">Service Account JSON</label>
+                                                            <div className="flex gap-2">
+                                                                <div className="flex-1 bg-bg-input border border-border-subtle rounded-lg px-3 py-2 text-xs text-text-secondary font-mono truncate">
+                                                                    {googleServiceAccountPath
+                                                                        ? <span className="text-text-primary">{googleServiceAccountPath.split('/').pop()}</span>
+                                                                        : <span className="text-text-tertiary italic">No file selected</span>}
+                                                                </div>
+                                                                <button
                                                                     onClick={async () => {
-                                                                        setGroqSttModel(m.id);
-                                                                        try {
-                                                                            // @ts-ignore
-                                                                            await window.electronAPI?.setGroqSttModel?.(m.id);
-                                                                        } catch (e) {
-                                                                            console.error('Failed to set Groq model:', e);
+                                                                        // @ts-ignore
+                                                                        const result = await window.electronAPI?.selectServiceAccount?.();
+                                                                        if (result?.success && result.path) {
+                                                                            setGoogleServiceAccountPath(result.path);
                                                                         }
                                                                     }}
-                                                                    className={`rounded-lg px-3 py-2.5 text-left transition-all duration-200 ease-in-out active:scale-[0.98] ${groqSttModel === m.id
-                                                                        ? 'bg-blue-600 text-white shadow-md'
-                                                                        : 'bg-bg-input hover:bg-bg-elevated text-text-primary'
+                                                                    className="px-3 py-2 bg-bg-input hover:bg-bg-elevated border border-border-subtle rounded-lg text-xs font-medium text-text-primary transition-colors flex items-center gap-2"
+                                                                >
+                                                                    <Upload size={14} /> Select File
+                                                                </button>
+                                                            </div>
+                                                            <p className="text-[10px] text-text-tertiary mt-2">
+                                                                Required for Google Cloud Speech-to-Text.
+                                                            </p>
+                                                        </div>
+                                                    )}
+
+                                                    {/* API Key Input (non-Google providers) */}
+                                                    {sttProvider !== 'google' && (
+                                                        <div className={`${isLight ? "bg-white border-slate-200/80" : "bg-bg-item-surface border-border-subtle"} rounded-xl border p-4 space-y-3`}>
+                                                            <label className="text-xs font-medium text-text-secondary block">
+                                                                {sttProvider === 'groq' ? 'Groq' : sttProvider === 'openai' ? 'OpenAI STT' : sttProvider === 'elevenlabs' ? 'ElevenLabs' : sttProvider === 'azure' ? 'Azure' : sttProvider === 'ibmwatson' ? 'IBM Watson' : sttProvider === 'soniox' ? 'Soniox' : 'Deepgram'} API Key
+                                                            </label>
+                                                            {sttProvider === 'openai' && (
+                                                                <p className="text-[10px] text-text-tertiary mb-1.5">
+                                                                    This key is separate from your main AI Provider key.
+                                                                </p>
+                                                            )}
+                                                            <div className="flex gap-2">
+                                                                <input
+                                                                    type="password"
+                                                                    value={
+                                                                        sttProvider === 'groq' ? sttGroqKey
+                                                                            : sttProvider === 'openai' ? sttOpenaiKey
+                                                                                : sttProvider === 'elevenlabs' ? sttElevenLabsKey
+                                                                                    : sttProvider === 'azure' ? sttAzureKey
+                                                                                        : sttProvider === 'ibmwatson' ? sttIbmKey
+                                                                                            : sttProvider === 'soniox' ? sttSonioxKey
+                                                                                                : sttDeepgramKey
+                                                                    }
+                                                                    onChange={(e) => {
+                                                                        if (sttProvider === 'groq') setSttGroqKey(e.target.value);
+                                                                        else if (sttProvider === 'openai') setSttOpenaiKey(e.target.value);
+                                                                        else if (sttProvider === 'elevenlabs') setSttElevenLabsKey(e.target.value);
+                                                                        else if (sttProvider === 'azure') setSttAzureKey(e.target.value);
+                                                                        else if (sttProvider === 'ibmwatson') setSttIbmKey(e.target.value);
+                                                                        else if (sttProvider === 'soniox') setSttSonioxKey(e.target.value);
+                                                                        else setSttDeepgramKey(e.target.value);
+                                                                    }}
+                                                                    placeholder={
+                                                                        sttProvider === 'groq'
+                                                                            ? (hasStoredSttGroqKey ? '••••••••••••' : 'Enter Groq API key')
+                                                                            : sttProvider === 'openai'
+                                                                                ? (hasStoredSttOpenaiKey ? '••••••••••••' : 'Enter OpenAI STT API key')
+                                                                                : sttProvider === 'elevenlabs'
+                                                                                    ? (hasStoredElevenLabsKey ? '••••••••••••' : 'Enter ElevenLabs API key')
+                                                                                    : sttProvider === 'azure'
+                                                                                        ? (hasStoredAzureKey ? '••••••••••••' : 'Enter Azure API key')
+                                                                                        : sttProvider === 'ibmwatson'
+                                                                                            ? (hasStoredIbmWatsonKey ? '••••••••••••' : 'Enter IBM Watson API key')
+                                                                                            : sttProvider === 'soniox'
+                                                                                                ? (hasStoredSonioxKey ? '••••••••••••' : 'Enter Soniox API key')
+                                                                                                : (hasStoredDeepgramKey ? '••••••••••••' : 'Enter Deepgram API key')
+                                                                    }
+                                                                    className="flex-1 bg-bg-input border border-border-subtle rounded-lg px-3 py-2 text-sm text-text-primary placeholder-text-tertiary focus:outline-none focus:border-accent-primary transition-colors"
+                                                                />
+                                                                <button
+                                                                    onClick={() => {
+                                                                        const keyMap: Record<string, string> = {
+                                                                            groq: sttGroqKey, openai: sttOpenaiKey, deepgram: sttDeepgramKey,
+                                                                            elevenlabs: sttElevenLabsKey, azure: sttAzureKey, ibmwatson: sttIbmKey,
+                                                                        };
+                                                                        handleSttKeySubmit(sttProvider as any, keyMap[sttProvider] || '');
+                                                                    }}
+                                                                    disabled={sttSaving || !(() => {
+                                                                        const keyMap: Record<string, string> = {
+                                                                            groq: sttGroqKey, openai: sttOpenaiKey, deepgram: sttDeepgramKey,
+                                                                            elevenlabs: sttElevenLabsKey, azure: sttAzureKey, ibmwatson: sttIbmKey,
+                                                                            soniox: sttSonioxKey,
+                                                                        };
+                                                                        return (keyMap[sttProvider] || '').trim();
+                                                                    })()}
+                                                                    className={`px-5 py-2.5 rounded-lg text-xs font-medium transition-colors ${sttSaved
+                                                                        ? 'bg-green-500/20 text-green-400'
+                                                                        : 'bg-bg-input hover:bg-bg-input/80 border border-border-subtle text-text-primary disabled:opacity-50'
                                                                         }`}
                                                                 >
-                                                                    <span className="text-sm font-medium block">{m.label}</span>
-                                                                    <span className={`text-[11px] transition-colors ${groqSttModel === m.id ? 'text-white/70' : 'text-text-tertiary'
-                                                                        }`}>{m.desc}</span>
+                                                                    {sttSaving ? 'Saving...' : sttSaved ? 'Saved!' : 'Save'}
                                                                 </button>
-                                                            ))}
+                                                                {(() => {
+                                                                    const hasKeyMap: Record<string, boolean> = {
+                                                                        groq: hasStoredSttGroqKey,
+                                                                        openai: hasStoredSttOpenaiKey,
+                                                                        deepgram: hasStoredDeepgramKey,
+                                                                        elevenlabs: hasStoredElevenLabsKey,
+                                                                        azure: hasStoredAzureKey,
+                                                                        ibmwatson: hasStoredIbmWatsonKey,
+                                                                        soniox: hasStoredSonioxKey,
+                                                                    };
+                                                                    return hasKeyMap[sttProvider] ? (
+                                                                        <button
+                                                                            onClick={() => handleRemoveSttKey(sttProvider as any)}
+                                                                            className="px-2.5 py-2.5 rounded-lg text-xs font-medium text-text-tertiary hover:text-red-500 hover:bg-red-500/10 transition-all"
+                                                                            title="Remove API Key"
+                                                                        >
+                                                                            <Trash2 size={16} strokeWidth={1.5} />
+                                                                        </button>
+                                                                    ) : null;
+                                                                })()}
+                                                            </div>
+
+                                                            {/* Azure Region Input */}
+                                                            {sttProvider === 'azure' && (
+                                                                <div className="space-y-1.5">
+                                                                    <label className="text-xs font-medium text-text-secondary block">Region</label>
+                                                                    <div className="flex gap-2">
+                                                                        <input
+                                                                            type="text"
+                                                                            value={sttAzureRegion}
+                                                                            onChange={(e) => setSttAzureRegion(e.target.value)}
+                                                                            placeholder="e.g. eastus"
+                                                                            className="flex-1 bg-bg-input border border-border-subtle rounded-lg px-3 py-2 text-sm text-text-primary placeholder-text-tertiary focus:outline-none focus:border-accent-primary transition-colors"
+                                                                        />
+                                                                        <button
+                                                                            onClick={async () => {
+                                                                                if (!sttAzureRegion.trim()) return;
+                                                                                // @ts-ignore
+                                                                                await window.electronAPI?.setAzureRegion?.(sttAzureRegion.trim());
+                                                                                setSttSaved(true);
+                                                                                setTimeout(() => setSttSaved(false), 2000);
+                                                                            }}
+                                                                            disabled={!sttAzureRegion.trim()}
+                                                                            className="px-5 py-2.5 rounded-lg text-xs font-medium bg-bg-input hover:bg-bg-input/80 border border-border-subtle text-text-primary disabled:opacity-50 transition-colors"
+                                                                        >
+                                                                            Save
+                                                                        </button>
+                                                                    </div>
+                                                                    <p className="text-[10px] text-text-tertiary">e.g. eastus, westeurope, westus2</p>
+                                                                </div>
+                                                            )}
+
+                                                            <div className="flex items-center gap-3">
+                                                                <button
+                                                                    onClick={handleTestSttConnection}
+                                                                    disabled={sttTestStatus === 'testing'}
+                                                                    className="text-xs bg-bg-input hover:bg-bg-elevated text-text-primary px-3 py-1.5 rounded-md transition-colors flex items-center gap-2 disabled:opacity-50"
+                                                                >
+                                                                    {sttTestStatus === 'testing' ? (
+                                                                        <><RefreshCw size={12} className="animate-spin" /> Testing...</>
+                                                                    ) : sttTestStatus === 'success' ? (
+                                                                        <><Check size={12} className="text-green-500" /> Connected</>
+                                                                    ) : (
+                                                                        <>Test Connection</>
+                                                                    )}
+                                                                </button>
+                                                                <button
+                                                                    onClick={() => {
+                                                                        const urls: Record<string, string> = {
+                                                                            groq: 'https://console.groq.com/keys',
+                                                                            openai: 'https://platform.openai.com/api-keys',
+                                                                            deepgram: 'https://console.deepgram.com',
+                                                                            elevenlabs: 'https://elevenlabs.io/app/settings/api-keys',
+                                                                            azure: 'https://portal.azure.com/#create/Microsoft.CognitiveServicesSpeech',
+                                                                            ibmwatson: 'https://cloud.ibm.com/catalog/services/speech-to-text'
+                                                                        };
+                                                                        if (urls[sttProvider]) {
+                                                                            // @ts-ignore
+                                                                            window.electronAPI?.openExternal(urls[sttProvider]);
+                                                                        }
+                                                                    }}
+                                                                    className="text-xs text-text-tertiary hover:text-text-primary flex items-center gap-1 transition-colors ml-1"
+                                                                    title="Get API Key"
+                                                                >
+                                                                    <ExternalLink size={12} />
+                                                                </button>
+                                                                {sttTestStatus === 'error' && (
+                                                                    <span className="text-xs text-red-400">{sttTestError}</span>
+                                                                )}
+                                                            </div>
+                                                        </div>
+                                                    )}
+
+                                                    {/* Recognition Language Family */}
+                                                    <CustomSelect
+                                                        label="Language"
+                                                        icon={<Globe size={14} />}
+                                                        value={selectedSttGroup}
+                                                        options={languageGroups.map(g => ({
+                                                            deviceId: g,
+                                                            label: g,
+                                                            kind: 'audioinput' as MediaDeviceKind,
+                                                            groupId: '',
+                                                            toJSON: () => ({})
+                                                        }))}
+                                                        onChange={handleGroupChange}
+                                                        placeholder="Select Language"
+                                                    />
+
+                                                    {/* Variant/Accent Selector (Conditional) */}
+                                                    {currentGroupVariants.length > 1 && (
+                                                        <div className="mt-3 animated fadeIn">
+                                                            <CustomSelect
+                                                                label="Accent / Region"
+                                                                icon={<MapPin size={14} />}
+                                                                value={recognitionLanguage}
+                                                                options={currentGroupVariants}
+                                                                onChange={handleLanguageChange}
+                                                                placeholder="Select Region"
+                                                            />
+                                                        </div>
+                                                    )}
+
+                                                    <div className="flex gap-2 items-center mt-2 px-1">
+                                                        <Info size={14} className="text-text-secondary shrink-0" />
+                                                        <p className="text-xs text-text-secondary">
+                                                            Select the primary language being spoken in the meeting.
+                                                        </p>
+                                                    </div>
+                                                </div>
+                                            </div>
+
+                                            <div className="h-px bg-border-subtle" />
+
+                                            {/* ── Audio Configuration Section ── */}
+                                            <div>
+                                                <h3 className="text-lg font-bold text-text-primary mb-1">Audio Configuration</h3>
+                                                <p className="text-xs text-text-secondary mb-5">Manage input and output devices.</p>
+
+                                                <div className="space-y-4">
+                                                    <CustomSelect
+                                                        label="Input Device"
+                                                        icon={<Mic size={16} />}
+                                                        value={selectedInput}
+                                                        options={inputDevices}
+                                                        onChange={(id) => {
+                                                            setSelectedInput(id);
+                                                            localStorage.setItem('preferredInputDeviceId', id);
+                                                        }}
+                                                        placeholder="Default Microphone"
+                                                    />
+
+                                                    <div>
+                                                        <div className="flex justify-between text-xs text-text-secondary mb-2 px-1">
+                                                            <span>Input Level</span>
+                                                        </div>
+                                                        <div className="h-1.5 bg-bg-input rounded-full overflow-hidden">
+                                                            <div
+                                                                className="h-full bg-green-500 transition-all duration-100 ease-out"
+                                                                style={{ width: `${micLevel}%` }}
+                                                            />
                                                         </div>
                                                     </div>
-                                                )}
 
-                                                {/* Google Cloud Service Account */}
-                                                {sttProvider === 'google' && (
-                                                    <div className={`${isLight ? "bg-white border-slate-200/80" : "bg-bg-item-surface border-border-subtle"} rounded-xl border p-4`}>
-                                                        <label className="text-xs font-medium text-text-secondary mb-2 block">Service Account JSON</label>
-                                                        <div className="flex gap-2">
-                                                            <div className="flex-1 bg-bg-input border border-border-subtle rounded-lg px-3 py-2 text-xs text-text-secondary font-mono truncate">
-                                                                {googleServiceAccountPath
-                                                                    ? <span className="text-text-primary">{googleServiceAccountPath.split('/').pop()}</span>
-                                                                    : <span className="text-text-tertiary italic">No file selected</span>}
+                                                    <div className="h-px bg-border-subtle my-2" />
+
+                                                    <CustomSelect
+                                                        label="Output Device"
+                                                        icon={<Speaker size={16} />}
+                                                        value={selectedOutput}
+                                                        options={outputDevices}
+                                                        onChange={(id) => {
+                                                            setSelectedOutput(id);
+                                                            localStorage.setItem('preferredOutputDeviceId', id);
+                                                        }}
+                                                        placeholder="Default Speakers"
+                                                    />
+
+                                                    <div className="flex justify-end">
+                                                        <button
+                                                            onClick={async () => {
+                                                                try {
+                                                                    const AudioContext = window.AudioContext || (window as any).webkitAudioContext;
+                                                                    if (!AudioContext) {
+                                                                        console.error("Web Audio API not supported");
+                                                                        return;
+                                                                    }
+
+                                                                    const ctx = new AudioContext();
+
+                                                                    if (ctx.state === 'suspended') {
+                                                                        await ctx.resume();
+                                                                    }
+
+                                                                    const oscillator = ctx.createOscillator();
+                                                                    const gainNode = ctx.createGain();
+
+                                                                    oscillator.connect(gainNode);
+                                                                    gainNode.connect(ctx.destination);
+
+                                                                    oscillator.type = 'sine';
+                                                                    oscillator.frequency.setValueAtTime(523.25, ctx.currentTime);
+                                                                    gainNode.gain.setValueAtTime(0.5, ctx.currentTime);
+                                                                    gainNode.gain.exponentialRampToValueAtTime(0.01, ctx.currentTime + 1.0);
+
+                                                                    if (selectedOutput && (ctx as any).setSinkId) {
+                                                                        try {
+                                                                            await (ctx as any).setSinkId(selectedOutput);
+                                                                        } catch (e) {
+                                                                            console.warn("Error setting sink for AudioContext", e);
+                                                                        }
+                                                                    }
+
+                                                                    oscillator.start();
+                                                                    oscillator.stop(ctx.currentTime + 1.0);
+                                                                } catch (e) {
+                                                                    console.error("Error playing test sound", e);
+                                                                }
+                                                            }}
+                                                            className="text-xs bg-bg-input hover:bg-bg-elevated text-text-primary px-3 py-1.5 rounded-md transition-colors flex items-center gap-2"
+                                                        >
+                                                            <Speaker size={12} /> Test Sound
+                                                        </button>
+                                                    </div>
+
+                                                    <div className="h-px bg-border-subtle my-2" />
+
+                                                    {/* SCK Backend Toggle */}
+                                                    <div className="bg-amber-500/5 rounded-xl border border-amber-500/20 p-4">
+                                                        <div className="flex items-center justify-between">
+                                                            <div className="flex items-start gap-3">
+                                                                <div className="mt-0.5 p-1.5 rounded-lg bg-amber-500/10 text-amber-500">
+                                                                    <FlaskConical size={18} />
+                                                                </div>
+                                                                <div>
+                                                                    <div className="flex items-center gap-2 mb-0.5">
+                                                                        <h3 className="text-sm font-bold text-text-primary">SCK Backend</h3>
+                                                                        <span className="px-1.5 py-0.5 rounded text-[10px] font-bold bg-indigo-500/20 text-indigo-400 uppercase tracking-wide">Alternative</span>
+                                                                    </div>
+                                                                    <p className="text-xs text-text-secondary leading-relaxed max-w-[300px]">
+                                                                        Use the ScreenCaptureKit backend. An optimized alternative to CoreAudio if you experience any capture issues.
+                                                                    </p>
+                                                                </div>
+                                                            </div>
+                                                            <div
+                                                                onClick={() => {
+                                                                    const newState = !useExperimentalSck;
+                                                                    setUseExperimentalSck(newState);
+                                                                    window.localStorage.setItem('useExperimentalSckBackend', newState ? 'true' : 'false');
+                                                                }}
+                                                                className={`w-11 h-6 rounded-full relative transition-colors shrink-0 ${useExperimentalSck ? 'bg-amber-500' : 'bg-bg-toggle-switch border border-border-muted'}`}
+                                                            >
+                                                                <div className={`absolute top-1 left-1 w-4 h-4 rounded-full bg-white transition-transform ${useExperimentalSck ? 'translate-x-5' : 'translate-x-0'}`} />
+                                                            </div>
+                                                        </div>
+                                                    </div>
+                                                </div>
+                                            </div>
+                                        </div>
+                                    )}
+
+                                    {activeTab === 'calendar' && (
+                                        <div className="space-y-6 animated fadeIn h-full">
+                                            <div>
+                                                <h3 className="text-lg font-bold text-text-primary mb-2">Visible Calendars</h3>
+                                                <p className="text-xs text-text-secondary mb-4">Upcoming meetings are synchronized from these calendars</p>
+                                            </div>
+
+                                            <div className="space-y-3">
+
+                                                {/* ── Google Calendar card ── */}
+                                                <div className="bg-bg-item-surface border-border-subtle rounded-xl p-5 flex flex-col items-start gap-4">
+                                                    {calendarStatus.connected ? (
+                                                        <div className="w-full flex items-center justify-between">
+                                                            <div className="flex items-center gap-3">
+                                                                <div className="w-9 h-9 rounded-lg bg-blue-500/10 flex items-center justify-center shrink-0">
+                                                                    {/* Google colour logo */}
+                                                                    <svg viewBox="0 0 24 24" width="18" height="18" xmlns="http://www.w3.org/2000/svg">
+                                                                        <g transform="matrix(1, 0, 0, 1, 27.009001, -39.238998)">
+                                                                            <path fill="#4285F4" d="M -3.264 51.509 C -3.264 50.719 -3.334 49.969 -3.454 49.239 L -14.754 49.239 L -14.754 53.749 L -8.284 53.749 C -8.574 55.229 -9.424 56.479 -10.684 57.329 L -10.684 60.329 L -6.824 60.329 C -4.564 58.239 -3.264 55.159 -3.264 51.509 Z" />
+                                                                            <path fill="#34A853" d="M -14.754 63.239 C -11.514 63.239 -8.804 62.159 -6.824 60.329 L -10.684 57.329 C -11.764 58.049 -13.134 58.489 -14.754 58.489 C -17.884 58.489 -20.534 56.379 -21.484 53.529 L -25.464 53.529 L -25.464 56.619 C -23.494 60.539 -19.444 63.239 -14.754 63.239 Z" />
+                                                                            <path fill="#FBBC05" d="M -21.484 53.529 C -21.734 52.809 -21.864 52.039 -21.864 51.239 C -21.864 50.439 -21.734 49.669 -21.484 48.949 L -21.484 45.859 L -25.464 45.859 C -26.284 47.479 -26.754 49.299 -26.754 51.239 C -26.754 53.179 -26.284 54.999 -25.464 56.619 L -21.484 53.529 Z" />
+                                                                            <path fill="#EA4335" d="M -14.754 43.989 C -12.984 43.989 -11.404 44.599 -10.154 45.789 L -6.734 42.369 C -8.804 40.429 -11.514 39.239 -14.754 39.239 C -19.444 39.239 -23.494 41.939 -25.464 45.859 L -21.484 48.949 C -20.534 46.099 -17.884 43.989 -14.754 43.989 Z" />
+                                                                        </g>
+                                                                    </svg>
+                                                                </div>
+                                                                <div>
+                                                                    <h4 className="text-sm font-medium text-text-primary">Google Calendar</h4>
+                                                                    <p className="text-xs text-text-secondary">Connected as {calendarStatus.email || 'User'}</p>
+                                                                </div>
                                                             </div>
                                                             <button
                                                                 onClick={async () => {
-                                                                    // @ts-ignore
-                                                                    const result = await window.electronAPI?.selectServiceAccount?.();
-                                                                    if (result?.success && result.path) {
-                                                                        setGoogleServiceAccountPath(result.path);
-                                                                    }
-                                                                }}
-                                                                className="px-3 py-2 bg-bg-input hover:bg-bg-elevated border border-border-subtle rounded-lg text-xs font-medium text-text-primary transition-colors flex items-center gap-2"
-                                                            >
-                                                                <Upload size={14} /> Select File
-                                                            </button>
-                                                        </div>
-                                                        <p className="text-[10px] text-text-tertiary mt-2">
-                                                            Required for Google Cloud Speech-to-Text.
-                                                        </p>
-                                                    </div>
-                                                )}
-
-                                                {/* API Key Input (non-Google providers) */}
-                                                {sttProvider !== 'google' && (
-                                                    <div className={`${isLight ? "bg-white border-slate-200/80" : "bg-bg-item-surface border-border-subtle"} rounded-xl border p-4 space-y-3`}>
-                                                        <label className="text-xs font-medium text-text-secondary block">
-                                                            {sttProvider === 'groq' ? 'Groq' : sttProvider === 'openai' ? 'OpenAI STT' : sttProvider === 'elevenlabs' ? 'ElevenLabs' : sttProvider === 'azure' ? 'Azure' : sttProvider === 'ibmwatson' ? 'IBM Watson' : sttProvider === 'soniox' ? 'Soniox' : 'Deepgram'} API Key
-                                                        </label>
-                                                        {sttProvider === 'openai' && (
-                                                            <p className="text-[10px] text-text-tertiary mb-1.5">
-                                                                This key is separate from your main AI Provider key.
-                                                            </p>
-                                                        )}
-                                                        <div className="flex gap-2">
-                                                            <input
-                                                                type="password"
-                                                                value={
-                                                                    sttProvider === 'groq' ? sttGroqKey
-                                                                        : sttProvider === 'openai' ? sttOpenaiKey
-                                                                            : sttProvider === 'elevenlabs' ? sttElevenLabsKey
-                                                                                : sttProvider === 'azure' ? sttAzureKey
-                                                                                    : sttProvider === 'ibmwatson' ? sttIbmKey
-                                                                                        : sttProvider === 'soniox' ? sttSonioxKey
-                                                                                            : sttDeepgramKey
-                                                                }
-                                                                onChange={(e) => {
-                                                                    if (sttProvider === 'groq') setSttGroqKey(e.target.value);
-                                                                    else if (sttProvider === 'openai') setSttOpenaiKey(e.target.value);
-                                                                    else if (sttProvider === 'elevenlabs') setSttElevenLabsKey(e.target.value);
-                                                                    else if (sttProvider === 'azure') setSttAzureKey(e.target.value);
-                                                                    else if (sttProvider === 'ibmwatson') setSttIbmKey(e.target.value);
-                                                                    else if (sttProvider === 'soniox') setSttSonioxKey(e.target.value);
-                                                                    else setSttDeepgramKey(e.target.value);
-                                                                }}
-                                                                placeholder={
-                                                                    sttProvider === 'groq'
-                                                                        ? (hasStoredSttGroqKey ? '••••••••••••' : 'Enter Groq API key')
-                                                                        : sttProvider === 'openai'
-                                                                            ? (hasStoredSttOpenaiKey ? '••••••••••••' : 'Enter OpenAI STT API key')
-                                                                            : sttProvider === 'elevenlabs'
-                                                                                ? (hasStoredElevenLabsKey ? '••••••••••••' : 'Enter ElevenLabs API key')
-                                                                                : sttProvider === 'azure'
-                                                                                    ? (hasStoredAzureKey ? '••••••••••••' : 'Enter Azure API key')
-                                                                                    : sttProvider === 'ibmwatson'
-                                                                                        ? (hasStoredIbmWatsonKey ? '••••••••••••' : 'Enter IBM Watson API key')
-                                                                                        : sttProvider === 'soniox'
-                                                                                            ? (hasStoredSonioxKey ? '••••••••••••' : 'Enter Soniox API key')
-                                                                                            : (hasStoredDeepgramKey ? '••••••••••••' : 'Enter Deepgram API key')
-                                                                }
-                                                                className="flex-1 bg-bg-input border border-border-subtle rounded-lg px-3 py-2 text-sm text-text-primary placeholder-text-tertiary focus:outline-none focus:border-accent-primary transition-colors"
-                                                            />
-                                                            <button
-                                                                onClick={() => {
-                                                                    const keyMap: Record<string, string> = {
-                                                                        groq: sttGroqKey, openai: sttOpenaiKey, deepgram: sttDeepgramKey,
-                                                                        elevenlabs: sttElevenLabsKey, azure: sttAzureKey, ibmwatson: sttIbmKey,
-                                                                    };
-                                                                    handleSttKeySubmit(sttProvider as any, keyMap[sttProvider] || '');
-                                                                }}
-                                                                disabled={sttSaving || !(() => {
-                                                                    const keyMap: Record<string, string> = {
-                                                                        groq: sttGroqKey, openai: sttOpenaiKey, deepgram: sttDeepgramKey,
-                                                                        elevenlabs: sttElevenLabsKey, azure: sttAzureKey, ibmwatson: sttIbmKey,
-                                                                        soniox: sttSonioxKey,
-                                                                    };
-                                                                    return (keyMap[sttProvider] || '').trim();
-                                                                })()}
-                                                                className={`px-5 py-2.5 rounded-lg text-xs font-medium transition-colors ${sttSaved
-                                                                    ? 'bg-green-500/20 text-green-400'
-                                                                    : 'bg-bg-input hover:bg-bg-input/80 border border-border-subtle text-text-primary disabled:opacity-50'
-                                                                    }`}
-                                                            >
-                                                                {sttSaving ? 'Saving...' : sttSaved ? 'Saved!' : 'Save'}
-                                                            </button>
-                                                            {(() => {
-                                                                const hasKeyMap: Record<string, boolean> = {
-                                                                    groq: hasStoredSttGroqKey,
-                                                                    openai: hasStoredSttOpenaiKey,
-                                                                    deepgram: hasStoredDeepgramKey,
-                                                                    elevenlabs: hasStoredElevenLabsKey,
-                                                                    azure: hasStoredAzureKey,
-                                                                    ibmwatson: hasStoredIbmWatsonKey,
-                                                                    soniox: hasStoredSonioxKey,
-                                                                };
-                                                                return hasKeyMap[sttProvider] ? (
-                                                                    <button
-                                                                        onClick={() => handleRemoveSttKey(sttProvider as any)}
-                                                                        className="px-2.5 py-2.5 rounded-lg text-xs font-medium text-text-tertiary hover:text-red-500 hover:bg-red-500/10 transition-all"
-                                                                        title="Remove API Key"
-                                                                    >
-                                                                        <Trash2 size={16} strokeWidth={1.5} />
-                                                                    </button>
-                                                                ) : null;
-                                                            })()}
-                                                        </div>
-
-                                                        {/* Azure Region Input */}
-                                                        {sttProvider === 'azure' && (
-                                                            <div className="space-y-1.5">
-                                                                <label className="text-xs font-medium text-text-secondary block">Region</label>
-                                                                <div className="flex gap-2">
-                                                                    <input
-                                                                        type="text"
-                                                                        value={sttAzureRegion}
-                                                                        onChange={(e) => setSttAzureRegion(e.target.value)}
-                                                                        placeholder="e.g. eastus"
-                                                                        className="flex-1 bg-bg-input border border-border-subtle rounded-lg px-3 py-2 text-sm text-text-primary placeholder-text-tertiary focus:outline-none focus:border-accent-primary transition-colors"
-                                                                    />
-                                                                    <button
-                                                                        onClick={async () => {
-                                                                            if (!sttAzureRegion.trim()) return;
-                                                                            // @ts-ignore
-                                                                            await window.electronAPI?.setAzureRegion?.(sttAzureRegion.trim());
-                                                                            setSttSaved(true);
-                                                                            setTimeout(() => setSttSaved(false), 2000);
-                                                                        }}
-                                                                        disabled={!sttAzureRegion.trim()}
-                                                                        className="px-5 py-2.5 rounded-lg text-xs font-medium bg-bg-input hover:bg-bg-input/80 border border-border-subtle text-text-primary disabled:opacity-50 transition-colors"
-                                                                    >
-                                                                        Save
-                                                                    </button>
-                                                                </div>
-                                                                <p className="text-[10px] text-text-tertiary">e.g. eastus, westeurope, westus2</p>
-                                                            </div>
-                                                        )}
-
-                                                        <div className="flex items-center gap-3">
-                                                            <button
-                                                                onClick={handleTestSttConnection}
-                                                                disabled={sttTestStatus === 'testing'}
-                                                                className="text-xs bg-bg-input hover:bg-bg-elevated text-text-primary px-3 py-1.5 rounded-md transition-colors flex items-center gap-2 disabled:opacity-50"
-                                                            >
-                                                                {sttTestStatus === 'testing' ? (
-                                                                    <><RefreshCw size={12} className="animate-spin" /> Testing...</>
-                                                                ) : sttTestStatus === 'success' ? (
-                                                                    <><Check size={12} className="text-green-500" /> Connected</>
-                                                                ) : (
-                                                                    <>Test Connection</>
-                                                                )}
-                                                            </button>
-                                                            <button
-                                                                onClick={() => {
-                                                                    const urls: Record<string, string> = {
-                                                                        groq: 'https://console.groq.com/keys',
-                                                                        openai: 'https://platform.openai.com/api-keys',
-                                                                        deepgram: 'https://console.deepgram.com',
-                                                                        elevenlabs: 'https://elevenlabs.io/app/settings/api-keys',
-                                                                        azure: 'https://portal.azure.com/#create/Microsoft.CognitiveServicesSpeech',
-                                                                        ibmwatson: 'https://cloud.ibm.com/catalog/services/speech-to-text'
-                                                                    };
-                                                                    if (urls[sttProvider]) {
-                                                                        // @ts-ignore
-                                                                        window.electronAPI?.openExternal(urls[sttProvider]);
-                                                                    }
-                                                                }}
-                                                                className="text-xs text-text-tertiary hover:text-text-primary flex items-center gap-1 transition-colors ml-1"
-                                                                title="Get API Key"
-                                                            >
-                                                                <ExternalLink size={12} />
-                                                            </button>
-                                                            {sttTestStatus === 'error' && (
-                                                                <span className="text-xs text-red-400">{sttTestError}</span>
-                                                            )}
-                                                        </div>
-                                                    </div>
-                                                )}
-
-                                                {/* Recognition Language Family */}
-                                                <CustomSelect
-                                                    label="Language"
-                                                    icon={<Globe size={14} />}
-                                                    value={selectedSttGroup}
-                                                    options={languageGroups.map(g => ({
-                                                        deviceId: g,
-                                                        label: g,
-                                                        kind: 'audioinput' as MediaDeviceKind,
-                                                        groupId: '',
-                                                        toJSON: () => ({})
-                                                    }))}
-                                                    onChange={handleGroupChange}
-                                                    placeholder="Select Language"
-                                                />
-
-                                                {/* Variant/Accent Selector (Conditional) */}
-                                                {currentGroupVariants.length > 1 && (
-                                                    <div className="mt-3 animated fadeIn">
-                                                        <CustomSelect
-                                                            label="Accent / Region"
-                                                            icon={<MapPin size={14} />}
-                                                            value={recognitionLanguage}
-                                                            options={currentGroupVariants}
-                                                            onChange={handleLanguageChange}
-                                                            placeholder="Select Region"
-                                                        />
-                                                    </div>
-                                                )}
-
-                                                <div className="flex gap-2 items-center mt-2 px-1">
-                                                    <Info size={14} className="text-text-secondary shrink-0" />
-                                                    <p className="text-xs text-text-secondary">
-                                                        Select the primary language being spoken in the meeting.
-                                                    </p>
-                                                </div>
-                                            </div>
-                                        </div>
-
-                                        <div className="h-px bg-border-subtle" />
-
-                                        {/* ── Audio Configuration Section ── */}
-                                        <div>
-                                            <h3 className="text-lg font-bold text-text-primary mb-1">Audio Configuration</h3>
-                                            <p className="text-xs text-text-secondary mb-5">Manage input and output devices.</p>
-
-                                            <div className="space-y-4">
-                                                <CustomSelect
-                                                    label="Input Device"
-                                                    icon={<Mic size={16} />}
-                                                    value={selectedInput}
-                                                    options={inputDevices}
-                                                    onChange={(id) => {
-                                                        setSelectedInput(id);
-                                                        localStorage.setItem('preferredInputDeviceId', id);
-                                                    }}
-                                                    placeholder="Default Microphone"
-                                                />
-
-                                                <div>
-                                                    <div className="flex justify-between text-xs text-text-secondary mb-2 px-1">
-                                                        <span>Input Level</span>
-                                                    </div>
-                                                    <div className="h-1.5 bg-bg-input rounded-full overflow-hidden">
-                                                        <div
-                                                            className="h-full bg-green-500 transition-all duration-100 ease-out"
-                                                            style={{ width: `${micLevel}%` }}
-                                                        />
-                                                    </div>
-                                                </div>
-
-                                                <div className="h-px bg-border-subtle my-2" />
-
-                                                <CustomSelect
-                                                    label="Output Device"
-                                                    icon={<Speaker size={16} />}
-                                                    value={selectedOutput}
-                                                    options={outputDevices}
-                                                    onChange={(id) => {
-                                                        setSelectedOutput(id);
-                                                        localStorage.setItem('preferredOutputDeviceId', id);
-                                                    }}
-                                                    placeholder="Default Speakers"
-                                                />
-
-                                                <div className="flex justify-end">
-                                                    <button
-                                                        onClick={async () => {
-                                                            try {
-                                                                const AudioContext = window.AudioContext || (window as any).webkitAudioContext;
-                                                                if (!AudioContext) {
-                                                                    console.error("Web Audio API not supported");
-                                                                    return;
-                                                                }
-
-                                                                const ctx = new AudioContext();
-
-                                                                if (ctx.state === 'suspended') {
-                                                                    await ctx.resume();
-                                                                }
-
-                                                                const oscillator = ctx.createOscillator();
-                                                                const gainNode = ctx.createGain();
-
-                                                                oscillator.connect(gainNode);
-                                                                gainNode.connect(ctx.destination);
-
-                                                                oscillator.type = 'sine';
-                                                                oscillator.frequency.setValueAtTime(523.25, ctx.currentTime);
-                                                                gainNode.gain.setValueAtTime(0.5, ctx.currentTime);
-                                                                gainNode.gain.exponentialRampToValueAtTime(0.01, ctx.currentTime + 1.0);
-
-                                                                if (selectedOutput && (ctx as any).setSinkId) {
+                                                                    setIsGoogleCalendarLoading(true);
                                                                     try {
-                                                                        await (ctx as any).setSinkId(selectedOutput);
-                                                                    } catch (e) {
-                                                                        console.warn("Error setting sink for AudioContext", e);
-                                                                    }
-                                                                }
-
-                                                                oscillator.start();
-                                                                oscillator.stop(ctx.currentTime + 1.0);
-                                                            } catch (e) {
-                                                                console.error("Error playing test sound", e);
-                                                            }
-                                                        }}
-                                                        className="text-xs bg-bg-input hover:bg-bg-elevated text-text-primary px-3 py-1.5 rounded-md transition-colors flex items-center gap-2"
-                                                    >
-                                                        <Speaker size={12} /> Test Sound
-                                                    </button>
-                                                </div>
-
-                                                <div className="h-px bg-border-subtle my-2" />
-
-                                                {/* SCK Backend Toggle */}
-                                                <div className="bg-amber-500/5 rounded-xl border border-amber-500/20 p-4">
-                                                    <div className="flex items-center justify-between">
-                                                        <div className="flex items-start gap-3">
-                                                            <div className="mt-0.5 p-1.5 rounded-lg bg-amber-500/10 text-amber-500">
-                                                                <FlaskConical size={18} />
-                                                            </div>
-                                                            <div>
-                                                                <div className="flex items-center gap-2 mb-0.5">
-                                                                    <h3 className="text-sm font-bold text-text-primary">SCK Backend</h3>
-                                                                    <span className="px-1.5 py-0.5 rounded text-[10px] font-bold bg-indigo-500/20 text-indigo-400 uppercase tracking-wide">Alternative</span>
-                                                                </div>
-                                                                <p className="text-xs text-text-secondary leading-relaxed max-w-[300px]">
-                                                                    Use the ScreenCaptureKit backend. An optimized alternative to CoreAudio if you experience any capture issues.
-                                                                </p>
-                                                            </div>
-                                                        </div>
-                                                        <div
-                                                            onClick={() => {
-                                                                const newState = !useExperimentalSck;
-                                                                setUseExperimentalSck(newState);
-                                                                window.localStorage.setItem('useExperimentalSckBackend', newState ? 'true' : 'false');
-                                                            }}
-                                                            className={`w-11 h-6 rounded-full relative transition-colors shrink-0 ${useExperimentalSck ? 'bg-amber-500' : 'bg-bg-toggle-switch border border-border-muted'}`}
-                                                        >
-                                                            <div className={`absolute top-1 left-1 w-4 h-4 rounded-full bg-white transition-transform ${useExperimentalSck ? 'translate-x-5' : 'translate-x-0'}`} />
-                                                        </div>
-                                                    </div>
-                                                </div>
-                                            </div>
-                                        </div>
-                                    </div>
-                                )}
-
-                                {activeTab === 'calendar' && (
-                                    <div className="space-y-6 animated fadeIn h-full">
-                                        <div>
-                                            <h3 className="text-lg font-bold text-text-primary mb-2">Visible Calendars</h3>
-                                            <p className="text-xs text-text-secondary mb-4">Upcoming meetings are synchronized from these calendars</p>
-                                        </div>
-
-                                        <div className="space-y-3">
-
-                                            {/* ── Google Calendar card ── */}
-                                            <div className="bg-bg-item-surface border-border-subtle rounded-xl p-5 flex flex-col items-start gap-4">
-                                                {calendarStatus.connected ? (
-                                                    <div className="w-full flex items-center justify-between">
-                                                        <div className="flex items-center gap-3">
-                                                            <div className="w-9 h-9 rounded-lg bg-blue-500/10 flex items-center justify-center shrink-0">
-                                                                {/* Google colour logo */}
-                                                                <svg viewBox="0 0 24 24" width="18" height="18" xmlns="http://www.w3.org/2000/svg">
-                                                                    <g transform="matrix(1, 0, 0, 1, 27.009001, -39.238998)">
-                                                                        <path fill="#4285F4" d="M -3.264 51.509 C -3.264 50.719 -3.334 49.969 -3.454 49.239 L -14.754 49.239 L -14.754 53.749 L -8.284 53.749 C -8.574 55.229 -9.424 56.479 -10.684 57.329 L -10.684 60.329 L -6.824 60.329 C -4.564 58.239 -3.264 55.159 -3.264 51.509 Z" />
-                                                                        <path fill="#34A853" d="M -14.754 63.239 C -11.514 63.239 -8.804 62.159 -6.824 60.329 L -10.684 57.329 C -11.764 58.049 -13.134 58.489 -14.754 58.489 C -17.884 58.489 -20.534 56.379 -21.484 53.529 L -25.464 53.529 L -25.464 56.619 C -23.494 60.539 -19.444 63.239 -14.754 63.239 Z" />
-                                                                        <path fill="#FBBC05" d="M -21.484 53.529 C -21.734 52.809 -21.864 52.039 -21.864 51.239 C -21.864 50.439 -21.734 49.669 -21.484 48.949 L -21.484 45.859 L -25.464 45.859 C -26.284 47.479 -26.754 49.299 -26.754 51.239 C -26.754 53.179 -26.284 54.999 -25.464 56.619 L -21.484 53.529 Z" />
-                                                                        <path fill="#EA4335" d="M -14.754 43.989 C -12.984 43.989 -11.404 44.599 -10.154 45.789 L -6.734 42.369 C -8.804 40.429 -11.514 39.239 -14.754 39.239 C -19.444 39.239 -23.494 41.939 -25.464 45.859 L -21.484 48.949 C -20.534 46.099 -17.884 43.989 -14.754 43.989 Z" />
-                                                                    </g>
-                                                                </svg>
-                                                            </div>
-                                                            <div>
-                                                                <h4 className="text-sm font-medium text-text-primary">Google Calendar</h4>
-                                                                <p className="text-xs text-text-secondary">Connected as {calendarStatus.email || 'User'}</p>
-                                                            </div>
-                                                        </div>
-                                                        <button
-                                                            onClick={async () => {
-                                                                setIsGoogleCalendarLoading(true);
-                                                                try {
-                                                                    await window.electronAPI.calendarDisconnect();
-                                                                    const status = await window.electronAPI.getCalendarStatus();
-                                                                    setCalendarStatus(status);
-                                                                } catch (e) {
-                                                                    console.error(e);
-                                                                } finally {
-                                                                    setIsGoogleCalendarLoading(false);
-                                                                }
-                                                            }}
-                                                            disabled={isGoogleCalendarLoading}
-                                                            className="px-3 py-1.5 bg-bg-input hover:bg-bg-elevated border border-border-subtle text-text-primary rounded-md text-xs font-medium transition-colors"
-                                                        >
-                                                            {isGoogleCalendarLoading ? 'Disconnecting...' : 'Disconnect'}
-                                                        </button>
-                                                    </div>
-                                                ) : (
-                                                    <div className="w-full flex items-center justify-between">
-                                                        <div className="flex items-center gap-3">
-                                                            <div className="w-9 h-9 rounded-lg bg-bg-item-surface border border-border-subtle flex items-center justify-center shrink-0">
-                                                                <svg viewBox="0 0 24 24" width="16" height="16" xmlns="http://www.w3.org/2000/svg">
-                                                                    <g transform="matrix(1, 0, 0, 1, 27.009001, -39.238998)">
-                                                                        <path fill="#4285F4" d="M -3.264 51.509 C -3.264 50.719 -3.334 49.969 -3.454 49.239 L -14.754 49.239 L -14.754 53.749 L -8.284 53.749 C -8.574 55.229 -9.424 56.479 -10.684 57.329 L -10.684 60.329 L -6.824 60.329 C -4.564 58.239 -3.264 55.159 -3.264 51.509 Z" />
-                                                                        <path fill="#34A853" d="M -14.754 63.239 C -11.514 63.239 -8.804 62.159 -6.824 60.329 L -10.684 57.329 C -11.764 58.049 -13.134 58.489 -14.754 58.489 C -17.884 58.489 -20.534 56.379 -21.484 53.529 L -25.464 53.529 L -25.464 56.619 C -23.494 60.539 -19.444 63.239 -14.754 63.239 Z" />
-                                                                        <path fill="#FBBC05" d="M -21.484 53.529 C -21.734 52.809 -21.864 52.039 -21.864 51.239 C -21.864 50.439 -21.734 49.669 -21.484 48.949 L -21.484 45.859 L -25.464 45.859 C -26.284 47.479 -26.754 49.299 -26.754 51.239 C -26.754 53.179 -26.284 54.999 -25.464 56.619 L -21.484 53.529 Z" />
-                                                                        <path fill="#EA4335" d="M -14.754 43.989 C -12.984 43.989 -11.404 44.599 -10.154 45.789 L -6.734 42.369 C -8.804 40.429 -11.514 39.239 -14.754 39.239 C -19.444 39.239 -23.494 41.939 -25.464 45.859 L -21.484 48.949 C -20.534 46.099 -17.884 43.989 -14.754 43.989 Z" />
-                                                                    </g>
-                                                                </svg>
-                                                            </div>
-                                                            <div>
-                                                                <h4 className="text-sm font-medium text-text-primary">Google Calendar</h4>
-                                                                <p className="text-xs text-text-secondary">Not connected</p>
-                                                            </div>
-                                                        </div>
-                                                        <button
-                                                            onClick={async () => {
-                                                                setIsGoogleCalendarLoading(true);
-                                                                try {
-                                                                    const res = await window.electronAPI.calendarConnect();
-                                                                    if (res.success) {
+                                                                        await window.electronAPI.calendarDisconnect();
                                                                         const status = await window.electronAPI.getCalendarStatus();
                                                                         setCalendarStatus(status);
+                                                                    } catch (e) {
+                                                                        console.error(e);
+                                                                    } finally {
+                                                                        setIsGoogleCalendarLoading(false);
                                                                     }
-                                                                } catch (e) {
-                                                                    console.error(e);
-                                                                } finally {
-                                                                    setIsGoogleCalendarLoading(false);
-                                                                }
-                                                            }}
-                                                            disabled={isGoogleCalendarLoading}
-                                                            className="px-3 py-1.5 bg-bg-item-surface hover:bg-bg-item-active border border-border-subtle text-text-primary rounded-md text-xs font-medium transition-colors flex items-center gap-2"
-                                                        >
-                                                            {isGoogleCalendarLoading ? 'Connecting...' : 'Connect'}
-                                                        </button>
-                                                    </div>
-                                                )}
-                                            </div>
+                                                                }}
+                                                                disabled={isGoogleCalendarLoading}
+                                                                className="px-3 py-1.5 bg-bg-input hover:bg-bg-elevated border border-border-subtle text-text-primary rounded-md text-xs font-medium transition-colors"
+                                                            >
+                                                                {isGoogleCalendarLoading ? 'Disconnecting...' : 'Disconnect'}
+                                                            </button>
+                                                        </div>
+                                                    ) : (
+                                                        <div className="w-full flex items-center justify-between">
+                                                            <div className="flex items-center gap-3">
+                                                                <div className="w-9 h-9 rounded-lg bg-bg-item-surface border border-border-subtle flex items-center justify-center shrink-0">
+                                                                    <svg viewBox="0 0 24 24" width="16" height="16" xmlns="http://www.w3.org/2000/svg">
+                                                                        <g transform="matrix(1, 0, 0, 1, 27.009001, -39.238998)">
+                                                                            <path fill="#4285F4" d="M -3.264 51.509 C -3.264 50.719 -3.334 49.969 -3.454 49.239 L -14.754 49.239 L -14.754 53.749 L -8.284 53.749 C -8.574 55.229 -9.424 56.479 -10.684 57.329 L -10.684 60.329 L -6.824 60.329 C -4.564 58.239 -3.264 55.159 -3.264 51.509 Z" />
+                                                                            <path fill="#34A853" d="M -14.754 63.239 C -11.514 63.239 -8.804 62.159 -6.824 60.329 L -10.684 57.329 C -11.764 58.049 -13.134 58.489 -14.754 58.489 C -17.884 58.489 -20.534 56.379 -21.484 53.529 L -25.464 53.529 L -25.464 56.619 C -23.494 60.539 -19.444 63.239 -14.754 63.239 Z" />
+                                                                            <path fill="#FBBC05" d="M -21.484 53.529 C -21.734 52.809 -21.864 52.039 -21.864 51.239 C -21.864 50.439 -21.734 49.669 -21.484 48.949 L -21.484 45.859 L -25.464 45.859 C -26.284 47.479 -26.754 49.299 -26.754 51.239 C -26.754 53.179 -26.284 54.999 -25.464 56.619 L -21.484 53.529 Z" />
+                                                                            <path fill="#EA4335" d="M -14.754 43.989 C -12.984 43.989 -11.404 44.599 -10.154 45.789 L -6.734 42.369 C -8.804 40.429 -11.514 39.239 -14.754 39.239 C -19.444 39.239 -23.494 41.939 -25.464 45.859 L -21.484 48.949 C -20.534 46.099 -17.884 43.989 -14.754 43.989 Z" />
+                                                                        </g>
+                                                                    </svg>
+                                                                </div>
+                                                                <div>
+                                                                    <h4 className="text-sm font-medium text-text-primary">Google Calendar</h4>
+                                                                    <p className="text-xs text-text-secondary">Not connected</p>
+                                                                </div>
+                                                            </div>
+                                                            <button
+                                                                onClick={async () => {
+                                                                    setIsGoogleCalendarLoading(true);
+                                                                    try {
+                                                                        const res = await window.electronAPI.calendarConnect();
+                                                                        if (res.success) {
+                                                                            const status = await window.electronAPI.getCalendarStatus();
+                                                                            setCalendarStatus(status);
+                                                                        }
+                                                                    } catch (e) {
+                                                                        console.error(e);
+                                                                    } finally {
+                                                                        setIsGoogleCalendarLoading(false);
+                                                                    }
+                                                                }}
+                                                                disabled={isGoogleCalendarLoading}
+                                                                className="px-3 py-1.5 bg-bg-item-surface hover:bg-bg-item-active border border-border-subtle text-text-primary rounded-md text-xs font-medium transition-colors flex items-center gap-2"
+                                                            >
+                                                                {isGoogleCalendarLoading ? 'Connecting...' : 'Connect'}
+                                                            </button>
+                                                        </div>
+                                                    )}
+                                                </div>
 
-                                            {/* ── Zoom calendar card ── */}
-                                            <div className="bg-bg-item-surface border-border-subtle rounded-xl p-5 flex flex-col items-start gap-4">
-                                                {zoomCalendarStatus.connected ? (
-                                                    <div className="w-full flex items-center justify-between">
-                                                        <div className="flex items-center gap-3">
-                                                            {/* Zoom brand icon — colour kept intentionally for recognition */}
-                                                            <div className="w-9 h-9 rounded-lg bg-[#2D8CFF]/10 flex items-center justify-center shrink-0">
-                                                                <svg viewBox="0 0 24 24" width="18" height="18" fill="none" xmlns="http://www.w3.org/2000/svg">
-                                                                    <rect width="24" height="24" rx="4" fill="#2D8CFF" />
-                                                                    <path d="M14.5 9.5C14.5 8.67 13.83 8 13 8H6C5.17 8 4.5 8.67 4.5 9.5v5C4.5 15.33 5.17 16 6 16h7c.83 0 1.5-.67 1.5-1.5v-1.25L17 15V9l-2.5 1.75V9.5Z" fill="white" />
-                                                                </svg>
+                                                {/* ── Zoom calendar card ── */}
+                                                <div className="bg-bg-item-surface border-border-subtle rounded-xl p-5 flex flex-col items-start gap-4">
+                                                    {zoomCalendarStatus.connected ? (
+                                                        <div className="w-full flex items-center justify-between">
+                                                            <div className="flex items-center gap-3">
+                                                                {/* Zoom brand icon — colour kept intentionally for recognition */}
+                                                                <div className="w-9 h-9 rounded-lg bg-[#2D8CFF]/10 flex items-center justify-center shrink-0">
+                                                                    <svg viewBox="0 0 24 24" width="18" height="18" fill="none" xmlns="http://www.w3.org/2000/svg">
+                                                                        <rect width="24" height="24" rx="4" fill="#2D8CFF" />
+                                                                        <path d="M14.5 9.5C14.5 8.67 13.83 8 13 8H6C5.17 8 4.5 8.67 4.5 9.5v5C4.5 15.33 5.17 16 6 16h7c.83 0 1.5-.67 1.5-1.5v-1.25L17 15V9l-2.5 1.75V9.5Z" fill="white" />
+                                                                    </svg>
+                                                                </div>
+                                                                <div>
+                                                                    <h4 className="text-sm font-medium text-text-primary">Zoom Calendar</h4>
+                                                                    <p className="text-xs text-text-secondary">Connected as {zoomCalendarStatus.email || 'User'}</p>
+                                                                </div>
                                                             </div>
-                                                            <div>
-                                                                <h4 className="text-sm font-medium text-text-primary">Zoom Calendar</h4>
-                                                                <p className="text-xs text-text-secondary">Connected as {zoomCalendarStatus.email || 'User'}</p>
-                                                            </div>
-                                                        </div>
-                                                        <button
-                                                            onClick={async () => {
-                                                                setIsZoomCalendarLoading(true);
-                                                                try {
-                                                                    await window.electronAPI.zoomCalendarDisconnect();
-                                                                    const status = await window.electronAPI.getZoomCalendarStatus();
-                                                                    setZoomCalendarStatus(status);
-                                                                } catch (e) {
-                                                                    console.error(e);
-                                                                } finally {
-                                                                    setIsZoomCalendarLoading(false);
-                                                                }
-                                                            }}
-                                                            disabled={isZoomCalendarLoading}
-                                                            className="px-3 py-1.5 bg-bg-input hover:bg-bg-elevated border border-border-subtle text-text-primary rounded-md text-xs font-medium transition-colors"
-                                                        >
-                                                            {isZoomCalendarLoading ? 'Disconnecting...' : 'Disconnect'}
-                                                        </button>
-                                                    </div>
-                                                ) : (
-                                                    <div className="w-full flex items-center justify-between">
-                                                        <div className="flex items-center gap-3">
-                                                            <div className="w-9 h-9 rounded-lg bg-bg-item-surface border border-border-subtle flex items-center justify-center shrink-0">
-                                                                <svg viewBox="0 0 24 24" width="16" height="16" fill="none" xmlns="http://www.w3.org/2000/svg">
-                                                                    <rect width="24" height="24" rx="4" fill="#2D8CFF" />
-                                                                    <path d="M14.5 9.5C14.5 8.67 13.83 8 13 8H6C5.17 8 4.5 8.67 4.5 9.5v5C4.5 15.33 5.17 16 6 16h7c.83 0 1.5-.67 1.5-1.5v-1.25L17 15V9l-2.5 1.75V9.5Z" fill="white" />
-                                                                </svg>
-                                                            </div>
-                                                            <div>
-                                                                <h4 className="text-sm font-medium text-text-primary">Zoom Calendar</h4>
-                                                                <p className="text-xs text-text-secondary">Not connected</p>
-                                                            </div>
-                                                        </div>
-                                                        <button
-                                                            onClick={async () => {
-                                                                setIsZoomCalendarLoading(true);
-                                                                try {
-                                                                    const res = await window.electronAPI.zoomCalendarConnect();
-                                                                    if (res?.success) {
+                                                            <button
+                                                                onClick={async () => {
+                                                                    setIsZoomCalendarLoading(true);
+                                                                    try {
+                                                                        await window.electronAPI.zoomCalendarDisconnect();
                                                                         const status = await window.electronAPI.getZoomCalendarStatus();
                                                                         setZoomCalendarStatus(status);
+                                                                    } catch (e) {
+                                                                        console.error(e);
+                                                                    } finally {
+                                                                        setIsZoomCalendarLoading(false);
                                                                     }
-                                                                } catch (e) {
-                                                                    console.error(e);
-                                                                } finally {
-                                                                    setIsZoomCalendarLoading(false);
-                                                                }
-                                                            }}
-                                                            disabled={isZoomCalendarLoading}
-                                                            className="px-3 py-1.5 bg-bg-item-surface hover:bg-bg-item-active border border-border-subtle text-text-primary rounded-md text-xs font-medium transition-colors flex items-center gap-2"
-                                                        >
-                                                            {isZoomCalendarLoading ? 'Connecting...' : 'Connect'}
-                                                        </button>
-                                                    </div>
+                                                                }}
+                                                                disabled={isZoomCalendarLoading}
+                                                                className="px-3 py-1.5 bg-bg-input hover:bg-bg-elevated border border-border-subtle text-text-primary rounded-md text-xs font-medium transition-colors"
+                                                            >
+                                                                {isZoomCalendarLoading ? 'Disconnecting...' : 'Disconnect'}
+                                                            </button>
+                                                        </div>
+                                                    ) : (
+                                                        <div className="w-full flex items-center justify-between">
+                                                            <div className="flex items-center gap-3">
+                                                                <div className="w-9 h-9 rounded-lg bg-bg-item-surface border border-border-subtle flex items-center justify-center shrink-0">
+                                                                    <svg viewBox="0 0 24 24" width="16" height="16" fill="none" xmlns="http://www.w3.org/2000/svg">
+                                                                        <rect width="24" height="24" rx="4" fill="#2D8CFF" />
+                                                                        <path d="M14.5 9.5C14.5 8.67 13.83 8 13 8H6C5.17 8 4.5 8.67 4.5 9.5v5C4.5 15.33 5.17 16 6 16h7c.83 0 1.5-.67 1.5-1.5v-1.25L17 15V9l-2.5 1.75V9.5Z" fill="white" />
+                                                                    </svg>
+                                                                </div>
+                                                                <div>
+                                                                    <h4 className="text-sm font-medium text-text-primary">Zoom Calendar</h4>
+                                                                    <p className="text-xs text-text-secondary">Not connected</p>
+                                                                </div>
+                                                            </div>
+                                                            <button
+                                                                onClick={async () => {
+                                                                    setIsZoomCalendarLoading(true);
+                                                                    try {
+                                                                        const res = await window.electronAPI.zoomCalendarConnect();
+                                                                        if (res?.success) {
+                                                                            const status = await window.electronAPI.getZoomCalendarStatus();
+                                                                            setZoomCalendarStatus(status);
+                                                                        }
+                                                                    } catch (e) {
+                                                                        console.error(e);
+                                                                    } finally {
+                                                                        setIsZoomCalendarLoading(false);
+                                                                    }
+                                                                }}
+                                                                disabled={isZoomCalendarLoading}
+                                                                className="px-3 py-1.5 bg-bg-item-surface hover:bg-bg-item-active border border-border-subtle text-text-primary rounded-md text-xs font-medium transition-colors flex items-center gap-2"
+                                                            >
+                                                                {isZoomCalendarLoading ? 'Connecting...' : 'Connect'}
+                                                            </button>
+                                                        </div>
+                                                    )}
+                                                </div>
+
+                                                {/* Empty state — shown only when neither is connected */}
+                                                {!calendarStatus.connected && !zoomCalendarStatus.connected && (
+                                                    <p className="text-xs text-text-tertiary pt-1">
+                                                        Connect at least one calendar to see upcoming meetings in GoDojo.
+                                                    </p>
                                                 )}
+
                                             </div>
-
-                                            {/* Empty state — shown only when neither is connected */}
-                                            {!calendarStatus.connected && !zoomCalendarStatus.connected && (
-                                                <p className="text-xs text-text-tertiary pt-1">
-                                                    Connect at least one calendar to see upcoming meetings in GoDojo.
-                                                </p>
-                                            )}
-
                                         </div>
-                                    </div>
-                                )}
+                                    )}
 
-                                {activeTab === 'company-context' && (
-                                    <CompanyContextTab
-                                        companyContext={companyContext}
-                                        setCompanyContext={setCompanyContext}
-                                        companyLoading={companyLoading}
-                                        setCompanyLoading={setCompanyLoading}
-                                        companySaving={companySaving}
-                                        setCompanySaving={setCompanySaving}
-                                        companyError={companyError}
-                                        setCompanyError={setCompanyError}
-                                        assetUploading={assetUploading}
-                                        setAssetUploading={setAssetUploading}
-                                        isPremium={isPremium}
-                                        setIsPremiumModalOpen={setIsPremiumModalOpen}
-                                        isLight={isLight}
-                                    />
-                                )}
+                                    {activeTab === 'company-context' && (
+                                        <CompanyContextTab
+                                            companyContext={companyContext}
+                                            setCompanyContext={setCompanyContext}
+                                            companyLoading={companyLoading}
+                                            setCompanyLoading={setCompanyLoading}
+                                            companySaving={companySaving}
+                                            setCompanySaving={setCompanySaving}
+                                            companyError={companyError}
+                                            setCompanyError={setCompanyError}
+                                            assetUploading={assetUploading}
+                                            setAssetUploading={setAssetUploading}
+                                            isPremium={isPremium}
+                                            setIsPremiumModalOpen={setIsPremiumModalOpen}
+                                            isLight={isLight}
+                                        />
+                                    )}
 
-                                {activeTab === 'scoring-criteria' && (
-                                    <ScoringCriteriaTab />
-                                )}
+                                    {activeTab === 'scoring-criteria' && (
+                                        <ScoringCriteriaTab />
+                                    )}
 
-                                {activeTab === 'about' && (
-                                    <AboutSection />
-                                )}
+                                    {activeTab === 'user-roles-permissions' && (
+                                        <UserRolesPermissionsTab deepLinkInviteToken={deepLinkInviteToken} onDeepLinkTokenConsumed={onDeepLinkTokenConsumed} />
+                                    )}
+
+                                    {activeTab === 'about' && (
+                                        <AboutSection />
+                                    )}
+                                </div>
                             </div>
                         </div>
                     </motion.div>

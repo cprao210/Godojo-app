@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from "react" // forcing refresh
-import { QueryClient, QueryClientProvider } from "react-query"
+import { QueryClient, QueryClientProvider, QueryCache, MutationCache } from "react-query"
 import { ToastProvider, ToastViewport } from "./components/ui/toast"
 import NativelyInterface from "./components/NativelyInterface"
 import SettingsPopup from "./components/SettingsPopup" // Keeping for legacy/specific window support if needed
@@ -7,6 +7,7 @@ import Launcher from "./components/Launcher"
 import ModelSelectorWindow from "./components/ModelSelectorWindow"
 import SettingsOverlay from "./components/SettingsOverlay"
 import StartupSequence from "./components/StartupSequence"
+import ManagerDashboard from "./components/ManagerDashboard"
 import { AnimatePresence, motion } from "framer-motion"
 import UpdateBanner from "./components/UpdateBanner"
 import { SupportToaster } from "./components/SupportToaster"
@@ -24,10 +25,25 @@ import { analytics } from "./lib/analytics/analytics.service"
 import { ErrorBoundary } from "./components/ErrorBoundary"
 import { SignIn } from "./_pages/SignIn"
 import { subscribeAuthState, signOut as fbSignOut, verifySessionIsActive, installSessionGuard } from "./lib/firebase";
+import { apiFetch, ApiError, notifyInvalidSession, setInvalidSessionHandler } from "./lib/apiClient";
 import { EmailVerification } from "./_pages/EmailVerification";
+import { tenantsApi } from "./lib/tenantsApi";
+import type { Tenant } from "./types/tenant";
+import { InviteAccountMismatchBanner } from "./components/InviteAccountMismatchBanner";
+import { meetingsApi, type TranscriptSegmentInput } from "./lib/meetingsApi";
 import type { User } from "firebase/auth"
 
-const queryClient = new QueryClient()
+// Route HTTP auth failures (a terminal 401 from apiClient, surfaced through React
+// Query) into the same session-expired flow as the Firebase guard. The QueryClient
+// lives at module scope so it can't close over React state — it hands off via the
+// apiClient bridge (notifyInvalidSession), which <App/> wires to handleInvalidSession.
+const handleApiError = (error: unknown) => {
+  if (error instanceof ApiError && error.status === 401) notifyInvalidSession(error.code);
+};
+const queryClient = new QueryClient({
+  queryCache: new QueryCache({ onError: handleApiError }),
+  mutationCache: new MutationCache({ onError: handleApiError }),
+})
 
 const App: React.FC = () => {
   const isSettingsWindow = new URLSearchParams(window.location.search).get('window') === 'settings';
@@ -35,6 +51,28 @@ const App: React.FC = () => {
   const isOverlayWindow = new URLSearchParams(window.location.search).get('window') === 'overlay';
   const isModelSelectorWindow = new URLSearchParams(window.location.search).get('window') === 'model-selector';
   const isCropperWindow = new URLSearchParams(window.location.search).get('window') === 'cropper';
+
+  // Backend (HTTP API) meeting session state — separate from the Electron IPC
+  // session. meetingIdRef tracks the id returned by meetingsApi.start; segmentsRef
+  // buffers transcript turns so we can submit them all at once in handleEndMeeting,
+  // per the backend contract (submit once, at end-of-meeting).
+  const backendMeetingIdRef = React.useRef<string | null>(null);
+  const transcriptSegmentsRef = React.useRef<TranscriptSegmentInput[]>([]);
+
+  // Buffer transcript turns while a backend meeting session is active.
+  useEffect(() => {
+    const cleanup = window.electronAPI?.onNativeAudioTranscript?.((t) => {
+      if (!backendMeetingIdRef.current) return;
+      transcriptSegmentsRef.current.push({
+        speaker: (t.speaker as TranscriptSegmentInput["speaker"]) ?? "client",
+        text: t.text,
+        timestamp: t.timestamp ?? Date.now(),
+        final: t.final,
+        confidence: t.confidence,
+      });
+    });
+    return () => cleanup?.();
+  }, []);
 
   // Default to launcher if not specified (dev mode safety)
   const isDefault = !isSettingsWindow && !isOverlayWindow && !isModelSelectorWindow && !isCropperWindow;
@@ -85,7 +123,10 @@ const App: React.FC = () => {
   // State
   const [showStartup, setShowStartup] = useState(true);
   const [isSettingsOpen, setIsSettingsOpen] = useState(false);
+  const [isManagerDashboardOpen, setIsManagerDashboardOpen] = useState(false);
   const [settingsInitialTab, setSettingsInitialTab] = useState('general');
+  const [deepLinkInviteToken, setDeepLinkInviteToken] = useState<string | null>(null);
+  const [inviteMismatchEmail, setInviteMismatchEmail] = useState<string | null>(null);
   const [showPremiumModal, setShowPremiumModal] = useState(false);
   const [isPremiumActive, setIsPremiumActive] = useState(false);
 
@@ -95,6 +136,68 @@ const App: React.FC = () => {
   // Keeps authUser null so the main app never renders for unverified users.
   const [pendingVerificationUser, setPendingVerificationUser] = useState<User | null>(null);
   const [sessionExpiredMessage, setSessionExpiredMessage] = useState<string | null>(null);
+
+  const [tenantId, setTenantId] = useState<string | null>(null);
+
+  // Full tenant object (not just id) so we can check tenant.owner_id against
+  // the signed-in uid — same "is admin" check ManagerDashboard/UserRolesPermissionsTab
+  // use internally, hoisted here so App can gate the Dashboard button + default view.
+  const [tenant, setTenant] = useState<Tenant | null>(null);
+  // Only auto-open the Dashboard once per sign-in, so an admin who
+  // deliberately closes it isn't dumped back into it on every re-render.
+  const hasAutoOpenedDashboardRef = React.useRef(false);
+
+  // Only the default/launcher window runs the Firebase auth subscription
+  // (see the isLauncherWindow || isDefault guard below), so it's the only
+  // window that can actually resolve a tenant via tenantsApi.listMine().
+  // The overlay window (where the "End Meeting" button lives) is a totally
+  // separate renderer process/React tree — it can never see this window's
+  // state directly. Once resolved here, push it to the main process so it
+  // can broadcast to every window, including the overlay.
+  useEffect(() => {
+
+    // Guard: tenantsApi.listMine() attaches the Firebase ID token, so calling
+    // it before auth resolves (or when signed out) either 401s or races the
+    // token being set. Previously this ran once on mount with no dependency
+    // on auth state, so on a cold launch it could fire before authUser was
+    // set, fail silently (caught below), and never retry — leaving tenantId
+    // permanently null for the whole session, which is why meetings saved
+    // with an empty tenant_id.
+    if (!(isLauncherWindow || isDefault)) return;
+    if (!authUser) return;
+
+    const getTenantId = async () => {
+
+      const tenants = await tenantsApi.listMine();
+      console.log('[App.tsx] tenantsApi.listMine() resolved:', tenants);
+      const resolvedTenant = tenants[0] ?? null;
+      const resolved = resolvedTenant?.id ?? null;
+      setTenant(resolvedTenant);
+      // Publish to the main process so every window (esp. the overlay,
+      // which owns the End Meeting button) picks it up via tenant:state-changed.
+      window.electronAPI.setCurrentTenantId(resolved).catch(err =>
+        console.error('[App.tsx] Failed to publish tenantId to main process:', err)
+      );
+    }
+
+    getTenantId().catch(err => console.error("Failed to fetch tenant ID:", err));
+
+  }, [authUser, isLauncherWindow, isDefault]);
+
+  // Every window (including the overlay) subscribes to the broadcast tenantId
+  // and also asks for whatever value the main process already has cached,
+  // in case this window mounted after the default window already resolved it.
+  useEffect(() => {
+    window.electronAPI.getCurrentTenantId()
+      .then(id => { if (id) setTenantId(id); })
+      .catch(err => console.error('[App.tsx] Failed to read cached tenantId:', err));
+
+    const unsub = window.electronAPI.onTenantStateChanged((id) => {
+      console.log('[App.tsx] tenant:state-changed received:', id ?? '(null)');
+      setTenantId(id);
+    });
+    return () => unsub();
+  }, []);
 
   useEffect(() => {
     if (!(isLauncherWindow || isDefault)) {
@@ -135,16 +238,32 @@ const App: React.FC = () => {
   // latest — or immediately if the token has already expired.
   useEffect(() => {
     if (!(isLauncherWindow || isDefault || isOverlayWindow)) return;
-    const unsub = installSessionGuard(async (errorCode?: string) => {
+    const handleInvalidSession = async (errorCode?: string) => {
       const { getAuthErrorMessage } = await import('./lib/firebase');
       const msg = errorCode
         ? getAuthErrorMessage({ code: errorCode })
         : 'Your session has expired or the account was disabled. Please sign in again.';
       setSessionExpiredMessage(msg || 'Your session has ended. Please sign in again.');
       await fbSignOut().catch(() => { });
-    });
-    return () => unsub();
+    };
+    // Firebase token-refresh guard (catches account disabled/deleted/revoked).
+    const unsub = installSessionGuard(handleInvalidSession);
+    // A terminal HTTP 401 from apiClient (after its one refresh-retry) routes through
+    // the SAME handler via React Query's QueryCache/MutationCache onError bridge.
+    setInvalidSessionHandler((code) => { void handleInvalidSession(code); });
+    return () => {
+      unsub();
+      setInvalidSessionHandler(null);
+    };
   }, [isLauncherWindow, isDefault]);
+
+  // Backend readiness probe: once signed in, confirm the API is reachable and the
+  // forwarded token is accepted. /auth/me is RLS-independent (works even before
+  // Supabase third-party auth is enabled). Best-effort — failures are logged, not fatal.
+  useEffect(() => {
+    if (!authUser) return;
+    apiFetch('/auth/me').catch((e) => console.warn('[api] /auth/me probe failed:', e));
+  }, [authUser]);
 
   useEffect(() => {
     if (!window.electronAPI?.onAuthStateChanged) return;
@@ -156,6 +275,57 @@ const App: React.FC = () => {
     });
     return () => unsub?.();
   }, []);
+
+  // Team invite deep link: main process relays the token from
+  // godojo://invite?token=... via this event. We only stash the token
+  // here — the actual account check + routing to Settings happens in
+  // the resolver effect below, since it needs to react to authUser
+  // changes too (e.g. after a forced sign-out/sign-in).
+  useEffect(() => {
+    if (!window.electronAPI?.onInviteDeepLink) return;
+    const unsub = window.electronAPI.onInviteDeepLink(({ token }) => {
+      setDeepLinkInviteToken(token);
+    });
+    return () => unsub?.();
+  }, []);
+
+  // Resolves a pending invite deep link token against whoever is currently
+  // signed in. If the invite was sent to a different email than the
+  // signed-in account, force a sign-out instead of showing the Accept/
+  // Reject prompt to the wrong person — re-runs once the right account
+  // signs in (or does nothing if no one is signed in yet).
+  useEffect(() => {
+    const token = deepLinkInviteToken;
+    if (!token || !authUser) return;
+
+    let cancelled = false;
+    (async () => {
+      try {
+        const preview = await tenantsApi.previewInvitation(token);
+        if (cancelled) return;
+
+        const invitedEmail = preview.email?.toLowerCase();
+        const currentEmail = authUser.email?.toLowerCase();
+
+        if (invitedEmail && currentEmail && invitedEmail !== currentEmail) {
+          setInviteMismatchEmail(preview.email);
+          await fbSignOut().catch(() => { });
+          return;
+        }
+
+        setInviteMismatchEmail(null);
+        setSettingsInitialTab('user-roles-permissions');
+        setIsSettingsOpen(true);
+      } catch (err) {
+        if (cancelled) return;
+        console.warn('[App] Failed to preview invitation for account check:', err);
+        setSettingsInitialTab('user-roles-permissions');
+        setIsSettingsOpen(true);
+      }
+    })();
+
+    return () => { cancelled = true; };
+  }, [deepLinkInviteToken, authUser]);
 
   // Overlay opacity — only meaningful when isOverlayWindow, but stored centrally
   // so it can be initialized once from localStorage and updated via IPC.
@@ -184,6 +354,25 @@ const App: React.FC = () => {
   const [hasProfile, setHasProfile] = useState(false);
   const [isLauncherMainView, setIsLauncherMainView] = useState(true);
 
+  // "admin" == the tenant owner (same rule ManagerDashboard/UserRolesPermissionsTab
+  // use). Members (non-owners), and anyone with no resolved tenant yet, are false.
+  const isAdmin = !!(tenant && authUser && tenant.owner_id === authUser.uid);
+
+  // Default screen on login: admins land on the Manager Dashboard, members
+  // land on the normal Launcher (which is already the default state).
+  useEffect(() => {
+    if (!authUser) {
+      // Signed out (or switched accounts) — allow the next admin login to
+      // auto-open the dashboard again.
+      hasAutoOpenedDashboardRef.current = false;
+      setIsManagerDashboardOpen(false);
+      return;
+    }
+    if (!tenant || hasAutoOpenedDashboardRef.current) return;
+    setIsManagerDashboardOpen(isAdmin);
+    hasAutoOpenedDashboardRef.current = true;
+  }, [authUser, tenant, isAdmin]);
+
   // Initialize Ads Campaign Manager
   const [appStartTime] = useState<number>(Date.now());
   const [lastMeetingEndTime, setLastMeetingEndTime] = useState<number | null>(null);
@@ -197,7 +386,7 @@ const App: React.FC = () => {
   // Re-index State
   const [incompatibleWarning, setIncompatibleWarning] = useState<{ count: number; oldProvider: string; newProvider: string } | null>(null);
 
-  const isAppReady = !isSettingsWindow && !isOverlayWindow && !isModelSelectorWindow && !showStartup && !isSettingsOpen && isLauncherMainView;
+  const isAppReady = !isSettingsWindow && !isOverlayWindow && !isModelSelectorWindow && !showStartup && !isSettingsOpen && !isManagerDashboardOpen && isLauncherMainView;
   const { activeAd, dismissAd } = useAdCampaigns(
     isPremiumActive,
     hasProfile,
@@ -326,6 +515,25 @@ const App: React.FC = () => {
         })
       };
 
+      // Start the corresponding backend session (Phase-1 HTTP API). This runs
+      // alongside the existing IPC session — failures here are logged but don't
+      // block the meeting, since audio capture/STT stay client-side regardless.
+      // transcriptSegmentsRef.current = [];
+      // try {
+      //   const startResp = await meetingsApi.start({
+      //     title: calendarEvent?.title,
+      //     attendees: calendarEvent?.attendees,
+      //     audio: { input_device_id: inputDeviceId, output_device_id: outputDeviceId },
+      //     calendar_event_id: calendarEvent?.id,
+      //   });
+      //   backendMeetingIdRef.current = startResp.meeting_id;
+      // } catch (err) {
+      //   console.error("[App] meetingsApi.start failed:", err);
+      //   backendMeetingIdRef.current = null;
+      // }
+
+      // await window.electronAPI.setWindowMode('overlay');
+
       const result = await window.electronAPI.startMeeting(meetingMetadata);
       if (result.success) {
         analytics.trackMeetingStarted();
@@ -365,9 +573,31 @@ const App: React.FC = () => {
     // means the placeholder card is visible as soon as Launcher mounts and
     // receives the onMeetingsUpdated event, instead of only after the full IPC
     // round-trip completes.
-    window.electronAPI.endMeeting(meetingTypes).catch(err =>
+    console.log('[App.tsx] handleEndMeeting: tenantId at IPC call =', tenantId ?? '(null)');
+    window.electronAPI.endMeeting(meetingTypes, tenantId).catch(err =>
       console.error("Failed to end meeting:", err)
     );
+
+    // Submit the buffered transcript then close out the backend session. Fired
+    // without blocking the window-mode switch, same rationale as the IPC endMeeting
+    // above — this shouldn't hold up returning to the launcher.
+    // const backendMeetingId = backendMeetingIdRef.current;
+    // if (backendMeetingId) {
+    //   const segments = transcriptSegmentsRef.current;
+    //   (async () => {
+    //     try {
+    //       if (segments.length > 0) {
+    //         await meetingsApi.submitTranscript(backendMeetingId, segments);
+    //       }
+    //       await meetingsApi.end(backendMeetingId, meetingTypes ?? []);
+    //     } catch (err) {
+    //       console.error("[App] Failed to submit transcript / end backend meeting:", err);
+    //     } finally {
+    //       backendMeetingIdRef.current = null;
+    //       transcriptSegmentsRef.current = [];
+    //     }
+    //   })();
+    // }
 
     try {
       await window.electronAPI.setWindowMode('launcher');
@@ -499,8 +729,13 @@ const App: React.FC = () => {
                           onStartMeeting={(event?: any) => handleStartMeeting(event)}
                           onOpenSettings={(tab = 'general') => {
                             setSettingsInitialTab(tab);
+                            setIsManagerDashboardOpen(false); // switching to Settings closes Dashboard
                             setIsSettingsOpen(true);
                           }}
+                          onOpenManagerDashboard={isAdmin ? () => {
+                            setIsSettingsOpen(false);         // switching to Dashboard closes Settings
+                            setIsManagerDashboardOpen((open) => !open); // toggle: click again to close
+                          } : undefined}
                           onPageChange={setIsLauncherMainView}
                           ollamaPullStatus={ollamaPullStatus}
                           ollamaPullPercent={ollamaPullPercent}
@@ -516,6 +751,12 @@ const App: React.FC = () => {
                           window.dispatchEvent(new CustomEvent('settings-closed'));
                         }}
                         initialTab={settingsInitialTab}
+                        deepLinkInviteToken={deepLinkInviteToken}
+                        onDeepLinkTokenConsumed={() => setDeepLinkInviteToken(null)}
+                      />
+                      <ManagerDashboard
+                        isOpen={isManagerDashboardOpen}
+                        onClose={() => setIsManagerDashboardOpen(false)}
                       />
                       <ToastViewport />
                     </ToastProvider>
@@ -565,6 +806,12 @@ const App: React.FC = () => {
             {/* <UpdateBanner /> */}
             {/* <SupportToaster /> */}
 
+            {inviteMismatchEmail && (
+              <InviteAccountMismatchBanner
+                invitedEmail={inviteMismatchEmail}
+                onDismiss={() => setInviteMismatchEmail(null)}
+              />
+            )}
 
             {isLauncherMainView && !isSettingsOpen && (
               <>

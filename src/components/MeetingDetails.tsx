@@ -11,7 +11,9 @@ import { Prism as SyntaxHighlighter } from 'react-syntax-highlighter';
 import { vscDarkPlus } from 'react-syntax-highlighter/dist/esm/styles/prism';
 import FollowUpEmailModal from './FollowUpEmailModal';
 import { LiveAnalysisContent } from './LiveAnalysisContent';
-import { LiveAnalysisData } from '../types/liveAnalysis';
+import { useQuery, useMutation, useQueryClient } from 'react-query';
+import { meetingsApi } from '../lib/meetingsApi';
+import type { Meeting, MeetingTranscriptLine } from '../types/meeting';
 import { guardSession } from '../lib/firebase';
 import { DealHealthScore } from './DealHealthScore';
 import { MeetingScorecardPanel } from './MeetingScoreCard';
@@ -28,93 +30,7 @@ const cleanMarkdown = (content: string) => {
     return content.replace(/([^\n])```/g, '$1\n\n```');
 };
 
-interface Meeting {
-    id: string;
-    title: string;
-    date: string;
-    duration: string;
-    summary: string;
-    isProcessed?: boolean;
-    detailedSummary?: {
-        // Old fields (keep for backward compat with existing meetings)
-        overview?: string;
-        actionItems: string[];
-        keyPoints: string[];
-        actionItemsTitle?: string;
-        keyPointsTitle?: string;
-
-        leadName?: string;
-        company?: string;
-
-        liveAnalysis?: LiveAnalysisData;
-        scorecard?: MeetingScorecardResult;
-
-        // New sales fields
-        dealStatus?: {
-            stage?: string;
-            summary?: string;
-        };
-        bant?: {
-            budget?: { status: string; detail: string };
-            authority?: { status: string; detail: string };
-            need?: { status: string; detail: string };
-            timeline?: { status: string; detail: string };
-        };
-        meddicc?: {
-            metrics?: { status: string; detail: string };
-            economicBuyer?: { status: string; detail: string };
-            decisionCriteria?: { status: string; detail: string };
-            decisionProcess?: { status: string; detail: string };
-            identifyPain?: { status: string; detail: string };
-            champion?: { status: string; detail: string };
-            competition?: { status: string; detail: string };
-            gaps?: string[];
-        };
-        followUpEmail?: {
-            subject?: string;
-            sections?: {
-                whatYouWillAchieveAfterTransformation?: string[];
-                whatWeDiscussed?: string[];
-                whatIsTheNeed?: string[];
-                currentProcess?: string;
-                scopeOfImprovement?: string[];
-                howOurSolutionHelps?: string[];
-                expectedBusinessImpact?: string[];
-                nextSteps?: string[];
-            };
-            fullEmail?: string;
-        };
-        salesCoachReview?: {
-            whatIDidRight?: string[];
-            whatICouldHaveDoneBetter?: string[];
-            whatIMissedCompletely?: string[];
-        };
-        nextCallPlaybook?: {
-            openingRecap?: string;
-            questionsToAsk?: string[];
-            valueAndROI?: {
-                quantitative?: string[];
-                qualitative?: string[];
-            };
-        };
-    };
-    participants?: { email: string | null, name: string | null, oraganizer: boolean, self: boolean }[];
-    transcript?: Array<{
-        speaker: string;
-        displayName?: string;
-        text: string;
-        timestamp: number;
-        final?: boolean;
-        confidence?: number;
-    }>;
-    usage?: Array<{
-        type: 'assist' | 'followup' | 'chat' | 'followup_questions';
-        timestamp: number;
-        question?: string;
-        answer?: string;
-        items?: string[];
-    }>;
-}
+// Meeting type is imported from ../types/meeting (shared with Launcher + meetingsApi).
 
 interface Message {
     id: string;
@@ -176,7 +92,7 @@ const DetailAnalysisAccordion: React.FC<DetailAnalysisAccordionProps> = ({ score
                     </span>
                     {/* Type pills summary — show each detected type with its score */}
                     <div className="flex gap-1 ml-1">
-                        {(scorecard.scorecards ?? []).map(sc => {
+                        {(Object.values(scorecard.scorecards ?? [])).map(sc => {
                             const COLORS: Record<string, { color: string; bg: string }> = {
                                 discovery: { color: '#a78bfa', bg: 'rgba(167,139,250,0.1)' },
                                 demo: { color: '#34d399', bg: 'rgba(52,211,153,0.1)' },
@@ -234,9 +150,121 @@ const DetailAnalysisAccordion: React.FC<DetailAnalysisAccordionProps> = ({ score
 const MeetingDetails: React.FC<MeetingDetailsProps> = ({ meeting: initialMeeting }) => {
 
     const isLight = useResolvedTheme() === 'light';
-    // We need local state for the meeting object to reflect optimistic updates
-    const [meeting, setMeeting] = useState<Meeting>(initialMeeting);
+    const queryClient = useQueryClient();
+    const meetingKey = ["meeting", initialMeeting.id];
+
+    // Tracks the post-call processing skeleton. While processing we don't fetch detail
+    // over HTTP (the row may not be in the backend yet); the onMeetingsUpdated effect
+    // below pulls it once main signals it's ready.
+    const [isProcessing, setIsProcessing] = useState<boolean>(
+        initialMeeting.title === 'Processing...' || initialMeeting.isProcessed === false
+    );
+
+    // Full detail (transcript + usage) loads over HTTP; the list row seeds initialData so
+    // the view renders instantly, then reconciles with the backend.
+    const { data: meetingData = initialMeeting, isFetching: isLoadingMeetingDetail } = useQuery<Meeting>(
+        meetingKey,
+        () => meetingsApi.get(initialMeeting.id),
+        { initialData: initialMeeting, enabled: !isProcessing && !!initialMeeting.id },
+    );
+
+    // The HTTP transcript depends on the Supabase mirror having already synced this
+    // meeting's transcript rows — fire-and-forget, and can lag behind (or, for some
+    // rows, never catch up to) the local save. Local SQLite is the actual source of
+    // truth and always has the transcript the instant a meeting finishes (written
+    // synchronously in saveMeeting's transaction), so fall back to it — same
+    // "local-first, cloud is just a mirror" precedent already used for scorecard
+    // below via meeting:getScorecard.
+    const needsLocalTranscript = !isProcessing && !!initialMeeting.id && (meetingData.transcript?.length ?? 0) === 0;
+    const { data: localTranscript } = useQuery<MeetingTranscriptLine[] | null>(
+        ["meeting-local-transcript", initialMeeting.id],
+        async () => {
+            const details = await window.electronAPI?.getMeetingDetails?.(initialMeeting.id);
+            return details?.transcript ?? null;
+        },
+        { enabled: needsLocalTranscript },
+    );
+    // Every existing `meeting.transcript` reference below transparently gets the
+    // fallback via this merged value — no need to touch each call site.
+    const meeting: Meeting = useMemo(
+        () =>
+            needsLocalTranscript && localTranscript && localTranscript.length > 0
+                ? { ...meetingData, transcript: localTranscript }
+                : meetingData,
+        [meetingData, needsLocalTranscript, localTranscript]
+    );
+
+    // Scorecard is handled locally (IPC), NOT over HTTP: the backend's GET /meetings/{id}
+    // only serves summary_json, while the scorecard lives in the dedicated
+    // meeting_scorecards table. meeting:getScorecard reads Supabase first (other devices'
+    // scorecards) and falls back to local SQLite.
+    const scorecardKey = ["meeting-scorecard", initialMeeting.id];
+    const { data: localScorecard = null } = useQuery<MeetingScorecardResult | null>(
+        scorecardKey,
+        async () => {
+            const res = await window.electronAPI?.meetingGetScorecard?.(initialMeeting.id);
+            return res?.success ? (res.data ?? null) : null;
+        },
+        { enabled: !isProcessing && !!initialMeeting.id },
+    );
+    // Prefer the dedicated-table scorecard; the summary_json-embedded blob is only the
+    // legacy / DB-write-failure fallback (same precedence as DatabaseManager.getMeetingDetails).
+    const scorecard: MeetingScorecardResult | null =
+        localScorecard ?? meeting.detailedSummary?.scorecard ?? null;
+
+    // Title / summary edits: HTTP is canonical; the existing IPC write is fired on success
+    // as a write-through so local SQLite + RAG stay consistent (and the async mirror can't
+    // clobber the edit). Optimistic onMutate preserves the instant-edit feel.
+    const titleMutation = useMutation<unknown, unknown, string, { prev?: Meeting }>(
+        (title) => meetingsApi.updateTitle(initialMeeting.id, title),
+        {
+            onMutate: async (title) => {
+                await queryClient.cancelQueries(meetingKey);
+                const prev = queryClient.getQueryData<Meeting>(meetingKey);
+                queryClient.setQueryData<Meeting>(meetingKey, (m = initialMeeting) => ({ ...m, title }));
+                return { prev };
+            },
+            onError: (_e, _t, ctx) => { if (ctx?.prev) queryClient.setQueryData(meetingKey, ctx.prev); },
+            onSuccess: (_d, title) => { window.electronAPI?.updateMeetingTitle?.(initialMeeting.id, title); },
+            onSettled: () => {
+                void queryClient.invalidateQueries(meetingKey);
+                void queryClient.invalidateQueries(["meetings"]);
+            },
+        },
+    );
+    const summaryMutation = useMutation<unknown, unknown, Record<string, any>, { prev?: Meeting }>(
+        (updates) => meetingsApi.updateSummary(initialMeeting.id, updates),
+        {
+            onMutate: async (updates) => {
+                await queryClient.cancelQueries(meetingKey);
+                const prev = queryClient.getQueryData<Meeting>(meetingKey);
+                queryClient.setQueryData<Meeting>(meetingKey, (m = initialMeeting) => ({
+                    ...m,
+                    detailedSummary: { actionItems: [], keyPoints: [], ...(m.detailedSummary ?? {}), ...updates },
+                }));
+                return { prev };
+            },
+            onError: (_e, _u, ctx) => { if (ctx?.prev) queryClient.setQueryData(meetingKey, ctx.prev); },
+            onSuccess: (_d, updates) => { window.electronAPI?.updateMeetingSummary?.(initialMeeting.id, updates as any); },
+            onSettled: () => {
+                void queryClient.invalidateQueries(meetingKey);
+                void queryClient.invalidateQueries(["meetings"]);
+            },
+        },
+    );
     const [activeTab, setActiveTab] = useState<'summary' | 'transcript' | 'usage' | 'analysis'>('summary');
+
+    // Persisted "Ask Dojo" Q&A history — fetched lazily the first time the
+    // user opens this tab (enabled gate), not bundled into the initial
+    // meeting payload since most sessions on a meeting never open it.
+    const { data: aiInteractionsData, isLoading: isLoadingAiInteractions } = useQuery(
+        ['ai-interactions', meeting?.id],
+        () => meetingsApi.getAiInteractions(meeting!.id),
+        {
+            enabled: activeTab === 'usage' && !!meeting?.id,
+            staleTime: 30_000,
+        }
+    );
     const [query, setQuery] = useState('');
     const [isCopied, setIsCopied] = useState(false);
     const [isRegenerating, setIsRegenerating] = useState(false);
@@ -245,47 +273,120 @@ const MeetingDetails: React.FC<MeetingDetailsProps> = ({ meeting: initialMeeting
     const [isChatOpen, setIsChatOpen] = useState(false);
     const [pendingQuery, setPendingQuery] = useState<{ text: string; id: number } | null>(null);
     const [chatMessages, setChatMessages] = useState<Message[]>([]);
-    const [isProcessing, setIsProcessing] = useState<boolean>(
-        initialMeeting.title === 'Processing...' || initialMeeting.isProcessed === false
-    );
     const [isTalktimeOpen, setIsTalktimeOpen] = useState(false);
 
     const speakerNames = (meeting.detailedSummary as any)?.speakerNames as
         { user: string; client: string } | undefined;
 
-    const getSpeakerDisplayName = (speaker: string, displayName?: string): string => {
+    // Diarization: suffix far-end labels only when 2+ distinct speaker indices
+    // were recorded for this meeting — 1:1 calls render exactly as before.
+    const hasMultipleClientSpeakers = useMemo(() => {
+        const seen = new Set<number>();
+        for (const seg of meeting.transcript || []) {
+            const idx = (seg as any).speakerIndex;
+            if (idx !== undefined && idx !== null && seg.speaker !== 'user') {
+                seen.add(idx);
+                if (seen.size >= 2) return true;
+            }
+        }
+        return false;
+    }, [meeting.transcript]);
+
+    const getSpeakerDisplayName = (speaker: string, displayName?: string, speakerIndex?: number): string => {
         // 1. Live transcription supplies displayName directly — always prefer it.
         if (displayName) return displayName;
         // 2. Use resolved calendar names saved in detailedSummary.speakerNames.
         //    These are set by SessionTracker (e.g. "Nikhilbarot", "Salesforce").
         //    Fall back to "You" / "Other Party" only when no calendar data was resolved.
         if (speaker === 'user') return speakerNames?.user || 'You';
-        if (speaker === 'client' || speaker === "interviewer") return speakerNames?.client || 'Other Party';
+        if (speaker === 'client' || speaker === "interviewer") {
+            const base = speakerNames?.client || 'Other Party';
+            if (hasMultipleClientSpeakers && speakerIndex !== undefined && speakerIndex !== null) {
+                return `${base} · Speaker ${speakerIndex + 1}`;
+            }
+            return base;
+        }
         if (speaker === 'assistant') return 'Assistant';
         return speaker;
     };
 
     useEffect(() => {
         if (!isProcessing) return;
+
+        // IMPORTANT: onMeetingsUpdated fires once, whenever background processing
+        // actually finishes — which is very often *before* this component ever
+        // mounts (the user is usually still looking at the Launcher card, not
+        // this detail view, at that moment). A listener registered only now would
+        // silently miss an event that already fired, leaving isProcessing stuck
+        // true forever and permanently disabling the transcript/scorecard queries
+        // above. So check immediately on mount too, not only on a future event
+        const unblockFromLocal = async () => {
+            try {
+                const details = await window.electronAPI?.getMeetingDetails?.(initialMeeting.id);
+                if (details && details.isProcessed !== false && details.title !== 'Processing...') {
+                    queryClient.setQueryData<Meeting>(meetingKey, (prev) => ({ ...(prev ?? initialMeeting), ...details }));
+                    setIsProcessing(false);
+                    void queryClient.invalidateQueries(scorecardKey);
+                }
+            } catch (e) {
+                console.log("[ERROR: Local getMeetingDetails fallback]: ", e);
+            }
+        };
+
+        // Run the same check immediately — covers "processing already finished
+        // before this view opened."
+        //
+        // NOTE: `updated.isProcessed` only reflects the `meetings` row (summary
+        // generated) — it says nothing about whether the transcript/scorecard
+        // mirror upserts (separate tables, separate async queue entries) have
+        // landed in Supabase yet. Trusting isProcessed alone here was skipping
+        // unblockFromLocal() even when updated.transcript was still empty,
+        // permanently missing the transcript/scorecard tabs for that view.
+        const isHttpResultComplete = (m: Meeting) =>
+            !!m.isProcessed && (m.transcript?.length ?? 0) > 0 && !!m.detailedSummary?.scorecard;
+
+        meetingsApi.get(initialMeeting.id)
+            .then((updated) => {
+                if (updated && isHttpResultComplete(updated)) {
+                    queryClient.setQueryData<Meeting>(meetingKey, updated);
+                    setIsProcessing(false);
+                    void queryClient.invalidateQueries(scorecardKey);
+                } else {
+                    if (updated?.isProcessed) {
+                        // Still stop showing the "processing" skeleton — the
+                        // summary IS ready — but let unblockFromLocal fill in
+                        // the transcript/scorecard from the reliable local copy.
+                        queryClient.setQueryData<Meeting>(meetingKey, updated);
+                    }
+                    void unblockFromLocal();
+                }
+            })
+            .catch(() => void unblockFromLocal());
+
         if (!window.electronAPI?.onMeetingsUpdated) return;
 
         const unsubscribe = window.electronAPI.onMeetingsUpdated(() => {
-            if (window.electronAPI?.getMeetingDetails) {
-                window.electronAPI.getMeetingDetails(meeting.id)
-                    .then((updated: any) => {
-                        if (updated && updated.isProcessed) {
-                            setMeeting(updated);
-                            setIsProcessing(false); // ← stop skeleton
+            meetingsApi.get(initialMeeting.id)
+                .then((updated) => {
+                    if (updated && isHttpResultComplete(updated)) {
+                        queryClient.setQueryData<Meeting>(meetingKey, updated);
+                        setIsProcessing(false); // ← stop skeleton
+                        // Scorecard is generated during background processing (before the
+                        // final save) — fetch it now that processing is done. The query was
+                        // disabled while processing, so kick it explicitly.
+                        void queryClient.invalidateQueries(scorecardKey);
+                    } else {
+                        if (updated?.isProcessed) {
+                            queryClient.setQueryData<Meeting>(meetingKey, updated);
                         }
-                    })
-                    .catch((e) => {
-                        console.log("[ERROR: Get Meeting Details]: ", e);
-                    });
-            }
+                        void unblockFromLocal();
+                    }
+                })
+                .catch(() => void unblockFromLocal());
         });
 
         return () => unsubscribe();
-    }, [isProcessing, meeting.id]);
+    }, [isProcessing, initialMeeting.id]);
 
     const handleSubmitQuestion = () => {
         if (query.trim()) {
@@ -484,7 +585,7 @@ const MeetingDetails: React.FC<MeetingDetailsProps> = ({ meeting: initialMeeting
         } else if (activeTab === 'transcript' && meeting.transcript) {
             textToCopy = meeting.transcript
                 .filter(t => !['system', 'ai', 'assistant', 'model'].includes(t.speaker?.toLowerCase()))
-                .map(t => `[${formatTime(t.timestamp)}] ${getSpeakerDisplayName(t.speaker, t.displayName)}: ${t.text}`)
+                .map(t => `[${formatTime(t.timestamp)}] ${getSpeakerDisplayName(t.speaker, t.displayName, (t as any).speakerIndex)}: ${t.text}`)
                 .join('\n');
 
         } else if (activeTab === 'usage' && meeting.usage) {
@@ -584,48 +685,18 @@ const MeetingDetails: React.FC<MeetingDetailsProps> = ({ meeting: initialMeeting
     };
 
     // UPDATE HANDLERS
-    const handleTitleSave = async (newTitle: string) => {
-        setMeeting(prev => ({ ...prev, title: newTitle }));
-        if (window.electronAPI?.updateMeetingTitle) {
-            await window.electronAPI.updateMeetingTitle(meeting.id, newTitle);
-        }
-    };
+    const handleTitleSave = (newTitle: string) => { titleMutation.mutate(newTitle); };
 
-    const handleActionItemSave = async (index: number, newVal: string) => {
+    const handleActionItemSave = (index: number, newVal: string) => {
         const newItems = [...(meeting.detailedSummary?.actionItems || [])];
-        if (!newVal.trim()) {
-            // Optional: Remove empty items? For now just keep empty or update
-        }
         newItems[index] = newVal;
-
-        setMeeting(prev => ({
-            ...prev,
-            detailedSummary: {
-                ...prev.detailedSummary!,
-                actionItems: newItems
-            }
-        }));
-
-        if (window.electronAPI?.updateMeetingSummary) {
-            await window.electronAPI.updateMeetingSummary(meeting.id, { actionItems: newItems });
-        }
+        summaryMutation.mutate({ actionItems: newItems });
     };
 
-    const handleKeyPointSave = async (index: number, newVal: string) => {
+    const handleKeyPointSave = (index: number, newVal: string) => {
         const newItems = [...(meeting.detailedSummary?.keyPoints || [])];
         newItems[index] = newVal;
-
-        setMeeting(prev => ({
-            ...prev,
-            detailedSummary: {
-                ...prev.detailedSummary!,
-                keyPoints: newItems
-            }
-        }));
-
-        if (window.electronAPI?.updateMeetingSummary) {
-            await window.electronAPI.updateMeetingSummary(meeting.id, { keyPoints: newItems });
-        }
+        summaryMutation.mutate({ keyPoints: newItems });
     };
 
     const handleRegenerateSummary = async () => {
@@ -640,8 +711,12 @@ const MeetingDetails: React.FC<MeetingDetailsProps> = ({ meeting: initialMeeting
             const result = await window.electronAPI.regenerateMeetingSummary(meeting.id);
 
             if (result?.success && result.meeting) {
-                // Replace the entire meeting state with fresh data from DB
-                setMeeting(result.meeting);
+                // Regenerate stays on IPC (LLM = Phase 2); push the fresh data into the cache.
+                queryClient.setQueryData<Meeting>(meetingKey, result.meeting);
+                void queryClient.invalidateQueries(["meetings"]);
+                // Regeneration also re-scores against the latest criteria — refetch the
+                // locally-served scorecard so the panel shows the fresh result.
+                void queryClient.invalidateQueries(scorecardKey);
             } else {
                 setRegenError('Failed to regenerate. Please try again.');
             }
@@ -687,7 +762,7 @@ const MeetingDetails: React.FC<MeetingDetailsProps> = ({ meeting: initialMeeting
     const talkTime = useMemo(() => computeTalkTime(meeting.transcript), [meeting.transcript]);
 
     return (
-        <div className={`h-full w-full flex flex-col font-sans overflow-hidden ${isLight ? 'bg-[#f0f2f8] text-slate-700' : 'bg-[#0a0c14] text-slate-300'}`}>
+        <div className={`relative h-full w-full flex flex-col font-sans overflow-hidden ${isLight ? 'bg-[#f0f2f8] text-slate-700' : 'bg-[#0a0c14] text-slate-300'}`}>
 
             {/* Main Content */}
             <main className="flex-1 overflow-y-auto custom-scrollbar">
@@ -833,27 +908,30 @@ const MeetingDetails: React.FC<MeetingDetailsProps> = ({ meeting: initialMeeting
                         {/* Using standard divs for content, framer motion for layout */}
                         {activeTab === 'summary' && (
                             <>
-                                {(isRegenerating || isProcessing) ?
+                                {(isRegenerating || isProcessing || isLoadingMeetingDetail) ?
                                     <motion.div
                                         initial={{ opacity: 0 }}
                                         animate={{ opacity: 1 }}
                                         transition={{ duration: 0.3 }}
                                     >
-                                        {/* Regenerating banner */}
-                                        <div className="flex items-center gap-3 mb-6 p-3 rounded-xl bg-blue-500/10 border border-blue-500/20">
-                                            <motion.div
-                                                animate={{ rotate: 360 }}
-                                                transition={{ duration: 1.2, repeat: Infinity, ease: 'linear' }}
-                                            >
-                                                <RefreshCw size={13} className="text-blue-400 shrink-0" />
-                                            </motion.div>
-                                            <p className="text-xs text-blue-400 font-medium">
-                                                {isProcessing
-                                                    ? 'Analysing transcript — this may take 15-30 seconds...'
-                                                    : 'Regenerating summary — this may take 15-30 seconds...'
-                                                }
-                                            </p>
-                                        </div>
+                                        {/* Regenerating / processing banner — skip it for the plain
+                                            "still fetching over HTTP" case, that one's near-instant. */}
+                                        {(isRegenerating || isProcessing) && (
+                                            <div className="flex items-center gap-3 mb-6 p-3 rounded-xl bg-blue-500/10 border border-blue-500/20">
+                                                <motion.div
+                                                    animate={{ rotate: 360 }}
+                                                    transition={{ duration: 1.2, repeat: Infinity, ease: 'linear' }}
+                                                >
+                                                    <RefreshCw size={13} className="text-blue-400 shrink-0" />
+                                                </motion.div>
+                                                <p className="text-xs text-blue-400 font-medium">
+                                                    {isProcessing
+                                                        ? 'Analysing transcript — this may take 15-30 seconds...'
+                                                        : 'Regenerating summary — this may take 15-30 seconds...'
+                                                    }
+                                                </p>
+                                            </div>
+                                        )}
 
                                         <Skeleton className='h-[200px] w-full mb-3' />
                                         <div className='flex gap-3'>
@@ -1015,11 +1093,11 @@ const MeetingDetails: React.FC<MeetingDetailsProps> = ({ meeting: initialMeeting
                                         </section>}
 
                                         {/* ── Detail Analysis accordion ── */}
-                                        {meeting.detailedSummary?.scorecard && !isSummaryEmpty(meeting.detailedSummary) && (
+                                        {scorecard && meeting.detailedSummary && !isSummaryEmpty(meeting.detailedSummary) && (
                                             <div className='mb-7'>
 
                                                 <DetailAnalysisAccordion
-                                                    scorecard={meeting.detailedSummary.scorecard}
+                                                    scorecard={scorecard}
                                                     isLight={isLight}
                                                 />
                                             </div>
@@ -1355,13 +1433,7 @@ const MeetingDetails: React.FC<MeetingDetailsProps> = ({ meeting: initialMeeting
                                                                 <div className="flex items-center justify-between mb-4">
                                                                     <EditableTextBlock
                                                                         initialValue={meeting.detailedSummary?.actionItemsTitle || 'Action Items'}
-                                                                        onSave={(val) => {
-                                                                            setMeeting(prev => ({
-                                                                                ...prev,
-                                                                                detailedSummary: { ...prev.detailedSummary!, actionItemsTitle: val }
-                                                                            }));
-                                                                            window.electronAPI?.updateMeetingSummary(meeting.id, { actionItemsTitle: val });
-                                                                        }}
+                                                                        onSave={(val) => summaryMutation.mutate({ actionItemsTitle: val })}
                                                                         tagName="h2"
                                                                         className="text-lg font-semibold text-text-primary -ml-2 px-2 py-1 rounded-sm transition-colors"
                                                                         multiline={false}
@@ -1381,9 +1453,9 @@ const MeetingDetails: React.FC<MeetingDetailsProps> = ({ meeting: initialMeeting
                                                                                     onEnter={() => {
                                                                                         const newItems = [...(meeting.detailedSummary?.actionItems || [])];
                                                                                         newItems.splice(i + 1, 0, "");
-                                                                                        setMeeting(prev => ({
-                                                                                            ...prev,
-                                                                                            detailedSummary: { ...prev.detailedSummary!, actionItems: newItems }
+                                                                                        queryClient.setQueryData<Meeting>(meetingKey, (m = meeting) => ({
+                                                                                            ...m,
+                                                                                            detailedSummary: { keyPoints: [], ...(m.detailedSummary ?? {}), actionItems: newItems }
                                                                                         }));
                                                                                     }}
                                                                                 />
@@ -1443,13 +1515,7 @@ const MeetingDetails: React.FC<MeetingDetailsProps> = ({ meeting: initialMeeting
                                                                                 <ClipboardList size={18} className={isLight ? 'text-blue-600' : 'text-blue-400'} />
                                                                                 <EditableTextBlock
                                                                                     initialValue={meeting.detailedSummary?.keyPointsTitle || 'Key Points'}
-                                                                                    onSave={(val) => {
-                                                                                        setMeeting(prev => ({
-                                                                                            ...prev,
-                                                                                            detailedSummary: { ...prev.detailedSummary!, keyPointsTitle: val }
-                                                                                        }));
-                                                                                        window.electronAPI?.updateMeetingSummary(meeting.id, { keyPointsTitle: val });
-                                                                                    }}
+                                                                                    onSave={(val) => summaryMutation.mutate({ keyPointsTitle: val })}
                                                                                     tagName="h3"
                                                                                     className={`text-[15px] font-semibold tracking-tight -ml-1 px-1 rounded-sm transition-colors ${isLight ? 'text-blue-700' : 'text-blue-300'}`}
                                                                                     multiline={false}
@@ -1472,9 +1538,9 @@ const MeetingDetails: React.FC<MeetingDetailsProps> = ({ meeting: initialMeeting
                                                                                                 onEnter={() => {
                                                                                                     const newItems = [...(meeting.detailedSummary?.keyPoints || [])];
                                                                                                     newItems.splice(i + 1, 0, "");
-                                                                                                    setMeeting(prev => ({
-                                                                                                        ...prev,
-                                                                                                        detailedSummary: { ...prev.detailedSummary!, keyPoints: newItems }
+                                                                                                    queryClient.setQueryData<Meeting>(meetingKey, (m = meeting) => ({
+                                                                                                        ...m,
+                                                                                                        detailedSummary: { actionItems: [], ...(m.detailedSummary ?? {}), keyPoints: newItems }
                                                                                                     }));
                                                                                                 }}
                                                                                             />
@@ -1524,257 +1590,274 @@ const MeetingDetails: React.FC<MeetingDetailsProps> = ({ meeting: initialMeeting
 
                         {activeTab === 'transcript' && (
                             <motion.section initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }}>
-
-                                {meeting.transcript && meeting.transcript.length > 0 && (
-                                    <div className={`mb-6 overflow-hidden rounded-2xl border ${isLight ? 'border-slate-200 bg-white' : 'border-white/10 bg-gray-800/10'}`}>
-                                        {/* Accordion Header */}
-                                        <button
-                                            onClick={() => setIsTalktimeOpen(prev => !prev)}
-                                            className={`flex w-full items-center justify-between px-4 py-3 transition-colors ${isLight ? 'hover:bg-slate-50' : 'hover:bg-gray-800/30'}`}
-                                        >
-                                            <div className="flex items-center gap-3">
-                                                <div className={`flex h-8 w-8 items-center justify-center rounded-xl ${isLight ? 'bg-slate-100' : 'bg-gray-800'}`}>
-                                                    <BarChart3 className={`h-4 w-4 ${isLight ? 'text-slate-500' : 'text-white/70'}`} />
-                                                </div>
-
-                                                <div className="text-left">
-                                                    <h3 className={`text-sm font-semibold ${isLight ? 'text-slate-700' : 'text-white/90'}`}>
-                                                        Speaking Balance
-                                                    </h3>
-
-                                                    <p className={`text-xs ${isLight ? 'text-slate-400' : 'text-white/40'}`}>
-                                                        Conversation analytics
-                                                    </p>
-                                                </div>
-                                            </div>
-
-                                            <ChevronDown
-                                                className={`h-4 w-4 transition-transform duration-300 ${isTalktimeOpen ? 'rotate-180' : ''} ${isLight ? 'text-slate-400' : 'text-white/50'}`}
-                                            />
-                                        </button>
-
-                                        {/* Accordion Content */}
-                                        <AnimatePresence initial={false}>
-                                            {isTalktimeOpen && (
-                                                <motion.div
-                                                    initial={{ height: 0, opacity: 0 }}
-                                                    animate={{ height: 'auto', opacity: 1 }}
-                                                    exit={{ height: 0, opacity: 0 }}
-                                                    transition={{ duration: 0.25 }}
-                                                    className="overflow-hidden"
+                                {isLoadingMeetingDetail ? (
+                                    <div className="space-y-3">
+                                        <Skeleton className="h-8 w-40 mb-4" />
+                                        {Array.from({ length: 6 }).map((_, i) => (
+                                            <Skeleton key={i} className={`h-14 w-full ${i % 2 === 0 ? 'mr-24' : 'ml-24'}`} />
+                                        ))}
+                                    </div>
+                                ) : (
+                                    <>
+                                        {meeting.transcript && meeting.transcript.length > 0 && (
+                                            <div className={`mb-6 overflow-hidden rounded-2xl border ${isLight ? 'border-slate-200 bg-white' : 'border-white/10 bg-gray-800/10'}`}>
+                                                {/* Accordion Header */}
+                                                <button
+                                                    onClick={() => setIsTalktimeOpen(prev => !prev)}
+                                                    className={`flex w-full items-center justify-between px-4 py-3 transition-colors ${isLight ? 'hover:bg-slate-50' : 'hover:bg-gray-800/30'}`}
                                                 >
-                                                    <div className={`border-t px-4 py-4 ${isLight ? 'border-slate-200' : 'border-white/10'}`}>
-
-                                                        {/* User */}
-                                                        <div className="mb-4">
-                                                            <div className="mb-2 flex items-center justify-between">
-                                                                <div className='flex gap-3 items-center'>
-
-                                                                    <div className="flex items-center gap-2">
-                                                                        <span className={`text-sm ${isLight ? 'text-slate-700' : 'text-white/80'}`}>
-                                                                            {getSpeakerDisplayName('user')}
-                                                                        </span>
-                                                                    </div>
-
-                                                                    <div className={`text-xs ${isLight ? 'text-slate-400' : 'text-white/40'}`}>
-                                                                        • {talkTime.userWords.toLocaleString()} words spoken
-                                                                    </div>
-
-                                                                </div>
-
-                                                                <span className={`text-sm font-medium ${isLight ? 'text-slate-800' : 'text-white'}`}>
-                                                                    {talkTime.user}%
-                                                                </span>
-                                                            </div>
-
-                                                            <div className={`h-1 overflow-hidden rounded-full ${isLight ? 'bg-slate-200' : 'bg-white/10'}`}>
-                                                                <div
-                                                                    className="h-full rounded-full bg-blue-500 transition-all duration-500"
-                                                                    style={{ width: `${talkTime.user}%` }}
-                                                                />
-                                                            </div>
+                                                    <div className="flex items-center gap-3">
+                                                        <div className={`flex h-8 w-8 items-center justify-center rounded-xl ${isLight ? 'bg-slate-100' : 'bg-gray-800'}`}>
+                                                            <BarChart3 className={`h-4 w-4 ${isLight ? 'text-slate-500' : 'text-white/70'}`} />
                                                         </div>
 
-                                                        {/* Remote Participant */}
-                                                        <div>
-                                                            <div className="mb-2 flex items-center justify-between">
-                                                                <div className='flex gap-3 items-center'>
+                                                        <div className="text-left">
+                                                            <h3 className={`text-sm font-semibold ${isLight ? 'text-slate-700' : 'text-white/90'}`}>
+                                                                Speaking Balance
+                                                            </h3>
 
-                                                                    <div className="flex items-center gap-2">
-
-                                                                        <span className={`text-sm ${isLight ? 'text-slate-700' : 'text-white/80'}`}>
-                                                                            {getSpeakerDisplayName('client')}
-                                                                        </span>
-                                                                    </div>
-
-                                                                    <div className={`text-xs ${isLight ? 'text-slate-400' : 'text-white/40'}`}>
-                                                                        • {talkTime.clientWords.toLocaleString()} words spoken
-                                                                    </div>
-
-                                                                </div>
-                                                                <span className={`text-sm font-medium ${isLight ? 'text-slate-800' : 'text-white'}`}>
-                                                                    {talkTime.client}%
-                                                                </span>
-                                                            </div>
-
-                                                            <div className={`h-1 overflow-hidden rounded-full ${isLight ? 'bg-slate-200' : 'bg-white/10'}`}>
-                                                                <div
-                                                                    className={`h-full rounded-full transition-all duration-500 ${isLight ? 'bg-slate-400' : 'bg-blue-500/30'}`}
-                                                                    style={{ width: `${talkTime.client}%` }}
-                                                                />
-                                                            </div>
-                                                        </div>
-
-                                                        {/* Optional Footer */}
-                                                        <div className={`mt-4 border-t pt-3 ${isLight ? 'border-slate-100' : 'border-white/5'}`}>
-                                                            <p className={`text-xs leading-relaxed ${isLight ? 'text-slate-400' : 'text-white/40'}`}>
-                                                                Speaking balance helps understand participation and engagement during the meeting.
+                                                            <p className={`text-xs ${isLight ? 'text-slate-400' : 'text-white/40'}`}>
+                                                                Conversation analytics
                                                             </p>
                                                         </div>
                                                     </div>
-                                                </motion.div>
-                                            )}
-                                        </AnimatePresence>
-                                    </div>
-                                )}
 
-                                <motion.section initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }}>
-                                    <div className="space-y-6">
-                                        {(() => {
-                                            const filteredTranscript = meeting.transcript?.filter(entry => {
-                                                const isHidden = ['system', 'ai', 'assistant', 'model'].includes(entry.speaker?.toLowerCase());
-                                                if (isHidden) console.log('Filtered out:', entry);
-                                                return !isHidden;
-                                            }) || [];
+                                                    <ChevronDown
+                                                        className={`h-4 w-4 transition-transform duration-300 ${isTalktimeOpen ? 'rotate-180' : ''} ${isLight ? 'text-slate-400' : 'text-white/50'}`}
+                                                    />
+                                                </button>
 
-                                            if (filteredTranscript.length === 0) {
-                                                return (
-                                                    <div className={`flex flex-col items-center justify-center py-16 gap-4 rounded-2xl border border-dashed ${isLight ? 'border-slate-200 bg-slate-50/50' : 'border-white/[0.07] bg-white/[0.02]'}`}>
-                                                        <div className={`w-12 h-12 rounded-2xl flex items-center justify-center ${isLight ? 'bg-slate-100' : 'bg-white/[0.05]'}`}>
-                                                            <MessageSquare size={22} strokeWidth={1.5} className={isLight ? 'text-slate-400' : 'text-white/25'} />
+                                                {/* Accordion Content */}
+                                                <AnimatePresence initial={false}>
+                                                    {isTalktimeOpen && (
+                                                        <motion.div
+                                                            initial={{ height: 0, opacity: 0 }}
+                                                            animate={{ height: 'auto', opacity: 1 }}
+                                                            exit={{ height: 0, opacity: 0 }}
+                                                            transition={{ duration: 0.25 }}
+                                                            className="overflow-hidden"
+                                                        >
+                                                            <div className={`border-t px-4 py-4 ${isLight ? 'border-slate-200' : 'border-white/10'}`}>
+
+                                                                {/* User */}
+                                                                <div className="mb-4">
+                                                                    <div className="mb-2 flex items-center justify-between">
+                                                                        <div className='flex gap-3 items-center'>
+
+                                                                            <div className="flex items-center gap-2">
+                                                                                <span className={`text-sm ${isLight ? 'text-slate-700' : 'text-white/80'}`}>
+                                                                                    {getSpeakerDisplayName('user')}
+                                                                                </span>
+                                                                            </div>
+
+                                                                            <div className={`text-xs ${isLight ? 'text-slate-400' : 'text-white/40'}`}>
+                                                                                • {talkTime.userWords.toLocaleString()} words spoken
+                                                                            </div>
+
+                                                                        </div>
+
+                                                                        <span className={`text-sm font-medium ${isLight ? 'text-slate-800' : 'text-white'}`}>
+                                                                            {talkTime.user}%
+                                                                        </span>
+                                                                    </div>
+
+                                                                    <div className={`h-1 overflow-hidden rounded-full ${isLight ? 'bg-slate-200' : 'bg-white/10'}`}>
+                                                                        <div
+                                                                            className="h-full rounded-full bg-blue-500 transition-all duration-500"
+                                                                            style={{ width: `${talkTime.user}%` }}
+                                                                        />
+                                                                    </div>
+                                                                </div>
+
+                                                                {/* Remote Participant */}
+                                                                <div>
+                                                                    <div className="mb-2 flex items-center justify-between">
+                                                                        <div className='flex gap-3 items-center'>
+
+                                                                            <div className="flex items-center gap-2">
+
+                                                                                <span className={`text-sm ${isLight ? 'text-slate-700' : 'text-white/80'}`}>
+                                                                                    {getSpeakerDisplayName('client')}
+                                                                                </span>
+                                                                            </div>
+
+                                                                            <div className={`text-xs ${isLight ? 'text-slate-400' : 'text-white/40'}`}>
+                                                                                • {talkTime.clientWords.toLocaleString()} words spoken
+                                                                            </div>
+
+                                                                        </div>
+                                                                        <span className={`text-sm font-medium ${isLight ? 'text-slate-800' : 'text-white'}`}>
+                                                                            {talkTime.client}%
+                                                                        </span>
+                                                                    </div>
+
+                                                                    <div className={`h-1 overflow-hidden rounded-full ${isLight ? 'bg-slate-200' : 'bg-white/10'}`}>
+                                                                        <div
+                                                                            className={`h-full rounded-full transition-all duration-500 ${isLight ? 'bg-slate-400' : 'bg-blue-500/30'}`}
+                                                                            style={{ width: `${talkTime.client}%` }}
+                                                                        />
+                                                                    </div>
+                                                                </div>
+
+                                                                {/* Optional Footer */}
+                                                                <div className={`mt-4 border-t pt-3 ${isLight ? 'border-slate-100' : 'border-white/5'}`}>
+                                                                    <p className={`text-xs leading-relaxed ${isLight ? 'text-slate-400' : 'text-white/40'}`}>
+                                                                        Speaking balance helps understand participation and engagement during the meeting.
+                                                                    </p>
+                                                                </div>
+                                                            </div>
+                                                        </motion.div>
+                                                    )}
+                                                </AnimatePresence>
+                                            </div>
+                                        )}
+
+                                        <motion.section initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }}>
+                                            <div className="space-y-6">
+                                                {(() => {
+                                                    const filteredTranscript = meeting.transcript?.filter(entry => {
+                                                        const isHidden = ['system', 'ai', 'assistant', 'model'].includes(entry.speaker?.toLowerCase());
+                                                        if (isHidden) console.log('Filtered out:', entry);
+                                                        return !isHidden;
+                                                    }) || [];
+
+                                                    if (filteredTranscript.length === 0) {
+                                                        return (
+                                                            <div className={`flex flex-col items-center justify-center py-16 gap-4 rounded-2xl border border-dashed ${isLight ? 'border-slate-200 bg-slate-50/50' : 'border-white/[0.07] bg-white/[0.02]'}`}>
+                                                                <div className={`w-12 h-12 rounded-2xl flex items-center justify-center ${isLight ? 'bg-slate-100' : 'bg-white/[0.05]'}`}>
+                                                                    <MessageSquare size={22} strokeWidth={1.5} className={isLight ? 'text-slate-400' : 'text-white/25'} />
+                                                                </div>
+                                                                <div className="text-center">
+                                                                    <p className={`text-[14px] font-medium mb-1 ${isLight ? 'text-slate-600' : 'text-white/50'}`}>No transcript recorded</p>
+                                                                    <p className={`text-[12px] ${isLight ? 'text-slate-400' : 'text-white/25'}`}>Transcription will appear here during a live meeting</p>
+                                                                </div>
+                                                            </div>
+                                                        );
+                                                    }
+
+                                                    return filteredTranscript.map((entry, i) => (
+                                                        <div key={i} className="group">
+
+                                                            <div className="flex items-center gap-2 mb-1">
+                                                                <span className={`text-xs font-semibold text-white ${entry.speaker === 'user'
+                                                                    ? 'bg-blue-600'
+                                                                    : isLight ? 'bg-slate-400' : 'bg-blue-500/30'
+                                                                    } px-2 py-1 rounded-full truncate max-w-[120px]`}>
+                                                                    {getSpeakerDisplayName(
+                                                                        entry.speaker,
+                                                                        entry.displayName,
+                                                                        (entry as any).speakerIndex
+                                                                    )}
+                                                                </span>
+                                                                <span className="text-xs text-text-tertiary font-mono">{entry.timestamp ? formatTime(entry.timestamp) : '0:00'}</span>
+                                                            </div>
+                                                            <p className="text-text-secondary text-[15px] leading-relaxed transition-colors select-text cursor-text">{entry.text}</p>
+
+
                                                         </div>
-                                                        <div className="text-center">
-                                                            <p className={`text-[14px] font-medium mb-1 ${isLight ? 'text-slate-600' : 'text-white/50'}`}>No transcript recorded</p>
-                                                            <p className={`text-[12px] ${isLight ? 'text-slate-400' : 'text-white/25'}`}>Transcription will appear here during a live meeting</p>
-                                                        </div>
-                                                    </div>
-                                                );
-                                            }
+                                                    ));
 
-                                            return filteredTranscript.map((entry, i) => (
-                                                <div key={i} className="group">
-
-                                                    <div className="flex items-center gap-2 mb-1">
-                                                        <span className={`text-xs font-semibold text-white ${entry.speaker === 'user'
-                                                            ? 'bg-blue-600'
-                                                            : isLight ? 'bg-slate-400' : 'bg-blue-500/30'
-                                                            } px-2 py-1 rounded-full truncate max-w-[120px]`}>
-                                                            {getSpeakerDisplayName(
-                                                                entry.speaker,
-                                                                entry.displayName
-                                                            )}
-                                                        </span>
-                                                        <span className="text-xs text-text-tertiary font-mono">{entry.timestamp ? formatTime(entry.timestamp) : '0:00'}</span>
-                                                    </div>
-                                                    <p className="text-text-secondary text-[15px] leading-relaxed transition-colors select-text cursor-text">{entry.text}</p>
-
-
-                                                </div>
-                                            ));
-
-                                        })()}
-                                    </div>
-                                </motion.section>
-
+                                                })()}
+                                            </div>
+                                        </motion.section>
+                                    </>)}
                             </motion.section>
                         )}
 
                         {activeTab === 'usage' && (
                             <motion.section initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }} className="space-y-8 pb-10">
-                                {meeting.usage?.map((interaction, i) => (
-                                    <div key={i} className="space-y-4">
-                                        {/* User Question */}
-                                        {interaction.question && (
-                                            <div className="flex justify-end">
-                                                <div className="bg-accent-primary text-white px-5 py-2.5 rounded-2xl rounded-tr-sm max-w-[80%] text-[15px] leading-relaxed shadow-sm">
-                                                    {interaction.question}
-                                                </div>
-                                            </div>
-                                        )}
-
-                                        {/* AI Answer */}
-                                        {interaction.answer && (
-                                            <div className="flex items-start gap-4">
-                                                <div className="mt-1 w-6 h-6 rounded-full bg-bg-input flex items-center justify-center border border-border-subtle shrink-0">
-                                                    <img src={NativelyLogo} alt="AI" className="w-4 h-4 opacity-50 object-contain force-black-icon" />
-                                                </div>
-                                                <div>
-                                                    <div className="text-[11px] text-text-tertiary mb-1.5 font-medium">{formatTime(interaction.timestamp)}</div>
-                                                    <div className="text-text-secondary text-[15px] leading-relaxed max-w-none">
-                                                        <ReactMarkdown
-                                                            remarkPlugins={[remarkGfm]}
-                                                            components={{
-                                                                h1: ({ node, ...props }) => <p className="text-[15px] text-text-secondary font-normal leading-relaxed mb-2 whitespace-pre-wrap" {...props} />,
-                                                                h2: ({ node, ...props }) => <p className="text-[15px] text-text-secondary font-normal leading-relaxed mb-2 whitespace-pre-wrap" {...props} />,
-                                                                h3: ({ node, ...props }) => <p className="text-[15px] text-text-secondary font-normal leading-relaxed mb-2 whitespace-pre-wrap" {...props} />,
-                                                                p: ({ node, ...props }) => <p className="text-[15px] text-text-secondary font-normal leading-relaxed mb-2 whitespace-pre-wrap" {...props} />,
-                                                                ul: ({ node, ...props }) => <ul className="list-disc ml-4 mb-2 space-y-1" {...props} />,
-                                                                ol: ({ node, ...props }) => <ol className="list-decimal ml-4 mb-2 space-y-1" {...props} />,
-                                                                li: ({ node, ...props }) => <li className="text-[15px] text-text-secondary font-normal" {...props} />,
-                                                                strong: ({ node, ...props }) => <span className="font-normal text-text-secondary" {...props} />,
-                                                                a: ({ node, ...props }: any) => <a className="text-blue-500 hover:underline" {...props} />,
-                                                                pre: ({ children }: any) => <div className="not-prose mb-4">{children}</div>,
-                                                                code: ({ node, inline, className, children, ...props }: any) => {
-                                                                    const match = /language-(\w+)/.exec(className || '');
-                                                                    const isInline = inline ?? false;
-                                                                    const lang = match ? match[1] : '';
-
-                                                                    return !isInline ? (
-                                                                        <div className="my-3 rounded-xl overflow-hidden border border-white/[0.08] shadow-lg bg-zinc-800/60 backdrop-blur-md">
-                                                                            <div className="bg-white/[0.04] px-3 py-1.5 border-b border-white/[0.08]">
-                                                                                <span className="text-[10px] uppercase tracking-widest font-semibold text-white/40 font-mono">
-                                                                                    {lang || 'CODE'}
-                                                                                </span>
-                                                                            </div>
-                                                                            <div className="bg-transparent">
-                                                                                <SyntaxHighlighter
-                                                                                    language={lang || 'text'}
-                                                                                    style={vscDarkPlus}
-                                                                                    customStyle={{
-                                                                                        margin: 0,
-                                                                                        borderRadius: 0,
-                                                                                        fontSize: '13px',
-                                                                                        lineHeight: '1.6',
-                                                                                        background: 'transparent',
-                                                                                        padding: '16px',
-                                                                                        fontFamily: 'ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace'
-                                                                                    }}
-                                                                                    wrapLongLines={true}
-                                                                                    showLineNumbers={true}
-                                                                                    lineNumberStyle={{ minWidth: '2.5em', paddingRight: '1.2em', color: 'rgba(255,255,255,0.2)', textAlign: 'right', fontSize: '11px' }}
-                                                                                    {...props}
-                                                                                >
-                                                                                    {String(children).replace(/\n$/, '')}
-                                                                                </SyntaxHighlighter>
-                                                                            </div>
-                                                                        </div>
-                                                                    ) : (
-                                                                        <code className="bg-bg-tertiary px-1.5 py-0.5 rounded text-[13px] font-mono text-text-primary border border-border-subtle whitespace-pre-wrap" {...props}>
-                                                                            {children}
-                                                                        </code>
-                                                                    );
-                                                                }
-                                                            }}
-                                                        >
-                                                            {cleanMarkdown(interaction.answer || '')}
-                                                        </ReactMarkdown>
+                                {isLoadingMeetingDetail || isLoadingAiInteractions ? (
+                                    Array.from({ length: 3 }).map((_, i) => (
+                                        <div key={i} className="space-y-3">
+                                            <Skeleton className="h-10 w-2/3" />
+                                            <Skeleton className="h-24 w-full" />
+                                        </div>
+                                    ))
+                                ) : (
+                                    (aiInteractionsData?.items ?? []).map((interaction) => (
+                                        <div key={interaction.id} className="space-y-4">
+                                            {/* User Question */}
+                                            {interaction.user_query && (
+                                                <div className="flex justify-end">
+                                                    <div className="bg-accent-primary text-white px-5 py-2.5 rounded-2xl rounded-tr-sm max-w-[80%] text-[15px] leading-relaxed shadow-sm">
+                                                        {interaction.user_query}
                                                     </div>
                                                 </div>
-                                            </div>
-                                        )}
-                                    </div>
-                                ))}
-                                {!meeting.usage?.length && (
+                                            )}
+
+                                            {/* AI Answer */}
+                                            {interaction.ai_response && (
+                                                <div className="flex items-start gap-4">
+                                                    <div className="mt-1 w-6 h-6 rounded-full bg-bg-input flex items-center justify-center border border-border-subtle shrink-0">
+                                                        <img src={NativelyLogo} alt="AI" className="w-4 h-4 opacity-50 object-contain force-black-icon" />
+                                                    </div>
+                                                    <div>
+                                                        <div className="text-[11px] text-text-tertiary mb-1.5 font-medium">{formatTime(interaction.timestamp)}</div>
+                                                        <div className="text-text-secondary text-[15px] leading-relaxed max-w-none">
+                                                            <ReactMarkdown
+                                                                remarkPlugins={[remarkGfm]}
+                                                                components={{
+                                                                    h1: ({ node, ...props }) => <p className="text-[15px] text-text-secondary font-normal leading-relaxed mb-2 whitespace-pre-wrap" {...props} />,
+                                                                    h2: ({ node, ...props }) => <p className="text-[15px] text-text-secondary font-normal leading-relaxed mb-2 whitespace-pre-wrap" {...props} />,
+                                                                    h3: ({ node, ...props }) => <p className="text-[15px] text-text-secondary font-normal leading-relaxed mb-2 whitespace-pre-wrap" {...props} />,
+                                                                    p: ({ node, ...props }) => <p className="text-[15px] text-text-secondary font-normal leading-relaxed mb-2 whitespace-pre-wrap" {...props} />,
+                                                                    ul: ({ node, ...props }) => <ul className="list-disc ml-4 mb-2 space-y-1" {...props} />,
+                                                                    ol: ({ node, ...props }) => <ol className="list-decimal ml-4 mb-2 space-y-1" {...props} />,
+                                                                    li: ({ node, ...props }) => <li className="text-[15px] text-text-secondary font-normal" {...props} />,
+                                                                    strong: ({ node, ...props }) => <span className="font-normal text-text-secondary" {...props} />,
+                                                                    a: ({ node, ...props }: any) => <a className="text-blue-500 hover:underline" {...props} />,
+                                                                    pre: ({ children }: any) => <div className="not-prose mb-4">{children}</div>,
+                                                                    code: ({ node, inline, className, children, ...props }: any) => {
+                                                                        const match = /language-(\w+)/.exec(className || '');
+                                                                        const isInline = inline ?? false;
+                                                                        const lang = match ? match[1] : '';
+
+                                                                        return !isInline ? (
+                                                                            <div className="my-3 rounded-xl overflow-hidden border border-white/[0.08] shadow-lg bg-zinc-800/60 backdrop-blur-md">
+                                                                                <div className="bg-white/[0.04] px-3 py-1.5 border-b border-white/[0.08]">
+                                                                                    <span className="text-[10px] uppercase tracking-widest font-semibold text-white/40 font-mono">
+                                                                                        {lang || 'CODE'}
+                                                                                    </span>
+                                                                                </div>
+                                                                                <div className="bg-transparent">
+                                                                                    <SyntaxHighlighter
+                                                                                        language={lang || 'text'}
+                                                                                        style={vscDarkPlus}
+                                                                                        customStyle={{
+                                                                                            margin: 0,
+                                                                                            borderRadius: 0,
+                                                                                            fontSize: '13px',
+                                                                                            lineHeight: '1.6',
+                                                                                            background: 'transparent',
+                                                                                            padding: '16px',
+                                                                                            fontFamily: 'ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace'
+                                                                                        }}
+                                                                                        wrapLongLines={true}
+                                                                                        showLineNumbers={true}
+                                                                                        lineNumberStyle={{ minWidth: '2.5em', paddingRight: '1.2em', color: 'rgba(255,255,255,0.2)', textAlign: 'right', fontSize: '11px' }}
+                                                                                        {...props}
+                                                                                    >
+                                                                                        {String(children).replace(/\n$/, '')}
+                                                                                    </SyntaxHighlighter>
+                                                                                </div>
+                                                                            </div>
+                                                                        ) : (
+                                                                            <code className="bg-bg-tertiary px-1.5 py-0.5 rounded text-[13px] font-mono text-text-primary border border-border-subtle whitespace-pre-wrap" {...props}>
+                                                                                {children}
+                                                                            </code>
+                                                                        );
+                                                                    }
+                                                                }}
+                                                            >
+                                                                {cleanMarkdown(interaction.ai_response || '')}
+                                                            </ReactMarkdown>
+                                                        </div>
+                                                    </div>
+                                                </div>
+                                            )}
+                                        </div>
+                                    )))}
+                                {!isLoadingMeetingDetail && !isLoadingAiInteractions && !(aiInteractionsData?.items?.length) && (
                                     <div className={`flex flex-col items-center justify-center py-16 gap-4 rounded-2xl border border-dashed ${isLight ? 'border-slate-200 bg-slate-50/50' : 'border-white/[0.07] bg-white/[0.02]'}`}>
                                         <div className={`w-12 h-12 rounded-2xl flex items-center justify-center ${isLight ? 'bg-slate-100' : 'bg-white/[0.05]'}`}>
                                             <MessagesSquareIcon size={22} strokeWidth={1.5} className={isLight ? 'text-slate-400' : 'text-white/25'} />
@@ -1794,7 +1877,15 @@ const MeetingDetails: React.FC<MeetingDetailsProps> = ({ meeting: initialMeeting
 
                         {activeTab === 'analysis' && (
                             <motion.section initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }}>
-                                {meeting.detailedSummary?.liveAnalysis ? (
+                                {isLoadingMeetingDetail ? (
+                                    <div className="space-y-3">
+                                        <Skeleton className="h-32 w-full" />
+                                        <div className="flex gap-3">
+                                            <Skeleton className="h-40 w-full" />
+                                            <Skeleton className="h-40 w-full" />
+                                        </div>
+                                    </div>
+                                ) : meeting.detailedSummary?.liveAnalysis ? (
                                     <>
                                         {/* <div className={`rounded-2xl mb-4 overflow-hidden ${isLight ? 'transparent' : 'bg-[#0d0d0f]'}`}>
                                             <DealHealthScore analysisData={meeting.detailedSummary.liveAnalysis} calledFromAnalysisTab={true} />
@@ -1826,7 +1917,22 @@ const MeetingDetails: React.FC<MeetingDetailsProps> = ({ meeting: initialMeeting
             </main>
 
             {/* Floating Footer (Ask Bar) */}
-            <div className={`absolute bottom-0 left-0 right-0 p-6 flex justify-center pointer-events-none ${isChatOpen ? 'z-50' : 'z-20'}`}>
+            <div className={`absolute bottom-0 left-0 right-0 p-6 flex flex-col items-center gap-2 pointer-events-none ${isChatOpen ? 'z-50' : 'z-20'}`}>
+                {/* History affordance — only shown when there's a past conversation
+                    and the overlay is currently closed, so it's clear there's
+                    something to go back to without needing to type first. */}
+                {!isChatOpen && chatMessages.length > 0 && (
+                    <button
+                        onClick={() => setIsChatOpen(true)}
+                        className={`pointer-events-auto flex items-center gap-1.5 px-3 py-1.5 rounded-full text-[12px] font-medium backdrop-blur-[24px] backdrop-saturate-[140%] transition-colors ${isLight
+                            ? 'bg-white/80 border border-slate-200 text-slate-600 hover:bg-white shadow-[0_8px_30px_rgba(0,0,0,0.08)]'
+                            : 'bg-white/[0.06] border border-white/20 text-white/70 hover:bg-white/[0.1] shadow-[0_8px_30px_rgb(0,0,0,0.12)]'
+                            }`}
+                    >
+                        <MessageSquare size={12} />
+                        {chatMessages.length} {chatMessages.length === 1 ? 'message' : 'messages'} · View conversation
+                    </button>
+                )}
                 <div className="w-full max-w-[440px] relative group pointer-events-auto">
                     {/* Dark Glass Effect Input (Matching Reference) */}
                     <input
@@ -1834,6 +1940,12 @@ const MeetingDetails: React.FC<MeetingDetailsProps> = ({ meeting: initialMeeting
                         value={query}
                         onChange={(e) => setQuery(e.target.value)}
                         onKeyDown={handleInputKeyDown}
+                        // Clicking/focusing the input opens the panel immediately —
+                        // if there's existing history it's visible right away,
+                        // without first having to type and submit a new question.
+                        onFocus={() => {
+                            if (!isChatOpen) setIsChatOpen(true);
+                        }}
                         placeholder="Ask about this meeting..."
                         className={`w-full pl-5 pr-12 py-3 backdrop-blur-[24px] backdrop-saturate-[140%] focus:outline-none transition-shadow duration-200 rounded-full text-sm text-text-primary placeholder-text-tertiary/70 ${isLight ? 'bg-white/80 border border-slate-200 shadow-[0_8px_30px_rgba(0,0,0,0.08)]' : 'bg-transparent border border-white/20 shadow-[0_8px_30px_rgb(0,0,0,0.12)]'}`}
                     />

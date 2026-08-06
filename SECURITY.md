@@ -4,44 +4,53 @@
 
 | Version | Supported          |
 | ------- | ------------------ |
-| 1.1.x   | :white_check_mark: |
-| < 1.1.0 | :x:                |
+| 1.0.x   | :white_check_mark: |
+| < 1.0.0 | :x:                |
 
 ## Reporting a Vulnerability
 
-We take the security of our software seriously. If you have found a security vulnerability in this open-source interview meeting application, please report it to us as described below.
+We take the security of GoDojo AI seriously. If you have found a security
+vulnerability in the GoDojo AI desktop application, please report it to us
+privately as described below.
 
 **Do not report security vulnerabilities through public GitHub issues.**
 
 ## Disclosure Process
 
-1.  Please email your report to **natively.contact@gmail.com**.
+1.  Please email your report to **security@godojo.ai**.
 2.  In your report, please include:
-    *   The type of issue (e.g., buffer overflow, SQL injection, cross-site scripting, etc.).
-    *   Full paths of source file(s) related to the manifestation of the issue.
-    *   The location of the affected source code (tag/branch/commit or direct URL).
+    *   The type of issue (e.g., privilege escalation, insecure data storage,
+        injection, credential exposure, etc.).
+    *   Affected version(s) and platform (macOS / Windows).
     *   Any special configuration required to reproduce the issue.
     *   Step-by-step instructions to reproduce the issue.
     *   Proof-of-concept or exploit code if possible.
-    *   Impact of the issue, including how an attacker might exploit the issue.
-3.  We will acknowledge receipt of your vulnerability report within **72 hours**.
-4.  We will investigate the report and may ask for further information.
-5.  Once the issue is resolved, we will release a patch and publish a security advisory.
+    *   Impact of the issue, including how an attacker might exploit it.
+3.  We will acknowledge receipt of your report within **72 hours**.
+4.  We will investigate and may ask for further information.
+5.  Once the issue is resolved, we will release a patch and, where
+    appropriate, publish a security advisory.
 
 ## Scope
 
 The following areas are considered in scope for security reports:
 
-*   **Data Handling:** Issues related to how user data is stored, processed, or transmitted.
-*   **Local Processing:** Vulnerabilities arising from local data processing on the user's machine.
-*   **Permissions:** Incorrect or overly broad permission requests or enforcement.
-*   **Network Communication:** Insecure network connections or data leakage during communication.
+*   **Data Handling:** How user data (meetings, transcripts, credentials) is
+    stored, processed, or transmitted.
+*   **Credential Storage:** Handling of user-supplied API keys and auth tokens.
+*   **Permissions:** Incorrect or overly broad OS permission requests
+    (microphone, screen capture) or enforcement.
+*   **Network Communication:** Insecure connections or data leakage to the
+    backend, Supabase, or third-party AI/STT providers.
+*   **Update Mechanism:** Integrity of the auto-update channel.
 
 Out of scope:
+
 *   Bugs that do not have a security impact.
 *   Reports from automated tools or scans without manual verification.
-*   Attacks requiring physical access to the user's device.
+*   Attacks requiring physical access to an unlocked device.
 
 ## Appreciation
 
-We appreciate the efforts of security researchers and the open-source community in helping us improve the security of this project.
+We appreciate the efforts of security researchers who help us keep GoDojo AI
+and its users safe through responsible disclosure.

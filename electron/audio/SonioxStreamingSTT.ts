@@ -44,6 +44,12 @@ export class SonioxStreamingSTT extends EventEmitter {
     
     private buffer: Buffer[] = [];
     private isConnecting = false;
+    // Monotonic connection id. Every connect() bumps it and each socket's handlers
+    // close over the value captured at creation. A superseded socket's late-firing
+    // events (e.g. the old socket's async 'close' after a language-change restart)
+    // are then ignored — without this, that stale 'close' nulls the NEW this.ws and
+    // schedules a reconnect, churning the live connection.
+    private _connectGeneration = 0;
 
     constructor(apiKey: string) {
         super();
@@ -170,14 +176,22 @@ export class SonioxStreamingSTT extends EventEmitter {
     private connect(): void {
         if (this.isConnecting) return;
         this.isConnecting = true;
-        
+        const generation = ++this._connectGeneration; // capture current generation
+
         console.log(`[SonioxStreaming] Connecting (rate=${this.sampleRate}, ch=${this.numChannels})...`);
 
         this.configSent = false;
         this.pendingFinalText = '';
-        this.ws = new WebSocket(SONIOX_WEBSOCKET_URL);
+        const ws = new WebSocket(SONIOX_WEBSOCKET_URL);
+        this.ws = ws;
 
-        this.ws.on('open', () => {
+        ws.on('open', () => {
+            // Superseded by a newer connect() (e.g. language-change restart)? Discard
+            // this socket entirely rather than sending config on a stale connection.
+            if (generation !== this._connectGeneration) {
+                try { ws.close(); } catch { /* ignore */ }
+                return;
+            }
             this.isActive = true;
             this.reconnectAttempts = 0;
             console.log('[SonioxStreaming] Connected, sending config...');
@@ -219,7 +233,10 @@ export class SonioxStreamingSTT extends EventEmitter {
             this.startKeepAlive();
         });
 
-        this.ws.on('message', (data: WebSocket.Data) => {
+        ws.on('message', (data: WebSocket.Data) => {
+            // Ignore messages from a superseded socket — its transcripts belong to a
+            // dead connection.
+            if (generation !== this._connectGeneration) return;
             try {
                 const msg = JSON.parse(data.toString());
 
@@ -290,12 +307,21 @@ export class SonioxStreamingSTT extends EventEmitter {
             }
         });
 
-        this.ws.on('error', (err: Error) => {
+        ws.on('error', (err: Error) => {
+            if (generation !== this._connectGeneration) return;
             console.error('[SonioxStreaming] WebSocket error:', err.message);
             this.emit('error', err);
         });
 
-        this.ws.on('close', (code: number, reason: Buffer) => {
+        ws.on('close', (code: number, reason: Buffer) => {
+            // A newer connect() already superseded this socket (e.g. language-change
+            // restart). Its close is expected teardown — do NOT null this.ws (that is
+            // now the NEW socket) or schedule a reconnect that would churn the live
+            // connection.
+            if (generation !== this._connectGeneration) {
+                console.log(`[SonioxStreaming] Stale socket closed (gen ${generation} vs ${this._connectGeneration}) — no reconnect`);
+                return;
+            }
             // Null out the ws reference immediately to prevent stale reuse
             this.ws = null;
             this.isConnecting = false;

@@ -77,11 +77,13 @@ export function buildScorecardPrompt(
         For each detected meeting type, score every category based on transcript evidence.
         Score = points earned out of maxScore (weight). Use evidence-based reasoning.
 
-        SCORING SCALE:
-        - Full marks: Criterion clearly met with strong evidence
-        - Partial (50–80%): Attempted but incomplete or weak
-        - Minimal (1–49%): Barely touched
-        - Zero: Not present at all
+        SCORING SCALE (apply per checkpoint within a category, then combine):
+        - Full marks: Checkpoint is clearly confirmed by the CLIENT's own words — not just asked about
+        - Partial (50–80%): Checkpoint was substantively answered but is incomplete, vague, or not yet confirmed by the client (e.g. rep gave a price range but client did not confirm budget fit)
+        - Minimal (1–49%): Checkpoint was raised but the client deflected, gave a non-answer, or gave a soft no (e.g. "it depends", "not really", "timing might not be great") — being merely asked about is NOT evidence it was met
+        - Zero: Not raised, or raised and explicitly declined/unanswered
+
+        A category's score must reflect how many of its checkpoints were actually confirmed by the client, not how many the rep attempted to cover. Do not average toward the middle by default — most real calls should score low on categories where the client gave no real information.
 
         ${categoryDocs}
 
@@ -89,6 +91,7 @@ export function buildScorecardPrompt(
         - Only score meeting types you detected (or were pre-selected)
         - Use direct transcript quotes as evidence wherever possible
         - Never fabricate evidence — if not in transcript, score 0 for that checkpoint
+        - Before assigning any score above 0 for a checkpoint, you must be able to cite a CLIENT quote (not just a REP question) that substantively satisfies it. If the only relevant line is the rep asking or a client deflection/non-answer, score that checkpoint 0.
         - overallScore = weighted average of category scores (score/maxScore * weight), summed
         - Keep coaching recommendations specific and actionable (not generic)
         - confidenceScore: 90–100 = very clear, 70–89 = likely, 50–69 = some evidence, <50 = skip this type

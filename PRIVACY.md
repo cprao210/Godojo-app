@@ -1,68 +1,118 @@
 # Privacy Policy
 
+_Last updated: 2026._
+
+> **NOTE TO REVIEWER:** This policy has been rewritten to accurately reflect
+> how GoDojo AI actually processes data (cloud sign-in, a hosted backend, a
+> cloud database mirror, and cloud speech/LLM providers). The previous version
+> incorrectly described the app as fully local and open-source. This draft
+> still requires review by qualified legal/privacy counsel and must be
+> reconciled with the actual data-retention configuration of the backend and
+> Supabase before public release.
+
 ## Overview
 
-This privacy policy describes how this open-source application ("Natively") handles your data. Our philosophy is privacy-first: we believe your meeting data belongs to you. We do not operate a central server to store your personal meeting recordings or transcripts.
+This Privacy Policy describes how GoDojo AI ("GoDojo AI", "we", "us") collects,
+uses, stores, and transmits data when you use the GoDojo AI desktop application
+("the Software"). GoDojo AI is an AI sales copilot that transcribes calls and
+generates meeting intelligence. Because those features rely on cloud services,
+some of your data is transmitted off your device — this policy explains what,
+where, and why.
 
-## Data Collection
+## Account and Authentication
 
-**We do not collect, store, or transmit your personal data to our own servers.**
+Using GoDojo AI **requires an account**. Authentication is provided by Google
+Firebase Authentication (email/password or Google sign-in). We collect and
+process your email address and authentication tokens to identify you and secure
+your data. Authentication tokens are stored on your device using the operating
+system's encrypted credential storage.
 
-The application functions as a local tool on your device.
-*   **Audio & Video:** The application captures audio and screen content only when you explicitly start a recording or session.
-*   **Transcripts & Notes:** All generated transcripts, summaries, and meeting notes are stored locally on your device.
-*   **Telemetry:** This application does not include third-party analytics or tracking SDKs (such as Google Analytics or Mixpanel).
+## Data We Process
 
-## Local Processing
+- **Audio (your microphone and system/call audio):** Captured only while a
+  session is active. Audio is sent to the speech-to-text provider you configure
+  (see "Third-Party Processors") to produce a transcript.
+- **Transcripts, meeting notes, summaries, scorecards, and AI interactions:**
+  Generated from your sessions.
+- **Screenshots / screen content:** Captured only when you explicitly trigger a
+  screenshot or share call context.
+- **Configuration and API keys:** Provider API keys you enter are stored locally
+  on your device, encrypted using the OS credential store, and are **not** sent
+  to us. They are transmitted directly to the corresponding provider when you
+  use that provider.
 
-The majority of the application's logic runs locally on your machine.
-*   **Database:** Meeting history and notes are stored in a local SQLite database file on your computer.
-*   **Settings:** Configuration preferences are stored locally using `electron-store`.
+## Where Your Data Is Stored and Sent
 
-## Network Communication
+GoDojo AI is **not** a purely local application. Your data is handled in the
+following ways:
 
-The application communicates over the internet only for specific, user-initiated features:
+1. **Locally on your device:** Meeting history, transcripts, and notes are
+   stored in a local SQLite database in the application's user-data folder.
+   Settings are stored via `electron-store`. Credentials are stored encrypted.
 
-### 1. Artificial Intelligence Services
-To generate summaries and action items, the application sends text (transcripts) to the AI provider you have configured (e.g., OpenAI, Anthropic, Google Gemini, Groq).
-*   **Data Transmitted:** Anonymized text transcripts and prompts.
-*   **Privacy:** This data is subject to the privacy policy of the respective AI provider you have chosen. We encourage using providers that do not train on API data.
-*   **Keys:** Your API keys are stored locally on your device and are never sent to us.
+2. **GoDojo AI backend (hosted service):** The Software communicates with our
+   backend service to provide account-linked features, including meeting
+   management and live deal-intelligence analysis (which may run
+   retrieval-augmented generation and LLM processing server-side). Requests are
+   authenticated with your Firebase token.
 
-### 2. Software Updates
-The application periodically checks GitHub's servers to see if a new version of the software is available.
-*   **Data Transmitted:** Basic application version information and your operating system type (e.g., macOS, Windows).
+3. **Cloud database (Supabase):** To support account-linked history and
+   cross-session features, meeting records — which may include meetings,
+   transcripts, AI interactions, derived text chunks, and meeting scorecards —
+   are mirrored to a cloud database (Supabase) operated on our behalf. This
+   means transcript content associated with your account is stored in the cloud,
+   not only on your device.
+
+## Third-Party Processors
+
+Depending on the providers you configure and the features you use, the Software
+transmits data to third parties, each governed by its own privacy policy:
+
+- **Speech-to-text (transcription):** e.g., Deepgram, OpenAI, Azure Speech,
+  Groq, ElevenLabs. Your call audio is sent to the provider you select.
+- **Large Language Models:** e.g., OpenAI, Anthropic, Google (Gemini), Groq.
+  Transcript text and prompts are sent to the provider you select.
+- **Web enrichment (optional):** e.g., Tavily, for company research.
+- **Infrastructure:** Google Firebase (authentication), Google Cloud Run
+  (backend hosting), Supabase (database).
+
+We encourage choosing providers whose terms state that they do not train on
+API-submitted data. We do not control how these third parties handle data once
+it is sent to them.
+
+## Software Updates
+
+The Software periodically checks for updates. This transmits basic version and
+operating-system information to the update host (GitHub) to determine whether a
+newer version is available.
+
+## Analytics and Tracking
+
+The Software does **not** include third-party analytics or advertising/tracking
+SDKs (such as Google Analytics, Mixpanel, Amplitude, PostHog, or Sentry) at this
+time. If crash reporting or analytics is added in the future, this policy will
+be updated before that change ships.
 
 ## Permissions
 
-To function correctly, the application requires the following permissions on your device:
-*   **Microphone:** Required to record meeting audio for transcription.
-*   **Screen Recording / Accessibility:** Required to capture screen content or system audio if enabled.
-*   **Notifications:** Used to alert you when a summary is ready.
+- **Microphone:** Required to capture your side of a call for transcription.
+- **Screen / System-Audio Recording:** Required to capture other participants'
+  audio and screen context when you enable those features.
+- **Notifications:** Used to alert you when results are ready.
 
-You may revoke these permissions at any time through your operating system settings, though this will limit the application's functionality.
+You may revoke these permissions at any time in your operating system settings,
+though doing so will limit the Software's functionality.
 
-## Third-Party Services
+## Data Retention and Your Choices
 
-This project allows integration with third-party Large Language Model (LLM) providers. We do not control how these third parties handle your data once it is sent to them explicitly by the application.
-*   OpenAI
-*   Anthropic
-*   Google (Gemini)
-*   Groq
-
-**This project does not use third-party tracking or marketing cookies.**
-
-## Data Retention
-
-Since data is stored locally:
-*   **You are in control:** You can delete meeting logs, transcripts, and the application database at any time from your local file system.
-*   **No Remote Retention:** We cannot delete your data for you because we do not have access to it.
-
-## Open Source Transparency
-
-This project is open-source. The full source code is available for inspection on our GitHub repository. You can verify the claims in this policy by auditing the code directly.
+- **Local data:** You control local data and can delete meeting logs,
+  transcripts, and the local database from your device at any time.
+- **Cloud data:** Because account-linked data is stored in our backend and
+  cloud database, you may request access to or deletion of that data by
+  contacting us at the address below. (The exact retention periods and
+  deletion process must be finalized and stated here before launch.)
 
 ## Contact
 
-If you have any questions or concerns about this privacy policy, please contact us at:
-**natively.contact@gmail.com**
+Questions or requests regarding this policy or your data:
+**privacy@godojo.ai**
