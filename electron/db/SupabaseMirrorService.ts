@@ -255,7 +255,9 @@ export class SupabaseMirrorService {
             case 'scoring_criteria':
                 return row.user_id != null ? 'user_id,id' : 'id';
             case 'company_asset_chunks':
-                return row.user_id != null && row.id != null ? 'user_id,id' : (row.id != null ? 'id' : null);
+                return row.user_id != null && row.asset_id != null && row.chunk_index != null
+                    ? 'user_id,asset_id,chunk_index'
+                    : (row.id != null ? 'id' : null);
             default:
                 if (table.startsWith('rag_chunk_vectors_')) {
                     return row.user_id != null ? 'user_id,chunk_id' : 'chunk_id';

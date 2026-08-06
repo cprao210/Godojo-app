@@ -910,7 +910,7 @@ export const CompanyContextTab: React.FC<CompanyContextTabProps> = ({
                                             <button
                                                 onClick={() => handleUploadAsset(type)}
                                                 disabled={!!assetUploading}
-                                                className="px-3 py-1.5 rounded-full text-xs font-medium transition-all disabled:opacity-50 disabled:cursor-wait whitespace-nowrap"
+                                                className="px-3 py-1.5 rounded-full text-xs font-medium transition-all cursor-pointer disabled:opacity-50 disabled:cursor-wait whitespace-nowrap"
                                                 style={hasAssets
                                                     ? { background: cfg.accentBg, color: cfg.accent, border: `1px solid ${cfg.accentBorder}` }
                                                     : { background: isLight ? '#f3f6ff' : '#18202e', color: isLight ? 'var(--bg-bg-item-surface)' : '#495166', opacity: 1 }
