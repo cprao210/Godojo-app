@@ -1,79 +1,22 @@
 // Shown after email/password sign-up until the user's email is verified.
 // Polls Firebase every 4 seconds and auto-advances when verified.
+//
+// All polling/resend/sign-out state lives in useEmailVerification; this
+// component only owns rendering, reusing the same background chrome as
+// SignIn.
 
-import React, { useState, useEffect, useRef, useCallback } from 'react';
+import React from 'react';
 import { motion } from 'framer-motion';
 import { Mail, RefreshCw, LogOut, CheckCircle } from 'lucide-react';
-import { sendVerificationEmail, reloadAndCheckVerified, signOut } from '@/lib/firebase';
-import { useResolvedTheme } from '@/hooks';
-import { IMAGES } from '@/lib/assets';
+import { useResolvedTheme, useEmailVerification } from '@/hooks';
 import { EmailVerificationProps } from '@/types';
-
-const POLL_INTERVAL_MS = 4000;
-const RESEND_COOLDOWN_S = 60;
+import { AuthBackground, AuthLogo, AuthPageShell } from '@/features/auth';
 
 export const EmailVerification: React.FC<EmailVerificationProps> = ({ user, onVerified }) => {
+
     const isLight = useResolvedTheme() === 'light';
-    const emailSentRef = useRef(false);
 
-    const [resendCooldown, setResendCooldown] = useState(0);
-    const [resendBusy, setResendBusy] = useState(false);
-    const [resendInfo, setResendInfo] = useState<string | null>(null);
-    const [resendError, setResendError] = useState<string | null>(null);
-    const [verified, setVerified] = useState(false);
-
-    // Poll Firebase until email is verified
-    useEffect(() => {
-        const poll = setInterval(async () => {
-            try {
-                const isVerified = await reloadAndCheckVerified(user);
-                if (isVerified) {
-                    clearInterval(poll);
-                    setVerified(true);
-                    // Small delay so the user sees the success state
-                    setTimeout(() => onVerified(), 1200);
-                }
-            } catch (e) {
-                // Swallow network errors — keep polling
-            }
-        }, POLL_INTERVAL_MS);
-        return () => clearInterval(poll);
-    }, [user, onVerified]);
-
-    // Cooldown countdown timer
-    useEffect(() => {
-        if (resendCooldown <= 0) return;
-        const t = setInterval(() => setResendCooldown((c) => Math.max(0, c - 1)), 1000);
-        return () => clearInterval(t);
-    }, [resendCooldown]);
-
-    // Send verification email once on mount automatically
-    useEffect(() => {
-        if (emailSentRef.current) return;
-        emailSentRef.current = true;
-        sendVerificationEmail(user).catch(() => { });
-        setResendCooldown(RESEND_COOLDOWN_S);
-    }, []);
-
-    const handleResend = useCallback(async () => {
-        if (resendBusy || resendCooldown > 0) return;
-        setResendBusy(true);
-        setResendInfo(null);
-        setResendError(null);
-        try {
-            await sendVerificationEmail(user);
-            setResendInfo('Verification email sent! Check your inbox.');
-            setResendCooldown(RESEND_COOLDOWN_S);
-        } catch (e: any) {
-            setResendError(e?.message ?? 'Failed to send email. Please try again.');
-        } finally {
-            setResendBusy(false);
-        }
-    }, [user, resendBusy, resendCooldown]);
-
-    const handleSignOut = async () => {
-        await signOut().catch(() => { });
-    };
+    const { verified, resendCooldown, resendBusy, resendInfo, resendError, handleResend, handleSignOut } = useEmailVerification({ user, onVerified });
 
     const textPrimary = isLight ? 'text-slate-900' : 'text-white';
     const textSecondary = isLight ? 'text-slate-500' : 'text-slate-400';
@@ -82,23 +25,8 @@ export const EmailVerification: React.FC<EmailVerificationProps> = ({ user, onVe
         : 'border-white/10 bg-white/[0.03] shadow-[0_30px_80px_-20px_rgba(0,0,0,0.8)]';
 
     return (
-        <div
-            className={`relative draggable-area w-full overflow-hidden ${isLight ? 'bg-[#f4f6fb] text-slate-900' : 'bg-[#05070d] text-white'
-                } font-[Inter,ui-sans-serif,system-ui] antialiased`}
-        >
-            {/* Background gradient */}
-            <div
-                className="absolute inset-0"
-                style={{
-                    background: isLight
-                        ? 'radial-gradient(ellipse at 50% 20%, #ffffff 0%, #eef2fb 45%, #e2e8f5 100%)'
-                        : 'radial-gradient(ellipse at 50% 20%, #0f1d3a 0%, #070b18 45%, #03050b 100%)',
-                }}
-            />
-            <div
-                className={`pointer-events-none absolute left-1/2 top-1/2 h-[500px] w-[500px] -translate-x-1/2 -translate-y-1/2 rounded-full blur-[120px] ${isLight ? 'bg-blue-300/30' : 'bg-blue-600/20'
-                    }`}
-            />
+        <AuthPageShell isLight={isLight}>
+            <AuthBackground isLight={isLight} />
 
             <div className="relative z-10 flex min-h-screen flex-col items-center justify-center px-4 py-10">
                 <motion.div
@@ -107,15 +35,7 @@ export const EmailVerification: React.FC<EmailVerificationProps> = ({ user, onVe
                     transition={{ duration: 0.6, ease: 'easeOut' }}
                     className="w-full max-w-[420px]"
                 >
-                    {/* Logo */}
-                    <motion.div
-                        initial={{ opacity: 0, y: -10 }}
-                        animate={{ opacity: 1, y: 0 }}
-                        transition={{ duration: 0.5 }}
-                        className="mb-6 flex items-center justify-center"
-                    >
-                        <img src={IMAGES.godojoLogoV3} alt="GoDojo AI" className="h-10 object-contain" />
-                    </motion.div>
+                    <AuthLogo />
 
                     {/* Card */}
                     <div className={`relative rounded-2xl border p-8 backdrop-blur-xl ${cardBg}`}>
@@ -231,6 +151,6 @@ export const EmailVerification: React.FC<EmailVerificationProps> = ({ user, onVe
                     </div>
                 </motion.div>
             </div>
-        </div>
+        </AuthPageShell>
     );
 };

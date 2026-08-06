@@ -20,11 +20,8 @@ function buildSettingsFallback(key: keyof typeof SETTINGS_FALLBACKS): string[] {
     return SETTINGS_FALLBACKS[key] ?? [];
 }
 
-const AnimatedToggle: React.FC<AnimatedToggleProps> = ({
-    value,
-    onChange,
-    accentColor = '#3b82f6',
-}) => (
+const AnimatedToggle: React.FC<AnimatedToggleProps> = ({ value, onChange, accentColor = '#3b82f6' }) => (
+
     <motion.button
         onClick={() => onChange(!value)}
         className="relative shrink-0"
@@ -50,9 +47,7 @@ const AnimatedToggle: React.FC<AnimatedToggleProps> = ({
     </motion.button>
 );
 
-const SettingRow: React.FC<SettingRowProps> = ({
-    icon, label, iconColor = 'rgba(255,255,255,0.35)', children, divider, emphasis,
-}) => (
+const SettingRow: React.FC<SettingRowProps> = ({ icon, label, iconColor = 'rgba(255,255,255,0.35)', children, divider, emphasis }) => (
     <>
         <div className="flex items-center justify-between px-5 py-4">
             <div className="flex items-center gap-3.5">

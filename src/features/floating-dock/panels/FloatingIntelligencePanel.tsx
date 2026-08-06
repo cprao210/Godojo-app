@@ -12,14 +12,17 @@ const AUTO_REFRESH_OPTIONS = [
     { label: '20-min', value: 20 },
 ];
 
-// ── Film-roll transcript — text streams right-to-left like a ticker ──────────
-const FilmRollTranscript: React.FC<{
+interface FilmRollTranscriptProps {
     text: string;
     speakerLabel: string;
     speakerColor?: string;
     dotColor?: string;
     liveColor?: string;
-}> = ({ text, speakerLabel, speakerColor = 'text-white/55', dotColor = 'bg-blue-400', liveColor = '#f87171' }) => {
+}
+
+// ── Film-roll transcript — text streams right-to-left like a ticker ──────────
+const FilmRollTranscript: React.FC<FilmRollTranscriptProps> = ({ text, speakerLabel, speakerColor = 'text-white/55', dotColor = 'bg-blue-400', liveColor = '#f87171' }) => {
+
     const scrollRef = useRef<HTMLDivElement>(null);
 
     // Auto-scroll to end whenever text grows
@@ -232,11 +235,8 @@ const NoAnalysisCapturedPlaceholder: React.FC = () => (
 // `openedAt`      — timestamp when the current timer cycle started (from FloatingDock)
 // `intervalMins`  — the selected auto-refresh interval in minutes
 // `isPaused`      — when true the countdown ring freezes
-const CountdownPlaceholder: React.FC<{
-    openedAt: number;
-    intervalMins: number;
-    isPaused: boolean;
-}> = ({ openedAt, intervalMins, isPaused }) => {
+const CountdownPlaceholder: React.FC<{ openedAt: number; intervalMins: number; isPaused: boolean }> = ({ openedAt, intervalMins, isPaused }) => {
+
     const totalMs = intervalMins * 60 * 1000;
 
     // Elapsed time frozen at the moment the meeting was paused; null while running,
@@ -252,8 +252,7 @@ const CountdownPlaceholder: React.FC<{
     // reset on remount) fixes that regardless of how often this component itself
     // gets torn down and recreated.
     const frozenElapsedAtPauseRef = useRef<number | null>(null);
-    const computeElapsed = () =>
-        frozenElapsedAtPauseRef.current !== null ? frozenElapsedAtPauseRef.current : Date.now() - openedAt;
+    const computeElapsed = () => frozenElapsedAtPauseRef.current !== null ? frozenElapsedAtPauseRef.current : Date.now() - openedAt;
 
     const [remaining, setRemaining] = useState(() => Math.max(0, totalMs - computeElapsed()));
 
@@ -367,10 +366,8 @@ const MEETING_TYPES: { value: MeetingType; label: string; activeColor: string; a
     { value: 'negotiation', label: 'Negotiation', activeColor: '#fbbf24', activeBg: 'rgba(251,191,36,0.12)', activeBorder: 'rgba(251,191,36,0.30)' },
 ];
 
-const MeetingTypeSelector: React.FC<{
-    selected: MeetingType[];
-    onChange: (types: MeetingType[]) => void;
-}> = ({ selected, onChange }) => {
+const MeetingTypeSelector: React.FC<{ selected: MeetingType[]; onChange: (types: MeetingType[]) => void; }> = ({ selected, onChange }) => {
+
     const toggle = (type: MeetingType) =>
         onChange(selected.includes(type) ? selected.filter(t => t !== type) : [...selected, type]);
 

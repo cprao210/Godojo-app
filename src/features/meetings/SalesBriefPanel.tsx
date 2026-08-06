@@ -6,22 +6,46 @@ import { Star, ChevronRight, AlertCircle, WifiOff, Trophy, Zap, GitBranch, Brief
 import { useResolvedTheme, useCompanyIntel, hasValue, pickValue, isIntelEmpty, openExternalUrl, LOADING_STAGES } from '@/hooks';
 import { SalesBriefPanelProps } from '@/types';
 
-// ─── Skeleton pulse block ─────────────────────────────────────────────────────
-const Skeleton: React.FC<{ w?: string; h?: string; className?: string; isLight?: boolean }> = ({
-    w = 'w-full', h = 'h-3', className = '', isLight = false
-}) => (
-    <div className={`${w} ${h} rounded-md animate-pulse ${isLight ? 'bg-slate-200' : 'bg-white/[0.07]'} ${className}`} />
-);
+interface SkeletonProps {
+    w?: string;
+    h?: string;
+    className?: string;
+    isLight?: boolean;
+}
 
-// ─── Single field row ─────────────────────────────────────────────────────────
-const Field: React.FC<{
+interface FieldProps {
     icon: React.ReactNode;
     label: string;
     value: React.ReactNode;
     isLight: boolean;
     loading?: boolean;
     accent?: boolean;
-}> = ({ icon, label, value, isLight, loading, accent }) => (
+}
+
+interface PillListProps {
+    items: string[];
+    isLight: boolean;
+    color?: string;
+}
+
+interface SectionHeaderProps {
+    title: string;
+    isLight: boolean;
+}
+
+interface NoDataPlaceholderProps {
+    companyName: string | null;
+    onRetry: () => void;
+    isLight: boolean;
+}
+
+// ─── Skeleton pulse block ─────────────────────────────────────────────────────
+const Skeleton: React.FC<SkeletonProps> = ({ w = 'w-full', h = 'h-3', className = '', isLight = false }) => (
+    <div className={`${w} ${h} rounded-md animate-pulse ${isLight ? 'bg-slate-200' : 'bg-white/[0.07]'} ${className}`} />
+);
+
+// ─── Single field row ─────────────────────────────────────────────────────────
+const Field: React.FC<FieldProps> = ({ icon, label, value, isLight, loading, accent }) => (
     <div className="flex items-start gap-3 py-2.5 group">
         <div className={[
             'mt-0.5 flex h-6 w-6 shrink-0 items-center justify-center rounded-md',
@@ -50,9 +74,7 @@ const Field: React.FC<{
 );
 
 // ─── Pill list ─────────────────────────────────────────────────────────────────
-const PillList: React.FC<{ items: string[]; isLight: boolean; color?: string }> = ({
-    items, isLight, color = ''
-}) => (
+const PillList: React.FC<PillListProps> = ({ items, isLight, color = '' }) => (
     <div className="flex flex-wrap gap-1.5 mt-0.5">
         {items.map((item, i) => (
             <span key={i} className={[
@@ -68,7 +90,7 @@ const PillList: React.FC<{ items: string[]; isLight: boolean; color?: string }> 
 );
 
 // ─── Section header ────────────────────────────────────────────────────────────
-const SectionHeader: React.FC<{ title: string; isLight: boolean }> = ({ title, isLight }) => (
+const SectionHeader: React.FC<SectionHeaderProps> = ({ title, isLight }) => (
     <div className={['flex items-center gap-2 pt-4 pb-1 mb-1 border-b',
         isLight ? 'border-slate-200/60' : 'border-white/[0.06]'].join(' ')}>
         <span className={['text-[10px] font-bold uppercase tracking-[0.12em]',
@@ -129,9 +151,7 @@ const PanelSkeleton: React.FC<{ isLight: boolean }> = ({ isLight }) => (
 );
 
 // ─── No-data placeholder ───────────────────────────────────────────────────────
-const NoDataPlaceholder: React.FC<{ companyName: string | null; onRetry: () => void; isLight: boolean }> = ({
-    companyName, onRetry, isLight,
-}) => (
+const NoDataPlaceholder: React.FC<NoDataPlaceholderProps> = ({ companyName, onRetry, isLight }) => (
     <div className="flex flex-col items-center justify-center py-16 px-8 gap-5 text-center">
         <div className={[
             'w-14 h-14 rounded-2xl flex items-center justify-center',

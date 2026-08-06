@@ -2,17 +2,8 @@ import React, { useEffect, useState } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
 import { DockButtonProps } from '@/types';
 
-export const DockButton: React.FC<DockButtonProps> = ({
-    icon,
-    tooltip,
-    isActive,
-    activeColor = '#3b82f6',
-    dangerColor = false,
-    showActiveDot = false,
-    frozen = false,
-    onClick,
-    zIndex,
-}) => {
+export const DockButton: React.FC<DockButtonProps> = ({ icon, tooltip, isActive, activeColor = '#3b82f6', dangerColor = false, showActiveDot = false, frozen = false, onClick, zIndex }) => {
+
     const [showTooltip, setShowTooltip] = useState(false);
     const tooltipTimerRef = React.useRef<ReturnType<typeof setTimeout> | null>(null);
 

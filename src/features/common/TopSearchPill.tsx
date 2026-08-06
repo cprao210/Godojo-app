@@ -1,190 +1,38 @@
-import React, { useState, useEffect, useRef, useCallback, useMemo } from 'react';
+import React from 'react';
 import { createPortal } from 'react-dom';
-import { Search, FileText } from 'lucide-react';
+import { Search } from 'lucide-react';
 import { motion, AnimatePresence } from 'framer-motion';
-import { Meeting, PillState, SearchResult, TopSearchPillProps } from '@/types';
-
-// ============================================
-// Fuzzy Search Helper
-// ============================================
-
-function fuzzyMatch(text: string, query: string): boolean {
-    const normalizedText = text.toLowerCase();
-    const normalizedQuery = query.toLowerCase();
-
-    // Simple contains match for now
-    if (normalizedText.includes(normalizedQuery)) return true;
-
-    // Fuzzy character match
-    // Fuzzy match removed for stricter accuracy
-    // Only return true if exact substring match (already checked above)
-    return false;
-}
-
-function searchMeetings(meetings: Meeting[], query: string): SearchResult[] {
-    if (!query.trim()) return [];
-
-    const results: SearchResult[] = [];
-    const seen = new Set<string>();
-
-    for (const meeting of meetings) {
-        if (seen.has(meeting.id)) continue;
-
-        // Match against title and summary
-        const titleMatch = fuzzyMatch(meeting.title, query);
-        const summaryMatch = meeting.summary && fuzzyMatch(meeting.summary, query);
-
-        if (titleMatch || summaryMatch) {
-            seen.add(meeting.id);
-            results.push({
-                id: meeting.id,
-                type: 'meeting',
-                title: meeting.title,
-                subtitle: new Date(meeting.date).toLocaleDateString('en-US', {
-                    month: 'short',
-                    day: 'numeric'
-                }),
-                meetingId: meeting.id
-            });
-        }
-
-        if (results.length >= 5) break;
-    }
-
-    return results;
-}
+import { TopSearchPillProps } from '@/types';
+import { useTopSearchPill } from '@/hooks';
+import SearchResultRow from '@/features/common/SearchResultRow';
 
 // ============================================
 // Main Component
 // ============================================
+// All state, search logic, and keyboard handling now live in
+// useTopSearchPill — this component only renders.
 
 const TopSearchPill: React.FC<TopSearchPillProps> = ({
     meetings,
     onOpenMeeting,
     onExpansionChange
 }) => {
-    const [state, setState] = useState<PillState>('idle');
-    const [query, setQuery] = useState('');
-    const [selectedIndex, setSelectedIndex] = useState(-1);
-
-    const inputRef = useRef<HTMLInputElement>(null);
-    const containerRef = useRef<HTMLDivElement>(null);
-
-    // Notify parent of expansion changes
-    useEffect(() => {
-        onExpansionChange?.(state !== 'idle');
-    }, [state, onExpansionChange]);
-
-    // Compute results
-    const sessionResults = useMemo(() => {
-        if (state !== 'results' || !query.trim()) return [];
-        return searchMeetings(meetings, query);
-    }, [meetings, query, state]);
-
-    // Total selectable items: meeting results only
-    const totalItems = sessionResults.length;
-
-    // State transitions
-    const open = useCallback(() => {
-        setState('focused');
-        setTimeout(() => inputRef.current?.focus(), 50);
-    }, []);
-
-    const close = useCallback(() => {
-        setState('idle');
-        // Delay clearing query to allow exit animation to complete
-        setTimeout(() => {
-            setQuery('');
-            setSelectedIndex(-1);
-        }, 150);
-        inputRef.current?.blur();
-    }, []);
-
-    const handleInputChange = useCallback((e: React.ChangeEvent<HTMLInputElement>) => {
-        const value = e.target.value;
-        setQuery(value);
-        setSelectedIndex(-1);
-
-        if (value.trim()) {
-            setState('results');
-        } else {
-            setState('focused');
-        }
-    }, []);
-
-    const handleSelect = useCallback((index: number) => {
-        const result = sessionResults[index];
-        if (result) {
-            onOpenMeeting(result.meetingId);
-            close();
-        }
-    }, [sessionResults, onOpenMeeting, close]);
-
-    // Keyboard handling
-    useEffect(() => {
-        const handleKeyDown = (e: KeyboardEvent) => {
-            // ⌘K to open
-            if ((e.metaKey || e.ctrlKey) && e.key === 'k') {
-                e.preventDefault();
-                if (state === 'idle') {
-                    open();
-                } else {
-                    close();
-                }
-                return;
-            }
-
-            if (state === 'idle') return;
-
-            // ESC to close
-            if (e.key === 'Escape') {
-                e.preventDefault();
-                close();
-                return;
-            }
-
-            // Arrow navigation
-            if (state === 'results') {
-                if (e.key === 'ArrowDown') {
-                    e.preventDefault();
-                    setSelectedIndex(prev => Math.min(prev + 1, totalItems - 1));
-                } else if (e.key === 'ArrowUp') {
-                    e.preventDefault();
-                    setSelectedIndex(prev => Math.max(prev - 1, -1));
-                } else if (e.key === 'Enter') {
-                    e.preventDefault();
-                    handleSelect(selectedIndex);
-                }
-            }
-        };
-
-        window.addEventListener('keydown', handleKeyDown);
-        return () => window.removeEventListener('keydown', handleKeyDown);
-    }, [state, open, close, selectedIndex, totalItems, handleSelect]);
-
-    // Click outside to close
-    useEffect(() => {
-        if (state === 'idle') return;
-
-        const handleClickOutside = (e: MouseEvent) => {
-            if (containerRef.current && !containerRef.current.contains(e.target as Node)) {
-                close();
-            }
-        };
-
-        // Delay to prevent immediate close on open click
-        const timer = setTimeout(() => {
-            document.addEventListener('mousedown', handleClickOutside);
-        }, 100);
-
-        return () => {
-            clearTimeout(timer);
-            document.removeEventListener('mousedown', handleClickOutside);
-        };
-    }, [state, close]);
-
-    const isExpanded = state !== 'idle';
-    const showResults = state === 'results' && query.trim();
+    const {
+        state,
+        query,
+        selectedIndex,
+        sessionResults,
+        isExpanded,
+        showResults,
+        inputRef,
+        containerRef,
+        close,
+        handleInputChange,
+        handleInputFocus,
+        handlePillClick,
+        handleSelect,
+        setSelectedIndex,
+    } = useTopSearchPill({ meetings, onOpenMeeting, onExpansionChange });
 
     return (
         <>
@@ -236,7 +84,7 @@ const TopSearchPill: React.FC<TopSearchPillProps> = ({
                                 {/* Input Row */}
                                 <div
                                     className="relative flex items-center"
-                                    onClick={() => state === 'idle' && open()}
+                                    onClick={handlePillClick}
                                 >
                                     <div className="absolute left-3 flex items-center pointer-events-none">
                                         <Search size={14} className="text-text-tertiary" />
@@ -246,7 +94,7 @@ const TopSearchPill: React.FC<TopSearchPillProps> = ({
                                         type="text"
                                         value={query}
                                         onChange={handleInputChange}
-                                        onFocus={() => state === 'idle' && setState('focused')}
+                                        onFocus={handleInputFocus}
                                         className={`
                                         w-full bg-transparent
                                         pl-9 pr-4 py-1
@@ -286,38 +134,13 @@ const TopSearchPill: React.FC<TopSearchPillProps> = ({
 
                                                             <AnimatePresence initial={false} mode="popLayout">
                                                                 {sessionResults.map((result, index) => (
-                                                                    <motion.button
-                                                                        layout="position"
+                                                                    <SearchResultRow
                                                                         key={result.id}
-                                                                        initial={{ opacity: 0, height: 0 }}
-                                                                        animate={{ opacity: 1, height: 'auto' }}
-                                                                        exit={{ opacity: 0, height: 0 }}
-                                                                        transition={{ duration: 0.2 }}
-                                                                        className={`
-                                                                        w-full flex items-center gap-3 px-2 py-1.5 rounded-lg text-left
-                                                                        transition-colors duration-100
-                                                                        ${selectedIndex === index
-                                                                                ? 'bg-bg-item-active'
-                                                                                : 'hover:bg-bg-item-surface'
-                                                                            }
-                                                                    `}
-                                                                        onClick={() => handleSelect(index)}
-                                                                        onMouseEnter={() => setSelectedIndex(index)}
-                                                                    >
-                                                                        <div className="w-6 h-6 rounded-md bg-bg-item-surface flex items-center justify-center shrink-0">
-                                                                            <FileText size={12} className="text-text-secondary" />
-                                                                        </div>
-                                                                        <div className="flex-1 min-w-0">
-                                                                            <div className="text-[13px] text-text-primary truncate">
-                                                                                {result.title}
-                                                                            </div>
-                                                                            {result.subtitle && (
-                                                                                <div className="text-[11px] text-text-tertiary">
-                                                                                    {result.subtitle}
-                                                                                </div>
-                                                                            )}
-                                                                        </div>
-                                                                    </motion.button>
+                                                                        result={result}
+                                                                        isSelected={selectedIndex === index}
+                                                                        onSelect={() => handleSelect(index)}
+                                                                        onHover={() => setSelectedIndex(index)}
+                                                                    />
                                                                 ))}
                                                             </AnimatePresence>
                                                         </div>

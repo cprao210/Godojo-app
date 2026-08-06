@@ -274,28 +274,6 @@ export interface ModelOption {
   provider?: string;
 }
 
-// --- src/features/common/NativelyInterface.tsx ---
-export interface NativelyMessage {
-  id: string;
-  role: 'user' | 'system' | 'client';
-  text: string;
-  isStreaming?: boolean;
-  hasScreenshot?: boolean;
-  screenshotPreview?: string;
-  isCode?: boolean;
-  intent?: string;
-  isNegotiationCoaching?: boolean;
-  negotiationCoachingData?: {
-    tacticalNote: string;
-    exactScript: string;
-    showSilenceTimer: boolean;
-    phase: string;
-    theirOffer: number | null;
-    yourTarget: number | null;
-    currency: string;
-  };
-}
-
 // --- src/features/common/TopSearchPill.tsx ---
 export type PillState = 'idle' | 'focused' | 'typing' | 'results';
 
@@ -1360,9 +1338,9 @@ export interface LauncherProps {
   onSignOut?: () => void;
 }
 
-// --- src/features/common/NativelyInterface.tsx ---
+// --- src/features/common/GodojoInterface.tsx ---
 
-export interface NativelyInterfaceMessage {
+export interface GodojoInterfaceMessage {
   id: string;
   role: 'user' | 'system' | 'client';
   text: string;
@@ -1383,7 +1361,7 @@ export interface NativelyInterfaceMessage {
   };
 }
 
-export interface NativelyInterfaceProps {
+export interface GodojoInterfaceProps {
   onEndMeeting?: (meetingTypes?: ('discovery' | 'demo' | 'negotiation')[]) => void;
   overlayOpacity?: number;
 }

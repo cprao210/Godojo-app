@@ -8,11 +8,8 @@ import { FloatingChatButtonProps } from '@/types';
 // Lives on the Launcher screen only — mirrors the "chat bubble" pattern
 // used by Intercom / Drift / etc. so the entry point is unmistakably a
 // separate assistant, not part of meeting search.
-const FloatingChatButton: React.FC<FloatingChatButtonProps> = ({
-    isOpen,
-    onClick,
-    label = 'Ask AI'
-}) => {
+const FloatingChatButton: React.FC<FloatingChatButtonProps> = ({ isOpen, onClick, label = 'Ask AI' }) => {
+
     const shortcutKeys = isMac ? ['⌘', 'Space'] : ['Ctrl', 'Space'];
 
     return (

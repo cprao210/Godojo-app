@@ -11,394 +11,35 @@
  * needs to pass the tenant id + the selected AE's user id (plus the summary
  * fields already known from the dashboard, used as an instant-paint
  * placeholder while the detail request is in flight).
+ *
+ * All state + data-fetching lives in useAeDetail — this component only owns
+ * rendering. Presentational pieces live in AeDetailWidgets.tsx / shared.tsx.
  */
 
-import React, { useEffect, useState } from 'react';
+import React from 'react';
 import { AnimatePresence, motion } from 'framer-motion';
-import { ArrowLeft, Search, Briefcase, Target, MessageCircle, Handshake, Radio } from 'lucide-react';
-import { CheckCircle2, Lightbulb, ChevronRight, TrendingUp, Info, type LucideIcon } from 'lucide-react';
+import { ArrowLeft, Info } from 'lucide-react';
 import { useResolvedTheme } from '@/hooks';
-import { tenantsApi } from '@/api';
-import { ApiError } from '@/lib/apiClient';
+import { useAeDetail } from '@/hooks/useAeDetail';
 import { MeetingDetails } from '@/features/meetings';
-import { Skeleton } from './ManagerDashboard';
-import { AeDetailViewProps, Meeting, DimensionGaugeProps, DimensionScore, StrengthOrGap } from '@/types';
-import { RecentCall, MemberDetail, MemberDetailRadarScores, MemberDetailRecentCall } from '@/types';
-
-// ─── AE detail skeletons ─────────────────────────────────────────────────────
-// Shape-matched placeholders shown while isLoadingDetail is true, so the panel
-// reads as "this rep's data is loading" rather than a bare "Loading…" string.
-
-const DimensionGaugeSkeleton: React.FC<{ isLight: boolean }> = ({ isLight }) => (
-    <div className="flex flex-col items-center py-4">
-        <Skeleton isLight={isLight} className="w-48 h-24 rounded-t-full rounded-b-none" />
-        <div className="flex items-center gap-3 mt-5">
-            {Array.from({ length: 5 }).map((_, i) => (
-                <Skeleton key={i} isLight={isLight} className="h-3 w-10" />
-            ))}
-        </div>
-    </div>
-);
-
-const RecentCallsSkeleton: React.FC<{ isLight: boolean }> = ({ isLight }) => (
-    <div className="flex flex-col gap-3 py-1">
-        {Array.from({ length: 3 }).map((_, i) => (
-            <div key={i} className="flex items-center justify-between gap-4">
-                <div className="flex flex-col gap-1.5 flex-1">
-                    <Skeleton isLight={isLight} className="h-3.5 w-1/2" />
-                    <Skeleton isLight={isLight} className="h-3 w-1/3" />
-                </div>
-                <Skeleton isLight={isLight} className="h-6 w-10 shrink-0" />
-            </div>
-        ))}
-    </div>
-);
-
-// ─── Dimension metadata (icon/color per radar_scores key) ──────────────────
-// Order here drives the order the segments are drawn in on the gauge.
-
-const DIMENSION_META: { key: keyof MemberDetailRadarScores; label: string; icon: LucideIcon; color: string; ring: string }[] = [
-    { key: 'MEDDICC', label: 'MEDDICC', icon: Briefcase, color: '#7c3aed', ring: '#a78bfa' },
-    { key: 'Discovery', label: 'Discovery', icon: Search, color: '#7c5cf0', ring: '#a5b4fc' },
-    { key: 'BANT', label: 'BANT', icon: Target, color: '#4f7fee', ring: '#93c5fd' },
-    { key: 'Objections', label: 'Objections', icon: MessageCircle, color: '#22b8cf', ring: '#67e8f9' },
-    { key: 'Closing', label: 'Closing', icon: Handshake, color: '#14b88f', ring: '#6ee7b7' },
-    { key: 'Signals', label: 'Signals', icon: Radio, color: '#22c55e', ring: '#86efac' },
-];
-
-function dimensionsFromRadarScores(radar: MemberDetailRadarScores): DimensionScore[] {
-    return DIMENSION_META.map((d) => ({
-        key: d.key,
-        label: d.label,
-        score: Math.round(radar[d.key] ?? 0),
-        icon: d.icon,
-        color: d.color,
-        ring: d.ring,
-    }));
-}
-
-function strengthsAndGapsFrom(detail: MemberDetail): StrengthOrGap[] {
-    const items: StrengthOrGap[] = detail.strengths.map((s) => ({
-        title: s.title,
-        description: s.description,
-        tag: 'Strength',
-    }));
-    if (detail.weakest_area) {
-        items.push({
-            title: `${detail.weakest_area} needs focus`,
-            description: `${detail.weakest_area} is the lowest-scoring dimension across recent calls.`,
-            tag: 'Opportunity',
-        });
-    }
-    return items;
-}
-
-function formatCallMeta(startTimeMs: number): string {
-    const d = new Date(startTimeMs);
-    const datePart = d.toLocaleDateString(undefined, { month: 'short', day: 'numeric' });
-    const timePart = d.toLocaleTimeString(undefined, { hour: 'numeric', minute: '2-digit' });
-    return `${datePart} · ${timePart}`;
-}
-
-function recentCallsFrom(detail: MemberDetail): RecentCall[] {
-    return detail.recent_calls.map((c) => ({
-        meetingId: c.meeting_id,
-        title: c.title,
-        meta: formatCallMeta(c.start_time),
-        highlight: c.highlight || '—',
-        score: c.score,
-    }));
-}
-
-// Builds a minimal placeholder Meeting so MeetingDetails can paint instantly
-// (title/date) while its own useQuery (meetingsApi.get) fetches the full
-// record — same "list row as initialData" pattern Launcher/MeetingDetails use.
-function placeholderMeetingFromCall(c: MemberDetailRecentCall): Meeting {
-    return {
-        id: c.meeting_id,
-        title: c.title,
-        date: new Date(c.start_time).toISOString(),
-        duration: '',
-        summary: '',
-    };
-}
-
-// ─── Small shared bits (kept local so this file drops in standalone) ───────
-
-const AVATAR_PALETTE = [
-    { bg: 'bg-blue-500/15', text: 'text-blue-400' },
-    { bg: 'bg-violet-500/15', text: 'text-violet-400' },
-    { bg: 'bg-emerald-500/15', text: 'text-emerald-400' },
-    { bg: 'bg-amber-500/15', text: 'text-amber-400' },
-    { bg: 'bg-pink-500/15', text: 'text-pink-400' },
-    { bg: 'bg-cyan-500/15', text: 'text-cyan-400' },
-];
-
-function avatarColorFor(key: string) {
-    let hash = 0;
-    for (let i = 0; i < key.length; i++) hash = (hash * 31 + key.charCodeAt(i)) >>> 0;
-    return AVATAR_PALETTE[hash % AVATAR_PALETTE.length];
-}
-
-function initialsFor(name: string) {
-    const parts = name.trim().split(/\s+/);
-    return ((parts[0]?.[0] ?? '') + (parts[1]?.[0] ?? '')).toUpperCase();
-}
-
-// ─── Radial dimension gauge (6 colored arc segments over a semicircle) ──────
-
-function polar(cx: number, cy: number, r: number, angleDeg: number) {
-    // angleDeg: 0 = top, -90 = left, 90 = right (matches a left-to-right semicircle sweep)
-    const a = (angleDeg - 90) * (Math.PI / 180);
-    return { x: cx + r * Math.cos(a), y: cy + r * Math.sin(a) };
-}
-
-function arcPath(cx: number, cy: number, rOuter: number, rInner: number, startA: number, endA: number) {
-    const p1 = polar(cx, cy, rOuter, startA);
-    const p2 = polar(cx, cy, rOuter, endA);
-    const p3 = polar(cx, cy, rInner, endA);
-    const p4 = polar(cx, cy, rInner, startA);
-    const large = endA - startA > 180 ? 1 : 0;
-    return [
-        `M ${p1.x} ${p1.y}`,
-        `A ${rOuter} ${rOuter} 0 ${large} 1 ${p2.x} ${p2.y}`,
-        `L ${p3.x} ${p3.y}`,
-        `A ${rInner} ${rInner} 0 ${large} 0 ${p4.x} ${p4.y}`,
-        'Z',
-    ].join(' ');
-}
-
-const DimensionGauge: React.FC<DimensionGaugeProps> = ({ dimensions, overallScore, isLight, isAboveTeamAverage }) => {
-    const width = 520;
-    const height = 340;
-    const cx = width / 2;
-    const cy = 250;
-    const rOuter = 150;
-
-    const rInner = 100;
-    const rBadge = (rOuter + rInner) / 2;
-
-    const startAngle = -90;
-    const endAngle = 90;
-    const segAngle = (endAngle - startAngle) / dimensions.length;
-    const gap = 1.2; // deg of breathing room between segments
-
-    const textColor = isLight ? '#64748b' : '#94a3b8';
-    const ringFill = isLight ? '#e2e8f0' : '#1e293b';
-    const bgColor = isLight ? '#fff' : '#0d1117';
-    const leaderColor = isLight ? '#94a3b8' : '#64748b';
-
-    return (
-        <svg viewBox={`0 0 ${width} ${height}`} className="w-full h-auto" role="img" aria-label="Sales performance by dimension">
-            {/* Outer halo ring/track */}
-            <path d={arcPath(cx, cy, rOuter + 14, rOuter + 10, startAngle - 1, endAngle + 1)} fill={ringFill} />
-
-            {dimensions.map((d, i) => {
-                const a1 = startAngle + i * segAngle + gap / 2;
-                const a2 = startAngle + (i + 1) * segAngle - gap / 2;
-                const mid = (a1 + a2) / 2;
-                const badgePos = polar(cx, cy, rBadge, mid);
-                const tickPos = polar(cx, cy, rOuter + 12, mid);
-                const leaderEnd = polar(cx, cy, rOuter + 34, mid);
-                const labelPos = polar(cx, cy, rOuter + 54, mid);
-                const Icon = d.icon;
-                const ringColor = d.ring ?? d.color;
-
-                return (
-                    <g key={d.key}>
-                        <path d={arcPath(cx, cy, rOuter, rInner, a1, a2)} fill={d.color} opacity={0.94} />
-
-                        {/* Icon + score, stacked, centered on the segment */}
-                        <foreignObject x={badgePos.x - 16} y={badgePos.y - 20} width={32} height={40}>
-                            <div className="flex flex-col items-center justify-center text-white">
-                                <Icon size={20} className="opacity-95" />
-                                <span className="text-[12px] font-bold leading-tight mt-0.5">{d.score}</span>
-                            </div>
-                        </foreignObject>
-
-                        {/* Tick dot sitting on the halo ring */}
-                        <circle cx={tickPos.x} cy={tickPos.y} r={4.5} fill={bgColor} stroke={ringColor} strokeWidth={2} />
-
-                        {/* Dotted leader line up to the label */}
-                        <line
-                            x1={tickPos.x}
-                            y1={tickPos.y}
-                            x2={leaderEnd.x}
-                            y2={leaderEnd.y}
-                            stroke={leaderColor}
-                            strokeWidth={1}
-                            strokeDasharray="2 3"
-                        />
-
-                        {/* Dimension label */}
-                        <text
-                            x={labelPos.x}
-                            y={labelPos.y}
-                            textAnchor="middle"
-                            dominantBaseline="middle"
-                            fontSize={11}
-                            fontWeight={600}
-                            fill={textColor}
-                        >
-                            {d.label}
-                        </text>
-                    </g>
-                );
-            })}
-
-            {/* Center: overall score */}
-            <text x={cx} y={cy - 24} textAnchor="middle" fontSize={52} fontWeight={800} fill={isLight ? '#0f172a' : '#fff'}>
-                {overallScore}
-            </text>
-            <text x={cx} y={cy + 4} textAnchor="middle" fontSize={12} fontWeight={600} fill={textColor}>
-                Overall score
-            </text>
-            {isAboveTeamAverage && (
-                <foreignObject x={cx - 90} y={cy + 18} width={180} height={28}>
-                    <div className="flex items-center justify-center gap-1.5 px-2.5 py-1 rounded-full border border-emerald-500/40 bg-emerald-500/10 text-emerald-400 text-xs font-semibold w-fit mx-auto">
-                        <TrendingUp size={12} />
-                        Above team average
-                    </div>
-                </foreignObject>
-            )}
-        </svg>
-    );
-};
-
-// ─── Strengths & areas to focus list ─────────────────────────────────────────
-
-const StrengthsAndGapsList: React.FC<{ items: StrengthOrGap[]; isLight: boolean }> = ({ items, isLight }) => (
-    <div className="flex flex-col gap-1">
-        {items.length === 0 && (
-            <p className="text-sm text-text-tertiary py-6 text-center">Not enough call data yet.</p>
-        )}
-        {items.map((item) => {
-            const isStrength = item.tag === 'Strength';
-            return (
-                <div
-                    key={item.title}
-                    className={`flex items-start gap-3 px-2 py-2.5 rounded-xl transition-colors ${isLight ? 'hover:bg-slate-50' : 'hover:bg-white/[0.03]'}`}
-                >
-                    <div className={`w-7 h-7 rounded-lg flex items-center justify-center shrink-0 mt-0.5 ${isStrength ? 'bg-emerald-500/15 text-emerald-400' : 'bg-amber-500/15 text-amber-400'}`}>
-                        {isStrength ? <CheckCircle2 size={14} /> : <Lightbulb size={14} />}
-                    </div>
-                    <div className="min-w-0 flex-1">
-                        <p className="text-sm font-semibold text-text-primary">{item.title}</p>
-                        <p className="text-xs text-text-tertiary mt-0.5">{item.description}</p>
-                    </div>
-                    <span
-                        className={`shrink-0 px-2.5 py-1 rounded-full text-[11px] font-semibold ${isStrength ? 'bg-emerald-500/15 text-emerald-400' : 'bg-amber-500/15 text-amber-400'}`}
-                    >
-                        {item.tag}
-                    </span>
-                </div>
-            );
-        })}
-    </div>
-);
-
-// ─── Recent calls list ────────────────────────────────────────────────────────
-
-const RecentCallsList: React.FC<{ calls: RecentCall[]; isLight: boolean; onSelectCall?: (call: RecentCall) => void }> = ({
-    calls,
-    isLight,
-    onSelectCall,
-}) => (
-    <div className="flex flex-col">
-        {calls.length === 0 && (
-            <p className="text-sm text-text-tertiary py-6 text-center">No recent calls in this period.</p>
-        )}
-        {calls.map((call, i) => (
-            <button
-                key={`${call.title}-${i}`}
-                type="button"
-                onClick={() => onSelectCall?.(call)}
-                className={`grid grid-cols-[36px_1fr_180px_50px_16px] gap-3 items-center px-2 py-3 text-left border-b border-border-subtle last:border-b-0 transition-colors ${isLight ? 'hover:bg-slate-50' : 'hover:bg-white/[0.03]'}`}
-            >
-                <div className={`w-8 h-8 rounded-lg flex items-center justify-center shrink-0 ${isLight ? 'bg-violet-100 text-violet-500' : 'bg-violet-500/15 text-violet-400'}`}>
-                    <Briefcase size={14} />
-                </div>
-                <div className="min-w-0">
-                    <p className="text-sm font-semibold text-text-primary truncate">{call.title}</p>
-                    <p className="text-xs text-text-tertiary truncate">{call.meta}</p>
-                </div>
-                {/* <span className="text-xs text-text-tertiary truncate">
-                    Highlight: <span className="text-cyan-400 font-medium">{call.highlight}</span>
-                </span> */}
-                <span className="text-sm font-bold text-text-primary text-right tabular-nums">{call.score}</span>
-                <ChevronRight size={14} className="text-text-tertiary justify-self-end" />
-            </button>
-        ))}
-    </div>
-);
+import { AeDetailViewProps } from '@/types';
+import { avatarColorFor, initialsFor, AVATAR_PALETTE } from './shared';
+import { DimensionGaugeSkeleton, RecentCallsSkeleton, DimensionGauge, StrengthsAndGapsList, RecentCallsList } from './AeDetailWidgets';
 
 // ─── Main export ─────────────────────────────────────────────────────────────
 
 export const AeDetailView: React.FC<AeDetailViewProps> = ({ ae, tenantId, onBack }) => {
+
     const isLight = useResolvedTheme() === 'light';
     const isOpen = ae !== null;
 
-    // ── Detail fetch (GET /tenants/:tenant_id/members/:user_id) ─────────────
-    const [detail, setDetail] = useState<MemberDetail | null>(null);
-    const [isLoadingDetail, setIsLoadingDetail] = useState(false);
-    const [detailError, setDetailError] = useState<string | null>(null);
+    const AeDetailsStates = useAeDetail({ ae, tenantId });
 
-    useEffect(() => {
-        if (!ae || !tenantId) {
-            setDetail(null);
-            setDetailError(null);
-            return;
-        }
-        let cancelled = false;
-        setIsLoadingDetail(true);
-        setDetailError(null);
-        setDetail(null);
-        tenantsApi
-            .getMember(tenantId, ae.userId)
-            .then((data) => {
-                if (!cancelled) setDetail(data);
-            })
-            .catch((err: unknown) => {
-                if (cancelled) return;
-                setDetailError(err instanceof ApiError ? err.message : 'Failed to load AE detail.');
-            })
-            .finally(() => {
-                if (!cancelled) setIsLoadingDetail(false);
-            });
-        return () => {
-            cancelled = true;
-        };
-        // Re-fetch whenever a different AE (or tenant) is opened.
-    }, [ae?.userId, tenantId]);
+    const { isLoadingDetail, detailError, displayName, displayRole, displayCalls, displayScore } = AeDetailsStates;
+    const { dimensions, strengthsAndGaps, recentCalls, selectedMeeting, setSelectedMeeting, handleSelectCall } = AeDetailsStates;
 
     const cardCls = isLight ? 'bg-white border-slate-200' : 'bg-[#141820] border-border-subtle';
     const avatarColor = ae ? avatarColorFor(ae.name) : AVATAR_PALETTE[0];
-
-    // Prefer live detail once it's back; fall back to the dashboard summary
-    // (name/role/calls/score) so the header paints instantly on open.
-    const displayName = detail?.name ?? ae?.name ?? '';
-    const displayRole = ae?.role ?? (detail?.role === 'admin' ? 'Admin' : 'Member');
-    const displayCalls = detail?.calls_total ?? ae?.calls ?? 0;
-    const displayScore = detail?.avg_score ?? ae?.score ?? 0;
-
-    const dimensions = detail ? dimensionsFromRadarScores(detail.radar_scores) : [];
-    const strengthsAndGaps = detail ? strengthsAndGapsFrom(detail) : [];
-    const recentCalls = detail ? recentCallsFrom(detail) : [];
-    const sparkline = recentCalls.map((c) => c.score).reverse();
-
-    // ── Post-call analysis (opens the same MeetingDetails view used elsewhere) ─
-    const [selectedMeeting, setSelectedMeeting] = useState<Meeting | null>(null);
-
-    // Reset the open call whenever a different AE is opened / the panel closes.
-    useEffect(() => {
-        setSelectedMeeting(null);
-    }, [ae?.userId]);
-
-    const handleSelectCall = (call: RecentCall) => {
-        const raw = detail?.recent_calls.find((c) => c.meeting_id === call.meetingId);
-        if (!raw) return;
-        setSelectedMeeting(placeholderMeetingFromCall(raw));
-    };
 
     return (
         <AnimatePresence>
@@ -443,7 +84,6 @@ export const AeDetailView: React.FC<AeDetailViewProps> = ({ ae, tenantId, onBack
                                         </div>
                                     </div>
                                     <div className="flex items-center gap-5 shrink-0">
-                                        {/* <MiniSparkline data={sparkline} color="#8b5cf6" /> */}
                                         <div className="text-right">
                                             <p className="text-3xl font-bold text-text-primary tabular-nums leading-none">{displayScore}</p>
                                             <p className="text-xs text-text-tertiary mt-1">avg score</p>

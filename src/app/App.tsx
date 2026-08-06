@@ -26,7 +26,7 @@ import { StartupSequence } from "@/features/onboarding";
 // components — generic UI kit + shared/common
 // ---------------------------------------------------------------------------
 import { ToastProvider, ToastViewport } from "@/features/ui/toast";
-import { ModelSelectorWindow, NativelyInterface, Launcher, ErrorBoundary } from "@/features/common";
+import { ModelSelectorWindow, GodojoInterface, Launcher, ErrorBoundary } from "@/features/common";
 import { IncompatibleProviderBanner, AdCampaignToasters } from "@/features/common";
 // import { SupportToaster } from "@/features/common";
 
@@ -55,40 +55,22 @@ const queryClient = new QueryClient({
 });
 
 const App: React.FC = () => {
+
   // --- Window identity -------------------------------------------------
-  const { isSettingsWindow, isLauncherWindow, isOverlayWindow, isModelSelectorWindow, isCropperWindow, isDefault } =
-    useWindowRoute();
+  const { isSettingsWindow, isLauncherWindow, isOverlayWindow, isModelSelectorWindow, isCropperWindow, isDefault } = useWindowRoute();
 
   // --- Cross-cutting app logic, lifted into hooks -----------------------
   useAppAnalytics(isLauncherWindow, isOverlayWindow, isDefault);
 
-  const {
-    authUser,
-    authChecked,
-    pendingVerificationUser,
-    sessionExpiredMessage,
-    setSessionExpiredMessage,
-    completeEmailVerification,
-    signOut,
-  } = useFirebaseAuth(isLauncherWindow, isDefault, isOverlayWindow);
-
+  const FirebaseAuthStates = useFirebaseAuth(isLauncherWindow, isDefault, isOverlayWindow);
+  const { authUser, authChecked, pendingVerificationUser, sessionExpiredMessage } = FirebaseAuthStates;
+  const { setSessionExpiredMessage, completeEmailVerification, signOut } = FirebaseAuthStates;
   const { tenantId, tenant, isAdmin } = useTenant(authUser, isLauncherWindow, isDefault);
-
   const [overlayOpacity] = useOverlayOpacity(isOverlayWindow);
 
-  const {
-    hasProfile,
-    isPremiumActive,
-    setIsPremiumActive,
-    isProcessingMeeting,
-    setIsProcessingMeeting,
-    lastMeetingEndTime,
-    appStartTime,
-    ollamaPull,
-    incompatibleWarning,
-    dismissIncompatibleWarning,
-    reindexIncompatibleMeetings,
-  } = useAppLifecycleListeners();
+  const AppLifecycleStates = useAppLifecycleListeners();
+  const { hasProfile, isPremiumActive, setIsPremiumActive, isProcessingMeeting, setIsProcessingMeeting } = AppLifecycleStates;
+  const { lastMeetingEndTime, appStartTime, ollamaPull, incompatibleWarning, dismissIncompatibleWarning, reindexIncompatibleMeetings } = AppLifecycleStates;
 
   const { handleStartMeeting, handleEndMeeting } = useMeetingSession(tenantId, setIsProcessingMeeting);
 
@@ -106,21 +88,11 @@ const App: React.FC = () => {
     setSettingsInitialTab("user-roles-permissions");
     setIsSettingsOpen(true);
   };
-  const { deepLinkInviteToken, clearDeepLinkInviteToken, inviteMismatchEmail, dismissInviteMismatch } = useTeamInvite(
-    authUser,
-    openInviteSettingsTab
-  );
 
-  const isAppReady =
-    !isSettingsWindow && !isOverlayWindow && !isModelSelectorWindow && !showStartup && !isSettingsOpen && !isManagerDashboardOpen && isLauncherMainView;
-  const { activeAd, dismissAd } = useAdCampaigns(
-    isPremiumActive,
-    hasProfile,
-    isAppReady,
-    appStartTime,
-    lastMeetingEndTime,
-    isProcessingMeeting
-  );
+  const { deepLinkInviteToken, clearDeepLinkInviteToken, inviteMismatchEmail, dismissInviteMismatch } = useTeamInvite(authUser, openInviteSettingsTab);
+
+  const isAppReady = !isSettingsWindow && !isOverlayWindow && !isModelSelectorWindow && !showStartup && !isSettingsOpen && !isManagerDashboardOpen && isLauncherMainView;
+  const { activeAd, dismissAd } = useAdCampaigns(isPremiumActive, hasProfile, isAppReady, appStartTime, lastMeetingEndTime, isProcessingMeeting);
 
   // --- Render --------------------------------------------------------------
 
@@ -176,7 +148,7 @@ const App: React.FC = () => {
                   transition: "background-color 75ms ease, border-color 75ms ease, box-shadow 75ms ease",
                 } as React.CSSProperties}
               >
-                <NativelyInterface onEndMeeting={handleEndMeeting} overlayOpacity={overlayOpacity} />
+                <GodojoInterface onEndMeeting={handleEndMeeting} overlayOpacity={overlayOpacity} />
               </div>
               <ToastViewport />
             </ToastProvider>

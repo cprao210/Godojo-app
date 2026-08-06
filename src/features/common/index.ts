@@ -5,9 +5,14 @@ import ErrorBoundary from "@/features/common/ErrorBoundary";
 import IncompatibleProviderBanner from "@/features/common/IncompatibleProviderBanner";
 import Launcher from "@/features/common/Launcher";
 import ModelSelectorWindow from "@/features/common/ModelSelectorWindow";
-import NativelyInterface from "@/features/common/NativelyInterface";
+import GodojoInterface from "@/features/common/GodojoInterface";
 import { SupportToaster } from "@/features/common/SupportToaster";
 import TopSearchPill from "@/features/common/TopSearchPill";
 import WindowControls from "@/features/common/WindowControls";
 
-export { AdCampaignToasters, Cropper, EditableTextBlock, ErrorBoundary, IncompatibleProviderBanner, Launcher, ModelSelectorWindow, NativelyInterface, SupportToaster, TopSearchPill, WindowControls };
+import { MaximizeRestoreIcon } from '@/features/common/MaximizeRestoreIcon';
+import { WindowControlButton } from '@/features/common/WindowControlButton';
+
+export { MaximizeRestoreIcon, WindowControlButton };
+
+export { AdCampaignToasters, Cropper, EditableTextBlock, ErrorBoundary, IncompatibleProviderBanner, Launcher, ModelSelectorWindow, GodojoInterface, SupportToaster, TopSearchPill, WindowControls };

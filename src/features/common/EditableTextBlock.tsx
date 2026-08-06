@@ -1,6 +1,13 @@
-import React, { useState, useRef, useEffect, useCallback } from 'react';
+import React from 'react';
 import { EditableTextBlockProps } from '@/types';
+import { useEditableTextBlock } from '@/hooks';
 
+// ============================================
+// Main Component
+// ============================================
+// Generic inline-editable text element (used for titles, notes, list items,
+// etc. across the app). All editing state, debounced saving, and keyboard
+// handling now live in useEditableTextBlock — this component only renders.
 const EditableTextBlock: React.FC<EditableTextBlockProps> = ({
     initialValue,
     onSave,
@@ -11,106 +18,8 @@ const EditableTextBlock: React.FC<EditableTextBlockProps> = ({
     onEnter,
     autoFocus = false
 }) => {
-    const [isEditing, setIsEditing] = useState(autoFocus); // Start editing if autoFocus is true
-    const [localValue, setLocalValue] = useState(initialValue);
-    const contentRef = useRef<HTMLElement>(null);
-    const saveTimeoutRef = useRef<NodeJS.Timeout | null>(null);
-
-    // Sync external changes if not editing
-    useEffect(() => {
-        if (!isEditing) {
-            setLocalValue(initialValue);
-            if (contentRef.current && contentRef.current.innerText !== initialValue) {
-                contentRef.current.innerText = initialValue;
-            }
-        }
-    }, [initialValue, isEditing]);
-
-    const handleSave = useCallback((newValue: string) => {
-        const trimmed = newValue.trim();
-        // Only save if changed (allow saving empty string if that's the intent, but usually we want to keep it clean)
-        // If it's a list item, empty might mean delete, but for now let's just save whatever.
-        if (trimmed !== initialValue) {
-            onSave(trimmed);
-        }
-    }, [initialValue, onSave]);
-
-    const handleChange = useCallback(() => {
-        if (!contentRef.current) return;
-        const newValue = contentRef.current.innerText;
-        setLocalValue(newValue);
-
-        // Debounced save
-        if (saveTimeoutRef.current) {
-            clearTimeout(saveTimeoutRef.current);
-        }
-
-        saveTimeoutRef.current = setTimeout(() => {
-            handleSave(newValue);
-        }, 600); // 600ms debounce
-    }, [handleSave]);
-
-    const handleBlur = useCallback(() => {
-        setIsEditing(false);
-        if (saveTimeoutRef.current) {
-            clearTimeout(saveTimeoutRef.current);
-        }
-        if (contentRef.current) {
-            handleSave(contentRef.current.innerText);
-        }
-    }, [handleSave]);
-
-    const lastEnterTime = useRef<number>(0);
-
-    const handleKeyDown = (e: React.KeyboardEvent) => {
-        if (e.key === 'Escape') {
-            e.preventDefault();
-            // Revert
-            setIsEditing(false);
-            if (saveTimeoutRef.current) {
-                clearTimeout(saveTimeoutRef.current);
-            }
-            if (contentRef.current) {
-                contentRef.current.innerText = initialValue;
-            }
-            setLocalValue(initialValue);
-        } else if (e.key === 'Enter') {
-            if (!multiline) {
-                e.preventDefault();
-                contentRef.current?.blur();
-            } else if (onEnter) {
-                // Double-Enter detection (500ms threshold)
-                const now = Date.now();
-                if (now - lastEnterTime.current < 500) {
-                    // Double-Enter detected!
-                    e.preventDefault();
-                    if (saveTimeoutRef.current) clearTimeout(saveTimeoutRef.current);
-                    if (contentRef.current) handleSave(contentRef.current.innerText);
-                    onEnter();
-                    lastEnterTime.current = 0; // Reset
-                } else {
-                    // First Enter: Allow default (newline)
-                    // But track time
-                    lastEnterTime.current = now;
-                    // Standard newline behavior allows contentEditable to insert <div> or <br>
-                    // We don't preventDefault here.
-                }
-            }
-        }
-    };
-
-    const handleClick = () => {
-        setIsEditing(true);
-    };
-
-    // Focus management
-    useEffect(() => {
-        if (isEditing && contentRef.current) {
-            contentRef.current.focus();
-            // If autoFocus was relevant (newly created), we might want cursor at start or end?
-            // Standard behavior usually end, but for new empty item it doesn't matter.
-        }
-    }, [isEditing]);
+    const { isEditing, localValue, contentRef, handleChange, handleBlur, handleClick, handleKeyDown } =
+        useEditableTextBlock({ initialValue, onSave, multiline, autoFocus, onEnter });
 
     const Tag = tagName as any;
 

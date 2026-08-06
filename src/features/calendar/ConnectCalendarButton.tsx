@@ -29,20 +29,11 @@ const ConnectCalendarButton: React.FC<ConnectCalendarButtonProps> = ({ onConnect
 
     const isLight = useResolvedTheme() === 'light';
 
-    const {
-        loading,
-        connected,
-        anyConnected,
-        connectedList,
-        unconnectedList,
-        showPicker,
-        dropdownPos,
-        mainButtonRef,
-        addButtonRef,
-        dropdownRef,
-        togglePicker,
-        handleConnect,
-    } = useCalendarConnections({ providers: PROVIDERS, onConnect, onDisconnect });
+    const calendarConnectionsStates = useCalendarConnections({ providers: PROVIDERS, onConnect, onDisconnect });
+
+    const { loading, connected, anyConnected, connectedList, unconnectedList } = calendarConnectionsStates;
+    const { showPicker, dropdownPos, mainButtonRef, addButtonRef, dropdownRef } = calendarConnectionsStates;
+    const { togglePicker, handleConnect } = calendarConnectionsStates;
 
     // ── Shared floating dropdown ──────────────────────────────────────────────
     const Dropdown = ({ items }: { items: typeof PROVIDERS }) => {
@@ -246,6 +237,7 @@ const ConnectCalendarButton: React.FC<ConnectCalendarButtonProps> = ({ onConnect
             `}</style>
         </>
     );
+
 };
 
 export default ConnectCalendarButton;

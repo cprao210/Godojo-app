@@ -89,7 +89,6 @@ const signalTypeColorThemed = (type: string, isLight: boolean) => {
 };
 
 // ─── SectionToggle ─────────────────────────────────────────────────────────
-
 const SectionToggle: React.FC<SectionToggleProps> = ({
     icon, title, badge, badgeColor = 'bg-white/10 text-white/50',
     children, defaultOpen = false, themed = false, isLight = false,
@@ -175,7 +174,6 @@ const SectionToggle: React.FC<SectionToggleProps> = ({
 };
 
 // ─── FieldRow ──────────────────────────────────────────────────────────────
-
 const FieldRow: React.FC<FieldRowProps> = ({ label, field, themed = false, isLight = false }) => {
     if (themed) {
         return (
@@ -240,7 +238,6 @@ const FieldRow: React.FC<FieldRowProps> = ({ label, field, themed = false, isLig
 };
 
 // ─── Main component ────────────────────────────────────────────────────────
-
 export const LiveAnalysisContent: React.FC<LiveAnalysisContentProps> = ({
     analysisData,
     // aiInsight,

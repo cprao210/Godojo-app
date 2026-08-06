@@ -9,14 +9,16 @@ import { chatApi, statusLabel } from '@/api';
 import { chatMarkdownComponents } from '@/features/chat';
 import { ChatHistoryTurn, FloatingChatPanelProps, LiveTranscriptSegment, Message, StreamHandle } from '@/types';
 
-// ── Film-roll transcript — text streams right-to-left like a ticker ──────────
-const FilmRollTranscript: React.FC<{
+interface FilmRollTranscriptProps {
     text: string;
     speakerLabel: string;
     speakerColor?: string;
     dotColor?: string;
     liveColor?: string;
-}> = ({ text, speakerLabel, speakerColor = 'text-white/55', dotColor = 'bg-blue-400', liveColor = '#f87171' }) => {
+}
+
+// ── Film-roll transcript — text streams right-to-left like a ticker ──────────
+const FilmRollTranscript: React.FC<FilmRollTranscriptProps> = ({ text, speakerLabel, speakerColor = 'text-white/55', dotColor = 'bg-blue-400', liveColor = '#f87171' }) => {
     const scrollRef = useRef<HTMLDivElement>(null);
 
     // Auto-scroll to end whenever text grows
@@ -199,18 +201,8 @@ const MessageBubble: React.FC<{ msg: Message }> = ({ msg }) => {
     );
 };
 
-export const FloatingChatPanel: React.FC<FloatingChatPanelProps> = ({
-    transcriptRef,
-    rollingTranscriptUser,
-    rollingTranscriptClient,
-    isClientSpeaking,
-    isUserSpeaking,
-    isMeetingPaused,
-    showTranscript,
-    speakerNames,
-    messages,
-    onMessagesChange,
-}) => {
+export const FloatingChatPanel: React.FC<FloatingChatPanelProps> = ({ transcriptRef, rollingTranscriptUser, rollingTranscriptClient, isClientSpeaking, isUserSpeaking, isMeetingPaused, showTranscript, speakerNames, messages, onMessagesChange }) => {
+
     const setMessages = onMessagesChange;
     const [inputValue, setInputValue] = useState('');
     const [isProcessing, setIsProcessing] = useState(false);
