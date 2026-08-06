@@ -23,9 +23,17 @@
   },
   "build": {
     "generateUpdatesFilesForAllChannels": true,
-    "appId": "com.geoserves.godojo-ai",
+    "appId": "com.electron.meeting-notes",
     "afterPack": "./scripts/ad-hoc-sign.js",
     "productName": "GoDojo AI",
+    "protocols": [
+      {
+        "name": "GoDojo Invite Link",
+        "schemes": [
+          "godojo"
+        ]
+      }
+    ],
     "files": [
       "dist",
       "dist-electron",
@@ -132,15 +140,15 @@
     "publish": [
       {
         "provider": "github",
-        "owner": "evinjohnn",
-        "repo": "natively-cluely-ai-assistant",
+        "owner": "cprao210",
+        "repo": "Godojo-app",
         "releaseType": "release"
       }
     ]
   },
   "keywords": [],
-  "author": "",
-  "license": "ISC",
+  "author": "GoDojo AI",
+  "license": "UNLICENSED",
   "devDependencies": {
     "@electron/notarize": "^3.1.1",
     "@electron/rebuild": "^4.0.3",

@@ -73,6 +73,7 @@ export interface ElectronAPI {
   getOpenAtLogin: () => Promise<boolean>
   onSettingsVisibilityChange: (callback: (isVisible: boolean) => void) => () => void
   toggleSettingsWindow: (coords?: { x: number; y: number }) => Promise<void>
+  onInviteDeepLink: (callback: (data: { token: string }) => void) => () => void
   closeSettingsWindow: () => Promise<void>
   toggleAdvancedSettings: () => Promise<void>
   closeAdvancedSettings: () => Promise<void>
@@ -105,12 +106,16 @@ export interface ElectronAPI {
   setGroqSttModel: (model: string) => Promise<{ success: boolean; error?: string }>
   setSonioxApiKey: (apiKey: string) => Promise<{ success: boolean; error?: string }>
   testSttConnection: (provider: 'groq' | 'openai' | 'deepgram' | 'elevenlabs' | 'azure' | 'ibmwatson' | 'soniox', apiKey: string, region?: string) => Promise<{ success: boolean; error?: string }>
+  setDiarizeClientEnabled: (enabled: boolean) => Promise<{ success: boolean; error?: string }>
+  getDiarizeClientEnabled: () => Promise<boolean>
+  getAudioPipelineStats: () => Promise<Record<string, unknown> | null>
+  getOutputRoute: () => Promise<{ kind: string; transport: string; name: string } | null>
   getDisplayName: (role: 'user' | 'client' | 'assistant') => Promise<string>;
   getSpeakerNames: () => Promise<{ user: string; client: string }>;
   onSpeakerNamesResolved: (callback: (names: { user: string; client: string }) => void) => () => void;
 
   // Native Audio Service Events
-  onNativeAudioTranscript: (callback: (transcript: { speaker: string; text: string; final: boolean }) => void) => () => void
+  onNativeAudioTranscript: (callback: (transcript: { speaker: string; displayName?: string; text: string; timestamp?: number; final: boolean; confidence?: number; speakerIndex?: number; retract?: boolean }) => void) => () => void
   onNativeAudioSuggestion: (callback: (suggestion: { context: string; lastQuestion: string; confidence: number }) => void) => () => void
   onNativeAudioConnected: (callback: () => void) => () => void
   onNativeAudioDisconnected: (callback: () => void) => () => void
@@ -164,7 +169,7 @@ export interface ElectronAPI {
 
   // Meeting Lifecycle
   startMeeting: (metadata?: any) => Promise<{ success: boolean; error?: string }>
-  endMeeting: (meetingTypes?: ('discovery' | 'demo' | 'negotiation')[]) => Promise<{ success: boolean; error?: string }>
+  endMeeting: (meetingTypes?: ('discovery' | 'demo' | 'negotiation')[], tenantId?: string | null) => Promise<{ success: boolean; meetingId?: string | null; error?: string }>
   finalizeMicSTT: () => Promise<void>
   getRecentMeetings: () => Promise<Array<{ id: string; title: string; date: string; duration: string; summary: string }>>
   getMeetingDetails: (id: string) => Promise<any>
@@ -200,11 +205,6 @@ export interface ElectronAPI {
   onGeminiStreamToken: (callback: (token: string) => void) => () => void
   onGeminiStreamDone: (callback: () => void) => () => void
   onGeminiStreamError: (callback: (error: string) => void) => () => void;
-
-  // NEW: Dedicated Live Analysis with its own events
-  startLiveAnalysis: (prompt: string) => Promise<{ success: boolean; error?: string }>;
-  onLiveAnalysisResult: (callback: (result: string) => void) => () => void;
-  onLiveAnalysisError: (callback: (error: string) => void) => () => void;
 
   updateLiveAnalysis: (data: LiveAnalysisData) => Promise<{ success: boolean }>;
 
@@ -414,6 +414,11 @@ export interface ElectronAPI {
   onAuthStateChanged: (
     callback: (state: { signedIn: boolean; uid?: string; email?: string | null; displayName?: string | null; photoURL?: string | null }) => void
   ) => () => void;
+
+  // ===== Tenant ID (cross-window) =====
+  setCurrentTenantId: (tenantId: string | null) => Promise<{ success: boolean }>;
+  getCurrentTenantId: () => Promise<string | null>;
+  onTenantStateChanged: (callback: (tenantId: string | null) => void) => () => void;
 
   // ===== Supabase mirror =====
   supabaseSetCredentials: (url: string, anonKey: string) => Promise<{ success: boolean; error?: string }>;

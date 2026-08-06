@@ -222,7 +222,11 @@ export class GoogleSTT extends EventEmitter {
         this.isStreaming = true;
         this.isConnecting = true;
 
-        this.stream = this.client
+        // Build into a local `stream`, then publish to this.stream. Each handler
+        // guards `this.stream !== stream` so a PREVIOUS stream's late error/end/close
+        // (which fires async after a setSampleRate/language restart destroyed it)
+        // cannot null out the NEW this.stream and trigger lazy-reconnect churn.
+        const stream = this.client
             .streamingRecognize({
                 config: {
                     encoding: this.encoding,
@@ -237,6 +241,7 @@ export class GoogleSTT extends EventEmitter {
                 interimResults: true,
             })
             .on('error', (err: Error) => {
+                if (this.stream !== stream) return;
                 console.error('[GoogleSTT] Stream error:', err);
                 this.emit('error', err);
                 this.isConnecting = false;
@@ -244,18 +249,21 @@ export class GoogleSTT extends EventEmitter {
                 this.stream = null;
             })
             .on('end', () => {
+                if (this.stream !== stream) return;
                 console.log('[GoogleSTT] Stream ended server-side (idle timeout)');
                 this.isConnecting = false;
                 this.isStreaming = false;
                 this.stream = null;
             })
             .on('close', () => {
+                if (this.stream !== stream) return;
                 console.log('[GoogleSTT] Stream closed server-side');
                 this.isConnecting = false;
                 this.isStreaming = false;
                 this.stream = null;
             })
             .on('data', (data: any) => {
+                if (this.stream !== stream) return;
                 // ... (existing data handler)
                 if (data.results[0] && data.results[0].alternatives[0]) {
                     const result = data.results[0];
@@ -273,7 +281,9 @@ export class GoogleSTT extends EventEmitter {
                 }
             });
 
-        // Initialize writeable check or wait for 'open'? 
+        this.stream = stream;
+
+        // Initialize writeable check or wait for 'open'?
         // gRPC streams are usually writeable immediately.
         // We can flush immediately after creation.
         this.isConnecting = false;

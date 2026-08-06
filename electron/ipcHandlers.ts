@@ -18,6 +18,11 @@ import {
   buildOwnCompanyBlockFromOrchestrator,
   hydrateOrchestratorFromContext,
 } from './utils/companyKnowledge';
+import { AuthManager } from './services/AuthManager';
+
+function getAuthToken(): string | null {
+  return AuthManager.getInstance().getIdToken();
+}
 
 export function initializeIpcHandlers(appState: AppState): void {
   const safeHandle = (channel: string, listener: (event: any, ...args: any[]) => Promise<any> | any) => {
@@ -385,7 +390,6 @@ export function initializeIpcHandlers(appState: AppState): void {
   // Each new invocation increments the ID; any in-flight iteration bails as soon as it detects
   // that a newer stream has taken over.
   let _chatStreamId = 0;
-  let _analysisStreamId = 0;
 
   /**
    * Per-session Tavily dedup cache for gemini-chat-stream.
@@ -535,42 +539,6 @@ export function initializeIpcHandlers(appState: AppState): void {
     } catch (error: any) {
       console.error("[IPC] Error in gemini-chat-stream setup:", error);
       throw error;
-    }
-  });
-
-  safeHandle("live-analysis-stream", async (event, prompt: string) => {
-
-    try {
-
-      const promptKb = (prompt.length / 1024).toFixed(1);
-      console.log(`[IPC] live-analysis-stream called — prompt: ${prompt.length} chars (${promptKb} KB)`);
-
-      const llmHelper = appState.processingHelper.getLLMHelper();
-      const myStreamId = ++_analysisStreamId;
-
-      appState.setLiveAnalysisInFlight(true);
-      let result: any;
-      try {
-        // Use the dedicated live analysis method (Gemini Flash → Claude → OpenAI, Groq excluded).
-        // This bypasses the general-purpose fallback waterfall and enforces temperature=0.1
-        // for schema-accurate extraction. Falls back to chatWithGemini if the method is absent
-        // (older LLMHelper version during hot-reload).
-        result = typeof llmHelper.generateLiveAnalysis === 'function'
-          ? await llmHelper.generateLiveAnalysis(prompt)
-          : await llmHelper.chatWithGemini(prompt, undefined, undefined, true);
-      } finally {
-        appState.setLiveAnalysisInFlight(false);
-      }
-
-      if (_analysisStreamId === myStreamId) {
-        event.sender.send('live-analysis-result', result);
-      }
-
-      return { success: true };
-    } catch (error: any) {
-      console.error('[IPC] live-analysis-stream error:', error);
-      event.sender.send('live-analysis-error', error.message || 'Analysis failed');
-      return { success: false, error: error.message };
     }
   });
 
@@ -1159,6 +1127,74 @@ export function initializeIpcHandlers(appState: AppState): void {
     }
   });
 
+  // Deepgram diarization on the far-end (client) stream — paid streaming add-on.
+  safeHandle("set-diarize-client-enabled", async (_, enabled: boolean) => {
+    try {
+      const { CredentialsManager } = require('./services/CredentialsManager');
+      CredentialsManager.getInstance().setDiarizeClientEnabled(!!enabled);
+      // Rebuild both STT instances so the client connection picks up diarize.
+      await appState.reconfigureSttProvider();
+      return { success: true };
+    } catch (error: any) {
+      console.error("Error setting client diarization:", error);
+      return { success: false, error: error.message };
+    }
+  });
+
+  safeHandle("get-diarize-client-enabled", async () => {
+    try {
+      const { CredentialsManager } = require('./services/CredentialsManager');
+      return CredentialsManager.getInstance().getDiarizeClientEnabled();
+    } catch {
+      return false;
+    }
+  });
+
+  // Echo pipeline mode for the native audio gate ('legacy' | 'phase1' | 'full_duplex').
+  safeHandle("set-echo-pipeline-mode", async (_, mode: string) => {
+    try {
+      const { CredentialsManager } = require('./services/CredentialsManager');
+      CredentialsManager.getInstance().setEchoPipelineMode(mode);
+      return { success: true };
+    } catch (error: any) {
+      return { success: false, error: error.message };
+    }
+  });
+
+  safeHandle("get-echo-pipeline-mode", async () => {
+    try {
+      const { CredentialsManager } = require('./services/CredentialsManager');
+      return CredentialsManager.getInstance().getEchoPipelineMode();
+    } catch {
+      return 'full_duplex';
+    }
+  });
+
+  // Echo pipeline telemetry (ERLE, gate state, mute ratio) for a debug panel.
+  safeHandle("get-audio-pipeline-stats", async () => {
+    try {
+      const { loadNativeModule } = require('./audio/nativeModuleLoader');
+      const native = loadNativeModule();
+      if (!native?.getAudioPipelineStats) return null;
+      return JSON.parse(native.getAudioPipelineStats());
+    } catch (error: any) {
+      console.error("Error reading audio pipeline stats:", error);
+      return null;
+    }
+  });
+
+  // Current default output route classification (headphones/speakers).
+  safeHandle("get-output-route", async () => {
+    try {
+      const { loadNativeModule } = require('./audio/nativeModuleLoader');
+      const native = loadNativeModule();
+      if (!native?.getOutputRoute) return null;
+      return native.getOutputRoute();
+    } catch {
+      return null;
+    }
+  });
+
   safeHandle("set-groq-stt-api-key", async (_, apiKey: string) => {
     try {
       const { CredentialsManager } = require('./services/CredentialsManager');
@@ -1679,10 +1715,10 @@ export function initializeIpcHandlers(appState: AppState): void {
     }
   });
 
-  safeHandle("end-meeting", async (_, payload?: { meetingTypes?: ('discovery' | 'demo' | 'negotiation')[] }) => {
+  safeHandle("end-meeting", async (_, payload?: { meetingTypes?: ('discovery' | 'demo' | 'negotiation')[], tenantId?: string | null }) => {
     try {
-      await appState.endMeeting(payload?.meetingTypes);
-      return { success: true };
+      const meetingId = await appState.endMeeting(payload?.meetingTypes, payload?.tenantId);
+      return { success: true, meetingId };
     } catch (error: any) {
       console.error("Error ending meeting:", error);
       return { success: false, error: error.message };
@@ -2506,7 +2542,19 @@ export function initializeIpcHandlers(appState: AppState): void {
 
   safeHandle('company:getContext', async () => {
     try {
-      // Prefer DB (source of truth); fall back to SettingsManager for pre-migration data
+      // Supabase is the source of truth for this screen — the local SQLite
+      // cache only ever syncs one-way (local -> Supabase), so it can't see
+      // deletions/edits made directly against the cloud table. Read live
+      // whenever we have a configured, signed-in client; fall back to the
+      // local cache only when Supabase is unreachable (offline, etc.).
+      if (SupabaseReadService.isAvailable()) {
+        try {
+          return await SupabaseReadService.getCompanyContext();
+        } catch (supabaseErr) {
+          console.warn('[IPC] company:getContext: Supabase read failed, falling back to local cache:', supabaseErr);
+        }
+      }
+      // Fall back to local DB (source of truth for pre-migration/offline data)
       const dbCtx = DatabaseManager.getInstance().getCompanyContext();
       if (dbCtx) return dbCtx;
       const { SettingsManager } = require('./services/SettingsManager');
@@ -2540,115 +2588,157 @@ export function initializeIpcHandlers(appState: AppState): void {
           const fileBuffer = Buffer.from(asset.fileData, 'base64');
           db.saveAssetFile(asset.id, asset.fileName, asset.mimeType, fileBuffer);
 
-          // Kick off chunking + embedding in background
-          setImmediate(async () => {
+          // Chunk + embed synchronously (awaited) so the caller (handleSave) can
+          // be certain embeddings are actually written before it returns success —
+          // this is what /reindex depends on downstream.
+
+          if (asset.mimeType !== "application/pdf") {
+
+            await (async () => {
+              try {
+                const { extractTextFromBuffer } = require('./utils/documentParser');
+                const { estimateTokens } = require('./rag');
+
+                const rawText: string = await extractTextFromBuffer(fileBuffer, asset.mimeType);
+
+                const MAX_TOKENS = 400;
+                const sentences = rawText.split(/(?<=[.!?])\s+/);
+                const chunks: Array<{ index: number; text: string; tokenCount: number }> = [];
+                let current = '';
+                let idx = 0;
+                for (const sentence of sentences) {
+                  const combined = current ? `${current} ${sentence}` : sentence;
+                  if (estimateTokens(combined) > MAX_TOKENS && current) {
+                    chunks.push({ index: idx++, text: current.trim(), tokenCount: estimateTokens(current) });
+                    current = sentence;
+                  } else {
+                    current = combined;
+                  }
+                }
+                if (current.trim()) {
+                  chunks.push({ index: idx, text: current.trim(), tokenCount: estimateTokens(current) });
+                }
+
+                db.saveAssetChunks(asset.id, chunks);
+
+                const ragManager = appState.getRAGManager?.();
+                if (!ragManager) {
+                  // RAG pipeline not available — mark error so the UI shows the real state
+                  // instead of silently lying with 'mapped'
+                  db.upsertCompanyAsset({ id: asset.id, type: asset.type, label: asset.label, status: 'error' });
+                  console.warn(`[IPC] company:saveContext — ragManager not available, skipping embeddings for asset ${asset.id}`);
+                  // Still link chunks (text-only, no embeddings) to the orchestrator
+                  try {
+                    const orchestrator = appState.getKnowledgeOrchestrator();
+                    if (orchestrator && typeof orchestrator.ingestDocument === 'function') {
+                      await orchestrator.ingestDocument({ id: asset.id, type: asset.type, label: asset.label, mimeType: asset.mimeType });
+                    }
+                  } catch (_) { }
+                  return;
+                }
+
+                const pipeline = ragManager.getEmbeddingPipeline();
+
+                // Bug 2 fix: wait for the pipeline to finish initializing before embedding
+                try {
+                  await pipeline.waitForReady(20000);
+                } catch (readyErr: any) {
+                  console.error(`[IPC] company:saveContext — embedding pipeline not ready for asset ${asset.id}:`, readyErr.message);
+                  db.upsertCompanyAsset({ id: asset.id, type: asset.type, label: asset.label, status: 'error' });
+                  try {
+                    const orchestrator = appState.getKnowledgeOrchestrator();
+                    if (orchestrator && typeof orchestrator.ingestDocument === 'function') {
+                      await orchestrator.ingestDocument({ id: asset.id, type: asset.type, label: asset.label, mimeType: asset.mimeType });
+                    }
+                  } catch (_) { }
+                  return;
+                }
+
+                let embeddingsFailed = 0;
+                const storedChunks = db.getAssetChunksWithoutEmbeddings(asset.id);
+                for (const c of storedChunks) {
+                  try {
+                    const vector = await pipeline.getEmbedding(c.chunk_text);
+                    const blob = Buffer.from(new Float32Array(vector).buffer);
+                    db.saveAssetChunkEmbedding(c.id, blob);
+                  } catch (embErr: any) {
+                    embeddingsFailed++;
+                    console.warn(`[IPC] company:saveContext — embedding failed for chunk ${c.id}:`, embErr.message);
+                  }
+                }
+
+                // Only mark 'mapped' if all embeddings succeeded
+                const finalStatus = embeddingsFailed === 0 ? 'mapped' : 'error';
+                if (embeddingsFailed > 0) {
+                  console.error(`[IPC] company:saveContext — ${embeddingsFailed}/${storedChunks.length} chunks failed to embed for asset ${asset.id}`);
+                }
+                db.upsertCompanyAsset({ id: asset.id, type: asset.type, label: asset.label, status: finalStatus });
+
+                // [NEW] Link the indexed document to the orchestrator
+                try {
+                  const orchestrator = appState.getKnowledgeOrchestrator();
+                  if (orchestrator && typeof orchestrator.ingestDocument === 'function') {
+                    // Do NOT pass extractedText here — chunks + embeddings are already
+                    // written to DB above. Passing extractedText triggers Mode A which
+                    // re-embeds inline and produces null embeddings if the pipeline is
+                    // momentarily busy, making all chunks invisible to semantic search.
+                    // Mode B (no extractedText) reads the already-embedded chunks from DB.
+                    await orchestrator.ingestDocument({
+                      id: asset.id,
+                      type: asset.type,        // 'sales_deck' | 'product_specs' | 'case_studies' | 'custom'
+                      label: asset.label,
+                      mimeType: asset.mimeType,
+                    });
+                    console.log(`[IPC] company:saveContext — orchestrator.ingestDocument linked for asset ${asset.id}`);
+                  }
+                } catch (ingestErr: any) {
+                  // Non-fatal: orchestrator link failure should not block the save flow
+                  console.warn(`[IPC] company:saveContext — orchestrator.ingestDocument failed for ${asset.id}:`, ingestErr.message);
+                }
+
+                console.log(`[IPC] company:saveContext — asset ${asset.id} fully indexed`);
+              } catch (indexErr: any) {
+                console.error(`[IPC] company:saveContext — indexing failed for asset ${asset.id}:`, indexErr.message);
+                db.upsertCompanyAsset({ id: asset.id, type: asset.type, label: asset.label, status: 'error' });
+              }
+            })();
+
+          } else {
+
             try {
-              const { extractTextFromBuffer } = require('./utils/documentParser');
-              const { estimateTokens } = require('./rag');
+              const form = new FormData();
+              form.append('file', new Blob([fileBuffer], { type: asset.mimeType }), asset.fileName);
+              form.append('asset_id', asset.id);
+              form.append('label', asset.label);
+              form.append('asset_type', asset.type);
 
-              const rawText: string = await extractTextFromBuffer(fileBuffer, asset.mimeType);
-
-              const MAX_TOKENS = 400;
-              const sentences = rawText.split(/(?<=[.!?])\s+/);
-              const chunks: Array<{ index: number; text: string; tokenCount: number }> = [];
-              let current = '';
-              let idx = 0;
-              for (const sentence of sentences) {
-                const combined = current ? `${current} ${sentence}` : sentence;
-                if (estimateTokens(combined) > MAX_TOKENS && current) {
-                  chunks.push({ index: idx++, text: current.trim(), tokenCount: estimateTokens(current) });
-                  current = sentence;
-                } else {
-                  current = combined;
-                }
-              }
-              if (current.trim()) {
-                chunks.push({ index: idx, text: current.trim(), tokenCount: estimateTokens(current) });
-              }
-
-              db.saveAssetChunks(asset.id, chunks);
-
-              const ragManager = appState.getRAGManager?.();
-              if (!ragManager) {
-                // RAG pipeline not available — mark error so the UI shows the real state
-                // instead of silently lying with 'mapped'
+              const token = getAuthToken();
+              if (!token) {
                 db.upsertCompanyAsset({ id: asset.id, type: asset.type, label: asset.label, status: 'error' });
-                console.warn(`[IPC] company:saveContext — ragManager not available, skipping embeddings for asset ${asset.id}`);
-                // Still link chunks (text-only, no embeddings) to the orchestrator
-                try {
-                  const orchestrator = appState.getKnowledgeOrchestrator();
-                  if (orchestrator && typeof orchestrator.ingestDocument === 'function') {
-                    await orchestrator.ingestDocument({ id: asset.id, type: asset.type, label: asset.label, mimeType: asset.mimeType });
-                  }
-                } catch (_) { }
+                console.error(`[IPC] no auth token available — user not signed in?`);
                 return;
               }
 
-              const pipeline = ragManager.getEmbeddingPipeline();
+              // const resp = await fetch(`${BACKEND_URL}/intelligence/company-assets/upload`, {
+              const resp = await fetch(`http://127.0.0.1:8000/api/v1/intelligence/company-assets/upload`, {
+                method: 'POST',
+                headers: { Authorization: `Bearer ${token}` },
+                body: form,
+              });
 
-              // Bug 2 fix: wait for the pipeline to finish initializing before embedding
-              try {
-                await pipeline.waitForReady(20000);
-              } catch (readyErr: any) {
-                console.error(`[IPC] company:saveContext — embedding pipeline not ready for asset ${asset.id}:`, readyErr.message);
-                db.upsertCompanyAsset({ id: asset.id, type: asset.type, label: asset.label, status: 'error' });
-                try {
-                  const orchestrator = appState.getKnowledgeOrchestrator();
-                  if (orchestrator && typeof orchestrator.ingestDocument === 'function') {
-                    await orchestrator.ingestDocument({ id: asset.id, type: asset.type, label: asset.label, mimeType: asset.mimeType });
-                  }
-                } catch (_) { }
-                return;
-              }
-
-              let embeddingsFailed = 0;
-              const storedChunks = db.getAssetChunksWithoutEmbeddings(asset.id);
-              for (const c of storedChunks) {
-                try {
-                  const vector = await pipeline.getEmbedding(c.chunk_text);
-                  const blob = Buffer.from(new Float32Array(vector).buffer);
-                  db.saveAssetChunkEmbedding(c.id, blob);
-                } catch (embErr: any) {
-                  embeddingsFailed++;
-                  console.warn(`[IPC] company:saveContext — embedding failed for chunk ${c.id}:`, embErr.message);
-                }
-              }
-
-              // Only mark 'mapped' if all embeddings succeeded
-              const finalStatus = embeddingsFailed === 0 ? 'mapped' : 'error';
-              if (embeddingsFailed > 0) {
-                console.error(`[IPC] company:saveContext — ${embeddingsFailed}/${storedChunks.length} chunks failed to embed for asset ${asset.id}`);
-              }
-              db.upsertCompanyAsset({ id: asset.id, type: asset.type, label: asset.label, status: finalStatus });
-
-              // [NEW] Link the indexed document to the orchestrator
-              try {
-                const orchestrator = appState.getKnowledgeOrchestrator();
-                if (orchestrator && typeof orchestrator.ingestDocument === 'function') {
-                  // Do NOT pass extractedText here — chunks + embeddings are already
-                  // written to DB above. Passing extractedText triggers Mode A which
-                  // re-embeds inline and produces null embeddings if the pipeline is
-                  // momentarily busy, making all chunks invisible to semantic search.
-                  // Mode B (no extractedText) reads the already-embedded chunks from DB.
-                  await orchestrator.ingestDocument({
-                    id: asset.id,
-                    type: asset.type,        // 'sales_deck' | 'product_specs' | 'case_studies' | 'custom'
-                    label: asset.label,
-                    mimeType: asset.mimeType,
-                  });
-                  console.log(`[IPC] company:saveContext — orchestrator.ingestDocument linked for asset ${asset.id}`);
-                }
-              } catch (ingestErr: any) {
-                // Non-fatal: orchestrator link failure should not block the save flow
-                console.warn(`[IPC] company:saveContext — orchestrator.ingestDocument failed for ${asset.id}:`, ingestErr.message);
-              }
-
-              console.log(`[IPC] company:saveContext — asset ${asset.id} fully indexed`);
-            } catch (indexErr: any) {
-              console.error(`[IPC] company:saveContext — indexing failed for asset ${asset.id}:`, indexErr.message);
+              const result = await resp.json();
+              console.log("SAVE_CONTEXT UPLOAD RESULT: ", result);
+              db.upsertCompanyAsset({
+                id: asset.id, type: asset.type, label: asset.label,
+                status: result.status === 'indexed' ? 'mapped' : 'error',
+              });
+            } catch (uploadErr: any) {
+              console.error(`[IPC] upload failed for asset ${asset.id}:`, uploadErr.message);
               db.upsertCompanyAsset({ id: asset.id, type: asset.type, label: asset.label, status: 'error' });
             }
-          });
+
+          }
+
         } else {
           // Existing asset already in DB — just keep its current status
           // Re-upsert with 'mapped' since it was already processed before
@@ -2690,6 +2780,19 @@ export function initializeIpcHandlers(appState: AppState): void {
         console.warn('[IPC] company:saveContext — orchestrator sync failed (non-fatal):', orchErr.message);
       }
 
+      // 7. Wait for the just-queued deletes/upserts to actually reach
+      //    Supabase before returning. company:getContext now reads Supabase
+      //    as the source of truth (see earlier fix), so if we returned
+      //    success while the delete was still sitting in the async mirror
+      //    outbox, switching tabs right after Save would re-fetch the old
+      //    row from Supabase and the "deleted" asset would pop back in.
+      try {
+        const { SupabaseMirrorService } = require('./db/SupabaseMirrorService');
+        await SupabaseMirrorService.getInstance().flush();
+      } catch (flushErr: any) {
+        console.warn('[IPC] company:saveContext — mirror flush failed (non-fatal, will retry in background):', flushErr.message);
+      }
+
       return { success: true };
     } catch (error: any) {
       return { success: false, error: error.message };
@@ -2699,7 +2802,7 @@ export function initializeIpcHandlers(appState: AppState): void {
   safeHandle('company:selectFile', async () => {
     try {
       const result: any = await dialog.showOpenDialog({
-        properties: ['openFile'],
+        properties: ['openFile', 'multiSelections'],
         filters: [
           { name: 'Documents', extensions: ['pdf', 'doc', 'docx', 'ppt', 'pptx'] }
         ]
@@ -2707,11 +2810,17 @@ export function initializeIpcHandlers(appState: AppState): void {
       if (result.canceled || result.filePaths.length === 0) {
         return { cancelled: true };
       }
-      const fp: string = result.filePaths[0];
-      const { statSync } = require('fs');
-      const { basename } = require('path');
-      const stat = statSync(fp);
-      return { success: true, filePath: fp, fileName: basename(fp), fileSize: stat.size };
+      // const fp: string = result.filePaths[0];
+      // const { statSync } = require('fs');
+      // const { basename } = require('path');
+      // const stat = statSync(fp);
+      // return { success: true, filePath: fp, fileName: basename(fp), fileSize: stat.size };
+
+      const files = result.filePaths.map((filePath: string) => {
+        const stat = fs.statSync(filePath);
+        return { filePath, fileName: path.basename(filePath), fileSize: stat.size };
+      });
+      return { cancelled: false, files };
     } catch (error: any) {
       return { success: false, error: error.message };
     }
@@ -3484,6 +3593,28 @@ export function initializeIpcHandlers(appState: AppState): void {
   } catch (e) {
     console.warn('[ipc] AuthManager event wiring failed:', e);
   }
+
+  // ==========================================
+  // Tenant ID bridge (cross-window)
+  // ==========================================
+  // The current tenant is resolved once, in the main/launcher window, via
+  // tenantsApi.listMine() (needs the Firebase token owned by that window's
+  // renderer). The overlay window — where "End Meeting" actually lives — is
+  // a *separate* renderer process with its own React tree and its own
+  // (always-null) local state, so it can never see that value on its own.
+  // We cache the resolved tenantId here in the main process and broadcast it
+  // to every window, the same way auth:state-changed already works.
+  let currentTenantId: string | null = null;
+
+  safeHandle('tenant:set-current', async (_, tenantId: string | null) => {
+    currentTenantId = tenantId ?? null;
+    BrowserWindow.getAllWindows().forEach(win => {
+      if (!win.isDestroyed()) win.webContents.send('tenant:state-changed', currentTenantId);
+    });
+    return { success: true };
+  });
+
+  safeHandle('tenant:get-current', async () => currentTenantId);
 
   safeHandle('auth:set-id-token', async (_, session: {
     idToken: string;

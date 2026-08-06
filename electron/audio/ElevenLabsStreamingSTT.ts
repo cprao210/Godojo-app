@@ -137,8 +137,22 @@ export class ElevenLabsStreamingSTT extends EventEmitter {
         try {
             // The input buffer from the native module is ALREADY 16-bit PCM (Int16LE).
             // Do NOT read it as Float32.
-            const inputS16 = new Int16Array(chunk.buffer, chunk.byteOffset, chunk.byteLength / 2);
-            
+            // A zero-copy Int16Array view requires a 2-byte-aligned byteOffset, but
+            // Buffer.from() draws small buffers from Node's shared pool and can hand
+            // back an ODD byteOffset — constructing the view then throws RangeError
+            // (previously swallowed by the catch → silently dropped audio). Copy into
+            // a fresh, offset-0 ArrayBuffer whenever the offset is unaligned, and floor
+            // the length to an even byte count.
+            const evenByteLength = chunk.byteLength & ~1;
+            let inputS16: Int16Array;
+            if (chunk.byteOffset % 2 === 0) {
+                inputS16 = new Int16Array(chunk.buffer, chunk.byteOffset, evenByteLength / 2);
+            } else {
+                const aligned = new Uint8Array(evenByteLength);
+                aligned.set(chunk.subarray(0, evenByteLength));
+                inputS16 = new Int16Array(aligned.buffer, 0, evenByteLength / 2);
+            }
+
             let outputS16: Int16Array;
 
             if (this.inputSampleRate === this.targetSampleRate) {

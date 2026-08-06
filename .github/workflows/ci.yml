@@ -7,6 +7,143 @@ on:
   workflow_dispatch:
 
 jobs:
+  # Tag-triggered release runs can't read each other's Actions cache (each
+  # tag is its own ref) — but they CAN fall back to the default branch's
+  # cache. This job warms that cache in release profile, only when the
+  # native module actually changed, so release.yml's macOS job isn't a
+  # cold build on every single release.
+  warm-native-cache:
+    name: Warm native module cache (macOS)
+    runs-on: macos-latest
+    if: |
+      github.event_name == 'push' &&
+      github.ref == format('refs/heads/{0}', github.event.repository.default_branch)
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Check if native-module changed
+        id: changed
+        run: |
+          if git diff --quiet ${{ github.event.before }} ${{ github.sha }} -- native-module/ 2>/dev/null; then
+            echo "changed=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "changed=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Install Rust toolchain
+        if: steps.changed.outputs.changed == 'true'
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-apple-darwin
+
+      - name: Cache Rust build
+        if: steps.changed.outputs.changed == 'true'
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: native-module -> target
+          key: macos-universal
+
+      - name: Install Meson & Ninja
+        if: steps.changed.outputs.changed == 'true'
+        run: brew install meson ninja
+
+      - name: Build native module (release profile, warms cache only)
+        if: steps.changed.outputs.changed == 'true'
+        working-directory: native-module
+        run: |
+          start=$(date +%s)
+          cargo build --release --target aarch64-apple-darwin
+          end=$(date +%s)
+          echo "::notice title=Native build duration (macOS)::$((end - start))s"
+
+  warm-native-cache-windows:
+    name: Warm native module cache (Windows)
+    runs-on: windows-latest
+    if: |
+      github.event_name == 'push' &&
+      github.ref == format('refs/heads/{0}', github.event.repository.default_branch)
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Check if native-module changed
+        id: changed
+        shell: bash
+        run: |
+          if git diff --quiet ${{ github.event.before }} ${{ github.sha }} -- native-module/ 2>/dev/null; then
+            echo "changed=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "changed=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Install Rust toolchain
+        if: steps.changed.outputs.changed == 'true'
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache Rust build
+        if: steps.changed.outputs.changed == 'true'
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: native-module -> target
+          key: windows
+
+      - name: Build native module (release profile, warms cache only)
+        if: steps.changed.outputs.changed == 'true'
+        working-directory: native-module
+        shell: bash
+        run: |
+          start=$(date +%s)
+          cargo build --release
+          end=$(date +%s)
+          echo "::notice title=Native build duration (Windows)::$((end - start))s"
+
+  warm-native-cache-linux:
+    name: Warm native module cache (Linux)
+    runs-on: ubuntu-24.04
+    if: |
+      github.event_name == 'push' &&
+      github.ref == format('refs/heads/{0}', github.event.repository.default_branch)
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Check if native-module changed
+        id: changed
+        run: |
+          if git diff --quiet ${{ github.event.before }} ${{ github.sha }} -- native-module/ 2>/dev/null; then
+            echo "changed=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "changed=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Install Rust toolchain
+        if: steps.changed.outputs.changed == 'true'
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache Rust build
+        if: steps.changed.outputs.changed == 'true'
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: native-module -> target
+          key: linux
+
+      - name: Install system packages required by webrtc-audio-processing
+        if: steps.changed.outputs.changed == 'true'
+        run: |
+          sudo apt-get update -y
+          sudo apt-get install -y \
+            pkg-config meson ninja-build \
+            libasound-dev \
+            libclang-dev clang \
+            libssl-dev
+
+      - name: Build native module (release profile, warms cache only)
+        if: steps.changed.outputs.changed == 'true'
+        working-directory: native-module
+        run: |
+          start=$(date +%s)
+          cargo build --release
+          end=$(date +%s)
+          echo "::notice title=Native build duration (Linux)::$((end - start))s"
+
   # ─── Job 1: Type check both renderer and electron ───────────────────────────
   typecheck:
     name: Type Check
@@ -49,8 +186,8 @@ jobs:
 
   # ─── Job 3: Smoke build — compile renderer + electron on macOS ───────────────
   smoke-build:
-    name: Smoke Build (macOS)
-    runs-on: macos-latest
+    name: Smoke Build
+    runs-on: ubuntu-latest
     needs: typecheck
     steps:
       - uses: actions/checkout@v4

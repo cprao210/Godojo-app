@@ -38,6 +38,10 @@ pub mod fallback {
         pub fn try_pop(&mut self) -> Option<f32> {
             None
         }
+
+        pub fn backend_name(&self) -> &'static str {
+            "none"
+        }
     }
 
     pub struct SpeakerStream;
@@ -59,6 +63,9 @@ pub mod fallback {
         }
         pub fn stream(self) -> SpeakerStream {
             SpeakerStream
+        }
+        pub fn backend_name(&self) -> &'static str {
+            "none"
         }
     }
 

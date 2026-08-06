@@ -78,7 +78,7 @@ interface ElectronAPI {
   testSttConnection: (provider: 'groq' | 'openai' | 'deepgram' | 'elevenlabs' | 'azure' | 'ibmwatson' | 'soniox', apiKey: string, region?: string) => Promise<{ success: boolean; error?: string }>
 
   // Native Audio Service Events
-  onNativeAudioTranscript: (callback: (transcript: { speaker: string; text: string; final: boolean }) => void) => () => void
+  onNativeAudioTranscript: (callback: (transcript: { speaker: string; text: string; final: boolean; retract?: boolean }) => void) => () => void
   onNativeAudioSuggestion: (callback: (suggestion: { context: string; lastQuestion: string; confidence: number }) => void) => () => void
   onNativeAudioConnected: (callback: () => void) => () => void
   onNativeAudioDisconnected: (callback: () => void) => () => void
@@ -121,7 +121,7 @@ interface ElectronAPI {
 
   // Meeting Lifecycle
   startMeeting: (metadata?: any) => Promise<{ success: boolean; error?: string }>
-  endMeeting: (meetingTypes?: ('discovery' | 'demo' | 'negotiation')[]) => Promise<{ success: boolean; error?: string }>
+  endMeeting: (meetingTypes?: ('discovery' | 'demo' | 'negotiation')[], tenantId?: string | null) => Promise<{ success: boolean; error?: string }>
   finalizeMicSTT: () => Promise<void>
   getRecentMeetings: () => Promise<Array<{ id: string; title: string; date: string; duration: string; summary: string }>>
   getMeetingDetails: (id: string) => Promise<any>
@@ -157,6 +157,9 @@ interface ElectronAPI {
 
   // Settings Window
   toggleSettingsWindow: (coords?: { x: number; y: number }) => Promise<void>
+
+  // Team invite deep link (godojo://invite?token=...)
+  onInviteDeepLink: (callback: (data: { token: string }) => void) => () => void
 
   // Groq Fast Text Mode
   getGroqFastTextMode: () => Promise<{ enabled: boolean }>
@@ -209,11 +212,6 @@ interface ElectronAPI {
   onGeminiStreamError: (callback: (error: string) => void) => () => void
 
   chatWithGemini: (message: string, imagePaths?: string[], context?: string, skipSystemPrompt?: boolean) => Promise<string>
-
-  // NEW: Dedicated Live Analysis with its own events
-  startLiveAnalysis: (prompt: string) => Promise<{ success: boolean; error?: string }>;
-  onLiveAnalysisResult: (callback: (result: string) => void) => () => void;
-  onLiveAnalysisError: (callback: (error: string) => void) => () => void;
 
   onUndetectableChanged: (callback: (state: boolean) => void) => () => void
   onGroqFastTextChanged: (callback: (enabled: boolean) => void) => () => void
@@ -652,9 +650,13 @@ contextBridge.exposeInMainWorld("electronAPI", {
   setGroqSttModel: (model: string) => ipcRenderer.invoke("set-groq-stt-model", model),
   setSonioxApiKey: (apiKey: string) => ipcRenderer.invoke("set-soniox-api-key", apiKey),
   testSttConnection: (provider: 'groq' | 'openai' | 'deepgram' | 'elevenlabs' | 'azure' | 'ibmwatson' | 'soniox', apiKey: string, region?: string) => ipcRenderer.invoke("test-stt-connection", provider, apiKey, region),
+  setDiarizeClientEnabled: (enabled: boolean) => ipcRenderer.invoke("set-diarize-client-enabled", enabled),
+  getDiarizeClientEnabled: () => ipcRenderer.invoke("get-diarize-client-enabled"),
+  getAudioPipelineStats: () => ipcRenderer.invoke("get-audio-pipeline-stats"),
+  getOutputRoute: () => ipcRenderer.invoke("get-output-route"),
 
   // Native Audio Service Events
-  onNativeAudioTranscript: (callback: (transcript: { speaker: string; text: string; final: boolean }) => void) => {
+  onNativeAudioTranscript: (callback: (transcript: { speaker: string; displayName?: string; text: string; timestamp?: number; final: boolean; confidence?: number; speakerIndex?: number; retract?: boolean }) => void) => {
     const subscription = (_: any, data: any) => callback(data)
     ipcRenderer.on("native-audio-transcript", subscription)
     return () => {
@@ -751,7 +753,7 @@ contextBridge.exposeInMainWorld("electronAPI", {
 
   // Meeting Lifecycle
   startMeeting: (metadata?: any) => ipcRenderer.invoke("start-meeting", metadata),
-  endMeeting: (meetingTypes?: ('discovery' | 'demo' | 'negotiation')[]) => ipcRenderer.invoke("end-meeting", { meetingTypes }),
+  endMeeting: (meetingTypes?: ('discovery' | 'demo' | 'negotiation')[], tenantId?: string | null) => ipcRenderer.invoke("end-meeting", { meetingTypes, tenantId }),
   finalizeMicSTT: () => ipcRenderer.invoke("finalize-mic-stt"),
   getRecentMeetings: () => ipcRenderer.invoke("get-recent-meetings"),
   getMeetingDetails: (id: string) => ipcRenderer.invoke("get-meeting-details", id),
@@ -901,23 +903,6 @@ contextBridge.exposeInMainWorld("electronAPI", {
     }
   },
 
-  startLiveAnalysis: (prompt: string) => ipcRenderer.invoke('live-analysis-stream', prompt),
-
-  onLiveAnalysisResult: (callback: (result: string) => void) => {
-    const subscription = (_: any, result: string) => callback(result);
-    ipcRenderer.on('live-analysis-result', subscription);
-    return () => {
-      ipcRenderer.removeListener('live-analysis-result', subscription);
-    };
-  },
-
-  onLiveAnalysisError: (callback: (error: string) => void) => {
-    const subscription = (_: any, error: string) => callback(error);
-    ipcRenderer.on('live-analysis-error', subscription);
-    return () => {
-      ipcRenderer.removeListener('live-analysis-error', subscription);
-    };
-  },
 
   onGeminiStreamDone: (callback: () => void) => {
     const subscription = () => callback()
@@ -944,6 +929,15 @@ contextBridge.exposeInMainWorld("electronAPI", {
 
   // Settings Window
   toggleSettingsWindow: (coords?: { x: number; y: number }) => ipcRenderer.invoke('toggle-settings-window', coords),
+
+  // Team invite deep link
+  onInviteDeepLink: (callback: (data: { token: string }) => void) => {
+    const subscription = (_: any, data: { token: string }) => callback(data)
+    ipcRenderer.on('invite-deep-link', subscription)
+    return () => {
+      ipcRenderer.removeListener('invite-deep-link', subscription)
+    }
+  },
 
   // Groq Fast Text Mode
   getGroqFastTextMode: () => ipcRenderer.invoke('get-groq-fast-text-mode'),
@@ -1325,6 +1319,17 @@ contextBridge.exposeInMainWorld("electronAPI", {
     ipcRenderer.on('auth:state-changed', subscription)
     return () => {
       ipcRenderer.removeListener('auth:state-changed', subscription)
+    }
+  },
+
+  // ===== Tenant ID (cross-window) =====
+  setCurrentTenantId: (tenantId: string | null) => ipcRenderer.invoke('tenant:set-current', tenantId),
+  getCurrentTenantId: () => ipcRenderer.invoke('tenant:get-current'),
+  onTenantStateChanged: (callback: (tenantId: string | null) => void) => {
+    const subscription = (_: Electron.IpcRendererEvent, tenantId: string | null) => callback(tenantId)
+    ipcRenderer.on('tenant:state-changed', subscription)
+    return () => {
+      ipcRenderer.removeListener('tenant:state-changed', subscription)
     }
   },
 

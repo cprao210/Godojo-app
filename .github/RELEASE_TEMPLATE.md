@@ -16,7 +16,6 @@ Short one-line description of the release.
 
 ## Fixes
 
-- Fixed issue with stealth activation
 - Resolved crash on startup
 - Corrected UI alignment issue
 

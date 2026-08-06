@@ -19,10 +19,30 @@ import { EventEmitter } from 'events';
 import { DeepgramClient } from '@deepgram/sdk';
 import { V1Socket } from '@deepgram/sdk/dist/cjs/api/resources/listen/resources/v1/client/Socket';
 import { RECOGNITION_LANGUAGES } from '../config/languages';
+import {
+    appendAnchor,
+    convertStreamSecToWallMs,
+    splitFinalBySpeaker,
+    type SttWord,
+    type TimeAnchor,
+} from './sttWordUtils';
 
 const RECONNECT_BASE_DELAY_MS = 1000;
 const RECONNECT_MAX_DELAY_MS = 30000;
 const KEEPALIVE_INTERVAL_MS = 5000;
+// A connection must stay open at least this long to count as "stable" and reset
+// the exponential-backoff counter. Shorter-lived connections keep escalating the
+// delay so a flapping server / repeated 429 backs off instead of hammering at 1s.
+const STABLE_CONNECTION_MS = 30000;
+
+export interface DeepgramSttOptions {
+    /**
+     * Enable Deepgram streaming diarization on this connection. Only useful on
+     * the client (system-audio) stream — the mic is single-speaker by role.
+     * NOTE: paid streaming add-on (~$0.002/min on top of Nova-3).
+     */
+    diarize?: boolean;
+}
 
 export class DeepgramStreamingSTT extends EventEmitter {
     private apiKey: string;
@@ -36,6 +56,12 @@ export class DeepgramStreamingSTT extends EventEmitter {
     private languageCode = 'en';
 
     private reconnectAttempts = 0;
+    private rateLimitedUntil = 0;
+    // Wall-clock ms of the last successful 'open'. Backoff is only reset after a
+    // connection proves STABLE (see STABLE_CONNECTION_MS) — resetting on every open
+    // let a socket that accepts then immediately drops (server flap / post-open 429)
+    // reconnect at the 1s floor forever, defeating exponential backoff.
+    private _openedAt = 0;
     private reconnectTimer: NodeJS.Timeout | null = null;
     private keepAliveTimer: NodeJS.Timeout | null = null;
     private buffer: Buffer[] = [];
@@ -46,10 +72,18 @@ export class DeepgramStreamingSTT extends EventEmitter {
     private role: 'client' | 'user' = 'user';
     private _connectGeneration = 0;
 
-    constructor(apiKey: string, role: 'client' | 'user' = 'user') {
+    private diarize = false;
+    // Per-connection audio clock → wall clock mapping. Word timestamps arrive
+    // in stream-audio seconds; the anchor ring converts them to wall-clock ms
+    // so cross-connection comparison (echo filtering) sees one time base.
+    private _bytesSent = 0;
+    private _anchors: TimeAnchor[] = [];
+
+    constructor(apiKey: string, role: 'client' | 'user' = 'user', options?: DeepgramSttOptions) {
         super();
         this.apiKey = apiKey;
         this.role = role;
+        this.diarize = options?.diarize ?? false;
         this.client = new DeepgramClient({ apiKey });
     }
 
@@ -110,7 +144,7 @@ export class DeepgramStreamingSTT extends EventEmitter {
 
         if (this._isSocketOpen() && this.buffer.length > 0) {
             for (const chunk of this.buffer) {
-                try { this.socket!.sendMedia(chunk); } catch { /* ignore */ }
+                this._sendTracked(this.socket!, chunk);
             }
         }
 
@@ -140,10 +174,24 @@ export class DeepgramStreamingSTT extends EventEmitter {
             return;
         }
 
+        this._sendTracked(this.socket, chunk, true);
+    }
+
+    /**
+     * Single choke point for sendMedia: advances the per-connection audio
+     * clock (_bytesSent) and records a {streamSec, wallMs} anchor so word
+     * timestamps can be mapped back to wall time.
+     */
+    private _sendTracked(socket: V1Socket, chunk: Buffer, logErrors = false): void {
         try {
-            this.socket.sendMedia(chunk);
+            socket.sendMedia(chunk);
+            this._bytesSent += chunk.length;
+            const bytesPerSec = this.sampleRate * 2 * this.numChannels; // s16le
+            if (bytesPerSec > 0) {
+                appendAnchor(this._anchors, this._bytesSent / bytesPerSec, Date.now());
+            }
         } catch (err) {
-            console.error(`[DeepgramStreaming:${this.role}] sendMedia error:`, err);
+            if (logErrors) console.error(`[DeepgramStreaming:${this.role}] sendMedia error:`, err);
         }
     }
 
@@ -160,9 +208,26 @@ export class DeepgramStreamingSTT extends EventEmitter {
         this.isConnecting = true;
         const generation = ++this._connectGeneration;  // capture current generation
 
-        console.log(`[DeepgramStreaming:${this.role}] Connecting (rate=${this.sampleRate}, ch=${this.numChannels}, lang=${this.languageCode})...`);
+        // Defensively tear down any prior socket before opening a new one. Without
+        // this, the previous socket's internal ReconnectingWebSocket (maxRetries:
+        // Infinity) keeps retrying in the background forever — a zombie connection
+        // that never backs off. Accumulated zombies pin Deepgram's concurrency
+        // count and turn a transient 429 into a permanent one.
+        this._closeSocket();
 
-        const queryParams = {
+        // New websocket = new stream-audio clock. Reset the anchor ring so word
+        // timestamps from this connection map against its own byte count.
+        this._bytesSent = 0;
+        this._anchors = [];
+        if (this.diarize && this.reconnectAttempts > 0) {
+            // Diarization speaker indices are per-connection: after a reconnect
+            // they restart from 0 and may not match the previous assignment.
+            console.warn(`[DeepgramStreaming:${this.role}] Reconnecting with diarize on — speaker indices will reset`);
+        }
+
+        console.log(`[DeepgramStreaming:${this.role}] Connecting (rate=${this.sampleRate}, ch=${this.numChannels}, lang=${this.languageCode}, diarize=${this.diarize})...`);
+
+        const queryParams: Record<string, unknown> = {
             Authorization: `Token ${this.apiKey}`,
             model: 'nova-3',
             encoding: 'linear16',
@@ -175,6 +240,9 @@ export class DeepgramStreamingSTT extends EventEmitter {
             vad_events: "true",
             endpointing: "500",
         };
+        if (this.diarize) {
+            queryParams.diarize = "true";
+        }
 
         // createConnection() returns an unconnected socket — safe to register
         // handlers before any WS event can fire.
@@ -195,15 +263,26 @@ export class DeepgramStreamingSTT extends EventEmitter {
                 // Registered BEFORE socket.connect() fires the WS handshake.
                 // No race condition possible.
                 socket.on('open', () => {
+                    // A newer connect() may have superseded this socket while its WS
+                    // handshake was in flight. If so, ignore its events entirely — the
+                    // 'close' guard below is the important one: without it, this stale
+                    // socket's async close schedules a reconnect that tears down the
+                    // healthy current socket, whose close then schedules another... a
+                    // self-sustaining 1s connect/close loop (seen on Windows after the
+                    // rate resync triggered _reconnectWithNewConfig).
+                    if (generation !== this._connectGeneration) return;
                     this.isConnecting = false;
-                    this.reconnectAttempts = 0;
+                    // Do NOT reset reconnectAttempts here — only reset once the
+                    // connection proves stable (see 'close' handler). Record when it
+                    // opened so 'close' can measure how long it survived.
+                    this._openedAt = Date.now();
                     console.log(`[DeepgramStreaming:${this.role}] Connected`);
 
                     // Flush audio buffered during the handshake
                     while (this.buffer.length > 0) {
                         const chunk = this.buffer.shift();
                         if (chunk) {
-                            try { socket.sendMedia(chunk); } catch { /* ignore */ }
+                            this._sendTracked(socket, chunk);
                         }
                     }
 
@@ -212,6 +291,10 @@ export class DeepgramStreamingSTT extends EventEmitter {
 
                 // ---- message ----
                 socket.on('message', (data: any) => {
+                    // Drop messages from a socket that a newer connect() superseded —
+                    // its transcripts belong to a dead connection and its anchor ring
+                    // (_anchors/_bytesSent) now describes the current socket's clock.
+                    if (generation !== this._connectGeneration) return;
                     if (!data) return;
 
                     if (data.type === 'SpeechStarted') {
@@ -243,7 +326,8 @@ export class DeepgramStreamingSTT extends EventEmitter {
                     if (data.type === 'Metadata') return;
                     if (data.type !== 'Results') return;
 
-                    const transcript = data?.channel?.alternatives?.[0]?.transcript;
+                    const alternative = data?.channel?.alternatives?.[0];
+                    const transcript = alternative?.transcript;
                     if (!transcript || transcript.trim() === '') return;
 
                     const isWindowFinal: boolean = data.is_final === true;
@@ -275,33 +359,90 @@ export class DeepgramStreamingSTT extends EventEmitter {
                         // The transcript is committed — emit as final immediately.
                         this._lastIsFinalText = '';
                         this._lastIsFinalConfidence = 1.0;
-                        const confidence = data?.channel?.alternatives?.[0]?.confidence ?? 1.0;
-                        this.emit('transcript', {
-                            text: transcript,
-                            isFinal: true,
-                            confidence,
-                        });
+                        const confidence = alternative?.confidence ?? 1.0;
+
+                        // Word-level metadata (timestamps in stream-audio sec,
+                        // speaker ints when diarize=true) → wall-clock SttWords.
+                        // Consumed by the transcript echo filter and speaker
+                        // labeling in the main process; stripped before IPC.
+                        const words = this._parseWords(alternative?.words);
+
+                        // Committed windows can span a speaker change. Split into
+                        // contiguous same-speaker runs (single-speaker windows —
+                        // the common case — pass through verbatim). Interims are
+                        // never split or labeled: their speaker ints are unstable
+                        // and would flicker in the UI.
+                        const segments = splitFinalBySpeaker(words, transcript);
+                        for (const seg of segments) {
+                            this.emit('transcript', {
+                                text: seg.text,
+                                isFinal: true,
+                                confidence,
+                                speakerIndex: seg.speakerIndex,
+                                words: seg.words.length > 0 ? seg.words : undefined,
+                            });
+                        }
                     } else {
                         // Interim result — live display only, will be revised.
+                        // Words are parsed here too: the echo filter judges mic
+                        // interims and uses client interims as provisional
+                        // reference. Stripped before IPC like final words.
+                        const words = this._parseWords(alternative?.words);
                         this.emit('transcript', {
                             text: transcript,
                             isFinal: false,
-                            confidence: data?.channel?.alternatives?.[0]?.confidence ?? 1.0,
+                            confidence: alternative?.confidence ?? 1.0,
+                            words: words.length > 0 ? words : undefined,
                         });
                     }
                 });
 
                 // ---- error ----
                 socket.on('error', (err: Error) => {
-                    console.error(`[DeepgramStreaming:${this.role}] Error:`, err?.message ?? err);
+                    // Errors from a superseded socket must not mutate shared reconnect
+                    // state (rateLimitedUntil) or tear down the current socket.
+                    if (generation !== this._connectGeneration) return;
+                    const msg = err?.message ?? String(err);
+                    console.error(`[DeepgramStreaming:${this.role}] Error:`, msg);
                     this.emit('error', err);
+
+                    // A 429 means Deepgram is rejecting connections (concurrency / rate
+                    // limit). Retrying within 1s only makes it worse — apply a long
+                    // backoff floor so we stop hammering the upgrade endpoint.
+                    if (msg.includes('429')) {
+                        this.rateLimitedUntil = Date.now() + RECONNECT_MAX_DELAY_MS;
+                        console.warn(`[DeepgramStreaming:${this.role}] Rate limited (429) — backing off ${RECONNECT_MAX_DELAY_MS}ms`);
+                    }
+
+                    // Close this socket so the SDK's internal ReconnectingWebSocket
+                    // (maxRetries: Infinity) stops its own retry loop. Our backoff
+                    // becomes the single source of truth for reconnection; the 'close'
+                    // handler below schedules it.
+                    this._closeSocket();
                 });
 
                 // ---- close ----
                 socket.on('close', () => {
+                    // If a newer connect() already superseded this socket (rate/config
+                    // change, or an explicit reconnect), its close is expected teardown
+                    // — do NOT schedule a reconnect. Scheduling here would kill the
+                    // healthy current socket and start an endless connect/close loop.
+                    // We also must not touch isConnecting/keepAlive, which now belong to
+                    // the current socket.
+                    if (generation !== this._connectGeneration) {
+                        console.log(`[DeepgramStreaming:${this.role}] Stale socket closed (gen ${generation} vs ${this._connectGeneration}) — no reconnect`);
+                        return;
+                    }
                     this.isConnecting = false;
                     this.clearKeepAlive();
                     console.log(`[DeepgramStreaming:${this.role}] Connection closed`);
+                    // Reset backoff only if this connection was open long enough to be
+                    // considered stable. A socket that opened then dropped quickly keeps
+                    // its (growing) attempt count so scheduleReconnect() escalates.
+                    if (this._openedAt > 0 && Date.now() - this._openedAt >= STABLE_CONNECTION_MS) {
+                        this.reconnectAttempts = 0;
+                    }
+                    this._openedAt = 0;
                     if (this.shouldReconnect) {
                         this.scheduleReconnect();
                     }
@@ -324,6 +465,31 @@ export class DeepgramStreamingSTT extends EventEmitter {
     // =========================================================================
     // Helpers
     // =========================================================================
+
+    /**
+     * Convert raw Deepgram words (stream-audio seconds) into wall-clocked
+     * SttWords via the anchor ring. Returns [] when word data or anchors are
+     * missing (consumers fall back to text-only handling).
+     */
+    private _parseWords(rawWords: any[] | undefined): SttWord[] {
+        if (!Array.isArray(rawWords) || rawWords.length === 0) return [];
+        const out: SttWord[] = [];
+        for (const w of rawWords) {
+            if (!w || typeof w.word !== 'string') continue;
+            const startMs = convertStreamSecToWallMs(this._anchors, Number(w.start) || 0);
+            const endMs = convertStreamSecToWallMs(this._anchors, Number(w.end) || 0);
+            if (startMs === null || endMs === null) return []; // no anchors — no usable timing
+            out.push({
+                text: w.word,
+                punctuated: typeof w.punctuated_word === 'string' ? w.punctuated_word : undefined,
+                startMs,
+                endMs,
+                speaker: typeof w.speaker === 'number' ? w.speaker : undefined,
+                confidence: typeof w.confidence === 'number' ? w.confidence : undefined,
+            });
+        }
+        return out;
+    }
 
     private _isSocketOpen(): boolean {
         if (!this.socket) return false;
@@ -363,10 +529,15 @@ export class DeepgramStreamingSTT extends EventEmitter {
 
     private scheduleReconnect(): void {
         if (!this.shouldReconnect) return;
-        const delay = Math.min(
+        const backoffDelay = Math.min(
             RECONNECT_BASE_DELAY_MS * Math.pow(2, this.reconnectAttempts),
             RECONNECT_MAX_DELAY_MS
         );
+        // Honor the 429 rate-limit floor: after a 429 the error handler sets
+        // rateLimitedUntil so we stop hammering Deepgram's upgrade endpoint. Without
+        // this, a 429 would still schedule at the ~1s backoff floor.
+        const rateLimitFloor = Math.max(0, this.rateLimitedUntil - Date.now());
+        const delay = Math.max(backoffDelay, rateLimitFloor);
         this.reconnectAttempts++;
         console.log(`[DeepgramStreaming:${this.role}] Reconnecting in ${delay}ms (attempt ${this.reconnectAttempts})...`);
         this.reconnectTimer = setTimeout(() => {

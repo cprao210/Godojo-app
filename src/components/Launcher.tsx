@@ -1,11 +1,12 @@
 import React, { useState, useEffect } from 'react';
-import { Zap, Calendar, ArrowRight, ArrowLeft, MoreHorizontal, ChevronRight, Settings, RefreshCw, Ghost, Trash2, Download, DownloadCloud, CheckCircle, AlertCircle, Briefcase, Upload, X, ChevronUp, Sparkles } from 'lucide-react';
+import { Zap, Calendar, ArrowRight, ArrowLeft, MoreHorizontal, ChevronRight, Settings, RefreshCw, Ghost, Trash2, Download, DownloadCloud, CheckCircle, AlertCircle, Briefcase, Upload, X, ChevronUp, Sparkles, LayoutDashboard } from 'lucide-react';
 import { generateMeetingPDF } from '../utils/pdfGenerator';
 import ConnectCalendarButton from './ui/ConnectCalendarButton';
 import MeetingDetails from './MeetingDetails';
 import SalesBriefPanel from './SalesBriefPanel';
 import TopSearchPill from './TopSearchPill';
 import GlobalChatOverlay from './GlobalChatOverlay';
+import FloatingChatButton from './FloatingChatButton';
 import { motion, AnimatePresence } from 'framer-motion';
 import { analytics } from '../lib/analytics/analytics.service'; // Added analytics import
 import { useShortcuts } from '../hooks/useShortcuts';
@@ -18,37 +19,17 @@ import NextMeetingCard from './NextMeetingCard';
 import MeetingTimeline from './MeetingTimeline';
 import godojoLogo from '../assets/logo-variant-3.svg';
 import { loadUserProfile } from './settings/UserProfileTab';
+import { useQuery, useMutation, useQueryClient } from 'react-query';
+import { meetingsApi } from '../lib/meetingsApi';
+import type { Meeting } from '../types/meeting';
+import { ApiError } from '../lib/apiClient';
 
-interface Meeting {
-    id: string;
-    title: string;
-    date: string;
-    duration: string;
-    summary: string;
-    isProcessed?: boolean;
-    detailedSummary?: {
-        actionItems: string[];
-        keyPoints: string[];
-    };
-    transcript?: Array<{
-        speaker: string;
-        text: string;
-        timestamp: number;
-    }>;
-    usage?: Array<{
-        type: 'assist' | 'followup' | 'chat' | 'followup_questions';
-        timestamp: number;
-        question?: string;
-        answer?: string;
-        items?: string[];
-    }>;
-    active?: boolean; // UI state
-    time?: string; // Optional for compatibility
-}
+// Meeting type is imported from ../types/meeting (shared with MeetingDetails + meetingsApi).
 
 interface LauncherProps {
     onStartMeeting: (calendarEvent?: any) => void;
     onOpenSettings: (tab?: string) => void;
+    onOpenManagerDashboard?: () => void;
     onPageChange?: (isMain: boolean) => void;
     ollamaPullStatus?: 'idle' | 'downloading' | 'complete' | 'failed';
     ollamaPullPercent?: number;
@@ -82,8 +63,31 @@ const formatTime = (dateStr: string) => {
     return date.toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit', hour12: true }).toLowerCase();
 };
 
-const Launcher: React.FC<LauncherProps> = ({ onStartMeeting, onOpenSettings, onPageChange, ollamaPullStatus = 'idle', ollamaPullPercent = 0, ollamaPullMessage = '', authUser, onSignOut }) => {
-    const [meetings, setMeetings] = useState<Meeting[]>([]);
+const Launcher: React.FC<LauncherProps> = ({ onStartMeeting, onOpenSettings, onOpenManagerDashboard, onPageChange, ollamaPullStatus = 'idle', ollamaPullPercent = 0, ollamaPullMessage = '', authUser, onSignOut }) => {
+    const queryClient = useQueryClient();
+    const { data: meetings = [] } = useQuery<Meeting[]>(["meetings"], meetingsApi.list, {
+        // Poll only while a meeting is still processing (replaces the manual setInterval).
+        refetchInterval: (data) =>
+            (data ?? []).some(m => m.isProcessed === false || m.title === 'Processing...') ? 3000 : false,
+    });
+    const deleteMutation = useMutation<void, unknown, string, { prev?: Meeting[] }>(
+        (id) => meetingsApi.remove(id),
+        {
+            onMutate: async (id) => {
+                await queryClient.cancelQueries(["meetings"]);
+                const prev = queryClient.getQueryData<Meeting[]>(["meetings"]);
+                queryClient.setQueryData<Meeting[]>(["meetings"], (old = []) => old.filter(x => x.id !== id));
+                return { prev };
+            },
+            onError: (_err, _id, ctx) => {
+                if (ctx?.prev) queryClient.setQueryData(["meetings"], ctx.prev);
+            },
+            // Write-through: also delete locally so the async SQLite→Supabase mirror can't
+            // resurrect the row, and offline/RAG reads stay consistent.
+            onSuccess: (_data, id) => { window.electronAPI?.deleteMeeting?.(id); },
+            onSettled: () => { void queryClient.invalidateQueries(["meetings"]); },
+        }
+    );
     const [isDetectable, setIsDetectable] = useState(false);
     const [isMeetingActive, setIsMeetingActive] = useState(false);
     const [selectedMeeting, setSelectedMeeting] = useState<Meeting | null>(null);
@@ -105,25 +109,48 @@ const Launcher: React.FC<LauncherProps> = ({ onStartMeeting, onOpenSettings, onP
         return () => window.removeEventListener('storage', handler);
     }, []);
 
+    // Meeting ids already sent to the backend chunking endpoint (or seen as
+    // already-processed on first load — see the effect below). Prevents
+    // re-firing chunk() on every subsequent poll tick once a meeting is done.
+    const chunkedMeetingIdsRef = React.useRef<Set<string>>(new Set());
+    const hasSeededChunkedRef = React.useRef(false);
+
+    // Fire /meetings/:id/chunking exactly once, the moment a meeting's
+    // transcript + summary processing actually finishes (isProcessed: true).
+    // This is strictly later than endMeeting() resolving — isProcessed only
+    // flips once MeetingPersistence.processAndSaveMeeting has fully written
+    // the real record, so there's no "row not synced yet" race here.
+    useEffect(() => {
+        if (meetings.length === 0) return;
+
+        // On first load, treat every already-processed meeting as already
+        // handled — this effect is for newly-completed meetings going
+        // forward, not for retroactively chunking existing history.
+        if (!hasSeededChunkedRef.current) {
+            meetings.forEach(m => {
+                if (m.isProcessed) chunkedMeetingIdsRef.current.add(m.id);
+            });
+            hasSeededChunkedRef.current = true;
+            return;
+        }
+
+        meetings.forEach(m => {
+            if (!m.isProcessed) return;
+            if (chunkedMeetingIdsRef.current.has(m.id)) return;
+
+            chunkedMeetingIdsRef.current.add(m.id); // mark immediately — avoid double-fire on the next poll tick
+            meetingsApi.chunk(m.id).catch(err =>
+                console.error(`[Launcher] Failed to chunk meeting ${m.id} for RAG:`, err)
+            );
+        });
+    }, [meetings]);
+
     const effectiveName = localProfile.displayName || authUser?.displayName || authUser?.email?.split('@')[0] || '';
 
-    const fetchMeetings = () => {
-        if (window.electronAPI && window.electronAPI.getRecentMeetings) {
-            window.electronAPI.getRecentMeetings()
-                .then(meetings => {
-                    // Deduplicate by id in case backend returns duplicates
-                    // or rapid successive calls overlap
-                    const seen = new Set<string>();
-                    const deduped = meetings.filter(m => {
-                        if (seen.has(m.id)) return false;
-                        seen.add(m.id);
-                        return true;
-                    });
-                    setMeetings(deduped);
-                })
-                .catch(err => console.error("Failed to fetch meetings:", err));
-        }
-    };
+    // Meetings load over HTTP via React Query (the useQuery above). Existing call sites keep
+    // working: this just invalidates the cache so the list refetches from the backend.
+    // (The incoming branch's dedup-by-id now lives in meetingsApi.list.)
+    const fetchMeetings = () => { void queryClient.invalidateQueries(["meetings"]); };
 
     // Detect whether any meeting in the list is still being processed
     const hasProcessingMeeting = meetings.some(
@@ -163,12 +190,7 @@ const Launcher: React.FC<LauncherProps> = ({ onStartMeeting, onOpenSettings, onP
     // Stops automatically once all meetings have been fully processed.
     // This is a safety net for the race where onMeetingsUpdated fires before
     // the listener is registered, or is missed entirely.
-    useEffect(() => {
-        if (!hasProcessingMeeting) return;
-        const pollId = setInterval(fetchMeetings, 3000);
-        return () => clearInterval(pollId);
-        // eslint-disable-next-line react-hooks/exhaustive-deps
-    }, [hasProcessingMeeting]);
+    // The "still processing" poll is handled by the useQuery refetchInterval above.
 
 
     useEffect(() => {
@@ -180,6 +202,7 @@ const Launcher: React.FC<LauncherProps> = ({ onStartMeeting, onOpenSettings, onP
             setIsCalendarConnected(google.connected || zoom.connected);
         });
     }, []);
+
 
     // Keybinds
     const { isShortcutPressed } = useShortcuts();
@@ -231,7 +254,7 @@ const Launcher: React.FC<LauncherProps> = ({ onStartMeeting, onOpenSettings, onP
                 // and replaces this placeholder naturally since setMeetings overwrites
                 // the whole list.
                 if (!isActive) {
-                    setMeetings(prev => {
+                    queryClient.setQueryData<Meeting[]>(["meetings"], (prev = []) => {
                         // Don't double-insert if one is already there from a previous
                         // rapid end cycle
                         const alreadyHasPlaceholder = prev.some(
@@ -366,7 +389,7 @@ const Launcher: React.FC<LauncherProps> = ({ onStartMeeting, onOpenSettings, onP
         // Optimistically inject a placeholder immediately so the user sees
         // the card appear right away without needing to hit refresh.
         const optimisticId = `optimistic-upload-${Date.now()}`;
-        setMeetings(prev => {
+        queryClient.setQueryData<Meeting[]>(["meetings"], (prev = []) => {
             const alreadyHasPlaceholder = prev.some(
                 m => m.title === 'Processing...' && m.isProcessed === false
             );
@@ -383,25 +406,35 @@ const Launcher: React.FC<LauncherProps> = ({ onStartMeeting, onOpenSettings, onP
         });
 
         try {
-            const result = await window.electronAPI.uploadTranscript(
-                uploadText.trim(),
-                uploadTitle.trim() || undefined,
-                uploadMeetingTypes
+            // const result = await window.electronAPI.uploadTranscript(
+            //     uploadText.trim(),
+            //     uploadTitle.trim() || undefined,
+            //     uploadMeetingTypes
+            // );
+            // if (result?.success) {
+            //     setIsUploadOpen(false);
+            //     setUploadText('');
+            //     setUploadTitle('');
+            //     setUploadMeetingTypes(['discovery']);
+            //     fetchMeetings(); // replaces placeholder with real entry
+            // } else {
+            //     // Remove the placeholder on failure
+            //     queryClient.setQueryData<Meeting[]>(["meetings"], (prev = []) => prev.filter(m => m.id !== optimisticId));
+            //     setUploadError(result?.error || 'Upload failed');
+            // }
+            const result = await meetingsApi.uploadTranscript(
+                uploadTitle.trim() || 'Processing...',
+                uploadText.trim()
             );
-            if (result?.success) {
-                setIsUploadOpen(false);
-                setUploadText('');
-                setUploadTitle('');
-                setUploadMeetingTypes(['discovery']);
-                fetchMeetings(); // replaces placeholder with real entry
-            } else {
-                // Remove the placeholder on failure
-                setMeetings(prev => prev.filter(m => m.id !== optimisticId));
-                setUploadError(result?.error || 'Upload failed');
-            }
+            setIsUploadOpen(false);
+            setUploadText('');
+            setUploadTitle('');
+            setUploadMeetingTypes(['discovery']);
+            fetchMeetings();
+
         } catch (e) {
-            setMeetings(prev => prev.filter(m => m.id !== optimisticId));
-            setUploadError('Something went wrong');
+            queryClient.setQueryData<Meeting[]>(["meetings"], (prev = []) => prev.filter(m => m.id !== optimisticId));
+            setUploadError(e instanceof ApiError ? e.message : 'Something went wrong');
         } finally {
             setIsUploading(false);
         }
@@ -432,35 +465,54 @@ const Launcher: React.FC<LauncherProps> = ({ onStartMeeting, onOpenSettings, onP
         }
     }, [selectedMeeting, isGlobalChatOpen, onPageChange]);
 
-    const handleOpenMeeting = async (meeting: Meeting) => {
-        setForwardMeeting(null); // Clear forward history on new navigation
-        console.log("[Launcher] Opening meeting:", meeting.id);
-        analytics.trackCommandExecuted('open_meeting_details');
+    // Keyboard shortcut: Cmd+Space (mac) / Ctrl+Space (win/linux) opens the
+    // floating AI chat — same as clicking the FAB. Scoped to this Launcher
+    // screen only: it's a no-op once a meeting is open (the chat overlay has
+    // its own focus/typing context and shouldn't have this listener re-fire
+    // underneath it), and it ignores the keystroke while the person is
+    // typing in any input/textarea/contentEditable field.
+    useEffect(() => {
+        const handleShortcut = (e: KeyboardEvent) => {
+            if (e.code !== 'Space' || !(e.metaKey || e.ctrlKey)) return;
+            if (selectedMeeting) return; // only on the Launcher view, not inside a meeting
 
-        if (meeting.title === 'Processing...' || meeting.isProcessed === false) {
-            setSelectedMeeting(meeting);
-            return;
-        }
-
-        // Fetch full meeting details including transcript and usage
-        if (window.electronAPI && window.electronAPI.getMeetingDetails) {
-            try {
-                console.log("[Launcher] Fetching full meeting details...");
-                const fullMeeting = await window.electronAPI.getMeetingDetails(meeting.id);
-                console.log("[Launcher] Got meeting details:", fullMeeting);
-                console.log("[Launcher] Transcript count:", fullMeeting?.transcript?.length);
-                console.log("[Launcher] Usage count:", fullMeeting?.usage?.length);
-                if (fullMeeting) {
-                    setSelectedMeeting(fullMeeting);
-                    return;
-                }
-            } catch (err) {
-                console.error("[Launcher] Failed to fetch meeting details:", err);
+            // The isTyping guard only matters when the shortcut would OPEN the
+            // chat (avoid hijacking Cmd/Ctrl+Space while typing elsewhere on the
+            // page). Once the chat is already open, its own input is focused —
+            // that focus would otherwise make every "close" press look like
+            // "typing" and get ignored, so the shortcut could open the chat but
+            // never close it. Closing should always work regardless of focus.
+            if (!isGlobalChatOpen) {
+                const target = e.target as HTMLElement | null;
+                const isTyping = !!target && (
+                    target.tagName === 'INPUT' ||
+                    target.tagName === 'TEXTAREA' ||
+                    target.isContentEditable
+                );
+                if (isTyping) return;
             }
-        } else {
-            console.warn("[Launcher] getMeetingDetails not available on electronAPI");
-        }
-        // Fallback to list-view data if fetch fails
+
+            e.preventDefault();
+            setIsGlobalChatOpen(prev => {
+                const next = !prev;
+                if (next) {
+                    analytics.trackCommandExecuted('open_global_chat_shortcut');
+                } else {
+                    setSubmittedGlobalQuery('');
+                }
+                return next;
+            });
+        };
+
+        window.addEventListener('keydown', handleShortcut);
+        return () => window.removeEventListener('keydown', handleShortcut);
+    }, [selectedMeeting, isGlobalChatOpen]);
+
+    const handleOpenMeeting = (meeting: Meeting) => {
+        setForwardMeeting(null); // Clear forward history on new navigation
+        analytics.trackCommandExecuted('open_meeting_details');
+        // Full detail (transcript + usage) loads in MeetingDetails via React Query
+        // (meetingsApi.get → GET /meetings/{id}); the list row seeds it as initialData.
         setSelectedMeeting(meeting);
     };
 
@@ -561,18 +613,6 @@ const Launcher: React.FC<LauncherProps> = ({ onStartMeeting, onOpenSettings, onP
                     {/* Center: Spotlight-style Search Pill */}
                     <TopSearchPill
                         meetings={meetings}
-                        onAIQuery={(query) => {
-                            analytics.trackCommandExecuted('ai_query_search');
-                            setSubmittedGlobalQuery(query);
-                            setIsGlobalChatOpen(true);
-                        }}
-                        onLiteralSearch={(query) => {
-                            // For now, also use AI query for literal search
-                            // Could be enhanced to do fuzzy filtering in the UI
-                            analytics.trackCommandExecuted('literal_search');
-                            setSubmittedGlobalQuery(query);
-                            setIsGlobalChatOpen(true);
-                        }}
                         onOpenMeeting={(meetingId) => {
                             const meeting = meetings.find(m => m.id === meetingId);
                             if (meeting) {
@@ -583,8 +623,25 @@ const Launcher: React.FC<LauncherProps> = ({ onStartMeeting, onOpenSettings, onP
                     />
                 </div>
 
-                {/* Right: Settings + Profile */}
+                {/* Right: Dashboard + Settings + Profile */}
                 <div className={`flex items-center gap-2 no-drag shrink-0 ${isMac ? 'mr-1' : ''}`}>
+
+                    {/* Manager Dashboard */}
+                    {onOpenManagerDashboard && (
+                        <button
+                            onClick={onOpenManagerDashboard}
+                            className={[
+                                "inline-flex items-center justify-center rounded-full transition-all no-drag",
+                                isMac ? "h-9 w-9" : "h-7 w-7",
+                                isLight
+                                    ? "border border-border-muted bg-bg-elevated/80 text-text-secondary hover:bg-bg-elevated hover:text-text-primary"
+                                    : "border border-border-subtle bg-bg-item-surface text-text-secondary hover:bg-white/[0.08] hover:text-white",
+                            ].join(" ")}
+                            aria-label="Manager Dashboard"
+                        >
+                            <LayoutDashboard size={15} />
+                        </button>
+                    )}
 
                     {/* Settings */}
                     <button
@@ -1138,11 +1195,8 @@ const Launcher: React.FC<LauncherProps> = ({ onStartMeeting, onOpenSettings, onP
                                                                         </button>
                                                                         <button
                                                                             className="w-full flex items-center gap-2 px-3 py-1.5 text-[12px] text-red-400 hover:bg-red-500/10 hover:text-red-300 rounded-lg transition-colors text-left"
-                                                                            onClick={async () => {
-                                                                                if (window.electronAPI?.deleteMeeting) {
-                                                                                    const ok = await window.electronAPI.deleteMeeting(m.id);
-                                                                                    if (ok) setMeetings(prev => prev.filter(x => x.id !== m.id));
-                                                                                }
+                                                                            onClick={() => {
+                                                                                deleteMutation.mutate(m.id);
                                                                                 setActiveMenuId(null);
                                                                             }}
                                                                         >
@@ -1192,6 +1246,23 @@ const Launcher: React.FC<LauncherProps> = ({ onStartMeeting, onOpenSettings, onP
                 )}
             </AnimatePresence>
 
+            {/* Floating Global Chat launcher — bottom-right, real "chat bot" style entry point.
+                Hidden once a meeting is open so it doesn't collide with per-meeting chat. */}
+            {!selectedMeeting && (
+                <FloatingChatButton
+                    isOpen={isGlobalChatOpen}
+                    onClick={() => {
+                        if (isGlobalChatOpen) {
+                            setIsGlobalChatOpen(false);
+                            setSubmittedGlobalQuery('');
+                        } else {
+                            analytics.trackCommandExecuted('open_global_chat_fab');
+                            setIsGlobalChatOpen(true);
+                        }
+                    }}
+                />
+            )}
+
             {/* Global Chat Overlay */}
             <GlobalChatOverlay
                 isOpen={isGlobalChatOpen}
@@ -1200,6 +1271,13 @@ const Launcher: React.FC<LauncherProps> = ({ onStartMeeting, onOpenSettings, onP
                     setSubmittedGlobalQuery('');
                 }}
                 initialQuery={submittedGlobalQuery}
+                onOpenMeeting={(meetingId) => {
+                    const meeting = meetings.find(m => m.id === meetingId);
+                    if (meeting) {
+                        handleOpenMeeting(meeting);
+                        analytics.trackCommandExecuted('open_meeting_from_chat_source');
+                    }
+                }}
             />
             {/* Sales Brief Panel */}
             <AnimatePresence>

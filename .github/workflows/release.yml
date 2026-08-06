@@ -30,6 +30,12 @@ jobs:
         with:
           targets: x86_64-apple-darwin,aarch64-apple-darwin
 
+      - name: Cache Rust build
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: native-module -> target
+          key: macos-universal
+
       - name: Install Meson & Ninja
         run: brew install meson ninja
 
@@ -50,6 +56,7 @@ jobs:
           VITE_FIREBASE_MESSAGING_SENDER_ID=${{ secrets.VITE_FIREBASE_MESSAGING_SENDER_ID }}
           VITE_FIREBASE_APP_ID=${{ secrets.VITE_FIREBASE_APP_ID }}
           VITE_FIREBASE_MEASUREMENT_ID=${{ secrets.VITE_FIREBASE_MEASUREMENT_ID }}
+          VITE_API_BASE_URL=${{ secrets.VITE_API_BASE_URL }}
           SUPABASE_URL=${{ secrets.SUPABASE_URL }}
           SUPABASE_KEY=${{ secrets.SUPABASE_KEY }}
           SUPABASE_SERVICE_KEY=${{ secrets.SUPABASE_SERVICE_KEY }}
@@ -69,7 +76,11 @@ jobs:
         # NATIVELY_BUILD_ALL_MAC_ARCHES=1 tells build-native.js to compile both arches
         env:
           NATIVELY_BUILD_ALL_MAC_ARCHES: "1"
-        run: npm run build:native
+        run: |
+          start=$(date +%s)
+          npm run build:native
+          end=$(date +%s)
+          echo "::notice title=Native build duration (macOS)::$((end - start))s"
 
       - name: Package with electron-builder (macOS)
         # ad-hoc-sign.js runs automatically as afterPack hook via package.json
@@ -102,6 +113,12 @@ jobs:
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
 
+      - name: Cache Rust build
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: native-module -> target
+          key: windows
+
       - name: Install dependencies
         env:
           SHARP_IGNORE_GLOBAL_LIBVIPS: "1"
@@ -119,6 +136,7 @@ jobs:
           VITE_FIREBASE_MESSAGING_SENDER_ID=${{ secrets.VITE_FIREBASE_MESSAGING_SENDER_ID }}
           VITE_FIREBASE_APP_ID=${{ secrets.VITE_FIREBASE_APP_ID }}
           VITE_FIREBASE_MEASUREMENT_ID=${{ secrets.VITE_FIREBASE_MEASUREMENT_ID }}
+          VITE_API_BASE_URL=${{ secrets.VITE_API_BASE_URL }}
           SUPABASE_URL=${{ secrets.SUPABASE_URL }}
           SUPABASE_KEY=${{ secrets.SUPABASE_KEY }}
           SUPABASE_SERVICE_KEY=${{ secrets.SUPABASE_SERVICE_KEY }}
@@ -137,7 +155,12 @@ jobs:
       - name: Build native module (Windows)
         # webrtc-audio-processing is cfg-gated to non-Windows in Cargo.toml,
         # so Meson/Ninja/abseil are never invoked here.
-        run: npm run build:native
+        shell: bash
+        run: |
+          start=$(date +%s)
+          npm run build:native
+          end=$(date +%s)
+          echo "::notice title=Native build duration (Windows)::$((end - start))s"
 
       - name: Package with electron-builder (Windows)
         env:
@@ -170,6 +193,12 @@ jobs:
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
 
+      - name: Cache Rust build
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: native-module -> target
+          key: linux
+
       - name: Install system packages required by electron-builder
         run: |
           sudo apt-get update -y
@@ -196,6 +225,7 @@ jobs:
           VITE_FIREBASE_MESSAGING_SENDER_ID=${{ secrets.VITE_FIREBASE_MESSAGING_SENDER_ID }}
           VITE_FIREBASE_APP_ID=${{ secrets.VITE_FIREBASE_APP_ID }}
           VITE_FIREBASE_MEASUREMENT_ID=${{ secrets.VITE_FIREBASE_MEASUREMENT_ID }}
+          VITE_API_BASE_URL=${{ secrets.VITE_API_BASE_URL }}
           SUPABASE_URL=${{ secrets.SUPABASE_URL }}
           SUPABASE_KEY=${{ secrets.SUPABASE_KEY }}
           SUPABASE_SERVICE_KEY=${{ secrets.SUPABASE_SERVICE_KEY }}
@@ -212,7 +242,11 @@ jobs:
           npm run build:electron
 
       - name: Build native module (Linux x64)
-        run: npm run build:native
+        run: |
+          start=$(date +%s)
+          npm run build:native
+          end=$(date +%s)
+          echo "::notice title=Native build duration (Linux)::$((end - start))s"
 
       - name: Package with electron-builder (Linux)
         env:

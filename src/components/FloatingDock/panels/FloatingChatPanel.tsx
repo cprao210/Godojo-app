@@ -4,6 +4,9 @@ import { Brain, ArrowRight, Copy, Check, RotateCcw, Search, Send } from 'lucide-
 import ReactMarkdown from 'react-markdown';
 import { guardSession } from '../../../lib/firebase';
 import remarkGfm from 'remark-gfm';
+import { useStreamBuffer } from '../../../hooks/useStreamBuffer';
+import { chatApi, statusLabel, type ChatHistoryTurn, type LiveTranscriptSegment, type StreamHandle } from '../../../lib/chatApi';
+import { chatMarkdownComponents } from '../../../lib/markdownComponents';
 
 interface Message {
     id: string;
@@ -11,6 +14,11 @@ interface Message {
     text: string;
     isStreaming?: boolean;
     intent?: string;
+    ragAnswer?: { confidence: number; sourceCount: number };
+    /** Latest backend status label ("Searching meetings…", etc.) while this
+     * message is still streaming with no text yet. Cleared once the first
+     * token/rag_answer arrives. */
+    status?: string;
 }
 
 // ── Film-roll transcript — text streams right-to-left like a ticker ──────────
@@ -85,17 +93,31 @@ interface FloatingChatPanelProps {
     onMessagesChange: (updater: Message[] | ((prev: Message[]) => Message[])) => void;
 }
 
-const TypingDots: React.FC = () => (
-    <div className="flex items-center gap-1 py-2">
-        {[0, 1, 2].map(i => (
-            <motion.div
-                key={i}
-                className="w-1.5 h-1.5 rounded-full"
-                style={{ background: 'rgba(255,255,255,0.3)' }}
-                animate={{ opacity: [0.3, 1, 0.3] }}
-                transition={{ duration: 0.7, repeat: Infinity, delay: i * 0.15, ease: 'easeInOut' }}
-            />
-        ))}
+const TypingDots: React.FC<{ label?: string }> = ({ label }) => (
+    <div className="flex items-center gap-2 py-2">
+        <div className="flex items-center gap-1">
+            {[0, 1, 2].map(i => (
+                <motion.div
+                    key={i}
+                    className="w-1.5 h-1.5 rounded-full"
+                    style={{ background: 'rgba(255,255,255,0.3)' }}
+                    animate={{ opacity: [0.3, 1, 0.3] }}
+                    transition={{ duration: 0.7, repeat: Infinity, delay: i * 0.15, ease: 'easeInOut' }}
+                />
+            ))}
+        </div>
+        {label && (
+            <motion.span
+                key={label}
+                initial={{ opacity: 0, y: 2 }}
+                animate={{ opacity: 1, y: 0 }}
+                transition={{ duration: 0.15 }}
+                className="text-[12px]"
+                style={{ color: 'rgba(255,255,255,0.4)' }}
+            >
+                {label}
+            </motion.span>
+        )}
     </div>
 );
 
@@ -169,13 +191,21 @@ const MessageBubble: React.FC<{ msg: Message }> = ({ msg }) => {
                     }}
                 >
                     {msg.isStreaming && msg.text === '' ? (
-                        <TypingDots />
+                        <TypingDots label={msg.status} />
                     ) : (
                         <>
-                            <div className="markdown-content prose prose-invert prose-sm max-w-none">
-                                <ReactMarkdown remarkPlugins={[remarkGfm]}>
+                            <div className="markdown-content">
+                                <ReactMarkdown remarkPlugins={[remarkGfm]} components={chatMarkdownComponents}>
                                     {msg.text}
                                 </ReactMarkdown>
+                                {msg.ragAnswer && (
+                                    <div className="mt-2 text-[10px] text-white/35 flex items-center gap-2">
+                                        <span>{Math.round(msg.ragAnswer.confidence * 100)}% confidence</span>
+                                        {msg.ragAnswer.sourceCount > 0 && (
+                                            <span>· {msg.ragAnswer.sourceCount} source{msg.ragAnswer.sourceCount > 1 ? 's' : ''}</span>
+                                        )}
+                                    </div>
+                                )}
                             </div>
                             {!msg.isStreaming && (
                                 <button
@@ -198,6 +228,7 @@ const MessageBubble: React.FC<{ msg: Message }> = ({ msg }) => {
 };
 
 export const FloatingChatPanel: React.FC<FloatingChatPanelProps> = ({
+    transcriptRef,
     rollingTranscriptUser,
     rollingTranscriptClient,
     isClientSpeaking,
@@ -211,9 +242,13 @@ export const FloatingChatPanel: React.FC<FloatingChatPanelProps> = ({
     const setMessages = onMessagesChange;
     const [inputValue, setInputValue] = useState('');
     const [isProcessing, setIsProcessing] = useState(false);
+    const [errorMessage, setErrorMessage] = useState<string | null>(null);
     const messagesEndRef = useRef<HTMLDivElement>(null);
     const inputRef = useRef<HTMLTextAreaElement>(null);
-    const [tavilySearchingFor, setTavilySearchingFor] = useState<string | null>(null);
+    // const [tavilySearchingFor, setTavilySearchingFor] = useState<string | null>(null);
+    const streamBuffer = useStreamBuffer();
+    const activeStreamRef = useRef<StreamHandle | null>(null);
+    const pendingQuestionRef = useRef<string | null>(null);
 
     // Auto-scroll
     useEffect(() => {
@@ -221,93 +256,98 @@ export const FloatingChatPanel: React.FC<FloatingChatPanelProps> = ({
     }, [messages]);
 
     // Stream event listeners
+    // useEffect(() => {
+    //     const cleanups: (() => void)[] = [];
+
+    //     // ── Gemini free-form chat stream (onGeminiStreamToken / onGeminiStreamDone) ──
+    //     if (window.electronAPI?.onGeminiStreamToken) {
+    //         cleanups.push(window.electronAPI.onGeminiStreamToken((token: string) => {
+    //             setMessages(prev => {
+    //                 const last = prev[prev.length - 1];
+    //                 if (last?.isStreaming && last.role === 'system' && !last.intent) {
+    //                     const updated = [...prev];
+    //                     updated[prev.length - 1] = { ...last, text: last.text + token };
+    //                     return updated;
+    //                 }
+    //                 return [...prev, { id: Date.now().toString(), role: 'system', text: token, isStreaming: true }];
+    //             });
+    //         }));
+    //     }
+
+    //     if (window.electronAPI?.onGeminiStreamDone) {
+    //         cleanups.push(window.electronAPI.onGeminiStreamDone(() => {
+    //             setIsProcessing(false);
+    //             setMessages(prev => {
+    //                 const last = prev[prev.length - 1];
+    //                 if (last?.isStreaming && !last.intent) {
+    //                     return [...prev.slice(0, -1), { ...last, isStreaming: false }];
+    //                 }
+    //                 return prev;
+    //             });
+    //         }));
+    //     }
+
+    //     if (window.electronAPI?.onGeminiStreamError) {
+    //         cleanups.push(window.electronAPI.onGeminiStreamError((error: string) => {
+    //             setIsProcessing(false);
+    //             setMessages(prev => {
+    //                 // Remove the empty streaming placeholder and add error
+    //                 const last = prev[prev.length - 1];
+    //                 if (last?.isStreaming) {
+    //                     return [...prev.slice(0, -1), { id: Date.now().toString(), role: 'system', text: `❌ ${error}` }];
+    //                 }
+    //                 return [...prev, { id: Date.now().toString(), role: 'system', text: `❌ ${error}` }];
+    //             });
+    //         }));
+    //     }
+
+    //     // ── RAG stream (used when ragQueryLive handles the question) ──
+    //     if (window.electronAPI?.onRAGStreamChunk) {
+    //         cleanups.push(window.electronAPI.onRAGStreamChunk((data) => {
+    //             setMessages(prev => {
+    //                 const last = prev[prev.length - 1];
+    //                 if (last?.isStreaming && last.role === 'system' && !last.intent) {
+    //                     const updated = [...prev];
+    //                     updated[prev.length - 1] = { ...last, text: last.text + data.chunk };
+    //                     return updated;
+    //                 }
+    //                 return prev;
+    //             });
+    //         }));
+    //     }
+
+    //     if (window.electronAPI?.onRAGStreamComplete) {
+    //         cleanups.push(window.electronAPI.onRAGStreamComplete(() => {
+    //             setIsProcessing(false);
+    //             setMessages(prev => {
+    //                 const last = prev[prev.length - 1];
+    //                 if (last?.isStreaming && !last.intent) {
+    //                     return [...prev.slice(0, -1), { ...last, isStreaming: false }];
+    //                 }
+    //                 return prev;
+    //             });
+    //         }));
+    //     }
+
+    //     if (window.electronAPI?.onTavilySearching) {
+    //         cleanups.push(window.electronAPI.onTavilySearching((data) => {
+    //             setTavilySearchingFor(data.entity);
+    //         }));
+    //     }
+
+    //     if (window.electronAPI?.onTavilySearchDone) {
+    //         cleanups.push(window.electronAPI.onTavilySearchDone(() => {
+    //             setTavilySearchingFor(null);
+    //         }));
+    //     }
+
+    //     return () => cleanups.forEach(fn => fn());
+
+    // }, []);
+
+    // Abort any in-flight stream on unmount (panel switch, meeting end)
     useEffect(() => {
-        const cleanups: (() => void)[] = [];
-
-        // ── Gemini free-form chat stream (onGeminiStreamToken / onGeminiStreamDone) ──
-        if (window.electronAPI?.onGeminiStreamToken) {
-            cleanups.push(window.electronAPI.onGeminiStreamToken((token: string) => {
-                setMessages(prev => {
-                    const last = prev[prev.length - 1];
-                    if (last?.isStreaming && last.role === 'system' && !last.intent) {
-                        const updated = [...prev];
-                        updated[prev.length - 1] = { ...last, text: last.text + token };
-                        return updated;
-                    }
-                    return [...prev, { id: Date.now().toString(), role: 'system', text: token, isStreaming: true }];
-                });
-            }));
-        }
-
-        if (window.electronAPI?.onGeminiStreamDone) {
-            cleanups.push(window.electronAPI.onGeminiStreamDone(() => {
-                setIsProcessing(false);
-                setMessages(prev => {
-                    const last = prev[prev.length - 1];
-                    if (last?.isStreaming && !last.intent) {
-                        return [...prev.slice(0, -1), { ...last, isStreaming: false }];
-                    }
-                    return prev;
-                });
-            }));
-        }
-
-        if (window.electronAPI?.onGeminiStreamError) {
-            cleanups.push(window.electronAPI.onGeminiStreamError((error: string) => {
-                setIsProcessing(false);
-                setMessages(prev => {
-                    // Remove the empty streaming placeholder and add error
-                    const last = prev[prev.length - 1];
-                    if (last?.isStreaming) {
-                        return [...prev.slice(0, -1), { id: Date.now().toString(), role: 'system', text: `❌ ${error}` }];
-                    }
-                    return [...prev, { id: Date.now().toString(), role: 'system', text: `❌ ${error}` }];
-                });
-            }));
-        }
-
-        // ── RAG stream (used when ragQueryLive handles the question) ──
-        if (window.electronAPI?.onRAGStreamChunk) {
-            cleanups.push(window.electronAPI.onRAGStreamChunk((data) => {
-                setMessages(prev => {
-                    const last = prev[prev.length - 1];
-                    if (last?.isStreaming && last.role === 'system' && !last.intent) {
-                        const updated = [...prev];
-                        updated[prev.length - 1] = { ...last, text: last.text + data.chunk };
-                        return updated;
-                    }
-                    return prev;
-                });
-            }));
-        }
-
-        if (window.electronAPI?.onRAGStreamComplete) {
-            cleanups.push(window.electronAPI.onRAGStreamComplete(() => {
-                setIsProcessing(false);
-                setMessages(prev => {
-                    const last = prev[prev.length - 1];
-                    if (last?.isStreaming && !last.intent) {
-                        return [...prev.slice(0, -1), { ...last, isStreaming: false }];
-                    }
-                    return prev;
-                });
-            }));
-        }
-
-        if (window.electronAPI?.onTavilySearching) {
-            cleanups.push(window.electronAPI.onTavilySearching((data) => {
-                setTavilySearchingFor(data.entity);
-            }));
-        }
-
-        if (window.electronAPI?.onTavilySearchDone) {
-            cleanups.push(window.electronAPI.onTavilySearchDone(() => {
-                setTavilySearchingFor(null);
-            }));
-        }
-
-        return () => cleanups.forEach(fn => fn());
-
+        return () => activeStreamRef.current?.abort();
     }, []);
 
     // Auto-resize textarea
@@ -318,43 +358,162 @@ export const FloatingChatPanel: React.FC<FloatingChatPanelProps> = ({
         el.style.height = `${Math.min(el.scrollHeight, 96)}px`; // max ~4 lines
     }, [inputValue]);
 
-    const addUserMessage = (text: string) => {
-        setMessages(prev => [...prev, { id: Date.now().toString(), role: 'user', text }]);
-        setMessages(prev => [...prev, { id: (Date.now() + 1).toString(), role: 'system', text: '', isStreaming: true }]);
+    // const addUserMessage = (text: string) => {
+    //     setMessages(prev => [...prev, { id: Date.now().toString(), role: 'user', text }]);
+    //     setMessages(prev => [...prev, { id: (Date.now() + 1).toString(), role: 'system', text: '', isStreaming: true }]);
+    //     setIsProcessing(true);
+    // };
+
+    // const handleSend = async () => {
+    //     const text = inputValue.trim();
+    //     if (!text || isProcessing) return;
+    //     setInputValue('');
+    //     addUserMessage(text);
+    //     try {
+
+    //         const sessionActive = await guardSession();
+    //         if (!sessionActive) {
+    //             setIsProcessing(false);
+    //             return;
+    //         }
+
+    //         // Try RAG first (context-aware live query)
+    //         const ragResult = await window.electronAPI?.ragQueryLive?.(text);
+    //         if (ragResult?.success) {
+    //             // Response streams via onRAGStreamChunk / onRAGStreamComplete
+    //             return;
+    //         }
+    //         // Fallback to direct Gemini chat
+    //         await window.electronAPI?.streamGeminiChat(text, undefined, undefined, undefined);
+    //     } catch (err: any) {
+    //         setIsProcessing(false);
+    //         setMessages(prev => {
+    //             const last = prev[prev.length - 1];
+    //             if (last?.isStreaming) {
+    //                 return [...prev.slice(0, -1), { id: Date.now().toString(), role: 'system', text: `❌ Error: ${err?.message}` }];
+    //             }
+    //             return [...prev, { id: Date.now().toString(), role: 'system', text: `❌ Error: ${err?.message}` }];
+    //         });
+    //     }
+    // };
+
+    // Build the {role, content} history the endpoint expects from our local
+    // Message[] shape. 'client' rows are rolling-transcript display only —
+    // not chat turns — so they're excluded.
+    const buildHistory = (msgs: Message[]): ChatHistoryTurn[] =>
+        msgs
+            .filter(m => (m.role === 'user' || m.role === 'system') && m.text)
+            .map(m => ({ role: m.role === 'user' ? 'user' : 'assistant', content: m.text }));
+
+    const buildTranscript = (): LiveTranscriptSegment[] =>
+        (transcriptRef?.current ?? []).map((t, i) => ({
+            text: t.text,
+            speaker: t.speaker,
+            timestamp: t.timestamp,
+            meeting_id: '',
+            chunk_index: i,
+        }));
+
+    const submitQuestion = async (question: string) => {
+        if (!question.trim()) return;
+        if (isProcessing) {
+            pendingQuestionRef.current = question; // queue, don't drop
+            return;
+        }
+        // if (!meetingId) {
+        //     setErrorMessage("Live chat isn't ready yet — the meeting session hasn't started.");
+        //     return;
+        // }
+
+        const sessionActive = await guardSession();
+        if (!sessionActive) return;
+
+        setErrorMessage(null);
         setIsProcessing(true);
+        const userMessage: Message = { id: `user-${Date.now()}`, role: 'user', text: question };
+        const assistantId = `assistant-${Date.now()}`;
+        setMessages(prev => [...prev, userMessage, { id: assistantId, role: 'system', text: '', isStreaming: true }]);
+
+        const historyBeforeThisTurn = buildHistory(messages);
+
+        // Local to THIS call — not shared with any other question, so there's
+        // no way for a concurrent/overlapping/duplicate call, or leftover
+        // state from a prior turn, to reset or overwrite this turn's text.
+        let localBuffer = '';
+        let rafId: number | null = null;
+        const flush = () => {
+            rafId = null;
+            setMessages(prev => prev.map(m => m.id === assistantId ? { ...m, text: localBuffer } : m));
+        };
+
+        activeStreamRef.current = chatApi.queryLive(
+            question,
+            historyBeforeThisTurn,
+            buildTranscript(),
+            {
+                onStatus: (status) => {
+                    const label = statusLabel(status);
+                    setMessages(prev => prev.map(m => m.id === assistantId ? { ...m, status: label } : m));
+                },
+                onToken: (chunk) => {
+                    localBuffer += chunk;
+                    if (rafId === null) rafId = requestAnimationFrame(flush);
+                    // First token has arrived — clear the status label so the
+                    // dots/status row is replaced by real content, not shown
+                    // alongside it.
+                    setMessages(prev => prev.map(m => (m.id === assistantId && m.status) ? { ...m, status: undefined } : m));
+                },
+                onRagAnswer: (rag) => {
+                    // Structured answer arrives whole — render as a complete
+                    // bubble immediately, don't wait for `done` to stop the
+                    // streaming cursor since no `token` frames are coming.
+                    setMessages(prev => prev.map(m =>
+                        m.id === assistantId
+                            ? {
+                                ...m,
+                                text: rag.answer,
+                                isStreaming: false,
+                                status: undefined,
+                                ragAnswer: { confidence: rag.confidence ?? 0, sourceCount: rag.sources?.length ?? 0 },
+                            }
+                            : m
+                    ));
+                },
+                onDone: () => {
+                    if (rafId !== null) { cancelAnimationFrame(rafId); rafId = null; }
+                    setMessages(prev => prev.map(m =>
+                        // Don't clobber a rag_answer bubble that already set its
+                        // final text — only finalize from the token buffer if
+                        // this turn actually streamed tokens.
+                        m.id === assistantId && !m.ragAnswer
+                            ? { ...m, text: localBuffer, isStreaming: false }
+                            : m
+                    ));
+                    setIsProcessing(false);
+                    activeStreamRef.current = null;
+                    if (pendingQuestionRef.current) {
+                        const next = pendingQuestionRef.current;
+                        pendingQuestionRef.current = null;
+                        setTimeout(() => submitQuestion(next), 50);
+                    }
+                },
+                onError: (error) => {
+                    if (rafId !== null) { cancelAnimationFrame(rafId); rafId = null; }
+                    console.error('[FloatingChatPanel] live chat stream error:', error);
+                    setMessages(prev => prev.filter(m => m.id !== assistantId));
+                    setErrorMessage(error);
+                    setIsProcessing(false);
+                    activeStreamRef.current = null;
+                },
+            },
+        );
     };
 
-    const handleSend = async () => {
+    const handleSend = () => {
         const text = inputValue.trim();
         if (!text || isProcessing) return;
         setInputValue('');
-        addUserMessage(text);
-        try {
-
-            const sessionActive = await guardSession();
-            if (!sessionActive) {
-                setIsProcessing(false);
-                return;
-            }
-
-            // Try RAG first (context-aware live query)
-            const ragResult = await window.electronAPI?.ragQueryLive?.(text);
-            if (ragResult?.success) {
-                // Response streams via onRAGStreamChunk / onRAGStreamComplete
-                return;
-            }
-            // Fallback to direct Gemini chat
-            await window.electronAPI?.streamGeminiChat(text, undefined, undefined, undefined);
-        } catch (err: any) {
-            setIsProcessing(false);
-            setMessages(prev => {
-                const last = prev[prev.length - 1];
-                if (last?.isStreaming) {
-                    return [...prev.slice(0, -1), { id: Date.now().toString(), role: 'system', text: `❌ Error: ${err?.message}` }];
-                }
-                return [...prev, { id: Date.now().toString(), role: 'system', text: `❌ Error: ${err?.message}` }];
-            });
-        }
+        submitQuestion(text);
     };
 
     const handleKeyDown = (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
@@ -480,7 +639,7 @@ export const FloatingChatPanel: React.FC<FloatingChatPanelProps> = ({
                 <div ref={messagesEndRef} />
             </div>
 
-            {tavilySearchingFor && (
+            {/* {tavilySearchingFor && (
                 <div
                     className="px-5 py-2 shrink-0 flex items-center gap-2"
                     style={{ borderTop: '1px solid rgba(255,255,255,0.05)', background: 'rgba(139,92,246,0.05)' }}
@@ -490,6 +649,14 @@ export const FloatingChatPanel: React.FC<FloatingChatPanelProps> = ({
                         Searching company information for{' '}
                         <span className="font-semibold text-violet-300">{tavilySearchingFor}</span>…
                     </span>
+                </div>
+            )} */}
+            {errorMessage && (
+                <div
+                    className="px-5 py-2 shrink-0 text-[12px] text-[#FF6B6B]"
+                    style={{ borderTop: '1px solid rgba(255,255,255,0.05)' }}
+                >
+                    {errorMessage}
                 </div>
             )}
 

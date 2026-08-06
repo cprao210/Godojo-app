@@ -2,7 +2,7 @@ import React, { useState, useRef, useEffect } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
 import { Radio, RefreshCw, Clock, ChevronDown } from 'lucide-react';
 import { LiveAnalysisContent } from '../../LiveAnalysisContent';
-import { LiveAnalysisData } from '../../../types/liveAnalysis';
+import { LiveAnalysisData, MeetingType } from '../../../types/liveAnalysis';
 import { DealHealthScore } from '../../DealHealthScore';
 
 const AUTO_REFRESH_OPTIONS = [
@@ -69,7 +69,9 @@ const FilmRollTranscript: React.FC<{
     );
 };
 
-export type MeetingType = 'discovery' | 'demo' | 'negotiation';
+// Canonical definition lives in the wire-contract types; re-exported here so existing
+// importers (FloatingDock et al.) keep working.
+export type { MeetingType };
 
 interface FloatingIntelligencePanelProps {
     isMeetingPaused: boolean;
@@ -89,6 +91,7 @@ interface FloatingIntelligencePanelProps {
     isUserSpeaking: boolean;
     speakerNames: { user: string; client: string };
     panelFirstOpenedAt: number | null; // timestamp when intelligence panel was first opened
+    noAnalysisCaptured?: boolean; // true when the countdown ended without enough transcript to analyse
     meetingTypes: MeetingType[];
     onMeetingTypesChange: (types: MeetingType[]) => void;
 }
@@ -230,6 +233,28 @@ const WaitingPlaceholder: React.FC = () => (
     </div>
 );
 
+// Shown when the auto-refresh countdown reached zero without enough
+// transcript captured to run an analysis. Does not auto-retry — a new
+// analysis cycle only starts on interval change, resume, or a new session.
+const NoAnalysisCapturedPlaceholder: React.FC = () => (
+    <div className="flex flex-col items-center justify-center h-full px-6 py-12 gap-5">
+        <div
+            className="w-14 h-14 rounded-2xl flex items-center justify-center"
+            style={{ background: 'rgba(148,163,184,0.10)', border: '1px solid rgba(148,163,184,0.18)' }}
+        >
+            <Radio size={26} className="text-white/30" strokeWidth={1.5} />
+        </div>
+
+        <div className="text-center flex flex-col gap-2">
+            <p className="text-[13px] font-semibold text-white/60 tracking-wide">No analysis captured</p>
+            <p className="text-[11px] text-white/30 leading-relaxed max-w-[220px]">
+                Not enough transcript was captured in this window. Hit{' '}
+                <span className="text-blue-400/70 font-semibold">Refresh</span> once there's more to analyse.
+            </p>
+        </div>
+    </div>
+);
+
 // ─── Countdown Placeholder ────────────────────────────────────────────────────
 // Shows a live ring-countdown that matches the auto-refresh interval exactly.
 // `openedAt`      — timestamp when the current timer cycle started (from FloatingDock)
@@ -242,31 +267,39 @@ const CountdownPlaceholder: React.FC<{
 }> = ({ openedAt, intervalMins, isPaused }) => {
     const totalMs = intervalMins * 60 * 1000;
 
-    // `frozenAt` captures the elapsed time when the meeting is paused so the
-    // countdown ring doesn't move while paused.
-    const frozenElapsedRef = useRef<number>(0);
-    const pauseStartRef = useRef<number | null>(null);
+    // Elapsed time frozen at the moment the meeting was paused; null while running,
+    // in which case elapsed is always derived live from `openedAt` (not a ref).
+    //
+    // Previously this used a `useRef(0)` for the running-elapsed baseline, which
+    // reset to 0 on every mount — since this component fully unmounts/remounts
+    // whenever the panel swaps to the loading skeleton and back (e.g. checking
+    // "Negotiation" triggers an immediate analysis run → brief skeleton → back to
+    // this component), the countdown was silently restarting from the full
+    // duration on every such swap, discarding real elapsed time. Deriving
+    // directly from the `openedAt` prop (which FloatingDock owns and does NOT
+    // reset on remount) fixes that regardless of how often this component itself
+    // gets torn down and recreated.
+    const frozenElapsedAtPauseRef = useRef<number | null>(null);
+    const computeElapsed = () =>
+        frozenElapsedAtPauseRef.current !== null ? frozenElapsedAtPauseRef.current : Date.now() - openedAt;
 
-    const [remaining, setRemaining] = useState(() => totalMs);
+    const [remaining, setRemaining] = useState(() => Math.max(0, totalMs - computeElapsed()));
 
     useEffect(() => {
-        // When pausing: snapshot elapsed so far
+        // When pausing: snapshot elapsed so far and freeze the ring/digits.
         if (isPaused) {
-            pauseStartRef.current = Date.now();
-            // Compute elapsed up to this moment
-            frozenElapsedRef.current = Date.now() - openedAt;
+            frozenElapsedAtPauseRef.current = Date.now() - openedAt;
+            setRemaining(Math.max(0, totalMs - frozenElapsedAtPauseRef.current));
             return;
         }
 
-        // When resuming (or on first mount): adjust openedAt equivalent so elapsed
-        // picks up from where it left off.
-        // We recalculate a virtual `startedAt` = now - frozenElapsed
-        const startedAt = Date.now() - frozenElapsedRef.current;
-        pauseStartRef.current = null;
+        // Running (including resuming, or a fresh/re-mount): always compute
+        // elapsed straight from `openedAt`, the one value that's actually
+        // stable across this component's mount/unmount cycles.
+        frozenElapsedAtPauseRef.current = null;
 
         const tick = () => {
-            const elapsed = Date.now() - startedAt;
-            setRemaining(Math.max(0, totalMs - elapsed));
+            setRemaining(Math.max(0, totalMs - (Date.now() - openedAt)));
         };
 
         tick(); // immediate paint
@@ -422,6 +455,7 @@ export const FloatingIntelligencePanel: React.FC<FloatingIntelligencePanelProps>
     isUserSpeaking,
     speakerNames,
     panelFirstOpenedAt,
+    noAnalysisCaptured,
     isOpen,
     meetingTypes,
     onMeetingTypesChange,
@@ -640,8 +674,13 @@ export const FloatingIntelligencePanel: React.FC<FloatingIntelligencePanelProps>
                 <DealHealthScore analysisData={displayData} isRefreshRun={isRefreshRun} />
             )} */}
 
-            {/* Tab bar — only shown when there is live data */}
-            {displayData && !isLoading && (
+            {/* Tab bar — shown whenever there is live data, including while a
+                background refresh of that data is in flight. Only hide it
+                for the initial/no-data loading state (matches the content
+                area's isLoading && !isRefreshRun check below), otherwise a
+                refresh would unmount the tabs even though displayData is
+                still valid. */}
+            {displayData && (!isLoading || isRefreshRun) && (
                 <div
                     className="shrink-0 overflow-x-auto"
                     style={{ borderBottom: '1px solid rgba(255,255,255,0.06)', scrollbarWidth: 'none' }}
@@ -711,7 +750,16 @@ export const FloatingIntelligencePanel: React.FC<FloatingIntelligencePanelProps>
 
             {/* Content */}
             <div className="overflow-y-auto flex-1" style={{ scrollbarWidth: 'thin', scrollbarColor: 'rgba(255,255,255,0.1) transparent' }}>
-                {isLoading && !isRefreshRun ? (
+                {isLoading && !isRefreshRun && displayData === null ? (
+                    // displayData === null added: isRefreshRun is meant to keep existing
+                    // content visible during a forced re-run (e.g. checking "Negotiation"
+                    // calls runAnalysis(true) immediately so Deal Alert populates without
+                    // waiting for the next auto-refresh tick), but it's a second piece of
+                    // state that has to land in the same render as isLoading to work. If
+                    // there's already data to show, never drop back to the skeleton (or,
+                    // by falling through, the countdown placeholder) regardless of that
+                    // timing — the existing tabs/content should stay up the whole time a
+                    // background refresh is in flight.
                     <IntelligenceSkeleton />
                 ) : analysisError && displayData === null ? (
                     <div className="flex flex-col items-center justify-center h-full px-6 py-10 gap-4">
@@ -734,7 +782,9 @@ export const FloatingIntelligencePanel: React.FC<FloatingIntelligencePanelProps>
                         </button>
                     </div>
                 ) : displayData === null ? (
-                    panelFirstOpenedAt && autoRefreshInterval ? (
+                    noAnalysisCaptured ? (
+                        <NoAnalysisCapturedPlaceholder />
+                    ) : panelFirstOpenedAt && autoRefreshInterval ? (
                         <CountdownPlaceholder openedAt={panelFirstOpenedAt} intervalMins={autoRefreshInterval} isPaused={isMeetingPaused} />
                     ) : (
                         <WaitingPlaceholder />

@@ -1,5 +1,6 @@
 import { useState, useCallback, useRef, useEffect } from 'react';
-import { LiveAnalysisData, DealOptimizerAlert } from '../types/liveAnalysis';
+import { LiveAnalysisData, LiveAnalysisTurn, MeetingType } from '../types/liveAnalysis';
+import { intelligenceApi } from '../lib/intelligenceApi';
 
 // ─── Prompt builders ─────────────────────────────────────────────────────────
 //
@@ -40,17 +41,6 @@ const URGENT_TRIGGER_PATTERNS = [
   /\bbudget\s+(is\s+)?(approved|confirmed|allocated|set\s+aside)\b/i,
   /\bi\s+(can\s+)?approve\s+this\b|\bfinal\s+(call\s+)?is\s+mine\b/i,
 ];
-
-// Short, cheap stand-in for DEAL_OPTIMIZER_SECTION when the meeting isn't a
-// negotiation call. Keeps the "dealOptimizer" key present in the output schema
-// (so downstream parsing never breaks) without paying for the ~55 lines of
-// trigger docs + examples on every discovery/demo run.
-const DEAL_OPTIMIZER_SKIP_NOTE = `
-     ═══════════════════════════════════════
-     SECTION 5: DEAL OPTIMIZER (Negotiation Intelligence)
-     ═══════════════════════════════════════
-     Not applicable to this meeting type. Always return "dealOptimizer": [].
- `;
 
 const hasUrgentTrigger = (text: string): boolean =>
   URGENT_TRIGGER_PATTERNS.some(r => r.test(text));
@@ -294,7 +284,7 @@ const DEAL_OPTIMIZER_SECTION = `
 `;
 
 // ── PROMPT 1: First run — full transcript, derive everything from scratch ──────
-const getFirstRunPrompt = (fullProspectContext: string, isNegotiation: boolean): string =>
+const getFirstRunPrompt = (fullProspectContext: string): string =>
   `You are an expert real-time sales intelligence engine analyzing a live sales call transcript. Your job is to extract structured insights across four areas: BANT, MEDDIC, Objections, and Buying Signals. Return ONLY valid JSON. No explanation, no markdown, no text outside the JSON object.
 
     ═══════════════════════════════════════
@@ -373,7 +363,7 @@ const getFirstRunPrompt = (fullProspectContext: string, isNegotiation: boolean):
     Apply the quality bar: only capture what a sales rep could act on RIGHT NOW.
     ${SHARED_SIGNAL_CATALOGUE}
     ${SHARED_OUTPUT_FORMAT}
-    ${isNegotiation ? DEAL_OPTIMIZER_SECTION : DEAL_OPTIMIZER_SKIP_NOTE}
+    ${DEAL_OPTIMIZER_SECTION}
 
     ═══════════════════════════════════════
     CLIENT TRANSCRIPT (client turns only — full call so far):
@@ -384,8 +374,7 @@ const getFirstRunPrompt = (fullProspectContext: string, isNegotiation: boolean):
 // ── PROMPT 2: Refresh run — prior state + new prospect delta only ─────────────
 const getRefreshPrompt = (
   priorState: LiveAnalysisData,
-  newProspectDelta: string,
-  isNegotiation: boolean
+  newProspectDelta: string
 ): string =>
   `You are an expert real-time sales intelligence engine updating a live analysis mid-call. Return ONLY valid JSON. No explanation, no markdown, no text outside the JSON object.
 
@@ -448,7 +437,7 @@ const getRefreshPrompt = (
     ═══════════════════════════════════════
     ${SHARED_SIGNAL_CATALOGUE}
     ${SHARED_OUTPUT_FORMAT}
-    ${isNegotiation ? DEAL_OPTIMIZER_SECTION : DEAL_OPTIMIZER_SKIP_NOTE}
+    ${DEAL_OPTIMIZER_SECTION}
 `;
 
 // ─── Anthropic API fallback (used when electronAPI is not available) ─────────
@@ -560,32 +549,32 @@ const mergeWithPrior = (
   // which would shift whenever new items are prepended.
   // New items are prepended as a batch (not sequential unshifts) to preserve
   // the LLM's own ordering (index 0 = most recent).
-  const priorObjIds = new Set(prior.objections.map(o => o.id ?? stableId(o.quote ?? '')));
+  const priorObjIds = new Set(prior.objections.map(o => o.id ?? stableId(o.quote)));
   const newObjections = incoming.objections
-    .filter(obj => !priorObjIds.has(obj.id ?? stableId(obj.quote ?? '')))
-    .map(obj => ({ ...obj, id: obj.id ?? stableId(obj.quote ?? '') }));
+    .filter(obj => !priorObjIds.has(obj.id ?? stableId(obj.quote)))
+    .map(obj => ({ ...obj, id: obj.id ?? stableId(obj.quote) }));
   const mergedObjections = [
     ...newObjections,
-    ...prior.objections.map(o => ({ ...o, id: o.id ?? stableId(o.quote ?? '') })),
+    ...prior.objections.map(o => ({ ...o, id: o.id ?? stableId(o.quote) })),
   ];
 
-  const priorSigIds = new Set(prior.signals.map(s => s.id ?? stableId(s.quote ?? '')));
+  const priorSigIds = new Set(prior.signals.map(s => s.id ?? stableId(s.quote)));
   const newSignals = incoming.signals
-    .filter(sig => !priorSigIds.has(sig.id ?? stableId(sig.quote ?? '')))
-    .map(sig => ({ ...sig, id: sig.id ?? stableId(sig.quote ?? '') }));
+    .filter(sig => !priorSigIds.has(sig.id ?? stableId(sig.quote)))
+    .map(sig => ({ ...sig, id: sig.id ?? stableId(sig.quote) }));
   const mergedSignals = [
     ...newSignals,
-    ...prior.signals.map(s => ({ ...s, id: s.id ?? stableId(s.quote ?? '') })),
+    ...prior.signals.map(s => ({ ...s, id: s.id ?? stableId(s.quote) })),
   ];
 
   // ── Deal Optimizer: preserve-and-append guard ─────────────────────────────
-  const priorAlertIds = new Set((prior.dealOptimizer ?? []).map(a => a.id ?? stableId(a.quote ?? '')));
+  const priorAlertIds = new Set((prior.dealOptimizer ?? []).map(a => a.id ?? stableId(a.quote)));
   const newAlerts = (incoming.dealOptimizer ?? [])
-    .filter(a => !priorAlertIds.has(a.id ?? stableId(a.quote ?? '')))
-    .map(a => ({ ...a, id: a.id ?? stableId(a.quote ?? '') }));
+    .filter(a => !priorAlertIds.has(a.id ?? stableId(a.quote)))
+    .map(a => ({ ...a, id: a.id ?? stableId(a.quote) }));
   const mergedAlerts = [
     ...newAlerts,
-    ...(prior.dealOptimizer ?? []).map(a => ({ ...a, id: a.id ?? stableId(a.quote ?? '') })),
+    ...(prior.dealOptimizer ?? []).map(a => ({ ...a, id: a.id ?? stableId(a.quote) })),
   ];
 
   return {
@@ -597,11 +586,49 @@ const mergeWithPrior = (
   };
 };
 
+// ─── Stable-id stamp + dedupe (backend path only) ─────────────────────────────
+// The backend now performs the incremental merge itself (BANT/MEDDIC status ratchet
+// with an evidence-backed downgrade escape hatch, objection/signal dedupe-and-append,
+// guaranteed suggested_questions, and quote-grounding that exempts quotes carried
+// verbatim from the prior analysis). So the renderer trusts the backend's merged
+// result directly on this path — it does NOT run mergeWithPrior, whose status guard
+// has no escape hatch and would revert the backend's legitimate downgrades.
+//
+// Two gaps in the backend response are closed here:
+//   • Stable ids — the backend schema has no `id` field, so it's dropped on every
+//     round-trip. Re-stamp it deterministically from the quote (stableId is a pure
+//     function of the text), so dismiss/checked UI state keyed by id survives refreshes.
+//   • Dedupe safety net — the backend dedupes by prompt but not deterministically, so
+//     drop any exact id collision, keeping the first (newest, since the backend orders
+//     newly-detected items first).
+const stampIds = (data: LiveAnalysisData): LiveAnalysisData => {
+  const dedupeStamp = <T extends { id?: string; quote: string }>(items: T[]): T[] => {
+    const seen = new Set<string>();
+    const out: T[] = [];
+    for (const item of items) {
+      const id = item.id ?? stableId(item.quote);
+      if (seen.has(id)) continue;
+      seen.add(id);
+      out.push({ ...item, id });
+    }
+    return out;
+  };
+  return {
+    bant: data.bant,
+    meddic: data.meddic,
+    objections: dedupeStamp(data.objections),
+    signals: dedupeStamp(data.signals),
+    dealOptimizer: dedupeStamp(data.dealOptimizer ?? []),
+  };
+};
+
 export const useLiveAnalysis = (
   transcriptRef: React.MutableRefObject<Array<{ speaker: string; displayName?: string; text: string; timestamp: number }>>,
   isMeetingPaused: boolean,
   companyIntel?: Record<string, any> | null,
-  meetingTypes: string[] = []
+  // Meeting Type multi-select state (owned by FloatingDock). Sent to the backend as
+  // `meeting_types`; dealOptimizer is produced only when it includes 'negotiation'.
+  meetingTypes: MeetingType[] = []
 ) => {
   const [analysisData, setAnalysisData] = useState<LiveAnalysisData | null>(null);
   const [isLoading, setIsLoading] = useState(false);
@@ -631,10 +658,10 @@ export const useLiveAnalysis = (
     companyIntelRef.current = companyIntel;
   }, [companyIntel]);
 
-  // Mirrors meetingTypes in a ref (like companyIntelRef) so runAnalysis always reads
-  // the latest value without needing meetingTypes in its useCallback deps — avoids
-  // recreating the callback (and re-registering IPC listeners) on every meeting-type toggle.
-  const meetingTypesRef = useRef<string[]>(meetingTypes);
+  // Ref-mirror (same pattern as companyIntelRef): runAnalysis reads the latest selection
+  // without meetingTypes becoming a useCallback dep — its identity stays stable, so the
+  // FloatingDock auto-refresh timer holding runAnalysisRef never resets on a toggle.
+  const meetingTypesRef = useRef<MeetingType[]>(meetingTypes);
   useEffect(() => {
     meetingTypesRef.current = meetingTypes;
   }, [meetingTypes]);
@@ -679,9 +706,6 @@ export const useLiveAnalysis = (
     setIsLoading(true);
     setError(null);
 
-    let resultCleanup: (() => void) | undefined;
-    let errorCleanup: (() => void) | undefined;
-
     // Snapshot cursor and prior state at call time to avoid stale closures
     const priorState = analysisDataRef.current;
 
@@ -715,7 +739,6 @@ export const useLiveAnalysis = (
       const adjustedDeltaStartIndex = priorState ? lastAnalyzedIndexRef.current : 0;
 
       let livePrompt: string;
-      const isNegotiation = meetingTypesRef.current.includes('negotiation');
 
       if (!priorState) {
         setIsRefreshRun(false);
@@ -758,9 +781,9 @@ export const useLiveAnalysis = (
 
         const companyBlock = buildCompanyBlock(companyIntel);
         livePrompt = companyBlock
-          ? `${companyBlock}\n\n${getFirstRunPrompt(firstRunContext, isNegotiation)}`
-          : getFirstRunPrompt(firstRunContext, isNegotiation);
-        console.log(`[useLiveAnalysis] First run — ... compressed: ${hasOldTurns}, negotiation: ${isNegotiation}`);
+          ? `${companyBlock}\n\n${getFirstRunPrompt(firstRunContext)}`
+          : getFirstRunPrompt(firstRunContext);
+        console.log(`[useLiveAnalysis] First run — sending ${humanTurns.length} turns (${firstRunContext.length} chars), compressed: ${hasOldTurns}`);
       } else {
         setIsRefreshRun(true);
         // ── REFRESH RUN: prior state + new CLIENT turns only ────────────────────
@@ -775,40 +798,41 @@ export const useLiveAnalysis = (
 
         const companyBlock = buildCompanyBlock(companyIntel);
         livePrompt = companyBlock
-          ? `${companyBlock}\n\n${getRefreshPrompt(priorState, prospectDelta, isNegotiation)}`
-          : getRefreshPrompt(priorState, prospectDelta, isNegotiation);
-        console.log(`[useLiveAnalysis] Refresh run — ${newTurns.length} new turns, ${prospectDelta.length} chars of prospect delta, negotiation: ${isNegotiation}`);
+          ? `${companyBlock}\n\n${getRefreshPrompt(priorState, prospectDelta)}`
+          : getRefreshPrompt(priorState, prospectDelta);
+        console.log(`[useLiveAnalysis] Refresh run — ${newTurns.length} new turns, ${prospectDelta.length} chars of prospect delta`);
       }
 
-      // ── Electron path ────────────────────────────────────────────────
-      if (window.electronAPI?.startLiveAnalysis) {
-        const analysisPromise = new Promise<LiveAnalysisData>((resolve, reject) => {
-          const timeoutId = setTimeout(() => reject(new Error('Analysis timed out')), 60000);
+      // ── Backend path (renderer-direct via axios) ─────────────────────
+      // The renderer owns the transcript + Firebase token, so it POSTs straight to
+      // /intelligence/live-analysis (no IPC round-trip through the main-process
+      // GodojoClient). Incremental contract: on a refresh run we send ONLY the delta
+      // turns (new since the cursor) plus the prior analysis, and the backend merges;
+      // on the first run priorState is null → send the full transcript, no prior state.
+      // The backend builds the prompt server-side, so `livePrompt` is only used by the
+      // Anthropic fallback below.
+      // electronAPI is undefined in the web/dev environment despite its non-optional
+      // global type; alias through a nullable local so the else (Anthropic) branch
+      // stays reachable without narrowing the global the rest of the app relies on.
+      const electronAPI: typeof window.electronAPI | undefined = window.electronAPI;
+      if (electronAPI) {
+        // The cursor indexes humanTurns, so slice humanTurns (then narrow to the two
+        // real speakers) to keep the delta aligned with currentEndIndex.
+        const deltaTurns = priorState
+          ? humanTurns.slice(adjustedDeltaStartIndex)
+          : humanTurns;
+        const turns: LiveAnalysisTurn[] = deltaTurns
+          .filter(t => (t.speaker === 'user' || t.speaker === 'client') && t.text?.trim())
+          .map(t => ({ speaker: t.speaker, text: t.text }));
 
-          resultCleanup = window.electronAPI?.onLiveAnalysisResult?.((result: string) => {
-            clearTimeout(timeoutId);
-            try {
-              let jsonStr = result.trim();
-              const jsonMatch = result.match(/```(?:json)?\s*([\s\S]*?)\s*```/);
-              if (jsonMatch) jsonStr = jsonMatch[1];
-              resolve(JSON.parse(jsonStr));
-            } catch {
-              reject(new Error('Failed to parse analysis result'));
-            }
-          });
-
-          errorCleanup = window.electronAPI?.onLiveAnalysisError?.((err: string) => {
-            clearTimeout(timeoutId);
-            reject(new Error(err));
-          });
+        const parsed = await intelligenceApi.analyzeLive(turns, null, {
+          meetingTypes: meetingTypesRef.current,
+          // null on the first run → backend analyses `turns` as the full call.
+          previousAnalysis: priorState,
         });
 
-        await window.electronAPI.startLiveAnalysis(livePrompt);
-        const parsed = await analysisPromise;
-
-        // Client-side merge: ensures prior objections/signals are never lost even if
-        // the LLM dropped them (model switch, context truncation, etc.)
-        const merged = mergeWithPrior(parsed, priorState);
+        // Backend already merged (see stampIds note); just re-stamp stable ids + dedupe.
+        const merged = stampIds(parsed);
 
         // Advance cursor so next delta run only processes new turns
         lastAnalyzedIndexRef.current = currentEndIndex;
@@ -821,6 +845,8 @@ export const useLiveAnalysis = (
         );
       } else {
         // ── Anthropic API fallback (web / dev environment) ────────────
+        // No backend merge on this path — livePrompt asks the LLM to merge, and
+        // mergeWithPrior is the deterministic safety net on top (append guard + ids).
         const parsed = await runAnalysisViaAnthropicAPI(livePrompt);
         const merged = mergeWithPrior(parsed, priorState);
         lastAnalyzedIndexRef.current = currentEndIndex;
@@ -836,8 +862,6 @@ export const useLiveAnalysis = (
     } finally {
       isLoadingRef.current = false;
       setIsLoading(false);
-      resultCleanup?.();
-      errorCleanup?.();
     }
   }, [transcriptRef, isMeetingPaused, setAnalysisDataAndRef]);
 
