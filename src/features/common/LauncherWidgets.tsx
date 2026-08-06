@@ -123,6 +123,7 @@ export const LauncherHeader: React.FC<LauncherHeaderProps> = ({
                                 : 'border border-border-subtle bg-bg-item-surface text-text-secondary hover:bg-white/[0.08] hover:text-white',
                         ].join(' ')}
                         aria-label="Manager Dashboard"
+                        title='Manager Dashboard'
                     >
                         <LayoutDashboard size={15} />
                     </button>
@@ -141,6 +142,7 @@ export const LauncherHeader: React.FC<LauncherHeaderProps> = ({
                             : 'border border-border-subtle bg-bg-item-surface text-text-secondary hover:bg-white/[0.08] hover:text-white',
                     ].join(' ')}
                     aria-label="Settings"
+                    title='Settings'
                 >
                     <Settings size={15} />
                 </button>
