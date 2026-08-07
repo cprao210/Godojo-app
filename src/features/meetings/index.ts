@@ -3,8 +3,8 @@ import MeetingChatOverlay from './MeetingChatOverlay';
 import MeetingDetails from './MeetingDetails';
 import { MeetingScorecardPanel } from './MeetingScoreCard';
 import MeetingTimeline from './MeetingTimeline';
-import NextMeetingCard from './NextMeetingCard';
+import { NextMeetingDetails } from './NextMeetingDetails';
+import { NextMeetingEmptyState } from './NextMeetingEmptyState';
 import SalesBriefPanel from './SalesBriefPanel';
 
-export { FollowUpEmailModal, SalesBriefPanel, MeetingChatOverlay, MeetingDetails, MeetingScorecardPanel, MeetingTimeline, NextMeetingCard };
-
+export { FollowUpEmailModal, SalesBriefPanel, MeetingChatOverlay, MeetingDetails, MeetingScorecardPanel, MeetingTimeline, NextMeetingDetails, NextMeetingEmptyState };

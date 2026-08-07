@@ -236,9 +236,9 @@ export const TopObjectionsList: React.FC<TopObjectionsListProps> = ({ objections
 
     return (
         <div className="flex flex-col gap-3.5">
-            {objections.map((o) => (
+            {objections.map((o, i) => (
                 <button
-                    key={o.label}
+                    key={o.label ? `${o.label}-${i}` : `objection-${i}`}
                     type="button"
                     onClick={() => onSelect(o)}
                     disabled={o.latest.length === 0}

@@ -8,12 +8,14 @@
  *      pending invitation on file (GET /invitations/me).
  *
  * They must Accept or Reject before seeing the team's member list.
+ *
+ * All submit state and API calls now live in useInvitationResponseModal —
+ * this component only renders.
  */
 
-import React, { useState } from 'react';
+import React from 'react';
 import { Users, X, Check } from 'lucide-react';
-import { tenantsApi } from '@/api/tenantsApi';
-import { ApiError } from '@/lib/apiClient';
+import { useInvitationResponseModal } from '@/hooks/useInvitationResponseModal';
 import type { InvitationResponseModalProps } from '@/types';
 
 export const InvitationResponseModal: React.FC<InvitationResponseModalProps> = ({
@@ -23,32 +25,11 @@ export const InvitationResponseModal: React.FC<InvitationResponseModalProps> = (
     onDeclined,
     onDismiss,
 }) => {
-    const [isSubmitting, setIsSubmitting] = useState<'accept' | 'reject' | null>(null);
-    const [error, setError] = useState<string | null>(null);
-
-    const handleAccept = async () => {
-        setError(null);
-        setIsSubmitting('accept');
-        try {
-            const result = await tenantsApi.acceptInvitation(invitation.token);
-            onAccepted(result);
-        } catch (err) {
-            setError(err instanceof ApiError ? err.message : 'Failed to accept invitation. Please try again.');
-            setIsSubmitting(null);
-        }
-    };
-
-    const handleReject = async () => {
-        setError(null);
-        setIsSubmitting('reject');
-        try {
-            await tenantsApi.declineInvitation(invitation.token);
-            onDeclined();
-        } catch (err) {
-            setError(err instanceof ApiError ? err.message : 'Failed to decline invitation. Please try again.');
-            setIsSubmitting(null);
-        }
-    };
+    const { isSubmitting, error, handleAccept, handleReject } = useInvitationResponseModal({
+        invitation,
+        onAccepted,
+        onDeclined,
+    });
 
     return (
         <div

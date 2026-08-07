@@ -38,7 +38,7 @@ import { EmailVerification, SignIn } from "@/pages";
 // ---------------------------------------------------------------------------
 // premium
 // ---------------------------------------------------------------------------
-import { PremiumUpgradeModal, useAdCampaigns } from "../premium";
+import { PremiumUpgradeModal, useAdCampaigns } from "./premium";
 
 // Route HTTP auth failures (a terminal 401 from apiClient, surfaced through React
 // Query) into the same session-expired flow as the Firebase guard. The QueryClient
@@ -97,7 +97,7 @@ const App: React.FC = () => {
   // --- Render --------------------------------------------------------------
 
   if (isCropperWindow) {
-    const Cropper = React.lazy(() => import("../features/common/Cropper"));
+    const Cropper = React.lazy(() => import("./features/common/Cropper"));
     return (
       <React.Suspense fallback={<div className="w-screen h-screen bg-transparent" />}>
         <Cropper />

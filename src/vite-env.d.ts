@@ -1,5 +1,5 @@
 /// <reference types="vite/client" />
-import { ElectronAPI } from './types/electron';
+import { ElectronAPI } from './electron.d.ts';
 
 interface Window {
     electronAPI: ElectronAPI;

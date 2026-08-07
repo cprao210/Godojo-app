@@ -1,8 +1,16 @@
-import React, { useState, useEffect, useRef } from 'react';
-import { Trash2, AlertCircle, CheckCircle, ExternalLink, Loader2, ChevronDown, Check, RefreshCw } from 'lucide-react';
-import { useResolvedTheme } from '@/hooks';
-import { FetchedModel, ProviderCardProps } from '@/types';
+import React from 'react';
+import { Trash2, AlertCircle, CheckCircle, ExternalLink, Loader2, RefreshCw } from 'lucide-react';
+import { useResolvedTheme, useProviderCard } from '@/hooks';
+import { ProviderCardProps } from '@/types';
+import ModelDropdown from './ModelDropdown';
 
+// ============================================
+// Main Component
+// ============================================
+// A single AI-provider settings card: API key input/save/remove, connection
+// test, and (once a key is stored) model discovery + selection. All state,
+// the auto-save timer, and model-fetch logic now live in useProviderCard —
+// this component only renders.
 export const ProviderCard: React.FC<ProviderCardProps> = ({
     providerId,
     providerName,
@@ -21,111 +29,29 @@ export const ProviderCard: React.FC<ProviderCardProps> = ({
     keyUrl,
     onPreferredModelChange,
 }) => {
-    const [fetchedModels, setFetchedModels] = useState<FetchedModel[]>([]);
-    const [isFetching, setIsFetching] = useState(false);
-    const [fetchError, setFetchError] = useState<string | null>(null);
-    const [selectedModel, setSelectedModel] = useState<string>(preferredModel || '');
-    const [isDropdownOpen, setIsDropdownOpen] = useState(false);
-    const dropdownRef = React.useRef<HTMLDivElement>(null);
     const isLight = useResolvedTheme() === 'light';
 
-    // Refs to avoid stale closures in the auto-save timer
-    const savedRef = useRef(savedStatus);
-    const savingRef = useRef(savingStatus);
-    savedRef.current = savedStatus;
-    savingRef.current = savingStatus;
-
-    // Auto-save API key after 5 seconds of inactivity
-    useEffect(() => {
-        if (!apiKey.trim()) return;
-        const timer = setTimeout(() => {
-            if (!savedRef.current && !savingRef.current) {
-                onSaveKey().catch(console.error);
-            }
-        }, 5000);
-        return () => clearTimeout(timer);
-    }, [apiKey]);
-
-    // Sync preferredModel prop
-    useEffect(() => {
-        if (preferredModel) setSelectedModel(preferredModel);
-    }, [preferredModel]);
-
-    // Auto-fetch models on mount if a key is already stored
-    const hasFetchedOnMount = useRef(false);
-    useEffect(() => {
-        if (hasStoredKey && fetchedModels.length === 0) {
-            hasFetchedOnMount.current = true;
-            handleFetchModels();
-        }
-    }, [hasStoredKey]);
-
-    // Close dropdown on outside click
-    useEffect(() => {
-        const handleClickOutside = (event: MouseEvent) => {
-            if (dropdownRef.current && !dropdownRef.current.contains(event.target as Node)) {
-                setIsDropdownOpen(false);
-            }
-        };
-        document.addEventListener('mousedown', handleClickOutside);
-        return () => document.removeEventListener('mousedown', handleClickOutside);
-    }, []);
-
-    const handleFetchModels = async () => {
-        setIsFetching(true);
-        setFetchError(null);
-
-        try {
-            // If a new key is entered, save it first
-            if (apiKey.trim()) {
-                await onSaveKey();
-            }
-
-            // Fetch models using the key (or stored key)
-            const keyToUse = apiKey.trim() || '';
-            // @ts-ignore
-            const result = await window.electronAPI?.fetchProviderModels(providerId, keyToUse);
-
-            if (result?.success && result.models) {
-                setFetchedModels(result.models);
-                // If we have a preferred model that exists in the list, keep it; otherwise auto-select first
-                if (result.models.length > 0) {
-                    const existsInList = result.models.some((m: FetchedModel) => m.id === selectedModel);
-                    if (!existsInList) {
-                        const firstModel = result.models[0].id;
-                        setSelectedModel(firstModel);
-                        // @ts-ignore
-                        await window.electronAPI?.setProviderPreferredModel(providerId, firstModel);
-                        if (onPreferredModelChange) {
-                            onPreferredModelChange(firstModel);
-                        }
-                    }
-                }
-            } else {
-                setFetchError(result?.error || 'Failed to fetch models');
-            }
-        } catch (e: any) {
-            setFetchError(e.message || 'Failed to fetch models');
-        } finally {
-            setIsFetching(false);
-        }
-    };
-
-    const handleSelectModel = async (modelId: string) => {
-        setSelectedModel(modelId);
-        setIsDropdownOpen(false);
-        try {
-            // @ts-ignore
-            await window.electronAPI?.setProviderPreferredModel(providerId, modelId);
-            if (onPreferredModelChange) {
-                onPreferredModelChange(modelId);
-            }
-        } catch (e) {
-            console.error('Failed to save preferred model:', e);
-        }
-    };
-
-    const selectedOption = fetchedModels.find(m => m.id === selectedModel);
+    const {
+        fetchedModels,
+        isFetching,
+        fetchError,
+        selectedModel,
+        selectedOption,
+        isDropdownOpen,
+        dropdownRef,
+        handleFetchModels,
+        handleSelectModel,
+        toggleDropdown,
+    } = useProviderCard({
+        providerId,
+        apiKey,
+        preferredModel,
+        hasStoredKey,
+        onSaveKey,
+        onPreferredModelChange,
+        savedStatus,
+        savingStatus,
+    });
 
     return (
         <div className="bg-bg-item-surface rounded-xl p-5 border border-border-subtle">
@@ -194,34 +120,17 @@ export const ProviderCard: React.FC<ProviderCardProps> = ({
 
                 {/* Inline Model Dropdown */}
                 {fetchedModels.length > 0 || preferredModel ? (
-                    <div className="relative flex-1 max-w-[200px] mx-4" ref={dropdownRef}>
-                        <button
-                            onClick={() => fetchedModels.length > 0 && setIsDropdownOpen(!isDropdownOpen)}
-                            className={`w-full bg-bg-input border border-border-subtle rounded-md px-3 py-1.5 text-xs text-text-primary focus:outline-none focus:border-accent-primary flex items-center justify-between transition-colors ${fetchedModels.length > 0 ? 'hover:bg-bg-elevated' : 'opacity-80 cursor-default'}`}
-                            type="button"
-                        >
-                            <span className="truncate pr-2">{selectedOption ? selectedOption.label : (preferredModel || 'Select model')}</span>
-                            <ChevronDown size={14} className={`text-text-secondary transition-transform ${isDropdownOpen ? 'rotate-180' : ''} ${fetchedModels.length === 0 ? 'opacity-50' : ''}`} />
-                        </button>
-
-                        {isDropdownOpen && fetchedModels.length > 0 && (
-                            <div className={`absolute top-full left-1/2 -translate-x-1/2 mt-1 w-full min-w-[200px] ${isLight ? "bg-bg-elevated" : "bg-gray-900"} border border-border-subtle rounded-lg shadow-xl z-50 max-h-60 overflow-y-auto animated fadeIn`}>
-                                <div className="p-1 space-y-0.5">
-                                    {fetchedModels.map((model) => (
-                                        <button
-                                            key={model.id}
-                                            onClick={() => handleSelectModel(model.id)}
-                                            className={`w-full text-left px-3 py-2 text-xs rounded-md flex items-center justify-between group transition-colors ${selectedModel === model.id ? 'bg-bg-input hover:bg-bg-elevated text-text-primary' : 'text-text-secondary hover:bg-bg-input hover:text-text-primary'}`}
-                                            type="button"
-                                        >
-                                            <span className="truncate">{model.label}</span>
-                                            {selectedModel === model.id && <Check size={14} className="text-accent-primary shrink-0 ml-2" />}
-                                        </button>
-                                    ))}
-                                </div>
-                            </div>
-                        )}
-                    </div>
+                    <ModelDropdown
+                        dropdownRef={dropdownRef}
+                        fetchedModels={fetchedModels}
+                        selectedModel={selectedModel}
+                        selectedOption={selectedOption}
+                        preferredModel={preferredModel}
+                        isOpen={isDropdownOpen}
+                        isLight={isLight}
+                        onToggle={toggleDropdown}
+                        onSelect={handleSelectModel}
+                    />
                 ) : (
                     <div className="flex-1 mx-4" />
                 )}
@@ -250,8 +159,6 @@ export const ProviderCard: React.FC<ProviderCardProps> = ({
             {/* Error from test or fetch */}
             {testError && <p className="text-[10px] text-red-400 mt-1.5 mb-2">{testError}</p>}
             {fetchError && <p className="text-[10px] text-red-400 mt-1.5 mb-2">Model fetch error: {fetchError}</p>}
-
-
         </div>
     );
 };

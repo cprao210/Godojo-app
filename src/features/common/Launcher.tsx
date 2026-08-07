@@ -15,7 +15,7 @@
 import React from 'react';
 import { AnimatePresence, motion } from 'framer-motion';
 import { IoSparklesSharp } from 'react-icons/io5';
-import { MeetingDetails, MeetingTimeline, NextMeetingCard, SalesBriefPanel } from '@/features/meetings';
+import { MeetingDetails, MeetingTimeline, NextMeetingDetails, NextMeetingEmptyState, SalesBriefPanel } from '@/features/meetings';
 import { GlobalChatOverlay, FloatingChatButton } from '@/features/chat';
 import { analytics } from '@/lib/analytics/analytics.service';
 import { useLauncher } from '@/hooks';
@@ -153,13 +153,20 @@ const Launcher: React.FC<LauncherProps> = ({ onStartMeeting, onOpenSettings, onO
 
                                             {/* Detail card — full width always */}
                                             <div className="flex-1 min-w-0">
-                                                <NextMeetingCard
-                                                    meeting={focusedMeeting}
-                                                    isLight={isLight}
-                                                    getMeetingStartText={getMeetingStartText}
-                                                    onStart={onStartMeeting}
-                                                    onSalesBrief={setSalesBriefEvent}
-                                                />
+                                                {focusedMeeting ? (
+                                                    <NextMeetingDetails
+                                                        meeting={focusedMeeting}
+                                                        isLight={isLight}
+                                                        getMeetingStartText={getMeetingStartText}
+                                                        onStart={onStartMeeting}
+                                                        onSalesBrief={setSalesBriefEvent}
+                                                    />
+                                                ) : (
+                                                    <NextMeetingEmptyState
+                                                        isLight={isLight}
+                                                        onStart={onStartMeeting}
+                                                    />
+                                                )}
                                             </div>
 
                                             {/* Timeline strip — only when 2+ meetings */}

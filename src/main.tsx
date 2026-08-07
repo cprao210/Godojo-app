@@ -82,7 +82,7 @@ function syncThemeWithMainProcess(): void {
  */
 async function bootFirebaseAuthBridge(): Promise<void> {
   try {
-    const { getFirebaseAuth, trySilentRestore } = await import("../lib/firebase");
+    const { getFirebaseAuth, trySilentRestore } = await import("./lib/firebase");
     getFirebaseAuth();
     void trySilentRestore();
   } catch (error) {

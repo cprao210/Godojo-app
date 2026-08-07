@@ -2,7 +2,7 @@ import React from 'react';
 import { X } from 'lucide-react';
 import { motion, AnimatePresence } from 'framer-motion';
 import { IMAGES } from '@/lib/assets';
-import { useGlobalChat } from '@/hooks';
+import { useGlobalChat, useResolvedTheme } from '@/hooks';
 import { GlobalChatOverlayProps } from '@/types';
 
 import TypingIndicator from './TypingIndicator';
@@ -19,6 +19,7 @@ import ChatInputBar from './ChatInputBar';
 const GlobalChatOverlay: React.FC<GlobalChatOverlayProps> = ({ isOpen, onClose, initialQuery = '', onOpenMeeting }) => {
 
     const globalChatStates = useGlobalChat({ isOpen, onClose, initialQuery });
+    const isLight = useResolvedTheme() === "light";
     const { messages, chatState, errorMessage, statusText, query, isBusy, setQuery } = globalChatStates;
     const { messagesEndRef, chatWindowRef, inputRef, submitQuestion, handleInputKeyDown } = globalChatStates;
     const { handleSendClick, resetOnExit } = globalChatStates;
@@ -53,7 +54,7 @@ const GlobalChatOverlay: React.FC<GlobalChatOverlayProps> = ({ isOpen, onClose, 
                             mass: 0.8
                         }}
                         style={{ transformOrigin: 'center' }}
-                        className="pointer-events-auto relative w-[760px] h-[82vh] max-w-[calc(100vw-64px)] max-h-[calc(100vh-64px)] rounded-[22px] border border-border-subtle shadow-[0_24px_70px_-12px_rgba(0,0,0,0.5)] overflow-hidden flex flex-col bg-bg-secondary/95 backdrop-blur-2xl"
+                        className={`pointer-events-auto relative w-[760px] h-[82vh] max-w-[calc(100vw-64px)] max-h-[calc(100vh-64px)] rounded-[22px] border border-border-subtle shadow-[0_24px_70px_-12px_rgba(0,0,0,0.5)] overflow-hidden flex flex-col ${isLight ? "bg-blue-50/80" : "bg-bg-secondary/95"} backdrop-blur-2xl`}
                     >
                         {/* Header */}
                         <div className="flex items-center justify-between gap-3 px-4 py-3.5 border-b border-border-subtle shrink-0 bg-gradient-to-b from-bg-elevated/60 to-transparent">

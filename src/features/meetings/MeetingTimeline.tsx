@@ -31,26 +31,18 @@
  *   useEffect(() => {
  *       if (nextMeeting?.id && !focusedMeetingId) setFocusedMeetingId(nextMeeting.id);
  *   }, [nextMeeting?.id]);
+ *
+ * Scroll-into-view + label formatting live in `useMeetingTimeline`.
  */
 
-import React, { useEffect, useRef } from 'react';
+import React from 'react';
 import { motion } from 'framer-motion';
 import { SiGooglemeet, SiZoom } from 'react-icons/si';
 import { BsMicrosoftTeams } from "react-icons/bs";
 import { Clock } from 'lucide-react';
-import { MeetingTimelineProps } from '@/types';
-
-// ─────────────────────────────────────────────────────────────────
-// HELPERS
-// ─────────────────────────────────────────────────────────────────
-
-function detectProvider(link?: string): 'meet' | 'zoom' | 'teams' | null {
-    if (!link) return null;
-    if (link.includes('meet.google.com')) return 'meet';
-    if (link.includes('zoom.us')) return 'zoom';
-    if (link.includes('teams.microsoft.com')) return 'teams';
-    return null;
-}
+import type { MeetingTimelineProps } from '@/types';
+import { useMeetingTimeline, getRelativeLabel, formatTimeShort } from '@/hooks';
+import { detectProvider } from '@/lib/meetingProviderUtils';
 
 const PROVIDER_CONFIG = {
     meet: { Icon: SiGooglemeet, color: 'text-[#00897B]' },
@@ -58,44 +50,12 @@ const PROVIDER_CONFIG = {
     teams: { Icon: BsMicrosoftTeams, color: 'text-[#6264A7]' },
 };
 
-function getRelativeLabel(startTime: string): string {
-    const diffMs = new Date(startTime).getTime() - Date.now();
-    if (diffMs <= 0) return 'Now';
-    const totalMins = Math.ceil(diffMs / 60000);
-    if (totalMins < 60) return `${totalMins}m`;
-    const h = Math.floor(totalMins / 60);
-    const m = totalMins % 60;
-    return m === 0 ? `${h}h` : `${h}h ${m}m`;
-}
-
-function formatTimeShort(iso: string): string {
-    return new Date(iso).toLocaleTimeString('en-US', {
-        hour: 'numeric',
-        minute: '2-digit',
-        hour12: true,
-    });
-}
-
-// ─────────────────────────────────────────────────────────────────
-// COMPONENT
-// ─────────────────────────────────────────────────────────────────
-
 const MeetingTimeline: React.FC<MeetingTimelineProps> = ({
     events,
     selectedId,
     onSelect,
 }) => {
-    const scrollRef = useRef<HTMLDivElement>(null);
-    const activeRef = useRef<HTMLButtonElement>(null);
-
-    // Scroll active pill into view
-    useEffect(() => {
-        activeRef.current?.scrollIntoView({
-            inline: 'nearest',
-            block: 'nearest',
-            behavior: 'smooth',
-        });
-    }, [selectedId]);
+    const { scrollRef, activeRef } = useMeetingTimeline(selectedId);
 
     return (
         <div className="relative shrink-0">
