@@ -1512,6 +1512,7 @@ export interface FloatingChatPanelProps {
   rollingTranscriptUser: string;
   rollingTranscriptClient: string;
   isClientSpeaking: boolean;
+  meetingId: string;
   isUserSpeaking: boolean;
   showTranscript: boolean;
   currentModel: string;

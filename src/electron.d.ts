@@ -267,11 +267,12 @@ export interface ElectronAPI {
   // ===========================================================================
   getMeetingActive: () => Promise<boolean>
   onMeetingStateChanged: (callback: (data: { isActive: boolean }) => void) => () => void
+  onMeetingIdAssigned: (callback: (data: { meetingId: string }) => void) => () => void
   getMeetingPaused: () => Promise<boolean>
   pauseMeeting: () => Promise<{ success: boolean; error?: string }>
   resumeMeeting: () => Promise<{ success: boolean; error?: string }>
   onMeetingPauseStateChanged: (callback: (data: { isPaused: boolean }) => void) => () => void
-  startMeeting: (metadata?: any) => Promise<{ success: boolean; error?: string }>
+  startMeeting: (metadata?: any) => Promise<{ success: boolean; error?: string; meetingId?: string }>
   endMeeting: (meetingTypes?: ('discovery' | 'demo' | 'negotiation')[], tenantId?: string | null) => Promise<{ success: boolean; meetingId?: string | null; error?: string }>
   finalizeMicSTT: () => Promise<void>
   getRecentMeetings: () => Promise<Array<{ id: string; title: string; date: string; duration: string; summary: string }>>

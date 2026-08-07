@@ -1701,14 +1701,14 @@ export function initializeIpcHandlers(appState: AppState): void {
 
   safeHandle("start-meeting", async (event, metadata?: any) => {
     try {
-      await appState.startMeeting(metadata);
+      const meetingId = await appState.startMeeting(metadata);
       if (metadata?.attendees) {
         const selfEmail = metadata.attendees.find((a: any) => a.self)?.email;
         _tavilyAllowedCompanies = extractAllowedCompaniesFromAttendees(metadata.attendees, selfEmail);
       } else {
         _tavilyAllowedCompanies = new Set();
       }
-      return { success: true };
+      return { success: true, meetingId };
     } catch (error: any) {
       console.error("Error starting meeting:", error);
       return { success: false, error: error.message };

@@ -567,6 +567,15 @@ contextBridge.exposeInMainWorld("electronAPI", {
     ipcRenderer.on('meeting-state-changed', subscription);
     return () => { ipcRenderer.removeListener('meeting-state-changed', subscription); };
   },
+  // Fired once at the start of startMeeting() with the real meeting id
+  // (generated up-front, not at endMeeting()). The overlay window is a
+  // separate renderer from whichever window called startMeeting(), so this
+  // is how it learns the id — not via React props.
+  onMeetingIdAssigned: (callback: (data: { meetingId: string }) => void) => {
+    const subscription = (_: any, data: { meetingId: string }) => callback(data);
+    ipcRenderer.on('meeting-id-assigned', subscription);
+    return () => { ipcRenderer.removeListener('meeting-id-assigned', subscription); };
+  },
   getMeetingPaused: () => ipcRenderer.invoke("get-meeting-paused"),
   pauseMeeting: () => ipcRenderer.invoke("pause-meeting"),
   resumeMeeting: () => ipcRenderer.invoke("resume-meeting"),

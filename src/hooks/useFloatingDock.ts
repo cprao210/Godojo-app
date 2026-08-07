@@ -138,6 +138,22 @@ export function useFloatingDock({ transcriptRef, isMeetingPaused, companyIntel }
     // ── Chat history — lifted so it survives panel switches ─────────────────
     const [chatMessages, setChatMessages] = useState<ChatMessage[]>([]);
 
+    // ── Live meeting id ───────────────────────────────────────────────────
+    // main.ts#startMeeting() generates the real meeting id up-front (not at
+    // endMeeting()) and broadcasts it via 'meeting-id-assigned' the moment
+    // the call starts — this window (the overlay) is a separate renderer
+    // from whichever window called startMeeting(), so IPC is how it learns
+    // the id, not React props. Same id is later used for the final
+    // persisted meeting row, so /chat/live and the meetings list always
+    // agree — no fake/local session id involved.
+    const [meetingId, setMeetingId] = useState<string | null>(null);
+    useEffect(() => {
+        const unsubscribe = window.electronAPI?.onMeetingIdAssigned?.(({ meetingId }) => {
+            setMeetingId(meetingId);
+        });
+        return () => unsubscribe?.();
+    }, []);
+
     // ── Auto-refresh countdown timer ─────────────────────────────────────────
     // Owned here (not in the panel) so the timer survives panel close/open
     // cycles and responds correctly to isMeetingPaused changes.
@@ -264,6 +280,7 @@ export function useFloatingDock({ transcriptRef, isMeetingPaused, companyIntel }
         runAnalysis,
         isRefreshRun,
         // chat history (lifted)
+        meetingId,
         chatMessages,
         setChatMessages,
         // auto-refresh countdown

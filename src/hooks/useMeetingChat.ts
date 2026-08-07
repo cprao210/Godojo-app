@@ -31,6 +31,7 @@ export function useMeetingChat({ isOpen, onClose, onMessagesChange, messages, me
 
     const pendingQuestionRef = useRef<string | null>(null);
     const chatStateRef = useRef<MeetingChatState>('idle');
+    const lastSubmittedQueryIdRef = useRef<number | null>(null);
 
     useEffect(() => () => activeStreamRef.current?.abort(), []);
 
@@ -45,13 +46,14 @@ export function useMeetingChat({ isOpen, onClose, onMessagesChange, messages, me
 
     // Submit initial query when overlay opens
     useEffect(() => {
-        if (isOpen && initialQuery?.text) {
+        if (isOpen && initialQuery?.text && initialQuery.id !== lastSubmittedQueryIdRef.current) {
+            lastSubmittedQueryIdRef.current = initialQuery.id;
             // Small delay so overlay is visible before question fires
             const t = setTimeout(() => submitQuestion(initialQuery.text), 100);
             return () => clearTimeout(t);
         }
         // eslint-disable-next-line react-hooks/exhaustive-deps
-    }, [isOpen, initialQuery?.id]); // ← id changes every time, even same question text
+    }, [isOpen, initialQuery?.id]);
 
     // Reset state when overlay closes
     useEffect(() => {

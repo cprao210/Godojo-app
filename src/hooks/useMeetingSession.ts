@@ -77,6 +77,11 @@ export function useMeetingSession(
                 }),
             };
 
+            // Note: result.meetingId is the real meeting id, generated up-front
+            // in main.ts#startMeeting(). We don't need to track it here — this
+            // hook runs in the launcher window, but FloatingChatPanel lives in
+            // the separate overlay window and gets the id directly via the
+            // 'meeting-id-assigned' IPC broadcast (see useFloatingDock.ts).
             const result = await window.electronAPI.startMeeting(meetingMetadata);
             if (result.success) {
                 analytics.trackMeetingStarted();

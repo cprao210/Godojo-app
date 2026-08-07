@@ -256,7 +256,7 @@ export class MeetingPersistence {
      *   Forwarded as the scorecard's `hintMeetingTypes` so auto-detection respects the
      *   rep's explicit selection instead of guessing from the transcript alone.
      */
-    public async stopMeeting(meetingTypes?: ('discovery' | 'demo' | 'negotiation')[], tenantId?: string | null): Promise<string | null> {
+    public async stopMeeting(meetingTypes?: ('discovery' | 'demo' | 'negotiation')[], tenantId?: string | null, existingMeetingId?: string | null): Promise<string | null> {
         console.log('[MeetingPersistence] Stopping meeting and queueing save...');
 
         // 0. Force-save any pending interim transcript
@@ -296,7 +296,16 @@ export class MeetingPersistence {
         // 2. Reset state immediately so new meeting can start or UI is clean
         this.session.reset();
 
-        const meetingId = crypto.randomUUID();
+        // meetingId is now generated up-front in main.ts#startMeeting and
+        // threaded through here — NOT regenerated — so it matches the id
+        // already used for live /chat/live calls during the call.
+        // Fallback only guards against a caller that skipped startMeeting()
+        // (shouldn't happen in the normal flow, but avoids saving a meeting
+        // with an undefined id if it ever does).
+        const meetingId = existingMeetingId ?? crypto.randomUUID();
+        if (!existingMeetingId) {
+            console.warn('[MeetingPersistence] stopMeeting() called without a pre-generated meetingId — generating a fallback one. This should not happen in the normal start→stop flow.');
+        }
         this.processAndSaveMeeting(
             snapshot,
             meetingId,
