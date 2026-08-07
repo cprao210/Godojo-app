@@ -532,10 +532,13 @@ export const KnowledgeBaseSection: React.FC<{
                                     <button
                                         onClick={() => onUpload(type)}
                                         disabled={!!assetUploading}
-                                        className="px-3 py-1.5 rounded-full text-xs font-medium transition-all disabled:opacity-50 disabled:cursor-wait whitespace-nowrap"
+                                        className={`px-3 py-1.5 rounded-full text-xs font-medium transition-all disabled:opacity-50 disabled:cursor-wait disabled:hover:brightness-100 whitespace-nowrap ${hasAssets
+                                            ? 'hover:brightness-110'
+                                            : 'bg-blue-600 text-white hover:bg-blue-500'
+                                            }`}
                                         style={hasAssets
                                             ? { background: cfg.accentBg, color: cfg.accent, border: `1px solid ${cfg.accentBorder}` }
-                                            : { background: isLight ? '#f3f6ff' : '#18202e', color: isLight ? 'var(--bg-bg-item-surface)' : '#495166', opacity: 1 }
+                                            : undefined
                                         }
                                     >
                                         <span className="flex items-center gap-1">

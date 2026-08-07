@@ -74,6 +74,17 @@ export function useManagerDashboard({ isOpen }: UseManagerDashboardArgs) {
     const openAeFromRow = (ae: AeEntry) =>
         setSelectedAe({ userId: ae.userId, name: ae.name, role: ae.role, calls: ae.calls, score: ae.score });
 
+    // Clear any in-progress AE/objection drill-down whenever the dashboard
+    // closes, so the header "Dashboard" icon reliably lands back on the main
+    // dashboard view next time it's opened, instead of resuming on whatever
+    // sub-view was showing when it was last closed.
+    useEffect(() => {
+        if (!isOpen) {
+            setSelectedAe(null);
+            setSelectedObjection(null);
+        }
+    }, [isOpen]);
+
     // ── 1. Tenant + admin check (GET /tenants/me) ───────────────────────────
     const [tenant, setTenant] = useState<Tenant | null>(null);
     const [isLoadingTenant, setIsLoadingTenant] = useState(true);

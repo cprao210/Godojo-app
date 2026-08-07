@@ -368,8 +368,13 @@ const MEETING_TYPES: { value: MeetingType; label: string; activeColor: string; a
 
 const MeetingTypeSelector: React.FC<{ selected: MeetingType[]; onChange: (types: MeetingType[]) => void; }> = ({ selected, onChange }) => {
 
-    const toggle = (type: MeetingType) =>
-        onChange(selected.includes(type) ? selected.filter(t => t !== type) : [...selected, type]);
+    const toggle = (type: MeetingType) => {
+        const isSelected = selected.includes(type);
+        // Require at least one meeting type to remain selected — it's needed
+        // for meeting score generation. Block unchecking the last one.
+        if (isSelected && selected.length === 1) return;
+        onChange(isSelected ? selected.filter(t => t !== type) : [...selected, type]);
+    };
 
     return (
         <div
@@ -637,11 +642,6 @@ export const FloatingIntelligencePanel: React.FC<FloatingIntelligencePanelProps>
                 selected={meetingTypes}
                 onChange={onMeetingTypesChange}
             />
-
-            {/* Deal Health Score — visible when live analysis data is present */}
-            {/* {displayData && !isLoading && (
-                <DealHealthScore analysisData={displayData} isRefreshRun={isRefreshRun} />
-            )} */}
 
             {/* Tab bar — shown whenever there is live data, including while a
                 background refresh of that data is in flight. Only hide it

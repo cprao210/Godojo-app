@@ -261,10 +261,10 @@ export const ManagerDashboard: React.FC<ManagerDashboardProps> = ({ isOpen }) =>
                         </div>
                     </motion.div>
                 )}
-                <AeDetailView ae={selectedAe} tenantId={tenant?.id ?? null} onBack={() => setSelectedAe(null)} />
+                {isOpen && <AeDetailView ae={selectedAe} tenantId={tenant?.id ?? null} onBack={() => setSelectedAe(null)} />}
             </AnimatePresence>
             <AnimatePresence>
-                {selectedObjection && (
+                {isOpen && selectedObjection && (
                     <motion.div
                         initial={{ opacity: 0 }}
                         animate={{ opacity: 1 }}

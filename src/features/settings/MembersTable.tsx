@@ -3,6 +3,7 @@ import { ChevronLeft, ChevronRight, Plus, Search, SearchX, UserX, Users, X } fro
 import { MembersTableProps } from '@/types';
 import { useMembersTable, MEMBERS_PAGE_SIZE, TABLE_GRID_COLS, avatarColorFor } from '@/hooks';
 import StatusBadge from './StatusBadge';
+import RoleBadge from './RoleBadge';
 import RowActionsMenu from './RowActionsMenu';
 import InviteUserModal from './InviteUserModal';
 
@@ -30,6 +31,7 @@ const MemberRowSkeleton: React.FC<{ isLight: boolean; delayMs: number }> = ({ is
             <SkeletonBar width="70%" isLight={isLight} />
         </div>
         <SkeletonBar width="85%" isLight={isLight} />
+        <div className={`h-5 w-14 rounded-full animate-pulse ${isLight ? 'bg-slate-200' : 'bg-white/10'}`} />
         <div className={`h-5 w-16 rounded-full animate-pulse ${isLight ? 'bg-slate-200' : 'bg-white/10'}`} />
         <div className={`h-6 w-6 rounded-md ml-auto animate-pulse ${isLight ? 'bg-slate-200' : 'bg-white/10'}`} />
     </div>
@@ -144,6 +146,7 @@ const MembersTable: React.FC<MembersTableProps> = ({ tenant, isLight, isOwner })
                     <div className={`grid ${TABLE_GRID_COLS} gap-4 px-6 py-3 text-[11px] font-bold text-text-tertiary uppercase tracking-wider border-b border-border-subtle ${isLight ? 'bg-slate-50/60' : 'bg-white/[0.02]'}`}>
                         <span>User</span>
                         <span>Email</span>
+                        <span>Role</span>
                         <span>Status</span>
                         {isOwner && <span className="text-right">Actions</span>}
                     </div>
@@ -182,6 +185,7 @@ const MembersTable: React.FC<MembersTableProps> = ({ tenant, isLight, isOwner })
                                         <span className="text-sm font-semibold text-text-primary truncate" title={displayName}>{displayName}</span>
                                     </div>
                                     <span className="text-sm text-text-secondary truncate" title={email}>{email}</span>
+                                    <RoleBadge role={m.role} />
                                     <StatusBadge status={m.status} />
                                     {isOwner && (
                                         <RowActionsMenu

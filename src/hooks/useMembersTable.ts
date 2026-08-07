@@ -9,7 +9,7 @@ import { ApiError } from "@/lib/apiClient";
 import { MemberOrInvitation, Tenant, TenantRole } from "@/types";
 
 export const MEMBERS_PAGE_SIZE = 8;
-export const TABLE_GRID_COLS = 'grid-cols-[1fr_1fr_140px_60px]';
+export const TABLE_GRID_COLS = 'grid-cols-[1fr_1fr_100px_140px_60px]';
 
 // Deterministic avatar color per user so the same person always gets the
 // same tint across renders/pages, instead of every avatar being the same blue.
