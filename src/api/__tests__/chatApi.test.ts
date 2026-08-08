@@ -208,17 +208,17 @@ describe('chatApi.queryLive', () => {
         vi.stubGlobal('fetch', fetchMock);
     });
 
-    it('POSTs the query, history, and transcript to /chat/live', async () => {
+    it('POSTs the meeting_id, query, history, and transcript to /chat/live', async () => {
         fetchMock.mockResolvedValueOnce(sseResponse(['event: done\ndata: {}']));
         const { handlers, settled } = collectHandlers();
         const history = [{ role: 'user', content: 'earlier question' }] as any;
         const transcript = [{ speaker: 'user', text: 'live line' }] as any;
 
-        chatApi.queryLive('follow up', history, transcript, handlers);
+        chatApi.queryLive('meeting-123', 'follow up', history, transcript, handlers);
         await settled;
 
         const [url, init] = fetchMock.mock.calls[0];
         expect(url).toBe('http://test-api/api/v1/chat/live');
-        expect(JSON.parse(init.body)).toEqual({ query: 'follow up', history, transcript });
+        expect(JSON.parse(init.body)).toEqual({ meeting_id: 'meeting-123', query: 'follow up', history, transcript });
     });
 });
