@@ -1620,9 +1620,13 @@ export class AppState {
     this._clientSpeakerIndicesSeen.clear();
     this._echoFilter.reset();
     this._userPartialPending = false;
-    // Anchor the duration clock the moment we commit to starting a meeting,
-    // not after audio-pipeline setup (which can throw/be slow) — so a
-    // recorded meeting's duration is never inflated by idle/init time.
+    // Reset the session clock HERE, synchronously, the same instant the
+    // meeting is marked active — not inside the setTimeout(0) callback
+    // below. That callback can be delayed (audio device checks, mic
+    // permission prompts, etc.), leaving a real gap where a fast
+    // stop→restart can compute the next meeting's duration against a
+    // stale sessionStartTime from the previous session. Resetting here
+    // ties the timer directly to "meeting marked active," with no gap.
     this.intelligenceManager.resetSessionTimer();
     this.broadcastMeetingState();
 
@@ -1659,6 +1663,7 @@ export class AppState {
         return;
       }
       try {
+
         // Check for audio configuration preference
         if (metadata?.audio) {
           await this.reconfigureAudio(metadata.audio.inputDeviceId, metadata.audio.outputDeviceId);
@@ -1754,6 +1759,11 @@ export class AppState {
 
       } catch (err) {
         console.error('[Main] Error initializing audio pipeline:', err);
+        // Audio init failed after resetSessionTimer() already ran — the
+        // clock is correctly anchored, but there's no working pipeline to
+        // record anything. Don't leave the app believing a meeting is live.
+        this.isMeetingActive = false;
+        this.broadcastMeetingState();
         // Notify UI so user knows microphone/audio failed to start
         this.broadcast('meeting-audio-error', (err as Error).message || 'Audio pipeline failed to start');
       }

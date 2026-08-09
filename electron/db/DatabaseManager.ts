@@ -4,6 +4,7 @@ import { app } from 'electron';
 import fs from 'fs';
 import * as sqliteVec from 'sqlite-vec';
 import { SupabaseMirrorService } from './SupabaseMirrorService';
+import { SupabaseClientManager } from './SupabaseClient';
 import { AuthManager } from '../services/AuthManager';
 import { LiveAnalysisData } from '../../src/types';
 
@@ -773,6 +774,24 @@ export class DatabaseManager {
             `);
             this.db.pragma('user_version = 19');
         }
+
+        // v19 → v20: stamp each meeting with the Firebase uid that owned it at
+        // creation time. Fixes a duplicate-row bug where a meeting's placeholder
+        // save and its later background updates (title/summary, which land
+        // seconds after LLM processing finishes) each independently re-resolved
+        // "the current signed-in user" from AuthManager. If the signed-in
+        // identity changed in between (e.g. admin/team-member session switch on
+        // the same device while a meeting was still processing), the two mirror
+        // writes landed under two different user_ids — and since Supabase's
+        // meetings PK is (user_id, id), that produced two rows for one meeting.
+        // owner_uid pins the mirror's user_id for a meeting's entire lifecycle.
+        if (version < 20) {
+            console.log('[DatabaseManager] Applying migration v19 → v20: Add owner_uid to meetings');
+            this.db.exec(`
+                ALTER TABLE meetings ADD COLUMN owner_uid TEXT;
+            `);
+            this.db.pragma('user_version = 20');
+        }
     }
 
     // ============================================
@@ -1447,9 +1466,19 @@ export class DatabaseManager {
 
         const durationMs = Math.max(0, (endTimeMs - startTimeMs) - totalPausedMs);
 
+        // Resolve the owning uid ONCE, here, at the moment the meeting first
+        // exists — and reuse it for every later mirror write (title update,
+        // summary update, etc.), instead of letting each of those calls
+        // re-resolve "the current signed-in user" independently. See v19→v20
+        // migration comment for why that mismatch causes duplicate Supabase rows.
+        // INSERT OR REPLACE would otherwise clobber an already-set owner_uid on
+        // a re-save of the same id with NULL, so preserve it if present.
+        const existingOwner = this.db.prepare('SELECT owner_uid FROM meetings WHERE id = ?').get(meeting.id) as { owner_uid: string | null } | undefined;
+        const ownerUid = existingOwner?.owner_uid ?? SupabaseClientManager.getCurrentUserId();
+
         const insertMeeting = this.db.prepare(`
-            INSERT OR REPLACE INTO meetings (id, title, start_time, end_time, total_paused_ms, duration_ms, summary_json, created_at, calendar_event_id, tenant_id, source, is_processed)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            INSERT OR REPLACE INTO meetings (id, title, start_time, end_time, total_paused_ms, duration_ms, summary_json, created_at, calendar_event_id, tenant_id, source, is_processed, owner_uid)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         `);
 
         const insertTranscript = this.db.prepare(`
@@ -1492,7 +1521,8 @@ export class DatabaseManager {
                 meeting.calendarEventId || null,
                 meeting.tenantId || null,
                 meeting.source || 'manual',
-                meeting.isProcessed ? 1 : 0
+                meeting.isProcessed ? 1 : 0,
+                ownerUid
             );
 
             // 2. Insert Transcript
@@ -1579,9 +1609,9 @@ export class DatabaseManager {
                     tenant_id: meeting.tenantId || null,
                     source: meeting.source || 'manual',
                     is_processed: meeting.isProcessed ? 1 : 0
-                });
-                if (transcriptMirror.length > 0) mirror.upsertRows('transcripts', transcriptMirror);
-                if (interactionMirror.length > 0) mirror.upsertRows('ai_interactions', interactionMirror);
+                }, ownerUid);
+                if (transcriptMirror.length > 0) mirror.upsertRows('transcripts', transcriptMirror, ownerUid);
+                if (interactionMirror.length > 0) mirror.upsertRows('ai_interactions', interactionMirror, ownerUid);
             } catch (mirrorErr) {
                 console.warn(`[DatabaseManager] Mirror enqueue failed for meeting ${meeting.id} (local save OK):`, mirrorErr);
             }
@@ -1621,7 +1651,13 @@ export class DatabaseManager {
 
                 if (info.changes > 0) {
                     try {
-                        SupabaseMirrorService.getInstance().upsertRow('meetings', { id, summary_json: jsonStr });
+                        // Reuse the uid captured when this meeting was first created —
+                        // NOT whichever user happens to be signed in right now. This
+                        // update can land seconds/minutes after saveMeeting()'s
+                        // placeholder write, long enough for a session/account switch
+                        // to have happened in between.
+                        const ownerRow = this.db.prepare('SELECT owner_uid FROM meetings WHERE id = ?').get(id) as { owner_uid: string | null } | undefined;
+                        SupabaseMirrorService.getInstance().upsertRow('meetings', { id, summary_json: jsonStr }, ownerRow?.owner_uid ?? null);
                     } catch (e) {
                         console.warn(`[DatabaseManager] Mirror enqueue failed for updateMeeting ${id}:`, e);
                     }
@@ -1643,7 +1679,10 @@ export class DatabaseManager {
             const info = stmt.run(title, id);
             if (info.changes > 0) {
                 try {
-                    SupabaseMirrorService.getInstance().upsertRow('meetings', { id, title });
+                    // Same reasoning as updateMeeting(): pin to the meeting's own
+                    // owner_uid rather than "whoever is signed in now".
+                    const ownerRow = this.db.prepare('SELECT owner_uid FROM meetings WHERE id = ?').get(id) as { owner_uid: string | null } | undefined;
+                    SupabaseMirrorService.getInstance().upsertRow('meetings', { id, title }, ownerRow?.owner_uid ?? null);
                 } catch (e) {
                     console.warn(`[DatabaseManager] Mirror enqueue failed for title update ${id}:`, e);
                 }
@@ -1659,8 +1698,9 @@ export class DatabaseManager {
         if (!this.db) return false;
 
         try {
-            // 1. Get current summary_json
-            const row = this.db.prepare('SELECT summary_json FROM meetings WHERE id = ?').get(id) as any;
+            // 1. Get current summary_json (+ owner_uid, so the mirror write below
+            // stays pinned to the meeting's original owner — see updateMeeting()).
+            const row = this.db.prepare('SELECT summary_json, owner_uid FROM meetings WHERE id = ?').get(id) as any;
             if (!row) return false;
 
             const existingData = JSON.parse(row.summary_json || '{}');
@@ -1691,7 +1731,7 @@ export class DatabaseManager {
             const info = stmt.run(jsonStr, id);
             if (info.changes > 0) {
                 try {
-                    SupabaseMirrorService.getInstance().upsertRow('meetings', { id, summary_json: jsonStr });
+                    SupabaseMirrorService.getInstance().upsertRow('meetings', { id, summary_json: jsonStr }, row.owner_uid ?? null);
                 } catch (e) {
                     console.warn(`[DatabaseManager] Mirror enqueue failed for summary update ${id}:`, e);
                 }
@@ -2116,238 +2156,238 @@ export class DatabaseManager {
             ]
         };
 
-        const demoMeeting: Meeting = {
-            id: demoId,
-            title: "Vertex Solutions — GoDojo Discovery & Demo",
-            date: today.toISOString(),
-            duration: "42:00",
-            summary: "Discovery call with Alex Rivera (VP Sales, Vertex Solutions). Strong signals on live coaching need and rep ramp pain. Budget confirmed, but CFO sign-off required above $75K. 3-week pilot with 5 reps agreed. Key gap: Alex not yet championing internally.",
-            detailedSummary: {
-                overview: summaryMarkdown,
+        // const demoMeeting: Meeting = {
+        //     id: demoId,
+        //     title: "Vertex Solutions — GoDojo Discovery & Demo",
+        //     date: today.toISOString(),
+        //     duration: "42:00",
+        //     summary: "Discovery call with Alex Rivera (VP Sales, Vertex Solutions). Strong signals on live coaching need and rep ramp pain. Budget confirmed, but CFO sign-off required above $75K. 3-week pilot with 5 reps agreed. Key gap: Alex not yet championing internally.",
+        //     detailedSummary: {
+        //         overview: summaryMarkdown,
 
-                dealStatus: {
-                    stage: "Demo",
-                    summary: "Pilot agreed with 5 reps over 3 weeks; expansion decision pending CFO review of pilot results."
-                },
+        //         dealStatus: {
+        //             stage: "Demo",
+        //             summary: "Pilot agreed with 5 reps over 3 weeks; expansion decision pending CFO review of pilot results."
+        //         },
 
-                bant: {
-                    budget: { status: "Clear", detail: "~$85K confirmed under sales enablement. CFO approval required above $75K." },
-                    authority: { status: "Partial", detail: "Alex (VP Sales) is champion but CFO holds final sign-off. CFO was not on this call." },
-                    need: { status: "Clear", detail: "Rep ramp 9–11 months is critical pain. Two reps lost in H1 who never hit quota." },
-                    timeline: { status: "Clear", detail: "Q3 hard deadline to show CRO enablement progress. Pilot must close before Q3 end." }
-                },
+        //         bant: {
+        //             budget: { status: "Clear", detail: "~$85K confirmed under sales enablement. CFO approval required above $75K." },
+        //             authority: { status: "Partial", detail: "Alex (VP Sales) is champion but CFO holds final sign-off. CFO was not on this call." },
+        //             need: { status: "Clear", detail: "Rep ramp 9–11 months is critical pain. Two reps lost in H1 who never hit quota." },
+        //             timeline: { status: "Clear", detail: "Q3 hard deadline to show CRO enablement progress. Pilot must close before Q3 end." }
+        //         },
 
-                meddicc: {
-                    metrics: { status: "Clear", detail: "Reduce ramp to under 6 months. 15% close rate improvement within 90 days. ~$270K/rep in recoverable revenue per 3 months of ramp saved." },
-                    economicBuyer: { status: "Partial", detail: "CFO holds approval above $75K. Not yet briefed. Needs ROI data, security docs, peer reference." },
-                    decisionCriteria: { status: "Clear", detail: "Live in-call coaching, CRM integration, measurable ramp improvement within pilot, SOC 2 compliance." },
-                    decisionProcess: { status: "Partial", detail: "Alex runs pilot, presents to CFO. Legal/InfoSec review before contract. Internal timeline not yet mapped." },
-                    identifyPain: { status: "Clear", detail: "Slow ramp, inconsistent discovery quality, deal slippage from objections reps miss in real time." },
-                    champion: { status: "Partial", detail: "Alex engaged but not yet committed to selling internally. 'I'll let the pilot results speak for themselves.'" },
-                    competition: { status: "Clear", detail: "Two post-call analytics tools rejected last year — too slow. GoDojo is the only live coaching tool in consideration." },
-                    gaps: [
-                        "Economic Buyer: CFO not engaged — their approval criteria and process unknown",
-                        "Decision Process: InfoSec/Legal timeline not mapped",
-                        "Champion: Alex has not committed to internally advocating for GoDojo"
-                    ]
-                },
+        //         meddicc: {
+        //             metrics: { status: "Clear", detail: "Reduce ramp to under 6 months. 15% close rate improvement within 90 days. ~$270K/rep in recoverable revenue per 3 months of ramp saved." },
+        //             economicBuyer: { status: "Partial", detail: "CFO holds approval above $75K. Not yet briefed. Needs ROI data, security docs, peer reference." },
+        //             decisionCriteria: { status: "Clear", detail: "Live in-call coaching, CRM integration, measurable ramp improvement within pilot, SOC 2 compliance." },
+        //             decisionProcess: { status: "Partial", detail: "Alex runs pilot, presents to CFO. Legal/InfoSec review before contract. Internal timeline not yet mapped." },
+        //             identifyPain: { status: "Clear", detail: "Slow ramp, inconsistent discovery quality, deal slippage from objections reps miss in real time." },
+        //             champion: { status: "Partial", detail: "Alex engaged but not yet committed to selling internally. 'I'll let the pilot results speak for themselves.'" },
+        //             competition: { status: "Clear", detail: "Two post-call analytics tools rejected last year — too slow. GoDojo is the only live coaching tool in consideration." },
+        //             gaps: [
+        //                 "Economic Buyer: CFO not engaged — their approval criteria and process unknown",
+        //                 "Decision Process: InfoSec/Legal timeline not mapped",
+        //                 "Champion: Alex has not committed to internally advocating for GoDojo"
+        //             ]
+        //         },
 
-                followUpEmail: {
-                    subject: "Vertex Solutions Pilot — Next Steps & ROI Model",
-                    sections: {
-                        whatWeDiscussed: [
-                            "35-rep enterprise team averaging 9–11 months to ramp — two reps lost in H1 who never hit quota",
-                            "Previous tools evaluated but rejected for being post-call only; need is live, in-call coaching",
-                            "Agreed on a 3-week pilot with 5 reps before CFO expansion review"
-                        ],
-                        whatIsTheNeed: [
-                            "Rep ramp must drop from 9–11 months to under 6 — Q3 CRO priority",
-                            "Coaching bandwidth is the constraint — managers can't review calls fast enough to change behavior"
-                        ],
-                        currentProcess: "Managers review recorded calls 2–3 days post-meeting and flag coaching gaps. By then reps have already repeated the same mistakes across multiple live deals.",
-                        scopeOfImprovement: [
-                            "~$270K in recoverable revenue per rep across 3 months of ramp saved (at ~$810K annual quota)",
-                            "Inconsistent discovery quality — no real-time floor on what gets asked or captured"
-                        ],
-                        howOurSolutionHelps: [
-                            "GoDojo surfaces coaching cues, BANT/MEDDIC gaps, and suggested questions to reps live during the call",
-                            "Scales the playbook of top reps to the entire team without extra manager time"
-                        ],
-                        expectedBusinessImpact: [
-                            "Ramp reduction from 9–11 months to under 6 within the first quarter of full deployment",
-                            "Estimated $2.7M annual revenue impact across 10 new hires per year"
-                        ],
-                        nextSteps: [
-                            "AE to send pilot agreement and onboarding checklist by EOD Friday",
-                            "Alex to nominate 5 pilot reps and share a Slack channel for the pilot",
-                            "Technical setup call with Alex and RevOps lead scheduled for early next week"
-                        ]
-                    },
-                    fullEmail: `Hi Alex,
- 
-                        Good speaking with you today. Quick recap of where things stand:
-                        
-                        - Vertex is averaging 9–11 months to ramp — at current quota that's roughly $270K in recoverable revenue per rep if we close that gap by 3 months
-                        - The previous tools didn't move the needle because feedback came days after the call; GoDojo coaches reps live, in the moment
-                        - We agreed on a 3-week pilot with 5 reps before bringing the CFO into the expansion conversation
-                        
-                        Next steps:
-                        - I'll send the pilot agreement and onboarding checklist today
-                        - Can you nominate the 5 reps and share a Slack channel for the pilot team?
-                        - Let's book a 30-min setup call with your RevOps contact early next week
-                        
-                        I'll have an ROI model to you by Thursday so you're ready when the CFO asks for numbers.
-                        
-                        Looking forward to it.`
-                },
+        //         followUpEmail: {
+        //             subject: "Vertex Solutions Pilot — Next Steps & ROI Model",
+        //             sections: {
+        //                 whatWeDiscussed: [
+        //                     "35-rep enterprise team averaging 9–11 months to ramp — two reps lost in H1 who never hit quota",
+        //                     "Previous tools evaluated but rejected for being post-call only; need is live, in-call coaching",
+        //                     "Agreed on a 3-week pilot with 5 reps before CFO expansion review"
+        //                 ],
+        //                 whatIsTheNeed: [
+        //                     "Rep ramp must drop from 9–11 months to under 6 — Q3 CRO priority",
+        //                     "Coaching bandwidth is the constraint — managers can't review calls fast enough to change behavior"
+        //                 ],
+        //                 currentProcess: "Managers review recorded calls 2–3 days post-meeting and flag coaching gaps. By then reps have already repeated the same mistakes across multiple live deals.",
+        //                 scopeOfImprovement: [
+        //                     "~$270K in recoverable revenue per rep across 3 months of ramp saved (at ~$810K annual quota)",
+        //                     "Inconsistent discovery quality — no real-time floor on what gets asked or captured"
+        //                 ],
+        //                 howOurSolutionHelps: [
+        //                     "GoDojo surfaces coaching cues, BANT/MEDDIC gaps, and suggested questions to reps live during the call",
+        //                     "Scales the playbook of top reps to the entire team without extra manager time"
+        //                 ],
+        //                 expectedBusinessImpact: [
+        //                     "Ramp reduction from 9–11 months to under 6 within the first quarter of full deployment",
+        //                     "Estimated $2.7M annual revenue impact across 10 new hires per year"
+        //                 ],
+        //                 nextSteps: [
+        //                     "AE to send pilot agreement and onboarding checklist by EOD Friday",
+        //                     "Alex to nominate 5 pilot reps and share a Slack channel for the pilot",
+        //                     "Technical setup call with Alex and RevOps lead scheduled for early next week"
+        //                 ]
+        //             },
+        //             fullEmail: `Hi Alex,
 
-                leadName: "Alex Rivera",
-                company: "Vertex Solutions",
+        //                 Good speaking with you today. Quick recap of where things stand:
 
-                salesCoachReview: {
-                    whatIDidRight: [
-                        "MEDDICC Identify Pain: Pushed past the surface — when Alex said ramp was too long, probed to find coaching bandwidth as the root cause and tied it to two lost reps in H1",
-                        "MEDDICC Competition: Surfaced previous tool evaluations early; used the rejection to anchor GoDojo's live-first differentiation",
-                        "MEDDICC Metrics: Built the ROI model live on the call — gave Alex a concrete number for the CFO without being prompted",
-                        "BANT Budget: Got the allocation amount and the $75K approval threshold on record, which shaped the pilot-first structure",
-                        "BANT Timeline: Anchored to the Q3 CRO deadline early — gave the pilot natural urgency"
-                    ],
-                    whatICouldHaveDoneBetter: [
-                        "Should have pushed on CFO involvement earlier — when Alex mentioned them at the $75K threshold, ask: 'Would it help to include the CFO in a brief intro call before the pilot, so they're not reviewing results cold?'",
-                        "Missed the chance to lock the decision process — when Alex said 'I'll let results speak for themselves,' ask: 'What does the internal approval process look like after the pilot readout?'"
-                    ],
-                    whatIMissedCompletely: [
-                        "Identify Champion: Alex never committed to selling this internally — never asked what they'd personally need to feel confident recommending it",
-                        "Metrics: Never asked what the CFO's success metrics are — Alex's and the CFO's definition of ROI may differ",
-                        "Authority: Never mapped who else is in the decision beyond Alex and the CFO — Legal, InfoSec, Procurement unknown",
-                        "Process: InfoSec/Legal review steps never scoped — no clarity on timeline or what they need upfront",
-                        "Pain: Never asked about international rep pain specifically — data residency concern was raised by Alex, not proactively explored"
-                    ]
-                },
+        //                 - Vertex is averaging 9–11 months to ramp — at current quota that's roughly $270K in recoverable revenue per rep if we close that gap by 3 months
+        //                 - The previous tools didn't move the needle because feedback came days after the call; GoDojo coaches reps live, in the moment
+        //                 - We agreed on a 3-week pilot with 5 reps before bringing the CFO into the expansion conversation
 
-                nextCallPlaybook: {
-                    openingRecap: "Alex, we agreed on a 3-week pilot with 5 reps. Before we get into setup — let's make sure the pilot is designed to answer exactly what the CFO will ask, so the readout lands.",
-                    questionsToAsk: [
-                        "When you present pilot results to the CFO, what do they need to see to say yes?",
-                        "What would you personally need to feel confident recommending this internally?",
-                        "What does the approval process look like after the pilot — who else is in the room, and how long does InfoSec review take?",
-                        "For your international reps — are ramp challenges the same, or are there different dynamics to account for?",
-                        "What does the CFO track as leading indicators that sales enablement is working?"
-                    ],
-                    valueAndROI: {
-                        quantitative: [
-                            "~$270K recoverable revenue per rep across 3 months of ramp saved — ~$2.7M/year across 10 hires",
-                            "15% new-rep close rate improvement within 90 days is the stated pilot success threshold"
-                        ],
-                        qualitative: [
-                            "GoDojo scales top-rep playbooks to every call without adding manager overhead",
-                            "Pilot is designed to produce exactly the data the CFO needs — results, not promises"
-                        ]
-                    }
-                },
+        //                 Next steps:
+        //                 - I'll send the pilot agreement and onboarding checklist today
+        //                 - Can you nominate the 5 reps and share a Slack channel for the pilot team?
+        //                 - Let's book a 30-min setup call with your RevOps contact early next week
 
-                keyPoints: [
-                    "Vertex Solutions: 35-rep enterprise team, avg ramp 9–11 months, Q3 CRO pressure",
-                    "Budget ~$85K confirmed; CFO sign-off required above $75K — not on this call",
-                    "Post-call analytics tools rejected previously — live coaching is the gap",
-                    "3-week pilot with 5 reps agreed; pilot results gate CFO expansion conversation",
-                    "Open: CFO engagement, CRM integration scoping, InfoSec/Legal timeline, international data residency"
-                ],
+        //                 I'll have an ROI model to you by Thursday so you're ready when the CFO asks for numbers.
 
-                actionItems: [
-                    "AE: Send pilot agreement and onboarding checklist by EOD Friday",
-                    "AE: Send ROI model to Alex by Thursday",
-                    "AE: Book technical setup call with Alex and RevOps lead early next week",
-                    "Alex: Nominate 5 pilot reps and share Slack channel",
-                    "AE: Send security overview and data processing agreement",
-                    "AE: Loop in Solutions Engineer for CRM integration scoping"
-                ],
+        //                 Looking forward to it.`
+        //         },
 
-                speakerNames: {
-                    user: 'AE (You)',
-                    client: 'Alex Rivera'
-                },
-                liveAnalysis: demoLiveAnalysis
-            },
-            transcript: [
-                { speaker: 'user', text: "Alex, thanks for the time. Plan for today — first half understanding your team's situation, second half a live demo. Sound good?", timestamp: 0 },
-                { speaker: 'client', text: "Works for me. I'll be upfront — we've been on a lot of vendor calls lately. What caught my attention was the live coaching angle, not another post-call dashboard.", timestamp: 8000 },
-                { speaker: 'user', text: "Good, let's start there. Can you give me a quick picture of your sales team — size, structure, how H1 went?", timestamp: 20000 },
-                { speaker: 'client', text: "35 AEs total. Classic enterprise motion, deal cycles of 4 to 6 months, ACV in the $75K to $200K range. H1 was rough — missed plan by around 10%. The CRO is on me to fix ramp time and tighten up discovery quality.", timestamp: 30000 },
-                { speaker: 'user', text: "What does ramp look like for a new hire right now?", timestamp: 62000 },
-                { speaker: 'client', text: "Too long. Nine to eleven months before a rep consistently hits quota. We lost two in H1 who never got there. The cost of a failed ramp is real money.", timestamp: 70000 },
-                { speaker: 'user', text: "Is that a training problem, a coaching problem, or something else?", timestamp: 96000 },
-                { speaker: 'client', text: "Coaching bandwidth. My top reps are excellent but I can't clone them. Managers are stretched. We do call reviews but it's reactive — by the time we catch a bad habit, a rep has already blown three discovery calls.", timestamp: 104000 },
-                { speaker: 'user', text: "You mentioned you've evaluated tools before. What happened?", timestamp: 130000 },
-                { speaker: 'client', text: "Two full evals last year. Both strong on post-call analytics — managers loved the dashboards. But reps didn't change behavior. Insight came too late. A rep gets feedback three days after a call, it doesn't stick. We need something in the moment.", timestamp: 138000 },
-                { speaker: 'user', text: "That's exactly the gap we built around. Let me show you the live overlay.", timestamp: 170000 },
-                { speaker: 'client', text: "Let's see it.", timestamp: 178000 },
-                { speaker: 'user', text: "As the prospect speaks, the rep sees coaching cues, live BANT and MEDDIC tracking, and flagged signals — all in real time. If the prospect says 'we need to check with finance,' GoDojo surfaces a coaching note and a suggested question immediately. The rep doesn't have to remember the playbook.", timestamp: 184000 },
-                { speaker: 'client', text: "That live overlay — that's exactly what we've been missing. Post-call feedback is too late by the time a rep blows a discovery call. How does it know what's relevant — is it keyword matching?", timestamp: 236000 },
-                { speaker: 'user', text: "No — full conversation understanding. The model tracks the entire call context, your sales methodology, and the rep's profile. It's contextual reasoning, not pattern matching.", timestamp: 252000 },
-                { speaker: 'client', text: "Does it integrate with our CRM? We have a heavily customized setup — custom stages, custom fields.", timestamp: 270000 },
-                { speaker: 'user', text: "Yes, native CRM integration. Custom objects are supported. I'd bring in our solutions engineer to scope your specific instance during pilot setup.", timestamp: 282000 },
-                { speaker: 'client', text: "We also have international reps. What happens to call recordings — we have data residency requirements.", timestamp: 300000 },
-                { speaker: 'user', text: "We're SOC 2 Type II certified and offer regional data residency. I'll send our security overview and data processing agreement — that covers what your legal team will need.", timestamp: 314000 },
-                { speaker: 'client', text: "Good. Our CFO — they'll want to see that. They sign off on anything above $75K.", timestamp: 332000 },
-                { speaker: 'user', text: "Makes sense. What does the CFO typically need to get comfortable with a new vendor at this level?", timestamp: 348000 },
-                { speaker: 'client', text: "ROI data, security docs, and a peer reference. They don't move without numbers. I want to show them pilot results before I bring them in.", timestamp: 356000 },
-                { speaker: 'user', text: "Smart approach. Let's design the pilot to produce exactly what you need for that conversation. What would meaningful results look like in a 3-week window?", timestamp: 372000 },
-                { speaker: 'client', text: "Reps doing better discovery — asking the right questions, catching buying signals — and ideally a couple of deals moving faster through the funnel.", timestamp: 384000 },
-                { speaker: 'user', text: "I'd suggest 5 reps — mix of newer hires and experienced ones for a natural comparison. Three weeks, live coaching enabled, and I'll put together a rep-level readout you can take directly to the CFO.", timestamp: 408000 },
-                { speaker: 'client', text: "I'd want to see it handle a complex deal with 6 or 7 stakeholders before I take this to the CFO.", timestamp: 432000 },
-                { speaker: 'user', text: "Exactly where live coaching adds the most value — tracking each stakeholder's role, surfacing the right talk track per conversation. We can make sure at least one pilot rep is working a complex active deal.", timestamp: 442000 },
-                { speaker: 'client', text: "Alright. I think a pilot makes sense. How quickly can we be live?", timestamp: 476000 },
-                { speaker: 'user', text: "Five business days from signed agreement. I'll send the paperwork today and let's book a technical setup call with your RevOps contact early next week.", timestamp: 486000 },
-                { speaker: 'client', text: "The CFO is going to want an ROI number. They don't approve anything without it.", timestamp: 510000 },
-                { speaker: 'user', text: "Let's build it together. If ramp drops from 10 months to 6 and your reps are at $810K quota, what's the revenue impact per rep per year?", timestamp: 520000 },
-                { speaker: 'client', text: "Meaningful. Four months of lost ramp at that quota is around $270K per rep. Across 10 hires a year, that's significant.", timestamp: 534000 },
-                { speaker: 'user', text: "Exactly. I'll model that out and have a draft to you by Thursday so you're ready when the CFO asks.", timestamp: 550000 },
-                { speaker: 'client', text: "We've been burned by tools before. Looked great in a demo, fell apart in production.", timestamp: 566000 },
-                { speaker: 'user', text: "Fair concern. That's why the pilot exists — we earn the right to full deployment through results. Let's define the success criteria in writing before we start, so you have a scorecard, not just our word.", timestamp: 576000 },
-                { speaker: 'client', text: "Good. Send me the pilot agreement and I'll get back to you by end of week.", timestamp: 600000 },
-                { speaker: 'user', text: "Will do. Everything in your inbox within the hour. Looking forward to it, Alex.", timestamp: 610000 }
-            ],
-            usage: [
-                {
-                    type: 'assist',
-                    timestamp: 104000,
-                    question: 'Prospect described a coaching bandwidth problem — what should I say?',
-                    answer: `Validate and bridge: "That's the core gap we hear from enterprise sales leaders — post-call coaching is reactive by design. What if the coaching happened live, so reps course-correct before the call ends?" This sets up the overlay demo naturally.`
-                },
-                {
-                    type: 'followup_questions',
-                    timestamp: 178000,
-                    items: [
-                        'When you picture your best rep on a discovery call, what do they do differently that you wish all your reps did?',
-                        'If we cut ramp time in half, how does that change your H2 forecast?',
-                        'Is the CFO involved in the evaluation, or do they only review at the end?',
-                        'Where in the ramp process do new reps tend to stall most often?'
-                    ]
-                },
-                {
-                    type: 'assist',
-                    timestamp: 332000,
-                    question: 'CFO needs to sign off above $75K — how do I handle this?',
-                    answer: `Don't work around the CFO — align on how to bring them in well. Ask: "What does the CFO need to see to get comfortable with a new vendor at this level?" Then offer to co-build the business case. Positions you as a partner, not a vendor avoiding the economic buyer.`
-                },
-                {
-                    type: 'chat',
-                    timestamp: 432000,
-                    question: 'Prospect is asking about multi-stakeholder deals — what are our strongest points here?',
-                    answer: `GoDojo tracks each stakeholder's role, concerns, and engagement across the deal thread. In multi-threaded deals it surfaces who hasn't been engaged recently and suggests targeted outreach angles. Leads to faster deal velocity on complex enterprise cycles.`
-                },
-                {
-                    type: 'assist',
-                    timestamp: 566000,
-                    question: `Prospect said they've been burned by tools before — how do I handle this?`,
-                    answer: `Acknowledge directly: "That's fair — the pilot exists exactly for this reason. We earn full deployment through results, not promises. Let's define success criteria in writing before we start so you have a clear scorecard — yours, not ours." Builds confidence and reduces perceived risk.`
-                }
-            ],
-            isProcessed: true
-        };
+        //         leadName: "Alex Rivera",
+        //         company: "Vertex Solutions",
 
-        this.saveMeeting(demoMeeting, today.getTime(), today.getTime() + durationMs, 0);
-        console.log('[DatabaseManager] Seeded demo meeting.');
+        //         salesCoachReview: {
+        //             whatIDidRight: [
+        //                 "MEDDICC Identify Pain: Pushed past the surface — when Alex said ramp was too long, probed to find coaching bandwidth as the root cause and tied it to two lost reps in H1",
+        //                 "MEDDICC Competition: Surfaced previous tool evaluations early; used the rejection to anchor GoDojo's live-first differentiation",
+        //                 "MEDDICC Metrics: Built the ROI model live on the call — gave Alex a concrete number for the CFO without being prompted",
+        //                 "BANT Budget: Got the allocation amount and the $75K approval threshold on record, which shaped the pilot-first structure",
+        //                 "BANT Timeline: Anchored to the Q3 CRO deadline early — gave the pilot natural urgency"
+        //             ],
+        //             whatICouldHaveDoneBetter: [
+        //                 "Should have pushed on CFO involvement earlier — when Alex mentioned them at the $75K threshold, ask: 'Would it help to include the CFO in a brief intro call before the pilot, so they're not reviewing results cold?'",
+        //                 "Missed the chance to lock the decision process — when Alex said 'I'll let results speak for themselves,' ask: 'What does the internal approval process look like after the pilot readout?'"
+        //             ],
+        //             whatIMissedCompletely: [
+        //                 "Identify Champion: Alex never committed to selling this internally — never asked what they'd personally need to feel confident recommending it",
+        //                 "Metrics: Never asked what the CFO's success metrics are — Alex's and the CFO's definition of ROI may differ",
+        //                 "Authority: Never mapped who else is in the decision beyond Alex and the CFO — Legal, InfoSec, Procurement unknown",
+        //                 "Process: InfoSec/Legal review steps never scoped — no clarity on timeline or what they need upfront",
+        //                 "Pain: Never asked about international rep pain specifically — data residency concern was raised by Alex, not proactively explored"
+        //             ]
+        //         },
+
+        //         nextCallPlaybook: {
+        //             openingRecap: "Alex, we agreed on a 3-week pilot with 5 reps. Before we get into setup — let's make sure the pilot is designed to answer exactly what the CFO will ask, so the readout lands.",
+        //             questionsToAsk: [
+        //                 "When you present pilot results to the CFO, what do they need to see to say yes?",
+        //                 "What would you personally need to feel confident recommending this internally?",
+        //                 "What does the approval process look like after the pilot — who else is in the room, and how long does InfoSec review take?",
+        //                 "For your international reps — are ramp challenges the same, or are there different dynamics to account for?",
+        //                 "What does the CFO track as leading indicators that sales enablement is working?"
+        //             ],
+        //             valueAndROI: {
+        //                 quantitative: [
+        //                     "~$270K recoverable revenue per rep across 3 months of ramp saved — ~$2.7M/year across 10 hires",
+        //                     "15% new-rep close rate improvement within 90 days is the stated pilot success threshold"
+        //                 ],
+        //                 qualitative: [
+        //                     "GoDojo scales top-rep playbooks to every call without adding manager overhead",
+        //                     "Pilot is designed to produce exactly the data the CFO needs — results, not promises"
+        //                 ]
+        //             }
+        //         },
+
+        //         keyPoints: [
+        //             "Vertex Solutions: 35-rep enterprise team, avg ramp 9–11 months, Q3 CRO pressure",
+        //             "Budget ~$85K confirmed; CFO sign-off required above $75K — not on this call",
+        //             "Post-call analytics tools rejected previously — live coaching is the gap",
+        //             "3-week pilot with 5 reps agreed; pilot results gate CFO expansion conversation",
+        //             "Open: CFO engagement, CRM integration scoping, InfoSec/Legal timeline, international data residency"
+        //         ],
+
+        //         actionItems: [
+        //             "AE: Send pilot agreement and onboarding checklist by EOD Friday",
+        //             "AE: Send ROI model to Alex by Thursday",
+        //             "AE: Book technical setup call with Alex and RevOps lead early next week",
+        //             "Alex: Nominate 5 pilot reps and share Slack channel",
+        //             "AE: Send security overview and data processing agreement",
+        //             "AE: Loop in Solutions Engineer for CRM integration scoping"
+        //         ],
+
+        //         speakerNames: {
+        //             user: 'AE (You)',
+        //             client: 'Alex Rivera'
+        //         },
+        //         liveAnalysis: demoLiveAnalysis
+        //     },
+        //     transcript: [
+        //         { speaker: 'user', text: "Alex, thanks for the time. Plan for today — first half understanding your team's situation, second half a live demo. Sound good?", timestamp: 0 },
+        //         { speaker: 'client', text: "Works for me. I'll be upfront — we've been on a lot of vendor calls lately. What caught my attention was the live coaching angle, not another post-call dashboard.", timestamp: 8000 },
+        //         { speaker: 'user', text: "Good, let's start there. Can you give me a quick picture of your sales team — size, structure, how H1 went?", timestamp: 20000 },
+        //         { speaker: 'client', text: "35 AEs total. Classic enterprise motion, deal cycles of 4 to 6 months, ACV in the $75K to $200K range. H1 was rough — missed plan by around 10%. The CRO is on me to fix ramp time and tighten up discovery quality.", timestamp: 30000 },
+        //         { speaker: 'user', text: "What does ramp look like for a new hire right now?", timestamp: 62000 },
+        //         { speaker: 'client', text: "Too long. Nine to eleven months before a rep consistently hits quota. We lost two in H1 who never got there. The cost of a failed ramp is real money.", timestamp: 70000 },
+        //         { speaker: 'user', text: "Is that a training problem, a coaching problem, or something else?", timestamp: 96000 },
+        //         { speaker: 'client', text: "Coaching bandwidth. My top reps are excellent but I can't clone them. Managers are stretched. We do call reviews but it's reactive — by the time we catch a bad habit, a rep has already blown three discovery calls.", timestamp: 104000 },
+        //         { speaker: 'user', text: "You mentioned you've evaluated tools before. What happened?", timestamp: 130000 },
+        //         { speaker: 'client', text: "Two full evals last year. Both strong on post-call analytics — managers loved the dashboards. But reps didn't change behavior. Insight came too late. A rep gets feedback three days after a call, it doesn't stick. We need something in the moment.", timestamp: 138000 },
+        //         { speaker: 'user', text: "That's exactly the gap we built around. Let me show you the live overlay.", timestamp: 170000 },
+        //         { speaker: 'client', text: "Let's see it.", timestamp: 178000 },
+        //         { speaker: 'user', text: "As the prospect speaks, the rep sees coaching cues, live BANT and MEDDIC tracking, and flagged signals — all in real time. If the prospect says 'we need to check with finance,' GoDojo surfaces a coaching note and a suggested question immediately. The rep doesn't have to remember the playbook.", timestamp: 184000 },
+        //         { speaker: 'client', text: "That live overlay — that's exactly what we've been missing. Post-call feedback is too late by the time a rep blows a discovery call. How does it know what's relevant — is it keyword matching?", timestamp: 236000 },
+        //         { speaker: 'user', text: "No — full conversation understanding. The model tracks the entire call context, your sales methodology, and the rep's profile. It's contextual reasoning, not pattern matching.", timestamp: 252000 },
+        //         { speaker: 'client', text: "Does it integrate with our CRM? We have a heavily customized setup — custom stages, custom fields.", timestamp: 270000 },
+        //         { speaker: 'user', text: "Yes, native CRM integration. Custom objects are supported. I'd bring in our solutions engineer to scope your specific instance during pilot setup.", timestamp: 282000 },
+        //         { speaker: 'client', text: "We also have international reps. What happens to call recordings — we have data residency requirements.", timestamp: 300000 },
+        //         { speaker: 'user', text: "We're SOC 2 Type II certified and offer regional data residency. I'll send our security overview and data processing agreement — that covers what your legal team will need.", timestamp: 314000 },
+        //         { speaker: 'client', text: "Good. Our CFO — they'll want to see that. They sign off on anything above $75K.", timestamp: 332000 },
+        //         { speaker: 'user', text: "Makes sense. What does the CFO typically need to get comfortable with a new vendor at this level?", timestamp: 348000 },
+        //         { speaker: 'client', text: "ROI data, security docs, and a peer reference. They don't move without numbers. I want to show them pilot results before I bring them in.", timestamp: 356000 },
+        //         { speaker: 'user', text: "Smart approach. Let's design the pilot to produce exactly what you need for that conversation. What would meaningful results look like in a 3-week window?", timestamp: 372000 },
+        //         { speaker: 'client', text: "Reps doing better discovery — asking the right questions, catching buying signals — and ideally a couple of deals moving faster through the funnel.", timestamp: 384000 },
+        //         { speaker: 'user', text: "I'd suggest 5 reps — mix of newer hires and experienced ones for a natural comparison. Three weeks, live coaching enabled, and I'll put together a rep-level readout you can take directly to the CFO.", timestamp: 408000 },
+        //         { speaker: 'client', text: "I'd want to see it handle a complex deal with 6 or 7 stakeholders before I take this to the CFO.", timestamp: 432000 },
+        //         { speaker: 'user', text: "Exactly where live coaching adds the most value — tracking each stakeholder's role, surfacing the right talk track per conversation. We can make sure at least one pilot rep is working a complex active deal.", timestamp: 442000 },
+        //         { speaker: 'client', text: "Alright. I think a pilot makes sense. How quickly can we be live?", timestamp: 476000 },
+        //         { speaker: 'user', text: "Five business days from signed agreement. I'll send the paperwork today and let's book a technical setup call with your RevOps contact early next week.", timestamp: 486000 },
+        //         { speaker: 'client', text: "The CFO is going to want an ROI number. They don't approve anything without it.", timestamp: 510000 },
+        //         { speaker: 'user', text: "Let's build it together. If ramp drops from 10 months to 6 and your reps are at $810K quota, what's the revenue impact per rep per year?", timestamp: 520000 },
+        //         { speaker: 'client', text: "Meaningful. Four months of lost ramp at that quota is around $270K per rep. Across 10 hires a year, that's significant.", timestamp: 534000 },
+        //         { speaker: 'user', text: "Exactly. I'll model that out and have a draft to you by Thursday so you're ready when the CFO asks.", timestamp: 550000 },
+        //         { speaker: 'client', text: "We've been burned by tools before. Looked great in a demo, fell apart in production.", timestamp: 566000 },
+        //         { speaker: 'user', text: "Fair concern. That's why the pilot exists — we earn the right to full deployment through results. Let's define the success criteria in writing before we start, so you have a scorecard, not just our word.", timestamp: 576000 },
+        //         { speaker: 'client', text: "Good. Send me the pilot agreement and I'll get back to you by end of week.", timestamp: 600000 },
+        //         { speaker: 'user', text: "Will do. Everything in your inbox within the hour. Looking forward to it, Alex.", timestamp: 610000 }
+        //     ],
+        //     usage: [
+        //         {
+        //             type: 'assist',
+        //             timestamp: 104000,
+        //             question: 'Prospect described a coaching bandwidth problem — what should I say?',
+        //             answer: `Validate and bridge: "That's the core gap we hear from enterprise sales leaders — post-call coaching is reactive by design. What if the coaching happened live, so reps course-correct before the call ends?" This sets up the overlay demo naturally.`
+        //         },
+        //         {
+        //             type: 'followup_questions',
+        //             timestamp: 178000,
+        //             items: [
+        //                 'When you picture your best rep on a discovery call, what do they do differently that you wish all your reps did?',
+        //                 'If we cut ramp time in half, how does that change your H2 forecast?',
+        //                 'Is the CFO involved in the evaluation, or do they only review at the end?',
+        //                 'Where in the ramp process do new reps tend to stall most often?'
+        //             ]
+        //         },
+        //         {
+        //             type: 'assist',
+        //             timestamp: 332000,
+        //             question: 'CFO needs to sign off above $75K — how do I handle this?',
+        //             answer: `Don't work around the CFO — align on how to bring them in well. Ask: "What does the CFO need to see to get comfortable with a new vendor at this level?" Then offer to co-build the business case. Positions you as a partner, not a vendor avoiding the economic buyer.`
+        //         },
+        //         {
+        //             type: 'chat',
+        //             timestamp: 432000,
+        //             question: 'Prospect is asking about multi-stakeholder deals — what are our strongest points here?',
+        //             answer: `GoDojo tracks each stakeholder's role, concerns, and engagement across the deal thread. In multi-threaded deals it surfaces who hasn't been engaged recently and suggests targeted outreach angles. Leads to faster deal velocity on complex enterprise cycles.`
+        //         },
+        //         {
+        //             type: 'assist',
+        //             timestamp: 566000,
+        //             question: `Prospect said they've been burned by tools before — how do I handle this?`,
+        //             answer: `Acknowledge directly: "That's fair — the pilot exists exactly for this reason. We earn full deployment through results, not promises. Let's define success criteria in writing before we start so you have a clear scorecard — yours, not ours." Builds confidence and reduces perceived risk.`
+        //         }
+        //     ],
+        //     isProcessed: true
+        // };
+
+        // this.saveMeeting(demoMeeting, today.getTime(), today.getTime() + durationMs, 0);
+        // console.log('[DatabaseManager] Seeded demo meeting.');
     }
 }

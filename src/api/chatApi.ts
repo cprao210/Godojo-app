@@ -8,60 +8,113 @@
 import { getAuthHeaders, API_BASE, ApiError, apiFetch } from "@/lib/apiClient";
 import { ChatHistoryTurn, ChatStreamHandlers, LiveTranscriptSegment, RagAnswer, StreamHandle } from "@/types";
 
+// Transient failures worth retrying automatically: network drops (fetch
+// throws a TypeError, e.g. "Failed to fetch") and server-side/rate-limit
+// errors (5xx, 429). Anything else (400/401/403/404, malformed request,
+// etc.) is a client-side problem that will fail identically on retry, so
+// don't waste time/attempts on it.
+const MAX_STREAM_RETRIES = 2;
+const RETRY_BASE_DELAY_MS = 600;
+
+function isRetryableStreamError(err: unknown): boolean {
+    if (err instanceof ApiError) return err.status >= 500 || err.status === 429;
+    // fetch() rejects with a plain TypeError for network-level failures
+    // (offline, DNS, connection reset) — anything else thrown here (e.g. a
+    // JSON.parse error while decoding a frame) is a bug, not a transient
+    // network blip, so it shouldn't be retried.
+    return err instanceof TypeError;
+}
+
 /**
  * POST `path` with `body` and parse the SSE response, dispatching frames to
  * `handlers` as they arrive. Fire-and-forget from the caller's point of view —
  * progress comes entirely through the handler callbacks.
+ *
+ * Automatically retries (with backoff) on transient failures — but ONLY while
+ * nothing has streamed back to the user yet. The moment a token, rag_answer,
+ * or sources frame arrives, retries are disabled for the rest of this call:
+ * re-sending the request after partial content has already rendered would
+ * duplicate or garble what's on screen, which is worse than just surfacing
+ * the error and letting the person hit "try again" themselves.
  */
 function streamSSE(path: string, body: unknown, handlers: ChatStreamHandlers): StreamHandle {
     const controller = new AbortController();
+    let hasStreamedContent = false;
+
+    // Wrap onToken/onRagAnswer/onSources so we can flip the retry gate the
+    // instant real content starts arriving, without touching every call site
+    // below.
+    const guardedHandlers: ChatStreamHandlers = {
+        ...handlers,
+        onToken: (chunk) => { hasStreamedContent = true; handlers.onToken(chunk); },
+        onRagAnswer: (answer) => { hasStreamedContent = true; handlers.onRagAnswer?.(answer); },
+        onSources: (sources) => { hasStreamedContent = true; handlers.onSources?.(sources); },
+    };
 
     (async () => {
-        try {
-            const authHeaders = await getAuthHeaders();
-            const res = await fetch(`${API_BASE}${path}`, {
-                method: "POST",
-                headers: { "Content-Type": "application/json", ...authHeaders },
-                body: JSON.stringify(body),
-                signal: controller.signal,
-            });
+        for (let attempt = 0; ; attempt++) {
+            try {
+                const authHeaders = await getAuthHeaders();
+                const res = await fetch(`${API_BASE}${path}`, {
+                    method: "POST",
+                    headers: { "Content-Type": "application/json", ...authHeaders },
+                    body: JSON.stringify(body),
+                    signal: controller.signal,
+                });
 
-            if (!res.ok || !res.body) {
-                const errBody = (await res.json().catch(() => undefined)) as
-                    | { error?: { code?: string; message?: string } }
-                    | undefined;
-                throw new ApiError(
-                    res.status,
-                    errBody?.error?.code ?? "error",
-                    errBody?.error?.message ?? res.statusText,
-                );
-            }
-
-            const reader = res.body.getReader();
-            const decoder = new TextDecoder();
-            let buffer = "";
-
-            while (true) {
-                const { value, done } = await reader.read();
-                if (done) break;
-                buffer += decoder.decode(value, { stream: true });
-
-                // SSE frames are separated by a blank line.
-                let sep: number;
-                while ((sep = buffer.indexOf("\n\n")) !== -1) {
-                    dispatchFrame(buffer.slice(0, sep), handlers);
-                    buffer = buffer.slice(sep + 2);
+                if (!res.ok || !res.body) {
+                    const errBody = (await res.json().catch(() => undefined)) as
+                        | { error?: { code?: string; message?: string } }
+                        | undefined;
+                    throw new ApiError(
+                        res.status,
+                        errBody?.error?.code ?? "error",
+                        errBody?.error?.message ?? res.statusText,
+                    );
                 }
-            }
-            if (buffer.trim()) dispatchFrame(buffer, handlers); // trailing frame, no closing blank line
 
-            handlers.onDone?.();
-        } catch (err) {
-            if (controller.signal.aborted) return; // caller cancelled — not a failure
-            console.error(`[chatApi] stream failed (${path}):`, err);
-            handlers.onError(
-                err instanceof ApiError ? err.message : "Couldn't get a response. Please try again.",
-            );
+                const reader = res.body.getReader();
+                const decoder = new TextDecoder();
+                let buffer = "";
+
+                while (true) {
+                    const { value, done } = await reader.read();
+                    if (done) break;
+                    buffer += decoder.decode(value, { stream: true });
+
+                    // SSE frames are separated by a blank line.
+                    let sep: number;
+                    while ((sep = buffer.indexOf("\n\n")) !== -1) {
+                        dispatchFrame(buffer.slice(0, sep), guardedHandlers);
+                        buffer = buffer.slice(sep + 2);
+                    }
+                }
+                if (buffer.trim()) dispatchFrame(buffer, guardedHandlers); // trailing frame, no closing blank line
+
+                handlers.onDone?.();
+                return; // success — stop the retry loop
+            } catch (err) {
+                if (controller.signal.aborted) return; // caller cancelled — not a failure
+
+                const canRetry = !hasStreamedContent
+                    && attempt < MAX_STREAM_RETRIES
+                    && isRetryableStreamError(err);
+
+                if (canRetry) {
+                    const nextAttempt = attempt + 1;
+                    console.warn(`[chatApi] stream failed (${path}), retrying ${nextAttempt}/${MAX_STREAM_RETRIES}:`, err);
+                    handlers.onRetry?.(nextAttempt, MAX_STREAM_RETRIES);
+                    const delay = RETRY_BASE_DELAY_MS * Math.pow(2, attempt);
+                    await new Promise((r) => setTimeout(r, delay));
+                    continue;
+                }
+
+                console.error(`[chatApi] stream failed (${path}):`, err);
+                handlers.onError(
+                    err instanceof ApiError ? err.message : "Couldn't get a response. Please try again.",
+                );
+                return;
+            }
         }
     })();
 

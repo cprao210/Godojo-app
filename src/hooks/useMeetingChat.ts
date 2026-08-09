@@ -127,6 +127,7 @@ export function useMeetingChat({ isOpen, onClose, onMessagesChange, messages, me
 
         activeStreamRef.current = chatApi.queryMeeting(meetingContext.id, question, {
             onStatus: (status) => setStatusText(statusLabel(status)),
+            onRetry: (attempt, max) => setStatusText(`Reconnecting… (${attempt}/${max})`),
             onSources: (s) => { sources = s; },
             onToken: (chunk) => {
                 setChatState('streaming_response');

@@ -205,10 +205,23 @@ export class SupabaseMirrorService {
     // in the local outbox and replay automatically on sign-in.
     // ============================================
 
-    /** Mirror a single row upsert to a Supabase table. */
-    upsertRow(table: string, row: Record<string, any>): void {
+    /**
+     * Mirror a single row upsert to a Supabase table.
+     *
+     * @param ownerUid Pin the mirror row's user_id to this uid instead of
+     *   re-resolving "the current signed-in user" at enqueue time. Callers
+     *   that write the SAME logical entity across multiple, separated-in-time
+     *   calls (e.g. a meeting's placeholder save, then its title/summary
+     *   updates minutes later) MUST pass the uid captured when that entity
+     *   was first created — otherwise a signed-in-user change in between
+     *   (account switch, session handoff) stamps later writes with a
+     *   different user_id and, for composite-PK tables like meetings
+     *   (user_id, id), silently creates a second row instead of updating
+     *   the first. Omit only for genuinely one-shot / first-write calls.
+     */
+    upsertRow(table: string, row: Record<string, any>, ownerUid?: string | null): void {
         if (!this.enabled) return;
-        this._enqueue({ op: 'upsert', table, payload: row, retries: 0 });
+        this._enqueue({ op: 'upsert', table, payload: row, retries: 0 }, ownerUid);
     }
 
     private _conflictTargetForTable(table: string, row: Record<string, any>): string | null {
@@ -316,19 +329,22 @@ export class SupabaseMirrorService {
      * leftover transcript items ahead of it. A single batched upsert call
      * is both faster (one request) and can't block later items for long.
      */
-    upsertRows(table: string, rows: Record<string, any>[]): void {
+    upsertRows(table: string, rows: Record<string, any>[], ownerUid?: string | null): void {
         if (!this.enabled || rows.length === 0) return;
-        this._enqueue({ op: 'upsertBatch', table, payload: rows, retries: 0 });
+        this._enqueue({ op: 'upsertBatch', table, payload: rows, retries: 0 }, ownerUid);
     }
 
     // ============================================
     // Private queue / drain machinery
     // ============================================
 
-    private _enqueue(item: Omit<OutboxItem, 'id' | 'ownerUid'>): void {
+    private _enqueue(item: Omit<OutboxItem, 'id' | 'ownerUid'>, ownerUid?: string | null): void {
         const entry: OutboxItem = {
             id: ++this.counter,
-            ownerUid: item.table === 'users' ? null : SupabaseClientManager.getCurrentUserId(),
+            // Explicit ownerUid (passed by callers that must keep a multi-step
+            // entity's writes under one identity) wins. Otherwise fall back to
+            // resolving "current user" fresh — fine for genuine one-shot writes.
+            ownerUid: item.table === 'users' ? null : (ownerUid ?? SupabaseClientManager.getCurrentUserId()),
             ...item,
         };
         this.outbox.push(entry);
