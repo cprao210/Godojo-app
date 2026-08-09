@@ -1620,6 +1620,10 @@ export class AppState {
     this._clientSpeakerIndicesSeen.clear();
     this._echoFilter.reset();
     this._userPartialPending = false;
+    // Anchor the duration clock the moment we commit to starting a meeting,
+    // not after audio-pipeline setup (which can throw/be slow) — so a
+    // recorded meeting's duration is never inflated by idle/init time.
+    this.intelligenceManager.resetSessionTimer();
     this.broadcastMeetingState();
 
     // Pass metadata directly to SessionTracker, which owns all name-resolution logic:
@@ -1686,11 +1690,6 @@ export class AppState {
         this.googleSTT?.setAudioChannelCount?.(1);
         this.googleSTT_User?.setSampleRate(16000);
         this.googleSTT_User?.setAudioChannelCount?.(1);
-
-        // Reset session timer here — not at the previous stopMeeting() — so that
-        // duration = (stopTime − startTime) equals actual recording length only,
-        // with no idle-between-meetings inflation.
-        this.intelligenceManager.resetSessionTimer();
 
         this.googleSTT?.start();
         this.googleSTT_User?.start();

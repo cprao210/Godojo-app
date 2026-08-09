@@ -262,10 +262,13 @@ export class MeetingPersistence {
         // 0. Force-save any pending interim transcript
         this.session.flushInterimTranscript();
 
-        // 1. Snapshot valid data BEFORE resetting
-        // subtract accumulated pause time to get true active duration
-        const rawDurationMs = Date.now() - this.session.getSessionStartTime();
-        const durationMs = Math.max(0, rawDurationMs - this.session.getTotalPausedMs());
+        // 1. Snapshot valid data BEFORE resetting.
+        // duration = end - start - paused, computed from three raw facts —
+        // no running clock, no derived state to go stale.
+        const startTimeMs = this.session.getSessionStartTime();
+        const endTimeMs = Date.now();
+        const totalPausedMs = this.session.getTotalPausedMs();
+        const durationMs = Math.max(0, (endTimeMs - startTimeMs) - totalPausedMs);
         if (durationMs < 1000) {
             console.log("Meeting too short, ignoring.");
             this.session.reset();
@@ -283,7 +286,9 @@ export class MeetingPersistence {
         const snapshot = {
             transcript: [...this.session.getFullTranscript()],
             usage: [...this.session.getFullUsage()],
-            startTime: this.session.getSessionStartTime(),
+            startTime: startTimeMs,
+            endTime: endTimeMs,
+            totalPausedMs: totalPausedMs,
             durationMs: durationMs,
             context: this.session.getFullSessionContext(),
         };
@@ -326,7 +331,7 @@ export class MeetingPersistence {
         };
 
         try {
-            DatabaseManager.getInstance().saveMeeting(placeholder, snapshot.startTime, durationMs);
+            DatabaseManager.getInstance().saveMeeting(placeholder, snapshot.startTime, snapshot.endTime, snapshot.totalPausedMs);
             // Notify Frontend
             const wins = require('electron').BrowserWindow.getAllWindows();
             wins.forEach((w: any) => w.webContents.send('meetings-updated'));
@@ -341,7 +346,7 @@ export class MeetingPersistence {
      * Heavy lifting: LLM Title, Summary, and DB Write
      */
     private async processAndSaveMeeting(
-        data: { transcript: TranscriptSegment[], usage: any[], startTime: number, durationMs: number, context: string },
+        data: { transcript: TranscriptSegment[], usage: any[], startTime: number, endTime?: number, totalPausedMs?: number, durationMs: number, context: string },
         meetingId: string,
         metadata?: { title?: string; calendarEventId?: string; source?: 'manual' | 'calendar' } | null,
         liveAnalysisData?: LiveAnalysisData | null,
@@ -558,7 +563,7 @@ export class MeetingPersistence {
                 tenantId: tenantId || null
             };
 
-            DatabaseManager.getInstance().saveMeeting(meetingData, data.startTime, data.durationMs);
+            DatabaseManager.getInstance().saveMeeting(meetingData, data.startTime, data.endTime ?? (data.startTime + data.durationMs), data.totalPausedMs ?? 0);
 
             // Metadata was already snapshotted before session.reset() — nothing to clear here.
 
@@ -822,7 +827,7 @@ export class MeetingPersistence {
                 isProcessed: false,
             };
 
-            DatabaseManager.getInstance().saveMeeting(placeholder, startTimeMs, durationMs);
+            DatabaseManager.getInstance().saveMeeting(placeholder, startTimeMs, startTimeMs + durationMs, 0);
             const wins = require('electron').BrowserWindow.getAllWindows();
             wins.forEach((w: any) => w.webContents.send('meetings-updated'));
 

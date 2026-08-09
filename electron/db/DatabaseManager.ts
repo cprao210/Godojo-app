@@ -43,6 +43,8 @@ export interface Meeting {
     date: string;
     duration: string;
     durationMs?: number; // raw ms — available when loaded from DB, used for accurate recovery
+    endTime?: number;       // raw ms epoch — when recording stopped
+    totalPausedMs?: number; // raw ms — cumulative pause time subtracted into durationMs
     summary: string;
     isProcessed?: boolean;
     detailedSummary?: {
@@ -758,6 +760,19 @@ export class DatabaseManager {
             `);
             this.db.pragma('user_version = 18');
         }
+
+        // v18 → v19: store end_time + total_paused_ms alongside start_time so
+        // duration_ms = end_time - start_time - total_paused_ms is a fact derived
+        // from this row alone — no in-memory session clock to go stale.
+        // Existing rows keep their already-computed duration_ms untouched.
+        if (version < 19) {
+            console.log('[DatabaseManager] Applying migration v18 → v19: Add end_time, total_paused_ms to meetings');
+            this.db.exec(`
+                ALTER TABLE meetings ADD COLUMN end_time INTEGER;
+                ALTER TABLE meetings ADD COLUMN total_paused_ms INTEGER DEFAULT 0;
+            `);
+            this.db.pragma('user_version = 19');
+        }
     }
 
     // ============================================
@@ -1417,16 +1432,24 @@ export class DatabaseManager {
         return this.resolvedExtPath;
     }
 
-    public saveMeeting(meeting: Meeting, startTimeMs: number, durationMs: number) {
+    /**
+     * startTimeMs / endTimeMs / totalPausedMs are the three raw facts for this
+     * meeting. duration_ms is derived here — once, from these three numbers —
+     * rather than being computed upstream and passed around, so there's a
+     * single place that can ever get the arithmetic wrong.
+     */
+    public saveMeeting(meeting: Meeting, startTimeMs: number, endTimeMs: number, totalPausedMs: number = 0) {
 
         if (!this.db) {
             console.error('[DatabaseManager] DB not initialized');
             return;
         }
 
+        const durationMs = Math.max(0, (endTimeMs - startTimeMs) - totalPausedMs);
+
         const insertMeeting = this.db.prepare(`
-            INSERT OR REPLACE INTO meetings (id, title, start_time, duration_ms, summary_json, created_at, calendar_event_id, tenant_id, source, is_processed)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            INSERT OR REPLACE INTO meetings (id, title, start_time, end_time, total_paused_ms, duration_ms, summary_json, created_at, calendar_event_id, tenant_id, source, is_processed)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         `);
 
         const insertTranscript = this.db.prepare(`
@@ -1461,6 +1484,8 @@ export class DatabaseManager {
                 meeting.id,
                 meeting.title,
                 startTimeMs,
+                endTimeMs,
+                totalPausedMs,
                 durationMs,
                 summaryJson,
                 meeting.date, // Using the ISO string as created_at for sorting simply
@@ -1545,6 +1570,8 @@ export class DatabaseManager {
                     id: meeting.id,
                     title: meeting.title,
                     start_time: startTimeMs,
+                    end_time: endTimeMs,
+                    total_paused_ms: totalPausedMs,
                     duration_ms: durationMs,
                     summary_json: summaryObj,
                     created_at: meeting.date,
@@ -2320,7 +2347,7 @@ export class DatabaseManager {
             isProcessed: true
         };
 
-        this.saveMeeting(demoMeeting, today.getTime(), durationMs);
+        this.saveMeeting(demoMeeting, today.getTime(), today.getTime() + durationMs, 0);
         console.log('[DatabaseManager] Seeded demo meeting.');
     }
 }

@@ -685,6 +685,8 @@ CREATE TABLE IF NOT EXISTS meetings (
     id                   TEXT NOT NULL,
     title                TEXT,
     start_time           BIGINT,
+    end_time             BIGINT,
+    total_paused_ms      BIGINT DEFAULT 0,
     duration_ms          BIGINT,
     summary_json         JSONB,
     created_at           TIMESTAMPTZ,
