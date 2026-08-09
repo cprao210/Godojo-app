@@ -26,7 +26,7 @@ function makeId(): string {
     return `f-${Date.now()}-${_seq++}`;
 }
 
-class FrontendLoggerService {
+export class FrontendLoggerService {
     private entries: LogEntry[] = [];
     private listeners: Set<LogListener> = new Set();
     private _intercepted = false;

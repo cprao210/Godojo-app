@@ -1,36 +1,9 @@
 import { useState, useEffect, useCallback } from 'react';
-import { acceleratorToKeys, keysToAccelerator } from '../utils/keyboardUtils';
-import { getPlatformShortcut, isMac } from '../utils/platformUtils';
+import { acceleratorToKeys, keysToAccelerator } from '../../utils/keyboardUtils';
+import { isMac } from '../../utils/platformUtils';
+import { ShortcutConfig } from '@/types';
 
 // Define the shape of our shortcuts configuration
-export interface ShortcutConfig {
-    whatToAnswer: string[];
-    autoAnswerMode: string[];
-    clarify: string[];
-    followUp: string[];
-    dynamicAction4: string[];
-    answer: string[];
-    codeHint: string[];
-    brainstorm: string[];
-    shorten: string[];
-    recap: string[];
-    scrollUp: string[];
-    scrollDown: string[];
-    // Window Movement
-    moveWindowUp: string[];
-    moveWindowDown: string[];
-    moveWindowLeft: string[];
-    moveWindowRight: string[];
-    // General
-    toggleVisibility: string[];
-    toggleMousePassthrough: string[];
-    processScreenshots: string[];
-    captureAndProcess: string[];
-    resetCancel: string[];
-    takeScreenshot: string[];
-    selectiveScreenshot: string[];
-}
-
 function buildDefaultShortcuts(): ShortcutConfig {
     const mod = isMac ? '⌘' : 'Ctrl';
     const shift = isMac ? '⇧' : 'Shift';

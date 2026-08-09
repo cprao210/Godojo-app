@@ -2,50 +2,12 @@
 // Works in Electron by dynamically loading the gtag script into the renderer DOM
 // Only requires the public Measurement ID — no API secrets needed
 
+
 // --- Types ---
+import { AnalyticsEventName, AssistantMode, ModelProviderType, ModelUsedPayload, SessionDurationPayload } from "@/types";
 
-export type ModelProviderType = 'cloud' | 'local';
-
-export type AssistantMode = 'launcher' | 'overlay' | 'undetectable' | string;
-
-export type AnalyticsEventName =
-    // App Lifecycle
-    | 'app_opened'
-    | 'app_closed'
-    | 'first_launch'
-    // Feature Usage
-    | 'assistant_started'
-    | 'assistant_stopped'
-    | 'mode_selected'
-    | 'copy_answer_clicked'
-    | 'calendar_connected'
-    | 'pdf_exported'
-    // Meeting Lifecycle
-    | 'meeting_started'
-    | 'meeting_ended'
-    // Model Usage
-    | 'model_used'
-    // Session
-    | 'session_duration'
-    // Engagement
-    | 'command_executed'
-    | 'conversation_started';
-
-interface ModelUsedPayload {
-    model_name: string;
-    provider_type: ModelProviderType;
-    latency_ms: number;
-    tokens_used?: number;
-}
-
-interface SessionDurationPayload {
-    duration_seconds: number;
-    assistant_active_seconds?: number;
-    idle_seconds?: number;
-}
 
 // --- Configuration ---
-
 const GA4_MEASUREMENT_ID = "G-494RMJ2G6E";
 const APP_VERSION = "1.1.3";
 

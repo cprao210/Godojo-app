@@ -1,6 +1,5 @@
+import { ResolvedTheme } from '@/types';
 import { useEffect, useState } from 'react';
-
-type ResolvedTheme = 'light' | 'dark';
 
 const getResolvedTheme = (): ResolvedTheme =>
     document.documentElement.getAttribute('data-theme') === 'light' ? 'light' : 'dark';

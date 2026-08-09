@@ -1,0 +1,218 @@
+name: CI — Validate & Smoke Build
+
+on:
+  pull_request:
+  push:
+    branches: [main, master, develop, dev]
+  workflow_dispatch:
+
+jobs:
+  # Tag-triggered release runs can't read each other's Actions cache (each
+  # tag is its own ref) — but they CAN fall back to the default branch's
+  # cache. This job warms that cache in release profile, only when the
+  # native module actually changed, so release.yml's macOS job isn't a
+  # cold build on every single release.
+  warm-native-cache:
+    name: Warm native module cache (macOS)
+    runs-on: macos-latest
+    if: |
+      github.event_name == 'push' &&
+      github.ref == format('refs/heads/{0}', github.event.repository.default_branch)
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Check if native-module changed
+        id: changed
+        run: |
+          if git diff --quiet ${{ github.event.before }} ${{ github.sha }} -- native-module/ 2>/dev/null; then
+            echo "changed=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "changed=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Install Rust toolchain
+        if: steps.changed.outputs.changed == 'true'
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-apple-darwin
+
+      - name: Cache Rust build
+        if: steps.changed.outputs.changed == 'true'
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: native-module -> target
+          key: macos-universal
+
+      - name: Install Meson & Ninja
+        if: steps.changed.outputs.changed == 'true'
+        run: brew install meson ninja
+
+      - name: Build native module (release profile, warms cache only)
+        if: steps.changed.outputs.changed == 'true'
+        working-directory: native-module
+        run: |
+          start=$(date +%s)
+          cargo build --release --target aarch64-apple-darwin
+          end=$(date +%s)
+          echo "::notice title=Native build duration (macOS)::$((end - start))s"
+
+  warm-native-cache-windows:
+    name: Warm native module cache (Windows)
+    runs-on: windows-latest
+    if: |
+      github.event_name == 'push' &&
+      github.ref == format('refs/heads/{0}', github.event.repository.default_branch)
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Check if native-module changed
+        id: changed
+        shell: bash
+        run: |
+          if git diff --quiet ${{ github.event.before }} ${{ github.sha }} -- native-module/ 2>/dev/null; then
+            echo "changed=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "changed=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Install Rust toolchain
+        if: steps.changed.outputs.changed == 'true'
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache Rust build
+        if: steps.changed.outputs.changed == 'true'
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: native-module -> target
+          key: windows
+
+      - name: Build native module (release profile, warms cache only)
+        if: steps.changed.outputs.changed == 'true'
+        working-directory: native-module
+        shell: bash
+        run: |
+          start=$(date +%s)
+          cargo build --release
+          end=$(date +%s)
+          echo "::notice title=Native build duration (Windows)::$((end - start))s"
+
+  warm-native-cache-linux:
+    name: Warm native module cache (Linux)
+    runs-on: ubuntu-24.04
+    if: |
+      github.event_name == 'push' &&
+      github.ref == format('refs/heads/{0}', github.event.repository.default_branch)
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Check if native-module changed
+        id: changed
+        run: |
+          if git diff --quiet ${{ github.event.before }} ${{ github.sha }} -- native-module/ 2>/dev/null; then
+            echo "changed=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "changed=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Install Rust toolchain
+        if: steps.changed.outputs.changed == 'true'
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache Rust build
+        if: steps.changed.outputs.changed == 'true'
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: native-module -> target
+          key: linux
+
+      - name: Install system packages required by webrtc-audio-processing
+        if: steps.changed.outputs.changed == 'true'
+        run: |
+          sudo apt-get update -y
+          sudo apt-get install -y \
+            pkg-config meson ninja-build \
+            libasound-dev \
+            libclang-dev clang \
+            libssl-dev
+
+      - name: Build native module (release profile, warms cache only)
+        if: steps.changed.outputs.changed == 'true'
+        working-directory: native-module
+        run: |
+          start=$(date +%s)
+          cargo build --release
+          end=$(date +%s)
+          echo "::notice title=Native build duration (Linux)::$((end - start))s"
+
+  # ─── Job 1: Type check both renderer and electron ───────────────────────────
+  typecheck:
+    name: Type Check
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Install dependencies (skip postinstall — no native builds needed)
+        run: npm ci --ignore-scripts
+
+      - name: Type check renderer (src + premium/src)
+        run: npx tsc --noEmit
+
+      - name: Type check electron
+        run: npx tsc -p electron/tsconfig.json --noEmit
+
+  # ─── Job 2: Run vitest unit tests ────────────────────────────────────────────
+  test:
+    name: Unit Tests (vitest)
+    runs-on: ubuntu-latest
+    needs: typecheck
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Install dependencies (skip postinstall)
+        run: npm ci --ignore-scripts
+
+      - name: Run vitest
+        run: npm test
+
+  # ─── Job 3: Smoke build — compile renderer + electron on macOS ───────────────
+  smoke-build:
+    name: Smoke Build
+    runs-on: ubuntu-latest
+    needs: typecheck
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Install dependencies
+        # SKIP_DOWNLOAD_MODELS=1 is read by scripts/download-models.js to exit early
+        # SHARP_IGNORE_GLOBAL_LIBVIPS=1 prevents sharp from compiling libvips from source
+        env:
+          SHARP_IGNORE_GLOBAL_LIBVIPS: "1"
+          SKIP_DOWNLOAD_MODELS: "1"
+        run: npm ci
+
+      - name: Build renderer (Vite)
+        run: npm run build
+
+      - name: Build Electron main process (tsc)
+        run: npm run build:electron
+
+      - name: Verify dist-electron entrypoint exists
+        run: test -f dist-electron/electron/main.js
+
+      - name: Verify Vite dist output exists
+        run: test -d dist

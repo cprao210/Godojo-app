@@ -39,6 +39,21 @@ export interface MicrophoneCaptureOptions {
      * flag when constructing MicrophoneCapture (see main.ts detectBuiltinOnly).
      */
     vadDisabled?: boolean;
+    /**
+     * Echo pipeline mode passed down to the Rust gate:
+     *   'legacy'      — original hard mute (SPEAKER_ACTIVE + warmup)
+     *   'phase1'      — headphone bypass + short RMS-driven gate
+     *   'full_duplex' — delay-aligned AEC3 + convergence-tracked soft gate (default)
+     * Overrides the NATIVELY_ECHO_MODE env var when set.
+     */
+    echoMode?: string;
+    /**
+     * Persisted AEC alignment seed for the current output route (SIGNED ms:
+     * positive = render delayed, negative = capture delayed). Lets the native
+     * echo canceller start pre-aligned instead of re-estimating from scratch.
+     * Ignored by pre-rework .node binaries.
+     */
+    echoAlignSeedMs?: number;
 }
 
 export class MicrophoneCapture extends EventEmitter {
@@ -47,6 +62,8 @@ export class MicrophoneCapture extends EventEmitter {
     private deviceId: string | null = null;
     private _sampleRateEmitted: boolean = false;
     private _vadDisabled: boolean = false;
+    private _echoMode: string | undefined;
+    private _echoAlignSeedMs: number | undefined;
 
     // VAD-lockout watchdog timers (only used when vadDisabled=false)
     private _vadResetTimer: NodeJS.Timeout | null = null;
@@ -57,18 +74,20 @@ export class MicrophoneCapture extends EventEmitter {
         super();
         this.deviceId = deviceId || null;
         this._vadDisabled = options?.vadDisabled ?? false;
+        this._echoMode = options?.echoMode;
+        this._echoAlignSeedMs = options?.echoAlignSeedMs;
 
         if (!RustMicCapture) {
             console.error('[MicrophoneCapture] Rust class implementation not found.');
         } else {
             console.log(
-                `[MicrophoneCapture] Initialized wrapper. Device: ${this.deviceId || 'default'}, vadDisabled: ${this._vadDisabled}`
+                `[MicrophoneCapture] Initialized wrapper. Device: ${this.deviceId || 'default'}, vadDisabled: ${this._vadDisabled}, echoMode: ${this._echoMode || 'default'}`
             );
             try {
                 console.log('[MicrophoneCapture] Creating native monitor (Eager Init)...');
-                // Pass vadDisabled as second argument to the Rust constructor.
-                // Rust signature: new(device_id: Option<String>, vad_disabled: Option<bool>)
-                this.monitor = new RustMicCapture(this.deviceId, this._vadDisabled);
+                // Rust signature: new(device_id, vad_disabled, options?: CaptureOptions)
+                // The trailing options object is ignored by pre-rework .node binaries.
+                this.monitor = new RustMicCapture(this.deviceId, this._vadDisabled, this._captureOptions());
             } catch (e) {
                 console.error('[MicrophoneCapture] Failed to create native monitor:', e);
                 // Re-throw so callers (e.g. reconfigureAudio) can catch and fall back to
@@ -78,6 +97,19 @@ export class MicrophoneCapture extends EventEmitter {
                 throw e;
             }
         }
+    }
+
+    /**
+     * Options object for the native constructor. Typed loosely on purpose:
+     * the native CaptureOptions grows fields (echoAlignSeedMs) that may not
+     * exist in the local .d.ts until the concurrent napi rebuild lands —
+     * older binaries simply ignore unknown keys.
+     */
+    private _captureOptions(): any {
+        return {
+            echoMode: this._echoMode,
+            echoAlignSeedMs: this._echoAlignSeedMs,
+        };
     }
 
     public getSampleRate(): number {
@@ -90,12 +122,21 @@ export class MicrophoneCapture extends EventEmitter {
     }
 
     public getOutputSampleRate(): number {
-        const native = this.getSampleRate();
-        if (this.monitor && typeof this.monitor.get_output_sample_rate === 'function') {
-            return this.monitor.get_output_sample_rate();
-        }
+        // Touch getSampleRate() so its native-rate log stays consistent.
+        this.getSampleRate();
+        // Return 0 if monitor hasn't started yet so the startMeeting settle poll
+        // knows the rate is not yet available.
         if (!this.monitor) return 0;
-        return native === 48000 ? 16000 : native;
+        // napi-rs exposes Rust's get_output_sample_rate() as camelCase
+        // getOutputSampleRate() (native-module/index.d.ts). The old snake_case check
+        // never matched and fell through to `native === 48000 ? 16000 : native`,
+        // which leaked non-48000 native rates (e.g. WASAPI 44100 on Windows) as the
+        // declared Deepgram sample_rate even though the Rust DSP always outputs 16kHz.
+        if (typeof this.monitor.getOutputSampleRate === 'function') {
+            return this.monitor.getOutputSampleRate();
+        }
+        // Fallback for older native builds: DSP always resamples output to 16kHz.
+        return 16000;
     }
 
     /**
@@ -115,7 +156,7 @@ export class MicrophoneCapture extends EventEmitter {
         if (!this.monitor) {
             console.log('[MicrophoneCapture] Monitor not initialized. Re-initializing...');
             try {
-                this.monitor = new RustMicCapture(this.deviceId, this._vadDisabled);
+                this.monitor = new RustMicCapture(this.deviceId, this._vadDisabled, this._captureOptions());
             } catch (e) {
                 this.emit('error', e);
                 return;
@@ -183,7 +224,7 @@ export class MicrophoneCapture extends EventEmitter {
                                     if (!this.isRecording) {
                                         // Recreate monitor and restart
                                         try {
-                                            this.monitor = new RustMicCapture(this.deviceId, this._vadDisabled);
+                                            this.monitor = new RustMicCapture(this.deviceId, this._vadDisabled, this._captureOptions());
                                         } catch (e) {
                                             this.emit('error', e);
                                             return;
@@ -209,7 +250,12 @@ export class MicrophoneCapture extends EventEmitter {
                     if (!this.isRecording) return;
                     const rate = this.monitor?.getSampleRate?.();
                     if (rate) {
-                        const outputRate = rate === 48000 ? 16000 : rate;
+                        // Use getOutputSampleRate() — the Rust DSP always resamples to
+                        // 16kHz regardless of native rate. The old `rate === 48000 ? 16000
+                        // : rate` leaked non-48000 native rates (e.g. WASAPI 44100 on
+                        // Windows) as the emitted output rate, misconfiguring the user STT
+                        // channel (setSampleRate(44100) on 16kHz audio → garbled transcripts).
+                        const outputRate = this.getOutputSampleRate() || 16000;
                         console.log(
                             `[MicrophoneCapture] Native: ${rate}Hz → Output: ${outputRate}Hz (${label})`
                         );

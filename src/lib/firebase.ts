@@ -1,4 +1,3 @@
-// src/lib/firebase.ts
 // Firebase Web SDK init + ID-token bridge to the Electron main process.
 //
 // The renderer owns the Firebase auth lifecycle (sign-in UI, onIdTokenChanged

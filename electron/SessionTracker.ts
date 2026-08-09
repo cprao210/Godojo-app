@@ -14,6 +14,12 @@ export interface TranscriptSegment {
     confidence?: number;
     /** 'chat' segments come from the assistant chat panel — exclude from saved transcript */
     source?: 'stt' | 'chat' | 'manual';
+    /**
+     * Diarization speaker index within the client stream (Deepgram, finals
+     * only). Distinguishes multiple far-end participants; undefined when
+     * diarization is off or unavailable.
+     */
+    speakerIndex?: number;
 }
 
 export interface SuggestionTrigger {
@@ -27,6 +33,8 @@ export interface ContextItem {
     role: 'client' | 'user' | 'assistant';
     text: string;
     timestamp: number;
+    /** Diarized far-end speaker index (client role only). */
+    speakerIndex?: number;
 }
 
 export interface AssistantResponse {
@@ -380,7 +388,8 @@ export class SessionTracker {
         this.contextItems.push({
             role,
             text,
-            timestamp: segment.timestamp
+            timestamp: segment.timestamp,
+            speakerIndex: segment.speakerIndex
         });
 
         this.evictOldEntries();
@@ -545,13 +554,35 @@ export class SessionTracker {
     }
 
     /**
+     * True when diarization has attributed client speech to 2+ distinct
+     * far-end speakers this session — the threshold for showing speaker
+     * suffixes anywhere (1:1 calls stay label-free).
+     */
+    private hasMultipleClientSpeakers(): boolean {
+        const seen = new Set<number>();
+        for (const seg of this.fullTranscript) {
+            if (seg.speakerIndex !== undefined && this.mapSpeakerToRole(seg.speaker) === 'client') {
+                seen.add(seg.speakerIndex);
+                if (seen.size >= 2) return true;
+            }
+        }
+        return false;
+    }
+
+    private clientSpeakerSuffix(speakerIndex: number | undefined, multi: boolean): string {
+        return multi && speakerIndex !== undefined ? ` (SPEAKER ${speakerIndex + 1})` : '';
+    }
+
+    /**
      * Get formatted context string for LLM prompts
      */
     getFormattedContext(lastSeconds: number = 120): string {
         const items = this.getContext(lastSeconds);
+        const multi = this.hasMultipleClientSpeakers();
         return items.map(item => {
-            const label = item.role === 'client' ? (this.speakerNameMap.client || 'CLIENT').toUpperCase() :
-                item.role === 'user' ? (this.speakerNameMap.user || 'ME').toUpperCase() :
+            const label = item.role === 'client'
+                ? (this.speakerNameMap.client || 'CLIENT').toUpperCase() + this.clientSpeakerSuffix(item.speakerIndex, multi)
+                : item.role === 'user' ? (this.speakerNameMap.user || 'ME').toUpperCase() :
                     'ASSISTANT';
             return `[${label}]: ${item.text}`;
         }).join('\n');
@@ -573,10 +604,12 @@ export class SessionTracker {
      * Get full session context from accumulated transcript (User + Client + Assistant)
      */
     getFullSessionContext(): string {
+        const multi = this.hasMultipleClientSpeakers();
         const recentTranscript = this.fullTranscript.map(segment => {
             const role = this.mapSpeakerToRole(segment.speaker);
-            const label = role === 'client' ? (this.speakerNameMap.client || 'CLIENT').toUpperCase() :
-                role === 'user' ? (this.speakerNameMap.user || 'ME').toUpperCase() :
+            const label = role === 'client'
+                ? (this.speakerNameMap.client || 'CLIENT').toUpperCase() + this.clientSpeakerSuffix(segment.speakerIndex, multi)
+                : role === 'user' ? (this.speakerNameMap.user || 'ME').toUpperCase() :
                     'ASSISTANT';
             return `[${label}]: ${segment.text}`;
         }).join('\n');

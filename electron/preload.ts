@@ -1,5 +1,5 @@
 import { contextBridge, ipcRenderer } from "electron"
-import { LiveAnalysisData } from "../src/types/liveAnalysis"
+import { LiveAnalysisData } from "../src/types"
 import { CalendarEvent } from "services/CalendarManager"
 
 // ✅ Inline the IPC channel constants — avoids cross-bundle path resolution
@@ -96,7 +96,7 @@ interface ElectronAPI {
   testSttConnection: (provider: 'groq' | 'openai' | 'deepgram' | 'elevenlabs' | 'azure' | 'ibmwatson' | 'soniox', apiKey: string, region?: string) => Promise<{ success: boolean; error?: string }>
 
   // Native Audio Service Events
-  onNativeAudioTranscript: (callback: (transcript: { speaker: string; text: string; final: boolean }) => void) => () => void
+  onNativeAudioTranscript: (callback: (transcript: { speaker: string; text: string; final: boolean; retract?: boolean }) => void) => () => void
   onNativeAudioSuggestion: (callback: (suggestion: { context: string; lastQuestion: string; confidence: number }) => void) => () => void
   onNativeAudioConnected: (callback: () => void) => () => void
   onNativeAudioDisconnected: (callback: () => void) => () => void
@@ -139,15 +139,14 @@ interface ElectronAPI {
 
   // Meeting Lifecycle
   startMeeting: (metadata?: any) => Promise<{ success: boolean; error?: string }>
-  endMeeting: () => Promise<{ success: boolean; error?: string }>
+  endMeeting: (meetingTypes?: ('discovery' | 'demo' | 'negotiation')[], tenantId?: string | null) => Promise<{ success: boolean; error?: string }>
   finalizeMicSTT: () => Promise<void>
   getRecentMeetings: () => Promise<Array<{ id: string; title: string; date: string; duration: string; summary: string }>>
   getMeetingDetails: (id: string) => Promise<any>
   updateMeetingTitle: (id: string, title: string) => Promise<boolean>
-  updateMeetingTypes: (id: string, types: string[]) => Promise<boolean>
   updateLiveAnalysis: (data: LiveAnalysisData) => Promise<{ success: boolean }>;
   regenerateMeetingSummary: (id: string) => Promise<{ success: boolean; meeting?: any; error?: string }>
-  uploadTranscript: (text: string, title?: string) => Promise<{ success: boolean; meetingId?: string; error?: string }>
+  uploadTranscript: (text: string, title?: string, meetingTypes?: ('discovery' | 'demo' | 'negotiation')[]) => Promise<{ success: boolean; meetingId?: string; error?: string }>
   updateMeetingSummary: (id: string, updates: { overview?: string, actionItems?: string[], keyPoints?: string[], actionItemsTitle?: string, keyPointsTitle?: string }) => Promise<boolean>
   onMeetingsUpdated: (callback: () => void) => () => void
   getDisplayName: (role: 'user' | 'client' | 'assistant') => Promise<string>;
@@ -176,6 +175,9 @@ interface ElectronAPI {
 
   // Settings Window
   toggleSettingsWindow: (coords?: { x: number; y: number }) => Promise<void>
+
+  // Team invite deep link (godojo://invite?token=...)
+  onInviteDeepLink: (callback: (data: { token: string }) => void) => () => void
 
   // Groq Fast Text Mode
   getGroqFastTextMode: () => Promise<{ enabled: boolean }>
@@ -228,11 +230,6 @@ interface ElectronAPI {
   onGeminiStreamError: (callback: (error: string) => void) => () => void
 
   chatWithGemini: (message: string, imagePaths?: string[], context?: string, skipSystemPrompt?: boolean) => Promise<string>
-
-  // NEW: Dedicated Live Analysis with its own events
-  startLiveAnalysis: (prompt: string) => Promise<{ success: boolean; error?: string }>;
-  onLiveAnalysisResult: (callback: (result: string) => void) => () => void;
-  onLiveAnalysisError: (callback: (error: string) => void) => () => void;
 
   onUndetectableChanged: (callback: (state: boolean) => void) => () => void
   onGroqFastTextChanged: (callback: (enabled: boolean) => void) => () => void
@@ -334,6 +331,13 @@ interface ElectronAPI {
   companySetPersonaEngine: (enabled: boolean) => Promise<{ success: boolean; error?: string }>;
   companySelectFile: () => Promise<{ filePath?: string; fileName?: string; fileSize?: number; cancelled?: boolean; success?: boolean; error?: string }>;
   companyGetCompleteness: () => Promise<number>;
+
+  // Scoring criteria
+  meetingGetScorecard: (meetingId: string) => Promise<{ success: boolean; data?: any; error?: string }>;
+  meetingDeleteScorecard: (meetingId: string) => Promise<{ success: boolean; error?: string }>;
+  scoringGetCriteria: () => Promise<{ success: boolean; data?: any; error?: string }>;
+  scoringSaveCriteria: (settings: any) => Promise<{ success: boolean; error?: string }>;
+  scoringResetCriteria: () => Promise<{ success: boolean; error?: string }>;
 
   // JD & Research API
   profileUploadJD: (filePath: string) => Promise<{ success: boolean; error?: string }>;
@@ -596,6 +600,20 @@ contextBridge.exposeInMainWorld("electronAPI", {
     ipcRenderer.on('meeting-state-changed', subscription);
     return () => { ipcRenderer.removeListener('meeting-state-changed', subscription); };
   },
+  // Fired once, exactly when endMeeting() resolves the real meetingId for
+  // the call that just ended — race-free alternative to inferring "the
+  // current meeting" from getRecentMeetings()[0] (see main.ts#endMeeting).
+  onLiveCallEnded: (callback: (data: { meetingId: string }) => void) => {
+    const subscription = (_: any, data: { meetingId: string }) => callback(data);
+    ipcRenderer.on('live-call-ended', subscription);
+    return () => { ipcRenderer.removeListener('live-call-ended', subscription); };
+  },
+  savePendingLiveChatInteractions: (meetingId: string, interactionIds: number[]) =>
+    ipcRenderer.invoke('live-chat:save-pending-interactions', meetingId, interactionIds),
+  getPendingLiveChatInteractions: (meetingId: string): Promise<number[]> =>
+    ipcRenderer.invoke('live-chat:get-pending-interactions', meetingId),
+  clearPendingLiveChatInteractions: (meetingId: string) =>
+    ipcRenderer.invoke('live-chat:clear-pending-interactions', meetingId),
   getMeetingPaused: () => ipcRenderer.invoke("get-meeting-paused"),
   pauseMeeting: () => ipcRenderer.invoke("pause-meeting"),
   resumeMeeting: () => ipcRenderer.invoke("resume-meeting"),
@@ -679,9 +697,13 @@ contextBridge.exposeInMainWorld("electronAPI", {
   setGroqSttModel: (model: string) => ipcRenderer.invoke("set-groq-stt-model", model),
   setSonioxApiKey: (apiKey: string) => ipcRenderer.invoke("set-soniox-api-key", apiKey),
   testSttConnection: (provider: 'groq' | 'openai' | 'deepgram' | 'elevenlabs' | 'azure' | 'ibmwatson' | 'soniox', apiKey: string, region?: string) => ipcRenderer.invoke("test-stt-connection", provider, apiKey, region),
+  setDiarizeClientEnabled: (enabled: boolean) => ipcRenderer.invoke("set-diarize-client-enabled", enabled),
+  getDiarizeClientEnabled: () => ipcRenderer.invoke("get-diarize-client-enabled"),
+  getAudioPipelineStats: () => ipcRenderer.invoke("get-audio-pipeline-stats"),
+  getOutputRoute: () => ipcRenderer.invoke("get-output-route"),
 
   // Native Audio Service Events
-  onNativeAudioTranscript: (callback: (transcript: { speaker: string; text: string; final: boolean }) => void) => {
+  onNativeAudioTranscript: (callback: (transcript: { speaker: string; displayName?: string; text: string; timestamp?: number; final: boolean; confidence?: number; speakerIndex?: number; retract?: boolean }) => void) => {
     const subscription = (_: any, data: any) => callback(data)
     ipcRenderer.on("native-audio-transcript", subscription)
     return () => {
@@ -778,15 +800,14 @@ contextBridge.exposeInMainWorld("electronAPI", {
 
   // Meeting Lifecycle
   startMeeting: (metadata?: any) => ipcRenderer.invoke("start-meeting", metadata),
-  endMeeting: () => ipcRenderer.invoke("end-meeting"),
+  endMeeting: (meetingTypes?: ('discovery' | 'demo' | 'negotiation')[], tenantId?: string | null) => ipcRenderer.invoke("end-meeting", { meetingTypes, tenantId }),
   finalizeMicSTT: () => ipcRenderer.invoke("finalize-mic-stt"),
   getRecentMeetings: () => ipcRenderer.invoke("get-recent-meetings"),
   getMeetingDetails: (id: string) => ipcRenderer.invoke("get-meeting-details", id),
   updateMeetingTitle: (id: string, title: string) => ipcRenderer.invoke("update-meeting-title", { id, title }),
-  updateMeetingTypes: (id, types) => ipcRenderer.invoke("update-meeting-types", { id, types }),
   updateMeetingSummary: (id: string, updates: any) => ipcRenderer.invoke("update-meeting-summary", { id, updates }),
   regenerateMeetingSummary: (id: string) => ipcRenderer.invoke('regenerate-meeting-summary', { id }),
-  uploadTranscript: (text: string, title?: string) => ipcRenderer.invoke('upload-transcript', { text, title }),
+  uploadTranscript: (text: string, title?: string, meetingTypes?: ('discovery' | 'demo' | 'negotiation')[]) => ipcRenderer.invoke('upload-transcript', { text, title, meetingTypes }),
   deleteMeeting: (id: string) => ipcRenderer.invoke("delete-meeting", id),
 
   onMeetingsUpdated: (callback: () => void) => {
@@ -929,23 +950,6 @@ contextBridge.exposeInMainWorld("electronAPI", {
     }
   },
 
-  startLiveAnalysis: (prompt: string) => ipcRenderer.invoke('live-analysis-stream', prompt),
-
-  onLiveAnalysisResult: (callback: (result: string) => void) => {
-    const subscription = (_: any, result: string) => callback(result);
-    ipcRenderer.on('live-analysis-result', subscription);
-    return () => {
-      ipcRenderer.removeListener('live-analysis-result', subscription);
-    };
-  },
-
-  onLiveAnalysisError: (callback: (error: string) => void) => {
-    const subscription = (_: any, error: string) => callback(error);
-    ipcRenderer.on('live-analysis-error', subscription);
-    return () => {
-      ipcRenderer.removeListener('live-analysis-error', subscription);
-    };
-  },
 
   onGeminiStreamDone: (callback: () => void) => {
     const subscription = () => callback()
@@ -972,6 +976,15 @@ contextBridge.exposeInMainWorld("electronAPI", {
 
   // Settings Window
   toggleSettingsWindow: (coords?: { x: number; y: number }) => ipcRenderer.invoke('toggle-settings-window', coords),
+
+  // Team invite deep link
+  onInviteDeepLink: (callback: (data: { token: string }) => void) => {
+    const subscription = (_: any, data: { token: string }) => callback(data)
+    ipcRenderer.on('invite-deep-link', subscription)
+    return () => {
+      ipcRenderer.removeListener('invite-deep-link', subscription)
+    }
+  },
 
   // Groq Fast Text Mode
   getGroqFastTextMode: () => ipcRenderer.invoke('get-groq-fast-text-mode'),
@@ -1294,6 +1307,13 @@ contextBridge.exposeInMainWorld("electronAPI", {
   companySelectFile: () => ipcRenderer.invoke('company:selectFile'),
   companyGetCompleteness: () => ipcRenderer.invoke('company:getCompleteness'),
 
+  // Scoring criteria
+  meetingGetScorecard: (meetingId: string) => ipcRenderer.invoke('meeting:getScorecard', meetingId),
+  meetingDeleteScorecard: (meetingId: string) => ipcRenderer.invoke('meeting:deleteScorecard', meetingId),
+  scoringGetCriteria: () => ipcRenderer.invoke('scoring:getCriteria'),
+  scoringSaveCriteria: (settings: any) => ipcRenderer.invoke('scoring:saveCriteria', settings),
+  scoringResetCriteria: () => ipcRenderer.invoke('scoring:resetCriteria'),
+
   // Tavily Search API
   setTavilyApiKey: (apiKey: string) => ipcRenderer.invoke('set-tavily-api-key', apiKey),
 
@@ -1346,6 +1366,17 @@ contextBridge.exposeInMainWorld("electronAPI", {
     ipcRenderer.on('auth:state-changed', subscription)
     return () => {
       ipcRenderer.removeListener('auth:state-changed', subscription)
+    }
+  },
+
+  // ===== Tenant ID (cross-window) =====
+  setCurrentTenantId: (tenantId: string | null) => ipcRenderer.invoke('tenant:set-current', tenantId),
+  getCurrentTenantId: () => ipcRenderer.invoke('tenant:get-current'),
+  onTenantStateChanged: (callback: (tenantId: string | null) => void) => {
+    const subscription = (_: Electron.IpcRendererEvent, tenantId: string | null) => callback(tenantId)
+    ipcRenderer.on('tenant:state-changed', subscription)
+    return () => {
+      ipcRenderer.removeListener('tenant:state-changed', subscription)
     }
   },
 

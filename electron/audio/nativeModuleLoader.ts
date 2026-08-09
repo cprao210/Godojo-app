@@ -5,17 +5,58 @@ export interface AudioDeviceInfo {
   name: string;
 }
 
+/** Optional trailing options accepted by both native capture constructors. */
+export interface NativeCaptureOptions {
+  /** Echo pipeline mode: 'legacy' | 'phase1' | 'full_duplex'. */
+  echoMode?: string;
+  vadDisabled?: boolean;
+  /**
+   * Persisted AEC alignment seed (SIGNED ms: positive = render delayed,
+   * negative = capture delayed) from a previous converged session on the
+   * same output route. Ignored by pre-rework .node binaries.
+   */
+  echoAlignSeedMs?: number;
+}
+
+export interface OutputRouteInfo {
+  /** 'headphones' | 'speakers' | 'unknown' */
+  kind: string;
+  transport: string;
+  name: string;
+}
+
 export interface NativeModule {
   getHardwareId(): string;
   verifyGumroadKey(licenseKey: string): Promise<string>;
   getInputDevices(): Array<AudioDeviceInfo>;
   getOutputDevices(): Array<AudioDeviceInfo>;
-  SystemAudioCapture: new (deviceId?: string | null) => {
+  /**
+   * Optional — present in .node binaries built after the echo pipeline rework.
+   * NOT in REQUIRED_METHODS so a stale binary still loads; callers must guard.
+   */
+  getOutputRoute?: () => OutputRouteInfo;
+  /** Optional — JSON snapshot of the echo pipeline (ERLE, gate state, ...). */
+  getAudioPipelineStats?: () => string;
+  /**
+   * Optional capability probe. Absent (→ treat as 0) on older binaries. Level >= 2
+   * means the Windows loopback capture synthesizes silence during render-idle
+   * periods, so JS callers can relax the capture-stall watchdog to a long
+   * last-resort window instead of the aggressive default.
+   */
+  getNativeFeatureLevel?: () => number;
+  SystemAudioCapture: new (
+    deviceId?: string | null,
+    options?: NativeCaptureOptions | null
+  ) => {
     getSampleRate(): number;
     start(callback: (...args: any[]) => any, onSpeechEnded?: (...args: any[]) => any): void;
     stop(): void;
   };
-  MicrophoneCapture: new (deviceId?: string | null) => {
+  MicrophoneCapture: new (
+    deviceId?: string | null,
+    vadDisabled?: boolean | null,
+    options?: NativeCaptureOptions | null
+  ) => {
     getSampleRate(): number;
     start(callback: (...args: any[]) => any, onSpeechEnded?: (...args: any[]) => any): void;
     stop(): void;
@@ -50,7 +91,7 @@ function validateNativeModule(mod: any): asserts mod is NativeModule {
 function getNativeBinaryName(): string {
     const { platform, arch } = process;
     const map: Record<string, Record<string, string>> = {
-        win32:  { x64: 'index.win32-x64-msvc.node' },
+        win32:  { x64: 'index.win32-x64-msvc.node', ia32: 'index.win32-ia32-msvc.node', arm64: 'index.win32-arm64-msvc.node' },
         darwin: { x64: 'index.darwin-x64.node', arm64: 'index.darwin-arm64.node' },
         linux:  { x64: 'index.linux-x64-gnu.node', arm64: 'index.linux-arm64-gnu.node' },
     };

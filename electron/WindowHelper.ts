@@ -2,6 +2,7 @@
 import { BrowserWindow, screen, app, Menu } from "electron"
 import { AppState } from "./main"
 import { KeybindManager } from "./services/KeybindManager"
+import { startStaticServer } from "./staticServer"
 import path from "node:path"
 
 const isEnvDev = process.env.NODE_ENV === "development"
@@ -13,9 +14,14 @@ console.log(`[WindowHelper] isEnvDev: ${isEnvDev}, isPackaged: ${isPackaged}, in
 // Force production mode if running as packaged app or inside app bundle
 const isDev = isEnvDev && !isPackaged;
 
-const startUrl = isDev
-  ? "http://localhost:5180"
-  : `file://${path.join(__dirname, "../../dist/index.html")}`
+let startUrl = isDev ? "http://localhost:5180" : ""
+
+/** Must be awaited before the first createWindow() call in production. */
+export async function initRendererUrl(): Promise<void> {
+  if (isDev) return
+  const distDir = path.join(__dirname, "../../dist")
+  startUrl = await startStaticServer(distDir)
+}
 
 export class WindowHelper {
   private launcherWindow: BrowserWindow | null = null
@@ -149,7 +155,19 @@ export class WindowHelper {
       show: false, // DEBUG: Force show -> Fixed white screen, now relies on ready-to-show
       // Platform-specific frame settings
       ...(isMac
-        ? { titleBarStyle: 'hiddenInset' as const, trafficLightPosition: { x: 14, y: 14 } }
+        ? {
+          titleBarStyle: 'hiddenInset' as const,
+          trafficLightPosition: { x: 14, y: 14 },
+          // Without this, the green traffic-light button enters native
+          // macOS fullscreen (a new Space) instead of a simple maximize —
+          // that's what the dock/menu-bar auto-hiding into floating
+          // overlays actually is. Combined with transparent + vibrancy
+          // below, that fullscreen Space transition is a known Electron/
+          // macOS bug where the vibrant surface fails to repaint and goes
+          // solid black. Disabling native fullscreen makes the button do
+          // a plain zoom-to-screen-bounds instead, avoiding both.
+          fullscreenable: false,
+        }
         : { frame: false, titleBarOverlay: false, autoHideMenuBar: true }),
       ...(isMac ? { vibrancy: 'under-window' as const, visualEffectState: 'followWindow' as const } : {}),
       transparent: isMac,

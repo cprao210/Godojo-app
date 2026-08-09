@@ -6,11 +6,81 @@ import { backendLogger } from './logger/backend.logger';
 if (!app.isPackaged) {
   require('dotenv').config();
 }
+// Load app-level config (Supabase, Google/Zoom OAuth client credentials, Firebase).
+// In dev this reads the repo-root `.env`. In a packaged build it reads the `.env`
+// shipped via `extraResources` (written by CI from GitHub Actions secrets — see
+// release.yml). This must run unconditionally — previously gated to `!app.isPackaged`,
+// which meant packaged builds NEVER loaded these values, no matter what the CI
+// job's own environment contained.
+//
+// IMPORTANT: never put user BYOK provider keys (Gemini/Groq/Claude/OpenAI/Deepgram/
+// etc.) in this file — those are supplied per-user via Settings > AI Providers and
+// stored through CredentialsManager. This file is the same for every install.
+const runtimeEnvPath = app.isPackaged
+  ? path.join(process.resourcesPath, '.env')
+  : path.join(app.getAppPath(), '.env');
+require('dotenv').config({ path: runtimeEnvPath }); // no-ops safely if the file is missing
 
 // Handle stdout/stderr errors at the process level to prevent EIO crashes
 // This is critical for Electron apps that may have their terminal detached
 process.stdout?.on?.('error', () => { });
 process.stderr?.on?.('error', () => { });
+
+// ---------------------------------------------------------------------------
+// Deep link handling (team invites): godojo://invite?token=... and, once the
+// domain association files are hosted, https://app.godojo.ai/invite?token=...
+// The token itself is just an opaque lookup key — all real validation
+// (expiry, email match, single-use) happens server-side in tenantsApi calls
+// made from the renderer, so we never trust this value beyond parsing it.
+// ---------------------------------------------------------------------------
+const INVITE_PROTOCOL = 'godojo';
+let pendingInviteToken: string | null = null;
+
+function extractInviteToken(url: string): string | null {
+  try {
+    const parsed = new URL(url);
+    // Supports both godojo://invite?token=xxx and
+    // https://app.godojo.ai/invite?token=xxx
+    return parsed.searchParams.get('token');
+  } catch (e) {
+    console.warn('[Main] Failed to parse deep link URL:', url, e);
+    return null;
+  }
+}
+
+/**
+ * Relay an invite deep link to the renderer. If the main window doesn't
+ * exist yet (cold start still booting), stash the token and it'll be
+ * flushed once the window finishes loading (see 'did-finish-load' below).
+ */
+function handleInviteDeepLink(url: string) {
+  const token = extractInviteToken(url);
+  if (!token) {
+    console.warn('[Main] Received deep link with no token:', url);
+    return;
+  }
+
+  const appState = AppState.getInstance();
+  const win = appState.getMainWindow();
+
+  if (win && !win.isDestroyed()) {
+    if (!appState.isVisible()) {
+      appState.toggleMainWindow();
+    }
+    win.focus();
+    win.webContents.send('invite-deep-link', { token });
+  } else {
+    pendingInviteToken = token;
+  }
+}
+
+// macOS: fired for godojo:// (and, once configured, associated https://)
+// links — including cold starts, as long as this listener is registered
+// before app.whenReady() resolves, which it is here (module load time).
+app.on('open-url', (event, url) => {
+  event.preventDefault();
+  handleInviteDeepLink(url);
+});
 
 process.on('uncaughtException', (err) => {
   logToFile('[CRITICAL] Uncaught Exception: ' + (err.stack || err.message || err));
@@ -114,7 +184,7 @@ console.error = (...args: any[]) => {
 };
 
 import { initializeIpcHandlers } from "./ipcHandlers"
-import { WindowHelper } from "./WindowHelper"
+import { WindowHelper, initRendererUrl } from "./WindowHelper"
 import { SettingsWindowHelper } from "./SettingsWindowHelper"
 import { ModelSelectorWindowHelper } from "./ModelSelectorWindowHelper"
 import { CropperWindowHelper } from "./CropperWindowHelper"
@@ -125,6 +195,9 @@ import { ProcessingHelper } from "./ProcessingHelper"
 import { IntelligenceManager } from "./IntelligenceManager"
 import { SystemAudioCapture } from "./audio/SystemAudioCapture"
 import { MicrophoneCapture } from "./audio/MicrophoneCapture"
+import { loadNativeModule } from "./audio/nativeModuleLoader"
+import { TranscriptEchoFilter, type AecTelemetry } from "./audio/TranscriptEchoFilter"
+import type { SttWord } from "./audio/sttWordUtils"
 import { GoogleSTT } from "./audio/GoogleSTT"
 import { RestSTT } from "./audio/RestSTT"
 import { DeepgramStreamingSTT } from "./audio/DeepgramStreamingSTT"
@@ -173,7 +246,7 @@ import { SettingsManager } from "./services/SettingsManager"
 import { setVerboseLoggingFlag } from "./verboseLog"
 import { ReleaseNotesManager } from "./update/ReleaseNotesManager"
 import { OllamaManager } from './services/OllamaManager'
-import { LiveAnalysisData } from "../src/types/liveAnalysis";
+import { LiveAnalysisData } from "../src/types";
 
 export class AppState {
   private static instance: AppState | null = null
@@ -492,7 +565,7 @@ export class AppState {
             const cm = CredentialsManager.getInstance();
             this.ragManager.initializeEmbeddings({
               openaiKey: cm.getOpenaiApiKey() || process.env.OPENAI_API_KEY || undefined,
-              geminiKey: cm.getGeminiApiKey() || process.env.GOOGLE_API_KEY || process.env.GEMINI_API_KEY || undefined,
+              geminiKey: cm.getGeminiApiKey() || process.env.GOOGLE_API_KEY || undefined,
               ollamaUrl: process.env.OLLAMA_URL || "http://localhost:11434"
             });
           }
@@ -512,7 +585,7 @@ export class AppState {
         const { CredentialsManager } = require('./services/CredentialsManager');
         const cm = CredentialsManager.getInstance();
         const openaiKey = cm.getOpenaiApiKey() || process.env.OPENAI_API_KEY;
-        const geminiKey = cm.getGeminiApiKey() || process.env.GOOGLE_API_KEY || process.env.GEMINI_API_KEY;
+        const geminiKey = cm.getGeminiApiKey() || process.env.GOOGLE_API_KEY;
 
         this.ragManager = new RAGManager({
           db: sqliteDb,
@@ -613,6 +686,17 @@ export class AppState {
   // Use this in contexts that should not affect the meeting-mode flag (e.g. audio test).
   private _isBuiltinOnly(inputDeviceId?: string, outputDeviceId?: string): boolean {
     return AudioDevices.isBuiltinOnly(inputDeviceId, outputDeviceId);
+  }
+
+  // Echo pipeline mode for the native gate ('legacy' | 'phase1' | 'full_duplex').
+  // Persisted in CredentialsManager; NATIVELY_ECHO_MODE env var wins for field debugging.
+  private _echoMode(): string {
+    try {
+      const { CredentialsManager } = require('./services/CredentialsManager');
+      return CredentialsManager.getInstance().getEchoPipelineMode();
+    } catch {
+      return 'full_duplex';
+    }
   }
 
   private _shouldDisableMicVad(inputDeviceId?: string, outputDeviceId?: string): boolean {
@@ -830,15 +914,139 @@ export class AppState {
   private _audioTestStarting = false;               // P2-12: in-flight guard against concurrent calls
   private googleSTT: STTProvider | null = null; // Client
   private googleSTT_User: STTProvider | null = null; // User
+  // Echo-pipeline telemetry poll (ERLE, gate state, mute ratio) — meeting-scoped.
+  private _pipelineStatsTimer: NodeJS.Timeout | null = null;
 
-  // Rolling window of recent final client (system audio) transcripts for macOS echo detection.
-  // Echo suppression only runs on macOS (Windows WASAPI has no acoustic bleed).
-  // Only FINAL transcripts are suppressed — partials still flow so live suggestions work.
-  // False-positive guard: short mic segments (< 4 words) are never suppressed because a
-  // natural reply ("yes", "exactly", "got it") overlapping with client text isn't echo.
-  private _recentClientTranscripts: Array<{ text: string; ts: number }> = [];
-  private static readonly _ECHO_WINDOW_MS = 6000;  // extended to cover STT latency + AEC convergence window
-  private static readonly _ECHO_SIMILARITY_THRESHOLD = 0.75; // base trigram overlap threshold
+  // Last route_name seen in the pipeline stats poll — fallback key for the
+  // AEC alignment seed lookup when getOutputRoute() is unavailable pre-start.
+  private _lastStatsRouteName: string | null = null;
+
+  private _startPipelineStatsPolling(): void {
+    if (this._pipelineStatsTimer) return;
+    const native = loadNativeModule();
+    if (!native?.getAudioPipelineStats) return; // stale .node binary — no stats surface
+    this._pipelineStatsTimer = setInterval(() => {
+      try {
+        const stats = native.getAudioPipelineStats!();
+        console.log(`[AudioPipeline] ${stats} filter=${JSON.stringify(this._echoFilter.getStats())}`);
+        this._maybePersistEchoAlignSeed(stats);
+      } catch (e) {
+        console.warn('[AudioPipeline] stats poll failed:', e);
+      }
+    }, 5000);
+  }
+
+  /**
+   * Persist the converged AEC alignment offset per output route so the next
+   * meeting on the same route starts pre-aligned (echoAlignSeedMs). SIGNED:
+   * positive = render delayed, negative = capture delayed. No-op until the
+   * native module reports `converged` + `applied_align_offset_ms`.
+   */
+  private _maybePersistEchoAlignSeed(statsJson: string): void {
+    try {
+      const stats = JSON.parse(statsJson);
+      if (typeof stats?.route_name === 'string' && stats.route_name) {
+        this._lastStatsRouteName = stats.route_name;
+      }
+      const offset = stats?.applied_align_offset_ms;
+      if (stats?.converged !== true || typeof offset !== 'number' || !Number.isFinite(offset)) return;
+      const routeName = this._lastStatsRouteName;
+      if (!routeName) return;
+      const backend = typeof stats?.render_backend === 'string' ? stats.render_backend : 'unknown';
+      if (CredentialsManager.getInstance().getEchoAlignSeed(routeName) !== offset) {
+        CredentialsManager.getInstance().setEchoAlignSeed(routeName, offset, backend);
+      }
+    } catch {
+      // Telemetry parsing must never disturb the audio pipeline.
+    }
+  }
+
+  /**
+   * Look up a persisted AEC alignment seed for the current output route.
+   * Route name comes from native getOutputRoute() when available pre-start,
+   * else the last stats sample; no route → no seed.
+   */
+  private _lookupEchoAlignSeed(): number | undefined {
+    try {
+      let routeName: string | undefined;
+      const native = loadNativeModule();
+      if (native?.getOutputRoute) {
+        try {
+          routeName = native.getOutputRoute().name || undefined;
+        } catch { /* fall through to last stats sample */ }
+      }
+      if (!routeName) routeName = this._lastStatsRouteName ?? undefined;
+      if (!routeName) return undefined;
+      const seed = CredentialsManager.getInstance().getEchoAlignSeed(routeName);
+      if (seed !== undefined) {
+        console.log(`[Main] Echo align seed found for route "${routeName}": ${seed}ms`);
+      }
+      return seed;
+    } catch {
+      return undefined; // fail-open — capture starts unseeded
+    }
+  }
+
+  private _stopPipelineStatsPolling(): void {
+    if (this._pipelineStatsTimer) {
+      clearInterval(this._pipelineStatsTimer);
+      this._pipelineStatsTimer = null;
+    }
+  }
+
+  // Transcript-level echo suppression (safety net behind the native AEC/gate).
+  // Word-timestamp based when Deepgram word data is available — can TRIM just
+  // the echoed words out of a mic segment instead of dropping it whole — with
+  // the legacy n-gram text fallback for providers without word data.
+  // Finals are dropped/trimmed; INTERIMS are suppressed (never trimmed) so
+  // echo residue never flashes in the live UI. Thresholds tighten while the
+  // native AEC is unconverged with the speaker active (getAecTelemetry).
+  // echoPossible defaults to macOS only (Windows WASAPI setups show no bleed).
+  private _echoFilter = new TranscriptEchoFilter({
+    useWordFilter: () => {
+      try {
+        const { CredentialsManager } = require('./services/CredentialsManager');
+        return CredentialsManager.getInstance().getEchoWordFilterEnabled();
+      } catch {
+        return true;
+      }
+    },
+    isBuiltinOnly: () => this._builtinOnlyMode,
+    getAecTelemetry: () => this._getAecTelemetry(),
+  });
+
+  // True while the renderer shows an un-finalized user partial — a dropped
+  // echo final then needs an explicit retraction event to clear it.
+  private _userPartialPending = false;
+
+  // 500ms-cached parse of the native pipeline stats for the echo filter's
+  // adaptive strictness. Any failure → null (fail-open: never strict).
+  private _aecTelemetryCache: { at: number; value: AecTelemetry | null } | null = null;
+
+  private _getAecTelemetry(): AecTelemetry | null {
+    const now = Date.now();
+    if (this._aecTelemetryCache && now - this._aecTelemetryCache.at < 500) {
+      return this._aecTelemetryCache.value;
+    }
+    let value: AecTelemetry | null = null;
+    try {
+      const raw = loadNativeModule()?.getAudioPipelineStats?.();
+      if (raw) {
+        const stats = JSON.parse(raw);
+        if (typeof stats?.gate_state === 'string') {
+          value = {
+            gateState: stats.gate_state,
+            speakerActive: stats.speaker_active === true,
+            erleDb: typeof stats.erle_db === 'number' ? stats.erle_db : undefined,
+          };
+        }
+      }
+    } catch {
+      value = null;
+    }
+    this._aecTelemetryCache = { at: now, value };
+    return value;
+  }
 
   // _builtinOnlyMode: true when built-in speakers + mic are in use (no external device).
   // Used by _isMicEcho to apply a lower similarity threshold and by audio init to
@@ -846,52 +1054,10 @@ export class AppState {
   // physical echo; no JS-side RMS gate is needed.
   private _builtinOnlyMode: boolean = false;
 
-  private _isMicEcho(micText: string): boolean {
-    // Only applies on macOS — Windows handles echo at the OS/WASAPI level
-    if (process.platform !== 'darwin') return false;
-    if (!micText || this._recentClientTranscripts.length === 0) return false;
-
-    const words = micText.trim().split(/\s+/);
-    // Single-word responses ("yes", "no", "okay") are almost always genuine replies.
-    // 2–3 word phrases can echo acoustically during the AEC convergence window.
-    if (words.length < 2) return false;
-
-    const now = Date.now();
-    this._recentClientTranscripts = this._recentClientTranscripts.filter(
-      e => now - e.ts < AppState._ECHO_WINDOW_MS
-    );
-    const normalise = (s: string) => s.toLowerCase().replace(/[^a-z0-9 ]/g, '').trim();
-
-    // For 2–3 word segments trigrams don't exist — use bigrams instead.
-    // For 4+ word segments use trigrams (lower false-positive rate).
-    const ngrams = (s: string, n: number): Set<string> => {
-      const ws = normalise(s).split(/\s+/);
-      const tg = new Set<string>();
-      for (let i = 0; i + n - 1 < ws.length; i++) tg.add(ws.slice(i, i + n).join(' '));
-      return tg;
-    };
-    const gramSize = words.length <= 3 ? 2 : 3;
-    const micTg = ngrams(micText, gramSize);
-    if (micTg.size === 0) return false;
-
-    for (const entry of this._recentClientTranscripts) {
-      const clientTg = ngrams(entry.text, gramSize);
-      if (clientTg.size === 0) continue;
-      const intersection = [...micTg].filter(t => clientTg.has(t)).length;
-      // Mic-side precision: fraction of mic's n-grams that appeared in client transcript.
-      // Partial echoes (mic heard first half of a long sentence) still score high here.
-      const precision = intersection / micTg.size;
-      // Bigram matching is inherently noisier — use a higher threshold for short segments
-      // to avoid false-positive suppression of genuine short replies.
-      const baseThreshold = this._builtinOnlyMode ? 0.60 : AppState._ECHO_SIMILARITY_THRESHOLD;
-      const threshold = gramSize === 2 ? Math.max(baseThreshold, 0.80) : baseThreshold;
-      if (precision >= threshold) {
-        console.log(`[Main] Echo detected (${gramSize}-gram precision=${precision.toFixed(2)}, threshold=${threshold}): dropping mic segment`);
-        return true;
-      }
-    }
-    return false;
-  }
+  // Distinct diarization speaker indices observed on the client stream this
+  // meeting. Display labels get a "· Speaker n" suffix only once 2+ are seen,
+  // so 1:1 calls render exactly as before diarization existed.
+  private _clientSpeakerIndicesSeen: Set<number> = new Set();
 
   private createSTTProvider(speaker: 'client' | 'user'): STTProvider {
     const { CredentialsManager } = require('./services/CredentialsManager');
@@ -903,8 +1069,12 @@ export class AppState {
     if (sttProvider === 'deepgram') {
       const apiKey = CredentialsManager.getInstance().getDeepgramApiKey();
       if (apiKey) {
-        console.log(`[Main] Using DeepgramStreamingSTT for ${speaker}`);
-        stt = new DeepgramStreamingSTT(apiKey, speaker);
+        // Diarization only on the client (system-audio) stream: the mic is
+        // single-speaker by role, and diarize is a paid streaming add-on.
+        const diarize = speaker === 'client'
+          && CredentialsManager.getInstance().getDiarizeClientEnabled();
+        console.log(`[Main] Using DeepgramStreamingSTT for ${speaker}${diarize ? ' (diarize on)' : ''}`);
+        stt = new DeepgramStreamingSTT(apiKey, speaker, { diarize });
       } else {
         console.warn(`[Main] No API key for Deepgram STT, falling back to GoogleSTT`);
         stt = new GoogleSTT();
@@ -967,7 +1137,10 @@ export class AppState {
     stt.setRecognitionLanguage(sttLanguage);
 
     // Wire Transcript Events
-    stt.on('transcript', (segment: { text: string, isFinal: boolean, confidence: number }) => {
+    stt.on('transcript', (segment: {
+      text: string, isFinal: boolean, confidence: number,
+      speakerIndex?: number, words?: SttWord[]
+    }) => {
       console.log(`[Main] STT transcript (${speaker}, final=${segment.isFinal}): "${segment.text}"`);
       if (!this.isMeetingActive) {
         console.warn(`[Main] Dropping transcript — meeting not active (speaker=${speaker})`);
@@ -978,17 +1151,78 @@ export class AppState {
         return; // Drop transcript segments received during pause (rare, in-flight audio)
       }
 
+      // Mic INTERIMS are judged first: leaked far-end speech must never flash
+      // in the live UI or linger in SessionTracker's pending-interim slot.
+      // Suppress-or-pass only — a suppressed interim is simply superseded.
+      if (speaker === 'user' && !segment.isFinal) {
+        const verdict = this._echoFilter.filterUserInterim(segment.text, segment.words);
+        if (verdict.action === 'suppress') {
+          console.log(`[Main] Suppressing mic echo interim (${verdict.method}, ratio=${verdict.matchRatio.toFixed(2)}${verdict.strict ? ', strict' : ''}): "${segment.text}"`);
+          return;
+        }
+      }
+
       // On macOS with external speakers the mic physically hears the speakers,
-      // causing the other party's speech to appear in both channels. Suppress
-      // mic (user) segments that are highly similar to a recent client transcript.
-      if (speaker === 'user' && segment.isFinal && this._isMicEcho(segment.text)) {
-        console.log(`[Main] Suppressing mic echo: "${segment.text}"`);
-        return;
+      // causing the other party's speech to appear in both channels. Filter
+      // mic (user) finals against recent client finals: word-timestamp matching
+      // can trim just the echoed span; the n-gram fallback drops whole segments.
+      if (speaker === 'user' && segment.isFinal) {
+        const verdict = this._echoFilter.filterUserFinal(segment.text, segment.words);
+        if (verdict.action === 'drop') {
+          console.log(`[Main] Suppressing mic echo (${verdict.method}, ratio=${verdict.matchRatio.toFixed(2)}${verdict.strict ? ', strict' : ''}): "${segment.text}"`);
+          // Clear SessionTracker's pending user interim so flushInterimTranscript()
+          // can't persist the echo on stop: final:true clears lastInterimUser
+          // and the empty text is ignored by addTranscript.
+          this.intelligenceManager.handleTranscript({
+            speaker: 'user',
+            text: '',
+            timestamp: Date.now(),
+            final: true,
+            confidence: 0
+          });
+          // If the renderer still shows a user partial, retract it — that
+          // partial was (or fed into) the echo final we just dropped.
+          if (this._userPartialPending) {
+            const helper = this.getWindowHelper();
+            const speakerNameMap = this.intelligenceManager.getSpeakerNameMap();
+            const retraction = {
+              speaker: 'user',
+              displayName: speakerNameMap.user || 'Me',
+              text: '',
+              timestamp: Date.now(),
+              final: false,
+              retract: true
+            };
+            helper.getLauncherWindow()?.webContents.send('native-audio-transcript', retraction);
+            helper.getOverlayWindow()?.webContents.send('native-audio-transcript', retraction);
+            this._userPartialPending = false;
+            this._echoFilter.noteRetractionEmitted();
+          }
+          return;
+        }
+        if (verdict.action === 'trim') {
+          console.log(`[Main] Trimming mic echo (ratio=${verdict.matchRatio.toFixed(2)}${verdict.strict ? ', strict' : ''}): "${segment.text}" → "${verdict.text}"`);
+          segment.text = verdict.text;
+          segment.words = verdict.keptWords;
+        }
       }
 
       // Record final client transcripts so mic echo detection has a reference window.
       if (speaker === 'client' && segment.isFinal) {
-        this._recentClientTranscripts.push({ text: segment.text, ts: Date.now() });
+        this._echoFilter.addClientFinal(segment.text, segment.words);
+      }
+
+      // Client INTERIMS become the provisional echo reference — this closes
+      // the ordering gap where mic echo lands before the client final does
+      // (VAD-lockout restarts delay client finals, not client interims).
+      if (speaker === 'client' && !segment.isFinal) {
+        this._echoFilter.addClientInterim(segment.text, segment.words);
+      }
+
+      // Track distinct diarized far-end speakers. Labels only appear once a
+      // SECOND speaker is confirmed — 1:1 calls render exactly as before.
+      if (speaker === 'client' && segment.isFinal && segment.speakerIndex !== undefined) {
+        this._clientSpeakerIndicesSeen.add(segment.speakerIndex);
       }
 
       this.intelligenceManager.handleTranscript({
@@ -996,7 +1230,8 @@ export class AppState {
         text: segment.text,
         timestamp: Date.now(),
         final: segment.isFinal,
-        confidence: segment.confidence
+        confidence: segment.confidence,
+        speakerIndex: segment.speakerIndex
       });
 
       // Feed final transcript to JIT RAG indexer
@@ -1012,19 +1247,35 @@ export class AppState {
       // Resolve real display name at emit-time so the renderer always gets
       // a human-readable label, even before a speaker-names-resolved event fires.
       const speakerNameMap = this.intelligenceManager.getSpeakerNameMap();
-      const displayName = speaker === 'user'
+      let displayName = speaker === 'user'
         ? (speakerNameMap.user || 'Me')
         : (speakerNameMap.client || 'Them');
+      if (
+        speaker === 'client' &&
+        segment.speakerIndex !== undefined &&
+        this._clientSpeakerIndicesSeen.size >= 2
+      ) {
+        displayName = `${displayName} · Speaker ${segment.speakerIndex + 1}`;
+      }
       const payload = {
         speaker: speaker,          // internal role — kept for renderer routing logic
         displayName: displayName,  // resolved human name for UI display
         text: segment.text,
         timestamp: Date.now(),
         final: segment.isFinal,
-        confidence: segment.confidence
+        confidence: segment.confidence,
+        speakerIndex: segment.speakerIndex
+        // NOTE: segment.words stays main-process internal (echo filter input) —
+        // deliberately NOT serialized into the 10+/sec IPC stream.
       };
       helper.getLauncherWindow()?.webContents.send('native-audio-transcript', payload);
       helper.getOverlayWindow()?.webContents.send('native-audio-transcript', payload);
+
+      // Track whether the renderer's latest user event is an un-finalized
+      // partial — an echo-dropped final must then retract it explicitly.
+      if (speaker === 'user') {
+        this._userPartialPending = !segment.isFinal;
+      }
 
       // Feed final recruiter (system audio) transcripts to negotiation tracker
       if (segment.isFinal && speaker === 'client') {
@@ -1048,7 +1299,7 @@ export class AppState {
       // wired to write to this.googleSTT / googleSTT_User.
 
       if (!this.systemAudioCapture) {
-        this.systemAudioCapture = new SystemAudioCapture();
+        this.systemAudioCapture = new SystemAudioCapture(undefined, { echoMode: this._echoMode() });
         // Wire Capture -> STT
         this.systemAudioCapture.on('data', (chunk: Buffer) => {
           this.googleSTT?.write(chunk);
@@ -1071,7 +1322,11 @@ export class AppState {
 
       if (!this.microphoneCapture) {
         const disableMicVad = this._shouldDisableMicVad(inputDeviceId, outputDeviceId);
-        this.microphoneCapture = new MicrophoneCapture(undefined, { vadDisabled: disableMicVad });
+        this.microphoneCapture = new MicrophoneCapture(undefined, {
+          vadDisabled: disableMicVad,
+          echoMode: this._echoMode(),
+          echoAlignSeedMs: this._lookupEchoAlignSeed()
+        });
         this.microphoneCapture.on('data', (chunk: Buffer) => {
           this.googleSTT_User?.write(chunk);
         });
@@ -1146,13 +1401,13 @@ export class AppState {
 
     try {
       console.log('[Main] Initializing SystemAudioCapture...');
-      this.systemAudioCapture = new SystemAudioCapture(outputDeviceId || undefined);
+      this.systemAudioCapture = new SystemAudioCapture(outputDeviceId || undefined, { echoMode: this._echoMode() });
       wireSystemAudio(this.systemAudioCapture);
       console.log('[Main] SystemAudioCapture initialized.');
     } catch (err) {
       console.warn('[Main] Failed to initialize SystemAudioCapture with preferred device. Falling back to default.', err);
       try {
-        this.systemAudioCapture = new SystemAudioCapture();
+        this.systemAudioCapture = new SystemAudioCapture(undefined, { echoMode: this._echoMode() });
         wireSystemAudio(this.systemAudioCapture);
         console.log('[Main] SystemAudioCapture (Default) initialized.');
       } catch (err2) {
@@ -1183,11 +1438,12 @@ export class AppState {
       });
     };
 
+    const echoAlignSeedMs = this._lookupEchoAlignSeed();
     try {
       console.log('[Main] Initializing MicrophoneCapture...');
       this.microphoneCapture = new MicrophoneCapture(
         inputDeviceId || undefined,
-        { vadDisabled: disableMicVad }
+        { vadDisabled: disableMicVad, echoMode: this._echoMode(), echoAlignSeedMs }
       );
       wireMicrophone(this.microphoneCapture);
       console.log('[Main] MicrophoneCapture initialized.');
@@ -1196,7 +1452,7 @@ export class AppState {
       try {
         this.microphoneCapture = new MicrophoneCapture(
           undefined,
-          { vadDisabled: disableMicVad }  // preserve VAD mode even on fallback
+          { vadDisabled: disableMicVad, echoMode: this._echoMode(), echoAlignSeedMs }  // preserve VAD mode even on fallback
         );
         wireMicrophone(this.microphoneCapture);
         console.log('[Main] MicrophoneCapture (Default) initialized.');
@@ -1305,7 +1561,14 @@ export class AppState {
 
     try {
       const testVadDisabled = this._isBuiltinOnly(deviceId, undefined);
-      this.audioTestCapture = new MicrophoneCapture(deviceId || undefined, { vadDisabled: testVadDisabled });
+      // Pass the route-keyed alignment seed here too: the native seed contract
+      // is per-construction (omitted = clear), so an unseeded audio-test
+      // constructor would wipe the pending seed of a concurrent meeting.
+      this.audioTestCapture = new MicrophoneCapture(deviceId || undefined, {
+        vadDisabled: testVadDisabled,
+        echoMode: this._echoMode(),
+        echoAlignSeedMs: this._lookupEchoAlignSeed()
+      });
       attachAudioTestListeners(this.audioTestCapture);
       this.audioTestCapture.start();
     } catch (err) {
@@ -1315,7 +1578,11 @@ export class AppState {
       try { this.audioTestCapture?.stop(); } catch { /* ignore errors on already-failed capture */ }
       this.audioTestCapture = null;
       try {
-        this.audioTestCapture = new MicrophoneCapture(undefined, { vadDisabled: false }); // fallback — unknown device, keep VAD
+        this.audioTestCapture = new MicrophoneCapture(undefined, {
+          vadDisabled: false, // fallback — unknown device, keep VAD
+          echoMode: this._echoMode(),
+          echoAlignSeedMs: this._lookupEchoAlignSeed()
+        });
         attachAudioTestListeners(this.audioTestCapture);
         this.audioTestCapture.start();
       } catch (fallbackErr) {
@@ -1352,9 +1619,11 @@ export class AppState {
     }
 
     this.isMeetingActive = true;
-
     this._pendingLiveAnalysisMeetingId = null;
     this._liveAnalysisInFlight = false;
+    this._clientSpeakerIndicesSeen.clear();
+    this._echoFilter.reset();
+    this._userPartialPending = false;
     this.broadcastMeetingState();
 
     // Pass metadata directly to SessionTracker, which owns all name-resolution logic:
@@ -1397,6 +1666,18 @@ export class AppState {
 
         // LAZY INIT: Ensure pipeline is ready (if not reconfigured above)
         this.setupSystemAudioPipeline();
+
+        // Loopback-input guard (warn only): a virtual/loopback device as the
+        // mic feeds far-end playback straight back as "user" speech — no echo
+        // pipeline can fix a wired loop. Never refuse or auto-switch.
+        try {
+          const loopback = AudioDevices.detectLoopbackInput(metadata?.audio?.inputDeviceId);
+          if (loopback.suspicious) {
+            const message = `Microphone input "${loopback.deviceName}" looks like a loopback/virtual audio device — the other party's voice may be transcribed as yours. Consider selecting a physical microphone in Audio Settings.`;
+            console.warn(`[Main] ${message}`);
+            this.broadcast('meeting-audio-warning', message);
+          }
+        } catch { /* warn-only guard — never block meeting start */ }
 
         // Start STT BEFORE audio captures.
         // DeepgramStreamingSTT.write() silently drops chunks when isActive=false,
@@ -1472,7 +1753,10 @@ export class AppState {
           const micRate = this.microphoneCapture?.getOutputSampleRate() || 16000;
           console.log(`[Main][debug] Audio pipeline: input=${requestedInput} output=${requestedOutput} backend=${backend} sysRate=${sysRate}Hz micRate=${micRate}Hz`);
         }
+        // Field telemetry for the echo pipeline (ERLE, gate state, mute ratio).
+        this._startPipelineStatsPolling();
         console.log('[Main] Audio pipeline started successfully.');
+
       } catch (err) {
         console.error('[Main] Error initializing audio pipeline:', err);
         // Notify UI so user knows microphone/audio failed to start
@@ -1481,7 +1765,7 @@ export class AppState {
     }, 0); // Defer to next event loop tick — ensures IPC response reaches renderer before audio init
   }
 
-  public async endMeeting(): Promise<void> {
+  public async endMeeting(meetingTypes?: ('discovery' | 'demo' | 'negotiation')[], tenantId?: string | null): Promise<string | null> {
     console.log('[Main] Ending Meeting...');
     this.isMeetingActive = false; // Block new data immediately
     this.isMeetingPaused = false; // Reset pause flag — clean slate for next meeting
@@ -1494,6 +1778,7 @@ export class AppState {
     }
 
     // Stop audio captures synchronously — these are fire-and-forget internally
+    this._stopPipelineStatsPolling();
     this.systemAudioCapture?.stop();
     this.googleSTT?.stop();
     this.microphoneCapture?.stop();
@@ -1504,7 +1789,18 @@ export class AppState {
     // Capture the meetingId NOW so the background IIFE uses a deterministic ID
     // rather than getRecentMeetings(1) which could return a different meeting if the
     // user starts a new session before background processing finishes.
-    const meetingId = await this.intelligenceManager.stopMeeting();
+    const meetingId = await this.intelligenceManager.stopMeeting(meetingTypes, tenantId);
+    // Tell the overlay window EXACTLY which meeting this call became — don't
+    // make it infer this from getRecentMeetings()[0]. That list is sorted by
+    // `date`, and MeetingPersistence rewrites `date` to "now" a SECOND time
+    // when a meeting's background processing finishes (which can complete
+    // well after a later call has already ended) — so an older meeting can
+    // briefly outrank the current one in "most recent" order. This broadcast
+    // is the one authoritative, race-free source for "which meeting did the
+    // call I just ended turn into".
+    if (meetingId) {
+      this.broadcast('live-call-ended', { meetingId });
+    }
     // If an analysis call is currently in-flight, record the meetingId so
     // setCurrentLiveAnalysis() can patch the DB when the result arrives.
     if (this._liveAnalysisInFlight) {
@@ -1564,6 +1860,12 @@ export class AppState {
       }
     }
     // ─────────────────────────────────────────────────────────────────────────
+
+    // Renderer needs this to call the FastAPI /meetings/:id/chunking endpoint
+    // once the meeting is over (electron does its own local RAG chunking above
+    // via processCompletedMeetingForRAG — this is a separate, backend-side ingest).
+    return meetingId;
+
   }
 
   /**
@@ -1837,14 +2139,6 @@ export class AppState {
 
   public getCurrentLiveAnalysis(): LiveAnalysisData | null {
     return this._currentLiveAnalysis;
-  }
-
-  public setLiveAnalysisInFlight(inFlight: boolean): void {
-    this._liveAnalysisInFlight = inFlight;
-  }
-
-  public getLiveAnalysisInFlight(): boolean {
-    return this._liveAnalysisInFlight;
   }
 
   public setCurrentLiveAnalysis(data: LiveAnalysisData | null): void {
@@ -2888,6 +3182,50 @@ async function initializeApp() {
     return;
   }
 
+  // Windows/Linux deliver the deep link as an argv entry to the already-
+  // running instance via 'second-instance' (macOS uses 'open-url' above).
+  // This also covers the ordinary "user double-clicked the app again while
+  // it's already open" case, so we still focus/restore the window even
+  // when no deep link is present.
+  app.on('second-instance', (_event, argv) => {
+    const deepLinkArg = argv.find(
+      (a) => a.startsWith(`${INVITE_PROTOCOL}://`) || a.includes('/invite?token=')
+    );
+    if (deepLinkArg) {
+      handleInviteDeepLink(deepLinkArg);
+    } else {
+      const appState = AppState.getInstance();
+      const win = appState.getMainWindow();
+      if (win) {
+        if (!appState.isVisible()) appState.toggleMainWindow();
+        win.focus();
+      }
+    }
+  });
+
+  // Register this app as the OS handler for godojo:// links.
+  if (process.defaultApp) {
+    if (process.argv.length >= 2) {
+      app.setAsDefaultProtocolClient(INVITE_PROTOCOL, process.execPath, [
+        path.resolve(process.argv[1]),
+      ]);
+    }
+  } else {
+    app.setAsDefaultProtocolClient(INVITE_PROTOCOL);
+  }
+
+  // Cold start on Windows/Linux: the OS launches a fresh process with the
+  // deep link URL as an argv entry instead of firing 'second-instance'.
+  // macOS cold starts are handled by the 'open-url' listener registered at
+  // module load time above.
+  const coldStartDeepLinkArg = process.argv.find(
+    (a) => a.startsWith(`${INVITE_PROTOCOL}://`) || a.includes('/invite?token=')
+  );
+  if (coldStartDeepLinkArg) {
+    const token = extractInviteToken(coldStartDeepLinkArg);
+    if (token) pendingInviteToken = token;
+  }
+
   // 2. Wait for app to be ready
   await app.whenReady()
 
@@ -3040,7 +3378,21 @@ async function initializeApp() {
 
   console.log("App is ready")
 
+  await initRendererUrl()
+
   appState.createWindow()
+
+  // If a deep link arrived before the window existed (cold start), deliver
+  // it now that the renderer is up and listening.
+  const mainWindowForDeepLink = appState.getMainWindow();
+  if (mainWindowForDeepLink) {
+    mainWindowForDeepLink.webContents.once('did-finish-load', () => {
+      if (pendingInviteToken) {
+        mainWindowForDeepLink.webContents.send('invite-deep-link', { token: pendingInviteToken });
+        pendingInviteToken = null;
+      }
+    });
+  }
 
   // Apply initial stealth state based on isUndetectable setting.
   // NOTE: app.dock.hide() was already called pre-emptively before createWindow()
