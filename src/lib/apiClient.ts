@@ -12,15 +12,11 @@
 // is read directly here — no IPC round-trip. `apiFetch` keeps its fetch-era
 // signature so existing callers (meetingsApi, App.tsx) are unchanged.
 
-import axios, {
-  AxiosError,
-  AxiosResponse,
-  InternalAxiosRequestConfig,
-} from "axios";
+import axios, { AxiosError, AxiosResponse } from "axios";
 import { getFirebaseAuth } from "./firebase";
+import { RetryConfig } from "@/types";
 
-const BASE =
-  (import.meta.env.VITE_API_BASE_URL as string | undefined) ?? "http://127.0.0.1:8000";
+const BASE = (import.meta.env.VITE_API_BASE_URL as string | undefined) ?? "http://127.0.0.1:8000";
 
 /** `${BASE}/api/v1` — exported so callers building raw `fetch` requests
  * (streaming endpoints, which can't go through the axios instance below)
@@ -29,12 +25,7 @@ export const API_BASE = `${BASE}/api/v1`;
 
 /** Typed error carrying the backend envelope's code + optional details. */
 export class ApiError extends Error {
-  constructor(
-    public status: number,
-    public code: string,
-    message: string,
-    public details?: unknown,
-  ) {
+  constructor(public status: number, public code: string, message: string, public details?: unknown) {
     super(message);
     this.name = "ApiError";
   }
@@ -82,7 +73,6 @@ export async function getAuthHeaders(): Promise<Record<string, string>> {
 
 // Per-request config flag: set once a 401 has triggered a force-refresh retry,
 // so the request interceptor force-refreshes the token and we never loop.
-type RetryConfig = InternalAxiosRequestConfig & { _retry?: boolean };
 
 const http = axios.create({
   baseURL: `${BASE}/api/v1`,

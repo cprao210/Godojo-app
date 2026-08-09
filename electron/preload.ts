@@ -1,5 +1,5 @@
 import { contextBridge, ipcRenderer } from "electron"
-import { LiveAnalysisData } from "../src/types/liveAnalysis"
+import { LiveAnalysisData } from "../src/types"
 import { CalendarEvent } from "services/CalendarManager"
 
 // Types for the exposed Electron API
@@ -567,6 +567,20 @@ contextBridge.exposeInMainWorld("electronAPI", {
     ipcRenderer.on('meeting-state-changed', subscription);
     return () => { ipcRenderer.removeListener('meeting-state-changed', subscription); };
   },
+  // Fired once, exactly when endMeeting() resolves the real meetingId for
+  // the call that just ended — race-free alternative to inferring "the
+  // current meeting" from getRecentMeetings()[0] (see main.ts#endMeeting).
+  onLiveCallEnded: (callback: (data: { meetingId: string }) => void) => {
+    const subscription = (_: any, data: { meetingId: string }) => callback(data);
+    ipcRenderer.on('live-call-ended', subscription);
+    return () => { ipcRenderer.removeListener('live-call-ended', subscription); };
+  },
+  savePendingLiveChatInteractions: (meetingId: string, interactionIds: number[]) =>
+    ipcRenderer.invoke('live-chat:save-pending-interactions', meetingId, interactionIds),
+  getPendingLiveChatInteractions: (meetingId: string): Promise<number[]> =>
+    ipcRenderer.invoke('live-chat:get-pending-interactions', meetingId),
+  clearPendingLiveChatInteractions: (meetingId: string) =>
+    ipcRenderer.invoke('live-chat:clear-pending-interactions', meetingId),
   getMeetingPaused: () => ipcRenderer.invoke("get-meeting-paused"),
   pauseMeeting: () => ipcRenderer.invoke("pause-meeting"),
   resumeMeeting: () => ipcRenderer.invoke("resume-meeting"),

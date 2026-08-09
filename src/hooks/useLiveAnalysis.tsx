@@ -1,6 +1,6 @@
 import { useState, useCallback, useRef, useEffect } from 'react';
-import { LiveAnalysisData, LiveAnalysisTurn, MeetingType } from '../types/liveAnalysis';
-import { intelligenceApi } from '../lib/intelligenceApi';
+import { LiveAnalysisData, LiveAnalysisTurn, MeetingType } from '@/types';
+import { intelligenceApi } from '@/api/intelligenceApi';
 
 // ─── Prompt builders ─────────────────────────────────────────────────────────
 //
@@ -372,10 +372,7 @@ const getFirstRunPrompt = (fullProspectContext: string): string =>
 `;
 
 // ── PROMPT 2: Refresh run — prior state + new prospect delta only ─────────────
-const getRefreshPrompt = (
-  priorState: LiveAnalysisData,
-  newProspectDelta: string
-): string =>
+const getRefreshPrompt = (priorState: LiveAnalysisData, newProspectDelta: string): string =>
   `You are an expert real-time sales intelligence engine updating a live analysis mid-call. Return ONLY valid JSON. No explanation, no markdown, no text outside the JSON object.
 
     ═══════════════════════════════════════
@@ -488,9 +485,9 @@ const isSimilar = (a: string, b: string): boolean => {
 const STATUS_RANK: Record<string, number> = { missing: 0, partial: 1, confirmed: 2 };
 
 const guardBANTField = (
-  incoming: import('../types/liveAnalysis').BANTField,
-  prior: import('../types/liveAnalysis').BANTField
-): import('../types/liveAnalysis').BANTField => {
+  incoming: import('@/types').BANTField,
+  prior: import('@/types').BANTField
+): import('@/types').BANTField => {
   const incomingRank = STATUS_RANK[incoming.status] ?? 0;
   const priorRank = STATUS_RANK[prior.status] ?? 0;
   // If the new result regressed (e.g. confirmed → missing), restore prior
@@ -499,9 +496,9 @@ const guardBANTField = (
 };
 
 const guardMEDDICField = (
-  incoming: import('../types/liveAnalysis').MEDDICField,
-  prior: import('../types/liveAnalysis').MEDDICField
-): import('../types/liveAnalysis').MEDDICField => {
+  incoming: import('@/types').MEDDICField,
+  prior: import('@/types').MEDDICField
+): import('@/types').MEDDICField => {
   const incomingRank = STATUS_RANK[incoming.status] ?? 0;
   const priorRank = STATUS_RANK[prior.status] ?? 0;
   if (incomingRank < priorRank) return prior;

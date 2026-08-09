@@ -2,12 +2,8 @@
 // Generates the LLM prompt for multi-type meeting scorecard analysis.
 // Called from MeetingPersistence.ts after transcript is available.
 
-import {
-    MeetingType,
-    CategoryConfig,
-    ScoringCriteriaSettings,
-    resolveEffectiveScorecardConfig,
-} from '../../src/types/score-card';
+import { MeetingType, CategoryConfig, ScoringCriteriaSettings } from '../../src/types';
+import { resolveEffectiveScorecardConfig } from "../../src/lib/utils"
 
 function buildCategoryBlock(cat: CategoryConfig): string {
     return `    "${cat.key}": {
@@ -25,7 +21,7 @@ function buildCategoryBlock(cat: CategoryConfig): string {
 function buildScorecardBlock(type: MeetingType, customSettings: ScoringCriteriaSettings | null): string {
     const cfg = resolveEffectiveScorecardConfig(type, customSettings);
     if (!cfg) return '';
-    const catKeys = cfg.categories.map(c => buildCategoryBlock(c)).join(',\n');
+    const catKeys = cfg.categories.map((c: any) => buildCategoryBlock(c)).join(',\n');
     return `  "${type}": {
     "meetingType": "${type}",
     "overallScore": <0–100 weighted>,
@@ -49,7 +45,7 @@ export function buildScorecardPrompt(
 
     const categoryDocs = (['discovery', 'demo', 'negotiation'] as MeetingType[]).map(type => {
         const cfg = resolveEffectiveScorecardConfig(type, customSettings);
-        const cats = cfg.categories.map(c => {
+        const cats = cfg.categories.map((c: any) => {
             const checkpointLine = c.checkpoints.length
                 ? `Checkpoints: ${c.checkpoints.join(', ')}`
                 : 'No specific checkpoints defined — use judgment.';
@@ -94,8 +90,10 @@ export function buildScorecardPrompt(
         - Before assigning any score above 0 for a checkpoint, you must be able to cite a CLIENT quote (not just a REP question) that substantively satisfies it. If the only relevant line is the rep asking or a client deflection/non-answer, score that checkpoint 0.
         - overallScore = weighted average of category scores (score/maxScore * weight), summed
         - Keep coaching recommendations specific and actionable (not generic)
-        - confidenceScore: 90–100 = very clear, 70–89 = likely, 50–69 = some evidence, <50 = skip this type
-        - Omit any meeting type with confidenceScore < 50
+        ${hintMeetingTypes && hintMeetingTypes.length > 0
+            ? `- The user pre-selected the meeting type(s) for this call — every one of them MUST appear in "detectedTypes" and have a corresponding entry in "scorecards", with confidenceScore fixed at 95, even if transcript evidence is thin. Weak evidence should pull individual category/checkpoint scores toward 0, NOT cause the whole type to be omitted. Do not apply the confidenceScore<50 omission rule below to a pre-selected type — that rule only applies to types you detect yourself beyond the pre-selected list.`
+            : `- confidenceScore: 90–100 = very clear, 70–89 = likely, 50–69 = some evidence, <50 = skip this type
+        - Omit any meeting type with confidenceScore < 50`}
         - Prefix every transcriptEvidence entry with the speaker role: "REP: <quote>" for the sales rep, "CLIENT: <quote>" for the prospect/client
 
         OUTPUT FORMAT:

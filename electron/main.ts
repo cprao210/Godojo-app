@@ -242,7 +242,7 @@ import { SettingsManager } from "./services/SettingsManager"
 import { setVerboseLoggingFlag } from "./verboseLog"
 import { ReleaseNotesManager } from "./update/ReleaseNotesManager"
 import { OllamaManager } from './services/OllamaManager'
-import { LiveAnalysisData } from "../src/types/liveAnalysis";
+import { LiveAnalysisData } from "../src/types";
 
 export class AppState {
   private static instance: AppState | null = null
@@ -561,7 +561,7 @@ export class AppState {
             const cm = CredentialsManager.getInstance();
             this.ragManager.initializeEmbeddings({
               openaiKey: cm.getOpenaiApiKey() || process.env.OPENAI_API_KEY || undefined,
-              geminiKey: cm.getGeminiApiKey() || process.env.GOOGLE_API_KEY || process.env.GEMINI_API_KEY || undefined,
+              geminiKey: cm.getGeminiApiKey() || process.env.GOOGLE_API_KEY || undefined,
               ollamaUrl: process.env.OLLAMA_URL || "http://localhost:11434"
             });
           }
@@ -581,7 +581,7 @@ export class AppState {
         const { CredentialsManager } = require('./services/CredentialsManager');
         const cm = CredentialsManager.getInstance();
         const openaiKey = cm.getOpenaiApiKey() || process.env.OPENAI_API_KEY;
-        const geminiKey = cm.getGeminiApiKey() || process.env.GOOGLE_API_KEY || process.env.GEMINI_API_KEY;
+        const geminiKey = cm.getGeminiApiKey() || process.env.GOOGLE_API_KEY;
 
         this.ragManager = new RAGManager({
           db: sqliteDb,
@@ -1615,7 +1615,6 @@ export class AppState {
     }
 
     this.isMeetingActive = true;
-
     this._pendingLiveAnalysisMeetingId = null;
     this._liveAnalysisInFlight = false;
     this._clientSpeakerIndicesSeen.clear();
@@ -1753,6 +1752,7 @@ export class AppState {
         // Field telemetry for the echo pipeline (ERLE, gate state, mute ratio).
         this._startPipelineStatsPolling();
         console.log('[Main] Audio pipeline started successfully.');
+
       } catch (err) {
         console.error('[Main] Error initializing audio pipeline:', err);
         // Notify UI so user knows microphone/audio failed to start
@@ -1786,6 +1786,17 @@ export class AppState {
     // rather than getRecentMeetings(1) which could return a different meeting if the
     // user starts a new session before background processing finishes.
     const meetingId = await this.intelligenceManager.stopMeeting(meetingTypes, tenantId);
+    // Tell the overlay window EXACTLY which meeting this call became — don't
+    // make it infer this from getRecentMeetings()[0]. That list is sorted by
+    // `date`, and MeetingPersistence rewrites `date` to "now" a SECOND time
+    // when a meeting's background processing finishes (which can complete
+    // well after a later call has already ended) — so an older meeting can
+    // briefly outrank the current one in "most recent" order. This broadcast
+    // is the one authoritative, race-free source for "which meeting did the
+    // call I just ended turn into".
+    if (meetingId) {
+      this.broadcast('live-call-ended', { meetingId });
+    }
     // If an analysis call is currently in-flight, record the meetingId so
     // setCurrentLiveAnalysis() can patch the DB when the result arrives.
     if (this._liveAnalysisInFlight) {

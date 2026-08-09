@@ -13,12 +13,13 @@ import { searchCompany, clearCompanyCache } from "./services/TavilyManager";
 
 import { buildCompanyContextBlock } from './utils/salesBriefUtils';
 import { RECOGNITION_LANGUAGES, AI_RESPONSE_LANGUAGES } from "./config/languages"
-import { LiveAnalysisData } from "../src/types/liveAnalysis";
+import { LiveAnalysisData } from "../src/types";
 import {
   buildOwnCompanyBlockFromOrchestrator,
   hydrateOrchestratorFromContext,
 } from './utils/companyKnowledge';
 import { AuthManager } from './services/AuthManager';
+import { PendingLiveChatStore } from './PendingLiveChatStore';
 
 function getAuthToken(): string | null {
   return AuthManager.getInstance().getIdToken();
@@ -1721,6 +1722,38 @@ export function initializeIpcHandlers(appState: AppState): void {
       return { success: true, meetingId };
     } catch (error: any) {
       console.error("Error ending meeting:", error);
+      return { success: false, error: error.message };
+    }
+  });
+
+  // ==========================================
+  // Pending Live-Chat Interaction Ids
+  // ==========================================
+  safeHandle("live-chat:save-pending-interactions", async (_, meetingId: string, interactionIds: number[]) => {
+    try {
+      PendingLiveChatStore.getInstance().save(meetingId, interactionIds);
+      return { success: true };
+    } catch (error: any) {
+      console.error("Error saving pending live chat interactions:", error);
+      return { success: false, error: error.message };
+    }
+  });
+
+  safeHandle("live-chat:get-pending-interactions", async (_, meetingId: string) => {
+    try {
+      return PendingLiveChatStore.getInstance().getPending(meetingId);
+    } catch (error: any) {
+      console.error("Error reading pending live chat interactions:", error);
+      return [];
+    }
+  });
+
+  safeHandle("live-chat:clear-pending-interactions", async (_, meetingId: string) => {
+    try {
+      PendingLiveChatStore.getInstance().clearPending(meetingId);
+      return { success: true };
+    } catch (error: any) {
+      console.error("Error clearing pending live chat interactions:", error);
       return { success: false, error: error.message };
     }
   });

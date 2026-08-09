@@ -1,11 +1,15 @@
 {
   "compilerOptions": {
     "target": "ESNext",
-    "lib": ["DOM", "DOM.Iterable", "ESNext"], // Browser APIs
-    "module": "ESNext", // For Vite/Modern browsers
-    "moduleResolution": "bundler", // For Vite
-    "jsx": "react-jsx", // React specific
-    "noEmit": true, // Vite handles the building
+    "lib": [
+      "DOM",
+      "DOM.Iterable",
+      "ESNext"
+    ],
+    "module": "ESNext",
+    "moduleResolution": "bundler",
+    "jsx": "react-jsx",
+    "noEmit": true,
     "allowImportingTsExtensions": true,
     "resolveJsonModule": true,
     "isolatedModules": true,
@@ -13,8 +17,55 @@
     "noUnusedLocals": false,
     "noUnusedParameters": true,
     "noFallthroughCasesInSwitch": true,
-    "skipLibCheck": true
+    "skipLibCheck": true,
+    "baseUrl": ".",
+    "paths": {
+      "@/*": [
+        "src/*"
+      ],
+      "@/app/*": [
+        "src/app/*"
+      ],
+      "@/pages/*": [
+        "src/pages/*"
+      ],
+      "@/features/*": [
+        "src/features/*"
+      ],
+      "@/components/*": [
+        "src/components/*"
+      ],
+      "@/lib/*": [
+        "src/lib/*"
+      ],
+      "@/hooks/*": [
+        "src/hooks/*"
+      ],
+      "@/types": [
+        "src/types/index.tsx"
+      ],
+      "@/types/*": [
+        "src/types/*"
+      ],
+      "@/utils/*": [
+        "src/utils/*"
+      ],
+      "@/config/*": [
+        "src/config/*"
+      ],
+      "@/assets/*": [
+        "src/assets/*"
+      ]
+    }
   },
-  "include": ["src", "premium/src"], // React source files and optional premium components
-  "references": [{ "path": "./tsconfig.node.json" }]
+  "include": [
+    "src",
+    "premium/src",
+    "utils/pdfGenerator.ts"
+  ],
+  "references": [
+    {
+      "path": "./tsconfig.node.json"
+    }
+  ]
 }

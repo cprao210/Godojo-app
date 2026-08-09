@@ -6,11 +6,10 @@ import { SessionTracker, TranscriptSegment } from './SessionTracker';
 import { LLMHelper } from './LLMHelper';
 import { DatabaseManager, Meeting, formatDuration } from './db/DatabaseManager';
 import { GROQ_TITLE_PROMPT, GROQ_SUMMARY_JSON_PROMPT } from './llm';
-import { LiveAnalysisData } from '../src/types/liveAnalysis';
+import { LiveAnalysisData, MeetingScorecardResult } from '../src/types';
 import { AppState } from './main';
 import { buildCompanyContextBlock } from '../electron/utils/salesBriefUtils';
 import { buildScorecardPrompt } from './llm/ScoreCardLLM';
-import { MeetingScorecardResult } from '../src/types/score-card';
 const crypto = require('crypto');
 
 const buildSummaryPrompt = (liveAnalysis?: LiveAnalysisData | null, companyIntel?: Record<string, any> | null): string => {
@@ -591,7 +590,7 @@ export class MeetingPersistence {
         transcriptText: string,
         hintTypes: ('discovery' | 'demo' | 'negotiation')[] | null
     ): Promise<{ scorecardResult: MeetingScorecardResult | null; persisted: boolean }> {
-        let customScoringCriteria: import('../src/types/score-card').ScoringCriteriaSettings | null = null;
+        let customScoringCriteria: import('../src/types').ScoringCriteriaSettings | null = null;
         try {
             customScoringCriteria = DatabaseManager.getInstance().getScoringCriteria();
         } catch (criteriaErr) {
