@@ -18,6 +18,8 @@ vi.mock('@/lib/apiClient', async () => {
 import { chatApi, statusLabel } from '@/api';
 import { getAuthHeaders, apiFetch } from '@/lib/apiClient';
 
+const MAX_STREAM_RETRIES = 3;
+
 const mockedGetAuthHeaders = vi.mocked(getAuthHeaders);
 const mockedApiFetch = vi.mocked(apiFetch);
 
@@ -142,13 +144,19 @@ describe('chatApi.queryGlobal', () => {
     });
 
     it('calls onError with the backend error envelope message on a non-ok response', async () => {
-        fetchMock.mockResolvedValueOnce(errorResponse(500, 'internal_error', 'Something broke'));
+        // A 500 is retried by chatApi (up to MAX_STREAM_RETRIES) before giving
+        // up — mock every attempt with the same error response so the retry
+        // loop doesn't exhaust the queued mock and fall through to an
+        // unrelated TypeError (res.ok on an undefined response) that masks
+        // the real assertion.
+        fetchMock.mockResolvedValue(errorResponse(500, 'internal_error', 'Something broke'))
         const result = collectHandlers();
 
         chatApi.queryGlobal('hi', result.handlers);
         await result.settled;
 
         expect(result.error).toBe('Something broke');
+        expect(fetchMock).toHaveBeenCalledTimes(MAX_STREAM_RETRIES + 1);
     });
 
     it('calls onError with a generic message on a network failure', async () => {
