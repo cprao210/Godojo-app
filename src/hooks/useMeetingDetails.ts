@@ -16,7 +16,7 @@
  */
 import { useEffect, useMemo, useState } from 'react';
 import { useQuery, useMutation, useQueryClient } from 'react-query';
-import { meetingsApi } from '@/api';
+import { meetingsApi, chatApi } from '@/api';
 import { guardSession } from '@/lib/firebase';
 import type { Meeting, MeetingTranscriptLine, MeetingScorecardResult } from '@/types';
 
@@ -84,11 +84,37 @@ export function useMeetingDetails(initialMeeting: Meeting) {
 
     // Full detail (transcript + usage) loads over HTTP; the list row seeds initialData so
     // the view renders instantly, then reconciles with the backend.
-    const { data: meetingData = initialMeeting, isLoading: isLoadingMeetingDetail } = useQuery<Meeting>(
+    const { data: meetingData = initialMeeting, isLoading: isLoadingMeetingDetail, dataUpdatedAt } = useQuery<Meeting>(
         meetingKey,
         () => meetingsApi.get(initialMeeting.id),
         { initialData: initialMeeting, enabled: !isProcessing },
     );
+
+    // /chat/live interaction_ids collected during the live call can't be
+    // linked to a meeting until the backend actually has that meeting row —
+    // useFloatingDock.ts only persists them locally at call-end (see
+    // PendingLiveChatStore.ts). `meetingData` is seeded via `initialData`
+    // above and stays truthy even before a real network fetch resolves, so
+    // gate on `dataUpdatedAt > 0` — react-query only sets that after an
+    // actual completed query, which IS the confirmation the backend has
+    // synced this meeting.
+    useEffect(() => {
+        if (isProcessing || dataUpdatedAt === 0 || meetingData.id !== initialMeeting.id) return;
+
+        (async () => {
+            const pendingIds = await window.electronAPI?.getPendingLiveChatInteractions?.(initialMeeting.id);
+            if (!pendingIds || pendingIds.length === 0) return;
+
+            try {
+                await chatApi.linkMeetingInteractions(initialMeeting.id, pendingIds);
+                await window.electronAPI?.clearPendingLiveChatInteractions?.(initialMeeting.id);
+            } catch (err) {
+                // Leave them in the pending store on failure — this effect will
+                // just retry next time the meeting is opened.
+                console.error('[useMeetingDetails] failed to link pending live chat interactions', err);
+            }
+        })();
+    }, [isProcessing, dataUpdatedAt, meetingData.id, initialMeeting.id]);
 
     // The HTTP transcript depends on the Supabase mirror having already synced this
     // meeting's transcript rows — fire-and-forget, and can lag behind (or, for some

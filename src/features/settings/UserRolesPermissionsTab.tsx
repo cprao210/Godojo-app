@@ -21,11 +21,11 @@
 
 import React from 'react';
 import { Users, Plus } from 'lucide-react';
-import { useResolvedTheme, useUserRolesPermissionsTab } from '@/hooks';
+import { useResolvedTheme, useUserRolesPermissionsTab, TABLE_GRID_COLS } from '@/hooks';
 import { UserRolesPermissionsTabProps } from '@/types';
 import { InvitationResponseModal } from '@/features/settings';
 import CreateTeamModal from './CreateTeamModal';
-import MembersTable from './MembersTable';
+import MembersTable, { MembersTableSkeleton } from './MembersTable';
 
 // ─── Main Tab ───────────────────────────────────────────────────────────────
 export const UserRolesPermissionsTab: React.FC<UserRolesPermissionsTabProps> = ({ deepLinkInviteToken = null, onDeepLinkTokenConsumed }) => {
@@ -65,8 +65,20 @@ export const UserRolesPermissionsTab: React.FC<UserRolesPermissionsTabProps> = (
             )}
 
             {isLoadingTenant ? (
-                <div className={`rounded-2xl border px-8 py-16 text-center ${cardCls}`}>
-                    <p className="text-sm text-text-secondary">Loading your team…</p>
+                <div className={`rounded-2xl border overflow-hidden ${cardCls}`}>
+                    <div className="flex items-center justify-between px-6 py-5 border-b border-border-subtle flex-wrap gap-3">
+                        <div className="space-y-2">
+                            <div className={`h-4 w-32 rounded-full animate-pulse ${isLight ? 'bg-slate-200' : 'bg-white/10'}`} />
+                            <div className={`h-3 w-56 rounded-full animate-pulse ${isLight ? 'bg-slate-200' : 'bg-white/10'}`} />
+                        </div>
+                        <div className={`h-9 w-28 rounded-lg animate-pulse ${isLight ? 'bg-slate-200' : 'bg-white/10'}`} />
+                    </div>
+                    <div className={`grid ${TABLE_GRID_COLS} gap-4 px-6 py-3 border-b border-border-subtle ${isLight ? 'bg-slate-50/60' : 'bg-white/[0.02]'}`}>
+                        {['Email', 'Role', 'Status', ''].map((_, i) => (
+                            <div key={i} className={`h-3 w-12 rounded-full animate-pulse ${isLight ? 'bg-slate-200' : 'bg-white/10'}`} />
+                        ))}
+                    </div>
+                    <MembersTableSkeleton isLight={isLight} rows={4} />
                 </div>
             ) : loadError ? (
                 <div className={`rounded-2xl border px-8 py-16 text-center ${cardCls}`}>

@@ -267,7 +267,6 @@ export class AppState {
   // need to know which meetingId to patch. This is set by endMeeting() and cleared
   // after the late-arriving result is saved.
   private _pendingLiveAnalysisMeetingId: string | null = null;
-  private _currentMeetingId: string | null = null;
   private _liveAnalysisInFlight: boolean = false;
   private speakerNameMap: { user: string, client: string };
 
@@ -1606,7 +1605,7 @@ export class AppState {
   }
 
 
-  public async startMeeting(metadata?: any): Promise<string> {
+  public async startMeeting(metadata?: any): Promise<void> {
     console.log('[Main] Starting Meeting...', metadata);
 
     if (!(await ensureMacMicrophoneAccess('meeting start'))) {
@@ -1616,12 +1615,6 @@ export class AppState {
     }
 
     this.isMeetingActive = true;
-
-    // Generate the meeting id NOW instead of at endMeeting() — this is the
-    // single source of truth used for the live /chat/live calls AND the
-    // final persisted row, so there's no mismatch between the two.
-    this._currentMeetingId = crypto.randomUUID();
-
     this._pendingLiveAnalysisMeetingId = null;
     this._liveAnalysisInFlight = false;
     this._clientSpeakerIndicesSeen.clear();
@@ -1635,12 +1628,6 @@ export class AppState {
     if (metadata) {
       this.intelligenceManager.setMeetingMetadata(metadata);
     }
-
-    // The overlay window is a SEPARATE renderer from the launcher window that
-    // called startMeeting() — it can't receive the id via a React prop/return
-    // value, only via IPC. Broadcast it now so FloatingChatPanel etc. can pick
-    // it up as soon as the overlay mounts.
-    this.broadcast('meeting-id-assigned', { meetingId: this._currentMeetingId });
 
     // Read back the names that SessionTracker just resolved and broadcast to renderer.
     // This runs unconditionally so the renderer always gets an update at meeting start,
@@ -1772,8 +1759,6 @@ export class AppState {
         this.broadcast('meeting-audio-error', (err as Error).message || 'Audio pipeline failed to start');
       }
     }, 0); // Defer to next event loop tick — ensures IPC response reaches renderer before audio init
-
-    return this._currentMeetingId;
   }
 
   public async endMeeting(meetingTypes?: ('discovery' | 'demo' | 'negotiation')[], tenantId?: string | null): Promise<string | null> {
@@ -1800,8 +1785,18 @@ export class AppState {
     // Capture the meetingId NOW so the background IIFE uses a deterministic ID
     // rather than getRecentMeetings(1) which could return a different meeting if the
     // user starts a new session before background processing finishes.
-    const meetingId = await this.intelligenceManager.stopMeeting(meetingTypes, tenantId, this._currentMeetingId);
-    this._currentMeetingId = null;
+    const meetingId = await this.intelligenceManager.stopMeeting(meetingTypes, tenantId);
+    // Tell the overlay window EXACTLY which meeting this call became — don't
+    // make it infer this from getRecentMeetings()[0]. That list is sorted by
+    // `date`, and MeetingPersistence rewrites `date` to "now" a SECOND time
+    // when a meeting's background processing finishes (which can complete
+    // well after a later call has already ended) — so an older meeting can
+    // briefly outrank the current one in "most recent" order. This broadcast
+    // is the one authoritative, race-free source for "which meeting did the
+    // call I just ended turn into".
+    if (meetingId) {
+      this.broadcast('live-call-ended', { meetingId });
+    }
     // If an analysis call is currently in-flight, record the meetingId so
     // setCurrentLiveAnalysis() can patch the DB when the result arrives.
     if (this._liveAnalysisInFlight) {

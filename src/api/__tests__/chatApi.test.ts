@@ -2,19 +2,24 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 
 // chatApi talks to the backend via raw `fetch` (for streaming), not apiFetch —
 // mock the pieces of apiClient it actually uses.
+// chatApi talks to the backend via raw `fetch` (for streaming) for the SSE
+// endpoints, but linkMeetingInteractions is a plain POST via apiFetch — mock
+// both surfaces.
 vi.mock('@/lib/apiClient', async () => {
     const actual = await vi.importActual<typeof import('@/lib/apiClient')>('@/lib/apiClient');
     return {
         ...actual,
         API_BASE: 'http://test-api/api/v1',
         getAuthHeaders: vi.fn().mockResolvedValue({ Authorization: 'Bearer test-token' }),
+        apiFetch: vi.fn().mockResolvedValue(undefined),
     };
 });
 
 import { chatApi, statusLabel } from '@/api';
-import { getAuthHeaders } from '@/lib/apiClient';
+import { getAuthHeaders, apiFetch } from '@/lib/apiClient';
 
 const mockedGetAuthHeaders = vi.mocked(getAuthHeaders);
+const mockedApiFetch = vi.mocked(apiFetch);
 
 /** Builds a fetch-compatible Response whose body streams the given SSE frames,
  * each already formatted as `event: ...\ndata: ...`. Frames are joined with a
@@ -208,17 +213,44 @@ describe('chatApi.queryLive', () => {
         vi.stubGlobal('fetch', fetchMock);
     });
 
-    it('POSTs the meeting_id, query, history, and transcript to /chat/live', async () => {
+    it('POSTs the query, history, and transcript to /chat/live', async () => {
         fetchMock.mockResolvedValueOnce(sseResponse(['event: done\ndata: {}']));
         const { handlers, settled } = collectHandlers();
         const history = [{ role: 'user', content: 'earlier question' }] as any;
         const transcript = [{ speaker: 'user', text: 'live line' }] as any;
 
-        chatApi.queryLive('meeting-123', 'follow up', history, transcript, handlers);
+        chatApi.queryLive('follow up', history, transcript, handlers);
         await settled;
 
         const [url, init] = fetchMock.mock.calls[0];
         expect(url).toBe('http://test-api/api/v1/chat/live');
-        expect(JSON.parse(init.body)).toEqual({ meeting_id: 'meeting-123', query: 'follow up', history, transcript });
+        expect(JSON.parse(init.body)).toEqual({ query: 'follow up', history, transcript });
+    });
+
+    it('fires onInteractionId for an interaction_id frame', async () => {
+        fetchMock.mockResolvedValueOnce(sseResponse([
+            'event: interaction_id\ndata: {"interaction_id": 441}',
+            'event: done\ndata: {}',
+        ]));
+        const { handlers, settled } = collectHandlers();
+        const onInteractionId = vi.fn();
+
+        chatApi.queryLive('follow up', [], [], { ...handlers, onInteractionId });
+        await settled;
+
+        expect(onInteractionId).toHaveBeenCalledWith(441);
+    });
+});
+
+describe('chatApi.linkMeetingInteractions', () => {
+    beforeEach(() => mockedApiFetch.mockClear());
+
+    it('POSTs collected interaction_ids with the final meeting_id to /live/link-meeting', async () => {
+        await chatApi.linkMeetingInteractions('meeting-123', [423, 434]);
+
+        expect(mockedApiFetch.mock.calls[0][0]).toBe('/live/link-meeting');
+        const init = mockedApiFetch.mock.calls[0][1] as RequestInit;
+        expect(init.method).toBe('POST');
+        expect(JSON.parse(init.body as string)).toEqual({ interaction_ids: [423, 434], meeting_id: 'meeting-123' });
     });
 });

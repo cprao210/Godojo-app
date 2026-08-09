@@ -37,7 +37,7 @@ const MemberRowSkeleton: React.FC<{ isLight: boolean; delayMs: number }> = ({ is
     </div>
 );
 
-const MembersTableSkeleton: React.FC<{ isLight: boolean; rows?: number }> = ({ isLight, rows = MEMBERS_PAGE_SIZE }) => (
+export const MembersTableSkeleton: React.FC<{ isLight: boolean; rows?: number }> = ({ isLight, rows = MEMBERS_PAGE_SIZE }) => (
     <div role="status" aria-label="Loading members">
         {Array.from({ length: rows }, (_, i) => (
             <MemberRowSkeleton key={i} isLight={isLight} delayMs={i * 60} />

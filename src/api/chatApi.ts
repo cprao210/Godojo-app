@@ -5,7 +5,7 @@
 // ReadableStream. Auth/tenant headers mirror apiClient's axios interceptor via
 // getAuthHeaders().
 
-import { getAuthHeaders, API_BASE, ApiError } from "@/lib/apiClient";
+import { getAuthHeaders, API_BASE, ApiError, apiFetch } from "@/lib/apiClient";
 import { ChatHistoryTurn, ChatStreamHandlers, LiveTranscriptSegment, RagAnswer, StreamHandle } from "@/types";
 
 /**
@@ -108,6 +108,11 @@ function dispatchFrame(frame: string, handlers: ChatStreamHandlers): void {
             handlers.onRagAnswer?.(parsed);
             break;
         }
+        case "interaction_id": {
+            const parsed = JSON.parse(data) as { interaction_id: number };
+            handlers.onInteractionId?.(parsed.interaction_id);
+            break;
+        }
         case "error": {
             const parsed = JSON.parse(data) as { error?: string };
             handlers.onError(parsed.error ?? "Something went wrong.");
@@ -151,11 +156,24 @@ export const chatApi = {
 
     /** In-call chat — FloatingChatPanel. Needs the live transcript + prior turns. */
     queryLive: (
-        meetingId: string,
         query: string,
         history: ChatHistoryTurn[],
         transcript: LiveTranscriptSegment[],
         handlers: ChatStreamHandlers,
     ): StreamHandle =>
-        streamSSE("/chat/live", { meeting_id: meetingId, query, history, transcript }, handlers),
+        streamSSE("/chat/live", { query, history, transcript }, handlers),
+
+    /**
+     * Called once, after the call ends, with every interaction_id collected
+     * from /chat/live responses during the call. The live endpoint has no
+     * real meeting id to attach to at query time (the meeting isn't
+     * persisted yet), so each turn is logged against just its interaction_id;
+     * this retroactively links that whole batch to the now-final meeting_id
+     * so meeting history / MeetingChatOverlay can retrieve them.
+     */
+    linkMeetingInteractions: (meetingId: string, interactionIds: number[]): Promise<void> =>
+        apiFetch<void>("/live/link-meeting", {
+            method: "POST",
+            body: JSON.stringify({ interaction_ids: interactionIds, meeting_id: meetingId }),
+        }),
 };

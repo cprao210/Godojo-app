@@ -42,7 +42,7 @@ export const FloatingDock: React.FC<FloatingDockProps> = ({
     const { activePanel, togglePanel, isFrozen, dockOpacity, handleDockOpacityChange, dockRef } = floatingDockStates;
     const { panelTopOffset, meetingTypes, setMeetingTypes, analysisData, analysisLoading, analysisError } = floatingDockStates;
     const { runAnalysis, isRefreshRun, chatMessages, setChatMessages, autoRefreshInterval, setAutoRefreshInterval } = floatingDockStates;
-    const { intelligencePanelFirstOpenedAt, noAnalysisCaptured, meetingId } = floatingDockStates;
+    const { intelligencePanelFirstOpenedAt, noAnalysisCaptured, handleInteractionId } = floatingDockStates;
 
     const panelSpring = { type: 'spring', damping: 28, stiffness: 380, mass: 0.8 } as const;
 
@@ -108,7 +108,7 @@ export const FloatingDock: React.FC<FloatingDockProps> = ({
                         transition={panelSpring}
                     >
                         <FloatingChatPanel
-                            meetingId={meetingId ?? ''}
+                            onInteractionId={handleInteractionId}
                             transcriptRef={transcriptRef}
                             isMeetingPaused={isMeetingPaused}
                             rollingTranscriptUser={rollingTranscriptUser}

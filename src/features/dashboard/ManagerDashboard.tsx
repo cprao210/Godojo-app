@@ -20,7 +20,7 @@
 
 import React from 'react';
 import { AnimatePresence, motion } from 'framer-motion';
-import { Users, Phone, Target, Calendar, ChevronDown, Trophy, AlertTriangle, X } from 'lucide-react';
+import { Users, Phone, Target, Calendar, ChevronDown, Trophy, AlertTriangle, X, FileIcon, FileText } from 'lucide-react';
 import { useResolvedTheme, useManagerDashboard, PERIOD_OPTIONS } from '@/hooks';
 import AeDetailView from './AEDetailView';
 import { ManagerDashboardProps } from '@/types';
@@ -301,7 +301,8 @@ export const ManagerDashboard: React.FC<ManagerDashboardProps> = ({ isOpen }) =>
                                             }`}
                                     >
                                         <p className="text-text-primary italic">"{q.quote}"</p>
-                                        <p className="text-xs text-text-tertiary mt-2">
+                                        <p className="text-xs text-text-tertiary mt-2 flex gap-1.5 items-center"><FileText size={12} /> {q.meeting_title}</p>
+                                        <p className="text-xs text-text-tertiary">
                                             {q.owner} · {q.status} ·{' '}
                                             {new Date(q.meeting_date).toLocaleDateString()}
                                         </p>

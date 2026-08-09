@@ -230,6 +230,11 @@ export interface ChatStreamHandlers {
    * "thinking" indicator. Raw status string is passed through; map it to a
    * label with `statusLabel()` below. */
   onStatus?: (status: string) => void;
+  /** Fired once per response, after the final token, with the backend's
+   * interaction_id for this turn. Only emitted on `/chat/live` — collect
+   * these across the call and POST them to `chatApi.linkMeetingInteractions`
+   * once the call ends and a real meeting_id exists. */
+  onInteractionId?: (interactionId: number) => void;
   /** Fired once the stream has fully closed (after the `done` frame). */
   onDone?: () => void;
   onError: (error: string) => void;
@@ -362,6 +367,8 @@ export interface DashboardObjectionQuote {
   owner: string;
   status: string;
   type: string;
+  meeting_title: string;
+  meeting_id: string;
   meeting_date: string;
 }
 
@@ -1512,7 +1519,6 @@ export interface FloatingChatPanelProps {
   rollingTranscriptUser: string;
   rollingTranscriptClient: string;
   isClientSpeaking: boolean;
-  meetingId: string;
   isUserSpeaking: boolean;
   showTranscript: boolean;
   currentModel: string;
@@ -1522,6 +1528,10 @@ export interface FloatingChatPanelProps {
   isMeetingPaused: boolean;
   messages: Message[];
   onMessagesChange: (updater: Message[] | ((prev: Message[]) => Message[])) => void;
+  /** Called with each turn's interaction_id as /chat/live responses complete.
+   * Collected by the parent (useFloatingDock) across the whole call and sent
+   * to chatApi.linkMeetingInteractions once the call ends. */
+  onInteractionId?: (interactionId: number) => void;
 }
 
 // --- src/features/floating-dock/panels/FloatingIntelligencePanel.tsx ---

@@ -19,6 +19,7 @@ import {
   hydrateOrchestratorFromContext,
 } from './utils/companyKnowledge';
 import { AuthManager } from './services/AuthManager';
+import { PendingLiveChatStore } from './PendingLiveChatStore';
 
 function getAuthToken(): string | null {
   return AuthManager.getInstance().getIdToken();
@@ -1701,14 +1702,14 @@ export function initializeIpcHandlers(appState: AppState): void {
 
   safeHandle("start-meeting", async (event, metadata?: any) => {
     try {
-      const meetingId = await appState.startMeeting(metadata);
+      await appState.startMeeting(metadata);
       if (metadata?.attendees) {
         const selfEmail = metadata.attendees.find((a: any) => a.self)?.email;
         _tavilyAllowedCompanies = extractAllowedCompaniesFromAttendees(metadata.attendees, selfEmail);
       } else {
         _tavilyAllowedCompanies = new Set();
       }
-      return { success: true, meetingId };
+      return { success: true };
     } catch (error: any) {
       console.error("Error starting meeting:", error);
       return { success: false, error: error.message };
@@ -1721,6 +1722,38 @@ export function initializeIpcHandlers(appState: AppState): void {
       return { success: true, meetingId };
     } catch (error: any) {
       console.error("Error ending meeting:", error);
+      return { success: false, error: error.message };
+    }
+  });
+
+  // ==========================================
+  // Pending Live-Chat Interaction Ids
+  // ==========================================
+  safeHandle("live-chat:save-pending-interactions", async (_, meetingId: string, interactionIds: number[]) => {
+    try {
+      PendingLiveChatStore.getInstance().save(meetingId, interactionIds);
+      return { success: true };
+    } catch (error: any) {
+      console.error("Error saving pending live chat interactions:", error);
+      return { success: false, error: error.message };
+    }
+  });
+
+  safeHandle("live-chat:get-pending-interactions", async (_, meetingId: string) => {
+    try {
+      return PendingLiveChatStore.getInstance().getPending(meetingId);
+    } catch (error: any) {
+      console.error("Error reading pending live chat interactions:", error);
+      return [];
+    }
+  });
+
+  safeHandle("live-chat:clear-pending-interactions", async (_, meetingId: string) => {
+    try {
+      PendingLiveChatStore.getInstance().clearPending(meetingId);
+      return { success: true };
+    } catch (error: any) {
+      console.error("Error clearing pending live chat interactions:", error);
       return { success: false, error: error.message };
     }
   });

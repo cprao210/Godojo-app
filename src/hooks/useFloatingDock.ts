@@ -138,18 +138,42 @@ export function useFloatingDock({ transcriptRef, isMeetingPaused, companyIntel }
     // ── Chat history — lifted so it survives panel switches ─────────────────
     const [chatMessages, setChatMessages] = useState<ChatMessage[]>([]);
 
-    // ── Live meeting id ───────────────────────────────────────────────────
-    // main.ts#startMeeting() generates the real meeting id up-front (not at
-    // endMeeting()) and broadcasts it via 'meeting-id-assigned' the moment
-    // the call starts — this window (the overlay) is a separate renderer
-    // from whichever window called startMeeting(), so IPC is how it learns
-    // the id, not React props. Same id is later used for the final
-    // persisted meeting row, so /chat/live and the meetings list always
-    // agree — no fake/local session id involved.
-    const [meetingId, setMeetingId] = useState<string | null>(null);
+    // ── Live chat interaction ids ────────────────────────────────────────
+    // /chat/live has no real meeting_id to attach to at query time (the
+    // meeting isn't persisted until the call ends), so each turn only
+    // returns an `interaction_id`. Collect every one seen during the call,
+    // then once the call actually ends and a real meeting_id exists,
+    // retroactively link the whole batch via POST /live/link-meeting so
+    // meeting history / MeetingChatOverlay can retrieve these turns.
+    const interactionIdsRef = useRef<number[]>([]);
+    const handleInteractionId = (interactionId: number) => {
+        interactionIdsRef.current.push(interactionId);
+    };
+
+    // 'live-call-ended' fires exactly once, from main.ts#endMeeting, with the
+    // authoritative meetingId for the call that just ended.
+    //
+    // We do NOT call chatApi.linkMeetingInteractions here — the backend
+    // (Supabase mirror) doesn't have this meeting yet at call-end (only local
+    // SQLite does; useMeetingDetails.ts explicitly gates its HTTP fetch on
+    // `!isProcessing` for the same reason), so link-meeting 404s with
+    // "Meeting not found" if called this early. Instead, persist the ids
+    // durably and link them lazily — see useMeetingDetails.ts, which calls
+    // chatApi.linkMeetingInteractions once it has *confirmed* (by successfully
+    // fetching) that the backend has this meeting.
     useEffect(() => {
-        const unsubscribe = window.electronAPI?.onMeetingIdAssigned?.(({ meetingId }) => {
-            setMeetingId(meetingId);
+        const unsubscribe = window.electronAPI?.onLiveCallEnded?.(async ({ meetingId }) => {
+            if (interactionIdsRef.current.length === 0 || !meetingId) return;
+
+            const idsToSave = interactionIdsRef.current;
+            interactionIdsRef.current = []; // clear before the await so a call
+            // straddling two meetings can't
+            // double-submit the same batch
+            try {
+                await window.electronAPI?.savePendingLiveChatInteractions?.(meetingId, idsToSave);
+            } catch (err) {
+                console.error('[useFloatingDock] failed to persist pending live chat interactions', err);
+            }
         });
         return () => unsubscribe?.();
     }, []);
@@ -280,7 +304,7 @@ export function useFloatingDock({ transcriptRef, isMeetingPaused, companyIntel }
         runAnalysis,
         isRefreshRun,
         // chat history (lifted)
-        meetingId,
+        handleInteractionId,
         chatMessages,
         setChatMessages,
         // auto-refresh countdown

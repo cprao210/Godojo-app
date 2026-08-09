@@ -201,7 +201,7 @@ const MessageBubble: React.FC<{ msg: Message }> = ({ msg }) => {
     );
 };
 
-export const FloatingChatPanel: React.FC<FloatingChatPanelProps> = ({ transcriptRef, meetingId, rollingTranscriptUser, rollingTranscriptClient, isClientSpeaking, isUserSpeaking, isMeetingPaused, showTranscript, speakerNames, messages, onMessagesChange }) => {
+export const FloatingChatPanel: React.FC<FloatingChatPanelProps> = ({ transcriptRef, rollingTranscriptUser, rollingTranscriptClient, isClientSpeaking, isUserSpeaking, isMeetingPaused, showTranscript, speakerNames, messages, onMessagesChange, onInteractionId }) => {
 
     const setMessages = onMessagesChange;
     const [inputValue, setInputValue] = useState('');
@@ -384,10 +384,6 @@ export const FloatingChatPanel: React.FC<FloatingChatPanelProps> = ({ transcript
             pendingQuestionRef.current = question; // queue, don't drop
             return;
         }
-        if (!meetingId) {
-            setErrorMessage("Live chat isn't ready yet — the meeting session hasn't started.");
-            return;
-        }
 
         const sessionActive = await guardSession();
         if (!sessionActive) return;
@@ -411,7 +407,6 @@ export const FloatingChatPanel: React.FC<FloatingChatPanelProps> = ({ transcript
         };
 
         activeStreamRef.current = chatApi.queryLive(
-            meetingId,
             question,
             historyBeforeThisTurn,
             buildTranscript(),
@@ -419,6 +414,9 @@ export const FloatingChatPanel: React.FC<FloatingChatPanelProps> = ({ transcript
                 onStatus: (status) => {
                     const label = statusLabel(status);
                     setMessages(prev => prev.map(m => m.id === assistantId ? { ...m, status: label } : m));
+                },
+                onInteractionId: (interactionId) => {
+                    onInteractionId?.(interactionId);
                 },
                 onToken: (chunk) => {
                     localBuffer += chunk;
