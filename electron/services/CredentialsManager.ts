@@ -107,11 +107,11 @@ export class CredentialsManager {
     // =========================================================================
 
     public getGeminiApiKey(): string | undefined {
-        return this.credentials.geminiApiKey;
+        return this.credentials.geminiApiKey || process.env.GEMINI_API_KEY;
     }
 
     public getGroqApiKey(): string | undefined {
-        return this.credentials.groqApiKey;
+        return this.credentials.groqApiKey || process.env.GROQ_API_KEY;
     }
 
     public getOpenaiApiKey(): string | undefined {
@@ -132,7 +132,7 @@ export class CredentialsManager {
 
     public getSttProvider(): 'google' | 'groq' | 'openai' | 'deepgram' | 'elevenlabs' | 'azure' | 'ibmwatson' | 'soniox' {
         const envProvider = process.env.STT_PROVIDER as StoredCredentials['sttProvider'];
-        return this.credentials.sttProvider || envProvider || 'azure';
+        return this.credentials.sttProvider || envProvider || 'deepgram';
     }
 
     public getDeepgramApiKey(): string | undefined {
@@ -176,7 +176,7 @@ export class CredentialsManager {
     }
 
     public getTavilyApiKey(): string | undefined {
-        return this.credentials.tavilyApiKey;
+        return this.credentials.tavilyApiKey || process.env.TAVILY_API_KEY;
     }
 
     public getSttLanguage(): string {
