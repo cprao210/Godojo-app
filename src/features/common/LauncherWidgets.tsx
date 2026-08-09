@@ -442,7 +442,7 @@ interface RecentMeetingsHeaderProps {
     onOpenUpload: () => void;
 }
 
-export const RecentMeetingsHeader: React.FC<RecentMeetingsHeaderProps> = ({ isLight, isMeetingsExpanded, onToggleExpand, onOpenUpload }) => (
+export const RecentMeetingsHeader: React.FC<RecentMeetingsHeaderProps> = ({ isLight, isMeetingsExpanded, onToggleExpand }) => (
     <div className="flex items-center justify-between mb-3">
         <div className="flex items-center gap-2.5">
             <div className={[
