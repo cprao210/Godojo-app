@@ -18,10 +18,14 @@ vi.mock('@/lib/apiClient', async () => {
 import { chatApi, statusLabel } from '@/api';
 import { getAuthHeaders, apiFetch } from '@/lib/apiClient';
 
-const MAX_STREAM_RETRIES = 3;
-
 const mockedGetAuthHeaders = vi.mocked(getAuthHeaders);
 const mockedApiFetch = vi.mocked(apiFetch);
+
+// Mirrors chatApi.ts's private MAX_STREAM_RETRIES (not exported — a 5xx/429
+// response is retried this many times before the stream gives up and calls
+// onError). Kept in sync manually; if chatApi.ts's retry count changes,
+// update this too.
+const MAX_STREAM_RETRIES = 2;
 
 /** Builds a fetch-compatible Response whose body streams the given SSE frames,
  * each already formatted as `event: ...\ndata: ...`. Frames are joined with a
@@ -145,11 +149,18 @@ describe('chatApi.queryGlobal', () => {
 
     it('calls onError with the backend error envelope message on a non-ok response', async () => {
         // A 500 is retried by chatApi (up to MAX_STREAM_RETRIES) before giving
-        // up — mock every attempt with the same error response so the retry
-        // loop doesn't exhaust the queued mock and fall through to an
-        // unrelated TypeError (res.ok on an undefined response) that masks
-        // the real assertion.
-        fetchMock.mockResolvedValue(errorResponse(500, 'internal_error', 'Something broke'))
+        // up. Each retry does its own `fetch` call and reads `.json()` on
+        // whatever Response comes back — and a real Response body can only be
+        // read ONCE. `mockResolvedValue` (no "Once") hands back the exact same
+        // Response instance for every call, so attempt 2+ would try to
+        // `.json()` an already-consumed body and silently fall back to
+        // `res.statusText` (empty string here) instead of the real envelope
+        // message — masking the assertion below. Use `mockImplementation` so
+        // every attempt gets its own fresh, unread Response, matching what a
+        // real backend returning the same 500 on every retry would look like.
+        fetchMock.mockImplementation(() =>
+            Promise.resolve(errorResponse(500, 'internal_error', 'Something broke')),
+        );
         const result = collectHandlers();
 
         chatApi.queryGlobal('hi', result.handlers);
@@ -160,13 +171,14 @@ describe('chatApi.queryGlobal', () => {
     });
 
     it('calls onError with a generic message on a network failure', async () => {
-        fetchMock.mockRejectedValueOnce(new TypeError('Failed to fetch'));
+        fetchMock.mockRejectedValue(new TypeError('Failed to fetch'));
         const result = collectHandlers();
 
         chatApi.queryGlobal('hi', result.handlers);
         await result.settled;
 
         expect(result.error).toBe("Couldn't get a response. Please try again.");
+        expect(fetchMock).toHaveBeenCalledTimes(MAX_STREAM_RETRIES + 1);
     });
 
     it('does not call onError when the request was aborted by the caller', async () => {
