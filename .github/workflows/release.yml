@@ -19,6 +19,14 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      - name: Sync package.json version to the pushed tag
+        shell: bash
+        run: |
+          RAW_TAG="${{ github.ref_name || inputs.tag }}"
+          VERSION="${RAW_TAG#v}"   # v1.0.6 -> 1.0.6 (npm/electron-builder want no leading 'v')
+          npm version "$VERSION" --no-git-tag-version --allow-same-version
+          echo "Building version: $VERSION"
+
       - uses: actions/setup-node@v4
         with:
           node-version: 22
@@ -105,6 +113,14 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      - name: Sync package.json version to the pushed tag
+        shell: bash
+        run: |
+          RAW_TAG="${{ github.ref_name || inputs.tag }}"
+          VERSION="${RAW_TAG#v}"   # v1.0.6 -> 1.0.6 (npm/electron-builder want no leading 'v')
+          npm version "$VERSION" --no-git-tag-version --allow-same-version
+          echo "Building version: $VERSION"
+
       - uses: actions/setup-node@v4
         with:
           node-version: 22
@@ -184,6 +200,14 @@ jobs:
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v4
+
+      - name: Sync package.json version to the pushed tag
+        shell: bash
+        run: |
+          RAW_TAG="${{ github.ref_name || inputs.tag }}"
+          VERSION="${RAW_TAG#v}"   # v1.0.6 -> 1.0.6 (npm/electron-builder want no leading 'v')
+          npm version "$VERSION" --no-git-tag-version --allow-same-version
+          echo "Building version: $VERSION"
 
       - uses: actions/setup-node@v4
         with:
@@ -280,12 +304,19 @@ jobs:
       - name: List artifacts
         run: find artifacts/ -type f | sort
 
+      - name: Render release notes with actual version
+        shell: bash
+        run: |
+          RAW_TAG="${{ github.ref_name || inputs.tag }}"
+          VERSION="${RAW_TAG#v}"
+          sed "s/__VERSION__/${VERSION}/g" .github/RELEASE_TEMPLATE.md > release-notes.md
+
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ github.ref_name || inputs.tag }}
           name: GoDojo AI ${{ github.ref_name || inputs.tag }}
-          body_path: .github/RELEASE_TEMPLATE.md
+          body_path: release-notes.md
           draft: true        # set to false to auto-publish on tag push
           prerelease: false
           generate_release_notes: true

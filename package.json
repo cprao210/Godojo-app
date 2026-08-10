@@ -109,7 +109,8 @@
         }
       ],
       "icon": "assets/icons/win/icon.ico",
-      "requestedExecutionLevel": "asInvoker"
+      "requestedExecutionLevel": "asInvoker",
+      "artifactName": "${productName}-${version}.${ext}"
     },
     "linux": {
       "maintainer": "GoDojo AI <contact@godojo.ai>",
