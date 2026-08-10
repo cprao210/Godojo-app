@@ -251,9 +251,6 @@ export const useCompanyContext = ({
                     }));
                     setIsDirty(true);
                     await window.electronAPI?.profileSetMode?.(true);
-                    intelligenceApi.reindexCompanyAssets().catch(err =>
-                        console.error('[CompanyContext] Failed to reindex:', err)
-                    );
                 } else {
                     setDraft(prev => ({ ...prev, assets: prev.assets.filter(a => a.id !== tempId) }));
                     setCompanyError(result?.error || `Upload failed for "${file.fileName}"`);

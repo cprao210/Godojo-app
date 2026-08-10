@@ -21,6 +21,8 @@ import {
 import { AuthManager } from './services/AuthManager';
 import { PendingLiveChatStore } from './PendingLiveChatStore';
 
+const BACKEND_URL = process.env.VITE_API_BASE_URL ?? "http://127.0.0.1:8000";
+
 function getAuthToken(): string | null {
   return AuthManager.getInstance().getIdToken();
 }
@@ -2752,8 +2754,7 @@ export function initializeIpcHandlers(appState: AppState): void {
                 return;
               }
 
-              // const resp = await fetch(`${BACKEND_URL}/intelligence/company-assets/upload`, {
-              const resp = await fetch(`http://127.0.0.1:8000/api/v1/intelligence/company-assets/upload`, {
+              const resp = await fetch(`${BACKEND_URL}/intelligence/company-assets/upload`, {
                 method: 'POST',
                 headers: { Authorization: `Bearer ${token}` },
                 body: form,
