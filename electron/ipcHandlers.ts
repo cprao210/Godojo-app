@@ -14,6 +14,7 @@ import { searchCompany, clearCompanyCache } from "./services/TavilyManager";
 import { buildCompanyContextBlock } from './utils/salesBriefUtils';
 import { RECOGNITION_LANGUAGES, AI_RESPONSE_LANGUAGES } from "./config/languages"
 import { LiveAnalysisData } from "../src/types";
+import { backendLogger } from './logger/backend.logger';
 import {
   buildOwnCompanyBlockFromOrchestrator,
   hydrateOrchestratorFromContext,
@@ -26,6 +27,11 @@ function getAuthToken(): string | null {
 }
 
 export function initializeIpcHandlers(appState: AppState): void {
+
+  if (process.env.NODE_ENV === 'development') {
+    backendLogger.registerIpcHandlers();
+  }
+
   const safeHandle = (channel: string, listener: (event: any, ...args: any[]) => Promise<any> | any) => {
     ipcMain.removeHandler(channel);
     ipcMain.handle(channel, listener);

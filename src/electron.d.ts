@@ -1,3 +1,4 @@
+import { LogEntry } from "../lib/logger/types"
 import { LiveAnalysisData } from "@/types";
 
 export interface ElectronAPI {
@@ -7,6 +8,26 @@ export interface ElectronAPI {
   updateContentDimensions: (dimensions: { width: number; height: number }) => Promise<void>
   onToggleExpand: (callback: () => void) => () => void
   onResetView: (callback: () => void) => () => void
+  // ===========================================================================
+  // Debug Logger System
+  // ===========================================================================
+  onSolutionStart: (callback: () => void) => () => void
+  onDebugStart: (callback: () => void) => () => void
+  onDebugSuccess: (callback: (data: any) => void) => () => void
+  onSolutionError: (callback: (error: string) => void) => () => void
+  debugGetBackendLogs: () => Promise<LogEntry[]>;
+  debugClearBackendLogs: () => Promise<void>;
+  onBackendLogsPush: (
+    callback: (entries: LogEntry[]) => void
+  ) => () => void;
+  onProcessingNoScreenshots: (callback: () => void) => () => void
+  onProblemExtracted: (callback: (data: any) => void) => () => void
+  onSolutionSuccess: (callback: (data: any) => void) => () => void
+  onUnauthorized: (callback: () => void) => () => void
+  onDebugError: (callback: (error: string) => void) => () => void
+
+  takeScreenshot: () => Promise<{ path: string; preview: string }>
+  takeSelectiveScreenshot: () => Promise<{ path: string; preview: string; cancelled?: boolean }>
   moveWindowLeft: () => Promise<void>
   moveWindowRight: () => Promise<void>
   moveWindowUp: () => Promise<void>

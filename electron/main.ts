@@ -2,6 +2,10 @@ import { app, BrowserWindow, Tray, Menu, nativeImage, ipcMain, shell, systemPref
 import path from "path"
 import fs from "fs"
 import { autoUpdater } from "electron-updater"
+import { backendLogger } from './logger/backend.logger';
+if (!app.isPackaged) {
+  require('dotenv').config();
+}
 // Load app-level config (Supabase, Google/Zoom OAuth client credentials, Firebase).
 // In dev this reads the repo-root `.env`. In a packaged build it reads the `.env`
 // shipped via `extraResources` (written by CI from GitHub Actions secrets — see
@@ -3172,6 +3176,11 @@ export class AppState {
 // Application initialization
 
 async function initializeApp() {
+
+  if (process.env.NODE_ENV === 'development') {
+    backendLogger.interceptConsole();
+  }
+
   // 1. Enforce single instance — prevent duplicate dock icons from leftover processes.
   // In development mode with hot-reload this is still safe because electron is restarted
   // by the build step, not re-launched by concurrently while the old process is alive.

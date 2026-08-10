@@ -1349,6 +1349,7 @@ export interface LauncherProps {
   ollamaPullMessage?: string;
   authUser?: { displayName?: string | null; email?: string | null; photoURL?: string | null } | null;
   onSignOut?: () => void;
+  onDebugOpen?: () => void;
 }
 
 // --- src/features/common/GodojoInterface.tsx ---

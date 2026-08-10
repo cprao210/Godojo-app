@@ -2,6 +2,19 @@ import { contextBridge, ipcRenderer } from "electron"
 import { LiveAnalysisData } from "../src/types"
 import { CalendarEvent } from "services/CalendarManager"
 
+// ✅ Inline the IPC channel constants — avoids cross-bundle path resolution
+const DEBUG_IPC = {
+  BACKEND_LOGS_PUSH: 'debug:backend-logs-push',
+  BACKEND_LOGS_REQUEST: 'debug:backend-logs-request',
+  BACKEND_LOGS_RESPONSE: 'debug:backend-logs-response',
+  BACKEND_LOGS_CLEAR: 'debug:backend-logs-clear',
+} as const;
+
+const IS_DEV = process.env.NODE_ENV === 'development';
+
+// Minimal type needed by preload — avoids cross-bundle src/ import
+type LogEntry = { id: string; timestamp: number; level: string; source: string; message: string; metadata?: unknown; };
+
 // Types for the exposed Electron API
 interface ElectronAPI {
   updateContentDimensions: (dimensions: {
@@ -27,6 +40,11 @@ interface ElectronAPI {
   onSolutionStart: (callback: () => void) => () => void
   onDebugStart: (callback: () => void) => () => void
   onDebugSuccess: (callback: (data: any) => void) => () => void
+  debugGetBackendLogs: () => Promise<LogEntry[]>;
+  debugClearBackendLogs: () => Promise<void>;
+  onBackendLogsPush: (
+    callback: (entries: LogEntry[]) => void
+  ) => () => void;
   onSolutionError: (callback: (error: string) => void) => () => void
   onProcessingNoScreenshots: (callback: () => void) => () => void
   onProblemExtracted: (callback: (data: any) => void) => () => void
@@ -486,6 +504,21 @@ contextBridge.exposeInMainWorld("electronAPI", {
       ipcRenderer.removeListener("debug-success", subscription)
     }
   },
+  debugGetBackendLogs: IS_DEV
+    ? () => ipcRenderer.invoke(DEBUG_IPC.BACKEND_LOGS_REQUEST)
+    : async () => [],
+  debugClearBackendLogs: IS_DEV
+    ? () => ipcRenderer.invoke(DEBUG_IPC.BACKEND_LOGS_CLEAR)
+    : async () => { },
+  onBackendLogsPush: IS_DEV
+    ? (callback: (entries: LogEntry[]) => void) => {
+      const subscription = (_event: Electron.IpcRendererEvent, entries: any) =>
+        callback(entries);
+      ipcRenderer.on(DEBUG_IPC.BACKEND_LOGS_PUSH, subscription);
+      return () =>
+        ipcRenderer.removeListener(DEBUG_IPC.BACKEND_LOGS_PUSH, subscription);
+    }
+    : () => () => { },
   onDebugError: (callback: (error: string) => void) => {
     const subscription = (_: any, error: string) => callback(error)
     ipcRenderer.on(PROCESSING_EVENTS.DEBUG_ERROR, subscription)

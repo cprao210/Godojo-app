@@ -98,6 +98,7 @@ const DetailAnalysisAccordion: React.FC<DetailAnalysisAccordionProps> = ({ score
     );
 };
 
+
 const MeetingDetails: React.FC<MeetingDetailsProps> = ({ meeting: initialMeeting }) => {
 
     const isLight = useResolvedTheme() === 'light';

@@ -1,5 +1,6 @@
 import { useEffect } from "react";
 import { analytics } from "../lib/analytics/analytics.service";
+import { FrontendLoggerService } from "@/lib/logger/frontend.logger";
 
 /**
  * Initializes the analytics service and tracks app-open / app-close /
@@ -9,8 +10,19 @@ import { analytics } from "../lib/analytics/analytics.service";
  * "App Open" vs "Assistant Start" still needs to be decided here: the
  * launcher is the main entry point, the overlay is the "Assistant".
  */
-export function useAppAnalytics(isLauncherWindow: boolean, isOverlayWindow: boolean, isDefault: boolean): void {
+export function useAppAnalytics(logger: FrontendLoggerService, isLauncherWindow: boolean, isOverlayWindow: boolean, isDefault: boolean): void {
     useEffect(() => {
+
+        // Only init if we are in a main window context to avoid duplicate events from helper windows
+        // Actually, we probably want to track app open from the main entry point.
+        // Let's protect initialization to ensure single run per window.
+        // The service handles single-init, but let's be thoughtful about WHICH window tracks "App Open".
+        // Launcher is the main entry. Overlay is the "Assistant".
+
+        if (import.meta.env.DEV) {
+            logger.interceptConsole();
+        }
+
         analytics.initAnalytics();
 
         if (isLauncherWindow || isDefault) {

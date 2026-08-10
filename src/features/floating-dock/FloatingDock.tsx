@@ -51,7 +51,7 @@ export const FloatingDock: React.FC<FloatingDockProps> = ({
     return (
         <>
             <motion.div
-                className={`relative w-[480px] mx-auto h-fit bg-transparent max-w-full rounded-2xl items-center flex flex-col min-h-0 ${overlayPanelClass}`}
+                className={`fixed top-0 left-[35px] w-[480px] mx-auto h-fit bg-transparent max-w-full rounded-2xl items-center flex flex-col min-h-0 ${overlayPanelClass}`}
                 style={{ height: isPanelActive ? '735px' : '130px' }}
             >
                 {/* Overlay Panels — all three stay mounted so internal state (countdown
