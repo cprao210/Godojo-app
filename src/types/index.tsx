@@ -230,6 +230,12 @@ export interface ChatStreamHandlers {
    * "thinking" indicator. Raw status string is passed through; map it to a
    * label with `statusLabel()` below. */
   onStatus?: (status: string) => void;
+  /** Fired right before an automatic retry attempt, after a transient
+   * failure (network error, 5xx, 429) that happened before any content
+   * streamed back. `attempt` is 1-indexed. Never fires once tokens/an
+   * answer have started rendering — a partial answer is never retried,
+   * since re-sending would duplicate or garble what's already shown. */
+  onRetry?: (attempt: number, maxAttempts: number) => void;
   /** Fired once per response, after the final token, with the backend's
    * interaction_id for this turn. Only emitted on `/chat/live` — collect
    * these across the call and POST them to `chatApi.linkMeetingInteractions`

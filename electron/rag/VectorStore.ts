@@ -181,7 +181,15 @@ export class VectorStore {
         insertAll();
 
         try {
-            if (mirrorRows.length > 0) SupabaseMirrorService.getInstance().upsertRows('chunks', mirrorRows);
+            // Chunks produced by live indexing carry the transient
+            // 'live-meeting-current' meeting_id, which is a local-only
+            // placeholder — no matching `meetings` row is ever created
+            // in Supabase for it, so mirroring these would permanently
+            // fail their FK check (chunks_user_id_meeting_id_fkey).
+            // Skip the cloud mirror for those; they're re-created under
+            // the real meeting UUID once the meeting is finalized.
+            const cloudMirrorRows = mirrorRows.filter(r => r.meeting_id !== 'live-meeting-current');
+            if (cloudMirrorRows.length > 0) SupabaseMirrorService.getInstance().upsertRows('chunks', cloudMirrorRows);
         } catch (e) {
             console.warn('[VectorStore] Mirror enqueue failed for chunks (local save OK):', e);
         }
@@ -212,7 +220,7 @@ export class VectorStore {
         // Mirror vector row to Supabase (pgvector). We need the meeting_id for RLS scoping.
         try {
             const row = this.db.prepare('SELECT meeting_id FROM chunks WHERE id = ?').get(chunkId) as any;
-            if (row?.meeting_id) {
+            if (row?.meeting_id && row.meeting_id !== 'live-meeting-current') {
                 SupabaseMirrorService.getInstance().upsertVector(
                     'chunk',
                     chunkId,
@@ -549,7 +557,7 @@ export class VectorStore {
             WHERE s.embedding IS NOT NULL
         `;
         const params: any[] = [];
-        
+
         if (providerName) {
             query += ' AND m.embedding_provider = ?';
             params.push(providerName);
@@ -592,8 +600,8 @@ export class VectorStore {
                 limit
             }, [flatEmbeddings.buffer]);
         } catch (e) {
-             console.error('[VectorStore] JS worker summary search failed:', e);
-             throw e;
+            console.error('[VectorStore] JS worker summary search failed:', e);
+            throw e;
         }
     }
 
@@ -658,7 +666,7 @@ export class VectorStore {
                             } catch (_) { /* dim table may not exist */ }
                         }
                     }
-                } catch (e) {}
+                } catch (e) { }
             }
         }
         return meetingIds;

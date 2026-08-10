@@ -442,7 +442,7 @@ interface RecentMeetingsHeaderProps {
     onOpenUpload: () => void;
 }
 
-export const RecentMeetingsHeader: React.FC<RecentMeetingsHeaderProps> = ({ isLight, isMeetingsExpanded, onToggleExpand, onOpenUpload }) => (
+export const RecentMeetingsHeader: React.FC<RecentMeetingsHeaderProps> = ({ isLight, isMeetingsExpanded, onToggleExpand }) => (
     <div className="flex items-center justify-between mb-3">
         <div className="flex items-center gap-2.5">
             <div className={[
@@ -460,7 +460,7 @@ export const RecentMeetingsHeader: React.FC<RecentMeetingsHeaderProps> = ({ isLi
         <div className="flex items-center gap-2">
 
             {/* Upload Transcript */}
-            {(
+            {/* {(
                 <button
                     onClick={onOpenUpload}
                     className={[
@@ -473,7 +473,7 @@ export const RecentMeetingsHeader: React.FC<RecentMeetingsHeaderProps> = ({ isLi
                     <Upload size={11} />
                     Upload Transcript
                 </button>
-            )}
+            )} */}
 
             {/* Expand / Collapse */}
             <motion.button
@@ -668,9 +668,34 @@ export const MeetingsList: React.FC<MeetingsListProps> = ({
 }) => {
     if (meetings.length === 0) {
         return (
-            <div className="py-8 text-center text-sm text-text-tertiary">
-                No recent meetings yet.
-            </div>
+            <motion.div
+                initial={{ opacity: 0, y: 8 }}
+                animate={{ opacity: 1, y: 0 }}
+                transition={{ duration: 0.4, ease: [0.22, 1, 0.36, 1] }}
+                className={[
+                    'flex flex-col items-center justify-center gap-3 rounded-xl border border-dashed py-10 px-6 text-center',
+                    isLight
+                        ? 'border-border-muted bg-bg-elevated/60'
+                        : 'border-white/[0.08] bg-bg-item-surface/40',
+                ].join(' ')}
+            >
+                <div
+                    className={[
+                        'flex h-11 w-11 items-center justify-center rounded-full',
+                        isLight ? 'bg-accent-muted text-accent-primary' : 'bg-blue-500/10 text-blue-400',
+                    ].join(' ')}
+                >
+                    <Calendar size={18} strokeWidth={2} />
+                </div>
+                <div>
+                    <p className="text-[13px] font-semibold text-text-primary">
+                        No recent meetings yet
+                    </p>
+                    <p className="mt-1 max-w-[240px] text-[12px] leading-relaxed text-text-tertiary">
+                        Meetings you record or import will show up here, ready to review.
+                    </p>
+                </div>
+            </motion.div>
         );
     }
 
