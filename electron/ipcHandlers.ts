@@ -2754,7 +2754,7 @@ export function initializeIpcHandlers(appState: AppState): void {
                 return;
               }
 
-              const resp = await fetch(`${BACKEND_URL}/intelligence/company-assets/upload`, {
+              const resp = await fetch(`${BACKEND_URL}/api/v1/intelligence/company-assets/upload`, {
                 method: 'POST',
                 headers: { Authorization: `Bearer ${token}` },
                 body: form,
