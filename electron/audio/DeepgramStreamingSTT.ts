@@ -112,7 +112,7 @@ export class DeepgramStreamingSTT extends EventEmitter {
     public setRecognitionLanguage(key: string): void {
         const config = RECOGNITION_LANGUAGES[key];
         if (config) {
-            this.languageCode = config.iso639;
+            this.languageCode = config.deepgram ?? config.iso639;
             console.log(`[DeepgramStreaming:${this.role}] Language set to ${this.languageCode}`);
             if (this.isActive) {
                 const savedBuffer = [...this.buffer];
@@ -238,7 +238,8 @@ export class DeepgramStreamingSTT extends EventEmitter {
             interim_results: "true",
             utterance_end_ms: "1500",
             vad_events: "true",
-            endpointing: "500",
+            // Deepgram recommends endpointing=100 for multilingual code-switching
+            endpointing: this.languageCode === 'multi' ? "100" : "500",
         };
         if (this.diarize) {
             queryParams.diarize = "true";

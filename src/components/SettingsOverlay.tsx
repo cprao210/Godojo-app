@@ -836,6 +836,7 @@ const SettingsOverlay: React.FC<SettingsOverlayProps> = ({ isOpen, onClose, init
     // STT Provider settings
     const [sttProvider, setSttProvider] = useState<'google' | 'groq' | 'openai' | 'deepgram' | 'elevenlabs' | 'azure' | 'ibmwatson' | 'soniox'>('google');
     const [diarizeClientEnabled, setDiarizeClientEnabled] = useState(false);
+    const [translateTranscripts, setTranslateTranscripts] = useState(true);
     const [groqSttModel, setGroqSttModel] = useState('whisper-large-v3-turbo');
     const [sttGroqKey, setSttGroqKey] = useState('');
     const [sttOpenaiKey, setSttOpenaiKey] = useState('');
@@ -895,6 +896,8 @@ const SettingsOverlay: React.FC<SettingsOverlayProps> = ({ isOpen, onClose, init
                 }
                 const diarize = await window.electronAPI?.getDiarizeClientEnabled?.();
                 setDiarizeClientEnabled(!!diarize);
+                const translate = await window.electronAPI?.getTranslateTranscripts?.();
+                setTranslateTranscripts(translate !== false);
             } catch (e) {
                 console.error('Failed to load STT settings:', e);
             }
@@ -911,6 +914,18 @@ const SettingsOverlay: React.FC<SettingsOverlayProps> = ({ isOpen, onClose, init
         } catch (e) {
             console.error('Failed to set diarization:', e);
             setDiarizeClientEnabled(!next);
+        }
+    };
+
+    const handleTranslateToggle = async () => {
+        const next = !translateTranscripts;
+        setTranslateTranscripts(next); // optimistic
+        try {
+            const res = await window.electronAPI?.setTranslateTranscripts?.(next);
+            if (res && res.success === false) setTranslateTranscripts(!next);
+        } catch (e) {
+            console.error('Failed to set transcript translation:', e);
+            setTranslateTranscripts(!next);
         }
     };
 
@@ -2761,6 +2776,28 @@ const SettingsOverlay: React.FC<SettingsOverlayProps> = ({ isOpen, onClose, init
                                                             </div>
                                                         </div>
                                                     )}
+
+                                                    {/* Translate non-English speech into English transcripts */}
+                                                    <div className={`${isLight ? "bg-white border-slate-200/80" : "bg-bg-item-surface border-border-subtle"} rounded-xl border p-4`}>
+                                                        <div className="flex items-center justify-between gap-3">
+                                                            <div className="min-w-0">
+                                                                <label className="text-xs font-medium text-text-primary block">Show transcript in English</label>
+                                                                <p className="text-[10px] text-text-tertiary mt-1 leading-relaxed">
+                                                                    Speak Hindi (or any other language) and read English. Applies to completed
+                                                                    sentences; the live preview stays in the spoken language. Uses your AI
+                                                                    provider key and does nothing when everyone is already speaking English.
+                                                                </p>
+                                                            </div>
+                                                            <button
+                                                                role="switch"
+                                                                aria-checked={translateTranscripts}
+                                                                onClick={handleTranslateToggle}
+                                                                className={`relative shrink-0 w-10 h-[22px] rounded-full transition-colors duration-200 ${translateTranscripts ? 'bg-blue-600' : isLight ? 'bg-slate-300' : 'bg-bg-input'}`}
+                                                            >
+                                                                <span className={`absolute top-[3px] left-[3px] w-4 h-4 rounded-full bg-white shadow transition-transform duration-200 ${translateTranscripts ? 'translate-x-[18px]' : ''}`} />
+                                                            </button>
+                                                        </div>
+                                                    </div>
 
                                                     {/* Groq Model Selector */}
                                                     {sttProvider === 'groq' && (

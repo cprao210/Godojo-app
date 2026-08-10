@@ -1150,6 +1150,29 @@ export function initializeIpcHandlers(appState: AppState): void {
     }
   });
 
+  // Render non-English transcript finals into English before display/storage.
+  safeHandle("set-translate-transcripts", async (_, enabled: boolean) => {
+    try {
+      const { CredentialsManager } = require('./services/CredentialsManager');
+      CredentialsManager.getInstance().setTranslateTranscriptsToEnglish(!!enabled);
+      // Rebuild STT so the running meeting picks the change up immediately.
+      await appState.reconfigureSttProvider();
+      return { success: true };
+    } catch (error: any) {
+      console.error("Error setting transcript translation:", error);
+      return { success: false, error: error.message };
+    }
+  });
+
+  safeHandle("get-translate-transcripts", async () => {
+    try {
+      const { CredentialsManager } = require('./services/CredentialsManager');
+      return CredentialsManager.getInstance().getTranslateTranscriptsToEnglish();
+    } catch {
+      return true;
+    }
+  });
+
   // Echo pipeline mode for the native audio gate ('legacy' | 'phase1' | 'full_duplex').
   safeHandle("set-echo-pipeline-mode", async (_, mode: string) => {
     try {
