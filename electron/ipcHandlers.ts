@@ -2843,7 +2843,7 @@ export function initializeIpcHandlers(appState: AppState): void {
       const result: any = await dialog.showOpenDialog(win!, {
         properties: ['openFile', 'multiSelections'],
         filters: [
-          { name: 'Documents', extensions: ['pdf', 'doc', 'docx', 'ppt', 'pptx'] }
+          { name: 'Documents', extensions: ['pdf', 'doc', 'docx', 'ppt', 'pptx', 'csv', 'xlsx'] }
         ]
       });
       if (result.canceled || result.filePaths.length === 0) {

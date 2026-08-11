@@ -13,7 +13,7 @@ import { useShortcuts, useResolvedTheme } from '@/hooks';
 import { loadUserProfile } from '@/features/settings';
 import { meetingsApi } from '@/api';
 import { ApiError } from '@/lib/apiClient';
-import { LauncherProps, Meeting } from '@/types';
+import { LauncherProps, Meeting, UpcomingMeeting } from '@/types';
 
 const MINUTE = 60 * 1000;
 const HOUR = 60 * MINUTE;
@@ -115,7 +115,7 @@ export function useLauncher({ onStartMeeting, ollamaPullStatus = 'idle', onPageC
     const [isCalendarConnected, setIsCalendarConnected] = useState(false);
     const [isRefreshing, setIsRefreshing] = useState(false);
     const [showNotification, setShowNotification] = useState(false);
-    const [salesBriefEvent, setSalesBriefEvent] = useState<any>(null);
+    const [salesBriefEvent, setSalesBriefEvent] = useState<UpcomingMeeting | null>(null);
 
     // Global search state (for AI chat overlay)
     const [isGlobalChatOpen, setIsGlobalChatOpen] = useState(false);

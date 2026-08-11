@@ -19,7 +19,7 @@ export function NextMeetingDetails({
     isLight: boolean;
     getMeetingStartText: (s: string) => string;
     onStart: () => void;
-    onSalesBrief: React.Dispatch<any>;
+    onSalesBrief: (meeting: UpcomingMeeting) => void;
 }) {
     const diffMs = new Date(meeting.startTime).getTime() - Date.now();
     const isStartingSoon = diffMs > 0 && diffMs < 15 * 60 * 1000; // within 15 min
@@ -177,7 +177,7 @@ export function NextMeetingDetails({
 
                 {/* Sales Brief */}
                 <button
-                    onClick={onSalesBrief}
+                    onClick={() => onSalesBrief(meeting)}
                     className={[
                         "flex items-center gap-2 px-4 py-2.5 rounded-xl border text-[12px] font-medium transition-all",
                         isLight

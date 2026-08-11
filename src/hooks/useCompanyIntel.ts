@@ -71,13 +71,16 @@ function deriveCompany(eventData: EventLike): { companyName: string | null; doma
     const orgDomain = eventData.organizer?.split("@")[1]?.toLowerCase() ?? "";
 
     const externalAttendees = attendees.filter((a) => {
-        const d = a.email.split("@")[1]?.toLowerCase() ?? "";
+        const d = a.email?.split("@")[1]?.toLowerCase() ?? "";
         return d && d !== orgDomain;
     });
 
     for (const attendee of externalAttendees) {
-        const name = companyFromEmail(attendee.email);
-        if (name) return { companyName: name, domain: attendee.email.split("@")[1] };
+        // Guaranteed defined here — the filter above already excludes any
+        // attendee without a usable email (d would be "" and fail the check).
+        const email = attendee.email!;
+        const name = companyFromEmail(email);
+        if (name) return { companyName: name, domain: email.split("@")[1] };
     }
 
     const titleMatch = eventData.title?.match(/(?:with|@|–|-)\s+([A-Z][a-zA-Z0-9\s]+)/);

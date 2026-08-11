@@ -151,7 +151,7 @@ export interface WindowRoute {
 export type Provider = 'google' | 'zoom';
 
 export interface EventLike {
-  attendees?: Array<{ email: string; name?: string }>;
+  attendees?: Attendee[];
   organizer?: string;
   title?: string;
 }
@@ -1270,7 +1270,7 @@ export interface Solution {
 
 // --- src/features/calendar/SalesBriefPanel.tsx ---
 export interface SalesBriefPanelProps {
-  eventData: any;
+  eventData: UpcomingMeeting;
   onClose: () => void;
 }
 
@@ -1686,7 +1686,7 @@ export interface NextMeetingCardProps {
   isLight: boolean;
   getMeetingStartText: (startTime: string) => string;
   onStart: (meeting?: any) => void;
-  onSalesBrief: (meeting: any) => void;
+  onSalesBrief: (meeting: UpcomingMeeting) => void;
 }
 
 // --- src/features/onboarding/AboutSection.tsx ---

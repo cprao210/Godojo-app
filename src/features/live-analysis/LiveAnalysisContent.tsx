@@ -189,18 +189,19 @@ const FieldRow: React.FC<FieldRowProps> = ({ label, field, themed = false, isLig
                         </span>
                     </div>
                 </div>
-                {field.evidence ? (
+                {field.evidence !== "" && (
                     <p className={`text-[12px] leading-relaxed ${isLight ? 'text-slate-600' : 'text-white/65'}`}>
                         {field.evidence}
                     </p>
-                ) : field.suggested_question ? (
+                )}
+                {field.suggested_question !== "" ? (
                     <div className="flex items-start gap-1.5">
                         <span className="text-[9px] font-bold text-blue-500 uppercase tracking-wider mt-[2px] shrink-0">Ask this</span>
                         <p className={`text-[11px] leading-relaxed ${isLight ? 'text-blue-600' : 'text-blue-300/80'}`}>
                             {field.suggested_question}
                         </p>
                     </div>
-                ) : (
+                ) : field.status === "confirmed" ? null : (
                     <p className={`text-[12px] italic ${isLight ? 'text-slate-400' : 'text-white/25'}`}>
                         Not yet captured — listen for clues
                     </p>
@@ -221,14 +222,15 @@ const FieldRow: React.FC<FieldRowProps> = ({ label, field, themed = false, isLig
                     </span>
                 </div>
             </div>
-            {field.evidence ? (
+            {field.evidence !== "" && (
                 <p className="text-[12px] text-white/65 leading-normal">{field.evidence}</p>
-            ) : field.suggested_question ? (
+            )}
+            {field.suggested_question !== "" ? (
                 <div className="flex items-start gap-1.5">
                     <span className="text-[9px] font-bold text-blue-400/70 uppercase tracking-wider mt-[2px] shrink-0">Ask this</span>
                     <p className="text-[11px] text-blue-300/80 leading-relaxed">{field.suggested_question}</p>
                 </div>
-            ) : (
+            ) : field.status === "confirmed" ? null : (
                 <p className="text-[12px] text-white/25 italic">
                     Not yet captured
                 </p>
