@@ -85,14 +85,15 @@ jobs:
           GOOGLE_CLIENT_SECRET=${{ secrets.GOOGLE_CLIENT_SECRET }}
           ZOOM_CLIENT_ID=${{ secrets.ZOOM_CLIENT_ID }}
           ZOOM_CLIENT_SECRET=${{ secrets.ZOOM_CLIENT_SECRET }}
-          POSTHOG_CLI_TOKEN=${{ secrets.POSTHOG_CLI_TOKEN }}
-          POSTHOG_CLI_ENV_ID=${{ secrets.POSTHOG_CLI_ENV_ID }}
           EOF
 
       - name: Install posthog-cli
         run: npm install -g @posthog/cli
 
       - name: Build renderer + electron
+        env:
+          POSTHOG_CLI_TOKEN: ${{ secrets.POSTHOG_CLI_TOKEN }}
+          POSTHOG_CLI_ENV_ID: ${{ secrets.POSTHOG_CLI_ENV_ID }}
         run: |
           npm run build:release
           npm run build:electron
@@ -190,14 +191,15 @@ jobs:
           GOOGLE_CLIENT_SECRET=${{ secrets.GOOGLE_CLIENT_SECRET }}
           ZOOM_CLIENT_ID=${{ secrets.ZOOM_CLIENT_ID }}
           ZOOM_CLIENT_SECRET=${{ secrets.ZOOM_CLIENT_SECRET }}
-          POSTHOG_CLI_TOKEN=${{ secrets.POSTHOG_CLI_TOKEN }}
-          POSTHOG_CLI_ENV_ID=${{ secrets.POSTHOG_CLI_ENV_ID }}
           EOF
 
       - name: Install posthog-cli
         run: npm install -g @posthog/cli
 
       - name: Build renderer + electron
+        env:
+          POSTHOG_CLI_TOKEN: ${{ secrets.POSTHOG_CLI_TOKEN }}
+          POSTHOG_CLI_ENV_ID: ${{ secrets.POSTHOG_CLI_ENV_ID }}
         run: |
           npm run build:release
           npm run build:electron
@@ -304,14 +306,15 @@ jobs:
           GOOGLE_CLIENT_SECRET=${{ secrets.GOOGLE_CLIENT_SECRET }}
           ZOOM_CLIENT_ID=${{ secrets.ZOOM_CLIENT_ID }}
           ZOOM_CLIENT_SECRET=${{ secrets.ZOOM_CLIENT_SECRET }}
-          POSTHOG_CLI_TOKEN=${{ secrets.POSTHOG_CLI_TOKEN }}
-          POSTHOG_CLI_ENV_ID=${{ secrets.POSTHOG_CLI_ENV_ID }}
           EOF
 
       - name: Install posthog-cli
         run: npm install -g @posthog/cli
 
       - name: Build renderer + electron
+        env:
+          POSTHOG_CLI_TOKEN: ${{ secrets.POSTHOG_CLI_TOKEN }}
+          POSTHOG_CLI_ENV_ID: ${{ secrets.POSTHOG_CLI_ENV_ID }}
         run: |
           npm run build:release
           npm run build:electron
