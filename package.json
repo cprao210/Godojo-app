@@ -6,7 +6,8 @@
   "scripts": {
     "clean": "rimraf dist dist-electron",
     "dev": "vite",
-    "build": "npm run clean && tsc && vite build && npm run sourcemaps:upload",
+    "build": "npm run clean && tsc && vite build",
+    "build:release": "npm run build && npm run sourcemaps:upload",
     "sourcemaps:upload": "posthog-cli sourcemap inject --directory dist && posthog-cli sourcemap upload --directory dist",
     "build:electron": "tsc -p electron/tsconfig.json",
     "preview": "vite preview",

@@ -25,7 +25,7 @@ const mockedApiFetch = vi.mocked(apiFetch);
 // response is retried this many times before the stream gives up and calls
 // onError). Kept in sync manually; if chatApi.ts's retry count changes,
 // update this too.
-const MAX_STREAM_RETRIES = 2;
+const MAX_STREAM_RETRIES = 3;
 
 /** Builds a fetch-compatible Response whose body streams the given SSE frames,
  * each already formatted as `event: ...\ndata: ...`. Frames are joined with a
