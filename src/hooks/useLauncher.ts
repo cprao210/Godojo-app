@@ -8,7 +8,6 @@
 
 import React, { useEffect, useState } from 'react';
 import { useMutation, useQuery, useQueryClient } from 'react-query';
-import { analytics } from '@/lib/analytics/analytics.service';
 import { useShortcuts, useResolvedTheme } from '@/hooks';
 import { loadUserProfile } from '@/features/settings';
 import { meetingsApi } from '@/api';
@@ -186,7 +185,6 @@ export function useLauncher({ onStartMeeting, ollamaPullStatus = 'idle', onPageC
 
     const handleRefresh = async () => {
         setIsRefreshing(true);
-        analytics.trackCommandExecuted('refresh_calendar');
         try {
             if (window.electronAPI && window.electronAPI.calendarRefresh) {
                 setShowNotification(true);
@@ -374,7 +372,6 @@ export function useLauncher({ onStartMeeting, ollamaPullStatus = 'idle', onPageC
         const newState = !isDetectable;
         setIsDetectable(newState);
         window.electronAPI?.setUndetectable(!newState); // Note: setUndetectable takes the *undetectable* state, which is inverse of *detectable*
-        analytics.trackModeSelected(newState ? 'launcher' : 'undetectable'); // If visible (detectable), mode is normal/launcher. If not detectable, mode is undetectable.
     };
 
     // ─── Meeting row navigation (back/forward + open) ───────────────────────
@@ -509,9 +506,7 @@ export function useLauncher({ onStartMeeting, ollamaPullStatus = 'idle', onPageC
             e.preventDefault();
             setIsGlobalChatOpen(prev => {
                 const next = !prev;
-                if (next) {
-                    analytics.trackCommandExecuted('open_global_chat_shortcut');
-                } else {
+                if (!next) {
                     setSubmittedGlobalQuery('');
                 }
                 return next;
@@ -524,7 +519,6 @@ export function useLauncher({ onStartMeeting, ollamaPullStatus = 'idle', onPageC
 
     const handleOpenMeeting = (meeting: Meeting) => {
         setForwardMeeting(null); // Clear forward history on new navigation
-        analytics.trackCommandExecuted('open_meeting_details');
         // Full detail (transcript + usage) loads in MeetingDetails via React Query
         // (meetingsApi.get → GET /meetings/{id}); the list row seeds it as initialData.
         setSelectedMeeting(meeting);
@@ -571,10 +565,8 @@ export function useLauncher({ onStartMeeting, ollamaPullStatus = 'idle', onPageC
         onStartMeetingClick: () => {
             if (isMeetingActive) {
                 window.electronAPI?.setWindowMode?.('overlay', true);
-                analytics.trackCommandExecuted('resume_meeting_from_launcher');
             } else {
                 onStartMeeting(nextMeeting);
-                analytics.trackCommandExecuted('start_natively_cta');
             }
         },
         showNotification,

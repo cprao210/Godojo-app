@@ -1,4 +1,3 @@
-import { useAppAnalytics } from './useAppAnalytics';
 import { useAppLifecycleListeners } from './useAppLifecycleListeners';
 import { useCalendarConnections } from './useCalendarConnections';
 import { useCompanyIntel, hasValue, pickValue, isIntelEmpty, openExternalUrl, LOADING_STAGES } from './useCompanyIntel';
@@ -59,7 +58,6 @@ import { useSttProviderSettings, STT_PROVIDER_KEY_URLS } from "./useSttProviderS
 import { useCompanyContext, ALLOWED_EXTENSIONS, MAX_FILE_SIZE_BYTES, ASSET_CONFIG, STATUS_BADGE, normalizeContext } from "./useCompanyContext";
 
 export {
-    useAppAnalytics,
     useAppLifecycleListeners,
     useCalendarConnections,
     useCompanyIntel,

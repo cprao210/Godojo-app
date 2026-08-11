@@ -16,7 +16,6 @@ import { ConnectCalendarButton } from '@/features/calendar';
 import { UserProfileButton } from '@/features/tenant';
 import { generateMeetingPDF } from '@/../utils/pdfGenerator';
 import { isMac } from '@/../utils/platformUtils';
-import { analytics } from '@/lib/analytics/analytics.service';
 import { Meeting } from '@/types';
 import { IMAGES } from '@/lib/assets';
 import { getGroupLabel, formatTime, formatDurationPill, UPLOAD_MEETING_TYPE_OPTIONS } from '@/hooks/useLauncher';
@@ -102,7 +101,6 @@ export const LauncherHeader: React.FC<LauncherHeaderProps> = ({
                         const meeting = meetings.find(m => m.id === meetingId);
                         if (meeting) {
                             onOpenMeeting(meeting);
-                            analytics.trackCommandExecuted('open_meeting_from_search');
                         }
                     }}
                 />
@@ -622,7 +620,6 @@ export const MeetingRow: React.FC<MeetingRowProps> = ({
                             className={['w-full flex items-center gap-2 px-3 py-1.5 text-[12px] rounded-lg transition-colors text-left text-text-primary', isLight ? 'hover:bg-bg-item-surface' : 'hover:bg-white/10'].join(' ')}
                             onClick={async () => {
                                 onToggleMenu(null);
-                                analytics.trackPdfExported();
                                 if (window.electronAPI?.getMeetingDetails) {
                                     try { generateMeetingPDF(await window.electronAPI.getMeetingDetails(m.id) ?? m); }
                                     catch { generateMeetingPDF(m); }

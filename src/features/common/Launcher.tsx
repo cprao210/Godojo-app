@@ -17,7 +17,6 @@ import { AnimatePresence, motion } from 'framer-motion';
 import { IoSparklesSharp } from 'react-icons/io5';
 import { MeetingDetails, MeetingTimeline, NextMeetingDetails, NextMeetingEmptyState, SalesBriefPanel } from '@/features/meetings';
 import { GlobalChatOverlay, FloatingChatButton } from '@/features/chat';
-import { analytics } from '@/lib/analytics/analytics.service';
 import { useLauncher } from '@/hooks';
 import { LauncherHeader, GhostModeToggle, RefreshButton, StartMeetingButton, OllamaPullBadge } from './LauncherWidgets';
 import { CalendarConnectCard, RecentMeetingsHeader, MeetingsList, RefreshToast, TranscriptUploadModal } from './LauncherWidgets';
@@ -253,7 +252,6 @@ const Launcher: React.FC<LauncherProps> = ({ onStartMeeting, onOpenSettings, onO
                             setIsGlobalChatOpen(false);
                             setSubmittedGlobalQuery('');
                         } else {
-                            analytics.trackCommandExecuted('open_global_chat_fab');
                             setIsGlobalChatOpen(true);
                         }
                     }}
@@ -272,7 +270,6 @@ const Launcher: React.FC<LauncherProps> = ({ onStartMeeting, onOpenSettings, onO
                     const meeting = meetings.find(m => m.id === meetingId);
                     if (meeting) {
                         handleOpenMeeting(meeting);
-                        analytics.trackCommandExecuted('open_meeting_from_chat_source');
                     }
                 }}
             />

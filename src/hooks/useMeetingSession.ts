@@ -1,6 +1,5 @@
 import { useEffect, useRef } from "react";
 import { verifySessionIsActive, signOut as fbSignOut } from "../lib/firebase";
-import { analytics } from "../lib/analytics/analytics.service";
 import { TranscriptSegmentInput, MeetingSessionControls } from "@/types";
 
 /**
@@ -79,7 +78,6 @@ export function useMeetingSession(
 
             const result = await window.electronAPI.startMeeting(meetingMetadata);
             if (result.success) {
-                analytics.trackMeetingStarted();
                 await window.electronAPI.setWindowMode("overlay");
             } else {
                 console.error("Failed to start meeting:", result.error);
@@ -91,7 +89,6 @@ export function useMeetingSession(
 
     const handleEndMeeting = async (meetingTypes?: ("discovery" | "demo" | "negotiation")[]) => {
         console.log("[useMeetingSession] handleEndMeeting triggered");
-        analytics.trackMeetingEnded();
         setIsProcessingMeeting(true);
 
         // Check profile toaster threshold before firing endMeeting — we don't want

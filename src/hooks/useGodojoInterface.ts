@@ -17,7 +17,6 @@
 // maintains.
 
 import { useEffect, useLayoutEffect, useRef, useState } from "react";
-import { analytics, detectProviderType } from "@/lib/analytics/analytics.service";
 import { useShortcuts } from "@/hooks";
 import { OVERLAY_OPACITY_DEFAULT } from "@/lib/overlayAppearance";
 import { GodojoInterfaceMessage, GodojoInterfaceProps } from "@/types";
@@ -358,9 +357,6 @@ export function useGodojoInterface({ overlayOpacity = OVERLAY_OPACITY_DEFAULT }:
             // Also reset rolling transcripts (both speakers)
             setRollingTranscriptUser('');
             setRollingTranscriptClient('');
-
-            // Track new conversation
-            analytics.trackConversationStarted();
 
             // Re-fetch resolved names from main process instead of resetting to generic labels.
             // The main process keeps resolved names in SessionTracker across session resets.
@@ -886,14 +882,12 @@ export function useGodojoInterface({ overlayOpacity = OVERLAY_OPACITY_DEFAULT }:
 
     const handleCopy = (text: string) => {
         navigator.clipboard.writeText(text);
-        analytics.trackCopyAnswer();
         // Optional: Trigger a small toast or state change for visual feedback
     };
 
     const handleWhatToSay = async () => {
         setIsExpanded(true);
         setIsProcessing(true);
-        analytics.trackCommandExecuted('what_to_say');
 
         // Capture and clear attached image context
         const currentAttachments = attachedContext;
@@ -926,7 +920,6 @@ export function useGodojoInterface({ overlayOpacity = OVERLAY_OPACITY_DEFAULT }:
     const handleWhatAmIMissing = async () => {
         setIsExpanded(true);
         setIsProcessing(true);
-        analytics.trackCommandExecuted('what_am_i_missing');
 
         try {
             await window.electronAPI.generateWhatAmIMissing();
@@ -944,7 +937,6 @@ export function useGodojoInterface({ overlayOpacity = OVERLAY_OPACITY_DEFAULT }:
     const handleDiscovery = async () => {
         setIsExpanded(true);
         setIsProcessing(true);
-        analytics.trackCommandExecuted('discovery');
 
         try {
             await window.electronAPI.generateDiscovery();
@@ -962,7 +954,6 @@ export function useGodojoInterface({ overlayOpacity = OVERLAY_OPACITY_DEFAULT }:
     const handleObjectionHandler = async () => {
         setIsExpanded(true);
         setIsProcessing(true);
-        analytics.trackCommandExecuted('objection_handler');
 
         try {
             await window.electronAPI.generateObjectionHandler();
@@ -980,7 +971,6 @@ export function useGodojoInterface({ overlayOpacity = OVERLAY_OPACITY_DEFAULT }:
     const handleFollowUp = async (intent: string = 'rephrase') => {
         setIsExpanded(true);
         setIsProcessing(true);
-        analytics.trackCommandExecuted('follow_up_' + intent);
 
         try {
             await window.electronAPI.generateFollowUp(intent);
@@ -998,7 +988,6 @@ export function useGodojoInterface({ overlayOpacity = OVERLAY_OPACITY_DEFAULT }:
     const handleRecap = async () => {
         setIsExpanded(true);
         setIsProcessing(true);
-        analytics.trackCommandExecuted('recap');
 
         try {
             await window.electronAPI.generateRecap();
@@ -1016,7 +1005,6 @@ export function useGodojoInterface({ overlayOpacity = OVERLAY_OPACITY_DEFAULT }:
     const handleFollowUpQuestions = async () => {
         setIsExpanded(true);
         setIsProcessing(true);
-        analytics.trackCommandExecuted('suggest_questions');
 
         try {
             await window.electronAPI.generateFollowUpQuestions();
@@ -1034,7 +1022,6 @@ export function useGodojoInterface({ overlayOpacity = OVERLAY_OPACITY_DEFAULT }:
     const handleClarify = async () => {
         setIsExpanded(true);
         setIsProcessing(true);
-        analytics.trackCommandExecuted('clarify');
 
         try {
             await window.electronAPI.generateClarify();
@@ -1052,7 +1039,6 @@ export function useGodojoInterface({ overlayOpacity = OVERLAY_OPACITY_DEFAULT }:
     const handleCodeHint = async () => {
         setIsExpanded(true);
         setIsProcessing(true);
-        analytics.trackCommandExecuted('code_hint');
 
         const currentAttachments = attachedContext;
         if (currentAttachments.length > 0) {
@@ -1083,7 +1069,6 @@ export function useGodojoInterface({ overlayOpacity = OVERLAY_OPACITY_DEFAULT }:
     const handleBrainstorm = async () => {
         setIsExpanded(true);
         setIsProcessing(true);
-        analytics.trackCommandExecuted('brainstorm');
 
         const currentAttachments = attachedContext;
         if (currentAttachments.length > 0) {
@@ -1161,20 +1146,7 @@ export function useGodojoInterface({ overlayOpacity = OVERLAY_OPACITY_DEFAULT }:
         // Stream Done
         cleanups.push(window.electronAPI.onGeminiStreamDone(() => {
             setIsProcessing(false);
-
-            // Calculate latency if we have a start time
-            let latency = 0;
-            if (requestStartTimeRef.current) {
-                latency = Date.now() - requestStartTimeRef.current;
-                requestStartTimeRef.current = null;
-            }
-
-            // Track Usage
-            analytics.trackModelUsed({
-                model_name: currentModel,
-                provider_type: detectProviderType(currentModel),
-                latency_ms: latency
-            });
+            requestStartTimeRef.current = null;
 
             setMessages(prev => {
                 const lastMsg = prev[prev.length - 1];

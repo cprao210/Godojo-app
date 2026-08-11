@@ -18,8 +18,7 @@
  * SCOPE: frontend (src) types only. Electron-specific types are excluded:
  *  - `ElectronAPI` and the `Window.electronAPI` augmentation from
  *    src/app/electron.d.ts
- *  - `Window` global augmentations from src/app/vite-env.d.ts and
- *    src/lib/analytics/analytics.service.ts
+ *  - `Window` global augmentations from src/app/vite-env.d.ts
  * These `declare global { interface Window { ... } }` / electron bridge
  * types must stay in their own ambient .d.ts / source files - moving them
  * here would break global merging and mixes electron/main concerns into
@@ -1169,47 +1168,6 @@ export interface ParsedReleaseNotes {
   sections: ReleaseNoteSection[];
   fullBody?: string;
   url?: string;
-}
-
-// --- src/lib/analytics/analytics.service.ts ---
-export type ModelProviderType = 'cloud' | 'local';
-
-export type AssistantMode = 'launcher' | 'overlay' | 'undetectable' | string;
-
-export type AnalyticsEventName =
-  // App Lifecycle
-  | 'app_opened'
-  | 'app_closed'
-  | 'first_launch'
-  // Feature Usage
-  | 'assistant_started'
-  | 'assistant_stopped'
-  | 'mode_selected'
-  | 'copy_answer_clicked'
-  | 'calendar_connected'
-  | 'pdf_exported'
-  // Meeting Lifecycle
-  | 'meeting_started'
-  | 'meeting_ended'
-  // Model Usage
-  | 'model_used'
-  // Session
-  | 'session_duration'
-  // Engagement
-  | 'command_executed'
-  | 'conversation_started';
-
-export interface ModelUsedPayload {
-  model_name: string;
-  provider_type: ModelProviderType;
-  latency_ms: number;
-  tokens_used?: number;
-}
-
-export interface SessionDurationPayload {
-  duration_seconds: number;
-  assistant_active_seconds?: number;
-  idle_seconds?: number;
 }
 
 // --- src/lib/apiClient.ts ---

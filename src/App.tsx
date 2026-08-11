@@ -10,7 +10,7 @@ import { ApiError, notifyInvalidSession } from "@/lib/apiClient";
 // ---------------------------------------------------------------------------
 // hooks — core app logic, extracted out of App.tsx
 // ---------------------------------------------------------------------------
-import { useWindowRoute, useAppAnalytics, useFirebaseAuth, useTenant, useAutoOpenDashboardForAdmins } from "@/hooks";
+import { useWindowRoute, useFirebaseAuth, useTenant, useAutoOpenDashboardForAdmins } from "@/hooks";
 import { useTeamInvite, useOverlayOpacity, useAppLifecycleListeners, useMeetingSession } from "@/hooks";
 
 // ---------------------------------------------------------------------------
@@ -60,7 +60,6 @@ const App: React.FC = () => {
   const { isSettingsWindow, isLauncherWindow, isOverlayWindow, isModelSelectorWindow, isCropperWindow, isDefault } = useWindowRoute();
 
   // --- Cross-cutting app logic, lifted into hooks -----------------------
-  useAppAnalytics(isLauncherWindow, isOverlayWindow, isDefault);
 
   const FirebaseAuthStates = useFirebaseAuth(isLauncherWindow, isDefault, isOverlayWindow);
   const { authUser, authChecked, pendingVerificationUser, sessionExpiredMessage } = FirebaseAuthStates;
