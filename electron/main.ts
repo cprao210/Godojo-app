@@ -1070,7 +1070,7 @@ export class AppState {
     let stt: STTProvider;
 
     if (sttProvider === 'deepgram') {
-      const apiKey = CredentialsManager.getInstance().getDeepgramApiKey();
+      const apiKey = CredentialsManager.getInstance().getDeepgramApiKey() || process.env.DEEPGRAM_API_KEY;
       if (apiKey) {
         // Diarization only on the client (system-audio) stream: the mic is
         // single-speaker by role, and diarize is a paid streaming add-on.

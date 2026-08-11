@@ -1064,8 +1064,8 @@ export function initializeIpcHandlers(appState: AppState): void {
       const hasKey = (key?: string) => !!(key && key.trim().length > 0);
 
       return {
-        hasGeminiKey: hasKey(creds.geminiApiKey),
-        hasGroqKey: hasKey(creds.groqApiKey),
+        hasGeminiKey: hasKey(creds.geminiApiKey || process.env.GEMINI_API_KEY),
+        hasGroqKey: hasKey(creds.groqApiKey || process.env.GROQ_API_KEY),
         hasOpenaiKey: hasKey(creds.openaiApiKey),
         hasClaudeKey: hasKey(creds.claudeApiKey),
         googleServiceAccountPath: creds.googleServiceAccountPath || null,
@@ -1073,14 +1073,14 @@ export function initializeIpcHandlers(appState: AppState): void {
         groqSttModel: creds.groqSttModel || 'whisper-large-v3-turbo',
         hasSttGroqKey: hasKey(creds.groqSttApiKey),
         hasSttOpenaiKey: hasKey(creds.openAiSttApiKey),
-        hasDeepgramKey: hasKey(creds.deepgramApiKey),
+        hasDeepgramKey: hasKey(creds.deepgramApiKey || process.env.DEEPGRAM_API_KEY),
         hasElevenLabsKey: hasKey(creds.elevenLabsApiKey),
         hasAzureKey: hasKey(creds.azureApiKey),
         azureRegion: creds.azureRegion || 'eastus',
         hasIbmWatsonKey: hasKey(creds.ibmWatsonApiKey),
         ibmWatsonRegion: creds.ibmWatsonRegion || 'us-south',
         hasSonioxKey: hasKey(creds.sonioxApiKey),
-        hasTavilyKey: hasKey(creds.tavilyApiKey),
+        hasTavilyKey: hasKey(creds.tavilyApiKey || process.env.TAVILY_API_KEY),
         // Dynamic Model Discovery - preferred models
         geminiPreferredModel: creds.geminiPreferredModel || undefined,
         groqPreferredModel: creds.groqPreferredModel || undefined,
@@ -1088,7 +1088,7 @@ export function initializeIpcHandlers(appState: AppState): void {
         claudePreferredModel: creds.claudePreferredModel || undefined,
       };
     } catch (error: any) {
-      return { hasGeminiKey: false, hasGroqKey: false, hasOpenaiKey: false, hasClaudeKey: false, googleServiceAccountPath: null, sttProvider: 'deepgram', groqSttModel: 'whisper-large-v3-turbo', hasSttGroqKey: false, hasSttOpenaiKey: false, hasDeepgramKey: false, hasElevenLabsKey: false, hasAzureKey: false, azureRegion: 'southeastasia', hasIbmWatsonKey: false, ibmWatsonRegion: 'us-south', hasSonioxKey: false, hasTavilyKey: false };
+      return { hasGeminiKey: process.env.GEMINI_API_KEY !== null, hasGroqKey: process.env.GROQ_API_KEY !== null, hasOpenaiKey: false, hasClaudeKey: false, googleServiceAccountPath: null, sttProvider: 'deepgram', groqSttModel: 'whisper-large-v3-turbo', hasSttGroqKey: false, hasSttOpenaiKey: false, hasDeepgramKey: process.env.DEEPGRAM_API_KEY !== null, hasElevenLabsKey: false, hasAzureKey: false, azureRegion: 'southeastasia', hasIbmWatsonKey: false, ibmWatsonRegion: 'us-south', hasSonioxKey: false, hasTavilyKey: process.env.TAVILY_API_KEY !== null };
     }
   });
 
