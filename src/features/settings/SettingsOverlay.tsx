@@ -11,6 +11,9 @@ import KeybindsTab from './KeybindsTab';
 import AudioTab from './AudioTab';
 import CalendarTab from './CalendarTab';
 
+import { useEffect } from 'react';
+import { posthogAnalytics } from '@/lib/analytics/posthog.service';
+
 // Sidebar nav item definitions — id must match the `activeTab` values used
 // below. Kept as data so the nav list itself stays a simple `.map()`.
 const NAV_ITEMS = [
@@ -50,6 +53,20 @@ const SettingsOverlay: React.FC<SettingsOverlayProps> = ({
 }) => {
     const overlay = useSettingsOverlay({ isOpen, onClose, initialTab });
     const { isLight, activeTab, setActiveTab, navigateToCompanyContext, opacity, tavily } = overlay;
+
+    // Fires once per genuine open. Reads `activeTab` here (not the raw
+    // `initialTab` prop) because useSettingsOverlay can redirect on open —
+    // e.g. initialTab="company-context" resolves through
+    // navigateToCompanyContext() — so `activeTab` is the only reliable
+    // source of which tab the user is actually looking at. This does NOT
+    // re-fire on later in-panel tab switches; only the isOpen transition
+    // counts as a new "open"
+    useEffect(() => {
+        if (isOpen) {
+            posthogAnalytics.trackPageView('main_settings');
+            posthogAnalytics.trackMainSettingsOpened(activeTab);
+        }
+    }, [isOpen]);
 
     return (
         <AnimatePresence>

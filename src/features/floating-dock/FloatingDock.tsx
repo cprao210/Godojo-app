@@ -9,11 +9,13 @@
  */
 
 import React from 'react';
+import { useEffect } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
 import { Radio, Brain, Pause, Play, StopCircle, Settings, Ghost } from 'lucide-react';
 import { FloatingSettingsPanel, FloatingChatPanel, FloatingIntelligencePanel, DockButton } from '@/features/floating-dock';
 import { FloatingPanelWrapper, DockDivider, DockDragHandle, PausedIndicatorDot } from '@/features/floating-dock';
 import { useFloatingDock } from '@/hooks';
+import { posthogAnalytics } from '@/lib/analytics/posthog.service';
 import { FloatingDockProps } from '@/types';
 
 export const FloatingDock: React.FC<FloatingDockProps> = ({
@@ -38,6 +40,10 @@ export const FloatingDock: React.FC<FloatingDockProps> = ({
 }) => {
 
     const floatingDockStates = useFloatingDock({ transcriptRef, isMeetingPaused, companyIntel });
+
+    useEffect(() => {
+        posthogAnalytics.trackPageView('floating_dock');
+    }, []);
 
     const { activePanel, togglePanel, isFrozen, dockOpacity, handleDockOpacityChange, dockRef } = floatingDockStates;
     const { panelTopOffset, meetingTypes, setMeetingTypes, analysisData, analysisLoading, analysisError } = floatingDockStates;

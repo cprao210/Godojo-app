@@ -6,6 +6,7 @@
 
 import { useState, useCallback, useRef, useEffect, useMemo } from 'react';
 import { intelligenceApi } from '@/api/intelligenceApi';
+import { posthogAnalytics } from '@/lib/analytics/posthog.service';
 import { CompanyContextData, CompanyContextTabProps, CompanyIdentity } from '@/types';
 import { Competitor, KnowledgeAsset, TargetPersona } from '@/types';
 import { BookOpen, FileText, FlaskConical, Presentation } from 'lucide-react';
@@ -189,6 +190,7 @@ export const useCompanyContext = ({
         try {
             const result = await (window as any).electronAPI?.companySaveContext?.(draft);
             if (result?.success) {
+                posthogAnalytics.trackCompanyContextSave();
                 setCompanyContext(draft);
                 savedSnapshot.current = draft;
                 setIsDirty(false);
@@ -222,11 +224,13 @@ export const useCompanyContext = ({
                 const ext = file.fileName.slice(file.fileName.lastIndexOf('.')).toLowerCase();
                 if (!ALLOWED_EXTENSIONS.includes(ext)) {
                     setCompanyError(`Unsupported file type "${ext}" in "${file.fileName}".`);
+                    posthogAnalytics.trackDocumentUploadFailed('unsupported_type');
                     continue;
                 }
                 if (file.fileSize > MAX_FILE_SIZE_BYTES) {
                     const mb = (file.fileSize / (1024 * 1024)).toFixed(1);
                     setCompanyError(`"${file.fileName}" is too large (${mb} MB). Max 5 MB.`);
+                    posthogAnalytics.trackDocumentUploadFailed('too_large');
                     continue;
                 }
 
@@ -250,10 +254,12 @@ export const useCompanyContext = ({
                         assets: prev.assets.map(a => a.id === tempId ? mappedAsset : a),
                     }));
                     setIsDirty(true);
+                    posthogAnalytics.trackDocumentUploadCompleted(type);
                     await window.electronAPI?.profileSetMode?.(true);
                 } else {
                     setDraft(prev => ({ ...prev, assets: prev.assets.filter(a => a.id !== tempId) }));
                     setCompanyError(result?.error || `Upload failed for "${file.fileName}"`);
+                    posthogAnalytics.trackDocumentUploadFailed('upload_error');
                 }
             }
         } catch (e: any) {

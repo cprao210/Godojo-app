@@ -9,6 +9,7 @@ import { useEffect, useState } from "react";
 import { tenantsApi } from "@/api";
 import { ApiError } from "@/lib/apiClient";
 import { getFirebaseAuth } from "@/lib/firebase";
+import { posthogAnalytics } from "@/lib/analytics/posthog.service";
 import { InvitationAcceptResult, MyPendingInvitation, Tenant } from "@/types";
 
 /**
@@ -110,6 +111,7 @@ export function useUserRolesPermissionsTab({ deepLinkInviteToken = null, onDeepL
 
     const handleCreateTeam = async (teamName: string) => {
         const created = await tenantsApi.create(teamName);
+        posthogAnalytics.trackCreateTeam();
         setTenant(created);
         setIsCreateTeamOpen(false);
     };
@@ -123,6 +125,7 @@ export function useUserRolesPermissionsTab({ deepLinkInviteToken = null, onDeepL
             const resolvedTenant = tenants[0] ?? null;
             setTenant(resolvedTenant);
             await window.electronAPI?.setCurrentTenantId?.(resolvedTenant?.id ?? null);
+            posthogAnalytics.trackAcceptInvite();
         } catch (err) {
             setLoadError(err instanceof ApiError ? err.message : 'Failed to load your team.');
         }

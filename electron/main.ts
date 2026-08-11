@@ -17,6 +17,11 @@ const runtimeEnvPath = app.isPackaged
   : path.join(app.getAppPath(), '.env');
 require('dotenv').config({ path: runtimeEnvPath }); // no-ops safely if the file is missing
 
+import { posthogMain } from './services/PostHogMainService';
+// Init as early as possible so it's live before the uncaughtException/
+// unhandledRejection handlers below can fire.
+posthogMain.init();
+
 // Handle stdout/stderr errors at the process level to prevent EIO crashes
 // This is critical for Electron apps that may have their terminal detached
 process.stdout?.on?.('error', () => { });
@@ -80,10 +85,12 @@ app.on('open-url', (event, url) => {
 
 process.on('uncaughtException', (err) => {
   logToFile('[CRITICAL] Uncaught Exception: ' + (err.stack || err.message || err));
+  posthogMain.captureException(err, 'uncaughtException');
 });
 
 process.on('unhandledRejection', (reason, promise) => {
   logToFile('[CRITICAL] Unhandled Rejection at: ' + promise + ' reason: ' + (reason instanceof Error ? reason.stack : reason));
+  posthogMain.captureException(reason, 'unhandledRejection', { promise: String(promise) });
 });
 
 // CQ-04 fix: do NOT call app.getPath() at module load time.
@@ -3452,6 +3459,27 @@ async function initializeApp() {
 
   // Note: We do NOT force dock show here anymore, respecting stealth mode.
 
+  // Renderer crashes (OOM kill, GPU crash, sandbox violation, etc.) never
+  // reach window.onerror in the crashed renderer — the process is gone
+  // before it could report anything. This is the only place these surface.
+  app.on('render-process-gone', (_event, webContents, details) => {
+    console.error('[Main] Renderer process gone:', details.reason, webContents.getURL());
+    posthogMain.captureException(
+      new Error(`Renderer process gone: ${details.reason}`),
+      'render-process-gone',
+      { reason: details.reason, exitCode: details.exitCode, url: webContents.getURL() }
+    );
+  });
+
+  app.on('child-process-gone', (_event, details) => {
+    console.error('[Main] Child process gone:', details.type, details.reason);
+    posthogMain.captureException(
+      new Error(`Child process gone: ${details.type} — ${details.reason}`),
+      'child-process-gone',
+      { type: details.type, reason: details.reason, exitCode: details.exitCode }
+    );
+  });
+
   app.on("activate", () => {
     console.log("App activated")
     if (process.platform === 'darwin') {
@@ -3493,6 +3521,10 @@ async function initializeApp() {
 
     // Kill Ollama if we started it
     OllamaManager.getInstance().stop();
+
+    // Flush any buffered error-tracking events (fire-and-forget — we don't
+    // want to delay quit waiting on this)
+    posthogMain.shutdown();
 
     try {
       const { CredentialsManager } = require('./services/CredentialsManager');

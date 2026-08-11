@@ -9,6 +9,7 @@
  */
 import { useState, useEffect } from 'react';
 import { guardSession } from '@/lib/firebase';
+import { posthogAnalytics } from '@/lib/analytics/posthog.service';
 import type { Meeting } from '@/types';
 
 export function useFollowUpEmail(isOpen: boolean, meeting: Meeting) {
@@ -223,12 +224,16 @@ export function useFollowUpEmail(isOpen: boolean, meeting: Meeting) {
         }
     };
 
-    const handleReset = () => generateEmail();
+    const handleReset = () => {
+        posthogAnalytics.trackFollowUpRegenerate();
+        generateEmail();
+    };
 
     const handleCopy = async () => {
         const fullEmail = subject ? `Subject: ${subject}\n\n${emailBody}` : emailBody;
         try {
             await navigator.clipboard.writeText(fullEmail);
+            posthogAnalytics.trackFollowUpCopy();
             setIsCopied(true);
             setTimeout(() => setIsCopied(false), 2000);
         } catch (err) {

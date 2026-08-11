@@ -33,6 +33,13 @@ export interface ElectronAPI {
   // ===========================================================================
   getScreenshots: () => Promise<Array<{ path: string; preview: string }>>
   deleteScreenshot: (path: string) => Promise<{ success: boolean; error?: string }>
+  logErrorToMain: (payload: {
+    type?: string
+    context?: string
+    message?: string
+    stack?: string
+    componentStack?: string | null
+  }) => Promise<{ success: boolean; error?: string }>
   onScreenshotTaken: (callback: (data: { path: string; preview: string }) => void) => () => void
   onScreenshotAttached: (callback: (data: { path: string; preview: string }) => void) => () => void
   onCaptureAndProcess: (callback: (data: { path: string; preview: string }) => void) => () => void
@@ -268,6 +275,7 @@ export interface ElectronAPI {
   getMeetingActive: () => Promise<boolean>
   onMeetingStateChanged: (callback: (data: { isActive: boolean }) => void) => () => void
   onLiveCallEnded: (callback: (data: { meetingId: string }) => void) => () => void
+  onMeetingCompleted: (callback: () => void) => () => void
   savePendingLiveChatInteractions: (meetingId: string, interactionIds: number[]) => Promise<{ success: boolean; error?: string }>
   getPendingLiveChatInteractions: (meetingId: string) => Promise<number[]>
   clearPendingLiveChatInteractions: (meetingId: string) => Promise<{ success: boolean; error?: string }>

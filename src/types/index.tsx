@@ -1602,7 +1602,13 @@ export interface MeetingChatOverlayProps {
 }
 
 // --- src/features/meetings/components/MeetingDetails.tsx ---
-export interface MeetingDetailsProps { meeting: Meeting; }
+export interface MeetingDetailsProps {
+  meeting: Meeting;
+  // When rendered from a manager's AE-review flow (AEDetailView) rather
+  // than the normal launcher meeting list. Only affects which page-view
+  // name gets tracked — no other behavior differs.
+  viewContext?: 'ae_review';
+}
 
 export interface DetailAnalysisAccordionProps {
   scorecard: MeetingScorecardResult;

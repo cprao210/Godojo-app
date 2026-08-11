@@ -10,6 +10,7 @@ import { useEffect, useRef, useState } from 'react';
 // import — this hook is itself re-exported from that barrel.
 import { useLiveAnalysis } from './useLiveAnalysis';
 import { ActivePanel, ChatMessage, MeetingType } from '@/types';
+import { posthogAnalytics } from '@/lib/analytics/posthog.service';
 
 const OPACITY_STORAGE_KEY = 'gd_dock_opacity';
 const MIN_OPACITY = 0.35;
@@ -42,7 +43,16 @@ export function useFloatingDock({ transcriptRef, isMeetingPaused, companyIntel }
 
     const togglePanel = (panel: ActivePanel) => {
         if (isFrozen && panel !== null) return;
-        setActivePanel((prev) => (prev === panel ? null : panel));
+        setActivePanel((prev) => {
+            const next = prev === panel ? null : panel;
+            // Only fire on genuine opens (next !== null) — toggling a panel
+            // closed, or switching directly between two panels, shouldn't
+            // double-count as an "open" for the panel being left.
+            if (next === 'intelligence') posthogAnalytics.trackLiveAnalysisOpened();
+            else if (next === 'chat') posthogAnalytics.trackLiveChatOpened();
+            else if (next === 'settings') posthogAnalytics.trackLiveSettingsOpened();
+            return next;
+        });
     };
 
     const handleFreezeMode = () => setIsFrozen((prev) => !prev);

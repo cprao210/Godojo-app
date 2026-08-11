@@ -3,6 +3,7 @@ import type { User } from "firebase/auth";
 import { subscribeAuthState, signOut as fbSignOut, installSessionGuard } from "../lib/firebase";
 import { apiFetch, setInvalidSessionHandler } from "../lib/apiClient";
 import { FirebaseAuthState } from "@/types";
+import { posthogAnalytics } from "@/lib/analytics/posthog.service";
 
 /**
  * Owns every piece of Firebase auth state App.tsx needs:
@@ -38,6 +39,7 @@ export function useFirebaseAuth(
                 setAuthUser(null);
                 setPendingVerificationUser(null);
                 setAuthChecked(true);
+                posthogAnalytics.resetIdentity(); // clear identity on sign-out
                 return;
             }
 
@@ -54,6 +56,10 @@ export function useFirebaseAuth(
             setPendingVerificationUser(null);
             setAuthUser(user);
             setAuthChecked(true);
+            posthogAnalytics.identifyUser(user.uid, {   // identify on verified sign-in
+                email: user.email,
+                name: user.displayName,
+            });
         });
         return () => unsub();
     }, [isLauncherWindow, isDefault]);

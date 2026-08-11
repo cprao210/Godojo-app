@@ -14,6 +14,7 @@ import {
     resetPassword,
     getAuthErrorMessage,
 } from "@/lib/firebase";
+import { posthogAnalytics } from "@/lib/analytics/posthog.service";
 import { FieldValuesType } from "@/types";
 
 export type AuthMode = "sign-in" | "sign-up" | "reset";
@@ -66,7 +67,12 @@ export function useSignIn() {
         setGoogleBusy(true);
         setBusy(true);
         try {
-            await signInWithGoogle();
+            const { isNewUser } = await signInWithGoogle();
+            if (isNewUser) {
+                posthogAnalytics.trackUserRegistered('google');
+            } else {
+                posthogAnalytics.trackUserSignedIn('google');
+            }
         } catch (e: any) {
             const msg: string = e?.message ?? "";
             // User-cancelled popups aren't real errors — don't surface them.
@@ -91,11 +97,13 @@ export function useSignIn() {
 
             if (mode === "sign-up") {
                 await signUpWithEmailExtended({ email, password, displayName, phoneNumber });
+                posthogAnalytics.trackUserRegistered('email');
                 // Do not call onSignedIn. Firebase fires onAuthStateChanged which
                 // subscribeAuthState in App.tsx intercepts. If emailVerified=false
                 // it shows EmailVerification; if true it opens the app.
             } else if (mode === "sign-in") {
                 await signInWithEmail(email, password);
+                posthogAnalytics.trackUserSignedIn('email');
             } else if (mode === "reset") {
                 await resetPassword(email);
                 setInfo("Password reset email sent.");

@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from "react";
 import type { User } from "firebase/auth";
 import { tenantsApi } from "../api/tenantsApi";
 import { Tenant, TenantState } from "@/types";
+import { posthogAnalytics } from "@/lib/analytics/posthog.service";
 
 /**
  * Resolves the signed-in user's tenant and keeps every window in sync.
@@ -35,6 +36,13 @@ export function useTenant(authUser: User | null, isLauncherWindow: boolean, isDe
             const resolvedTenant = tenants[0] ?? null;
             const resolved = resolvedTenant?.id ?? null;
             setTenant(resolvedTenant);
+
+            if (resolved) {
+                posthogAnalytics.identifyTenant(resolved, {
+                    name: resolvedTenant?.name,
+                });
+            }
+
             // Publish to the main process so every window (esp. the overlay,
             // which owns the End Meeting button) picks it up via tenant:state-changed.
             window.electronAPI.setCurrentTenantId(resolved).catch((err) =>

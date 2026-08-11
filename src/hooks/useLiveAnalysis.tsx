@@ -1,6 +1,7 @@
 import { useState, useCallback, useRef, useEffect } from 'react';
 import { LiveAnalysisData, LiveAnalysisTurn, MeetingType } from '@/types';
 import { intelligenceApi } from '@/api/intelligenceApi';
+import { posthogAnalytics } from '@/lib/analytics/posthog.service';
 
 // ─── Prompt builders ─────────────────────────────────────────────────────────
 //
@@ -698,6 +699,10 @@ export const useLiveAnalysis = (
       console.warn('[useLiveAnalysis] Analysis already in-flight, skipping duplicate call.');
       return;
     }
+
+    // force=true is the manual "Refresh" button (and the first-open kick);
+    // force=false is the unattended auto-refresh timer firing on its own.
+    posthogAnalytics.trackLiveAnalysisRefresh(force ? 'manual' : 'auto');
 
     isLoadingRef.current = true;
     setIsLoading(true);

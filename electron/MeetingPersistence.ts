@@ -570,6 +570,12 @@ export class MeetingPersistence {
             // Notify Frontend to refresh list
             const wins = require('electron').BrowserWindow.getAllWindows();
             wins.forEach((w: any) => w.webContents.send('meetings-updated'));
+            // Separate, analytics-specific signal from 'meetings-updated' above —
+            // that event also fires on paths that aren't "a meeting successfully
+            // finished processing" (e.g. list refreshes), so it's not a safe
+            // proxy for counting completed meetings. This one fires exactly once
+            // per successfully saved meeting.
+            wins.forEach((w: any) => w.webContents.send('meeting-completed'));
 
         } catch (error) {
             console.error('[MeetingPersistence] Failed to save meeting:', error);

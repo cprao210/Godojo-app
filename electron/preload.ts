@@ -418,6 +418,13 @@ contextBridge.exposeInMainWorld("electronAPI", {
   getScreenshots: () => ipcRenderer.invoke("get-screenshots"),
   deleteScreenshot: (path: string) =>
     ipcRenderer.invoke("delete-screenshot", path),
+  logErrorToMain: (payload: {
+    type?: string;
+    context?: string;
+    message?: string;
+    stack?: string;
+    componentStack?: string;
+  }) => ipcRenderer.invoke("log-error-to-main", payload),
 
   // Event listeners
   onScreenshotTaken: (
@@ -574,6 +581,11 @@ contextBridge.exposeInMainWorld("electronAPI", {
     const subscription = (_: any, data: { meetingId: string }) => callback(data);
     ipcRenderer.on('live-call-ended', subscription);
     return () => { ipcRenderer.removeListener('live-call-ended', subscription); };
+  },
+  onMeetingCompleted: (callback: () => void) => {
+    const subscription = () => callback();
+    ipcRenderer.on('meeting-completed', subscription);
+    return () => { ipcRenderer.removeListener('meeting-completed', subscription); };
   },
   savePendingLiveChatInteractions: (meetingId: string, interactionIds: number[]) =>
     ipcRenderer.invoke('live-chat:save-pending-interactions', meetingId, interactionIds),

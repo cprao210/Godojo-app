@@ -16,6 +16,7 @@ import { ConnectCalendarButton } from '@/features/calendar';
 import { UserProfileButton } from '@/features/tenant';
 import { generateMeetingPDF } from '@/../utils/pdfGenerator';
 import { isMac } from '@/../utils/platformUtils';
+import { posthogAnalytics } from '@/lib/analytics/posthog.service';
 import { Meeting } from '@/types';
 import { IMAGES } from '@/lib/assets';
 import { getGroupLabel, formatTime, formatDurationPill, UPLOAD_MEETING_TYPE_OPTIONS } from '@/hooks/useLauncher';
@@ -279,7 +280,12 @@ interface StartMeetingButtonProps {
 
 export const StartMeetingButton: React.FC<StartMeetingButtonProps> = ({ isMeetingActive, onClick }) => (
     <motion.button
-        onClick={onClick}
+        onClick={() => {
+            if (!isMeetingActive) {
+                posthogAnalytics.trackStartGodojoClicked('launcher_header');
+            }
+            onClick();
+        }}
         whileHover={{ scale: 1.02, filter: 'brightness(1.08)' }}
         whileTap={{ scale: 0.98 }}
         transition={{ duration: 0.15, ease: 'easeOut' }}

@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useEffect, useState } from 'react';
 import { useResolvedTheme, useMeetingDetails, formatTime, cleanMarkdown, isSummaryEmpty } from '@/hooks';
 import { Mail, ChevronDown, BarChart3, ArrowUp, Copy, Check, TrendingUp, TriangleAlert, MessageSquare } from 'lucide-react';
 import { MessagesSquareIcon, ChartColumnIncreasing, CircleCheck, NotepadText, RefreshCcw, RefreshCw, NotebookPen, ClipboardList } from 'lucide-react';
@@ -6,6 +6,7 @@ import { motion, AnimatePresence } from 'framer-motion';
 
 import { MeetingChatOverlay, FollowUpEmailModal, MeetingScorecardPanel } from '@/features/meetings';
 import { EditableTextBlock } from '@/features/common';
+import { posthogAnalytics } from '@/lib/analytics/posthog.service';
 import { IMAGES } from '@/lib/assets';
 import { LiveAnalysisContent } from '@/features/live-analysis/LiveAnalysisContent';
 import { MeetingDetailsProps, Meeting, DetailAnalysisAccordionProps } from '@/types';
@@ -98,7 +99,7 @@ const DetailAnalysisAccordion: React.FC<DetailAnalysisAccordionProps> = ({ score
     );
 };
 
-const MeetingDetails: React.FC<MeetingDetailsProps> = ({ meeting: initialMeeting }) => {
+const MeetingDetails: React.FC<MeetingDetailsProps> = ({ meeting: initialMeeting, viewContext }) => {
 
     const isLight = useResolvedTheme() === 'light';
     const {
@@ -131,6 +132,29 @@ const MeetingDetails: React.FC<MeetingDetailsProps> = ({ meeting: initialMeeting
         queryClient,
         meetingKey,
     } = useMeetingDetails(initialMeeting);
+
+    // Fires once per mount, independent of activeTab — matches "no matter
+    // of what tab is selected" in the spec. Re-fires if the user backs out
+    // and opens a different meeting, since that's a genuinely new view.
+    useEffect(() => {
+        posthogAnalytics.trackPageView(viewContext === 'ae_review' ? 'ae_meeting_details' : 'meeting_details');
+        // eslint-disable-next-line react-hooks/exhaustive-deps
+    }, [initialMeeting?.id]);
+
+    // Regenerate is triggered from three separate buttons in this file (tab
+    // bar + two empty-state variants) — wrap once here so all three fire the
+    // same tracked call instead of instrumenting each onClick separately.
+    const handleRegenerateSummaryTracked = () => {
+        posthogAnalytics.trackSummaryRegenerate();
+        handleRegenerateSummary();
+    };
+
+    const TAB_TRACKERS: Record<'summary' | 'transcript' | 'usage' | 'analysis', (() => void) | null> = {
+        summary: null,
+        transcript: () => posthogAnalytics.trackTranscriptTabView(),
+        usage: () => posthogAnalytics.trackAskDojoTabView(),
+        analysis: () => posthogAnalytics.trackCallAnalysisTabView(),
+    };
 
     return (
         <div className={`relative h-full w-full flex flex-col font-sans overflow-hidden ${isLight ? 'bg-[#f0f2f8] text-slate-700' : 'bg-[#0a0c14] text-slate-300'}`}>
@@ -165,7 +189,10 @@ const MeetingDetails: React.FC<MeetingDetailsProps> = ({ meeting: initialMeeting
 
                                 {/* Follow-up email — bordered pill button */}
                                 <button
-                                    onClick={handleFollowUpEmail}
+                                    onClick={() => {
+                                        posthogAnalytics.trackFollowUpMail();
+                                        handleFollowUpEmail();
+                                    }}
                                     disabled={isRegenerating || isProcessing}
                                     className={`
                                         shrink-0 flex items-center gap-2 px-3.5 py-2 rounded-lg text-[13px] font-medium
@@ -199,7 +226,10 @@ const MeetingDetails: React.FC<MeetingDetailsProps> = ({ meeting: initialMeeting
                             {(['summary', 'transcript', 'usage', 'analysis'] as const).map((tab) => (
                                 <button
                                     key={tab}
-                                    onClick={() => setActiveTab(tab)}
+                                    onClick={() => {
+                                        TAB_TRACKERS[tab]?.();
+                                        setActiveTab(tab);
+                                    }}
                                     className={`
                                         relative px-3.5 py-1.5 text-[13px] font-medium rounded-lg transition-all duration-200 z-10
                                         ${activeTab === tab
@@ -226,7 +256,7 @@ const MeetingDetails: React.FC<MeetingDetailsProps> = ({ meeting: initialMeeting
 
                             {/* Regenerate */}
                             <button
-                                onClick={handleRegenerateSummary}
+                                onClick={handleRegenerateSummaryTracked}
                                 disabled={isRegenerating || isProcessing}
                                 title={isProcessing ? 'Wait for analysis to complete first' : 'Regenerate summary'}
                                 className={`
@@ -325,7 +355,7 @@ const MeetingDetails: React.FC<MeetingDetailsProps> = ({ meeting: initialMeeting
                                                     <p className={`text-[12px] ${isLight ? 'text-slate-400' : 'text-white/25'}`}>Summary will appear here once the meeting is processed</p>
                                                 </div>
                                                 <button
-                                                    onClick={handleRegenerateSummary}
+                                                    onClick={handleRegenerateSummaryTracked}
                                                     className={`mt-1 flex items-center gap-2 px-4 py-2 rounded-lg text-[12px] font-medium transition-all ${isLight ? 'bg-white border border-slate-200 text-slate-600 hover:bg-slate-50 shadow-sm' : 'bg-white/[0.05] border border-white/[0.1] text-white/60 hover:bg-white/[0.08]'}`}
                                                 >
                                                     <RefreshCcw size={12} strokeWidth={1.8} />

@@ -8,6 +8,7 @@
 import { useState, useEffect, useRef, useCallback } from 'react';
 import { useStreamBuffer } from './useStreamBuffer';
 import { chatApi, statusLabel } from '@/api';
+import { posthogAnalytics } from '@/lib/analytics/posthog.service';
 import type { ChatSources, MeetingChatMessage, MeetingChatState, StreamHandle, MeetingContext } from '@/types';
 
 export interface UseMeetingChatArgs {
@@ -55,6 +56,11 @@ export function useMeetingChat({ isOpen, onClose, onMessagesChange, messages, me
         // eslint-disable-next-line react-hooks/exhaustive-deps
     }, [isOpen, initialQuery?.id]);
 
+    // Fire once per genuine open — not on every re-render while already open.
+    useEffect(() => {
+        if (isOpen) posthogAnalytics.trackMeetingChatOpened();
+    }, [isOpen]);
+
     // Reset state when overlay closes
     useEffect(() => {
         if (!isOpen) {
@@ -99,6 +105,8 @@ export function useMeetingChat({ isOpen, onClose, onMessagesChange, messages, me
             setChatState('error');
             return;
         }
+
+        posthogAnalytics.trackMeetingChatQuery();
 
         const userMessage: MeetingChatMessage = {
             id: `user-${Date.now()}`,

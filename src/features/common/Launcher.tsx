@@ -13,6 +13,7 @@
  */
 
 import React from 'react';
+import { useEffect } from 'react';
 import { AnimatePresence, motion } from 'framer-motion';
 import { IoSparklesSharp } from 'react-icons/io5';
 import { MeetingDetails, MeetingTimeline, NextMeetingDetails, NextMeetingEmptyState, SalesBriefPanel } from '@/features/meetings';
@@ -21,6 +22,7 @@ import { useLauncher } from '@/hooks';
 import { LauncherHeader, GhostModeToggle, RefreshButton, StartMeetingButton, OllamaPullBadge } from './LauncherWidgets';
 import { CalendarConnectCard, RecentMeetingsHeader, MeetingsList, RefreshToast, TranscriptUploadModal } from './LauncherWidgets';
 import { LauncherProps } from '@/types';
+import { posthogAnalytics } from '@/lib/analytics/posthog.service';
 
 const Launcher: React.FC<LauncherProps> = ({ onStartMeeting, onOpenSettings, onOpenManagerDashboard, onPageChange, ollamaPullStatus = 'idle', ollamaPullPercent = 0, ollamaPullMessage = '', authUser, onSignOut }) => {
 
@@ -33,6 +35,10 @@ const Launcher: React.FC<LauncherProps> = ({ onStartMeeting, onOpenSettings, onO
     const { isUploadOpen, setIsUploadOpen, uploadText, setUploadText, uploadTitle, setUploadTitle } = launcherStates;
     const { isUploading, uploadMeetingTypes, setUploadMeetingTypes, uploadError, handleUploadTranscript } = launcherStates;
     const { salesBriefEvent, setSalesBriefEvent, isGlobalChatOpen, setIsGlobalChatOpen, submittedGlobalQuery, setSubmittedGlobalQuery } = launcherStates;
+
+    useEffect(() => {
+        posthogAnalytics.trackPageView('launcher');
+    }, []);
 
     if (!window.electronAPI) {
         return <div className="text-white p-10">Error: Electron API not initialized. Check preload script.</div>;
@@ -252,6 +258,7 @@ const Launcher: React.FC<LauncherProps> = ({ onStartMeeting, onOpenSettings, onO
                             setIsGlobalChatOpen(false);
                             setSubmittedGlobalQuery('');
                         } else {
+                            posthogAnalytics.trackGlobalChatOpened();
                             setIsGlobalChatOpen(true);
                         }
                     }}

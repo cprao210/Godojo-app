@@ -1,4 +1,4 @@
-import React, { useState } from "react";
+import React, { useEffect, useState } from "react";
 import { AnimatePresence, motion } from "framer-motion";
 import { QueryClient, QueryClientProvider, QueryCache, MutationCache } from "react-query";
 
@@ -6,6 +6,7 @@ import { QueryClient, QueryClientProvider, QueryCache, MutationCache } from "rea
 // lib — infra / service wrappers
 // ---------------------------------------------------------------------------
 import { ApiError, notifyInvalidSession } from "@/lib/apiClient";
+import { posthogAnalytics } from "@/lib/analytics/posthog.service";
 
 // ---------------------------------------------------------------------------
 // hooks — core app logic, extracted out of App.tsx
@@ -61,6 +62,16 @@ const App: React.FC = () => {
 
   // --- Cross-cutting app logic, lifted into hooks -----------------------
 
+  // Each Electron BrowserWindow loads its own copy of this bundle, so
+  // PostHog needs its own init() call per window.
+  useEffect(() => {
+    posthogAnalytics.initAnalytics();
+    const unsubscribeMeetingCompleted = window.electronAPI?.onMeetingCompleted?.(() => {
+      posthogAnalytics.trackMeetingCompleted();
+    });
+    return () => unsubscribeMeetingCompleted?.();
+  }, []);
+
   const FirebaseAuthStates = useFirebaseAuth(isLauncherWindow, isDefault, isOverlayWindow);
   const { authUser, authChecked, pendingVerificationUser, sessionExpiredMessage } = FirebaseAuthStates;
   const { setSessionExpiredMessage, completeEmailVerification, signOut } = FirebaseAuthStates;
@@ -85,6 +96,7 @@ const App: React.FC = () => {
 
   const openInviteSettingsTab = () => {
     setSettingsInitialTab("user-roles-permissions");
+    posthogAnalytics.trackMainSettingsOpened("user-roles-permissions");
     setIsSettingsOpen(true);
   };
 

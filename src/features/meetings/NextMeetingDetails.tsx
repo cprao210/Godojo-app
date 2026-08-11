@@ -4,6 +4,7 @@ import { Calendar, Video, Users, Briefcase, Clock } from 'lucide-react';
 import type { UpcomingMeeting } from '@/types';
 import { NextMeetingProviderChip, NextMeetingAvatarStack } from './NextMeetingChips';
 import { NextMeetingCountdownRing } from './NextMeetingCountdownRing';
+import { posthogAnalytics } from '@/lib/analytics/posthog.service';
 
 // ─────────────────────────────────────────────────────────────────
 // NEXT MEETING CARD (populated state)
@@ -162,6 +163,7 @@ export function NextMeetingDetails({
                     whileHover={{ scale: 1.02 }}
                     whileTap={{ scale: 0.97 }}
                     onClick={() => {
+                        posthogAnalytics.trackMeetingJoined();
                         // Open the meeting link in the system browser
                         if (meeting.link) {
                             window.electronAPI?.openExternal?.(meeting.link);
@@ -177,7 +179,10 @@ export function NextMeetingDetails({
 
                 {/* Sales Brief */}
                 <button
-                    onClick={() => onSalesBrief(meeting)}
+                    onClick={() => {
+                        posthogAnalytics.trackCompanyInsightsClicked();
+                        onSalesBrief(meeting);
+                    }}
                     className={[
                         "flex items-center gap-2 px-4 py-2.5 rounded-xl border text-[12px] font-medium transition-all",
                         isLight

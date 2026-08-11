@@ -6,7 +6,8 @@
   "scripts": {
     "clean": "rimraf dist dist-electron",
     "dev": "vite",
-    "build": "npm run clean && tsc && vite build",
+    "build": "npm run clean && tsc && vite build && npm run sourcemaps:upload",
+    "sourcemaps:upload": "posthog-cli sourcemap inject --directory dist && posthog-cli sourcemap upload --directory dist",
     "build:electron": "tsc -p electron/tsconfig.json",
     "preview": "vite preview",
     "postinstall": "cross-env SHARP_IGNORE_GLOBAL_LIBVIPS=1 npm rebuild sharp && node scripts/download-models.js && node scripts/ensure-sqlite-vec.js",
@@ -36,6 +37,7 @@
     ],
     "files": [
       "dist",
+      "!dist/**/*.map",
       "dist-electron",
       "native-module",
       "package.json",
@@ -223,6 +225,8 @@
     "mammoth": "^1.12.0",
     "openai": "^6.22.0",
     "pdf-parse": "^2.4.5",
+    "posthog-js": "^1.415.2",
+    "posthog-node": "^5.48.1",
     "react": "^18.3.1",
     "react-code-blocks": "^0.1.6",
     "react-dom": "^18.3.1",

@@ -13,6 +13,7 @@ import { loadUserProfile } from '@/features/settings';
 import { meetingsApi } from '@/api';
 import { ApiError } from '@/lib/apiClient';
 import { LauncherProps, Meeting, UpcomingMeeting } from '@/types';
+import { posthogAnalytics } from '@/lib/analytics/posthog.service';
 
 const MINUTE = 60 * 1000;
 const HOUR = 60 * MINUTE;
@@ -184,6 +185,7 @@ export function useLauncher({ onStartMeeting, ollamaPullStatus = 'idle', onPageC
     };
 
     const handleRefresh = async () => {
+        posthogAnalytics.trackLauncherRefresh();
         setIsRefreshing(true);
         try {
             if (window.electronAPI && window.electronAPI.calendarRefresh) {
@@ -371,6 +373,14 @@ export function useLauncher({ onStartMeeting, ollamaPullStatus = 'idle', onPageC
     const toggleDetectable = () => {
         const newState = !isDetectable;
         setIsDetectable(newState);
+        // isDetectable=true means visible/on-screen (ghost mode OFF);
+        // isDetectable=false means hidden from capture (ghost mode ON) —
+        // matches the inverted setUndetectable(!newState) call right below.
+        if (newState) {
+            posthogAnalytics.trackGhostModeOff();
+        } else {
+            posthogAnalytics.trackGhostModeOn();
+        }
         window.electronAPI?.setUndetectable(!newState); // Note: setUndetectable takes the *undetectable* state, which is inverse of *detectable*
     };
 
@@ -506,7 +516,9 @@ export function useLauncher({ onStartMeeting, ollamaPullStatus = 'idle', onPageC
             e.preventDefault();
             setIsGlobalChatOpen(prev => {
                 const next = !prev;
-                if (!next) {
+                if (next) {
+                    posthogAnalytics.trackGlobalChatOpened();
+                } else {
                     setSubmittedGlobalQuery('');
                 }
                 return next;
@@ -522,6 +534,7 @@ export function useLauncher({ onStartMeeting, ollamaPullStatus = 'idle', onPageC
         // Full detail (transcript + usage) loads in MeetingDetails via React Query
         // (meetingsApi.get → GET /meetings/{id}); the list row seeds it as initialData.
         setSelectedMeeting(meeting);
+        posthogAnalytics.trackMeetingDetailsView();
     };
 
     const handleBack = () => {

@@ -13,7 +13,7 @@ import { ChatHistoryTurn, ChatStreamHandlers, LiveTranscriptSegment, RagAnswer, 
 // errors (5xx, 429). Anything else (400/401/403/404, malformed request,
 // etc.) is a client-side problem that will fail identically on retry, so
 // don't waste time/attempts on it.
-const MAX_STREAM_RETRIES = 2;
+const MAX_STREAM_RETRIES = 3;
 const RETRY_BASE_DELAY_MS = 600;
 
 function isRetryableStreamError(err: unknown): boolean {

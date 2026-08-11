@@ -30,6 +30,11 @@ export default defineConfig({
     },
     build: {
         chunkSizeWarningLimit: 1000,
+        // Emit sourcemaps so PostHog Error Tracking can show real
+        // file/line info instead of the minified Rollup bundle output.
+        // Uploaded to PostHog and stripped from the packaged app by the
+        // sourcemaps:upload step below — never shipped to end users.
+        sourcemap: true,
         // NOTE: manualChunks was removed here on purpose.
         //
         // The previous config split React/react-dom/framer-motion into a

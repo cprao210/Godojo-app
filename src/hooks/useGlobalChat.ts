@@ -7,6 +7,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { chatApi, statusLabel } from "@/api/chatApi";
 import { useStreamBuffer } from "@/hooks/useStreamBuffer";
+import { posthogAnalytics } from "@/lib/analytics/posthog.service";
 import { ChatSources, GlobalChatMessage, GlobalChatState, StreamHandle } from "@/types";
 
 interface UseGlobalChatArgs {
@@ -45,6 +46,8 @@ export function useGlobalChat({ isOpen, onClose, initialQuery = "" }: UseGlobalC
     // ── Submit question using global RAG ─────────────────────────────────────
     const submitQuestion = useCallback(async (question: string) => {
         if (!question.trim() || chatState === "waiting_for_llm" || chatState === "streaming_response") return;
+
+        posthogAnalytics.trackGlobalChatQuery();
 
         const userMessage: GlobalChatMessage = {
             id: `user-${Date.now()}`,

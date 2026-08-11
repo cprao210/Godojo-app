@@ -20,6 +20,8 @@ import {
 } from './utils/companyKnowledge';
 import { AuthManager } from './services/AuthManager';
 import { PendingLiveChatStore } from './PendingLiveChatStore';
+import { posthogMain } from './services/PostHogMainService';
+import { tenantContext } from './services/TenantContext';
 
 const BACKEND_URL = process.env.VITE_API_BASE_URL ?? "http://127.0.0.1:8000";
 
@@ -32,6 +34,34 @@ export function initializeIpcHandlers(appState: AppState): void {
     ipcMain.removeHandler(channel);
     ipcMain.handle(channel, listener);
   };
+
+  // Relays renderer-side errors (currently: ErrorBoundary.componentDidCatch,
+  // see src/features/common/ErrorBoundary.tsx) into main-process error
+  // tracking. The renderer already reports these to PostHog directly via
+  // posthog-js — this channel exists so the SAME event is also visible from
+  // main's perspective (which window/context it hit, main-process-side
+  // correlation), and as a fallback in case the renderer crashes before its
+  // own posthog-js capture() call completes.
+  safeHandle('log-error-to-main', async (_event, payload: {
+    type?: string;
+    context?: string;
+    message?: string;
+    stack?: string;
+    componentStack?: string;
+  }) => {
+    try {
+      const error = new Error(payload?.message ?? 'Unknown renderer error');
+      if (payload?.stack) error.stack = payload.stack;
+      posthogMain.captureException(error, 'renderer-error-boundary', {
+        rendererContext: payload?.context,
+        componentStack: payload?.componentStack,
+      });
+      return { success: true };
+    } catch (e: any) {
+      console.error('[ipc] log-error-to-main failed:', e);
+      return { success: false, error: e?.message ?? String(e) };
+    }
+  });
 
   // --- NEW Test Helper ---
   safeHandle("test-release-fetch", async () => {
@@ -3646,14 +3676,14 @@ export function initializeIpcHandlers(appState: AppState): void {
   let currentTenantId: string | null = null;
 
   safeHandle('tenant:set-current', async (_, tenantId: string | null) => {
-    currentTenantId = tenantId ?? null;
+    tenantContext.set(tenantId ?? null);
     BrowserWindow.getAllWindows().forEach(win => {
       if (!win.isDestroyed()) win.webContents.send('tenant:state-changed', currentTenantId);
     });
     return { success: true };
   });
 
-  safeHandle('tenant:get-current', async () => currentTenantId);
+  safeHandle('tenant:get-current', async () => tenantContext.get());
 
   safeHandle('auth:set-id-token', async (_, session: {
     idToken: string;

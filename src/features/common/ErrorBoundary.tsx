@@ -1,4 +1,3 @@
-// src/components/ErrorBoundary.tsx
 // Top-level React Error Boundary to catch uncaught render errors and present a
 // graceful fallback instead of a blank white screen (White Screen of Death).
 //
@@ -7,6 +6,7 @@
 import React, { Component, ReactNode } from 'react';
 import { RefreshCw, AlertTriangle } from 'lucide-react';
 import { ErrorBoundaryProps, ErrorBoundaryState } from '@/types';
+import { posthogAnalytics } from '@/lib/analytics/posthog.service';
 
 export class ErrorBoundary extends Component<ErrorBoundaryProps, ErrorBoundaryState> {
     state: ErrorBoundaryState = {
@@ -27,9 +27,18 @@ export class ErrorBoundary extends Component<ErrorBoundaryProps, ErrorBoundarySt
         console.error(`[ErrorBoundary:${context}] Uncaught render error:`, error, info.componentStack);
         this.setState({ componentStack: info.componentStack ?? '' });
 
-        // Report to analytics if IPC is available (non-blocking)
+        // Report to PostHog Error Tracking (non-blocking — must never throw
+        // inside an error handler)
         try {
-            // @ts-ignore  
+            posthogAnalytics.trackException(error, context, {
+                componentStack: info.componentStack,
+            });
+        } catch { /* analytics must never crash the handler */ }
+
+        // Also relay to main process, once logErrorToMain is wired up on the
+        // preload bridge (see Step 3 — IPC forwarding for main-process +
+        // renderer-crash capture)
+        try {
             window.electronAPI?.logErrorToMain?.({
                 type: 'uncaught-render-error',
                 context,

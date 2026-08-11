@@ -4,6 +4,7 @@
 // the component so it only owns rendering.
 
 import { useCallback, useEffect, useRef, useState } from "react";
+import { posthogAnalytics } from "@/lib/analytics/posthog.service";
 import { CalendarProvider, Provider } from "@/types";
 
 type ConnectionStatus = Record<Provider, boolean>;
@@ -125,6 +126,7 @@ export function useCalendarConnections({ providers, onConnect, onDisconnect }: U
         async (provider: Provider) => {
             setShowPicker(false);
             setLoading(provider);
+            posthogAnalytics.trackCalendarConnectClicked(provider);
             try {
                 const res =
                     provider === "google"
@@ -133,6 +135,7 @@ export function useCalendarConnections({ providers, onConnect, onDisconnect }: U
 
                 if (res?.success) {
                     setConnected((prev) => ({ ...prev, [provider]: true }));
+                    posthogAnalytics.trackCalendarConnected(provider);
                     onConnect?.();
                 }
             } catch (err) {

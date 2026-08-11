@@ -8,6 +8,7 @@ import { useEffect, useState } from "react";
 import { Briefcase, Search, Target, MessageCircle, Handshake, Radio, type LucideIcon } from "lucide-react";
 import { tenantsApi } from "@/api";
 import { ApiError } from "@/lib/apiClient";
+import { posthogAnalytics } from "@/lib/analytics/posthog.service";
 import {
     AeSummary,
     Meeting,
@@ -149,6 +150,7 @@ export function useAeDetail({ ae, tenantId }: UseAeDetailArgs) {
     const handleSelectCall = (call: RecentCall) => {
         const raw = detail?.recent_calls.find((c) => c.meeting_id === call.meetingId);
         if (!raw) return;
+        posthogAnalytics.trackAeMeetingView();
         setSelectedMeeting(placeholderMeetingFromCall(raw));
     };
 

@@ -17,10 +17,12 @@
  */
 
 import React from 'react';
+import { useEffect } from 'react';
 import { AnimatePresence, motion } from 'framer-motion';
 import { ArrowLeft, Info } from 'lucide-react';
 import { useResolvedTheme } from '@/hooks';
 import { useAeDetail } from '@/hooks/useAeDetail';
+import { posthogAnalytics } from '@/lib/analytics/posthog.service';
 import { MeetingDetails } from '@/features/meetings';
 import { AeDetailViewProps } from '@/types';
 import { avatarColorFor, initialsFor, AVATAR_PALETTE } from './shared';
@@ -32,6 +34,12 @@ export const AeDetailView: React.FC<AeDetailViewProps> = ({ ae, tenantId, onBack
 
     const isLight = useResolvedTheme() === 'light';
     const isOpen = ae !== null;
+
+    useEffect(() => {
+        if (isOpen) posthogAnalytics.trackAeProfileView();
+        if (isOpen) posthogAnalytics.trackPageView('ae_profile');
+        // eslint-disable-next-line react-hooks/exhaustive-deps
+    }, [ae?.userId]);
 
     const AeDetailsStates = useAeDetail({ ae, tenantId });
 
@@ -61,7 +69,7 @@ export const AeDetailView: React.FC<AeDetailViewProps> = ({ ae, tenantId, onBack
                         </button>
 
                         {selectedMeeting ? (
-                            <MeetingDetails meeting={selectedMeeting} />
+                            <MeetingDetails meeting={selectedMeeting} viewContext="ae_review" />
                         ) : (
                             <>
                                 {detailError && (

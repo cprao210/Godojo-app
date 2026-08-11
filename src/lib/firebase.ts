@@ -22,7 +22,8 @@ import {
     signOut as fbSignOut,
     updateProfile,
     Auth,
-    User
+    User,
+    getAdditionalUserInfo
 } from 'firebase/auth';
 
 // =====================================================================
@@ -157,7 +158,7 @@ function installIdTokenBridge(auth: Auth): void {
 // Public sign-in helpers (used by SignIn.tsx)
 // =====================================================================
 
-export async function signInWithGoogle(): Promise<User> {
+export async function signInWithGoogle(): Promise<{ user: User; isNewUser: boolean }> {
     const auth = getFirebaseAuth();
     const provider = new GoogleAuthProvider();
 
@@ -170,7 +171,13 @@ export async function signInWithGoogle(): Promise<User> {
 
     try {
         const result = await signInWithPopup(auth, provider);
-        return result.user;
+        // getAdditionalUserInfo tells us whether this popup created a brand
+        // new Firebase account or signed into an existing one — used to
+        // split 'user_registered' vs 'user_signed_in' analytics for Google,
+        // the same distinction the email/password flow gets for free from
+        // having separate sign-up/sign-in call sites.
+        const isNewUser = getAdditionalUserInfo(result)?.isNewUser ?? false;
+        return { user: result.user, isNewUser };
     } catch (err: any) {
         // User closed the popup — not a real error.
         if (err?.code === 'auth/popup-closed-by-user') {
