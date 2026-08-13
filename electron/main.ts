@@ -22,6 +22,35 @@ import { posthogMain } from './services/PostHogMainService';
 // unhandledRejection handlers below can fire.
 posthogMain.init();
 
+// One-time, masked diagnostic so a "keys not falling back to env" report can
+// be triaged directly from a shipped build's logs (Console.app on mac,
+// %APPDATA% logs on Windows) AND from PostHog, instead of guessing blind or
+// needing someone to pull local logs off a user's machine. Never logs or
+// sends actual key values — presence/absence + length only.
+{
+  const envFileExists = fs.existsSync(runtimeEnvPath);
+  const mask = (v?: string) => (v ? `present (${v.length} chars)` : 'MISSING');
+  const keyPresent = (v?: string) => !!v && v.trim().length > 0;
+  console.log(
+    `[Main] Runtime .env: path=${runtimeEnvPath} exists=${envFileExists} | ` +
+    `DEEPGRAM_API_KEY=${mask(process.env.DEEPGRAM_API_KEY)} ` +
+    `GEMINI_API_KEY=${mask(process.env.GEMINI_API_KEY)} ` +
+    `GROQ_API_KEY=${mask(process.env.GROQ_API_KEY)} ` +
+    `TAVILY_API_KEY=${mask(process.env.TAVILY_API_KEY)}`
+  );
+  posthogMain.capture('env_fallback_keys_status', {
+    platform: process.platform,
+    appVersion: app.getVersion(),
+    isPackaged: app.isPackaged,
+    envFileExists,
+    deepgramEnvPresent: keyPresent(process.env.DEEPGRAM_API_KEY),
+    geminiEnvPresent: keyPresent(process.env.GEMINI_API_KEY),
+    groqEnvPresent: keyPresent(process.env.GROQ_API_KEY),
+    tavilyEnvPresent: keyPresent(process.env.TAVILY_API_KEY),
+  });
+}
+
+
 // Handle stdout/stderr errors at the process level to prevent EIO crashes
 // This is critical for Electron apps that may have their terminal detached
 process.stdout?.on?.('error', () => { });
