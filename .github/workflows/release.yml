@@ -194,7 +194,10 @@ jobs:
         # warns only — same distinction as the pre-build check above).
         shell: bash
         run: |
-          mapfile -t APP_PATHS < <(find release -iname "*.app" -maxdepth 4 -type d)
+          APP_PATHS=()
+          while IFS= read -r -d '' app_path; do
+            APP_PATHS+=("$app_path")
+          done < <(find release -iname "*.app" -maxdepth 4 -type d -print0)
           if [ "${#APP_PATHS[@]}" -eq 0 ]; then
             echo "::error::No .app bundles found under release/ — cannot verify bundled .env."
             exit 1
