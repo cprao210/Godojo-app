@@ -70,6 +70,31 @@ class PostHogMainService {
     }
 
     /**
+     * Generic event capture for the main process (parity with
+     * posthogAnalytics.trackEvent() in the renderer). Use for one-off
+     * diagnostic/status events fired from main.ts, e.g.
+     * 'env_fallback_keys_status'.
+     */
+    public capture(eventName: string, properties?: Record<string, any>): void {
+        if (!this.client) return;
+
+        try {
+            const tenantId = tenantContext.get();
+            this.client.capture({
+                distinctId: this.currentDistinctId(),
+                event: eventName,
+                properties: {
+                    process: 'main',
+                    ...(tenantId ? { $groups: { tenant: tenantId } } : {}),
+                    ...properties,
+                },
+            });
+        } catch (captureError) {
+            console.warn('[PostHogMain] Failed to capture event:', captureError);
+        }
+    }
+
+    /**
      * Report an exception from the main process. `source` identifies where
      * it came from (e.g. "uncaughtException", "render-process-gone",
      * "renderer-error-boundary") so it's filterable in PostHog next to the
