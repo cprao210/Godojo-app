@@ -2654,135 +2654,25 @@ export function initializeIpcHandlers(appState: AppState): void {
           db.saveAssetFile(asset.id, asset.fileName, asset.mimeType, fileBuffer);
 
           // Chunk + embed synchronously (awaited) so the caller (handleSave) can
-          // be certain embeddings are actually written before it returns success —
-          // this is what /reindex depends on downstream.
-
-          if (asset.mimeType !== "application/pdf") {
-
-            await (async () => {
-              try {
-                const { extractTextFromBuffer } = require('./utils/documentParser');
-                const { estimateTokens } = require('./rag');
-
-                const rawText: string = await extractTextFromBuffer(fileBuffer, asset.mimeType);
-
-                const MAX_TOKENS = 400;
-                const sentences = rawText.split(/(?<=[.!?])\s+/);
-                const chunks: Array<{ index: number; text: string; tokenCount: number }> = [];
-                let current = '';
-                let idx = 0;
-                for (const sentence of sentences) {
-                  const combined = current ? `${current} ${sentence}` : sentence;
-                  if (estimateTokens(combined) > MAX_TOKENS && current) {
-                    chunks.push({ index: idx++, text: current.trim(), tokenCount: estimateTokens(current) });
-                    current = sentence;
-                  } else {
-                    current = combined;
-                  }
-                }
-                if (current.trim()) {
-                  chunks.push({ index: idx, text: current.trim(), tokenCount: estimateTokens(current) });
-                }
-
-                db.saveAssetChunks(asset.id, chunks);
-
-                const ragManager = appState.getRAGManager?.();
-                if (!ragManager) {
-                  // RAG pipeline not available — mark error so the UI shows the real state
-                  // instead of silently lying with 'mapped'
-                  db.upsertCompanyAsset({ id: asset.id, type: asset.type, label: asset.label, status: 'error' });
-                  console.warn(`[IPC] company:saveContext — ragManager not available, skipping embeddings for asset ${asset.id}`);
-                  // Still link chunks (text-only, no embeddings) to the orchestrator
-                  try {
-                    const orchestrator = appState.getKnowledgeOrchestrator();
-                    if (orchestrator && typeof orchestrator.ingestDocument === 'function') {
-                      await orchestrator.ingestDocument({ id: asset.id, type: asset.type, label: asset.label, mimeType: asset.mimeType });
-                    }
-                  } catch (_) { }
-                  return;
-                }
-
-                const pipeline = ragManager.getEmbeddingPipeline();
-
-                // Bug 2 fix: wait for the pipeline to finish initializing before embedding
-                try {
-                  await pipeline.waitForReady(20000);
-                } catch (readyErr: any) {
-                  console.error(`[IPC] company:saveContext — embedding pipeline not ready for asset ${asset.id}:`, readyErr.message);
-                  db.upsertCompanyAsset({ id: asset.id, type: asset.type, label: asset.label, status: 'error' });
-                  try {
-                    const orchestrator = appState.getKnowledgeOrchestrator();
-                    if (orchestrator && typeof orchestrator.ingestDocument === 'function') {
-                      await orchestrator.ingestDocument({ id: asset.id, type: asset.type, label: asset.label, mimeType: asset.mimeType });
-                    }
-                  } catch (_) { }
-                  return;
-                }
-
-                let embeddingsFailed = 0;
-                const storedChunks = db.getAssetChunksWithoutEmbeddings(asset.id);
-                for (const c of storedChunks) {
-                  try {
-                    const vector = await pipeline.getEmbedding(c.chunk_text);
-                    const blob = Buffer.from(new Float32Array(vector).buffer);
-                    db.saveAssetChunkEmbedding(c.id, blob);
-                  } catch (embErr: any) {
-                    embeddingsFailed++;
-                    console.warn(`[IPC] company:saveContext — embedding failed for chunk ${c.id}:`, embErr.message);
-                  }
-                }
-
-                // Only mark 'mapped' if all embeddings succeeded
-                const finalStatus = embeddingsFailed === 0 ? 'mapped' : 'error';
-                if (embeddingsFailed > 0) {
-                  console.error(`[IPC] company:saveContext — ${embeddingsFailed}/${storedChunks.length} chunks failed to embed for asset ${asset.id}`);
-                }
-                db.upsertCompanyAsset({ id: asset.id, type: asset.type, label: asset.label, status: finalStatus });
-
-                // [NEW] Link the indexed document to the orchestrator
-                try {
-                  const orchestrator = appState.getKnowledgeOrchestrator();
-                  if (orchestrator && typeof orchestrator.ingestDocument === 'function') {
-                    // Do NOT pass extractedText here — chunks + embeddings are already
-                    // written to DB above. Passing extractedText triggers Mode A which
-                    // re-embeds inline and produces null embeddings if the pipeline is
-                    // momentarily busy, making all chunks invisible to semantic search.
-                    // Mode B (no extractedText) reads the already-embedded chunks from DB.
-                    await orchestrator.ingestDocument({
-                      id: asset.id,
-                      type: asset.type,        // 'sales_deck' | 'product_specs' | 'case_studies' | 'custom'
-                      label: asset.label,
-                      mimeType: asset.mimeType,
-                    });
-                    console.log(`[IPC] company:saveContext — orchestrator.ingestDocument linked for asset ${asset.id}`);
-                  }
-                } catch (ingestErr: any) {
-                  // Non-fatal: orchestrator link failure should not block the save flow
-                  console.warn(`[IPC] company:saveContext — orchestrator.ingestDocument failed for ${asset.id}:`, ingestErr.message);
-                }
-
-                console.log(`[IPC] company:saveContext — asset ${asset.id} fully indexed`);
-              } catch (indexErr: any) {
-                console.error(`[IPC] company:saveContext — indexing failed for asset ${asset.id}:`, indexErr.message);
-                db.upsertCompanyAsset({ id: asset.id, type: asset.type, label: asset.label, status: 'error' });
-              }
-            })();
-
-          } else {
-
-            try {
+          // be certain the asset is actually indexed before it returns success.
+          //
+          // All supported types (pdf/doc/docx/ppt/pptx/csv/xlsx) now go through
+          // the backend's /company-assets/upload endpoint: docx/pptx/xlsx/csv get
+          // precise native text extraction there, PDFs/legacy doc/ppt fall back
+          // to Document AI. This replaces the old split where non-PDF types were
+          // extracted+embedded locally — one code path, one source of truth for
+          // "is this asset actually indexed".
+          try {
+            const token = getAuthToken();
+            if (!token) {
+              db.upsertCompanyAsset({ id: asset.id, type: asset.type, label: asset.label, status: 'error' });
+              console.error(`[IPC] company:saveContext — no auth token available for asset ${asset.id}`);
+            } else {
               const form = new FormData();
               form.append('file', new Blob([fileBuffer], { type: asset.mimeType }), asset.fileName);
               form.append('asset_id', asset.id);
               form.append('label', asset.label);
               form.append('asset_type', asset.type);
-
-              const token = getAuthToken();
-              if (!token) {
-                db.upsertCompanyAsset({ id: asset.id, type: asset.type, label: asset.label, status: 'error' });
-                console.error(`[IPC] no auth token available — user not signed in?`);
-                return;
-              }
 
               const resp = await fetch(`${BACKEND_URL}/api/v1/intelligence/company-assets/upload`, {
                 method: 'POST',
@@ -2791,17 +2681,17 @@ export function initializeIpcHandlers(appState: AppState): void {
               });
 
               const result = await resp.json();
-              console.log("SAVE_CONTEXT UPLOAD RESULT: ", result);
+              console.log(`[IPC] company:saveContext — upload result for ${asset.id}:`, result);
               db.upsertCompanyAsset({
                 id: asset.id, type: asset.type, label: asset.label,
                 status: result.status === 'indexed' ? 'mapped' : 'error',
               });
-            } catch (uploadErr: any) {
-              console.error(`[IPC] upload failed for asset ${asset.id}:`, uploadErr.message);
-              db.upsertCompanyAsset({ id: asset.id, type: asset.type, label: asset.label, status: 'error' });
             }
-
+          } catch (uploadErr: any) {
+            console.error(`[IPC] company:saveContext — upload failed for asset ${asset.id}:`, uploadErr.message);
+            db.upsertCompanyAsset({ id: asset.id, type: asset.type, label: asset.label, status: 'error' });
           }
+
 
         } else {
           // Existing asset already in DB — just keep its current status
@@ -2913,6 +2803,8 @@ export function initializeIpcHandlers(appState: AppState): void {
         docx: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
         ppt: 'application/vnd.ms-powerpoint',
         pptx: 'application/vnd.openxmlformats-officedocument.presentationml.presentation',
+        csv: 'text/csv',
+        xlsx: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
       };
       const mimeType = MIME_MAP[ext] ?? 'application/octet-stream';
 
@@ -2946,6 +2838,29 @@ export function initializeIpcHandlers(appState: AppState): void {
 
   safeHandle('company:deleteAsset', async (_, assetId: string) => {
     try {
+      // Purge backend (Supabase vectors + cached chat answers) first — if this
+      // fails we keep the local copy so the user can retry, instead of silently
+      // leaving orphaned vectors that chat/live-analysis RAG can still surface.
+      const token = getAuthToken();
+      if (token) {
+        try {
+          const resp = await fetch(
+            `${BACKEND_URL}/api/v1/intelligence/company-assets/${encodeURIComponent(assetId)}`,
+            { method: 'DELETE', headers: { Authorization: `Bearer ${token}` } }
+          );
+          if (!resp.ok && resp.status !== 404) {
+            // 404 is fine — asset was never uploaded to backend (e.g. local-only
+            // asset that errored before reaching /upload). Anything else, surface it.
+            const body = await resp.text();
+            throw new Error(`Backend delete failed (${resp.status}): ${body}`);
+          }
+        } catch (backendErr: any) {
+          console.error('[IPC] company:deleteAsset — backend delete failed:', backendErr.message);
+          return { success: false, error: backendErr.message || 'Failed to delete from server' };
+        }
+      } else {
+        console.warn('[IPC] company:deleteAsset — no auth token, skipping backend delete (local-only cleanup)');
+      }
       DatabaseManager.getInstance().deleteAssetFiles(assetId);
       return { success: true };
     } catch (error: any) {
@@ -3676,7 +3591,8 @@ export function initializeIpcHandlers(appState: AppState): void {
   let currentTenantId: string | null = null;
 
   safeHandle('tenant:set-current', async (_, tenantId: string | null) => {
-    tenantContext.set(tenantId ?? null);
+    currentTenantId = tenantId ?? null;
+    tenantContext.set(currentTenantId);
     BrowserWindow.getAllWindows().forEach(win => {
       if (!win.isDestroyed()) win.webContents.send('tenant:state-changed', currentTenantId);
     });

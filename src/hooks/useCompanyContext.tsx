@@ -10,9 +10,10 @@ import { posthogAnalytics } from '@/lib/analytics/posthog.service';
 import { CompanyContextData, CompanyContextTabProps, CompanyIdentity } from '@/types';
 import { Competitor, KnowledgeAsset, TargetPersona } from '@/types';
 import { BookOpen, FileText, FlaskConical, Presentation } from 'lucide-react';
+import { settingsToast } from '@/lib/settingsToastBus';
 
 // ─── Constants ────────────────────────────────────────────────────────────────
-export const ALLOWED_EXTENSIONS = ['.pdf', '.doc', '.docx', '.ppt', '.pptx'];
+export const ALLOWED_EXTENSIONS = ['.pdf', '.doc', '.docx', '.ppt', '.pptx', '.csv', '.xlsx'];
 export const MAX_FILE_SIZE_BYTES = 5 * 1024 * 1024; // 5 MB
 
 export const ASSET_CONFIG: Record<KnowledgeAsset['type'], {
@@ -114,6 +115,10 @@ export const useCompanyContext = ({
     const savedSnapshot = useRef<CompanyContextData>(draft);
     const [isDirty, setIsDirty] = useState(false);
 
+    // Asset ids removed in the draft but not yet purged server-side.
+    // Actual deletion is deferred until the user clicks Save.
+    const pendingDeletedAssetIds = useRef<Set<string>>(new Set());
+
     // ── Modal states ──────────────────────────────────────────────────────────
     const [personaModalOpen, setPersonaModalOpen] = useState(false);
     const [editingPersona, setEditingPersona] = useState<TargetPersona | null>(null);
@@ -188,27 +193,47 @@ export const useCompanyContext = ({
         setCompanyError('');
         setCompanySaving(true);
         try {
+            // Purge any assets removed in this session before saving the rest.
+            const idsToDelete = Array.from(pendingDeletedAssetIds.current);
+            for (const assetId of idsToDelete) {
+                const delResult = await (window as any).electronAPI?.companyDeleteAsset?.(assetId);
+                if (!delResult?.success) {
+                    const message = delResult?.error || 'Failed to delete asset';
+                    setCompanyError(message);
+                    settingsToast.error(message);
+                    setCompanySaving(false);
+                    return;
+                }
+            }
+            pendingDeletedAssetIds.current.clear();
             const result = await (window as any).electronAPI?.companySaveContext?.(draft);
             if (result?.success) {
                 posthogAnalytics.trackCompanyContextSave();
                 setCompanyContext(draft);
                 savedSnapshot.current = draft;
                 setIsDirty(false);
+                settingsToast.success('Saved Successfully');
                 // Trigger reindex (best-effort)
                 intelligenceApi.reindexCompanyAssets().catch(err =>
                     console.error('[CompanyContext] Failed to reindex:', err)
                 );
             } else {
-                setCompanyError(result?.error || 'Save failed');
+                const message = result?.error || 'Save failed';
+                setCompanyError(message);
+                settingsToast.error(message);
             }
         } catch (e: any) {
-            setCompanyError(e.message || 'Save failed');
+            const message = e.message || 'Save failed';
+            setCompanyError(message);
+            settingsToast.error(message);
         } finally {
             setCompanySaving(false);
         }
     }, [draft, setCompanyContext, setCompanyError, setCompanySaving]);
 
     const handleDiscard = useCallback(() => {
+        // Undo any queued-but-unsaved deletions along with the rest of the draft.
+        pendingDeletedAssetIds.current.clear();
         setDraft(JSON.parse(JSON.stringify(savedSnapshot.current)));
         setIsDirty(false);
         setCompanyError('');
@@ -223,6 +248,7 @@ export const useCompanyContext = ({
             for (const file of fileResult.files as { filePath: string; fileName: string; fileSize: number }[]) {
                 const ext = file.fileName.slice(file.fileName.lastIndexOf('.')).toLowerCase();
                 if (!ALLOWED_EXTENSIONS.includes(ext)) {
+                    settingsToast.error(`Unsupported file type "${ext}"`);
                     setCompanyError(`Unsupported file type "${ext}" in "${file.fileName}".`);
                     posthogAnalytics.trackDocumentUploadFailed('unsupported_type');
                     continue;
@@ -230,6 +256,7 @@ export const useCompanyContext = ({
                 if (file.fileSize > MAX_FILE_SIZE_BYTES) {
                     const mb = (file.fileSize / (1024 * 1024)).toFixed(1);
                     setCompanyError(`"${file.fileName}" is too large (${mb} MB). Max 5 MB.`);
+                    settingsToast.error(`File size exceeds. Max 5 MB.`);
                     posthogAnalytics.trackDocumentUploadFailed('too_large');
                     continue;
                 }
@@ -259,18 +286,24 @@ export const useCompanyContext = ({
                 } else {
                     setDraft(prev => ({ ...prev, assets: prev.assets.filter(a => a.id !== tempId) }));
                     setCompanyError(result?.error || `Upload failed for "${file.fileName}"`);
+                    settingsToast.error(`Upload failed for "${file.fileName}"`);
                     posthogAnalytics.trackDocumentUploadFailed('upload_error');
                 }
             }
         } catch (e: any) {
             setCompanyError(e.message || 'Upload failed');
+            settingsToast.error(`Upload failed!`);
         } finally {
             setAssetUploading(null);
         }
     }, [setCompanyError, setAssetUploading]);
 
-    const handleDeleteAsset = useCallback((assetId: string) => {
+    const handleDeleteAsset = useCallback(async (assetId: string) => {
         if (!confirm('Remove this knowledge asset?')) return;
+        // Only remove from the local draft. The actual server-side delete is
+        // deferred until the user clicks Save (handleSave), so unsaved
+        // deletions can still be discarded via handleDiscard.
+        pendingDeletedAssetIds.current.add(assetId);
         setDraft(prev => ({ ...prev, assets: prev.assets.filter(a => a.id !== assetId) }));
         setIsDirty(true);
     }, []);
@@ -278,7 +311,10 @@ export const useCompanyContext = ({
     const handleDeleteAllForType = useCallback((type: KnowledgeAsset['type']) => {
         const cfgLabel = ASSET_CONFIG[type].label;
         if (!confirm(`Remove all ${cfgLabel} files?`)) return;
-        setDraft(prev => ({ ...prev, assets: prev.assets.filter(a => a.type !== type) }));
+        setDraft(prev => {
+            prev.assets.filter(a => a.type === type).forEach(a => pendingDeletedAssetIds.current.add(a.id));
+            return { ...prev, assets: prev.assets.filter(a => a.type !== type) };
+        });
         setIsDirty(true);
     }, []);
 

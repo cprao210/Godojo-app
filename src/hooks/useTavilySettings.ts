@@ -4,6 +4,7 @@
 // was previously declared alongside them.
 
 import { useState } from 'react';
+import { settingsToast } from '@/lib/settingsToastBus';
 
 export function useTavilySettings() {
     const [tavilyApiKey, setTavilyApiKeyInput] = useState('');
@@ -28,13 +29,18 @@ export function useTavilySettings() {
         try {
             const result = await window.electronAPI?.setTavilyApiKey?.(tavilyApiKey.trim());
             if (result && !result.success) {
-                setTavilyError(result.error ?? 'Failed to save API key.');
+                const message = result.error ?? 'Failed to save API key.';
+                setTavilyError(message);
+                settingsToast.error(message);
             } else {
                 setHasStoredTavilyKey(true);
                 setTavilyApiKeyInput('');
+                settingsToast.success('Saved Successfully');
             }
         } catch (e: any) {
-            setTavilyError(e?.message ?? 'Unexpected error saving API key.');
+            const message = e?.message ?? 'Unexpected error saving API key.';
+            setTavilyError(message);
+            settingsToast.error(message);
         } finally {
             setTavilySaving(false);
         }

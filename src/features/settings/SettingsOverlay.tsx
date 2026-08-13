@@ -10,8 +10,10 @@ import GeneralTab from './GeneralTab';
 import KeybindsTab from './KeybindsTab';
 import AudioTab from './AudioTab';
 import CalendarTab from './CalendarTab';
+import { SettingsSaveToast } from './SettingsSaveToast';
 
 import { useEffect } from 'react';
+import { isMac } from '@/../utils/platformUtils';
 import { posthogAnalytics } from '@/lib/analytics/posthog.service';
 
 // Sidebar nav item definitions — id must match the `activeTab` values used
@@ -94,7 +96,7 @@ const SettingsOverlay: React.FC<SettingsOverlayProps> = ({
                         >
                             {/* ── Sidebar ── */}
                             <div className={`w-72 shrink-0 flex flex-col border-r ${isLight ? 'bg-white border-slate-200/70' : 'bg-bg-sidebar border-border-subtle'}`}>
-                                <div className="p-6">
+                                <div className={isMac ? "p-6 pt-12" : "p-6"}>
                                     <div className="flex items-center justify-between mb-4">
                                         <h2 className="font-semibold text-text-tertiary text-xs uppercase tracking-wider">Settings</h2>
                                     </div>
@@ -182,6 +184,10 @@ const SettingsOverlay: React.FC<SettingsOverlayProps> = ({
                             </div>
                         </div>
                     </motion.div>
+
+                    {/* Save/error notification — listens on settingsToastBus, fires from
+                        any tab's save handler regardless of which hook it lives in. */}
+                    <SettingsSaveToast isLight={isLight} />
                 </motion.div>
             )}
         </AnimatePresence>

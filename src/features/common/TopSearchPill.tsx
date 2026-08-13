@@ -4,6 +4,7 @@ import { Search } from 'lucide-react';
 import { motion, AnimatePresence } from 'framer-motion';
 import { TopSearchPillProps } from '@/types';
 import { useTopSearchPill } from '@/hooks';
+import { isMac } from '@/../utils/platformUtils';
 import SearchResultRow from '@/features/common/SearchResultRow';
 
 // ============================================
@@ -56,7 +57,7 @@ const TopSearchPill: React.FC<TopSearchPillProps> = ({
             {/* Search Pill Container */}
             <div
                 ref={containerRef}
-                className="absolute left-1/2 -translate-x-1/2 top-[7px] no-drag z-40"
+                className={isMac ? "absolute left-[54%] -translate-x-1/2 top-[10px] no-drag z-40" : "absolute left-1/2 -translate-x-1/2 top-[7px] no-drag z-40"}
             >
                 <div className="relative">
                     <motion.div
@@ -96,8 +97,8 @@ const TopSearchPill: React.FC<TopSearchPillProps> = ({
                                         onChange={handleInputChange}
                                         onFocus={handleInputFocus}
                                         className={`
-                                        w-full bg-transparent
-                                        pl-9 pr-4 py-1
+                                        w-full bg-transparent pl-9 pr-4 
+                                        ${isMac ? "py-2" : "py-1"}
                                         text-[13px] text-text-primary
                                         placeholder-text-tertiary
                                         focus:outline-none

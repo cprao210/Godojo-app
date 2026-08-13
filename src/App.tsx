@@ -236,6 +236,7 @@ const App: React.FC = () => {
                             setIsManagerDashboardOpen(false); // switching to Settings closes Dashboard
                             setIsSettingsOpen(true);
                           }}
+                          isManagerDashboardOpen={isManagerDashboardOpen}
                           onOpenManagerDashboard={
                             isAdmin
                               ? () => {

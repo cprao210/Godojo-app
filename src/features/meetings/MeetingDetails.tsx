@@ -5,6 +5,7 @@ import { MessagesSquareIcon, ChartColumnIncreasing, CircleCheck, NotepadText, Re
 import { motion, AnimatePresence } from 'framer-motion';
 
 import { MeetingChatOverlay, FollowUpEmailModal, MeetingScorecardPanel } from '@/features/meetings';
+import { chatMarkdownComponents } from '@/features/chat';
 import { EditableTextBlock } from '@/features/common';
 import { posthogAnalytics } from '@/lib/analytics/posthog.service';
 import { IMAGES } from '@/lib/assets';
@@ -12,8 +13,6 @@ import { LiveAnalysisContent } from '@/features/live-analysis/LiveAnalysisConten
 import { MeetingDetailsProps, Meeting, DetailAnalysisAccordionProps } from '@/types';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
-import { Prism as SyntaxHighlighter } from 'react-syntax-highlighter';
-import { vscDarkPlus } from 'react-syntax-highlighter/dist/esm/styles/prism';
 
 // Skeleton pulse component
 const Skeleton: React.FC<{ className?: string }> = ({ className = '' }) => (
@@ -1198,56 +1197,17 @@ const MeetingDetails: React.FC<MeetingDetailsProps> = ({ meeting: initialMeeting
                                                             <ReactMarkdown
                                                                 remarkPlugins={[remarkGfm]}
                                                                 components={{
-                                                                    h1: ({ node, ...props }) => <p className="text-[15px] text-text-secondary font-normal leading-relaxed mb-2 whitespace-pre-wrap" {...props} />,
-                                                                    h2: ({ node, ...props }) => <p className="text-[15px] text-text-secondary font-normal leading-relaxed mb-2 whitespace-pre-wrap" {...props} />,
-                                                                    h3: ({ node, ...props }) => <p className="text-[15px] text-text-secondary font-normal leading-relaxed mb-2 whitespace-pre-wrap" {...props} />,
-                                                                    p: ({ node, ...props }) => <p className="text-[15px] text-text-secondary font-normal leading-relaxed mb-2 whitespace-pre-wrap" {...props} />,
-                                                                    ul: ({ node, ...props }) => <ul className="list-disc ml-4 mb-2 space-y-1" {...props} />,
-                                                                    ol: ({ node, ...props }) => <ol className="list-decimal ml-4 mb-2 space-y-1" {...props} />,
-                                                                    li: ({ node, ...props }) => <li className="text-[15px] text-text-secondary font-normal" {...props} />,
-                                                                    strong: ({ node, ...props }) => <span className="font-normal text-text-secondary" {...props} />,
-                                                                    a: ({ node, ...props }: any) => <a className="text-blue-500 hover:underline" {...props} />,
-                                                                    pre: ({ children }: any) => <div className="not-prose mb-4">{children}</div>,
-                                                                    code: ({ node, inline, className, children, ...props }: any) => {
-                                                                        const match = /language-(\w+)/.exec(className || '');
-                                                                        const isInline = inline ?? false;
-                                                                        const lang = match ? match[1] : '';
-
-                                                                        return !isInline ? (
-                                                                            <div className="my-3 rounded-xl overflow-hidden border border-white/[0.08] shadow-lg bg-zinc-800/60 backdrop-blur-md">
-                                                                                <div className="bg-white/[0.04] px-3 py-1.5 border-b border-white/[0.08]">
-                                                                                    <span className="text-[10px] uppercase tracking-widest font-semibold text-white/40 font-mono">
-                                                                                        {lang || 'CODE'}
-                                                                                    </span>
-                                                                                </div>
-                                                                                <div className="bg-transparent">
-                                                                                    <SyntaxHighlighter
-                                                                                        language={lang || 'text'}
-                                                                                        style={vscDarkPlus}
-                                                                                        customStyle={{
-                                                                                            margin: 0,
-                                                                                            borderRadius: 0,
-                                                                                            fontSize: '13px',
-                                                                                            lineHeight: '1.6',
-                                                                                            background: 'transparent',
-                                                                                            padding: '16px',
-                                                                                            fontFamily: 'ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace'
-                                                                                        }}
-                                                                                        wrapLongLines={true}
-                                                                                        showLineNumbers={true}
-                                                                                        lineNumberStyle={{ minWidth: '2.5em', paddingRight: '1.2em', color: 'rgba(255,255,255,0.2)', textAlign: 'right', fontSize: '11px' }}
-                                                                                        {...props}
-                                                                                    >
-                                                                                        {String(children).replace(/\n$/, '')}
-                                                                                    </SyntaxHighlighter>
-                                                                                </div>
-                                                                            </div>
-                                                                        ) : (
-                                                                            <code className="bg-bg-tertiary px-1.5 py-0.5 rounded text-[13px] font-mono text-text-primary border border-border-subtle whitespace-pre-wrap" {...props}>
-                                                                                {children}
-                                                                            </code>
-                                                                        );
-                                                                    }
+                                                                    ...chatMarkdownComponents,
+                                                                    // Ask Dojo tab keeps headings/paragraphs down to plain
+                                                                    // body copy (no bold/large text) unlike the chat overlays.
+                                                                    h1: ({ node, ...props }: any) => <p className="text-[15px] text-text-secondary font-normal leading-relaxed mb-2 whitespace-pre-wrap" {...props} />,
+                                                                    h2: ({ node, ...props }: any) => <p className="text-[15px] text-text-secondary font-normal leading-relaxed mb-2 whitespace-pre-wrap" {...props} />,
+                                                                    h3: ({ node, ...props }: any) => <p className="text-[15px] text-text-secondary font-normal leading-relaxed mb-2 whitespace-pre-wrap" {...props} />,
+                                                                    p: ({ node, ...props }: any) => <p className="text-[15px] text-text-secondary font-normal leading-relaxed mb-2 whitespace-pre-wrap" {...props} />,
+                                                                    ul: ({ node, ...props }: any) => <ul className="list-disc ml-4 mb-2 space-y-1" {...props} />,
+                                                                    ol: ({ node, ...props }: any) => <ol className="list-decimal ml-4 mb-2 space-y-1" {...props} />,
+                                                                    li: ({ node, ...props }: any) => <li className="text-[15px] text-text-secondary font-normal" {...props} />,
+                                                                    strong: ({ node, ...props }: any) => <span className="font-normal text-text-secondary" {...props} />,
                                                                 }}
                                                             >
                                                                 {cleanMarkdown(interaction.ai_response || '')}

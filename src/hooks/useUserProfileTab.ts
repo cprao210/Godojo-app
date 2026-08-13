@@ -8,6 +8,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { getFirebaseAuth } from "@/lib/firebase";
 import { UserProfileData } from "@/types";
+import { settingsToast } from "@/lib/settingsToastBus";
 
 const PROFILE_KEY = "gd_user_profile";
 const SAVE_ANIMATION_MS = 400;
@@ -105,12 +106,17 @@ export function useUserProfileTab() {
 
     const handleSave = useCallback(() => {
         setSaving(true);
-        saveUserProfile(profile);
-        setTimeout(() => {
-            setSaving(false);
-            setSaved(true);
-            setTimeout(() => setSaved(false), SAVED_BADGE_MS);
-        }, SAVE_ANIMATION_MS);
+        try {
+            saveUserProfile(profile);
+            setTimeout(() => {
+                setSaving(false);
+                setSaved(true);
+                settingsToast.success('Saved Successfully');
+                setTimeout(() => setSaved(false), SAVED_BADGE_MS);
+            }, SAVE_ANIMATION_MS);
+        } catch (e: any) {
+            settingsToast.error(e?.message ?? 'Failed to save profile.');
+        }
     }, [profile]);
 
     const triggerPhotoPicker = useCallback(() => {

@@ -115,17 +115,35 @@ export function useFloatingDock({ transcriptRef, isMeetingPaused, companyIntel }
         runAnalysisRef.current = runAnalysis;
     }, [runAnalysis]);
 
+    // Moved above the negotiation-toggle effect (was previously declared further
+    // down, next to the countdown timer) so both consumers can share it. `force`
+    // in useLiveAnalysis.runAnalysis has no transcript-size guard of its own — it
+    // only bails on a completely empty transcript — so any caller that wants to
+    // avoid firing on a near-empty transcript has to check this itself.
+    const hasEnoughTranscript = () => {
+        const turns = transcriptRef.current ?? [];
+        return turns.filter((t) => !NON_PROSPECT_SPEAKERS.includes(t.speaker?.toLowerCase())).length >= MIN_PROSPECT_TURNS;
+    };
+
     // Fire an immediate analysis when Negotiation is NEWLY checked, so the Deal
     // Optimizer tab populates within seconds instead of waiting for the next
     // auto-refresh tick. The prev-ref means neither mount (['discovery']
     // default) nor a session-reset fires it, and unchecking never triggers a
     // run. Same force semantics as the Regenerate button; the hook's in-flight
     // guard prevents duplicate calls.
+    //
+    // BUGFIX: force=true skips useLiveAnalysis's own transcript checks, so
+    // without the hasEnoughTranscript() gate below, checking the box seconds
+    // into a call (only a couple of transcript words captured) triggered an
+    // immediate low-signal API call and visible panel refresh. Now it only
+    // force-fires once there's actually enough transcript to analyse — if
+    // there isn't yet, the regular auto-refresh cycle (or the urgent-trigger
+    // scan) will pick it up once enough turns arrive.
     const prevMeetingTypesRef = useRef<MeetingType[]>(meetingTypes);
     useEffect(() => {
         const hadNegotiation = prevMeetingTypesRef.current.includes('negotiation');
         prevMeetingTypesRef.current = meetingTypes;
-        if (!hadNegotiation && meetingTypes.includes('negotiation')) {
+        if (!hadNegotiation && meetingTypes.includes('negotiation') && hasEnoughTranscript()) {
             runAnalysisRef.current(true);
         }
     }, [meetingTypes]);
@@ -211,11 +229,6 @@ export function useFloatingDock({ transcriptRef, isMeetingPaused, companyIntel }
     // the new one, so the display could open showing an arbitrary leftover
     // value (e.g. "0:10") instead of the full configured duration.
     const [sessionKey, setSessionKey] = useState(0);
-
-    const hasEnoughTranscript = () => {
-        const turns = transcriptRef.current ?? [];
-        return turns.filter((t) => !NON_PROSPECT_SPEAKERS.includes(t.speaker?.toLowerCase())).length >= MIN_PROSPECT_TURNS;
-    };
 
     // Runs ONCE per cycle (single-shot, not recurring):
     //   - If enough transcript is captured before the countdown finishes,

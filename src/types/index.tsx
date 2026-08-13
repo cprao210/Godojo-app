@@ -1301,6 +1301,7 @@ export interface LauncherProps {
   onStartMeeting: (calendarEvent?: any) => void;
   onOpenSettings: (tab?: string) => void;
   onOpenManagerDashboard?: () => void;
+  isManagerDashboardOpen?: boolean;
   onPageChange?: (isMain: boolean) => void;
   ollamaPullStatus?: 'idle' | 'downloading' | 'complete' | 'failed';
   ollamaPullPercent?: number;
