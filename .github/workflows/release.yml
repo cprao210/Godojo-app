@@ -10,12 +10,54 @@ on:
         description: 'Version tag (e.g. v2.1.0)'
         required: true
         default: 'v0.0.0-test'
+      platform:
+        description: 'Which OS to build (tag pushes always build all three; this only applies to manual runs)'
+        required: true
+        type: choice
+        default: 'all'
+        options:
+          - all
+          - mac
+          - windows
+          - linux
 
 jobs:
+  # ─── Resolve which platform(s) to build, from either the tag name
+  # (v1.0.0 / v1.0.0-mac / v1.0.0-windows / v1.0.0-linux / v1.0.0-all)
+  # or the manual workflow_dispatch dropdown. Every build job reads this
+  # job's output instead of duplicating the same parsing logic three times.
+  # ─────────────────────────────────────────────────────────────────────
+  resolve-platform:
+    name: Resolve target platform
+    runs-on: ubuntu-latest
+    outputs:
+      platform: ${{ steps.resolve.outputs.platform }}
+    steps:
+      - name: Resolve
+        id: resolve
+        shell: bash
+        run: |
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            PLATFORM="${{ inputs.platform }}"
+          else
+            TAG="${{ github.ref_name }}"
+            case "$TAG" in
+              *-mac)     PLATFORM="mac" ;;
+              *-windows) PLATFORM="windows" ;;
+              *-linux)   PLATFORM="linux" ;;
+              *-all)     PLATFORM="all" ;;
+              *)         PLATFORM="all" ;;   # plain vX.Y.Z tag, no suffix — build everything, same as before
+            esac
+          fi
+          echo "Resolved platform='$PLATFORM' (event=${{ github.event_name }}, tag=${{ github.ref_name }})"
+          echo "platform=$PLATFORM" >> "$GITHUB_OUTPUT"
+
   # ─── macOS: .dmg + .zip for x64 and arm64 ───────────────────────────────────
   build-macos:
     name: Build macOS (x64 + arm64)
     runs-on: macos-latest
+    needs: resolve-platform
+    if: needs.resolve-platform.outputs.platform == 'all' || needs.resolve-platform.outputs.platform == 'mac'
     steps:
       - uses: actions/checkout@v4
 
@@ -23,7 +65,13 @@ jobs:
         shell: bash
         run: |
           RAW_TAG="${{ github.ref_name || inputs.tag }}"
-          VERSION="${RAW_TAG#v}"   # v1.0.6 -> 1.0.6 (npm/electron-builder want no leading 'v')
+          # Strip a platform suffix (-mac/-windows/-linux/-all) if present —
+          # the app's own version number should never include it.
+          CLEAN_TAG="${RAW_TAG%-mac}"
+          CLEAN_TAG="${CLEAN_TAG%-windows}"
+          CLEAN_TAG="${CLEAN_TAG%-linux}"
+          CLEAN_TAG="${CLEAN_TAG%-all}"
+          VERSION="${CLEAN_TAG#v}"   # v1.0.6 -> 1.0.6 (npm/electron-builder want no leading 'v')
           npm version "$VERSION" --no-git-tag-version --allow-same-version
           echo "Building version: $VERSION"
 
@@ -87,6 +135,28 @@ jobs:
           ZOOM_CLIENT_SECRET=${{ secrets.ZOOM_CLIENT_SECRET }}
           EOF
 
+      - name: Verify runtime secrets resolved (pre-build)
+        shell: bash
+        run: |
+          echo "Checking which GitHub Actions secrets actually resolved into .env..."
+          echo "(This catches secrets that are missing/blank in repo settings — separate"
+          echo " from whether the file itself makes it into the packaged app.)"
+          byok_missing=0
+          for key in VITE_API_BASE_URL SUPABASE_URL SUPABASE_KEY DEEPGRAM_API_KEY GEMINI_API_KEY GROQ_API_KEY TAVILY_API_KEY; do
+            value=$(grep "^${key}=" .env | cut -d '=' -f2-)
+            if [ -z "$value" ]; then
+              echo "::warning::${key} is EMPTY in the generated .env — the '${key}' secret is missing or blank in repo Settings > Secrets."
+              case "$key" in
+                DEEPGRAM_API_KEY|GEMINI_API_KEY|GROQ_API_KEY|TAVILY_API_KEY) byok_missing=1 ;;
+              esac
+            else
+              echo "${key} = present (${#value} chars)"
+            fi
+          done
+          if [ "$byok_missing" -eq 1 ]; then
+            echo "::warning::One or more BYOK fallback keys (DEEPGRAM/GEMINI/GROQ/TAVILY) are missing — users who haven't set their own key in Settings will have no fallback on this build."
+          fi
+
       - name: Install posthog-cli
         run: npm install -g @posthog/cli
 
@@ -115,6 +185,42 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: npx electron-builder --mac --publish never
 
+      - name: Verify .env bundled correctly in packaged app (macOS)
+        # This is the check that actually matters for the "mac production build
+        # has no env fallback keys" report: it inspects the REAL .app that ships,
+        # not just the repo-root .env used during the build. Distinguishes
+        # "extraResources never copied the file" (packaging bug, fails the job)
+        # from "file is there but a specific key is blank" (secrets config,
+        # warns only — same distinction as the pre-build check above).
+        shell: bash
+        run: |
+          mapfile -t APP_PATHS < <(find release -iname "*.app" -maxdepth 4 -type d)
+          if [ "${#APP_PATHS[@]}" -eq 0 ]; then
+            echo "::error::No .app bundles found under release/ — cannot verify bundled .env."
+            exit 1
+          fi
+          overall_fail=0
+          for APP_PATH in "${APP_PATHS[@]}"; do
+            ENV_IN_APP="$APP_PATH/Contents/Resources/.env"
+            echo "── Checking $APP_PATH ──"
+            if [ ! -f "$ENV_IN_APP" ]; then
+              echo "::error::.env was NOT bundled into $APP_PATH (missing at Contents/Resources/.env). This build will have ZERO env fallback keys — every user without their own key set in Settings will fail."
+              overall_fail=1
+              continue
+            fi
+            for key in DEEPGRAM_API_KEY GEMINI_API_KEY GROQ_API_KEY TAVILY_API_KEY; do
+              value=$(grep "^${key}=" "$ENV_IN_APP" | cut -d '=' -f2-)
+              if [ -z "$value" ]; then
+                echo "::warning::${key} is empty inside the bundled .env at $APP_PATH — matches the pre-build check, confirms it's a secrets-config issue, not a packaging one."
+              else
+                echo "${key}: present in bundle (${#value} chars)"
+              fi
+            done
+          done
+          if [ "$overall_fail" -eq 1 ]; then
+            exit 1
+          fi
+
       - name: Upload macOS artifacts
         uses: actions/upload-artifact@v4
         with:
@@ -128,6 +234,8 @@ jobs:
   build-windows:
     name: Build Windows (x64 + ia32)
     runs-on: windows-latest
+    needs: resolve-platform
+    if: needs.resolve-platform.outputs.platform == 'all' || needs.resolve-platform.outputs.platform == 'windows'
     steps:
       - uses: actions/checkout@v4
 
@@ -135,7 +243,13 @@ jobs:
         shell: bash
         run: |
           RAW_TAG="${{ github.ref_name || inputs.tag }}"
-          VERSION="${RAW_TAG#v}"   # v1.0.6 -> 1.0.6 (npm/electron-builder want no leading 'v')
+          # Strip a platform suffix (-mac/-windows/-linux/-all) if present —
+          # the app's own version number should never include it.
+          CLEAN_TAG="${RAW_TAG%-mac}"
+          CLEAN_TAG="${CLEAN_TAG%-windows}"
+          CLEAN_TAG="${CLEAN_TAG%-linux}"
+          CLEAN_TAG="${CLEAN_TAG%-all}"
+          VERSION="${CLEAN_TAG#v}"   # v1.0.6 -> 1.0.6 (npm/electron-builder want no leading 'v')
           npm version "$VERSION" --no-git-tag-version --allow-same-version
           echo "Building version: $VERSION"
 
@@ -193,6 +307,28 @@ jobs:
           ZOOM_CLIENT_SECRET=${{ secrets.ZOOM_CLIENT_SECRET }}
           EOF
 
+      - name: Verify runtime secrets resolved (pre-build)
+        shell: bash
+        run: |
+          echo "Checking which GitHub Actions secrets actually resolved into .env..."
+          echo "(This catches secrets that are missing/blank in repo settings — separate"
+          echo " from whether the file itself makes it into the packaged app.)"
+          byok_missing=0
+          for key in VITE_API_BASE_URL SUPABASE_URL SUPABASE_KEY DEEPGRAM_API_KEY GEMINI_API_KEY GROQ_API_KEY TAVILY_API_KEY; do
+            value=$(grep "^${key}=" .env | cut -d '=' -f2-)
+            if [ -z "$value" ]; then
+              echo "::warning::${key} is EMPTY in the generated .env — the '${key}' secret is missing or blank in repo Settings > Secrets."
+              case "$key" in
+                DEEPGRAM_API_KEY|GEMINI_API_KEY|GROQ_API_KEY|TAVILY_API_KEY) byok_missing=1 ;;
+              esac
+            else
+              echo "${key} = present (${#value} chars)"
+            fi
+          done
+          if [ "$byok_missing" -eq 1 ]; then
+            echo "::warning::One or more BYOK fallback keys (DEEPGRAM/GEMINI/GROQ/TAVILY) are missing — users who haven't set their own key in Settings will have no fallback on this build."
+          fi
+
       - name: Install posthog-cli
         run: npm install -g @posthog/cli
 
@@ -234,6 +370,8 @@ jobs:
     # this alias roll to a future release risks silently breaking apt-get install
     # again — the exact class of failure this job was just fixed for.
     runs-on: ubuntu-24.04
+    needs: resolve-platform
+    if: needs.resolve-platform.outputs.platform == 'all' || needs.resolve-platform.outputs.platform == 'linux'
     steps:
       - uses: actions/checkout@v4
 
@@ -241,7 +379,13 @@ jobs:
         shell: bash
         run: |
           RAW_TAG="${{ github.ref_name || inputs.tag }}"
-          VERSION="${RAW_TAG#v}"   # v1.0.6 -> 1.0.6 (npm/electron-builder want no leading 'v')
+          # Strip a platform suffix (-mac/-windows/-linux/-all) if present —
+          # the app's own version number should never include it.
+          CLEAN_TAG="${RAW_TAG%-mac}"
+          CLEAN_TAG="${CLEAN_TAG%-windows}"
+          CLEAN_TAG="${CLEAN_TAG%-linux}"
+          CLEAN_TAG="${CLEAN_TAG%-all}"
+          VERSION="${CLEAN_TAG#v}"   # v1.0.6 -> 1.0.6 (npm/electron-builder want no leading 'v')
           npm version "$VERSION" --no-git-tag-version --allow-same-version
           echo "Building version: $VERSION"
 
@@ -308,6 +452,28 @@ jobs:
           ZOOM_CLIENT_SECRET=${{ secrets.ZOOM_CLIENT_SECRET }}
           EOF
 
+      - name: Verify runtime secrets resolved (pre-build)
+        shell: bash
+        run: |
+          echo "Checking which GitHub Actions secrets actually resolved into .env..."
+          echo "(This catches secrets that are missing/blank in repo settings — separate"
+          echo " from whether the file itself makes it into the packaged app.)"
+          byok_missing=0
+          for key in VITE_API_BASE_URL SUPABASE_URL SUPABASE_KEY DEEPGRAM_API_KEY GEMINI_API_KEY GROQ_API_KEY TAVILY_API_KEY; do
+            value=$(grep "^${key}=" .env | cut -d '=' -f2-)
+            if [ -z "$value" ]; then
+              echo "::warning::${key} is EMPTY in the generated .env — the '${key}' secret is missing or blank in repo Settings > Secrets."
+              case "$key" in
+                DEEPGRAM_API_KEY|GEMINI_API_KEY|GROQ_API_KEY|TAVILY_API_KEY) byok_missing=1 ;;
+              esac
+            else
+              echo "${key} = present (${#value} chars)"
+            fi
+          done
+          if [ "$byok_missing" -eq 1 ]; then
+            echo "::warning::One or more BYOK fallback keys (DEEPGRAM/GEMINI/GROQ/TAVILY) are missing — users who haven't set their own key in Settings will have no fallback on this build."
+          fi
+
       - name: Install posthog-cli
         run: npm install -g @posthog/cli
 
@@ -362,7 +528,11 @@ jobs:
         shell: bash
         run: |
           RAW_TAG="${{ github.ref_name || inputs.tag }}"
-          VERSION="${RAW_TAG#v}"
+          CLEAN_TAG="${RAW_TAG%-mac}"
+          CLEAN_TAG="${CLEAN_TAG%-windows}"
+          CLEAN_TAG="${CLEAN_TAG%-linux}"
+          CLEAN_TAG="${CLEAN_TAG%-all}"
+          VERSION="${CLEAN_TAG#v}"
           sed "s/__VERSION__/${VERSION}/g" .github/RELEASE_TEMPLATE.md > release-notes.md
 
       - name: Create GitHub Release
