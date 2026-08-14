@@ -39,7 +39,6 @@ const UpdateModal: React.FC<UpdateModalProps> = ({
     downloadProgress,
     status,
     errorMessage,
-    instructionsArch
 }) => {
     // Helper to format version string
     const formatVersion = (v: string) => {
