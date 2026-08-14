@@ -41,6 +41,7 @@ export interface ElectronAPI {
     stack?: string
     componentStack?: string | null
   }) => Promise<{ success: boolean; error?: string }>
+  resetAppData: () => Promise<{ success: boolean; cancelled?: boolean; error?: string }>
   onScreenshotTaken: (callback: (data: { path: string; preview: string }) => void) => () => void
   onScreenshotAttached: (callback: (data: { path: string; preview: string }) => void) => () => void
   onCaptureAndProcess: (callback: (data: { path: string; preview: string }) => void) => () => void

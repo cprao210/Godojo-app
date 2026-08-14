@@ -2,6 +2,28 @@ import { app, BrowserWindow, Tray, Menu, nativeImage, ipcMain, shell, systemPref
 import path from "path"
 import fs from "fs"
 import { autoUpdater } from "electron-updater"
+
+// ─── Separate userData directories for dev vs. production ──────────────────
+// Electron's default userData folder name comes from app.getName(), which
+// reads the `name` field in package.json ("godojo-ai") — and that's the
+// SAME package.json electron-builder ships inside the packaged app. So a
+// `npm run dev` session and a real production install both default to the
+// identical folder (e.g. %APPDATA%\godojo-ai on Windows, ~/Library/Application
+// Support/godojo-ai on macOS), which is why new users created in dev were
+// showing up against the production Supabase config, and vice versa:
+// CredentialsManager, SettingsManager, and DatabaseManager all read/write
+// through app.getPath('userData').
+//
+// This MUST run before those modules are imported (they resolve
+// app.getPath('userData') at import/construction time) — hence its
+// placement here, immediately after the electron/path imports and before
+// anything else in this file. Because electron/tsconfig.json targets
+// CommonJS, imports below compile to sequential require() calls in source
+// order, not ES-module hoisting, so this genuinely executes first.
+const userDataDirName = app.isPackaged ? 'godojo-ai' : 'godojo-ai-dev';
+app.setPath('userData', path.join(app.getPath('appData'), userDataDirName));
+console.log(`[Main] userData path: ${app.getPath('userData')} (isPackaged=${app.isPackaged})`);
+
 // Load app-level config (Supabase, Google/Zoom OAuth client credentials, Firebase).
 // In dev this reads the repo-root `.env`. In a packaged build it reads the `.env`
 // shipped via `extraResources` (written by CI from GitHub Actions secrets — see
@@ -810,6 +832,11 @@ export class AppState {
         console.log("[AutoUpdater] Development build: skipping auto check entirely");
       } else {
         autoUpdater.checkForUpdatesAndNotify().catch(err => {
+          if (this.isNoReleaseAvailableError(err)) {
+            console.log("[AutoUpdater] No published release found on GitHub — treating as up to date");
+            this.broadcast("update-not-available", { version: app.getVersion() });
+            return;
+          }
           console.error("[AutoUpdater] Failed to check for updates:", err);
         });
       }
@@ -927,9 +954,28 @@ export class AppState {
       await autoUpdater.checkForUpdatesAndNotify()
     } catch (err: any) {
       console.error('[AutoUpdater] checkForUpdates failed:', err)
-      const errorMessage = err.message || err.toString() || 'Update check failed'
+      // electron-updater throws (typically a 404 fetching latest.yml) when
+      // GitHub has no published release yet — e.g. right after deleting all
+      // releases, or before the first one is published. That's not a real
+      // failure, it just means there's nothing to update to yet.
+      if (this.isNoReleaseAvailableError(err)) {
+        console.log('[AutoUpdater] No published release found on GitHub — treating as up to date')
+        this.broadcast("update-not-available", { version: app.getVersion() })
+        return
+      }
+      const errorMessage = err.message || err.toString() || 'Download failed'
       this.broadcast("update-error", errorMessage)
     }
+  }
+
+  private isNoReleaseAvailableError(err: any): boolean {
+    const msg = (err?.message || err?.toString() || '').toLowerCase()
+    return (
+      msg.includes('404') ||
+      msg.includes('cannot find latest') ||
+      msg.includes('no published versions') ||
+      msg.includes('not found')
+    )
   }
 
   public downloadUpdate(): void {

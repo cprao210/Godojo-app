@@ -1,5 +1,5 @@
-import React from 'react';
-import { Ghost, PointerOff, Power, Terminal, MessageSquare, Palette, Monitor, Sun, Moon, Globe, ChevronDown, Eye, Layout, Settings, Activity } from 'lucide-react';
+import React, { useState } from 'react';
+import { Ghost, PointerOff, Power, Terminal, MessageSquare, Palette, Monitor, Sun, Moon, Globe, ChevronDown, Eye, Layout, Settings, Activity, RotateCcw } from 'lucide-react';
 import { OVERLAY_OPACITY_MIN } from '@/lib/overlayAppearance';
 import { useSettingsOverlay } from '@/hooks';
 import MockupDock from './MockupDock';
@@ -30,6 +30,30 @@ const GeneralTab: React.FC<{ overlay: SettingsOverlayHook }> = ({ overlay }) => 
         isAiLangDropdownOpen, setIsAiLangDropdownOpen, aiLangDropdownRef } = overlay;
 
     const cardCls = isLight ? 'bg-white border-slate-200/80' : 'bg-bg-item-surface border-border-subtle';
+
+    // "Reset app data" — confirmation itself happens via a native dialog in
+    // the main process (see electron/ipcHandlers.ts: 'reset-app-data'), so
+    // this is just a loading/error state while that's in flight. On success
+    // the app relaunches itself, so there's no "done" state to render here.
+    const [isResetting, setIsResetting] = useState(false);
+    const [resetError, setResetError] = useState<string | null>(null);
+
+    const handleResetAppData = async () => {
+        setResetError(null);
+        setIsResetting(true);
+        try {
+            const result = await window.electronAPI.resetAppData();
+            if (!result.success && !result.cancelled) {
+                setResetError(result.error || 'Reset failed. Please try again.');
+            }
+            // On success the main process calls app.relaunch()/app.exit()
+            // itself — nothing further to do here.
+        } catch (e: any) {
+            setResetError(e?.message || 'Reset failed. Please try again.');
+        } finally {
+            setIsResetting(false);
+        }
+    };
 
     return (
         <div className="space-y-6 animated fadeIn">
@@ -314,6 +338,31 @@ const GeneralTab: React.FC<{ overlay: SettingsOverlayHook }> = ({ overlay }) => 
                     ))}
                 </div>
             </div>
+
+            {/* Danger Zone */}
+            <div className={`rounded-xl p-5 border border-red-500/30 ${isLight ? 'bg-red-50/60' : 'bg-red-950/20'}`}>
+                <div className="flex items-center justify-between gap-4">
+                    <div className="flex flex-col gap-1">
+                        <h3 className="text-sm font-bold text-red-500">Reset App Data</h3>
+                        <p className="text-xs text-text-secondary max-w-md">
+                            Permanently deletes your local credentials, settings, and offline data on this
+                            device, and signs you out. This can't be undone. The app restarts automatically.
+                        </p>
+                        {resetError && (
+                            <p className="text-xs text-red-500 mt-1">{resetError}</p>
+                        )}
+                    </div>
+                    <button
+                        onClick={handleResetAppData}
+                        disabled={isResetting}
+                        className="shrink-0 flex items-center gap-2 px-3.5 py-2 rounded-lg text-xs font-medium border border-red-500/40 text-red-500 hover:bg-red-500/10 disabled:opacity-50 disabled:cursor-not-allowed transition-all"
+                    >
+                        <RotateCcw size={13} className={isResetting ? 'animate-spin' : ''} />
+                        {isResetting ? 'Resetting…' : 'Reset App Data'}
+                    </button>
+                </div>
+            </div>
+
         </div>
     );
 };

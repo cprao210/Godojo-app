@@ -711,6 +711,31 @@ export class MeetingPersistence {
             return { scorecardResult: null, persisted: false };
         }
 
+        // Merge with any previously-saved scorecard so that a regenerate run
+        // which only re-detects a subset of types (LLM output isn't fully
+        // deterministic run-to-run) doesn't blow away scores for types that
+        // aren't returned this time. New results win per-type; older types
+        // not present in this run are carried forward as-is.
+        const previousScorecard = DatabaseManager.getInstance().getMeetingScorecard(meetingId);
+        if (previousScorecard?.scorecards?.length) {
+            const newTypes = new Set(scorecardResult.scorecards.map(sc => sc.meetingType));
+            const carriedOver = previousScorecard.scorecards.filter(sc => !newTypes.has(sc.meetingType));
+            const mergedScorecards = [...scorecardResult.scorecards, ...carriedOver];
+            const mergedDetectedTypes = Array.from(new Set([
+                ...scorecardResult.detectedTypes,
+                ...carriedOver.map(sc => sc.meetingType),
+            ]));
+            const mergedOverallScore = mergedScorecards.length
+                ? mergedScorecards.reduce((sum, sc) => sum + (sc.overallScore ?? 0), 0) / mergedScorecards.length
+                : scorecardResult.overallWeightedScore;
+
+            scorecardResult = {
+                scorecards: mergedScorecards,
+                detectedTypes: mergedDetectedTypes,
+                overallWeightedScore: mergedOverallScore,
+            };
+        }
+
         // Write scorecard to its dedicated table — NOT into summary_json
         try {
             DatabaseManager.getInstance().saveMeetingScorecard(

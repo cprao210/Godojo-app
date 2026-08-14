@@ -428,6 +428,12 @@ contextBridge.exposeInMainWorld("electronAPI", {
     componentStack?: string;
   }) => ipcRenderer.invoke("log-error-to-main", payload),
 
+  // Settings > General > Danger Zone. Shows a native confirm dialog in
+  // main, then wipes userData and relaunches. Resolves { success: false,
+  // cancelled: true } if the user clicks Cancel on the native dialog.
+  resetAppData: (): Promise<{ success: boolean; cancelled?: boolean; error?: string }> =>
+    ipcRenderer.invoke("reset-app-data"),
+
   // Event listeners
   onScreenshotTaken: (
     callback: (data: { path: string; preview: string }) => void

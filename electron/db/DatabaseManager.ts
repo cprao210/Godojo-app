@@ -148,6 +148,17 @@ export class DatabaseManager {
         this.init();
     }
 
+    // Releases the underlying sqlite file handle. Required before deleting
+    // or moving the userData directory (e.g. "Reset app data") — on Windows
+    // in particular, natively.db stays locked until this is called, and the
+    // delete would otherwise fail or silently leave the .db file behind.
+    public close(): void {
+        if (this.db) {
+            this.db.close();
+            this.db = null;
+        }
+    }
+
     public static getInstance(): DatabaseManager {
         if (!DatabaseManager.instance) {
             DatabaseManager.instance = new DatabaseManager();

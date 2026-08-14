@@ -3784,4 +3784,59 @@ export function initializeIpcHandlers(appState: AppState): void {
       return { success: false, error: error?.message ?? String(error) };
     }
   });
+
+  // "Reset app data" (Settings > General > Danger Zone). Wipes this
+  // install's entire userData directory (credentials.enc, settings.json,
+  // natively.db + its Supabase mirror queue, cached auth session — the
+  // full contents of app.getPath('userData'), i.e. godojo-ai or
+  // godojo-ai-dev depending on isPackaged) and relaunches, so the app
+  // comes back up exactly as it would on a brand-new install: sign-in
+  // screen, no local data. Native confirm dialog lives here (not the
+  // renderer) so this can't be triggered by a spoofed IPC call alone —
+  // it always requires an OS-level dialog click.
+  safeHandle('reset-app-data', async (event) => {
+    try {
+      const win = BrowserWindow.fromWebContents(event.sender) ?? undefined;
+      const messageBoxOptions: Electron.MessageBoxOptions = {
+        type: 'warning',
+        buttons: ['Cancel', 'Reset App Data'],
+        defaultId: 0,
+        cancelId: 0,
+        title: 'Reset App Data',
+        message: 'Reset all local app data?',
+        detail:
+          'This permanently deletes your local credentials, settings, and offline data on this device, and signs you out. This cannot be undone.\n\nThe app will restart automatically.',
+      };
+      const { response }: Electron.MessageBoxReturnValue = win
+        ? await dialog.showMessageBox(win, messageBoxOptions)
+        : await dialog.showMessageBox(messageBoxOptions);
+      if (response !== 1) {
+        return { success: false, cancelled: true };
+      }
+
+      // Release the sqlite file handle before touching userData — on
+      // Windows the delete below fails (or leaves natively.db behind)
+      // if it's still open.
+      try { DatabaseManager.getInstance().close(); } catch (e) {
+        console.warn('[ipc] reset-app-data: DatabaseManager.close() failed (continuing):', e);
+      }
+
+      const userDataPath = app.getPath('userData');
+      // Guard against ever deleting something unexpected (e.g. if
+      // userData somehow resolved to a root-ish path).
+      if (!userDataPath || path.basename(userDataPath).indexOf('godojo-ai') !== 0) {
+        throw new Error(`Refusing to reset — unexpected userData path: ${userDataPath}`);
+      }
+
+      fs.rmSync(userDataPath, { recursive: true, force: true });
+
+      app.relaunch();
+      app.exit(0);
+      return { success: true };
+    } catch (error: any) {
+      console.error('[ipc] reset-app-data failed:', error);
+      return { success: false, error: error?.message ?? String(error) };
+    }
+  });
+
 }
