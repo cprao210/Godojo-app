@@ -65,7 +65,7 @@ export function useFloatingDock({ transcriptRef, isMeetingPaused, companyIntel }
     const [dockOpacity, setDockOpacity] = useState<number>(() => {
         const stored = localStorage.getItem(OPACITY_STORAGE_KEY);
         const parsed = stored ? parseFloat(stored) : NaN;
-        return Number.isFinite(parsed) ? clampOpacity(parsed) : 0.88;
+        return Number.isFinite(parsed) ? clampOpacity(parsed) : 0.97;
     });
 
     useEffect(() => {

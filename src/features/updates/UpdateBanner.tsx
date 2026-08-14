@@ -122,10 +122,8 @@ const UpdateBanner: React.FC = () => {
                 const version = updateInfo?.version ? updateInfo.version.replace('v', '') : '2.0.8';
                 // NOTE: matches package.json publish.owner/repo (cprao210/Godojo-app)
                 // and the default electron-builder dmg artifactName pattern
-                // "${productName}-${version}-${arch}.dmg" for productName "GoDojo AI".
-                // Verify this against a real published release asset name before
-                // shipping — electron-builder URL-encodes the space as "GoDojo%20AI".
-                const url = `https://github.com/cprao210/Godojo-app/releases/download/v${version}/GoDojo%20AI-${version}-${dmgSuffix}.dmg`;
+                // "${productName}-${version}-${arch}.dmg" for productName "GoDojo.AI".
+                const url = `https://github.com/cprao210/Godojo-app/releases/download/v${version}/GoDojo.AI-${version}-${dmgSuffix}.dmg`;
                 localStorage.setItem(PENDING_UPDATE_KEY, version);
                 window.electronAPI.openExternal(url);
                 setStatus('instructions');

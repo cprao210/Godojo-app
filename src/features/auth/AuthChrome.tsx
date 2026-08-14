@@ -10,6 +10,8 @@
 import React from 'react';
 import { motion } from 'framer-motion';
 import { IMAGES } from '@/lib/assets';
+import { isMac } from '@/../utils/platformUtils';
+import { WindowControls } from '@/features/common';
 
 // ─── Background gradient + ambient glow ──────────────────────────────────────
 
@@ -108,6 +110,16 @@ export const AuthPageShell: React.FC<{ isLight: boolean; children: React.ReactNo
         className={`relative draggable-area w-full overflow-hidden ${isLight ? 'bg-[#f4f6fb] text-slate-900' : 'bg-[#05070d] text-white'
             } font-[Inter,ui-sans-serif,system-ui] antialiased`}
     >
+        {/* Titlebar row — auth screens render before the main Launcher header
+            exists, so without this there is no way to minimize/close the
+            window on Windows/Linux while sitting on Sign in / Sign up.
+            macOS uses native traffic lights, so WindowControls renders
+            nothing there (see WindowControls.tsx). */}
+        {!isMac && (
+            <div className="absolute top-0 right-0 z-20 flex h-[40px]">
+                <WindowControls />
+            </div>
+        )}
         {children}
     </div>
 );
