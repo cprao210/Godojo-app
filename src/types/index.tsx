@@ -223,6 +223,14 @@ export interface ChatStreamHandlers {
   onRagAnswer?: (answer: RagAnswer) => void;
   /** Fired once, usually before the first token, with the retrieved chunk ids. */
   onSources?: (sources: ChatSources) => void;
+  /** Fired once, only on a brand-new chat (session_id was null in the
+   * request) — the backend just created the session. Store this id and send
+   * it as `session_id` on every subsequent turn in this conversation. */
+  onSessionCreated?: (sessionId: string) => void;
+  /** Fired when the backend auto-generates/updates the session's title from
+   * the first message (3-4 words) — update the sidebar entry for this
+   * session_id in place. */
+  onTitleUpdated?: (title: string) => void;
   /** Fired for each `status` frame — backend progress updates ("connected",
    * "searching", "generating", ...) sent before/while the answer is being
    * produced. Use to show the person what's happening instead of a static
@@ -250,6 +258,13 @@ export type ChatRole = "user" | "assistant";
 export interface ChatHistoryTurn {
   role: ChatRole;
   content: string;
+}
+
+export interface ChatSession {
+  id: string;
+  title: string;
+  created_at: string;
+  updated_at: string;
 }
 
 export interface LiveTranscriptSegment {
@@ -1251,6 +1266,14 @@ export interface GlobalChatOverlayProps {
   onOpenMeeting?: (meetingId: string) => void;
 }
 
+export interface ChatSessionSidebarProps {
+  sessions: ChatSession[];
+  activeSessionId: string | null;
+  isLoading: boolean;
+  onSelectSession: (sessionId: string) => void;
+  onNewChat: () => void;
+}
+
 // --- src/features/common/AdCampaignToasters.tsx ---
 export interface AdCampaignToastersProps {
   /** Only rendered on the launcher main view, with Settings closed. */
@@ -1302,6 +1325,7 @@ export interface LauncherProps {
   onOpenSettings: (tab?: string) => void;
   onOpenManagerDashboard?: () => void;
   isManagerDashboardOpen?: boolean;
+  isSettingsOpen?: boolean;
   onPageChange?: (isMain: boolean) => void;
   ollamaPullStatus?: 'idle' | 'downloading' | 'complete' | 'failed';
   ollamaPullPercent?: number;
@@ -1884,6 +1908,7 @@ export interface UpdateModalProps {
   parsedNotes: ParsedReleaseNotes | null;
   onDismiss: () => void;
   onInstall: () => void;
+  onRemindLater?: () => void;
   downloadProgress: number;
   status: 'idle' | 'downloading' | 'ready' | 'error' | 'instructions';
   errorMessage?: string | null;

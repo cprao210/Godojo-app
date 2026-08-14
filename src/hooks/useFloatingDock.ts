@@ -22,9 +22,13 @@ const PANEL_DOCK_GAP = 65;
 const DEFAULT_DOCK_HEIGHT = 64; // sensible fallback before first ResizeObserver measure
 // Minimum number of prospect turns considered "enough transcript" to
 // generate an analysis from — used both to fire early (before the countdown
-// finishes) and to decide the zero-countdown outcome.
+// finishes) and to decide the zero-countdown outcome. Must count ONLY the
+// prospect's own turns (speaker === 'client'); counting the rep's ('user')
+// turns too meant checking "Negotiation" could force-fire an analysis after
+// only the rep had spoken, before the prospect said anything — a low-signal
+// refresh that looked like it was firing "randomly" on short transcripts.
 const MIN_PROSPECT_TURNS = 2;
-const NON_PROSPECT_SPEAKERS = ['system', 'ai', 'assistant', 'model'];
+const PROSPECT_SPEAKER = 'client';
 
 const clampOpacity = (v: number) => Math.min(MAX_OPACITY, Math.max(MIN_OPACITY, v));
 
@@ -122,7 +126,7 @@ export function useFloatingDock({ transcriptRef, isMeetingPaused, companyIntel }
     // avoid firing on a near-empty transcript has to check this itself.
     const hasEnoughTranscript = () => {
         const turns = transcriptRef.current ?? [];
-        return turns.filter((t) => !NON_PROSPECT_SPEAKERS.includes(t.speaker?.toLowerCase())).length >= MIN_PROSPECT_TURNS;
+        return turns.filter((t) => t.speaker?.toLowerCase() === PROSPECT_SPEAKER).length >= MIN_PROSPECT_TURNS;
     };
 
     // Fire an immediate analysis when Negotiation is NEWLY checked, so the Deal

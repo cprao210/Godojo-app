@@ -17,7 +17,7 @@ export function useAudioDeviceSettings({ isOpen, activeTab }: UseAudioDeviceSett
     const [selectedInput, setSelectedInput] = useState('');
     const [selectedOutput, setSelectedOutput] = useState('');
     const [micLevel, setMicLevel] = useState(0);
-    const [useExperimentalSck, setUseExperimentalSck] = useState(false);
+    const [useExperimentalSck, setUseExperimentalSck] = useState(true);
 
     // ── Load devices + saved preferences whenever the overlay opens ─────────
     useEffect(() => {

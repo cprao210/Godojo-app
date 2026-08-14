@@ -1,6 +1,12 @@
 import React, { useEffect, useState } from 'react';
 import UpdateModal from './UpdateModal';
 
+// Persisted across restarts: the version we sent the user off to manually
+// install on macOS. Compared against app.getVersion() on next launch so we
+// can surface an explicit success toast — the one thing macOS doesn't give
+// us for free the way quitAndInstall's auto-restart does on Windows/Linux.
+const PENDING_UPDATE_KEY = 'godojo_pending_manual_update_version';
+
 const UpdateBanner: React.FC = () => {
     const [updateInfo, setUpdateInfo] = useState<any>(null);
     const [parsedNotes, setParsedNotes] = useState<any>(null);
@@ -9,6 +15,26 @@ const UpdateBanner: React.FC = () => {
     const [status, setStatus] = useState<'idle' | 'downloading' | 'ready' | 'error' | 'instructions'>('idle');
     const [errorMessage, setErrorMessage] = useState<string | null>(null);
     const [instructionsArch, setInstructionsArch] = useState<'arm64' | 'x64' | null>(null);
+    const [justUpdatedVersion, setJustUpdatedVersion] = useState<string | null>(null);
+
+    // On launch: if the last thing we did was send the user to manually
+    // install a version on macOS, and the running app now matches it, the
+    // install succeeded — clear the flag and celebrate once.
+    useEffect(() => {
+        const pending = localStorage.getItem(PENDING_UPDATE_KEY);
+        if (!pending) return;
+
+        window.electronAPI.getAppVersion()
+            .then((current: string) => {
+                const normalize = (v: string) => v.replace(/^v/, '');
+                if (normalize(current) === normalize(pending)) {
+                    setJustUpdatedVersion(current);
+                    setTimeout(() => setJustUpdatedVersion(null), 5000);
+                }
+                localStorage.removeItem(PENDING_UPDATE_KEY);
+            })
+            .catch(() => localStorage.removeItem(PENDING_UPDATE_KEY));
+    }, []);
 
     useEffect(() => {
         // Listen for update available
@@ -82,6 +108,11 @@ const UpdateBanner: React.FC = () => {
     }, []);
 
     const handleInstall = async () => {
+        // macOS: manual browser download + install, until Developer ID
+        // signing + notarization are set up (electron-updater's Squirrel.Mac
+        // requires a real code signature — see package.json mac.identity,
+        // currently null, and scripts/ad-hoc-sign.js). Revisit this once
+        // that's configured; Windows/Linux are unaffected either way.
         if (window.electronAPI.platform === 'darwin') {
             try {
                 const arch = await window.electronAPI.getArch();
@@ -89,7 +120,13 @@ const UpdateBanner: React.FC = () => {
                 const dmgSuffix = isArm ? 'arm64' : 'x64';
                 setInstructionsArch(dmgSuffix);
                 const version = updateInfo?.version ? updateInfo.version.replace('v', '') : '2.0.8';
-                const url = `https://github.com/evinjohnn/natively-cluely-ai-assistant/releases/download/v${version}/Natively-${version}-${dmgSuffix}.dmg`;
+                // NOTE: matches package.json publish.owner/repo (cprao210/Godojo-app)
+                // and the default electron-builder dmg artifactName pattern
+                // "${productName}-${version}-${arch}.dmg" for productName "GoDojo AI".
+                // Verify this against a real published release asset name before
+                // shipping — electron-builder URL-encodes the space as "GoDojo%20AI".
+                const url = `https://github.com/cprao210/Godojo-app/releases/download/v${version}/GoDojo%20AI-${version}-${dmgSuffix}.dmg`;
+                localStorage.setItem(PENDING_UPDATE_KEY, version);
                 window.electronAPI.openExternal(url);
                 setStatus('instructions');
             } catch (err) {
@@ -99,7 +136,6 @@ const UpdateBanner: React.FC = () => {
             }
         } else {
             setStatus('downloading');
-            // Trigger download via IPC
             window.electronAPI.downloadUpdate();
         }
     };
@@ -109,20 +145,37 @@ const UpdateBanner: React.FC = () => {
         setStatus('idle'); // Reset error/downloading state so next event starts clean
     };
 
-    if (!isVisible) return null;
+    // Same as dismiss today — kept as a distinct handler so "Remind Me Later"
+    // can gain its own snooze/backoff behavior later without touching callers.
+    const handleRemindLater = () => {
+        handleDismiss();
+    };
 
     return (
-        <UpdateModal
-            isOpen={isVisible}
-            updateInfo={updateInfo}
-            parsedNotes={parsedNotes}
-            onDismiss={handleDismiss}
-            onInstall={handleInstall}
-            downloadProgress={downloadProgress}
-            status={status}
-            errorMessage={errorMessage}
-            instructionsArch={instructionsArch}
-        />
+        <>
+            {isVisible && (
+                <UpdateModal
+                    isOpen={isVisible}
+                    updateInfo={updateInfo}
+                    parsedNotes={parsedNotes}
+                    onDismiss={handleDismiss}
+                    onInstall={handleInstall}
+                    onRemindLater={handleRemindLater}
+                    downloadProgress={downloadProgress}
+                    status={status}
+                    errorMessage={errorMessage}
+                    instructionsArch={instructionsArch}
+                />
+            )}
+
+            {justUpdatedVersion && (
+                <div className="fixed bottom-6 right-6 z-[10000] flex items-center gap-2 bg-[#1E1E1E]/95 backdrop-blur-xl border border-white/[0.08] rounded-xl px-4 py-3 shadow-[0_20px_50px_-10px_rgba(0,0,0,0.5)]">
+                    <span className="text-[13px] font-medium text-white">
+                        You're now on the latest version 🎉
+                    </span>
+                </div>
+            )}
+        </>
     );
 };
 

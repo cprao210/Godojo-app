@@ -40,6 +40,7 @@ import { EmailVerification, SignIn } from "@/pages";
 // premium
 // ---------------------------------------------------------------------------
 import { PremiumUpgradeModal, useAdCampaigns } from "./premium";
+import { UpdateBanner } from "./features/updates";
 
 // Route HTTP auth failures (a terminal 401 from apiClient, surfaced through React
 // Query) into the same session-expired flow as the Firebase guard. The QueryClient
@@ -237,6 +238,7 @@ const App: React.FC = () => {
                             setIsSettingsOpen(true);
                           }}
                           isManagerDashboardOpen={isManagerDashboardOpen}
+                          isSettingsOpen={isSettingsOpen}
                           onOpenManagerDashboard={
                             isAdmin
                               ? () => {
@@ -278,7 +280,7 @@ const App: React.FC = () => {
               onReindex={reindexIncompatibleMeetings}
             />
 
-            {/* <UpdateBanner /> */}
+            <UpdateBanner />
             {/* <SupportToaster /> */}
 
             {inviteMismatchEmail && (

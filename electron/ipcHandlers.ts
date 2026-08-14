@@ -601,6 +601,13 @@ export function initializeIpcHandlers(appState: AppState): void {
   });
 
   safeHandle("check-for-updates", async () => {
+    // Updates are a production-only feature — electron-updater has no signed/
+    // published feed to check against in a dev build, so refuse up front
+    // instead of letting it silently no-op or hit a manual fallback.
+    if (!app.isPackaged) {
+      console.log('[IPC] check-for-updates ignored: running unpackaged (development)')
+      return { success: false, error: 'Updates are disabled in development builds' }
+    }
     try {
       console.log('[IPC] Manual update check requested')
       await appState.checkForUpdates()
@@ -612,6 +619,10 @@ export function initializeIpcHandlers(appState: AppState): void {
   })
 
   safeHandle("download-update", async () => {
+    if (!app.isPackaged) {
+      console.log('[IPC] download-update ignored: running unpackaged (development)')
+      return { success: false, error: 'Updates are disabled in development builds' }
+    }
     try {
       console.log('[IPC] Download update requested')
       appState.downloadUpdate()
@@ -620,6 +631,30 @@ export function initializeIpcHandlers(appState: AppState): void {
       console.error('[IPC] download-update failed:', err)
       return { success: false, error: err.message }
     }
+  })
+
+  safeHandle("get-app-version", async () => {
+    return app.getVersion()
+  })
+
+  // Opens a small allow-listed set of folders in Finder/Explorer (e.g. for the
+  // macOS manual-update instructions: "Open Downloads", "Open Applications").
+  // Intentionally a fixed key -> path map rather than taking an arbitrary path
+  // from the renderer, so this can't be used to open/reveal anything else.
+  safeHandle("open-known-folder", async (event, key: 'downloads' | 'applications') => {
+    const target = key === 'downloads' ? app.getPath('downloads') : '/Applications';
+    try {
+      await shell.openPath(target);
+    } catch (err) {
+      console.warn(`[IPC] Failed to open folder "${key}":`, err);
+    }
+  });
+
+  // Lets the renderer distinguish a production/packaged build from a local
+  // dev run so it can hide/disable the Updates UI accordingly, without
+  // relying on process.env.NODE_ENV (unreliable inside Electron).
+  safeHandle("is-app-packaged", async () => {
+    return app.isPackaged
   })
 
   // Window movement handlers
@@ -2315,11 +2350,7 @@ export function initializeIpcHandlers(appState: AppState): void {
 
       // 2. Build prompt
       const contextString = buildSalesBriefContext(eventData);
-      const ownCompanyBlock = buildOwnCompanyBlockFromOrchestrator(appState.getKnowledgeOrchestrator());
-      const fullContext = ownCompanyBlock
-        ? `${ownCompanyBlock}\n\n${contextString}`
-        : contextString;
-      const userMessage = `Generate a complete sales meeting brief for this meeting:\n\n${fullContext}`;
+      const userMessage = `Generate a complete sales meeting brief for this meeting:\n\n${contextString}`;
 
       console.log("Sales Brief PRMOPT: ", userMessage);
 

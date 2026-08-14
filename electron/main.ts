@@ -801,10 +801,13 @@ export class AppState {
       this.broadcast("update-downloaded", info)
     })
 
-    // Start checking for updates with a 10-second delay
+    // Start checking for updates with a 10-second delay.
+    // Gate on app.isPackaged rather than process.env.NODE_ENV: NODE_ENV isn't
+    // guaranteed to be set (or set correctly) in a packaged build, whereas
+    // isPackaged is Electron's own reliable dev-vs-production signal.
     setTimeout(() => {
-      if (process.env.NODE_ENV === "development") {
-        console.log("[AutoUpdater] Development mode: Skipping auto check (use manual button)");
+      if (!app.isPackaged) {
+        console.log("[AutoUpdater] Development build: skipping auto check entirely");
       } else {
         autoUpdater.checkForUpdatesAndNotify().catch(err => {
           console.error("[AutoUpdater] Failed to check for updates:", err);
@@ -912,13 +915,16 @@ export class AppState {
 
   public async checkForUpdates(): Promise<void> {
     console.log('[AutoUpdater] Manual check for updates requested')
+    // Production-only: don't fall back to the manual GitHub API check in dev
+    // either — that previously let "Check for Updates" work locally even
+    // though the feature is meant to be production-only.
+    if (!app.isPackaged) {
+      console.log('[AutoUpdater] Skipping: development build (updates are production-only)')
+      this.broadcast("update-error", "Updates are disabled in development builds")
+      return
+    }
     try {
-      // In development mode, use manual GitHub API check (electron-updater skips in dev)
-      if (process.env.NODE_ENV === "development") {
-        await this.checkForUpdatesManual()
-      } else {
-        await autoUpdater.checkForUpdatesAndNotify()
-      }
+      await autoUpdater.checkForUpdatesAndNotify()
     } catch (err: any) {
       console.error('[AutoUpdater] checkForUpdates failed:', err)
       const errorMessage = err.message || err.toString() || 'Update check failed'

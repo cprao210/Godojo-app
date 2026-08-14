@@ -251,6 +251,8 @@ interface ElectronAPI {
   checkForUpdates: () => Promise<void>
   downloadUpdate: () => Promise<void>
   testReleaseFetch: () => Promise<{ success: boolean; error?: string }>
+  getAppVersion: () => Promise<string>
+  isAppPackaged: () => Promise<boolean>
 
   // RAG (Retrieval-Augmented Generation) API
   ragQueryMeeting: (meetingId: string, query: string) => Promise<{ success?: boolean; fallback?: boolean; error?: string }>
@@ -613,6 +615,7 @@ contextBridge.exposeInMainWorld("electronAPI", {
   },
   toggleAdvancedSettings: () => ipcRenderer.invoke("toggle-advanced-settings"),
   openExternal: (url: string) => ipcRenderer.invoke("open-external", url),
+  openKnownFolder: (key: 'downloads' | 'applications') => ipcRenderer.invoke("open-known-folder", key),
   setUndetectable: (state: boolean) => ipcRenderer.invoke("set-undetectable", state),
   getUndetectable: () => ipcRenderer.invoke("get-undetectable"),
   setOverlayMousePassthrough: (enabled: boolean) => ipcRenderer.invoke("set-overlay-mouse-passthrough", enabled),
@@ -1137,6 +1140,8 @@ contextBridge.exposeInMainWorld("electronAPI", {
   checkForUpdates: () => ipcRenderer.invoke("check-for-updates"),
   downloadUpdate: () => ipcRenderer.invoke("download-update"),
   testReleaseFetch: () => ipcRenderer.invoke("test-release-fetch"),
+  getAppVersion: () => ipcRenderer.invoke("get-app-version"),
+  isAppPackaged: () => ipcRenderer.invoke("is-app-packaged"),
 
   // Intelligence Mode - WHAT AM I MISSING
   onWhatAmIMissingToken: (callback: (data: { token: string }) => void) => {

@@ -25,6 +25,7 @@ export interface ElectronAPI {
   hideOverlay: () => Promise<void>
   setWindowMode: (mode: 'launcher' | 'overlay', inactive?: boolean) => Promise<void>
   openExternal: (url: string) => Promise<void>
+  openKnownFolder: (key: 'downloads' | 'applications') => Promise<void>
   getArch: () => Promise<string>
   platform: NodeJS.Platform
 
@@ -405,8 +406,10 @@ export interface ElectronAPI {
   onDownloadProgress: (callback: (progressObj: any) => void) => () => void
   restartAndInstall: () => Promise<void>
   checkForUpdates: () => Promise<void>
+  isAppPackaged: () => Promise<boolean>
   downloadUpdate: () => Promise<void>
   testReleaseFetch: () => Promise<{ success: boolean; error?: string }>
+  getAppVersion: () => Promise<string>
 
   // ===========================================================================
   // Donation

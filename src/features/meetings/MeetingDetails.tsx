@@ -748,7 +748,7 @@ const MeetingDetails: React.FC<MeetingDetailsProps> = ({ meeting: initialMeeting
                                                             <div className={`p-4 rounded-xl border ${isLight ? 'bg-red-50 border-red-200' : 'bg-red-500/10 border-red-500/20'}`}>
                                                                 <div className='flex gap-3 mb-3'>
                                                                     <div><TriangleAlert className='text-red-400' size={18} /></div>
-                                                                    <div className="text-sm font-bold text-red-400 tracking-wider mb-3">MISSED COMPLETELY</div>
+                                                                    <div className="text-sm font-bold text-red-400 tracking-wider mb-3">ROOM TO IMPROVE</div>
                                                                 </div>
                                                                 {validMissedItems.map(({ label, content }, i) => (
                                                                     <div key={i} className="flex items-start gap-3 mb-4">

@@ -1,11 +1,11 @@
 import React from 'react';
-import { Mic, Monitor, Keyboard, User, LogOut, ArrowLeft, Calendar, FlaskConical, Info, BarChart2, Users, Building2 } from 'lucide-react';
+import { Mic, Monitor, Keyboard, User, LogOut, ArrowLeft, Calendar, FlaskConical, Info, BarChart2, Users, Building2, RefreshCw } from 'lucide-react';
 import { motion, AnimatePresence } from 'framer-motion';
 import { AboutSection } from '@/features/onboarding';
 import { AIProvidersSettings } from '@/features/settings';
-import { CompanyContextTab, ScoringCriteriaTab, UserProfileTab, UserRolesPermissionsTab } from '@/features/settings';
+import { CompanyContextTab, ScoringCriteriaTab, UserProfileTab, UserRolesPermissionsTab, UpdatesTab } from '@/features/settings';
 import { SettingsOverlayProps } from '@/types';
-import { useSettingsOverlay } from '@/hooks';
+import { useSettingsOverlay, useUpdateStatus } from '@/hooks';
 import GeneralTab from './GeneralTab';
 import KeybindsTab from './KeybindsTab';
 import AudioTab from './AudioTab';
@@ -19,16 +19,17 @@ import { posthogAnalytics } from '@/lib/analytics/posthog.service';
 // Sidebar nav item definitions — id must match the `activeTab` values used
 // below. Kept as data so the nav list itself stays a simple `.map()`.
 const NAV_ITEMS = [
-    { id: 'general', label: 'General', icon: Monitor },
-    { id: 'user-profile', label: 'User Profile', icon: User },
-    { id: 'ai-providers', label: 'AI Providers', icon: FlaskConical },
-    { id: 'calendar', label: 'Calendar', icon: Calendar },
-    { id: 'audio', label: 'Audio', icon: Mic },
-    { id: 'keybinds', label: 'Keybinds', icon: Keyboard },
-    { id: 'company-context', label: 'Company Context', icon: Building2 },
-    { id: 'scoring-criteria', label: 'Scoring Criteria', icon: BarChart2 },
-    { id: 'user-roles-permissions', label: 'Roles & Management', icon: Users },
-    { id: 'about', label: 'About', icon: Info },
+    { id: 'general', label: 'General', icon: Monitor, productionOnly: false },
+    { id: 'user-profile', label: 'User Profile', icon: User, productionOnly: false },
+    { id: 'ai-providers', label: 'AI Providers', icon: FlaskConical, productionOnly: false },
+    { id: 'calendar', label: 'Calendar', icon: Calendar, productionOnly: false },
+    { id: 'audio', label: 'Audio', icon: Mic, productionOnly: false },
+    { id: 'keybinds', label: 'Keybinds', icon: Keyboard, productionOnly: false },
+    { id: 'company-context', label: 'Company Context', icon: Building2, productionOnly: false },
+    { id: 'scoring-criteria', label: 'Scoring Criteria', icon: BarChart2, productionOnly: false },
+    { id: 'user-roles-permissions', label: 'Roles & Management', icon: Users, productionOnly: false },
+    { id: 'updates', label: 'Updates', icon: RefreshCw, productionOnly: true },
+    { id: 'about', label: 'About', icon: Info, productionOnly: false },
 ] as const;
 
 // ─────────────────────────────────────────────────────────────────────────
@@ -55,6 +56,15 @@ const SettingsOverlay: React.FC<SettingsOverlayProps> = ({
 }) => {
     const overlay = useSettingsOverlay({ isOpen, onClose, initialTab });
     const { isLight, activeTab, setActiveTab, navigateToCompanyContext, opacity, tavily } = overlay;
+
+    // Single owned instance for the whole overlay's lifetime — both the nav
+    // badge below and the Updates tab content read from this same object, so
+    // switching tabs and back doesn't reset anything.
+    const updateStatus = useUpdateStatus();
+    const { isUpdateAvailable, status: updateStatusValue, isPackaged } = updateStatus;
+    const showUpdateBadge = (isUpdateAvailable || updateStatusValue === 'ready') && activeTab !== 'updates';
+
+    const visibleNavItems = NAV_ITEMS.filter(item => !item.productionOnly || isPackaged);
 
     // Fires once per genuine open. Reads `activeTab` here (not the raw
     // `initialTab` prop) because useSettingsOverlay can redirect on open —
@@ -102,13 +112,16 @@ const SettingsOverlay: React.FC<SettingsOverlayProps> = ({
                                     </div>
 
                                     <nav className="space-y-1">
-                                        {NAV_ITEMS.map(({ id, label, icon: Icon }) => (
+                                        {visibleNavItems.map(({ id, label, icon: Icon }) => (
                                             <button
                                                 key={id}
                                                 onClick={() => (id === 'company-context' ? navigateToCompanyContext() : setActiveTab(id))}
                                                 className={`w-full text-left px-3 py-2 rounded-lg text-sm font-medium transition-colors flex items-center gap-3 ${activeTab === id ? 'bg-bg-item-active text-text-primary' : 'text-text-secondary hover:text-text-primary hover:bg-bg-item-active/50'}`}
                                             >
                                                 <Icon size={16} className="shrink-0" /> {label}
+                                                {id === 'updates' && showUpdateBadge && (
+                                                    <span className="ml-auto w-2 h-2 rounded-full bg-blue-400 shrink-0" />
+                                                )}
                                             </button>
                                         ))}
                                     </nav>
@@ -177,6 +190,10 @@ const SettingsOverlay: React.FC<SettingsOverlayProps> = ({
                                             deepLinkInviteToken={deepLinkInviteToken}
                                             onDeepLinkTokenConsumed={onDeepLinkTokenConsumed}
                                         />
+                                    )}
+
+                                    {activeTab === 'updates' && isPackaged && (
+                                        <UpdatesTab isLight={isLight} updateStatus={updateStatus} />
                                     )}
 
                                     {activeTab === 'about' && <AboutSection />}

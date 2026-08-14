@@ -25,6 +25,13 @@ export function useMeetingChat({ isOpen, onClose, onMessagesChange, messages, me
     const [errorMessage, setErrorMessage] = useState<string | null>(null);
     const [statusText, setStatusText] = useState<string | null>(null);
 
+    // One session per meeting, same session_id/history contract as
+    // useGlobalChat. No sidebar here — messages are already scoped to a
+    // single meeting via useMeetingDetails' chatMessages state, so this just
+    // needs to remember the id the backend hands back on the first turn and
+    // keep reusing it for the rest of this meeting's conversation.
+    const [sessionId, setSessionId] = useState<string | null>(null);
+
     const messagesEndRef = useRef<HTMLDivElement>(null);
     const chatWindowRef = useRef<HTMLDivElement>(null);
     const streamBuffer = useStreamBuffer();
@@ -33,6 +40,12 @@ export function useMeetingChat({ isOpen, onClose, onMessagesChange, messages, me
     const pendingQuestionRef = useRef<string | null>(null);
     const chatStateRef = useRef<MeetingChatState>('idle');
     const lastSubmittedQueryIdRef = useRef<number | null>(null);
+
+    // A different meeting means a different conversation — don't carry the
+    // previous meeting's session_id over.
+    useEffect(() => {
+        setSessionId(null);
+    }, [meetingContext.id]);
 
     useEffect(() => () => activeStreamRef.current?.abort(), []);
 
@@ -133,9 +146,13 @@ export function useMeetingChat({ isOpen, onClose, onMessagesChange, messages, me
         streamBuffer.reset();
         let sources: ChatSources | undefined;
 
-        activeStreamRef.current = chatApi.queryMeeting(meetingContext.id, question, {
+        // history is only consulted by the backend when sessionId is null
+        // (first turn of a new session); once a session exists it loads
+        // prior turns itself, same as queryGlobal — see chatApi.ts.
+        activeStreamRef.current = chatApi.queryMeeting(meetingContext.id, question, sessionId, [], {
             onStatus: (status) => setStatusText(statusLabel(status)),
             onRetry: (attempt, max) => setStatusText(`Reconnecting… (${attempt}/${max})`),
+            onSessionCreated: (id) => setSessionId(id),
             onSources: (s) => { sources = s; },
             onToken: (chunk) => {
                 setChatState('streaming_response');
@@ -191,12 +208,13 @@ export function useMeetingChat({ isOpen, onClose, onMessagesChange, messages, me
             },
         });
         // eslint-disable-next-line react-hooks/exhaustive-deps
-    }, [meetingContext.id]);
+    }, [meetingContext.id, sessionId]);
 
     return {
         chatState,
         errorMessage,
         statusText,
+        sessionId,
         messagesEndRef,
         chatWindowRef,
         handleBackdropClick,

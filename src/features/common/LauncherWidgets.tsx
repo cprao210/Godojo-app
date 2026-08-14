@@ -36,6 +36,7 @@ interface LauncherHeaderProps {
     onOpenMeeting: (meeting: Meeting) => void;
     onOpenManagerDashboard?: () => void;
     isManagerDashboardOpen?: boolean;
+    isSettingsOpen?: boolean;
     onOpenSettings: (tab?: string) => void;
     authUser?: { displayName?: string | null; email?: string | null; photoURL?: string | null } | null;
     onSignOut?: () => void;
@@ -43,14 +44,16 @@ interface LauncherHeaderProps {
 
 export const LauncherHeader: React.FC<LauncherHeaderProps> = ({
     isLight, selectedMeeting, forwardMeeting, onBack, onForward,
-    meetings, onOpenMeeting, onOpenManagerDashboard, isManagerDashboardOpen = false, onOpenSettings,
+    meetings, onOpenMeeting, onOpenManagerDashboard, isManagerDashboardOpen = false, onOpenSettings, isSettingsOpen = false,
     authUser, onSignOut,
 }) => {
     // Single source of truth for which nav item is "active" — driven by
     // the dashboard's actual open/closed state (owned in App.tsx), not
-    // inferred from selectedMeeting. Home is active whenever Dashboard isn't.
-    const isHomeActive = !isManagerDashboardOpen;
-    const isDashboardActive = isManagerDashboardOpen;
+    // inferred from selectedMeeting. Home is active whenever neither Dashboard
+    // nor Settings is open — opening Settings should clear both nav states
+    // since Settings isn't represented by either "Home" or "Dashboard".
+    const isHomeActive = !isManagerDashboardOpen && !isSettingsOpen;
+    const isDashboardActive = isManagerDashboardOpen && !isSettingsOpen;
     return (
         <header className={[
             'relative w-full shrink-0 flex items-center gap-3 drag-region select-none border-b z-[200] backdrop-blur-xl',

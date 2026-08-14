@@ -12,6 +12,67 @@ import { buildCompanyContextBlock } from '../electron/utils/salesBriefUtils';
 import { buildScorecardPrompt } from './llm/ScoreCardLLM';
 const crypto = require('crypto');
 
+// ── BANT/MEDDIC reconciliation ──────────────────────────────────────────────
+// buildSummaryPrompt() TELLS the LLM live analysis is authoritative and to
+// "copy these values directly" — but that's a prompt instruction, not a
+// guarantee. The LLM can paraphrase evidence, misapply the status mapping,
+// or re-derive a field from the transcript instead of trusting the supplied
+// value, especially on a fallback-tier provider. This function makes that
+// guarantee real: it overwrites summaryData.bant/meddicc in code, directly
+// from liveAnalysisData, so the Summary tab and the Call Analysis tab can
+// never disagree on BANT/MEDDIC status or evidence. Only the fields that
+// legitimately require transcript reasoning (overview, dealStatus,
+// salesCoachReview, nextCallPlaybook, keyPoints, actionItems) are left for
+// the LLM to generate freely — this function never touches them.
+const STATUS_MAP: Record<string, string> = {
+    confirmed: 'Clear',
+    partial: 'Partial',
+    missing: 'Missing',
+    '': 'Missing',
+};
+
+function reconcileBantMeddicWithLiveAnalysis(
+    summaryData: any,
+    liveAnalysis: LiveAnalysisData | null | undefined,
+): any {
+
+    console.log("liveAnalysis --> ", liveAnalysis);
+    if (!liveAnalysis) return summaryData; // nothing to reconcile against — leave LLM output as-is
+
+    const field = (f: { status: string; evidence: string } | undefined) => ({
+        status: STATUS_MAP[f?.status ?? ''] ?? 'Missing',
+        detail: f?.evidence || '',
+    });
+
+    return {
+        ...summaryData,
+        bant: {
+            budget: field(liveAnalysis.bant?.budget),
+            authority: field(liveAnalysis.bant?.authority),
+            need: field(liveAnalysis.bant?.need),
+            timeline: field(liveAnalysis.bant?.timeline),
+        },
+        meddicc: {
+            metrics: field(liveAnalysis.meddic?.metrics),
+            economicBuyer: field(liveAnalysis.meddic?.economic_buyer),
+            decisionCriteria: field(liveAnalysis.meddic?.decision_criteria),
+            decisionProcess: field(liveAnalysis.meddic?.decision_process),
+            identifyPain: field(liveAnalysis.meddic?.identify_pain),
+            champion: field(liveAnalysis.meddic?.champion),
+            competition: field(liveAnalysis.meddic?.competition),
+            // gaps is genuinely a summarization task (which of the 7 fields
+            // are weak) — keep the LLM's own list rather than recomputing it
+            // here, but fall back to deriving it from the reconciled statuses
+            // above if the LLM omitted it.
+            gaps: summaryData?.meddicc?.gaps?.length
+                ? summaryData.meddicc.gaps
+                : (['metrics', 'economic_buyer', 'decision_criteria', 'decision_process', 'identify_pain', 'champion', 'competition'] as const)
+                    .filter((k) => (liveAnalysis.meddic as any)?.[k]?.status !== 'confirmed')
+                    .map((k) => k),
+        },
+    };
+}
+
 const buildSummaryPrompt = (liveAnalysis?: LiveAnalysisData | null, companyIntel?: Record<string, any> | null): string => {
 
     // ── With live analysis: structured data is the authoritative BANT/MEDDIC source ──
@@ -396,6 +457,8 @@ export class MeetingPersistence {
             })
             .join('\n');
 
+        console.log("data.transcript: -> ", data.transcript);
+
         try {
             // Generate Title (only if not set by calendar)
             if (!metadata || !metadata.title) {
@@ -434,7 +497,16 @@ export class MeetingPersistence {
                     const jsonMatch = generatedSummary.match(/```json\n([\s\S]*?)\n```/) || [null, generatedSummary];
                     const jsonStr = (jsonMatch[1] || generatedSummary).trim();
                     try {
-                        summaryData = JSON.parse(jsonStr);
+                        // Parse the LLM's structured summary FIRST — this carries
+                        // overview/keyPoints/actionItems/dealStatus/salesCoachReview/
+                        // nextCallPlaybook. Losing this step means the summary tab
+                        // renders empty even though bant/meddicc still get filled in
+                        // below from live analysis.
+                        const parsedSummary = JSON.parse(jsonStr);
+                        // Guarantee BANT/MEDDIC in the summary matches live
+                        // analysis exactly — see reconcileBantMeddicWithLiveAnalysis
+                        // for why the prompt instruction alone isn't enough.
+                        summaryData = reconcileBantMeddicWithLiveAnalysis({ ...summaryData, ...parsedSummary }, liveAnalysisData);
                     } catch (e) { console.error("Failed to parse summary JSON", e); }
                 }
             } else {
@@ -725,7 +797,10 @@ export class MeetingPersistence {
 
             const jsonMatch = generatedSummary.match(/```json\n([\s\S]*?)\n```/) || [null, generatedSummary];
             const jsonStr = (jsonMatch[1] || generatedSummary).trim();
-            const summaryData = JSON.parse(jsonStr);
+            let summaryData = JSON.parse(jsonStr);
+            // Same guarantee as the initial save path — regenerating must not
+            // let BANT/MEDDIC drift from the meeting's stored live analysis.
+            summaryData = reconcileBantMeddicWithLiveAnalysis(summaryData, existingLiveAnalysis);
 
             DatabaseManager.getInstance().updateMeetingSummary(meetingId, summaryData);
             console.log(`[MeetingPersistence] Regenerated summary for meeting ${meetingId}`);
