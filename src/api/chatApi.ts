@@ -275,4 +275,9 @@ export const chatApi = {
             `/chat/sessions/${sessionId}/messages`,
         ).then((r) => r.messages),
 
+    /** Deletes a session + its turn history. Idempotent from the caller's
+     * perspective — the sidebar removes it optimistically regardless. */
+    deleteSession: (sessionId: string): Promise<void> =>
+        apiFetch<void>(`/chat/sessions/${sessionId}`, { method: "DELETE" }),
+
 };

@@ -61,6 +61,34 @@ export function useGlobalChat({ isOpen, onClose, initialQuery = "" }: UseGlobalC
         // eslint-disable-next-line react-hooks/exhaustive-deps
     }, [isOpen]);
 
+    // ── Delete a session from the sidebar ────────────────────────────────────
+    const deleteSession = useCallback(async (id: string) => {
+        // Optimistic removal so the sidebar feels instant.
+        const prevSessions = sessions;
+        setSessions((prev) => prev.filter((s) => s.id !== id));
+
+        // If the deleted session is the one currently open, drop back to a
+        // fresh chat rather than leaving the transcript of a now-gone session
+        // on screen.
+        if (id === sessionId) {
+            activeStreamRef.current?.abort();
+            setSessionId(null);
+            setMessages([]);
+            setChatState("idle");
+            setErrorMessage(null);
+            setStatusText(null);
+        }
+
+        try {
+            await chatApi.deleteSession(id);
+        } catch (e) {
+            console.error("[GlobalChat] Failed to delete session:", e);
+            // Roll back — it's still on the backend, so put it back in the list.
+            setSessions(prevSessions);
+        }
+        // eslint-disable-next-line react-hooks/exhaustive-deps
+    }, [sessions, sessionId]);
+
     // ── Focus the input as soon as the widget opens ─────────────────────────
     useEffect(() => {
         if (isOpen) {
@@ -312,6 +340,7 @@ export function useGlobalChat({ isOpen, onClose, initialQuery = "" }: UseGlobalC
         handleSendClick,
         resetOnExit,
         startNewChat,
-        loadSession
+        loadSession,
+        deleteSession,
     };
 }

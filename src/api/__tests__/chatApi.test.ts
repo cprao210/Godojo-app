@@ -355,4 +355,14 @@ describe('chatApi.createSession / listSessions / getSessionMessages', () => {
         expect(mockedApiFetch.mock.calls[0][0]).toBe('/chat/sessions/s1/messages');
         expect(result).toEqual(messages);
     });
+
+    it('DELETEs /chat/sessions/{id}', async () => {
+        mockedApiFetch.mockResolvedValueOnce(undefined as any);
+
+        await chatApi.deleteSession('s1');
+
+        expect(mockedApiFetch.mock.calls[0][0]).toBe('/chat/sessions/s1');
+        expect((mockedApiFetch.mock.calls[0][1] as RequestInit).method).toBe('DELETE');
+    });
+
 });

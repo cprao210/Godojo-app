@@ -1272,6 +1272,7 @@ export interface ChatSessionSidebarProps {
   isLoading: boolean;
   onSelectSession: (sessionId: string) => void;
   onNewChat: () => void;
+  onDeleteSession: (sessionId: string) => void;
 }
 
 // --- src/features/common/AdCampaignToasters.tsx ---

@@ -1,5 +1,5 @@
 import React from 'react';
-import { Plus, MessageSquare } from 'lucide-react';
+import { Plus, MessageSquare, Trash2 } from 'lucide-react';
 import { motion } from 'framer-motion';
 import { ChatSessionSidebarProps } from '@/types';
 
@@ -13,6 +13,7 @@ const ChatSessionSidebar: React.FC<ChatSessionSidebarProps> = ({
     isLoading,
     onSelectSession,
     onNewChat,
+    onDeleteSession,
 }) => {
     return (
         <div className="w-[220px] shrink-0 border-r border-border-subtle flex flex-col bg-bg-elevated/40">
@@ -42,13 +43,24 @@ const ChatSessionSidebar: React.FC<ChatSessionSidebarProps> = ({
                                 initial={{ opacity: 0 }}
                                 animate={{ opacity: 1 }}
                                 onClick={() => onSelectSession(session.id)}
-                                className={`w-full flex items-start gap-2 px-2.5 py-2 mb-0.5 rounded-lg text-left transition-colors ${isActive
-                                        ? 'bg-accent-primary/12 text-accent-primary'
-                                        : 'text-text-secondary hover:bg-bg-item-surface hover:text-text-primary'
+                                className={`group w-full flex items-start gap-2 px-2.5 py-2 mb-0.5 rounded-lg text-left transition-colors ${isActive
+                                    ? 'bg-accent-primary/12 text-accent-primary'
+                                    : 'text-text-secondary hover:bg-bg-item-surface hover:text-text-primary'
                                     }`}
                             >
                                 <MessageSquare size={13} className="mt-0.5 shrink-0 opacity-70" />
-                                <span className="text-[12px] leading-snug truncate">{session.title}</span>
+                                <span className="text-[12px] leading-snug truncate flex-1">{session.title}</span>
+                                <span
+                                    role="button"
+                                    aria-label="Delete conversation"
+                                    onClick={(e) => {
+                                        e.stopPropagation();
+                                        onDeleteSession(session.id);
+                                    }}
+                                    className="opacity-0 group-hover:opacity-100 shrink-0 p-0.5 rounded hover:bg-red-500/15 hover:text-red-400 transition-opacity"
+                                >
+                                    <Trash2 size={12} />
+                                </span>
                             </motion.button>
                         );
                     })
