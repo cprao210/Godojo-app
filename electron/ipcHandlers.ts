@@ -1,6 +1,6 @@
 // ipcHandlers.ts
 
-import { app, ipcMain, shell, dialog, desktopCapturer, systemPreferences, BrowserWindow, screen } from "electron"
+import { app, ipcMain, shell, dialog, desktopCapturer, systemPreferences, BrowserWindow, screen, session } from "electron"
 import { AppState } from "./main"
 import { GEMINI_FLASH_MODEL } from "./IntelligenceManager"
 import { DatabaseManager } from "./db/DatabaseManager"; // Import Database Manager
@@ -3830,6 +3830,18 @@ export function initializeIpcHandlers(appState: AppState): void {
         console.warn('[ipc] reset-app-data: DatabaseManager.close() failed (continuing):', e);
       }
 
+      // Chromium's own HTTP disk cache (userData/Cache/Cache_Data/*) is held
+      // open by this running process. On Windows an open handle blocks
+      // unlink, so without this the rmSync below throws EPERM on those
+      // cache files specifically. Clearing the session cache/storage first
+      // makes Chromium release its handles before we delete the directory.
+      try {
+        await session.defaultSession.clearCache();
+        await session.defaultSession.clearStorageData();
+      } catch (e) {
+        console.warn('[ipc] reset-app-data: clearing session cache failed (continuing):', e);
+      }
+
       const userDataPath = app.getPath('userData');
       // Guard against ever deleting something unexpected (e.g. if
       // userData somehow resolved to a root-ish path).
@@ -3837,7 +3849,33 @@ export function initializeIpcHandlers(appState: AppState): void {
         throw new Error(`Refusing to reset — unexpected userData path: ${userDataPath}`);
       }
 
-      fs.rmSync(userDataPath, { recursive: true, force: true });
+      // Delete everything except the disposable Chromium HTTP cache first.
+      // The Cache dir (Cache/Cache_Data/*) can still be held open by this
+      // process's network service on Windows even after clearCache() above,
+      // and we don't want a lock on a regenerable cache file to abort the
+      // deletion of the data that actually matters (credentials, settings,
+      // db). Any real (non-cache) file that's still locked will still throw
+      // and correctly fail the whole reset.
+      const cacheDirPath = path.join(userDataPath, 'Cache');
+      for (const entry of fs.readdirSync(userDataPath)) {
+        if (entry === 'Cache') continue;
+        fs.rmSync(path.join(userDataPath, entry), { recursive: true, force: true });
+      }
+
+      // Cache itself: best-effort, with a couple of short retries for a
+      // transient Windows file lock, but never fatal to the reset.
+      for (let attempt = 1; attempt <= 3; attempt++) {
+        try {
+          fs.rmSync(cacheDirPath, { recursive: true, force: true });
+          break;
+        } catch (e) {
+          if (attempt === 3) {
+            console.warn('[ipc] reset-app-data: could not fully clear Cache dir (non-fatal, will regenerate):', e);
+          } else {
+            await new Promise((resolve) => setTimeout(resolve, 150));
+          }
+        }
+      }
 
       app.relaunch();
       app.exit(0);
