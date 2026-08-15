@@ -19,7 +19,7 @@ export function NextMeetingDetails({
     meeting: UpcomingMeeting;
     isLight: boolean;
     getMeetingStartText: (s: string) => string;
-    onStart: () => void;
+    onStart: (meeting?: UpcomingMeeting) => void;
     onSalesBrief: (meeting: UpcomingMeeting) => void;
 }) {
     const diffMs = new Date(meeting.startTime).getTime() - Date.now();
@@ -168,8 +168,13 @@ export function NextMeetingDetails({
                         if (meeting.link) {
                             window.electronAPI?.openExternal?.(meeting.link);
                         }
-                        // Start live analysis + show the bottom dock
-                        onStart();
+                        // Start live analysis + show the bottom dock. Pass `meeting`
+                        // through (same as the "Start GoDojo" button's
+                        // onStartMeeting(nextMeeting) call in useLauncher.ts) —
+                        // onStart was being called with no args here, so the
+                        // downstream calendarEvent (and its .attendees) was always
+                        // undefined for this path.
+                        onStart(meeting);
                     }}
                     className="flex items-center gap-2 px-4 py-2.5 rounded-xl bg-gradient-to-b from-blue-500 to-blue-600 text-white text-[12px] font-semibold shadow-[0_4px_14px_-4px_rgba(59,130,246,0.6)] transition hover:from-blue-400 hover:to-blue-600"
                 >

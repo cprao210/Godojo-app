@@ -76,6 +76,13 @@ export function useMeetingDetails(initialMeeting: Meeting) {
     const queryClient = useQueryClient();
     const meetingKey = ["meeting", initialMeeting.id];
 
+    // 'live-meeting-current' is a local-only RAG session key (see RAGManager /
+    // VectorStore) used while a call is still in progress and the meeting row
+    // doesn't exist in the backend yet — there is no GET /meetings/{id} (or
+    // .../ai-interactions) route for it. Guard both HTTP queries below so we
+    // never fire a request for it.
+    const isLiveMeetingPlaceholder = initialMeeting.id === 'live-meeting-current';
+
     // Tracks the post-call processing skeleton. While processing we don't fetch detail
     // over HTTP (the row may not be in the backend yet); the onMeetingsUpdated effect
     // below pulls it once main signals it's ready.
@@ -88,7 +95,7 @@ export function useMeetingDetails(initialMeeting: Meeting) {
     const { data: meetingData = initialMeeting, isLoading: isLoadingMeetingDetail, dataUpdatedAt } = useQuery<Meeting>(
         meetingKey,
         () => meetingsApi.get(initialMeeting.id),
-        { initialData: initialMeeting, enabled: !isProcessing },
+        { initialData: initialMeeting, enabled: !isProcessing && !isLiveMeetingPlaceholder },
     );
 
     // /chat/live interaction_ids collected during the live call can't be
@@ -153,10 +160,10 @@ export function useMeetingDetails(initialMeeting: Meeting) {
     // fallback via this merged value — no need to touch each call site.
     const meeting: Meeting = useMemo(
         () =>
-            needsLocalTranscript && localTranscript && localTranscript.length > 0
+            localTranscript && localTranscript.length > 0
                 ? { ...meetingData, transcript: localTranscript }
-                : meetingData,
-        [meetingData, needsLocalTranscript, localTranscript]
+                : { ...meetingData, transcript: meetingData.transcript },
+        [meetingData, localTranscript]
     );
 
     // Drives the Transcript tab's own skeleton — deliberately NOT the same
@@ -239,7 +246,7 @@ export function useMeetingDetails(initialMeeting: Meeting) {
         ['ai-interactions', meeting?.id],
         () => meetingsApi.getAiInteractions(meeting!.id),
         {
-            enabled: activeTab === 'usage' && !!meeting?.id,
+            enabled: activeTab === 'usage' && !!meeting?.id && !isLiveMeetingPlaceholder,
             staleTime: 30_000,
         }
     );

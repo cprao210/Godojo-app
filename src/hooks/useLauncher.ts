@@ -163,7 +163,12 @@ export function useLauncher({ onStartMeeting, ollamaPullStatus = 'idle', onPageC
     }, []);
 
     const deleteMutation = useMutation<void, unknown, string, { prev?: Meeting[] }>(
-        (id) => meetingsApi.remove(id),
+        (id) => {
+            if (id === 'live-meeting-current') {
+                return Promise.resolve();
+            }
+            return meetingsApi.remove(id);
+        },
         {
             onMutate: async (id) => {
                 await queryClient.cancelQueries(['meetings']);

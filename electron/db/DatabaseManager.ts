@@ -1765,8 +1765,14 @@ export class DatabaseManager {
     public getRecentMeetings(limit: number = 50): Meeting[] {
         if (!this.db) return [];
 
+        // Exclude the 'live-meeting-current' row: RAGManager.startLiveIndexing()
+        // inserts it purely to satisfy the chunks table's FK constraint while a
+        // call is in progress (see RAGManager.ts) — it's local bookkeeping, not
+        // a real meeting, and has no corresponding row on the backend. ...
+
         const stmt = this.db.prepare(`
             SELECT * FROM meetings 
+            WHERE id != 'live-meeting-current'
             ORDER BY created_at DESC 
             LIMIT ?
         `);
