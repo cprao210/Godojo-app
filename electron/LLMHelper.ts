@@ -3448,6 +3448,14 @@ export class LLMHelper {
   public async generateMeetingSummary(systemPrompt: string, context: string, groqSystemPrompt?: string): Promise<string> {
     console.log(`[LLMHelper] generateMeetingSummary called. Context length: ${context.length}`);
 
+    // Tracks the most recent real provider error across all attempts below so
+    // the final throw (if every fallback fails) carries actual provider text
+    // ("429 RESOURCE_EXHAUSTED...", "rate_limit_exceeded", ...) instead of a
+    // generic message — this is what lets callers show/report a specific
+    // "Gemini key exhausted" / "Groq limit exceeded" reason instead of a
+    // silent, unexplained failure.
+    let lastProviderError: any = null;
+
     // Helper: Estimate tokens (crude approximation: 4 chars = 1 token)
     const estimateTokens = (text: string) => Math.ceil(text.length / 4);
     const tokenCount = estimateTokens(context);
@@ -3474,6 +3482,7 @@ export class LLMHelper {
         }
       } catch (e: any) {
         console.warn(`[LLMHelper] ⚠️ Custom provider summary failed: ${e.message}. Falling back...`);
+        lastProviderError = e;
       }
     }
 
@@ -3492,6 +3501,7 @@ export class LLMHelper {
         }
       } catch (e: any) {
         console.warn(`[LLMHelper] ⚠️ Natively API summary failed: ${e.message}. Falling back...`);
+        lastProviderError = e;
       }
     }
 
@@ -3521,6 +3531,7 @@ export class LLMHelper {
         }
       } catch (e: any) {
         console.warn(`[LLMHelper] ⚠️ Groq summary failed: ${e.message}. Falling back to Gemini...`);
+        lastProviderError = e;
       }
     } else {
       if (tokenCount >= 100000) {
@@ -3545,6 +3556,7 @@ export class LLMHelper {
         }
       } catch (e: any) {
         console.warn(`[LLMHelper] ⚠️ Gemini Flash attempt ${attempt}/3 failed: ${e.message}`);
+        lastProviderError = e;
         if (attempt < 3) {
           await new Promise(r => setTimeout(r, 1000 * attempt)); // Linear backoff
         }
@@ -3580,6 +3592,7 @@ export class LLMHelper {
           }
         } catch (e: any) {
           console.warn(`[LLMHelper] ⚠️ Gemini Pro attempt ${attempt} failed: ${e.message}`);
+          lastProviderError = e;
           // Aggressive backoff for Pro: 2s, 4s, 8s, 16s, 32s
           const backoff = 2000 * Math.pow(2, attempt - 1);
           console.log(`[LLMHelper] Waiting ${backoff}ms before next retry...`);
@@ -3590,7 +3603,7 @@ export class LLMHelper {
       console.log(`[LLMHelper] Gemini client not initialized — skipping Gemini Pro.`);
     }
 
-    throw new Error("Failed to generate summary after all fallback attempts.");
+    throw new Error(lastProviderError?.message || "Failed to generate summary after all fallback attempts.");
   }
 
   public async switchToOllama(model?: string, url?: string): Promise<void> {

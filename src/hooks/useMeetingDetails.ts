@@ -20,6 +20,8 @@ import { meetingsApi, chatApi } from '@/api';
 import { guardSession } from '@/lib/firebase';
 import type { Meeting, MeetingTranscriptLine, MeetingScorecardResult, LiveAnalysisData } from '@/types';
 import { normalizeBant, normalizeMeddicc, confirmedOnly, BANT_ORDER, MEDDICC_ORDER } from '@/lib/bantMeddic';
+import { classifyLLMError } from '@/lib/utils';
+import { posthogAnalytics } from '@/lib/analytics/posthog.service';
 
 export const formatTime = (ms: number) => {
     const date = new Date(ms);
@@ -158,6 +160,17 @@ export function useMeetingDetails(initialMeeting: Meeting) {
     );
     // Every existing `meeting.transcript` reference below transparently gets the
     // fallback via this merged value — no need to touch each call site.
+    //
+    // Local is the source of truth once we have it, full stop — NOT just while
+    // `needsLocalTranscript` (i.e. while the backend transcript is still empty).
+    // `needsLocalTranscript` only gates whether the local-transcript query is
+    // *enabled* (see above); it flips to `false` the moment the backend's
+    // summary_json comes back with its own (Supabase-mirrored, sometimes
+    // differently-chunked) transcript array. Selecting on it here meant that
+    // as soon as that happened we'd swap from the local transcript to the
+    // backend one, which the user would see as the transcript changing shape /
+    // duplicating rather than a clean overwrite. Once `localTranscript` is
+    // populated, keep showing it — don't fall back to `meetingData.transcript`.
     const meeting: Meeting = useMemo(
         () =>
             localTranscript && localTranscript.length > 0
@@ -629,11 +642,21 @@ ${formatNextCallPlaybook() || '  None'}
                 // locally-served scorecard so the panel shows the fresh result.
                 void queryClient.invalidateQueries(scorecardKey);
             } else {
-                setRegenError('Failed to regenerate. Please try again.');
+                // `result.error` now carries the real provider error (e.g. Gemini
+                // "429 RESOURCE_EXHAUSTED" / Groq rate-limit text) instead of being
+                // swallowed to a bare `false` — classify it into something the user
+                // can actually act on, and report both the classified reason and
+                // the raw text to PostHog so it's filterable/debuggable there.
+                const { reason, message } = classifyLLMError(result?.error);
+                setRegenError(message);
+                posthogAnalytics.trackSummaryRegenerateFailed(reason, result?.error, meeting.id);
             }
-        } catch (err) {
+        } catch (err: any) {
             console.log(err);
-            setRegenError('Something went wrong.');
+            const { reason, message } = classifyLLMError(err?.message ?? String(err));
+            setRegenError(message);
+            posthogAnalytics.trackSummaryRegenerateFailed(reason, err?.message ?? String(err), meeting.id);
+            posthogAnalytics.trackException(err instanceof Error ? err : new Error(String(err)), 'useMeetingDetails.handleRegenerateSummary', { meetingId: meeting.id });
         } finally {
             setIsRegenerating(false);
         }

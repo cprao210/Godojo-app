@@ -885,7 +885,13 @@ export class MeetingPersistence {
         } catch (e) {
 
             console.error('[MeetingPersistence] Failed to regenerate summary:', e);
-            return false;
+            // Previously swallowed to `return false` here, which lost the actual
+            // provider error (e.g. Gemini "RESOURCE_EXHAUSTED" / Groq rate-limit
+            // text set on `e` by LLMHelper.generateMeetingSummary) — the caller
+            // only ever saw a generic failure. Rethrow so it reaches the
+            // regenerate-meeting-summary IPC handler's catch, which returns
+            // { success: false, error } with the real message intact.
+            throw e;
 
         }
     }

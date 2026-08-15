@@ -1921,10 +1921,10 @@ export function initializeIpcHandlers(appState: AppState): void {
         return { success: true, meeting: updated };
       }
       return { success: false };
-    } catch (e) {
+    } catch (e: any) {
 
       console.error('[ipcHandlers] regenerate-meeting-summary error:', e);
-      return { success: false, error: String(e) };
+      return { success: false, error: e?.message || String(e) };
 
     }
 

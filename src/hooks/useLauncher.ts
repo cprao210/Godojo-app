@@ -164,6 +164,13 @@ export function useLauncher({ onStartMeeting, ollamaPullStatus = 'idle', onPageC
 
     const deleteMutation = useMutation<void, unknown, string, { prev?: Meeting[] }>(
         (id) => {
+            // 'live-meeting-current' is a local-only transient row (RAGManager
+            // inserts it to satisfy a FK constraint while a call is in progress —
+            // see DatabaseManager.getRecentMeetings) and never has a backend
+            // counterpart. It's normally filtered out of the list entirely, but
+            // as a defensive fallback (e.g. a stale cached row), skip the HTTP
+            // call and just clean it up locally instead of hitting a DELETE
+            // route that doesn't exist on the backend.
             if (id === 'live-meeting-current') {
                 return Promise.resolve();
             }
@@ -214,6 +221,9 @@ export function useLauncher({ onStartMeeting, ollamaPullStatus = 'idle', onPageC
     // re-firing chunk() on every subsequent poll tick once a meeting is done.
     const chunkedMeetingIdsRef = React.useRef<Set<string>>(new Set());
     const hasSeededChunkedRef = React.useRef(false);
+    // Dedupes trackCalendarEventsFetched() across fetchEvents()'s 60s poll —
+    // see fetchEvents below.
+    const lastTrackedEventsSignatureRef = React.useRef<string>('');
 
     // Fire /meetings/:id/chunking exactly once, the moment a meeting's
     // transcript + summary processing actually finishes (isProcessed: true).
@@ -259,7 +269,21 @@ export function useLauncher({ onStartMeeting, ollamaPullStatus = 'idle', onPageC
 
     const fetchEvents = () => {
         if (window.electronAPI && window.electronAPI.getUpcomingEvents) {
-            window.electronAPI.getUpcomingEvents().then(setUpcomingEvents).catch(err => console.error('Failed to fetch events:', err));
+            window.electronAPI.getUpcomingEvents()
+                .then((events) => {
+                    setUpcomingEvents(events);
+                    // Only fire when the set of events actually changed — fetchEvents
+                    // polls every 60s (see the interval below), and re-sending the
+                    // same unchanged events on every tick would just spam PostHog.
+                    const signature = (events ?? []).map((e: any) => e?.id).join(',');
+                    if (signature !== lastTrackedEventsSignatureRef.current) {
+                        lastTrackedEventsSignatureRef.current = signature;
+                        if (events && events.length > 0) {
+                            posthogAnalytics.trackCalendarEventsFetched(events);
+                        }
+                    }
+                })
+                .catch(err => console.error('Failed to fetch events:', err));
         }
     };
 

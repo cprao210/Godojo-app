@@ -167,6 +167,50 @@ class PostHogService {
         this.trackEvent('summary_regenerate');
     }
 
+    /** Regenerate-summary failed — `reason` is the classified, human-readable
+     * cause (e.g. "gemini_key_exhausted", "groq_rate_limited") so failures are
+     * filterable/groupable in PostHog, with the raw provider error kept in
+     * `raw_error` for debugging. */
+    public trackSummaryRegenerateFailed(reason: string, rawError?: string, meetingId?: string): void {
+        this.trackEvent('summary_regenerate_failed', { reason, raw_error: rawError, meeting_id: meetingId });
+    }
+
+    /** Meeting failed to start (mic/audio permission, backend session, etc). */
+    public trackMeetingStartFailed(reason: string): void {
+        this.trackEvent('meeting_start_failed', { reason });
+    }
+
+    /** Meeting-end IPC call failed — background save/processing didn't complete. */
+    public trackMeetingEndFailed(reason: string): void {
+        this.trackEvent('meeting_end_failed', { reason });
+    }
+
+    /** Company Insights (Sales Brief) generation failed — e.g. scraping/search
+     * provider errored or returned nothing usable. */
+    public trackCompanyInsightsFailed(reason: string, companyName?: string | null): void {
+        this.trackEvent('company_insights_failed', { reason, company_name: companyName });
+    }
+
+    /** Fired whenever the calendar returns upcoming events, with the full
+     * event objects (including attendees) attached so meeting context is
+     * queryable in PostHog. Session recording already masks free-text inputs,
+     * but this is structured calendar data, not something the person typed —
+     * treat it like any other CRM-sourced property, not free text. */
+    public trackCalendarEventsFetched(events: any[]): void {
+        this.trackEvent('calendar_events_fetched', {
+            event_count: events.length,
+            events: events.map((e) => ({
+                id: e?.id,
+                title: e?.title,
+                startTime: e?.startTime,
+                endTime: e?.endTime,
+                organizer: e?.organizer,
+                link: e?.link,
+                attendees: e?.attendees ?? [],
+            })),
+        });
+    }
+
     public trackMeetingChatOpened(): void {
         this.trackEvent('meeting_chat_opened');
     }
