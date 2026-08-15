@@ -1538,6 +1538,13 @@ export class DatabaseManager {
 
             // 2. Insert Transcript
             if (meeting.transcript) {
+                // saveMeeting() can legitimately be called more than once for the
+                // same meeting.id — a synchronous "Processing..." placeholder save
+                // now writes the real transcript immediately (see MeetingPersistence
+                // stopMeeting/upload flows), followed later by processAndSaveMeeting's
+                // final save with the same transcript. Clear any prior rows for this
+                // meeting first so re-saves replace rather than duplicate.
+                this.db.prepare('DELETE FROM transcripts WHERE meeting_id = ?').run(meeting.id);
                 for (const segment of meeting.transcript) {
                     const info = insertTranscript.run(
                         meeting.id,

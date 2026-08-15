@@ -1324,6 +1324,7 @@ export interface IncompatibleProviderBannerProps {
 export interface LauncherProps {
   onStartMeeting: (calendarEvent?: any) => void;
   onOpenSettings: (tab?: string) => void;
+  onCloseSettings?: () => void;
   onOpenManagerDashboard?: () => void;
   isManagerDashboardOpen?: boolean;
   isSettingsOpen?: boolean;

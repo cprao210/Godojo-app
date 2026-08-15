@@ -22,6 +22,12 @@ export function useMeetingSession(
     const backendMeetingIdRef = useRef<string | null>(null);
     const transcriptSegmentsRef = useRef<TranscriptSegmentInput[]>([]);
 
+    // Guards against a double-click (or a calendar auto-join racing a manual
+    // click) firing two concurrent start-meeting IPC calls. The backend now
+    // also no-ops a duplicate startMeeting() while one is active — this is
+    // the renderer-side half of the same fix.
+    const isStartingRef = useRef(false);
+
     // Buffer transcript turns while a backend meeting session is active.
     useEffect(() => {
         const cleanup = window.electronAPI?.onNativeAudioTranscript?.((t) => {
@@ -38,6 +44,13 @@ export function useMeetingSession(
     }, []);
 
     const handleStartMeeting = async (calendarEvent?: any) => {
+
+        if (isStartingRef.current) {
+            console.warn("[useMeetingSession] startMeeting already in flight — ignoring duplicate call.");
+            return;
+        }
+        isStartingRef.current = true;
+
         try {
             // Always verify the session is live against Firebase servers before
             // starting GoDojo. getIdToken(forceRefresh=true) throws if the account
@@ -84,6 +97,8 @@ export function useMeetingSession(
             }
         } catch (err) {
             console.error("Failed to start meeting:", err);
+        } finally {
+            isStartingRef.current = false;
         }
     };
 

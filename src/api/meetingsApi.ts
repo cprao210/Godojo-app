@@ -13,11 +13,32 @@ export const meetingsApi = {
     const rows = await apiFetch<any[]>("/meetings");
     // Dedupe by id (defensive — preserves the renderer's previous IPC-side dedup).
     const seen = new Set<string>();
-    return (rows ?? []).map(mapMeetingRow).filter((m) => {
+    const backendMeetings = (rows ?? []).map(mapMeetingRow).filter((m) => {
       if (seen.has(m.id)) return false;
       seen.add(m.id);
       return true;
     });
+
+    // Local-first safety net: the Supabase mirror can lag behind — or, for a
+    // meeting that's still processing, simply not have synced yet — the local
+    // SQLite row MeetingPersistence writes synchronously the instant a call
+    // ends. Merge in any locally-known "Processing..." meeting the backend
+    // hasn't surfaced yet, on EVERY fetch (not just a one-shot event), so the
+    // card shows up immediately regardless of mirror lag or whether this
+    // window even existed at the moment the call actually ended.
+    try {
+      const localRows = await window.electronAPI?.getRecentMeetings?.();
+      const localProcessing = (localRows ?? []).filter(
+        (m) => (m.isProcessed === false || m.title === 'Processing...') && !seen.has(m.id)
+      );
+      if (localProcessing.length > 0) {
+        return [...(localProcessing as Meeting[]), ...backendMeetings];
+      }
+    } catch {
+      // electron API unavailable (e.g. a web build) — backend list is fine as-is.
+    }
+
+    return backendMeetings;
   },
 
   get: async (id: string): Promise<Meeting> => {

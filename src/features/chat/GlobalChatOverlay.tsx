@@ -79,7 +79,8 @@ const GlobalChatOverlay: React.FC<GlobalChatOverlayProps> = ({ isOpen, onClose, 
                                     <div className="min-w-0">
                                         <div className="text-[13px] font-semibold text-text-primary leading-tight truncate">Godojo Chat Assistant</div>
                                         <div className="text-[11px] text-text-tertiary leading-tight">
-                                            {isBusy ? (statusText ?? 'Typing…') : 'Online · searches all meetings'}
+                                            {/* {isBusy ? (statusText ?? 'Typing…') : 'Online · searches all meetings'} */}
+                                            Online · searches all meetings
                                         </div>
                                     </div>
                                 </div>

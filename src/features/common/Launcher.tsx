@@ -24,7 +24,7 @@ import { CalendarConnectCard, RecentMeetingsHeader, MeetingsList, RefreshToast, 
 import { LauncherProps } from '@/types';
 import { posthogAnalytics } from '@/lib/analytics/posthog.service';
 
-const Launcher: React.FC<LauncherProps> = ({ onStartMeeting, onOpenSettings, onOpenManagerDashboard, isManagerDashboardOpen = false, isSettingsOpen = false, onPageChange, ollamaPullStatus = 'idle', ollamaPullPercent = 0, ollamaPullMessage = '', authUser, onSignOut }) => {
+const Launcher: React.FC<LauncherProps> = ({ onStartMeeting, onOpenSettings, onCloseSettings, onOpenManagerDashboard, isManagerDashboardOpen = false, isSettingsOpen = false, onPageChange, ollamaPullStatus = 'idle', ollamaPullPercent = 0, ollamaPullMessage = '', authUser, onSignOut }) => {
 
     const launcherStates = useLauncher({ onStartMeeting, onPageChange, ollamaPullStatus, authUser });
     const { isLight, meetings, deleteMutation, upcomingEvents, isCalendarConnected, setIsCalendarConnected } = launcherStates;
@@ -66,6 +66,7 @@ const Launcher: React.FC<LauncherProps> = ({ onStartMeeting, onOpenSettings, onO
                 isManagerDashboardOpen={isManagerDashboardOpen}
                 isSettingsOpen={isSettingsOpen}
                 onOpenSettings={onOpenSettings}
+                onCloseSettings={onCloseSettings}
                 authUser={authUser}
                 onSignOut={onSignOut}
             />

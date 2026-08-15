@@ -11,6 +11,7 @@ import { useState, useEffect } from 'react';
 import { guardSession } from '@/lib/firebase';
 import { posthogAnalytics } from '@/lib/analytics/posthog.service';
 import type { Meeting } from '@/types';
+import { normalizeBant, confirmedOnly, BANT_ORDER } from '@/lib/bantMeddic';
 
 export function useFollowUpEmail(isOpen: boolean, meeting: Meeting) {
     const [recipientEmail, setRecipientEmail] = useState('');
@@ -178,8 +179,12 @@ export function useFollowUpEmail(isOpen: boolean, meeting: Meeting) {
                 recipient_name: resolvedRecipient,
                 sender_name: resolvedSender,
 
-                // BANT — budget/need often contain the metrics the rep wants in the email
-                bant: (ds as any)?.bant || null,
+                bant: (() => {
+                    const normalized = normalizeBant((ds as any)?.liveAnalysis?.bant);
+                    const rows = confirmedOnly(normalized, BANT_ORDER);
+                    if (!rows.length) return null;
+                    return Object.fromEntries(rows.map(({ label, detail }) => [label, detail]));
+                })(),
 
                 // Pre-structured email sections (impact bullets, next steps, etc.)
                 followUpEmail: ds?.followUpEmail || null,

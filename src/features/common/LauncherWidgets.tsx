@@ -38,13 +38,14 @@ interface LauncherHeaderProps {
     isManagerDashboardOpen?: boolean;
     isSettingsOpen?: boolean;
     onOpenSettings: (tab?: string) => void;
+    onCloseSettings?: () => void;
     authUser?: { displayName?: string | null; email?: string | null; photoURL?: string | null } | null;
     onSignOut?: () => void;
 }
 
 export const LauncherHeader: React.FC<LauncherHeaderProps> = ({
     isLight, selectedMeeting, forwardMeeting, onBack, onForward,
-    meetings, onOpenMeeting, onOpenManagerDashboard, isManagerDashboardOpen = false, onOpenSettings, isSettingsOpen = false,
+    meetings, onOpenMeeting, onOpenManagerDashboard, isManagerDashboardOpen = false, onOpenSettings, onCloseSettings, isSettingsOpen = false,
     authUser, onSignOut,
 }) => {
     // Single source of truth for which nav item is "active" — driven by
@@ -109,6 +110,7 @@ export const LauncherHeader: React.FC<LauncherHeaderProps> = ({
                         // Only meaningful when Dashboard is currently open — closing it
                         // is what actually returns the user to the launcher/home view.
                         if (isManagerDashboardOpen) onOpenManagerDashboard?.();
+                        if (isSettingsOpen) onCloseSettings?.();
                         onBack();
                     }}
                     className={[

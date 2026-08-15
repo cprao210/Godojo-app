@@ -10,6 +10,8 @@ import { LiveAnalysisData, MeetingScorecardResult } from '../src/types';
 import { AppState } from './main';
 import { buildCompanyContextBlock } from '../electron/utils/salesBriefUtils';
 import { buildScorecardPrompt } from './llm/ScoreCardLLM';
+import { BANT_ORDER, MEDDICC_ORDER } from '../src/lib/bantMeddic';
+
 const crypto = require('crypto');
 
 // ── BANT/MEDDIC reconciliation ──────────────────────────────────────────────
@@ -20,10 +22,35 @@ const crypto = require('crypto');
 // value, especially on a fallback-tier provider. This function makes that
 // guarantee real: it overwrites summaryData.bant/meddicc in code, directly
 // from liveAnalysisData, so the Summary tab and the Call Analysis tab can
-// never disagree on BANT/MEDDIC status or evidence. Only the fields that
-// legitimately require transcript reasoning (overview, dealStatus,
-// salesCoachReview, nextCallPlaybook, keyPoints, actionItems) are left for
-// the LLM to generate freely — this function never touches them.
+// never disagree on BANT/MEDDIC status or evidence.
+
+// salesCoachReview.whatIDidRight's BANT/MEDDICC-labelled items are reconciled
+// the same way (see buildConfirmedWhatIDidRight below): the LLM was previously
+// free to cherry-pick up to 6 "wins" from the transcript on its own judgment,
+// which routinely disagreed with the Confirmed set shown in Call Analysis.
+// Those items are now derived deterministically from the same
+// liveAnalysis-backed bant/meddicc objects below, so "Sales Self-Analysis"
+// can never show a different confirmed count than the live Call Analysis tab.
+// Only fields that legitimately require transcript reasoning (overview,
+// dealStatus, whatICouldHaveDoneBetter, whatIMissedCompletely,
+// nextCallPlaybook, keyPoints, actionItems) are left for the LLM.
+
+const toComponentName = (camelKey: string): string => camelKey.charAt(0).toUpperCase() + camelKey.slice(1);
+
+function buildConfirmedWhatIDidRight(
+    bant: Record<string, { status: string; detail: string }>,
+    meddicc: Record<string, { status: string; detail: string }>,
+): string[] {
+    const meddiccItems = MEDDICC_ORDER
+        .filter((key) => meddicc[key]?.status === 'Clear')
+        .map((key) => `MEDDICC ${toComponentName(key)}: ${meddicc[key].detail}`);
+
+    const bantItems = BANT_ORDER
+        .filter((key) => bant[key]?.status === 'Clear')
+        .map((key) => `BANT ${toComponentName(key)}: ${bant[key].detail}`);
+
+    return [...meddiccItems, ...bantItems];
+}
 const STATUS_MAP: Record<string, string> = {
     confirmed: 'Clear',
     partial: 'Partial',
@@ -36,7 +63,6 @@ function reconcileBantMeddicWithLiveAnalysis(
     liveAnalysis: LiveAnalysisData | null | undefined,
 ): any {
 
-    console.log("liveAnalysis --> ", liveAnalysis);
     if (!liveAnalysis) return summaryData; // nothing to reconcile against — leave LLM output as-is
 
     const field = (f: { status: string; evidence: string } | undefined) => ({
@@ -44,31 +70,39 @@ function reconcileBantMeddicWithLiveAnalysis(
         detail: f?.evidence || '',
     });
 
+    const reconciledBant = {
+        budget: field(liveAnalysis.bant?.budget),
+        authority: field(liveAnalysis.bant?.authority),
+        need: field(liveAnalysis.bant?.need),
+        timeline: field(liveAnalysis.bant?.timeline),
+    };
+
+    const reconciledMeddicc = {
+        metrics: field(liveAnalysis.meddic?.metrics),
+        economicBuyer: field(liveAnalysis.meddic?.economic_buyer),
+        decisionCriteria: field(liveAnalysis.meddic?.decision_criteria),
+        decisionProcess: field(liveAnalysis.meddic?.decision_process),
+        identifyPain: field(liveAnalysis.meddic?.identify_pain),
+        champion: field(liveAnalysis.meddic?.champion),
+        competition: field(liveAnalysis.meddic?.competition),
+        // gaps is genuinely a summarization task (which of the 7 fields
+        // are weak) — keep the LLM's own list rather than recomputing it
+        // here, but fall back to deriving it from the reconciled statuses
+        // above if the LLM omitted it.
+        gaps: summaryData?.meddicc?.gaps?.length
+            ? summaryData.meddicc.gaps
+            : (['metrics', 'economic_buyer', 'decision_criteria', 'decision_process', 'identify_pain', 'champion', 'competition'] as const)
+                .filter((k) => (liveAnalysis.meddic as any)?.[k]?.status !== 'confirmed')
+                .map((k) => k),
+    };
+
     return {
         ...summaryData,
-        bant: {
-            budget: field(liveAnalysis.bant?.budget),
-            authority: field(liveAnalysis.bant?.authority),
-            need: field(liveAnalysis.bant?.need),
-            timeline: field(liveAnalysis.bant?.timeline),
-        },
-        meddicc: {
-            metrics: field(liveAnalysis.meddic?.metrics),
-            economicBuyer: field(liveAnalysis.meddic?.economic_buyer),
-            decisionCriteria: field(liveAnalysis.meddic?.decision_criteria),
-            decisionProcess: field(liveAnalysis.meddic?.decision_process),
-            identifyPain: field(liveAnalysis.meddic?.identify_pain),
-            champion: field(liveAnalysis.meddic?.champion),
-            competition: field(liveAnalysis.meddic?.competition),
-            // gaps is genuinely a summarization task (which of the 7 fields
-            // are weak) — keep the LLM's own list rather than recomputing it
-            // here, but fall back to deriving it from the reconciled statuses
-            // above if the LLM omitted it.
-            gaps: summaryData?.meddicc?.gaps?.length
-                ? summaryData.meddicc.gaps
-                : (['metrics', 'economic_buyer', 'decision_criteria', 'decision_process', 'identify_pain', 'champion', 'competition'] as const)
-                    .filter((k) => (liveAnalysis.meddic as any)?.[k]?.status !== 'confirmed')
-                    .map((k) => k),
+        bant: reconciledBant,
+        meddicc: reconciledMeddicc,
+        salesCoachReview: {
+            ...summaryData?.salesCoachReview,
+            whatIDidRight: buildConfirmedWhatIDidRight(reconciledBant, reconciledMeddicc),
         },
     };
 }
@@ -385,7 +419,13 @@ export class MeetingPersistence {
             durationMs: durationMs,
             summary: "Generating summary...",
             detailedSummary: { actionItems: [], keyPoints: [] },
-            transcript: [],
+            // Real transcript, not empty — it's already captured in `snapshot`
+            // above and there's no reason to make the Transcript tab wait on
+            // background summary/scorecard processing to see it. saveMeeting()
+            // now clears-and-reinserts transcript rows on every call, so the
+            // later final save in processAndSaveMeeting() safely replaces this
+            // rather than duplicating it.
+            transcript: snapshot.transcript,
             usage: [],
             tenantId: tenantId || null,
             isProcessed: false
@@ -832,13 +872,13 @@ export class MeetingPersistence {
 
             // Re-score using the latest criteria so any criteria changes made before
             // clicking "regenerate" are reflected in the scorecard shown in the UI.
-            const existingTypes = (meeting.detailedSummary as any)?.scorecard?.detectedTypes ?? null;
-            try {
-                await this.regenerateScorecard(meetingId, fullRegenerateContext, existingTypes);
-            } catch (scorecardErr) {
-                // Non-fatal: text summary was already saved; log and continue.
-                console.warn('[MeetingPersistence] Scorecard regeneration failed (non-fatal):', scorecardErr);
-            }
+            // const existingTypes = (meeting.detailedSummary as any)?.scorecard?.detectedTypes ?? null;
+            // try {
+            //     await this.regenerateScorecard(meetingId, fullRegenerateContext, existingTypes);
+            // } catch (scorecardErr) {
+            //     // Non-fatal: text summary was already saved; log and continue.
+            //     console.warn('[MeetingPersistence] Scorecard regeneration failed (non-fatal):', scorecardErr);
+            // }
 
             return true;
 
@@ -928,7 +968,10 @@ export class MeetingPersistence {
                 durationMs: durationMs,
                 summary: 'Generating summary...',
                 detailedSummary: { actionItems: [], keyPoints: [] },
-                transcript: [],
+                // Same reasoning as the live-meeting placeholder — the full
+                // transcript is already parsed and sitting in memory at this
+                // point, no reason to withhold it until background processing.
+                transcript,
                 usage: [],
                 isProcessed: false,
             };

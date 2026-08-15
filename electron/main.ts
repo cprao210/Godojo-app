@@ -1696,6 +1696,20 @@ export class AppState {
   public async startMeeting(metadata?: any): Promise<void> {
     console.log('[Main] Starting Meeting...', metadata);
 
+    // Idempotency guard: a duplicate call (double-click on Start before the UI
+    // switches to overlay mode, a calendar auto-join racing a manual start, an
+    // IPC retry, etc.) must be a no-op. Without this, resetSessionTimer() below
+    // would silently re-anchor sessionStartTime to "now" and zero out
+    // totalPausedMs mid-meeting — the clock and pause history for the meeting
+    // already in progress get wiped, and stopMeeting() later computes a
+    // technically-correct duration/start/pause set from those now-wrong inputs.
+    // This is the root cause of duration/start/end/pause values coming out
+    // wrong at save time despite the math itself being correct.
+    if (this.isMeetingActive) {
+      console.warn('[Main] startMeeting() called while a meeting is already active — ignoring duplicate call.');
+      return;
+    }
+
     if (!(await ensureMacMicrophoneAccess('meeting start'))) {
       const message = 'Microphone access denied. Please allow microphone access in System Settings.';
       this.broadcast('meeting-audio-error', message);

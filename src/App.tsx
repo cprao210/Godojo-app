@@ -1,11 +1,11 @@
 import React, { useEffect, useState } from "react";
 import { AnimatePresence, motion } from "framer-motion";
-import { QueryClient, QueryClientProvider, QueryCache, MutationCache } from "react-query";
+import { QueryClientProvider } from "react-query";
 
 // ---------------------------------------------------------------------------
 // lib — infra / service wrappers
 // ---------------------------------------------------------------------------
-import { ApiError, notifyInvalidSession } from "@/lib/apiClient";
+import { queryClient } from "@/lib/queryClient";
 import { posthogAnalytics } from "@/lib/analytics/posthog.service";
 
 // ---------------------------------------------------------------------------
@@ -42,20 +42,9 @@ import { EmailVerification, SignIn } from "@/pages";
 import { PremiumUpgradeModal, useAdCampaigns } from "./premium";
 import { UpdateBanner } from "./features/updates";
 
-// Route HTTP auth failures (a terminal 401 from apiClient, surfaced through React
-// Query) into the same session-expired flow as the Firebase guard. The QueryClient
-// lives at module scope so it can't close over React state — it hands off via the
-// apiClient bridge (notifyInvalidSession), which useFirebaseAuth's session guard
-// effect wires up to its own handleInvalidSession.
-const handleApiError = (error: any) => {
-  if (error instanceof ApiError && error.status === 401) notifyInvalidSession(error.code);
-};
-
-const queryClient = new QueryClient({
-  queryCache: new QueryCache({ onError: handleApiError }),
-  mutationCache: new MutationCache({ onError: handleApiError }),
-});
-
+// Shared QueryClient (auth-error routing lives in lib/queryClient.ts) —
+// imported rather than declared here so every window branch below uses the
+// exact same client/cache instance instead of a locally duplicated one.
 const App: React.FC = () => {
 
   // --- Window identity -------------------------------------------------
@@ -92,6 +81,11 @@ const App: React.FC = () => {
   const [settingsInitialTab, setSettingsInitialTab] = useState("general");
   const [showPremiumModal, setShowPremiumModal] = useState(false);
   const [isLauncherMainView, setIsLauncherMainView] = useState(true);
+
+  const closeSettings = () => {
+    setIsSettingsOpen(false);
+    window.dispatchEvent(new CustomEvent("settings-closed"));
+  };
 
   useAutoOpenDashboardForAdmins(authUser, tenant, isAdmin, setIsManagerDashboardOpen);
 
@@ -239,6 +233,7 @@ const App: React.FC = () => {
                           }}
                           isManagerDashboardOpen={isManagerDashboardOpen}
                           isSettingsOpen={isSettingsOpen}
+                          onCloseSettings={closeSettings}
                           onOpenManagerDashboard={
                             isAdmin
                               ? () => {
@@ -257,10 +252,7 @@ const App: React.FC = () => {
                       </div>
                       <SettingsOverlay
                         isOpen={isSettingsOpen}
-                        onClose={() => {
-                          setIsSettingsOpen(false);
-                          window.dispatchEvent(new CustomEvent("settings-closed"));
-                        }}
+                        onClose={closeSettings}
                         initialTab={settingsInitialTab}
                         deepLinkInviteToken={deepLinkInviteToken}
                         onDeepLinkTokenConsumed={clearDeepLinkInviteToken}

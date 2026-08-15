@@ -105,6 +105,7 @@ const MeetingDetails: React.FC<MeetingDetailsProps> = ({ meeting: initialMeeting
         meeting,
         isProcessing,
         isLoadingMeetingDetail,
+        isLoadingTranscript,
         scorecard,
         activeTab, setActiveTab,
         aiInteractionsData, isLoadingAiInteractions,
@@ -990,7 +991,13 @@ const MeetingDetails: React.FC<MeetingDetailsProps> = ({ meeting: initialMeeting
 
                         {activeTab === 'transcript' && (
                             <motion.section initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }}>
-                                {isLoadingMeetingDetail ? (
+                                {/* Local-first: don't gate this on isLoadingMeetingDetail (the
+                                    backend HTTP fetch) or isProcessing (summary generation) —
+                                    the transcript is written to local SQLite synchronously the
+                                    moment the meeting ends, well before either of those finish.
+                                    isLoadingTranscript reflects that local-first source directly,
+                                    so this tab shows content the instant it's actually available. */}
+                                {isLoadingTranscript ? (
                                     <div className="space-y-3">
                                         <Skeleton className="h-8 w-40 mb-4" />
                                         {Array.from({ length: 6 }).map((_, i) => (

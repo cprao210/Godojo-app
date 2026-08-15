@@ -1825,6 +1825,15 @@ export function initializeIpcHandlers(appState: AppState): void {
     }
   });
 
+  safeHandle("live-chat:get-all-pending-meeting-ids", async () => {
+    try {
+      return PendingLiveChatStore.getInstance().getAllPendingMeetingIds();
+    } catch (error: any) {
+      console.error("Error reading all pending live chat meeting ids:", error);
+      return [];
+    }
+  });
+
   safeHandle("pause-meeting", async () => {
     try {
       appState.pauseMeeting();

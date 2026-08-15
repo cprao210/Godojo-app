@@ -18,7 +18,8 @@ import { useEffect, useMemo, useState } from 'react';
 import { useQuery, useMutation, useQueryClient } from 'react-query';
 import { meetingsApi, chatApi } from '@/api';
 import { guardSession } from '@/lib/firebase';
-import type { Meeting, MeetingTranscriptLine, MeetingScorecardResult } from '@/types';
+import type { Meeting, MeetingTranscriptLine, MeetingScorecardResult, LiveAnalysisData } from '@/types';
+import { normalizeBant, normalizeMeddicc, confirmedOnly, BANT_ORDER, MEDDICC_ORDER } from '@/lib/bantMeddic';
 
 export const formatTime = (ms: number) => {
     const date = new Date(ms);
@@ -99,10 +100,13 @@ export function useMeetingDetails(initialMeeting: Meeting) {
     // actual completed query, which IS the confirmation the backend has
     // synced this meeting.
     useEffect(() => {
+
+        console.log({ isProcessing, dataUpdatedAt, meetingDataId: meetingData.id, initialMeetingId: initialMeeting.id })
         if (isProcessing || dataUpdatedAt === 0 || meetingData.id !== initialMeeting.id) return;
 
         (async () => {
             const pendingIds = await window.electronAPI?.getPendingLiveChatInteractions?.(initialMeeting.id);
+            console.log({ pendingIds })
             if (!pendingIds || pendingIds.length === 0) return;
 
             try {
@@ -123,14 +127,27 @@ export function useMeetingDetails(initialMeeting: Meeting) {
     // synchronously in saveMeeting's transaction), so fall back to it — same
     // "local-first, cloud is just a mirror" precedent already used for scorecard
     // below via meeting:getScorecard.
-    const needsLocalTranscript = !isProcessing && !!initialMeeting.id && (meetingData.transcript?.length ?? 0) === 0;
-    const { data: localTranscript } = useQuery<MeetingTranscriptLine[] | null>(
+    //
+    // Deliberately NOT gated on `!isProcessing`: the transcript is written to local
+    // SQLite synchronously the moment the meeting ends, well before summary
+    // generation (isProcessing) finishes. Requiring `!isProcessing` here made the
+    // Transcript tab wait on an unrelated background job for no reason — the user
+    // should see it immediately, even while "Processing..." is still showing for
+    // the summary tab.
+    const needsLocalTranscript = !!initialMeeting.id && (meetingData.transcript?.length ?? 0) === 0;
+    const { data: localTranscript, isLoading: isLoadingLocalTranscript } = useQuery<MeetingTranscriptLine[] | null>(
         ["meeting-local-transcript", initialMeeting.id],
         async () => {
             const details = await window.electronAPI?.getMeetingDetails?.(initialMeeting.id);
             return details?.transcript ?? null;
         },
-        { enabled: needsLocalTranscript },
+        {
+            enabled: needsLocalTranscript,
+            // Summary processing can still be writing to this meeting's row in the
+            // background; poll briefly so the transcript tab catches up to any
+            // late-arriving segments without requiring isProcessing to resolve first.
+            refetchInterval: (data) => (needsLocalTranscript && (!data || data.length === 0) ? 2000 : false),
+        },
     );
     // Every existing `meeting.transcript` reference below transparently gets the
     // fallback via this merged value — no need to touch each call site.
@@ -141,6 +158,19 @@ export function useMeetingDetails(initialMeeting: Meeting) {
                 : meetingData,
         [meetingData, needsLocalTranscript, localTranscript]
     );
+
+    // Drives the Transcript tab's own skeleton — deliberately NOT the same
+    // flag as isLoadingMeetingDetail (that's the backend HTTP fetch, and is
+    // often already `false` while we're still waiting on the local IPC
+    // fetch, e.g. because the main query is disabled during isProcessing).
+    // The transcript is local-first, so loading should reflect "is the
+    // *initial* local-transcript fetch still in flight" — isLoading is only
+    // true for that first attempt, not for the background refetchInterval
+    // polling above, so a genuinely transcript-less meeting still settles
+    // into a real empty state instead of spinning forever.
+    const isLoadingTranscript =
+        (meeting.transcript?.length ?? 0) === 0 &&
+        ((needsLocalTranscript && isLoadingLocalTranscript) || isLoadingMeetingDetail);
 
     // Scorecard is handled locally (IPC), NOT over HTTP: the backend's GET /meetings/{id}
     // only serves summary_json, while the scorecard lives in the dedicated
@@ -362,42 +392,22 @@ export function useMeetingDetails(initialMeeting: Meeting) {
             const formatList = (arr?: string[]) =>
                 arr && arr.length ? arr.map(i => `  • ${i}`).join('\n') : '  None';
 
-            const toStatusIcon = (s: string) =>
-                (s === 'Clear' || s === 'confirmed') ? '✅'
-                    : (s === 'Partial' || s === 'partial') ? '⚠️' : '❌';
+            const la = (ds as any).liveAnalysis as LiveAnalysisData | undefined;
+            const normalizedBant = normalizeBant(la?.bant);
+            const normalizedMeddicc = normalizeMeddicc(la?.meddic);
 
             const formatBANT = () => {
-                if (!ds.bant) return '  None';
-                return (['budget', 'authority', 'need', 'timeline'] as const)
-                    .map(key => {
-                        const item = ds.bant?.[key];
-                        if (!item) return null;
-                        const statusIcon = toStatusIcon(item.status);
-                        return `  ${statusIcon} ${key.toUpperCase()} (${item.status}): ${item.detail}`;
-                    })
-                    .filter(Boolean)
+                const rows = confirmedOnly(normalizedBant, BANT_ORDER)
+                    .map(({ label, detail }) => `  ✅ ${label}: ${detail}`)
                     .join('\n');
+                return rows || '  None confirmed yet';
             };
 
             const formatMEDDICC = () => {
-                if (!ds.meddicc) return '  None';
-                const keys = ['metrics', 'economicBuyer', 'decisionCriteria', 'decisionProcess', 'identifyPain', 'champion', 'competition'] as const;
-                const rows = keys
-                    .map(key => {
-                        const item = ds.meddicc?.[key];
-                        if (!item) return null;
-                        const label = key.replace(/([A-Z])/g, ' $1').trim();
-                        const statusIcon = toStatusIcon(item.status);
-                        return `  ${statusIcon} ${label.toUpperCase()} (${item.status}): ${item.detail}`;
-                    })
-                    .filter(Boolean)
+                const rows = confirmedOnly(normalizedMeddicc, MEDDICC_ORDER)
+                    .map(({ label, detail }) => `  ✅ ${label}: ${detail}`)
                     .join('\n');
-
-                const gaps = ds.meddicc?.gaps?.length
-                    ? `\n\n  ⚠ GAPS:\n${ds.meddicc.gaps.map(g => `  • ${g}`).join('\n')}`
-                    : '';
-
-                return rows + gaps;
+                return rows || '  None confirmed yet';
             };
 
             const formatSalesCoachReview = () => {
@@ -632,6 +642,7 @@ ${formatNextCallPlaybook() || '  None'}
         meeting,
         isProcessing,
         isLoadingMeetingDetail,
+        isLoadingTranscript,
         scorecard,
         activeTab, setActiveTab,
         aiInteractionsData, isLoadingAiInteractions,

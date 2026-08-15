@@ -123,7 +123,7 @@ interface ElectronAPI {
   startMeeting: (metadata?: any) => Promise<{ success: boolean; error?: string }>
   endMeeting: (meetingTypes?: ('discovery' | 'demo' | 'negotiation')[], tenantId?: string | null) => Promise<{ success: boolean; error?: string }>
   finalizeMicSTT: () => Promise<void>
-  getRecentMeetings: () => Promise<Array<{ id: string; title: string; date: string; duration: string; summary: string }>>
+  getRecentMeetings: () => Promise<Array<{ id: string; title: string; date: string; duration: string; summary: string; isProcessed?: boolean }>>
   getMeetingDetails: (id: string) => Promise<any>
   updateMeetingTitle: (id: string, title: string) => Promise<boolean>
   updateLiveAnalysis: (data: LiveAnalysisData) => Promise<{ success: boolean }>;
@@ -601,6 +601,8 @@ contextBridge.exposeInMainWorld("electronAPI", {
     ipcRenderer.invoke('live-chat:get-pending-interactions', meetingId),
   clearPendingLiveChatInteractions: (meetingId: string) =>
     ipcRenderer.invoke('live-chat:clear-pending-interactions', meetingId),
+  getAllPendingLiveChatMeetingIds: (): Promise<string[]> =>
+    ipcRenderer.invoke('live-chat:get-all-pending-meeting-ids'),
   getMeetingPaused: () => ipcRenderer.invoke("get-meeting-paused"),
   pauseMeeting: () => ipcRenderer.invoke("pause-meeting"),
   resumeMeeting: () => ipcRenderer.invoke("resume-meeting"),
