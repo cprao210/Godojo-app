@@ -119,11 +119,10 @@ export function useFloatingDock({ transcriptRef, isMeetingPaused, companyIntel }
         runAnalysisRef.current = runAnalysis;
     }, [runAnalysis]);
 
-    // Moved above the negotiation-toggle effect (was previously declared further
-    // down, next to the countdown timer) so both consumers can share it. `force`
-    // in useLiveAnalysis.runAnalysis has no transcript-size guard of its own — it
-    // only bails on a completely empty transcript — so any caller that wants to
-    // avoid firing on a near-empty transcript has to check this itself.
+    // `force` in useLiveAnalysis.runAnalysis has no transcript-size guard of
+    // its own — it only bails on a completely empty transcript — so any
+    // caller that wants to avoid firing on a near-empty transcript has to
+    // check this itself.
     const hasEnoughTranscript = () => {
         const turns = transcriptRef.current ?? [];
         return turns.filter((t) => t.speaker?.toLowerCase() === PROSPECT_SPEAKER).length >= MIN_PROSPECT_TURNS;
@@ -134,29 +133,6 @@ export function useFloatingDock({ transcriptRef, isMeetingPaused, companyIntel }
         try { await window.electronAPI?.setLiveAnalysisInFlight?.(true); } catch { }
         runAnalysisRef.current(true);
     };
-
-    // Fire an immediate analysis when Negotiation is NEWLY checked, so the Deal
-    // Optimizer tab populates within seconds instead of waiting for the next
-    // auto-refresh tick. The prev-ref means neither mount (['discovery']
-    // default) nor a session-reset fires it, and unchecking never triggers a
-    // run. Same force semantics as the Regenerate button; the hook's in-flight
-    // guard prevents duplicate calls.
-    //
-    // BUGFIX: force=true skips useLiveAnalysis's own transcript checks, so
-    // without the hasEnoughTranscript() gate below, checking the box seconds
-    // into a call (only a couple of transcript words captured) triggered an
-    // immediate low-signal API call and visible panel refresh. Now it only
-    // force-fires once there's actually enough transcript to analyse — if
-    // there isn't yet, the regular auto-refresh cycle (or the urgent-trigger
-    // scan) will pick it up once enough turns arrive.
-    const prevMeetingTypesRef = useRef<MeetingType[]>(meetingTypes);
-    useEffect(() => {
-        const hadNegotiation = prevMeetingTypesRef.current.includes('negotiation');
-        prevMeetingTypesRef.current = meetingTypes;
-        if (!hadNegotiation && meetingTypes.includes('negotiation') && hasEnoughTranscript()) {
-            runAnalysisRef.current(true);
-        }
-    }, [meetingTypes]);
 
     // Track whether the first analysis has been triggered so we don't re-run
     // on every remount.

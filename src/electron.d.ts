@@ -18,6 +18,7 @@ export interface ElectronAPI {
   onWindowMaximizedChanged: (callback: (isMaximized: boolean) => void) => () => void
   onEnsureExpanded: (callback: () => void) => () => void
   quitApp: () => Promise<void>
+  hardRefresh: () => Promise<{ success: boolean }>
   toggleWindow: () => Promise<void>
   showWindow: (inactive?: boolean) => Promise<void>
   hideWindow: () => Promise<void>

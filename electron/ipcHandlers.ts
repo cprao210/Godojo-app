@@ -590,6 +590,13 @@ export function initializeIpcHandlers(appState: AppState): void {
     app.quit()
   })
 
+  // Reload bypassing cache — same as Cmd/Ctrl+Shift+R via the app menu's
+  // { role: 'forceReload' } items already in WindowHelper.ts/KeybindManager.ts.
+  safeHandle("hard-refresh", (event) => {
+    BrowserWindow.fromWebContents(event.sender)?.webContents.reloadIgnoringCache();
+    return { success: true };
+  });
+
   safeHandle("quit-and-install-update", async () => {
     try {
       console.log('[IPC] Quit and install update requested')

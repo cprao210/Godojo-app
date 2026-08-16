@@ -576,6 +576,7 @@ contextBridge.exposeInMainWorld("electronAPI", {
 
   analyzeImageFile: (path: string) => ipcRenderer.invoke("analyze-image-file", path),
   quitApp: () => ipcRenderer.invoke("quit-app"),
+  hardRefresh: (): Promise<{ success: boolean }> => ipcRenderer.invoke("hard-refresh"),
   toggleWindow: () => ipcRenderer.invoke("toggle-window"),
   showWindow: (inactive?: boolean) => ipcRenderer.invoke("show-window", inactive),
   hideWindow: () => ipcRenderer.invoke("hide-window"),
