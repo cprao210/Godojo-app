@@ -21,6 +21,7 @@ import {
     signInWithPopup,
     signOut as fbSignOut,
     updateProfile,
+    deleteUser,
     Auth,
     User,
     getAdditionalUserInfo
@@ -397,6 +398,27 @@ export function installSessionGuard(onInvalidSession: (errorCode?: string) => vo
  * account is disabled/deleted, and returns whether the session is valid.
  * Use this as a gate before every LLM IPC call.
  */
+
+/**
+ * DEV-ONLY. Permanently deletes the currently signed-in Firebase Auth user.
+ * Self-service only — the Firebase client SDK has no way to delete anyone
+ * but the live `auth.currentUser`, which is intentional: deleting an
+ * arbitrary uid requires the Firebase Admin SDK (a service-account key),
+ * which this app deliberately never ships (see the same rule for Supabase's
+ * service-role key in electron/db/SupabaseClient.ts).
+ *
+ * Firebase requires a "recently signed in" session for this — if the ID
+ * token is more than a few minutes old it throws `auth/requires-recent-login`,
+ * in which case the caller should ask the user to sign out/in and retry.
+ */
+export async function deleteCurrentFirebaseUser(): Promise<void> {
+    const auth = getFirebaseAuth();
+    const user = auth.currentUser;
+    if (!user) {
+        throw new Error('No signed-in Firebase user to delete.');
+    }
+    await deleteUser(user);
+}
 
 export async function guardSession(): Promise<{ valid: boolean; message?: string }> {
     const auth = getFirebaseAuth();

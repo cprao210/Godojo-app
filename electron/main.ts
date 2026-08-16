@@ -2248,6 +2248,11 @@ export class AppState {
     return this._currentLiveAnalysis;
   }
 
+  // Renderer calls this at the start/end of every runAnalysis() call.
+  public setLiveAnalysisInFlight(inFlight: boolean): void {
+    this._liveAnalysisInFlight = inFlight;
+  }
+
   public setCurrentLiveAnalysis(data: LiveAnalysisData | null): void {
     this._currentLiveAnalysis = data;
 
@@ -3358,17 +3363,17 @@ async function initializeApp() {
   //          DatabaseManager is up — wires the outbox table and starts listening
   //          for AuthManager 'signed-in' / 'auth-changed' events.
 
-  // Dev convenience: in unpackaged builds, if SUPABASE_URL / SUPABASE_KEY are present
-  // in the loaded .env AND no credentials have been persisted yet, hydrate them once
-  // so the SQL DDL / mirror flow works without manually calling supabaseSetCredentials
-  // from DevTools on every fresh machine. No-op in production builds.
+  // Dev convenience: in unpackaged builds, always sync SUPABASE_URL / SUPABASE_KEY
+  // from the currently-loaded .env into credentials.enc. ... always overwriting
+  // from .env when present makes the currently-active .env the single source of
+  // truth in dev builds.
   try {
     if (!app.isPackaged && process.env.SUPABASE_URL && process.env.SUPABASE_KEY) {
       const cm = CredentialsManager.getInstance();
       const existing = cm.getSupabaseCredentials?.();
-      if (!existing?.url || !existing?.anonKey) {
+      if (existing?.url !== process.env.SUPABASE_URL || existing?.anonKey !== process.env.SUPABASE_KEY) {
         cm.setSupabaseCredentials(process.env.SUPABASE_URL, process.env.SUPABASE_KEY);
-        console.log('[Main] Supabase credentials hydrated from .env (dev only)');
+        console.log('[Main] Supabase credentials synced from .env (dev only)');
       }
     }
   } catch (e) {

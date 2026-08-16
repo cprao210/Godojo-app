@@ -707,6 +707,7 @@ export const useLiveAnalysis = (
     isLoadingRef.current = true;
     setIsLoading(true);
     setError(null);
+    window.electronAPI?.setLiveAnalysisInFlight?.(true).catch(() => { });
 
     // Snapshot cursor and prior state at call time to avoid stale closures
     const priorState = analysisDataRef.current;
@@ -864,6 +865,7 @@ export const useLiveAnalysis = (
     } finally {
       isLoadingRef.current = false;
       setIsLoading(false);
+      window.electronAPI?.setLiveAnalysisInFlight?.(false).catch(() => { });
     }
   }, [transcriptRef, isMeetingPaused, setAnalysisDataAndRef]);
 

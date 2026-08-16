@@ -129,6 +129,12 @@ export function useFloatingDock({ transcriptRef, isMeetingPaused, companyIntel }
         return turns.filter((t) => t.speaker?.toLowerCase() === PROSPECT_SPEAKER).length >= MIN_PROSPECT_TURNS;
     };
 
+    const ensureFinalAnalysisBeforeEndCall = async () => {
+        if (analysisLoading || !hasEnoughTranscript()) return;
+        try { await window.electronAPI?.setLiveAnalysisInFlight?.(true); } catch { }
+        runAnalysisRef.current(true);
+    };
+
     // Fire an immediate analysis when Negotiation is NEWLY checked, so the Deal
     // Optimizer tab populates within seconds instead of waiting for the next
     // auto-refresh tick. The prev-ref means neither mount (['discovery']
@@ -330,6 +336,7 @@ export function useFloatingDock({ transcriptRef, isMeetingPaused, companyIntel }
         analysisError,
         runAnalysis,
         isRefreshRun,
+        ensureFinalAnalysisBeforeEndCall,
         // chat history (lifted)
         handleInteractionId,
         chatMessages,

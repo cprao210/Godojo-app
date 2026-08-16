@@ -127,6 +127,7 @@ interface ElectronAPI {
   getMeetingDetails: (id: string) => Promise<any>
   updateMeetingTitle: (id: string, title: string) => Promise<boolean>
   updateLiveAnalysis: (data: LiveAnalysisData) => Promise<{ success: boolean }>;
+  setLiveAnalysisInFlight: (inFlight: boolean) => Promise<{ success: boolean }>;
   regenerateMeetingSummary: (id: string) => Promise<{ success: boolean; meeting?: any; error?: string }>
   uploadTranscript: (text: string, title?: string, meetingTypes?: ('discovery' | 'demo' | 'negotiation')[]) => Promise<{ success: boolean; meetingId?: string; error?: string }>
   updateMeetingSummary: (id: string, updates: { overview?: string, actionItems?: string[], keyPoints?: string[], actionItemsTitle?: string, keyPointsTitle?: string }) => Promise<boolean>
@@ -433,6 +434,15 @@ contextBridge.exposeInMainWorld("electronAPI", {
   // cancelled: true } if the user clicks Cancel on the native dialog.
   resetAppData: (): Promise<{ success: boolean; cancelled?: boolean; error?: string }> =>
     ipcRenderer.invoke("reset-app-data"),
+
+  confirmDeleteAccount: (): Promise<{ confirmed: boolean }> =>
+    ipcRenderer.invoke("confirm-delete-account"),
+
+  // DEV-ONLY: local half of "Delete My Account". No confirm dialog (the
+  // caller has already confirmed and completed the server-side deletion) —
+  // wipes natively.db + cached session/credentials and relaunches.
+  wipeLocalAccountData: (): Promise<{ success: boolean; error?: string }> =>
+    ipcRenderer.invoke("dev:wipe-local-account-data"),
 
   // Event listeners
   onScreenshotTaken: (
@@ -809,6 +819,7 @@ contextBridge.exposeInMainWorld("electronAPI", {
   },
 
   updateLiveAnalysis: (data: LiveAnalysisData) => ipcRenderer.invoke("update-live-analysis", data),
+  setLiveAnalysisInFlight: (inFlight: boolean) => ipcRenderer.invoke("set-live-analysis-in-flight", inFlight),
 
   // Window Mode
   setWindowMode: (mode: 'launcher' | 'overlay', inactive?: boolean) => ipcRenderer.invoke("set-window-mode", mode, inactive),
