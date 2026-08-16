@@ -5,6 +5,7 @@ import { useSettingsOverlay } from '@/hooks';
 import { getFirebaseAuth } from '@/lib/firebase';
 import { encryptDangerousKey } from '@/lib/dangerousKey';
 import { API_BASE } from '@/lib/apiClient';
+import { posthogAnalytics } from '@/lib/analytics/posthog.service';
 import MockupDock from './MockupDock';
 
 type SettingsOverlayHook = ReturnType<typeof useSettingsOverlay>;
@@ -42,6 +43,7 @@ const GeneralTab: React.FC<{ overlay: SettingsOverlayHook }> = ({ overlay }) => 
     const [resetError, setResetError] = useState<string | null>(null);
 
     const handleResetAppData = async () => {
+        posthogAnalytics.trackResetAppDataClicked();
         setResetError(null);
         setIsResetting(true);
         try {
