@@ -562,6 +562,57 @@ jobs:
             echo "all_present=false" >> "$GITHUB_OUTPUT"
           fi
 
+      - name: Verify update-metadata filenames match actual binaries
+        # Catches the class of bug that broke v1.0.1's Windows auto-update:
+        # electron-builder writes latest*.yml with the LOCAL artifact
+        # filename, but GitHub Releases silently rewrites spaces in
+        # uploaded asset filenames to dots. If artifactName ever contains a
+        # space (or otherwise drifts from what's actually uploaded), the
+        # updater fetches a URL that 404s. This fails the job instead of
+        # letting a broken update ship.
+        shell: bash
+        run: |
+          set -euo pipefail
+          fail=0
+
+          check_yml() {
+            local yml_path="$1"
+            local artifacts_dir="$2"
+            [ -f "$yml_path" ] || { echo "  (skipping, not present: $yml_path)"; return; }
+
+            echo "── Checking $yml_path against $artifacts_dir ──"
+            # Pull every filename referenced via top-level `path:` and each
+            # `files[].url:` entry. electron-builder's yml is flat/simple
+            # enough that this doesn't need a real YAML parser.
+            local names
+            names=$(grep -E '^\s*(path|url):\s' "$yml_path" | sed -E 's/^\s*(path|url):\s*//; s/\s*$//' | sort -u)
+
+            if [ -z "$names" ]; then
+              echo "::error::No path/url entries found in $yml_path — cannot verify."
+              fail=1
+              return
+            fi
+
+            while IFS= read -r name; do
+              if [ ! -f "$artifacts_dir/$name" ]; then
+                echo "::error::$yml_path references '$name' but no such file exists in $artifacts_dir. Uploaded asset names will not match what the auto-updater requests — this is the exact bug that broke Windows auto-update on v1.0.1."
+                fail=1
+              else
+                echo "  OK: $name"
+              fi
+            done <<< "$names"
+          }
+
+          check_yml "artifacts/mac-release/latest-mac.yml"   "artifacts/mac-release"
+          check_yml "artifacts/win-release/latest.yml"       "artifacts/win-release"
+          check_yml "artifacts/linux-release/latest-linux.yml" "artifacts/linux-release"
+
+          if [ "$fail" -eq 1 ]; then
+            echo "::error::Update-metadata / binary filename mismatch detected — aborting before publish."
+            exit 1
+          fi
+          echo "All update-metadata filenames match their binaries."
+
       - name: Render release notes with actual version
         shell: bash
         run: |
