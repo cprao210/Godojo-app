@@ -647,25 +647,32 @@ export class WindowHelper {
 
     // Show Launcher FIRST
     if (this.launcherWindow && !this.launcherWindow.isDestroyed()) {
-      if (process.platform === 'win32' && this.contentProtection) {
-        // Opacity Shield: Show at 0 opacity first
-        this.launcherWindow.setOpacity(0);
-        if (inactive) this.launcherWindow.showInactive(); else this.launcherWindow.show();
-        this.launcherWindow.setContentProtection(true);
+      try {
 
-        if (this.opacityTimeout) clearTimeout(this.opacityTimeout);
-        this.opacityTimeout = setTimeout(() => {
-          if (this.launcherWindow && !this.launcherWindow.isDestroyed()) {
-            this.launcherWindow.setOpacity(1);
-            if (!inactive) this.launcherWindow.focus();
-          }
-        }, 60);
-      } else {
-        this.launcherWindow.setContentProtection(this.contentProtection);
-        if (inactive) this.launcherWindow.showInactive(); else this.launcherWindow.show();
-        if (!inactive) this.launcherWindow.focus();
+        if (process.platform === 'win32' && this.contentProtection) {
+          // Opacity Shield: Show at 0 opacity first
+          this.launcherWindow.setOpacity(0);
+          if (inactive) this.launcherWindow.showInactive(); else this.launcherWindow.show();
+          this.launcherWindow.setContentProtection(true);
+
+          if (this.opacityTimeout) clearTimeout(this.opacityTimeout);
+          this.opacityTimeout = setTimeout(() => {
+            if (this.launcherWindow && !this.launcherWindow.isDestroyed()) {
+              this.launcherWindow.setOpacity(1);
+              if (!inactive) this.launcherWindow.focus();
+            }
+          }, 60);
+        } else {
+          this.launcherWindow.setContentProtection(this.contentProtection);
+          if (inactive) this.launcherWindow.showInactive(); else this.launcherWindow.show();
+          if (!inactive) this.launcherWindow.focus();
+        }
+
+        this.isWindowVisible = true;
+
+      } catch (e) {
+        console.warn("[WindowHelper] Ignored crash while switching to launcher (window destroying):", e);
       }
-      this.isWindowVisible = true;
     }
 
     // Hide Overlay SECOND
