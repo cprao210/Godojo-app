@@ -3563,6 +3563,9 @@ async function initializeApp() {
   // reach window.onerror in the crashed renderer — the process is gone
   // before it could report anything. This is the only place these surface.
   app.on('render-process-gone', (_event, webContents, details) => {
+    // Ignore routine OS kills (like computer going to sleep or app quitting)
+    if (details.reason === 'killed') return;
+    
     console.error('[Main] Renderer process gone:', details.reason, webContents.getURL());
     posthogMain.captureException(
       new Error(`Renderer process gone: ${details.reason}`),
