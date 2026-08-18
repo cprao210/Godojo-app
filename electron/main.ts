@@ -3572,6 +3572,8 @@ async function initializeApp() {
   });
 
   app.on('child-process-gone', (_event, details) => {
+    // Ignore routine OS kills (like computer going to sleep or app quitting)
+    if (details.reason === 'killed') return;
     console.error('[Main] Child process gone:', details.type, details.reason);
     posthogMain.captureException(
       new Error(`Child process gone: ${details.type} — ${details.reason}`),
