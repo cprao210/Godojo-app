@@ -6,6 +6,7 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { guardSession } from "@/lib/firebase";
 import { CompanyIntel, EventLike } from "@/types";
+import { posthogAnalytics } from "@/lib/analytics/posthog.service";
 
 const GENERIC_EMAIL_DOMAINS = new Set([
     "gmail.com", "yahoo.com", "outlook.com", "hotmail.com", "icloud.com",
@@ -200,6 +201,7 @@ export function useCompanyIntel(eventData: EventLike) {
 
             if (!tavily) {
                 setError("no_tavily_key");
+                posthogAnalytics.trackCompanyInsightsFailed("no_tavily_key", companyName);
                 return;
             }
 
@@ -213,10 +215,15 @@ export function useCompanyIntel(eventData: EventLike) {
                     console.warn("[useCompanyIntel] Failed to store company intel:", e),
                 );
             } else {
-                setError(result.error || "Failed to fetch company intelligence.");
+                const reason = result.error || "Failed to fetch company intelligence.";
+                setError(reason);
+                posthogAnalytics.trackCompanyInsightsFailed(reason, companyName);
             }
         } catch (e: any) {
-            setError(e?.message || "Unexpected error");
+            const reason = e?.message || "Unexpected error";
+            setError(reason);
+            posthogAnalytics.trackCompanyInsightsFailed(reason, companyName);
+            posthogAnalytics.trackException(e instanceof Error ? e : new Error(String(e)), "useCompanyIntel.fetchIntel", { companyName, domain });
         } finally {
             setLoading(false);
         }

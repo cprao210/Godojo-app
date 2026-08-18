@@ -123,10 +123,11 @@ interface ElectronAPI {
   startMeeting: (metadata?: any) => Promise<{ success: boolean; error?: string }>
   endMeeting: (meetingTypes?: ('discovery' | 'demo' | 'negotiation')[], tenantId?: string | null) => Promise<{ success: boolean; error?: string }>
   finalizeMicSTT: () => Promise<void>
-  getRecentMeetings: () => Promise<Array<{ id: string; title: string; date: string; duration: string; summary: string }>>
+  getRecentMeetings: () => Promise<Array<{ id: string; title: string; date: string; duration: string; summary: string; isProcessed?: boolean }>>
   getMeetingDetails: (id: string) => Promise<any>
   updateMeetingTitle: (id: string, title: string) => Promise<boolean>
   updateLiveAnalysis: (data: LiveAnalysisData) => Promise<{ success: boolean }>;
+  setLiveAnalysisInFlight: (inFlight: boolean) => Promise<{ success: boolean }>;
   regenerateMeetingSummary: (id: string) => Promise<{ success: boolean; meeting?: any; error?: string }>
   uploadTranscript: (text: string, title?: string, meetingTypes?: ('discovery' | 'demo' | 'negotiation')[]) => Promise<{ success: boolean; meetingId?: string; error?: string }>
   updateMeetingSummary: (id: string, updates: { overview?: string, actionItems?: string[], keyPoints?: string[], actionItemsTitle?: string, keyPointsTitle?: string }) => Promise<boolean>
@@ -251,6 +252,8 @@ interface ElectronAPI {
   checkForUpdates: () => Promise<void>
   downloadUpdate: () => Promise<void>
   testReleaseFetch: () => Promise<{ success: boolean; error?: string }>
+  getAppVersion: () => Promise<string>
+  isAppPackaged: () => Promise<boolean>
 
   // RAG (Retrieval-Augmented Generation) API
   ragQueryMeeting: (meetingId: string, query: string) => Promise<{ success?: boolean; fallback?: boolean; error?: string }>
@@ -418,6 +421,28 @@ contextBridge.exposeInMainWorld("electronAPI", {
   getScreenshots: () => ipcRenderer.invoke("get-screenshots"),
   deleteScreenshot: (path: string) =>
     ipcRenderer.invoke("delete-screenshot", path),
+  logErrorToMain: (payload: {
+    type?: string;
+    context?: string;
+    message?: string;
+    stack?: string;
+    componentStack?: string;
+  }) => ipcRenderer.invoke("log-error-to-main", payload),
+
+  // Settings > General > Danger Zone. Shows a native confirm dialog in
+  // main, then wipes userData and relaunches. Resolves { success: false,
+  // cancelled: true } if the user clicks Cancel on the native dialog.
+  resetAppData: (): Promise<{ success: boolean; cancelled?: boolean; error?: string }> =>
+    ipcRenderer.invoke("reset-app-data"),
+
+  confirmDeleteAccount: (): Promise<{ confirmed: boolean }> =>
+    ipcRenderer.invoke("confirm-delete-account"),
+
+  // DEV-ONLY: local half of "Delete My Account". No confirm dialog (the
+  // caller has already confirmed and completed the server-side deletion) —
+  // wipes natively.db + cached session/credentials and relaunches.
+  wipeLocalAccountData: (): Promise<{ success: boolean; error?: string }> =>
+    ipcRenderer.invoke("dev:wipe-local-account-data"),
 
   // Event listeners
   onScreenshotTaken: (
@@ -551,6 +576,7 @@ contextBridge.exposeInMainWorld("electronAPI", {
 
   analyzeImageFile: (path: string) => ipcRenderer.invoke("analyze-image-file", path),
   quitApp: () => ipcRenderer.invoke("quit-app"),
+  hardRefresh: (): Promise<{ success: boolean }> => ipcRenderer.invoke("hard-refresh"),
   toggleWindow: () => ipcRenderer.invoke("toggle-window"),
   showWindow: (inactive?: boolean) => ipcRenderer.invoke("show-window", inactive),
   hideWindow: () => ipcRenderer.invoke("hide-window"),
@@ -575,12 +601,19 @@ contextBridge.exposeInMainWorld("electronAPI", {
     ipcRenderer.on('live-call-ended', subscription);
     return () => { ipcRenderer.removeListener('live-call-ended', subscription); };
   },
+  onMeetingCompleted: (callback: () => void) => {
+    const subscription = () => callback();
+    ipcRenderer.on('meeting-completed', subscription);
+    return () => { ipcRenderer.removeListener('meeting-completed', subscription); };
+  },
   savePendingLiveChatInteractions: (meetingId: string, interactionIds: number[]) =>
     ipcRenderer.invoke('live-chat:save-pending-interactions', meetingId, interactionIds),
   getPendingLiveChatInteractions: (meetingId: string): Promise<number[]> =>
     ipcRenderer.invoke('live-chat:get-pending-interactions', meetingId),
   clearPendingLiveChatInteractions: (meetingId: string) =>
     ipcRenderer.invoke('live-chat:clear-pending-interactions', meetingId),
+  getAllPendingLiveChatMeetingIds: (): Promise<string[]> =>
+    ipcRenderer.invoke('live-chat:get-all-pending-meeting-ids'),
   getMeetingPaused: () => ipcRenderer.invoke("get-meeting-paused"),
   pauseMeeting: () => ipcRenderer.invoke("pause-meeting"),
   resumeMeeting: () => ipcRenderer.invoke("resume-meeting"),
@@ -601,6 +634,7 @@ contextBridge.exposeInMainWorld("electronAPI", {
   },
   toggleAdvancedSettings: () => ipcRenderer.invoke("toggle-advanced-settings"),
   openExternal: (url: string) => ipcRenderer.invoke("open-external", url),
+  openKnownFolder: (key: 'downloads' | 'applications') => ipcRenderer.invoke("open-known-folder", key),
   setUndetectable: (state: boolean) => ipcRenderer.invoke("set-undetectable", state),
   getUndetectable: () => ipcRenderer.invoke("get-undetectable"),
   setOverlayMousePassthrough: (enabled: boolean) => ipcRenderer.invoke("set-overlay-mouse-passthrough", enabled),
@@ -786,6 +820,7 @@ contextBridge.exposeInMainWorld("electronAPI", {
   },
 
   updateLiveAnalysis: (data: LiveAnalysisData) => ipcRenderer.invoke("update-live-analysis", data),
+  setLiveAnalysisInFlight: (inFlight: boolean) => ipcRenderer.invoke("set-live-analysis-in-flight", inFlight),
 
   // Window Mode
   setWindowMode: (mode: 'launcher' | 'overlay', inactive?: boolean) => ipcRenderer.invoke("set-window-mode", mode, inactive),
@@ -1125,6 +1160,8 @@ contextBridge.exposeInMainWorld("electronAPI", {
   checkForUpdates: () => ipcRenderer.invoke("check-for-updates"),
   downloadUpdate: () => ipcRenderer.invoke("download-update"),
   testReleaseFetch: () => ipcRenderer.invoke("test-release-fetch"),
+  getAppVersion: () => ipcRenderer.invoke("get-app-version"),
+  isAppPackaged: () => ipcRenderer.invoke("is-app-packaged"),
 
   // Intelligence Mode - WHAT AM I MISSING
   onWhatAmIMissingToken: (callback: (data: { token: string }) => void) => {

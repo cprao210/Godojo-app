@@ -74,4 +74,15 @@ export const intelligenceApi = {
    */
   reindexCompanyAssets: (): Promise<void> =>
     apiFetch<void>("/intelligence/company-assets/reindex", { method: "POST" }),
+
+  /**
+   * Deletes a company asset's vectors + metadata on the backend. Note: the
+   * primary delete path is the `companyDeleteAsset` IPC call (main process),
+   * which also cleans up the local SQLite mirror — use this directly only if
+   * you need a renderer-side delete without touching local file state.
+   */
+  deleteCompanyAsset: (assetId: string): Promise<void> =>
+    apiFetch<void>(`/intelligence/company-assets/${encodeURIComponent(assetId)}`, {
+      method: "DELETE",
+    })
 };

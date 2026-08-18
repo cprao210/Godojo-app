@@ -8,6 +8,7 @@ import { useStreamBuffer } from '@/hooks';
 import { chatApi, statusLabel } from '@/api';
 import { chatMarkdownComponents } from '@/features/chat';
 import { ChatHistoryTurn, FloatingChatPanelProps, LiveTranscriptSegment, Message, StreamHandle } from '@/types';
+import { posthogAnalytics } from '@/lib/analytics/posthog.service';
 
 interface FilmRollTranscriptProps {
     text: string;
@@ -387,6 +388,8 @@ export const FloatingChatPanel: React.FC<FloatingChatPanelProps> = ({ transcript
 
         const sessionActive = await guardSession();
         if (!sessionActive) return;
+
+        posthogAnalytics.trackLiveChatQuery();
 
         setErrorMessage(null);
         setIsProcessing(true);

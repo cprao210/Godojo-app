@@ -9,14 +9,14 @@ import { motion, AnimatePresence } from 'framer-motion';
 import {
     Zap, Calendar, ArrowRight, ArrowLeft, MoreHorizontal, ChevronRight,
     Settings, RefreshCw, Ghost, Trash2, Download, DownloadCloud, CheckCircle,
-    AlertCircle, Briefcase, Upload, X, ChevronUp, LayoutDashboard,
+    AlertCircle, Briefcase, Upload, X, ChevronUp,
 } from 'lucide-react';
 import { TopSearchPill, WindowControls } from '@/features/common';
 import { ConnectCalendarButton } from '@/features/calendar';
 import { UserProfileButton } from '@/features/tenant';
 import { generateMeetingPDF } from '@/../utils/pdfGenerator';
 import { isMac } from '@/../utils/platformUtils';
-import { analytics } from '@/lib/analytics/analytics.service';
+import { posthogAnalytics } from '@/lib/analytics/posthog.service';
 import { Meeting } from '@/types';
 import { IMAGES } from '@/lib/assets';
 import { getGroupLabel, formatTime, formatDurationPill, UPLOAD_MEETING_TYPE_OPTIONS } from '@/hooks/useLauncher';
@@ -35,16 +35,26 @@ interface LauncherHeaderProps {
     meetings: Meeting[];
     onOpenMeeting: (meeting: Meeting) => void;
     onOpenManagerDashboard?: () => void;
+    isManagerDashboardOpen?: boolean;
+    isSettingsOpen?: boolean;
     onOpenSettings: (tab?: string) => void;
+    onCloseSettings?: () => void;
     authUser?: { displayName?: string | null; email?: string | null; photoURL?: string | null } | null;
     onSignOut?: () => void;
 }
 
 export const LauncherHeader: React.FC<LauncherHeaderProps> = ({
     isLight, selectedMeeting, forwardMeeting, onBack, onForward,
-    meetings, onOpenMeeting, onOpenManagerDashboard, onOpenSettings,
+    meetings, onOpenMeeting, onOpenManagerDashboard, isManagerDashboardOpen = false, onOpenSettings, onCloseSettings, isSettingsOpen = false,
     authUser, onSignOut,
 }) => {
+    // Single source of truth for which nav item is "active" — driven by
+    // the dashboard's actual open/closed state (owned in App.tsx), not
+    // inferred from selectedMeeting. Home is active whenever neither Dashboard
+    // nor Settings is open — opening Settings should clear both nav states
+    // since Settings isn't represented by either "Home" or "Dashboard".
+    const isHomeActive = !isManagerDashboardOpen && !isSettingsOpen;
+    const isDashboardActive = isManagerDashboardOpen && !isSettingsOpen;
     return (
         <header className={[
             'relative w-full shrink-0 flex items-center gap-3 drag-region select-none border-b z-[200] backdrop-blur-xl',
@@ -93,41 +103,92 @@ export const LauncherHeader: React.FC<LauncherHeaderProps> = ({
             </div> */}
             <img src={IMAGES.godojoLogoV3} alt="GoDojo AI" className="h-5 object-contain" />
 
-            {/* Center: Search pill */}
-            <div className="mx-2 flex-1 no-drag">
-                {/* Center: Spotlight-style Search Pill */}
-                <TopSearchPill
-                    meetings={meetings}
-                    onOpenMeeting={(meetingId) => {
-                        const meeting = meetings.find(m => m.id === meetingId);
-                        if (meeting) {
-                            onOpenMeeting(meeting);
-                            analytics.trackCommandExecuted('open_meeting_from_search');
-                        }
+            {/* Left-of-center: Nav menu — Home + Dashboard (text labels) */}
+            <nav className="flex items-center gap-1 no-drag ml-2">
+                <button
+                    onClick={() => {
+                        // Only meaningful when Dashboard is currently open — closing it
+                        // is what actually returns the user to the launcher/home view.
+                        if (isManagerDashboardOpen) onOpenManagerDashboard?.();
+                        if (isSettingsOpen) onCloseSettings?.();
+                        onBack();
                     }}
-                />
-            </div>
-
-            {/* Right: Dashboard + Settings + Profile */}
-            <div className={`flex items-center gap-2 no-drag shrink-0 ${isMac ? 'mr-1' : ''}`}>
+                    className={[
+                        'inline-flex items-center rounded-lg px-3 text-[13px] font-medium transition-all no-drag',
+                        isMac ? 'h-9' : 'h-7',
+                        isHomeActive
+                            ? isLight
+                                ? 'bg-bg-elevated text-text-primary'
+                                : 'bg-blue-500/10 text-blue-300'
+                            : isLight
+                                ? 'text-text-secondary hover:bg-bg-elevated hover:text-text-primary'
+                                : 'text-text-secondary hover:bg-white/[0.08] hover:text-white',
+                    ].join(' ')}
+                    aria-label="Home"
+                    aria-current={isHomeActive ? 'page' : undefined}
+                    title="Home"
+                >
+                    Home
+                </button>
 
                 {/* Manager Dashboard */}
                 {onOpenManagerDashboard && (
                     <button
                         onClick={onOpenManagerDashboard}
                         className={[
-                            'inline-flex items-center justify-center rounded-full transition-all no-drag',
-                            isMac ? 'h-9 w-9' : 'h-7 w-7',
-                            isLight
-                                ? 'border border-border-muted bg-bg-elevated/80 text-text-secondary hover:bg-bg-elevated hover:text-text-primary'
-                                : 'border border-border-subtle bg-bg-item-surface text-text-secondary hover:bg-white/[0.08] hover:text-white',
+                            'inline-flex items-center rounded-lg px-3 text-[13px] font-medium transition-all no-drag',
+                            isMac ? 'h-9' : 'h-7',
+                            isDashboardActive
+                                ? isLight
+                                    ? 'bg-bg-elevated text-text-primary'
+                                    : 'bg-blue-500/10 text-blue-300'
+                                : isLight
+                                    ? 'text-text-secondary hover:bg-bg-elevated hover:text-text-primary'
+                                    : 'text-text-secondary hover:bg-white/[0.08] hover:text-white',
                         ].join(' ')}
-                        aria-label="Manager Dashboard"
-                        title='Manager Dashboard'
+                        aria-label="Dashboard"
+                        aria-current={isDashboardActive ? 'page' : undefined}
+                        title='Dashboard'
                     >
-                        <LayoutDashboard size={15} />
+                        Dashboard
                     </button>
                 )}
+            </nav>
+
+            {/* Center/Right-leaning: Search pill (nudged right) */}
+            <div className="ml-4 mr-2 flex-1 flex justify-end no-drag">
+                {/* Spotlight-style Search Pill */}
+                <div className="w-full max-w-md">
+                    <TopSearchPill
+                        meetings={meetings}
+                        onOpenMeeting={(meetingId) => {
+                            const meeting = meetings.find(m => m.id === meetingId);
+                            if (meeting) {
+                                onOpenMeeting(meeting);
+                            }
+                        }}
+                    />
+                </div>
+            </div>
+
+            {/* Right: Settings + Profile */}
+            <div className={`flex items-center gap-2 no-drag shrink-0 ${isMac ? 'mr-1' : ''}`}>
+
+                {/* Hard Refresh */}
+                <button
+                    onClick={() => window.electronAPI?.hardRefresh?.()}
+                    className={[
+                        'inline-flex items-center justify-center rounded-full transition-all no-drag',
+                        isMac ? 'h-9 w-9' : 'h-7 w-7',   // ← shrink on Windows
+                        isLight
+                            ? 'border border-border-muted bg-bg-elevated/80 text-text-secondary hover:bg-bg-elevated hover:text-text-primary'
+                            : 'border border-border-subtle bg-bg-item-surface text-text-secondary hover:bg-white/[0.08] hover:text-white',
+                    ].join(' ')}
+                    title={isMac ? 'Hard Refresh (⌘⇧R)' : 'Hard Refresh (Ctrl+Shift+R)'}
+                    aria-label="Hard Refresh"
+                >
+                    <RefreshCw size={15} />
+                </button>
 
                 {/* Settings */}
                 <button
@@ -281,7 +342,12 @@ interface StartMeetingButtonProps {
 
 export const StartMeetingButton: React.FC<StartMeetingButtonProps> = ({ isMeetingActive, onClick }) => (
     <motion.button
-        onClick={onClick}
+        onClick={() => {
+            if (!isMeetingActive) {
+                posthogAnalytics.trackStartGodojoClicked('launcher_header');
+            }
+            onClick();
+        }}
         whileHover={{ scale: 1.02, filter: 'brightness(1.08)' }}
         whileTap={{ scale: 0.98 }}
         transition={{ duration: 0.15, ease: 'easeOut' }}
@@ -622,7 +688,6 @@ export const MeetingRow: React.FC<MeetingRowProps> = ({
                             className={['w-full flex items-center gap-2 px-3 py-1.5 text-[12px] rounded-lg transition-colors text-left text-text-primary', isLight ? 'hover:bg-bg-item-surface' : 'hover:bg-white/10'].join(' ')}
                             onClick={async () => {
                                 onToggleMenu(null);
-                                analytics.trackPdfExported();
                                 if (window.electronAPI?.getMeetingDetails) {
                                     try { generateMeetingPDF(await window.electronAPI.getMeetingDetails(m.id) ?? m); }
                                     catch { generateMeetingPDF(m); }

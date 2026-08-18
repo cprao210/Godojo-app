@@ -1,6 +1,7 @@
 import React from 'react';
 import { motion } from 'framer-motion';
 import { Calendar, Play, Plus } from 'lucide-react';
+import { posthogAnalytics } from '@/lib/analytics/posthog.service';
 
 // ─────────────────────────────────────────────────────────────────
 // EMPTY STATE CARD (no upcoming meeting)
@@ -65,7 +66,10 @@ export function NextMeetingEmptyState({ isLight, onStart }: { isLight: boolean; 
 
             <motion.button
                 whileHover={{ scale: 1.03 }} whileTap={{ scale: 0.97 }}
-                onClick={onStart}
+                onClick={() => {
+                    posthogAnalytics.trackStartGodojoClicked('empty_state');
+                    onStart();
+                }}
                 className="mt-4 inline-flex h-9 items-center gap-2 rounded-xl bg-gradient-to-b from-blue-500 to-blue-600 px-4 text-xs font-semibold text-white shadow-[0_6px_18px_-4px_rgba(59,130,246,0.6)] transition hover:from-blue-400 hover:to-blue-600"
             >
                 <Play className="h-3.5 w-3.5 fill-white" />

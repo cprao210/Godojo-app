@@ -6,9 +6,9 @@ const mix = (min: number, max: number, value: number) => min + ((max - min) * va
 export const OVERLAY_OPACITY_MIN = 0.35;
 export const OVERLAY_OPACITY_MAX = 1;
 /** @deprecated Use getDefaultOverlayOpacity() for theme-aware default. */
-export const OVERLAY_OPACITY_DEFAULT = 0.65;
-export const OVERLAY_OPACITY_DEFAULT_DARK = 0.80;
-export const OVERLAY_OPACITY_DEFAULT_LIGHT = 0.70;
+export const OVERLAY_OPACITY_DEFAULT = 0.95;
+export const OVERLAY_OPACITY_DEFAULT_DARK = 0.95;
+export const OVERLAY_OPACITY_DEFAULT_LIGHT = 0.95;
 
 /** Returns the correct default opacity based on the currently active theme. */
 export const getDefaultOverlayOpacity = (): number =>

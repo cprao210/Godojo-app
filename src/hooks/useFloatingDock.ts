@@ -10,6 +10,7 @@ import { useEffect, useRef, useState } from 'react';
 // import — this hook is itself re-exported from that barrel.
 import { useLiveAnalysis } from './useLiveAnalysis';
 import { ActivePanel, ChatMessage, MeetingType } from '@/types';
+import { posthogAnalytics } from '@/lib/analytics/posthog.service';
 
 const OPACITY_STORAGE_KEY = 'gd_dock_opacity';
 const MIN_OPACITY = 0.35;
@@ -21,9 +22,13 @@ const PANEL_DOCK_GAP = 65;
 const DEFAULT_DOCK_HEIGHT = 64; // sensible fallback before first ResizeObserver measure
 // Minimum number of prospect turns considered "enough transcript" to
 // generate an analysis from — used both to fire early (before the countdown
-// finishes) and to decide the zero-countdown outcome.
+// finishes) and to decide the zero-countdown outcome. Must count ONLY the
+// prospect's own turns (speaker === 'client'); counting the rep's ('user')
+// turns too meant checking "Negotiation" could force-fire an analysis after
+// only the rep had spoken, before the prospect said anything — a low-signal
+// refresh that looked like it was firing "randomly" on short transcripts.
 const MIN_PROSPECT_TURNS = 2;
-const NON_PROSPECT_SPEAKERS = ['system', 'ai', 'assistant', 'model'];
+const PROSPECT_SPEAKER = 'client';
 
 const clampOpacity = (v: number) => Math.min(MAX_OPACITY, Math.max(MIN_OPACITY, v));
 
@@ -42,7 +47,16 @@ export function useFloatingDock({ transcriptRef, isMeetingPaused, companyIntel }
 
     const togglePanel = (panel: ActivePanel) => {
         if (isFrozen && panel !== null) return;
-        setActivePanel((prev) => (prev === panel ? null : panel));
+        setActivePanel((prev) => {
+            const next = prev === panel ? null : panel;
+            // Only fire on genuine opens (next !== null) — toggling a panel
+            // closed, or switching directly between two panels, shouldn't
+            // double-count as an "open" for the panel being left.
+            if (next === 'intelligence') posthogAnalytics.trackLiveAnalysisOpened();
+            else if (next === 'chat') posthogAnalytics.trackLiveChatOpened();
+            else if (next === 'settings') posthogAnalytics.trackLiveSettingsOpened();
+            return next;
+        });
     };
 
     const handleFreezeMode = () => setIsFrozen((prev) => !prev);
@@ -51,7 +65,7 @@ export function useFloatingDock({ transcriptRef, isMeetingPaused, companyIntel }
     const [dockOpacity, setDockOpacity] = useState<number>(() => {
         const stored = localStorage.getItem(OPACITY_STORAGE_KEY);
         const parsed = stored ? parseFloat(stored) : NaN;
-        return Number.isFinite(parsed) ? clampOpacity(parsed) : 0.88;
+        return Number.isFinite(parsed) ? clampOpacity(parsed) : 0.97;
     });
 
     useEffect(() => {
@@ -105,20 +119,20 @@ export function useFloatingDock({ transcriptRef, isMeetingPaused, companyIntel }
         runAnalysisRef.current = runAnalysis;
     }, [runAnalysis]);
 
-    // Fire an immediate analysis when Negotiation is NEWLY checked, so the Deal
-    // Optimizer tab populates within seconds instead of waiting for the next
-    // auto-refresh tick. The prev-ref means neither mount (['discovery']
-    // default) nor a session-reset fires it, and unchecking never triggers a
-    // run. Same force semantics as the Regenerate button; the hook's in-flight
-    // guard prevents duplicate calls.
-    const prevMeetingTypesRef = useRef<MeetingType[]>(meetingTypes);
-    useEffect(() => {
-        const hadNegotiation = prevMeetingTypesRef.current.includes('negotiation');
-        prevMeetingTypesRef.current = meetingTypes;
-        if (!hadNegotiation && meetingTypes.includes('negotiation')) {
-            runAnalysisRef.current(true);
-        }
-    }, [meetingTypes]);
+    // `force` in useLiveAnalysis.runAnalysis has no transcript-size guard of
+    // its own — it only bails on a completely empty transcript — so any
+    // caller that wants to avoid firing on a near-empty transcript has to
+    // check this itself.
+    const hasEnoughTranscript = () => {
+        const turns = transcriptRef.current ?? [];
+        return turns.filter((t) => t.speaker?.toLowerCase() === PROSPECT_SPEAKER).length >= MIN_PROSPECT_TURNS;
+    };
+
+    const ensureFinalAnalysisBeforeEndCall = async () => {
+        if (analysisLoading || !hasEnoughTranscript()) return;
+        try { await window.electronAPI?.setLiveAnalysisInFlight?.(true); } catch { }
+        runAnalysisRef.current(true);
+    };
 
     // Track whether the first analysis has been triggered so we don't re-run
     // on every remount.
@@ -201,11 +215,6 @@ export function useFloatingDock({ transcriptRef, isMeetingPaused, companyIntel }
     // the new one, so the display could open showing an arbitrary leftover
     // value (e.g. "0:10") instead of the full configured duration.
     const [sessionKey, setSessionKey] = useState(0);
-
-    const hasEnoughTranscript = () => {
-        const turns = transcriptRef.current ?? [];
-        return turns.filter((t) => !NON_PROSPECT_SPEAKERS.includes(t.speaker?.toLowerCase())).length >= MIN_PROSPECT_TURNS;
-    };
 
     // Runs ONCE per cycle (single-shot, not recurring):
     //   - If enough transcript is captured before the countdown finishes,
@@ -303,6 +312,7 @@ export function useFloatingDock({ transcriptRef, isMeetingPaused, companyIntel }
         analysisError,
         runAnalysis,
         isRefreshRun,
+        ensureFinalAnalysisBeforeEndCall,
         // chat history (lifted)
         handleInteractionId,
         chatMessages,

@@ -6,14 +6,14 @@
 // getAuthHeaders().
 
 import { getAuthHeaders, API_BASE, ApiError, apiFetch } from "@/lib/apiClient";
-import { ChatHistoryTurn, ChatStreamHandlers, LiveTranscriptSegment, RagAnswer, StreamHandle } from "@/types";
+import { ChatHistoryTurn, ChatSession, ChatStreamHandlers, LiveTranscriptSegment, RagAnswer, StreamHandle } from "@/types";
 
 // Transient failures worth retrying automatically: network drops (fetch
 // throws a TypeError, e.g. "Failed to fetch") and server-side/rate-limit
 // errors (5xx, 429). Anything else (400/401/403/404, malformed request,
 // etc.) is a client-side problem that will fail identically on retry, so
 // don't waste time/attempts on it.
-const MAX_STREAM_RETRIES = 2;
+const MAX_STREAM_RETRIES = 3;
 const RETRY_BASE_DELAY_MS = 600;
 
 function isRetryableStreamError(err: unknown): boolean {
@@ -166,6 +166,16 @@ function dispatchFrame(frame: string, handlers: ChatStreamHandlers): void {
             handlers.onInteractionId?.(parsed.interaction_id);
             break;
         }
+        case "session_created": {
+            const parsed = JSON.parse(data) as { session_id: string };
+            handlers.onSessionCreated?.(parsed.session_id);
+            break;
+        }
+        case "title_updated": {
+            const parsed = JSON.parse(data) as { title: string };
+            handlers.onTitleUpdated?.(parsed.title);
+            break;
+        }
         case "error": {
             const parsed = JSON.parse(data) as { error?: string };
             handlers.onError(parsed.error ?? "Something went wrong.");
@@ -199,13 +209,30 @@ export function statusLabel(status: string): string {
 }
 
 export const chatApi = {
-    /** Header search bar — TopSearchPill → GlobalChatOverlay. */
-    queryGlobal: (query: string, handlers: ChatStreamHandlers): StreamHandle =>
-        streamSSE("/chat/rag/query/global", { query }, handlers),
+    /** Header search bar — TopSearchPill → GlobalChatOverlay.
+     * `sessionId` — pass the stored session id to resume a chat, or `null` to
+     * start a new one (backend auto-creates and returns it via the
+     * `session_created` frame). `history` is a fallback ONLY used when
+     * `sessionId` is null; once a session exists the backend loads the last
+     * 20 turns from `ai_interactions` itself, so pass `[]` on resumed chats.
+      */
+    queryGlobal: (
+        query: string,
+        sessionId: string | null,
+        history: ChatHistoryTurn[],
+        handlers: ChatStreamHandlers,
+    ): StreamHandle =>
+        streamSSE("/chat/rag/query/global", { query, session_id: sessionId, history }, handlers),
 
-    /** Post-meeting chat — MeetingChatOverlay. */
-    queryMeeting: (meetingId: string, query: string, handlers: ChatStreamHandlers): StreamHandle =>
-        streamSSE(`/chat/rag/query/meeting/${meetingId}`, { query }, handlers),
+    /** Post-meeting chat — MeetingChatOverlay. Same session_id/history contract as queryGlobal. */
+    queryMeeting: (
+        meetingId: string,
+        query: string,
+        sessionId: string | null,
+        history: ChatHistoryTurn[],
+        handlers: ChatStreamHandlers,
+    ): StreamHandle =>
+        streamSSE(`/chat/rag/query/meeting/${meetingId}`, { query, session_id: sessionId, history }, handlers),
 
     /** In-call chat — FloatingChatPanel. Needs the live transcript + prior turns. */
     queryLive: (
@@ -229,4 +256,28 @@ export const chatApi = {
             method: "POST",
             body: JSON.stringify({ interaction_ids: interactionIds, meeting_id: meetingId }),
         }),
+
+    // ── Session management (REST, not SSE) ──────────────────────────────────
+
+    /** Pre-create a session before the first message. Optional — every chat
+     * endpoint auto-creates one — but lets the sidebar show "New Chat"
+     * immediately instead of waiting for the first `session_created` frame. */
+    createSession: (): Promise<ChatSession> =>
+        apiFetch<ChatSession>("/chat/sessions", { method: "POST" }),
+
+    /** Sidebar list. Sorted newest-first by the backend, capped at 30. */
+    listSessions: (): Promise<ChatSession[]> =>
+        apiFetch<{ sessions: ChatSession[] }>("/chat/sessions").then((r) => r.sessions),
+
+    /** Full turn history for resuming a chat (last 20 messages, chronological). */
+    getSessionMessages: (sessionId: string): Promise<ChatHistoryTurn[]> =>
+        apiFetch<{ session_id: string; messages: ChatHistoryTurn[] }>(
+            `/chat/sessions/${sessionId}/messages`,
+        ).then((r) => r.messages),
+
+    /** Deletes a session + its turn history. Idempotent from the caller's
+     * perspective — the sidebar removes it optimistically regardless. */
+    deleteSession: (sessionId: string): Promise<void> =>
+        apiFetch<void>(`/chat/sessions/${sessionId}`, { method: "DELETE" }),
+
 };

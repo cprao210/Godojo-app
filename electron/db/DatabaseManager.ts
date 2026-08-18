@@ -148,6 +148,17 @@ export class DatabaseManager {
         this.init();
     }
 
+    // Releases the underlying sqlite file handle. Required before deleting
+    // or moving the userData directory (e.g. "Reset app data") — on Windows
+    // in particular, natively.db stays locked until this is called, and the
+    // delete would otherwise fail or silently leave the .db file behind.
+    public close(): void {
+        if (this.db) {
+            this.db.close();
+            this.db = null;
+        }
+    }
+
     public static getInstance(): DatabaseManager {
         if (!DatabaseManager.instance) {
             DatabaseManager.instance = new DatabaseManager();
@@ -1527,6 +1538,13 @@ export class DatabaseManager {
 
             // 2. Insert Transcript
             if (meeting.transcript) {
+                // saveMeeting() can legitimately be called more than once for the
+                // same meeting.id — a synchronous "Processing..." placeholder save
+                // now writes the real transcript immediately (see MeetingPersistence
+                // stopMeeting/upload flows), followed later by processAndSaveMeeting's
+                // final save with the same transcript. Clear any prior rows for this
+                // meeting first so re-saves replace rather than duplicate.
+                this.db.prepare('DELETE FROM transcripts WHERE meeting_id = ?').run(meeting.id);
                 for (const segment of meeting.transcript) {
                     const info = insertTranscript.run(
                         meeting.id,
@@ -1747,8 +1765,14 @@ export class DatabaseManager {
     public getRecentMeetings(limit: number = 50): Meeting[] {
         if (!this.db) return [];
 
+        // Exclude the 'live-meeting-current' row: RAGManager.startLiveIndexing()
+        // inserts it purely to satisfy the chunks table's FK constraint while a
+        // call is in progress (see RAGManager.ts) — it's local bookkeeping, not
+        // a real meeting, and has no corresponding row on the backend. ...
+
         const stmt = this.db.prepare(`
             SELECT * FROM meetings 
+            WHERE id != 'live-meeting-current'
             ORDER BY created_at DESC 
             LIMIT ?
         `);

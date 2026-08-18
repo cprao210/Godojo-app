@@ -23,6 +23,33 @@ export const chatMarkdownComponents = {
 
     strong: ({ node, ...props }: any) => <strong className="font-semibold" {...props} />,
 
+    table: ({ node, ...props }: any) => (
+        <div className="my-3 overflow-x-auto rounded-lg border border-border-subtle">
+            <table className="w-full border-collapse text-[13px]" {...props} />
+        </div>
+    ),
+    thead: ({ node, ...props }: any) => (
+        <thead className="bg-bg-tertiary" {...props} />
+    ),
+    tbody: ({ node, ...props }: any) => (
+        <tbody className="divide-y divide-border-subtle" {...props} />
+    ),
+    tr: ({ node, ...props }: any) => (
+        <tr className="border-b border-border-subtle last:border-b-0" {...props} />
+    ),
+    th: ({ node, ...props }: any) => (
+        <th
+            className="border border-border-subtle px-3 py-2 text-left font-semibold text-text-primary whitespace-nowrap"
+            {...props}
+        />
+    ),
+    td: ({ node, ...props }: any) => (
+        <td
+            className="border border-border-subtle px-3 py-2 align-top text-text-secondary"
+            {...props}
+        />
+    ),
+
     pre: ({ children }: any) => <div className="not-prose mb-4">{children}</div>,
     code: ({ node, inline, className, children, ...props }: any) => {
         const match = /language-(\w+)/.exec(className || '');

@@ -7,7 +7,6 @@
 // window) so this tab never drifts out of sync.
 
 import { useCallback, useEffect, useState } from 'react';
-import { analytics } from '@/lib/analytics/analytics.service';
 
 export type DisguiseMode = 'terminal' | 'settings' | 'activity' | 'none';
 export type ThemeMode = 'system' | 'light' | 'dark';
@@ -106,7 +105,6 @@ export function useGeneralSettings({ isOpen }: UseGeneralSettingsArgs) {
         const newState = !isUndetectable;
         setIsUndetectable(newState);
         window.electronAPI?.setUndetectable(newState);
-        analytics.trackModeSelected(newState ? 'undetectable' : 'overlay');
     }, [isUndetectable]);
 
     const toggleMousePassthrough = useCallback(() => {
@@ -133,7 +131,6 @@ export function useGeneralSettings({ isOpen }: UseGeneralSettingsArgs) {
         if (isUndetectable) return;
         setDisguiseModeState(mode);
         window.electronAPI?.setDisguise(mode);
-        analytics.trackModeSelected(`disguise_${mode}`);
     }, [isUndetectable]);
 
     const setThemeMode = useCallback(async (mode: ThemeMode) => {

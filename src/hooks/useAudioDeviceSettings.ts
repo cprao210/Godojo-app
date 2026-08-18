@@ -4,6 +4,7 @@
 // ScreenCaptureKit backend toggle.
 
 import { useEffect, useState } from 'react';
+import { isMac } from '@/../utils/platformUtils';
 
 interface UseAudioDeviceSettingsArgs {
     isOpen: boolean;
@@ -17,7 +18,7 @@ export function useAudioDeviceSettings({ isOpen, activeTab }: UseAudioDeviceSett
     const [selectedInput, setSelectedInput] = useState('');
     const [selectedOutput, setSelectedOutput] = useState('');
     const [micLevel, setMicLevel] = useState(0);
-    const [useExperimentalSck, setUseExperimentalSck] = useState(false);
+    const [useExperimentalSck, setUseExperimentalSck] = useState(isMac);
 
     // ── Load devices + saved preferences whenever the overlay opens ─────────
     useEffect(() => {
@@ -62,7 +63,8 @@ export function useAudioDeviceSettings({ isOpen, activeTab }: UseAudioDeviceSett
         };
         loadDevices();
 
-        setUseExperimentalSck(localStorage.getItem('useExperimentalSckBackend') === 'true');
+        const savedSckPref = localStorage.getItem('useExperimentalSckBackend');
+        setUseExperimentalSck(savedSckPref !== null ? savedSckPref === 'true' : isMac);
         // Re-run if isOpen changes, or if a selected device was cleared elsewhere.
     }, [isOpen, selectedInput, selectedOutput]);
 

@@ -6,6 +6,7 @@
 import { useEffect, useState } from "react";
 import { tenantsApi } from "@/api";
 import { ApiError } from "@/lib/apiClient";
+import { posthogAnalytics } from "@/lib/analytics/posthog.service";
 import { MemberOrInvitation, Tenant, TenantRole } from "@/types";
 
 export const MEMBERS_PAGE_SIZE = 8;
@@ -105,6 +106,7 @@ export function useMembersTable({ tenant, isOwner }: UseMembersTableParams) {
     const handleInvite = async (email: string, role: TenantRole) => {
         if (!isOwner) return;
         await tenantsApi.inviteMember(tenant.id, email, role);
+        posthogAnalytics.trackInviteUser();
         setIsInviteOpen(false);
         setPage(1);
         refresh(); // pull the new pending invitation into the list

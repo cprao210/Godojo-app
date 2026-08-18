@@ -10,12 +10,54 @@ on:
         description: 'Version tag (e.g. v2.1.0)'
         required: true
         default: 'v0.0.0-test'
+      platform:
+        description: 'Which OS to build (tag pushes always build all three; this only applies to manual runs)'
+        required: true
+        type: choice
+        default: 'all'
+        options:
+          - all
+          - mac
+          - windows
+          - linux
 
 jobs:
+  # ─── Resolve which platform(s) to build, from either the tag name
+  # (v1.0.0 / v1.0.0-mac / v1.0.0-windows / v1.0.0-linux / v1.0.0-all)
+  # or the manual workflow_dispatch dropdown. Every build job reads this
+  # job's output instead of duplicating the same parsing logic three times.
+  # ─────────────────────────────────────────────────────────────────────
+  resolve-platform:
+    name: Resolve target platform
+    runs-on: ubuntu-latest
+    outputs:
+      platform: ${{ steps.resolve.outputs.platform }}
+    steps:
+      - name: Resolve
+        id: resolve
+        shell: bash
+        run: |
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            PLATFORM="${{ inputs.platform }}"
+          else
+            TAG="${{ github.ref_name }}"
+            case "$TAG" in
+              *-mac)     PLATFORM="mac" ;;
+              *-windows) PLATFORM="windows" ;;
+              *-linux)   PLATFORM="linux" ;;
+              *-all)     PLATFORM="all" ;;
+              *)         PLATFORM="all" ;;   # plain vX.Y.Z tag, no suffix — build everything, same as before
+            esac
+          fi
+          echo "Resolved platform='$PLATFORM' (event=${{ github.event_name }}, tag=${{ github.ref_name }})"
+          echo "platform=$PLATFORM" >> "$GITHUB_OUTPUT"
+
   # ─── macOS: .dmg + .zip for x64 and arm64 ───────────────────────────────────
   build-macos:
     name: Build macOS (x64 + arm64)
     runs-on: macos-latest
+    needs: resolve-platform
+    if: needs.resolve-platform.outputs.platform == 'all' || needs.resolve-platform.outputs.platform == 'mac'
     steps:
       - uses: actions/checkout@v4
 
@@ -23,7 +65,13 @@ jobs:
         shell: bash
         run: |
           RAW_TAG="${{ github.ref_name || inputs.tag }}"
-          VERSION="${RAW_TAG#v}"   # v1.0.6 -> 1.0.6 (npm/electron-builder want no leading 'v')
+          # Strip a platform suffix (-mac/-windows/-linux/-all) if present —
+          # the app's own version number should never include it.
+          CLEAN_TAG="${RAW_TAG%-mac}"
+          CLEAN_TAG="${CLEAN_TAG%-windows}"
+          CLEAN_TAG="${CLEAN_TAG%-linux}"
+          CLEAN_TAG="${CLEAN_TAG%-all}"
+          VERSION="${CLEAN_TAG#v}"   # v1.0.6 -> 1.0.6 (npm/electron-builder want no leading 'v')
           npm version "$VERSION" --no-git-tag-version --allow-same-version
           echo "Building version: $VERSION"
 
@@ -57,6 +105,8 @@ jobs:
         shell: bash
         run: |
           cat > .env << EOF
+          VITE_POSTHOG_KEY=${{ secrets.VITE_POSTHOG_KEY }}
+          VITE_POSTHOG_HOST=${{ secrets.VITE_POSTHOG_HOST }}
           VITE_FIREBASE_API_KEY=${{ secrets.VITE_FIREBASE_API_KEY }}
           VITE_FIREBASE_AUTH_DOMAIN=${{ secrets.VITE_FIREBASE_AUTH_DOMAIN }}
           VITE_FIREBASE_PROJECT_ID=${{ secrets.VITE_FIREBASE_PROJECT_ID }}
@@ -85,9 +135,37 @@ jobs:
           ZOOM_CLIENT_SECRET=${{ secrets.ZOOM_CLIENT_SECRET }}
           EOF
 
-      - name: Build renderer + electron
+      - name: Verify runtime secrets resolved (pre-build)
+        shell: bash
         run: |
-          npm run build
+          echo "Checking which GitHub Actions secrets actually resolved into .env..."
+          echo "(This catches secrets that are missing/blank in repo settings — separate"
+          echo " from whether the file itself makes it into the packaged app.)"
+          byok_missing=0
+          for key in VITE_API_BASE_URL SUPABASE_URL SUPABASE_KEY DEEPGRAM_API_KEY GEMINI_API_KEY GROQ_API_KEY TAVILY_API_KEY; do
+            value=$(grep "^${key}=" .env | cut -d '=' -f2-)
+            if [ -z "$value" ]; then
+              echo "::warning::${key} is EMPTY in the generated .env — the '${key}' secret is missing or blank in repo Settings > Secrets."
+              case "$key" in
+                DEEPGRAM_API_KEY|GEMINI_API_KEY|GROQ_API_KEY|TAVILY_API_KEY) byok_missing=1 ;;
+              esac
+            else
+              echo "${key} = present (${#value} chars)"
+            fi
+          done
+          if [ "$byok_missing" -eq 1 ]; then
+            echo "::warning::One or more BYOK fallback keys (DEEPGRAM/GEMINI/GROQ/TAVILY) are missing — users who haven't set their own key in Settings will have no fallback on this build."
+          fi
+
+      - name: Install posthog-cli
+        run: npm install -g @posthog/cli
+
+      - name: Build renderer + electron
+        env:
+          POSTHOG_CLI_TOKEN: ${{ secrets.POSTHOG_CLI_TOKEN }}
+          POSTHOG_CLI_ENV_ID: ${{ secrets.POSTHOG_CLI_ENV_ID }}
+        run: |
+          npm run build:release
           npm run build:electron
 
       - name: Build native Rust module (x64 + arm64)
@@ -107,6 +185,45 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: npx electron-builder --mac --publish never
 
+      - name: Verify .env bundled correctly in packaged app (macOS)
+        # This is the check that actually matters for the "mac production build
+        # has no env fallback keys" report: it inspects the REAL .app that ships,
+        # not just the repo-root .env used during the build. Distinguishes
+        # "extraResources never copied the file" (packaging bug, fails the job)
+        # from "file is there but a specific key is blank" (secrets config,
+        # warns only — same distinction as the pre-build check above).
+        shell: bash
+        run: |
+          APP_PATHS=()
+          while IFS= read -r -d '' app_path; do
+            APP_PATHS+=("$app_path")
+          done < <(find release -iname "*.app" -maxdepth 4 -type d -print0)
+          if [ "${#APP_PATHS[@]}" -eq 0 ]; then
+            echo "::error::No .app bundles found under release/ — cannot verify bundled .env."
+            exit 1
+          fi
+          overall_fail=0
+          for APP_PATH in "${APP_PATHS[@]}"; do
+            ENV_IN_APP="$APP_PATH/Contents/Resources/.env"
+            echo "── Checking $APP_PATH ──"
+            if [ ! -f "$ENV_IN_APP" ]; then
+              echo "::error::.env was NOT bundled into $APP_PATH (missing at Contents/Resources/.env). This build will have ZERO env fallback keys — every user without their own key set in Settings will fail."
+              overall_fail=1
+              continue
+            fi
+            for key in DEEPGRAM_API_KEY GEMINI_API_KEY GROQ_API_KEY TAVILY_API_KEY; do
+              value=$(grep "^${key}=" "$ENV_IN_APP" | cut -d '=' -f2-)
+              if [ -z "$value" ]; then
+                echo "::warning::${key} is empty inside the bundled .env at $APP_PATH — matches the pre-build check, confirms it's a secrets-config issue, not a packaging one."
+              else
+                echo "${key}: present in bundle (${#value} chars)"
+              fi
+            done
+          done
+          if [ "$overall_fail" -eq 1 ]; then
+            exit 1
+          fi
+
       - name: Upload macOS artifacts
         uses: actions/upload-artifact@v4
         with:
@@ -114,12 +231,16 @@ jobs:
           path: |
             release/*.dmg
             release/*.zip
+            release/*.blockmap
+            release/latest-mac.yml
           if-no-files-found: error
 
   # ─── Windows: .exe installer (nsis) + portable ───────────────────────────────
   build-windows:
     name: Build Windows (x64 + ia32)
     runs-on: windows-latest
+    needs: resolve-platform
+    if: needs.resolve-platform.outputs.platform == 'all' || needs.resolve-platform.outputs.platform == 'windows'
     steps:
       - uses: actions/checkout@v4
 
@@ -127,7 +248,13 @@ jobs:
         shell: bash
         run: |
           RAW_TAG="${{ github.ref_name || inputs.tag }}"
-          VERSION="${RAW_TAG#v}"   # v1.0.6 -> 1.0.6 (npm/electron-builder want no leading 'v')
+          # Strip a platform suffix (-mac/-windows/-linux/-all) if present —
+          # the app's own version number should never include it.
+          CLEAN_TAG="${RAW_TAG%-mac}"
+          CLEAN_TAG="${CLEAN_TAG%-windows}"
+          CLEAN_TAG="${CLEAN_TAG%-linux}"
+          CLEAN_TAG="${CLEAN_TAG%-all}"
+          VERSION="${CLEAN_TAG#v}"   # v1.0.6 -> 1.0.6 (npm/electron-builder want no leading 'v')
           npm version "$VERSION" --no-git-tag-version --allow-same-version
           echo "Building version: $VERSION"
 
@@ -155,6 +282,8 @@ jobs:
         shell: bash
         run: |
           cat > .env << EOF
+          VITE_POSTHOG_KEY=${{ secrets.VITE_POSTHOG_KEY }}
+          VITE_POSTHOG_HOST=${{ secrets.VITE_POSTHOG_HOST }}
           VITE_FIREBASE_API_KEY=${{ secrets.VITE_FIREBASE_API_KEY }}
           VITE_FIREBASE_AUTH_DOMAIN=${{ secrets.VITE_FIREBASE_AUTH_DOMAIN }}
           VITE_FIREBASE_PROJECT_ID=${{ secrets.VITE_FIREBASE_PROJECT_ID }}
@@ -183,9 +312,37 @@ jobs:
           ZOOM_CLIENT_SECRET=${{ secrets.ZOOM_CLIENT_SECRET }}
           EOF
 
-      - name: Build renderer + electron
+      - name: Verify runtime secrets resolved (pre-build)
+        shell: bash
         run: |
-          npm run build
+          echo "Checking which GitHub Actions secrets actually resolved into .env..."
+          echo "(This catches secrets that are missing/blank in repo settings — separate"
+          echo " from whether the file itself makes it into the packaged app.)"
+          byok_missing=0
+          for key in VITE_API_BASE_URL SUPABASE_URL SUPABASE_KEY DEEPGRAM_API_KEY GEMINI_API_KEY GROQ_API_KEY TAVILY_API_KEY; do
+            value=$(grep "^${key}=" .env | cut -d '=' -f2-)
+            if [ -z "$value" ]; then
+              echo "::warning::${key} is EMPTY in the generated .env — the '${key}' secret is missing or blank in repo Settings > Secrets."
+              case "$key" in
+                DEEPGRAM_API_KEY|GEMINI_API_KEY|GROQ_API_KEY|TAVILY_API_KEY) byok_missing=1 ;;
+              esac
+            else
+              echo "${key} = present (${#value} chars)"
+            fi
+          done
+          if [ "$byok_missing" -eq 1 ]; then
+            echo "::warning::One or more BYOK fallback keys (DEEPGRAM/GEMINI/GROQ/TAVILY) are missing — users who haven't set their own key in Settings will have no fallback on this build."
+          fi
+
+      - name: Install posthog-cli
+        run: npm install -g @posthog/cli
+
+      - name: Build renderer + electron
+        env:
+          POSTHOG_CLI_TOKEN: ${{ secrets.POSTHOG_CLI_TOKEN }}
+          POSTHOG_CLI_ENV_ID: ${{ secrets.POSTHOG_CLI_ENV_ID }}
+        run: |
+          npm run build:release
           npm run build:electron
 
       - name: Build native module (Windows)
@@ -207,7 +364,10 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: win-release
-          path: release/*.exe
+          path: |
+            release/*.exe
+            release/*.blockmap
+            release/latest.yml
           if-no-files-found: error
 
   # ─── Linux: .AppImage + .deb ─────────────────────────────────────────────────
@@ -218,6 +378,8 @@ jobs:
     # this alias roll to a future release risks silently breaking apt-get install
     # again — the exact class of failure this job was just fixed for.
     runs-on: ubuntu-24.04
+    needs: resolve-platform
+    if: needs.resolve-platform.outputs.platform == 'all' || needs.resolve-platform.outputs.platform == 'linux'
     steps:
       - uses: actions/checkout@v4
 
@@ -225,7 +387,13 @@ jobs:
         shell: bash
         run: |
           RAW_TAG="${{ github.ref_name || inputs.tag }}"
-          VERSION="${RAW_TAG#v}"   # v1.0.6 -> 1.0.6 (npm/electron-builder want no leading 'v')
+          # Strip a platform suffix (-mac/-windows/-linux/-all) if present —
+          # the app's own version number should never include it.
+          CLEAN_TAG="${RAW_TAG%-mac}"
+          CLEAN_TAG="${CLEAN_TAG%-windows}"
+          CLEAN_TAG="${CLEAN_TAG%-linux}"
+          CLEAN_TAG="${CLEAN_TAG%-all}"
+          VERSION="${CLEAN_TAG#v}"   # v1.0.6 -> 1.0.6 (npm/electron-builder want no leading 'v')
           npm version "$VERSION" --no-git-tag-version --allow-same-version
           echo "Building version: $VERSION"
 
@@ -262,6 +430,8 @@ jobs:
         shell: bash
         run: |
           cat > .env << EOF
+          VITE_POSTHOG_KEY=${{ secrets.VITE_POSTHOG_KEY }}
+          VITE_POSTHOG_HOST=${{ secrets.VITE_POSTHOG_HOST }}
           VITE_FIREBASE_API_KEY=${{ secrets.VITE_FIREBASE_API_KEY }}
           VITE_FIREBASE_AUTH_DOMAIN=${{ secrets.VITE_FIREBASE_AUTH_DOMAIN }}
           VITE_FIREBASE_PROJECT_ID=${{ secrets.VITE_FIREBASE_PROJECT_ID }}
@@ -290,9 +460,37 @@ jobs:
           ZOOM_CLIENT_SECRET=${{ secrets.ZOOM_CLIENT_SECRET }}
           EOF
 
-      - name: Build renderer + electron
+      - name: Verify runtime secrets resolved (pre-build)
+        shell: bash
         run: |
-          npm run build
+          echo "Checking which GitHub Actions secrets actually resolved into .env..."
+          echo "(This catches secrets that are missing/blank in repo settings — separate"
+          echo " from whether the file itself makes it into the packaged app.)"
+          byok_missing=0
+          for key in VITE_API_BASE_URL SUPABASE_URL SUPABASE_KEY DEEPGRAM_API_KEY GEMINI_API_KEY GROQ_API_KEY TAVILY_API_KEY; do
+            value=$(grep "^${key}=" .env | cut -d '=' -f2-)
+            if [ -z "$value" ]; then
+              echo "::warning::${key} is EMPTY in the generated .env — the '${key}' secret is missing or blank in repo Settings > Secrets."
+              case "$key" in
+                DEEPGRAM_API_KEY|GEMINI_API_KEY|GROQ_API_KEY|TAVILY_API_KEY) byok_missing=1 ;;
+              esac
+            else
+              echo "${key} = present (${#value} chars)"
+            fi
+          done
+          if [ "$byok_missing" -eq 1 ]; then
+            echo "::warning::One or more BYOK fallback keys (DEEPGRAM/GEMINI/GROQ/TAVILY) are missing — users who haven't set their own key in Settings will have no fallback on this build."
+          fi
+
+      - name: Install posthog-cli
+        run: npm install -g @posthog/cli
+
+      - name: Build renderer + electron
+        env:
+          POSTHOG_CLI_TOKEN: ${{ secrets.POSTHOG_CLI_TOKEN }}
+          POSTHOG_CLI_ENV_ID: ${{ secrets.POSTHOG_CLI_ENV_ID }}
+        run: |
+          npm run build:release
           npm run build:electron
 
       - name: Build native module (Linux x64)
@@ -314,6 +512,8 @@ jobs:
           path: |
             release/*.AppImage
             release/*.deb
+            release/*.blockmap
+            release/latest-linux.yml
           if-no-files-found: error
 
   # ─── Publish: collect all artifacts → create draft GitHub Release ────────────
@@ -321,6 +521,7 @@ jobs:
     name: Publish GitHub Release
     runs-on: ubuntu-latest
     needs: [build-macos, build-windows, build-linux]
+    if: always() && !cancelled() && !contains(needs.*.result, 'failure')
     permissions:
       contents: write
     steps:
@@ -330,15 +531,97 @@ jobs:
         uses: actions/download-artifact@v4
         with:
           path: artifacts/
+          # merge-multiple isn't needed here since artifact names are already
+          # distinct (mac-release/win-release/linux-release); skipped jobs
+          # simply produce no artifact directory, download-artifact tolerates that.
 
       - name: List artifacts
         run: find artifacts/ -type f | sort
+
+      - name: Determine release completeness
+        id: completeness
+        shell: bash
+        run: |
+          # Require both the yml update-metadata file AND at least one binary
+          # for every platform before we let this release go public. A skipped
+          # job just means these globs match nothing, so this catches partial
+          # (single-platform) runs the same way it catches real failures.
+          missing=""
+          [ -f artifacts/mac-release/latest-mac.yml ] || missing="$missing mac:latest-mac.yml"
+          compgen -G "artifacts/mac-release/*.dmg" > /dev/null || missing="$missing mac:dmg"
+          [ -f artifacts/win-release/latest.yml ] || missing="$missing win:latest.yml"
+          compgen -G "artifacts/win-release/*.exe" > /dev/null || missing="$missing win:exe"
+          [ -f artifacts/linux-release/latest-linux.yml ] || missing="$missing linux:latest-linux.yml"
+          compgen -G "artifacts/linux-release/*.AppImage" > /dev/null || missing="$missing linux:AppImage"
+
+          if [ -z "$missing" ]; then
+            echo "All platforms present — release will be published (not draft)."
+            echo "all_present=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "::warning::Missing for full publish:$missing — release will stay as a DRAFT."
+            echo "all_present=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Verify update-metadata filenames match actual binaries
+        # Catches the class of bug that broke v1.0.1's Windows auto-update:
+        # electron-builder writes latest*.yml with the LOCAL artifact
+        # filename, but GitHub Releases silently rewrites spaces in
+        # uploaded asset filenames to dots. If artifactName ever contains a
+        # space (or otherwise drifts from what's actually uploaded), the
+        # updater fetches a URL that 404s. This fails the job instead of
+        # letting a broken update ship.
+        shell: bash
+        run: |
+          set -euo pipefail
+          fail=0
+
+          check_yml() {
+            local yml_path="$1"
+            local artifacts_dir="$2"
+            [ -f "$yml_path" ] || { echo "  (skipping, not present: $yml_path)"; return; }
+
+            echo "── Checking $yml_path against $artifacts_dir ──"
+            # Pull every filename referenced via top-level `path:` and each
+            # `files[].url:` entry. electron-builder's yml is flat/simple
+            # enough that this doesn't need a real YAML parser.
+            local names
+            names=$(grep -E '^\s*(path|url):\s' "$yml_path" | sed -E 's/^\s*(path|url):\s*//; s/\s*$//' | sort -u)
+
+            if [ -z "$names" ]; then
+              echo "::error::No path/url entries found in $yml_path — cannot verify."
+              fail=1
+              return
+            fi
+
+            while IFS= read -r name; do
+              if [ ! -f "$artifacts_dir/$name" ]; then
+                echo "::error::$yml_path references '$name' but no such file exists in $artifacts_dir. Uploaded asset names will not match what the auto-updater requests — this is the exact bug that broke Windows auto-update on v1.0.1."
+                fail=1
+              else
+                echo "  OK: $name"
+              fi
+            done <<< "$names"
+          }
+
+          check_yml "artifacts/mac-release/latest-mac.yml"   "artifacts/mac-release"
+          check_yml "artifacts/win-release/latest.yml"       "artifacts/win-release"
+          check_yml "artifacts/linux-release/latest-linux.yml" "artifacts/linux-release"
+
+          if [ "$fail" -eq 1 ]; then
+            echo "::error::Update-metadata / binary filename mismatch detected — aborting before publish."
+            exit 1
+          fi
+          echo "All update-metadata filenames match their binaries."
 
       - name: Render release notes with actual version
         shell: bash
         run: |
           RAW_TAG="${{ github.ref_name || inputs.tag }}"
-          VERSION="${RAW_TAG#v}"
+          CLEAN_TAG="${RAW_TAG%-mac}"
+          CLEAN_TAG="${CLEAN_TAG%-windows}"
+          CLEAN_TAG="${CLEAN_TAG%-linux}"
+          CLEAN_TAG="${CLEAN_TAG%-all}"
+          VERSION="${CLEAN_TAG#v}"
           sed "s/__VERSION__/${VERSION}/g" .github/RELEASE_TEMPLATE.md > release-notes.md
 
       - name: Create GitHub Release
@@ -347,12 +630,15 @@ jobs:
           tag_name: ${{ github.ref_name || inputs.tag }}
           name: GoDojo AI ${{ github.ref_name || inputs.tag }}
           body_path: release-notes.md
-          draft: true        # set to false to auto-publish on tag push
+          draft: ${{ steps.completeness.outputs.all_present != 'true' }}
           prerelease: false
           generate_release_notes: true
           files: |
             artifacts/mac-release/*
             artifacts/win-release/*
             artifacts/linux-release/*
+          # softprops/action-gh-release silently ignores glob patterns that
+          # match nothing (e.g. artifacts/win-release/* when windows was
+          # skipped) — so this works unmodified for partial asset sets too
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

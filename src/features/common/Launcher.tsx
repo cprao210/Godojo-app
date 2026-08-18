@@ -13,17 +13,18 @@
  */
 
 import React from 'react';
+import { useEffect } from 'react';
 import { AnimatePresence, motion } from 'framer-motion';
 import { IoSparklesSharp } from 'react-icons/io5';
 import { MeetingDetails, MeetingTimeline, NextMeetingDetails, NextMeetingEmptyState, SalesBriefPanel } from '@/features/meetings';
 import { GlobalChatOverlay, FloatingChatButton } from '@/features/chat';
-import { analytics } from '@/lib/analytics/analytics.service';
 import { useLauncher } from '@/hooks';
 import { LauncherHeader, GhostModeToggle, RefreshButton, StartMeetingButton, OllamaPullBadge } from './LauncherWidgets';
 import { CalendarConnectCard, RecentMeetingsHeader, MeetingsList, RefreshToast, TranscriptUploadModal } from './LauncherWidgets';
 import { LauncherProps } from '@/types';
+import { posthogAnalytics } from '@/lib/analytics/posthog.service';
 
-const Launcher: React.FC<LauncherProps> = ({ onStartMeeting, onOpenSettings, onOpenManagerDashboard, onPageChange, ollamaPullStatus = 'idle', ollamaPullPercent = 0, ollamaPullMessage = '', authUser, onSignOut }) => {
+const Launcher: React.FC<LauncherProps> = ({ onStartMeeting, onOpenSettings, onCloseSettings, onOpenManagerDashboard, isManagerDashboardOpen = false, isSettingsOpen = false, onPageChange, ollamaPullStatus = 'idle', ollamaPullPercent = 0, ollamaPullMessage = '', authUser, onSignOut }) => {
 
     const launcherStates = useLauncher({ onStartMeeting, onPageChange, ollamaPullStatus, authUser });
     const { isLight, meetings, deleteMutation, upcomingEvents, isCalendarConnected, setIsCalendarConnected } = launcherStates;
@@ -34,6 +35,10 @@ const Launcher: React.FC<LauncherProps> = ({ onStartMeeting, onOpenSettings, onO
     const { isUploadOpen, setIsUploadOpen, uploadText, setUploadText, uploadTitle, setUploadTitle } = launcherStates;
     const { isUploading, uploadMeetingTypes, setUploadMeetingTypes, uploadError, handleUploadTranscript } = launcherStates;
     const { salesBriefEvent, setSalesBriefEvent, isGlobalChatOpen, setIsGlobalChatOpen, submittedGlobalQuery, setSubmittedGlobalQuery } = launcherStates;
+
+    useEffect(() => {
+        posthogAnalytics.trackPageView('launcher');
+    }, []);
 
     if (!window.electronAPI) {
         return <div className="text-white p-10">Error: Electron API not initialized. Check preload script.</div>;
@@ -58,7 +63,10 @@ const Launcher: React.FC<LauncherProps> = ({ onStartMeeting, onOpenSettings, onO
                 meetings={meetings}
                 onOpenMeeting={handleOpenMeeting}
                 onOpenManagerDashboard={onOpenManagerDashboard}
+                isManagerDashboardOpen={isManagerDashboardOpen}
+                isSettingsOpen={isSettingsOpen}
                 onOpenSettings={onOpenSettings}
+                onCloseSettings={onCloseSettings}
                 authUser={authUser}
                 onSignOut={onSignOut}
             />
@@ -253,7 +261,7 @@ const Launcher: React.FC<LauncherProps> = ({ onStartMeeting, onOpenSettings, onO
                             setIsGlobalChatOpen(false);
                             setSubmittedGlobalQuery('');
                         } else {
-                            analytics.trackCommandExecuted('open_global_chat_fab');
+                            posthogAnalytics.trackGlobalChatOpened();
                             setIsGlobalChatOpen(true);
                         }
                     }}
@@ -272,7 +280,6 @@ const Launcher: React.FC<LauncherProps> = ({ onStartMeeting, onOpenSettings, onO
                     const meeting = meetings.find(m => m.id === meetingId);
                     if (meeting) {
                         handleOpenMeeting(meeting);
-                        analytics.trackCommandExecuted('open_meeting_from_chat_source');
                     }
                 }}
             />

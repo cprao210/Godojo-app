@@ -55,4 +55,15 @@ export class PendingLiveChatStore {
         delete pending[meetingId];
         this.store.set('pending', pending);
     }
+
+    // Lets a global retry loop (see useLauncher.ts) sweep up EVERY meeting
+    // still waiting on a link-meeting call, not just whichever one happens to
+    // be open in MeetingDetails right now. Without this, a meeting whose
+    // details page never gets reopened after the backend finishes syncing it
+    // stays orphaned in `pending` forever — there was previously no way to
+    // even discover that it needed retrying.
+    public getAllPendingMeetingIds(): string[] {
+        return Object.keys(this.store.get('pending'));
+    }
+
 }

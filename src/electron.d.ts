@@ -18,6 +18,7 @@ export interface ElectronAPI {
   onWindowMaximizedChanged: (callback: (isMaximized: boolean) => void) => () => void
   onEnsureExpanded: (callback: () => void) => () => void
   quitApp: () => Promise<void>
+  hardRefresh: () => Promise<{ success: boolean }>
   toggleWindow: () => Promise<void>
   showWindow: (inactive?: boolean) => Promise<void>
   hideWindow: () => Promise<void>
@@ -25,6 +26,7 @@ export interface ElectronAPI {
   hideOverlay: () => Promise<void>
   setWindowMode: (mode: 'launcher' | 'overlay', inactive?: boolean) => Promise<void>
   openExternal: (url: string) => Promise<void>
+  openKnownFolder: (key: 'downloads' | 'applications') => Promise<void>
   getArch: () => Promise<string>
   platform: NodeJS.Platform
 
@@ -33,6 +35,16 @@ export interface ElectronAPI {
   // ===========================================================================
   getScreenshots: () => Promise<Array<{ path: string; preview: string }>>
   deleteScreenshot: (path: string) => Promise<{ success: boolean; error?: string }>
+  logErrorToMain: (payload: {
+    type?: string
+    context?: string
+    message?: string
+    stack?: string
+    componentStack?: string | null
+  }) => Promise<{ success: boolean; error?: string }>
+  confirmDeleteAccount: () => Promise<{ confirmed: boolean }>,
+  resetAppData: () => Promise<{ success: boolean; cancelled?: boolean; error?: string }>
+  wipeLocalAccountData: () => Promise<{ success: boolean; error?: string }>
   onScreenshotTaken: (callback: (data: { path: string; preview: string }) => void) => () => void
   onScreenshotAttached: (callback: (data: { path: string; preview: string }) => void) => () => void
   onCaptureAndProcess: (callback: (data: { path: string; preview: string }) => void) => () => void
@@ -252,6 +264,7 @@ export interface ElectronAPI {
 
   // Live Analysis
   updateLiveAnalysis: (data: LiveAnalysisData) => Promise<{ success: boolean }>
+  setLiveAnalysisInFlight: (inFlight: boolean) => Promise<{ success: boolean }>;
 
   // ===========================================================================
   // Chat (Gemini Streaming)
@@ -268,9 +281,11 @@ export interface ElectronAPI {
   getMeetingActive: () => Promise<boolean>
   onMeetingStateChanged: (callback: (data: { isActive: boolean }) => void) => () => void
   onLiveCallEnded: (callback: (data: { meetingId: string }) => void) => () => void
+  onMeetingCompleted: (callback: () => void) => () => void
   savePendingLiveChatInteractions: (meetingId: string, interactionIds: number[]) => Promise<{ success: boolean; error?: string }>
   getPendingLiveChatInteractions: (meetingId: string) => Promise<number[]>
   clearPendingLiveChatInteractions: (meetingId: string) => Promise<{ success: boolean; error?: string }>
+  getAllPendingLiveChatMeetingIds: () => Promise<string[]>
   getMeetingPaused: () => Promise<boolean>
   pauseMeeting: () => Promise<{ success: boolean; error?: string }>
   resumeMeeting: () => Promise<{ success: boolean; error?: string }>
@@ -278,7 +293,7 @@ export interface ElectronAPI {
   startMeeting: (metadata?: any) => Promise<{ success: boolean; error?: string }>
   endMeeting: (meetingTypes?: ('discovery' | 'demo' | 'negotiation')[], tenantId?: string | null) => Promise<{ success: boolean; meetingId?: string | null; error?: string }>
   finalizeMicSTT: () => Promise<void>
-  getRecentMeetings: () => Promise<Array<{ id: string; title: string; date: string; duration: string; summary: string }>>
+  getRecentMeetings: () => Promise<Array<{ id: string; title: string; date: string; duration: string; summary: string; isProcessed?: boolean }>>
   getMeetingDetails: (id: string) => Promise<any>
   updateMeetingTitle: (id: string, title: string) => Promise<boolean>
   updateMeetingSummary: (id: string, updates: { overview?: string, actionItems?: string[], keyPoints?: string[], actionItemsTitle?: string, keyPointsTitle?: string }) => Promise<boolean>
@@ -397,8 +412,10 @@ export interface ElectronAPI {
   onDownloadProgress: (callback: (progressObj: any) => void) => () => void
   restartAndInstall: () => Promise<void>
   checkForUpdates: () => Promise<void>
+  isAppPackaged: () => Promise<boolean>
   downloadUpdate: () => Promise<void>
   testReleaseFetch: () => Promise<{ success: boolean; error?: string }>
+  getAppVersion: () => Promise<string>
 
   // ===========================================================================
   // Donation

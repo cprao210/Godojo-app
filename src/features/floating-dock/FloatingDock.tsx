@@ -9,11 +9,13 @@
  */
 
 import React from 'react';
+import { useEffect } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
 import { Radio, Brain, Pause, Play, StopCircle, Settings, Ghost } from 'lucide-react';
 import { FloatingSettingsPanel, FloatingChatPanel, FloatingIntelligencePanel, DockButton } from '@/features/floating-dock';
 import { FloatingPanelWrapper, DockDivider, DockDragHandle, PausedIndicatorDot } from '@/features/floating-dock';
 import { useFloatingDock } from '@/hooks';
+import { posthogAnalytics } from '@/lib/analytics/posthog.service';
 import { FloatingDockProps } from '@/types';
 
 export const FloatingDock: React.FC<FloatingDockProps> = ({
@@ -39,7 +41,11 @@ export const FloatingDock: React.FC<FloatingDockProps> = ({
 
     const floatingDockStates = useFloatingDock({ transcriptRef, isMeetingPaused, companyIntel });
 
-    const { activePanel, togglePanel, isFrozen, dockOpacity, handleDockOpacityChange, dockRef } = floatingDockStates;
+    useEffect(() => {
+        posthogAnalytics.trackPageView('floating_dock');
+    }, []);
+
+    const { activePanel, togglePanel, isFrozen, dockOpacity, handleDockOpacityChange, dockRef, ensureFinalAnalysisBeforeEndCall } = floatingDockStates;
     const { panelTopOffset, meetingTypes, setMeetingTypes, analysisData, analysisLoading, analysisError } = floatingDockStates;
     const { runAnalysis, isRefreshRun, chatMessages, setChatMessages, autoRefreshInterval, setAutoRefreshInterval } = floatingDockStates;
     const { intelligencePanelFirstOpenedAt, noAnalysisCaptured, handleInteractionId } = floatingDockStates;
@@ -233,7 +239,10 @@ export const FloatingDock: React.FC<FloatingDockProps> = ({
                             isActive={false}
                             dangerColor
                             frozen={isFrozen}
-                            onClick={() => onEndCall(meetingTypes)}
+                            onClick={async () => {
+                                await ensureFinalAnalysisBeforeEndCall();
+                                onEndCall(meetingTypes);
+                            }}
                         />
 
                         {/* Settings */}

@@ -1,7 +1,7 @@
 import { useEffect, useRef } from "react";
 import { verifySessionIsActive, signOut as fbSignOut } from "../lib/firebase";
-import { analytics } from "../lib/analytics/analytics.service";
 import { TranscriptSegmentInput, MeetingSessionControls } from "@/types";
+import { posthogAnalytics } from "@/lib/analytics/posthog.service";
 
 /**
  * Owns the Electron IPC meeting lifecycle (start/end + window-mode switching)
@@ -23,6 +23,12 @@ export function useMeetingSession(
     const backendMeetingIdRef = useRef<string | null>(null);
     const transcriptSegmentsRef = useRef<TranscriptSegmentInput[]>([]);
 
+    // Guards against a double-click (or a calendar auto-join racing a manual
+    // click) firing two concurrent start-meeting IPC calls. The backend now
+    // also no-ops a duplicate startMeeting() while one is active — this is
+    // the renderer-side half of the same fix.
+    const isStartingRef = useRef(false);
+
     // Buffer transcript turns while a backend meeting session is active.
     useEffect(() => {
         const cleanup = window.electronAPI?.onNativeAudioTranscript?.((t) => {
@@ -39,6 +45,13 @@ export function useMeetingSession(
     }, []);
 
     const handleStartMeeting = async (calendarEvent?: any) => {
+
+        if (isStartingRef.current) {
+            console.warn("[useMeetingSession] startMeeting already in flight — ignoring duplicate call.");
+            return;
+        }
+        isStartingRef.current = true;
+
         try {
             // Always verify the session is live against Firebase servers before
             // starting GoDojo. getIdToken(forceRefresh=true) throws if the account
@@ -79,19 +92,22 @@ export function useMeetingSession(
 
             const result = await window.electronAPI.startMeeting(meetingMetadata);
             if (result.success) {
-                analytics.trackMeetingStarted();
                 await window.electronAPI.setWindowMode("overlay");
             } else {
                 console.error("Failed to start meeting:", result.error);
+                posthogAnalytics.trackMeetingStartFailed(result.error || "unknown");
             }
-        } catch (err) {
+        } catch (err: any) {
             console.error("Failed to start meeting:", err);
+            posthogAnalytics.trackMeetingStartFailed(err?.message || "unknown");
+            posthogAnalytics.trackException(err instanceof Error ? err : new Error(String(err)), "useMeetingSession.handleStartMeeting");
+        } finally {
+            isStartingRef.current = false;
         }
     };
 
     const handleEndMeeting = async (meetingTypes?: ("discovery" | "demo" | "negotiation")[]) => {
         console.log("[useMeetingSession] handleEndMeeting triggered");
-        analytics.trackMeetingEnded();
         setIsProcessingMeeting(true);
 
         // Check profile toaster threshold before firing endMeeting — we don't want
@@ -112,14 +128,18 @@ export function useMeetingSession(
         // receives the onMeetingsUpdated event, instead of only after the full IPC
         // round-trip completes.
         console.log("[useMeetingSession] handleEndMeeting: tenantId at IPC call =", tenantId ?? "(null)");
-        window.electronAPI.endMeeting(meetingTypes, tenantId).catch((err) =>
-            console.error("Failed to end meeting:", err)
-        );
+        window.electronAPI.endMeeting(meetingTypes, tenantId).catch((err) => {
+            console.error("Failed to end meeting:", err);
+            posthogAnalytics.trackMeetingEndFailed(err?.message || String(err));
+            posthogAnalytics.trackException(err instanceof Error ? err : new Error(String(err)), "useMeetingSession.handleEndMeeting");
+        });
 
         try {
             await window.electronAPI.setWindowMode("launcher");
-        } catch (err) {
+        } catch (err: any) {
             console.error("Failed to switch window mode:", err);
+            posthogAnalytics.trackMeetingEndFailed(err?.message || "window_mode_switch_failed");
+            posthogAnalytics.trackException(err instanceof Error ? err : new Error(String(err)), "useMeetingSession.handleEndMeeting.setWindowMode");
         }
     };
 

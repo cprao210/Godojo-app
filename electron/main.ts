@@ -2,6 +2,28 @@ import { app, BrowserWindow, Tray, Menu, nativeImage, ipcMain, shell, systemPref
 import path from "path"
 import fs from "fs"
 import { autoUpdater } from "electron-updater"
+
+// ─── Separate userData directories for dev vs. production ──────────────────
+// Electron's default userData folder name comes from app.getName(), which
+// reads the `name` field in package.json ("godojo-ai") — and that's the
+// SAME package.json electron-builder ships inside the packaged app. So a
+// `npm run dev` session and a real production install both default to the
+// identical folder (e.g. %APPDATA%\godojo-ai on Windows, ~/Library/Application
+// Support/godojo-ai on macOS), which is why new users created in dev were
+// showing up against the production Supabase config, and vice versa:
+// CredentialsManager, SettingsManager, and DatabaseManager all read/write
+// through app.getPath('userData').
+//
+// This MUST run before those modules are imported (they resolve
+// app.getPath('userData') at import/construction time) — hence its
+// placement here, immediately after the electron/path imports and before
+// anything else in this file. Because electron/tsconfig.json targets
+// CommonJS, imports below compile to sequential require() calls in source
+// order, not ES-module hoisting, so this genuinely executes first.
+const userDataDirName = app.isPackaged ? 'godojo-ai' : 'godojo-ai-dev';
+app.setPath('userData', path.join(app.getPath('appData'), userDataDirName));
+console.log(`[Main] userData path: ${app.getPath('userData')} (isPackaged=${app.isPackaged})`);
+
 // Load app-level config (Supabase, Google/Zoom OAuth client credentials, Firebase).
 // In dev this reads the repo-root `.env`. In a packaged build it reads the `.env`
 // shipped via `extraResources` (written by CI from GitHub Actions secrets — see
@@ -16,6 +38,40 @@ const runtimeEnvPath = app.isPackaged
   ? path.join(process.resourcesPath, '.env')
   : path.join(app.getAppPath(), '.env');
 require('dotenv').config({ path: runtimeEnvPath }); // no-ops safely if the file is missing
+
+import { posthogMain } from './services/PostHogMainService';
+// Init as early as possible so it's live before the uncaughtException/
+// unhandledRejection handlers below can fire.
+posthogMain.init();
+
+// One-time, masked diagnostic so a "keys not falling back to env" report can
+// be triaged directly from a shipped build's logs (Console.app on mac,
+// %APPDATA% logs on Windows) AND from PostHog, instead of guessing blind or
+// needing someone to pull local logs off a user's machine. Never logs or
+// sends actual key values — presence/absence + length only.
+{
+  const envFileExists = fs.existsSync(runtimeEnvPath);
+  const mask = (v?: string) => (v ? `present (${v.length} chars)` : 'MISSING');
+  const keyPresent = (v?: string) => !!v && v.trim().length > 0;
+  console.log(
+    `[Main] Runtime .env: path=${runtimeEnvPath} exists=${envFileExists} | ` +
+    `DEEPGRAM_API_KEY=${mask(process.env.DEEPGRAM_API_KEY)} ` +
+    `GEMINI_API_KEY=${mask(process.env.GEMINI_API_KEY)} ` +
+    `GROQ_API_KEY=${mask(process.env.GROQ_API_KEY)} ` +
+    `TAVILY_API_KEY=${mask(process.env.TAVILY_API_KEY)}`
+  );
+  posthogMain.capture('env_fallback_keys_status', {
+    platform: process.platform,
+    appVersion: app.getVersion(),
+    isPackaged: app.isPackaged,
+    envFileExists,
+    deepgramEnvPresent: keyPresent(process.env.DEEPGRAM_API_KEY),
+    geminiEnvPresent: keyPresent(process.env.GEMINI_API_KEY),
+    groqEnvPresent: keyPresent(process.env.GROQ_API_KEY),
+    tavilyEnvPresent: keyPresent(process.env.TAVILY_API_KEY),
+  });
+}
+
 
 // Handle stdout/stderr errors at the process level to prevent EIO crashes
 // This is critical for Electron apps that may have their terminal detached
@@ -80,10 +136,12 @@ app.on('open-url', (event, url) => {
 
 process.on('uncaughtException', (err) => {
   logToFile('[CRITICAL] Uncaught Exception: ' + (err.stack || err.message || err));
+  posthogMain.captureException(err, 'uncaughtException');
 });
 
 process.on('unhandledRejection', (reason, promise) => {
   logToFile('[CRITICAL] Unhandled Rejection at: ' + promise + ' reason: ' + (reason instanceof Error ? reason.stack : reason));
+  posthogMain.captureException(reason, 'unhandledRejection', { promise: String(promise) });
 });
 
 // CQ-04 fix: do NOT call app.getPath() at module load time.
@@ -765,12 +823,20 @@ export class AppState {
       this.broadcast("update-downloaded", info)
     })
 
-    // Start checking for updates with a 10-second delay
+    // Start checking for updates with a 10-second delay.
+    // Gate on app.isPackaged rather than process.env.NODE_ENV: NODE_ENV isn't
+    // guaranteed to be set (or set correctly) in a packaged build, whereas
+    // isPackaged is Electron's own reliable dev-vs-production signal.
     setTimeout(() => {
-      if (process.env.NODE_ENV === "development") {
-        console.log("[AutoUpdater] Development mode: Skipping auto check (use manual button)");
+      if (!app.isPackaged) {
+        console.log("[AutoUpdater] Development build: skipping auto check entirely");
       } else {
         autoUpdater.checkForUpdatesAndNotify().catch(err => {
+          if (this.isNoReleaseAvailableError(err)) {
+            console.log("[AutoUpdater] No published release found on GitHub — treating as up to date");
+            this.broadcast("update-not-available", { version: app.getVersion() });
+            return;
+          }
           console.error("[AutoUpdater] Failed to check for updates:", err);
         });
       }
@@ -876,18 +942,40 @@ export class AppState {
 
   public async checkForUpdates(): Promise<void> {
     console.log('[AutoUpdater] Manual check for updates requested')
+    // Production-only: don't fall back to the manual GitHub API check in dev
+    // either — that previously let "Check for Updates" work locally even
+    // though the feature is meant to be production-only.
+    if (!app.isPackaged) {
+      console.log('[AutoUpdater] Skipping: development build (updates are production-only)')
+      this.broadcast("update-error", "Updates are disabled in development builds")
+      return
+    }
     try {
-      // In development mode, use manual GitHub API check (electron-updater skips in dev)
-      if (process.env.NODE_ENV === "development") {
-        await this.checkForUpdatesManual()
-      } else {
-        await autoUpdater.checkForUpdatesAndNotify()
-      }
+      await autoUpdater.checkForUpdatesAndNotify()
     } catch (err: any) {
       console.error('[AutoUpdater] checkForUpdates failed:', err)
-      const errorMessage = err.message || err.toString() || 'Update check failed'
+      // electron-updater throws (typically a 404 fetching latest.yml) when
+      // GitHub has no published release yet — e.g. right after deleting all
+      // releases, or before the first one is published. That's not a real
+      // failure, it just means there's nothing to update to yet.
+      if (this.isNoReleaseAvailableError(err)) {
+        console.log('[AutoUpdater] No published release found on GitHub — treating as up to date')
+        this.broadcast("update-not-available", { version: app.getVersion() })
+        return
+      }
+      const errorMessage = err.message || err.toString() || 'Download failed'
       this.broadcast("update-error", errorMessage)
     }
+  }
+
+  private isNoReleaseAvailableError(err: any): boolean {
+    const msg = (err?.message || err?.toString() || '').toLowerCase()
+    return (
+      msg.includes('404') ||
+      msg.includes('cannot find latest') ||
+      msg.includes('no published versions') ||
+      msg.includes('not found')
+    )
   }
 
   public downloadUpdate(): void {
@@ -1063,7 +1151,7 @@ export class AppState {
     let stt: STTProvider;
 
     if (sttProvider === 'deepgram') {
-      const apiKey = CredentialsManager.getInstance().getDeepgramApiKey();
+      const apiKey = CredentialsManager.getInstance().getDeepgramApiKey() || process.env.DEEPGRAM_API_KEY;
       if (apiKey) {
         // Diarization only on the client (system-audio) stream: the mic is
         // single-speaker by role, and diarize is a paid streaming add-on.
@@ -1608,6 +1696,20 @@ export class AppState {
   public async startMeeting(metadata?: any): Promise<void> {
     console.log('[Main] Starting Meeting...', metadata);
 
+    // Idempotency guard: a duplicate call (double-click on Start before the UI
+    // switches to overlay mode, a calendar auto-join racing a manual start, an
+    // IPC retry, etc.) must be a no-op. Without this, resetSessionTimer() below
+    // would silently re-anchor sessionStartTime to "now" and zero out
+    // totalPausedMs mid-meeting — the clock and pause history for the meeting
+    // already in progress get wiped, and stopMeeting() later computes a
+    // technically-correct duration/start/pause set from those now-wrong inputs.
+    // This is the root cause of duration/start/end/pause values coming out
+    // wrong at save time despite the math itself being correct.
+    if (this.isMeetingActive) {
+      console.warn('[Main] startMeeting() called while a meeting is already active — ignoring duplicate call.');
+      return;
+    }
+
     if (!(await ensureMacMicrophoneAccess('meeting start'))) {
       const message = 'Microphone access denied. Please allow microphone access in System Settings.';
       this.broadcast('meeting-audio-error', message);
@@ -2144,6 +2246,11 @@ export class AppState {
 
   public getCurrentLiveAnalysis(): LiveAnalysisData | null {
     return this._currentLiveAnalysis;
+  }
+
+  // Renderer calls this at the start/end of every runAnalysis() call.
+  public setLiveAnalysisInFlight(inFlight: boolean): void {
+    this._liveAnalysisInFlight = inFlight;
   }
 
   public setCurrentLiveAnalysis(data: LiveAnalysisData | null): void {
@@ -3256,17 +3363,17 @@ async function initializeApp() {
   //          DatabaseManager is up — wires the outbox table and starts listening
   //          for AuthManager 'signed-in' / 'auth-changed' events.
 
-  // Dev convenience: in unpackaged builds, if SUPABASE_URL / SUPABASE_KEY are present
-  // in the loaded .env AND no credentials have been persisted yet, hydrate them once
-  // so the SQL DDL / mirror flow works without manually calling supabaseSetCredentials
-  // from DevTools on every fresh machine. No-op in production builds.
+  // Dev convenience: in unpackaged builds, always sync SUPABASE_URL / SUPABASE_KEY
+  // from the currently-loaded .env into credentials.enc. ... always overwriting
+  // from .env when present makes the currently-active .env the single source of
+  // truth in dev builds.
   try {
     if (!app.isPackaged && process.env.SUPABASE_URL && process.env.SUPABASE_KEY) {
       const cm = CredentialsManager.getInstance();
       const existing = cm.getSupabaseCredentials?.();
-      if (!existing?.url || !existing?.anonKey) {
+      if (existing?.url !== process.env.SUPABASE_URL || existing?.anonKey !== process.env.SUPABASE_KEY) {
         cm.setSupabaseCredentials(process.env.SUPABASE_URL, process.env.SUPABASE_KEY);
-        console.log('[Main] Supabase credentials hydrated from .env (dev only)');
+        console.log('[Main] Supabase credentials synced from .env (dev only)');
       }
     }
   } catch (e) {
@@ -3452,6 +3559,27 @@ async function initializeApp() {
 
   // Note: We do NOT force dock show here anymore, respecting stealth mode.
 
+  // Renderer crashes (OOM kill, GPU crash, sandbox violation, etc.) never
+  // reach window.onerror in the crashed renderer — the process is gone
+  // before it could report anything. This is the only place these surface.
+  app.on('render-process-gone', (_event, webContents, details) => {
+    console.error('[Main] Renderer process gone:', details.reason, webContents.getURL());
+    posthogMain.captureException(
+      new Error(`Renderer process gone: ${details.reason}`),
+      'render-process-gone',
+      { reason: details.reason, exitCode: details.exitCode, url: webContents.getURL() }
+    );
+  });
+
+  app.on('child-process-gone', (_event, details) => {
+    console.error('[Main] Child process gone:', details.type, details.reason);
+    posthogMain.captureException(
+      new Error(`Child process gone: ${details.type} — ${details.reason}`),
+      'child-process-gone',
+      { type: details.type, reason: details.reason, exitCode: details.exitCode }
+    );
+  });
+
   app.on("activate", () => {
     console.log("App activated")
     if (process.platform === 'darwin') {
@@ -3493,6 +3621,10 @@ async function initializeApp() {
 
     // Kill Ollama if we started it
     OllamaManager.getInstance().stop();
+
+    // Flush any buffered error-tracking events (fire-and-forget — we don't
+    // want to delay quit waiting on this)
+    posthogMain.shutdown();
 
     try {
       const { CredentialsManager } = require('./services/CredentialsManager');

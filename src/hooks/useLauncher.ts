@@ -8,12 +8,12 @@
 
 import React, { useEffect, useState } from 'react';
 import { useMutation, useQuery, useQueryClient } from 'react-query';
-import { analytics } from '@/lib/analytics/analytics.service';
 import { useShortcuts, useResolvedTheme } from '@/hooks';
 import { loadUserProfile } from '@/features/settings';
-import { meetingsApi } from '@/api';
+import { chatApi, meetingsApi } from '@/api';
 import { ApiError } from '@/lib/apiClient';
 import { LauncherProps, Meeting, UpcomingMeeting } from '@/types';
+import { posthogAnalytics } from '@/lib/analytics/posthog.service';
 
 const MINUTE = 60 * 1000;
 const HOUR = 60 * MINUTE;
@@ -77,6 +77,13 @@ export const UPLOAD_MEETING_TYPE_OPTIONS = [
     { value: 'negotiation' as const, label: 'Negotiation', activeColor: '#fbbf24', activeBg: 'rgba(251,191,36,0.10)', activeBorder: 'rgba(251,191,36,0.30)' },
 ];
 
+// How often to poll /meetings while a meeting is still "Processing...".
+const PROCESSING_POLL_INTERVAL_MS = 3000;
+// Stop fast-polling for a meeting that's been stuck "Processing..." longer
+// than this — it's almost certainly a sync failure rather than something
+// about to finish, so keeping the 3s poller alive forever isn't useful.
+const PROCESSING_POLL_TIMEOUT_MS = 5 * 60 * 1000;
+
 export function useLauncher({ onStartMeeting, ollamaPullStatus = 'idle', onPageChange, authUser }: Pick<LauncherProps, 'onStartMeeting' | 'onPageChange' | 'authUser'> & { ollamaPullStatus?: LauncherProps['ollamaPullStatus'] }) {
 
     const queryClient = useQueryClient();
@@ -84,12 +91,91 @@ export function useLauncher({ onStartMeeting, ollamaPullStatus = 'idle', onPageC
     // ─── Meetings list + delete mutation ────────────────────────────────────
     const { data: meetings = [] } = useQuery<Meeting[]>(['meetings'], meetingsApi.list, {
         // Poll only while a meeting is still processing (replaces the manual setInterval).
-        refetchInterval: (data) =>
-            (data ?? []).some(m => m.isProcessed === false || m.title === 'Processing...') ? 3000 : false,
+        staleTime: 10_000,
+        refetchInterval: (data) => {
+            const stillProcessing = (data ?? []).filter(
+                (m) => m.isProcessed === false || m.title === 'Processing...',
+            );
+            if (stillProcessing.length === 0) return false;
+
+            const worthPolling = stillProcessing.some((m) => {
+                const startedAt = new Date(m.date).getTime();
+                return Number.isNaN(startedAt) || Date.now() - startedAt < PROCESSING_POLL_TIMEOUT_MS;
+            });
+            return worthPolling ? PROCESSING_POLL_INTERVAL_MS : false;
+        },
     });
 
+    // ─── Global retry: link orphaned live-chat interactions ────────────────
+    // useMeetingDetails.ts links a meeting's pending "Ask Dojo" interaction
+    // ids the moment its details page happens to be open AND the backend has
+    // synced that meeting. That's a fine fast path, but it only runs for
+    // whichever meeting you happen to have open — a meeting whose details
+    // page never gets reopened after the backend catches up stays orphaned
+    // in PendingLiveChatStore forever, with no other path to link it. This
+    // sweeps every meeting with pending interactions, not just the open one,
+    // so a meeting's Ask Dojo history isn't dependent on you happening to
+    // revisit that specific meeting at the right moment.
+    useEffect(() => {
+        let cancelled = false;
+
+        const retryPendingLinks = async () => {
+            const pendingIds = await window.electronAPI?.getAllPendingLiveChatMeetingIds?.();
+            if (!pendingIds || pendingIds.length === 0 || cancelled) return;
+
+            for (const meetingId of pendingIds) {
+                if (cancelled) return;
+                try {
+                    // meetingsApi.get() succeeding is itself proof the backend
+                    // has this meeting row — same precondition useMeetingDetails.ts
+                    // relies on, just checked here instead of via a mounted page.
+                    await meetingsApi.get(meetingId);
+                    const interactionIds = await window.electronAPI?.getPendingLiveChatInteractions?.(meetingId);
+
+                    if (!interactionIds || interactionIds.length === 0) {
+                        await window.electronAPI?.clearPendingLiveChatInteractions?.(meetingId);
+                        continue;
+                    }
+                    await chatApi.linkMeetingInteractions(meetingId, interactionIds);
+                    await window.electronAPI?.clearPendingLiveChatInteractions?.(meetingId);
+                } catch (err) {
+                    // Backend likely hasn't synced this meeting yet (404) or is
+                    // briefly unreachable — leave it pending, next poll retries.
+                    if (err instanceof ApiError && err.status === 404) {
+                        // The meeting no longer exists (deleted, or never
+                        // will sync) — not "hasn't synced yet". Clear it so
+                        // this loop stops hammering /meetings/{id} for a
+                        // dead id every 15s forever.
+                        console.warn('[useLauncher] retry: meeting no longer exists, giving up on pending interactions for', meetingId);
+                        await window.electronAPI?.clearPendingLiveChatInteractions?.(meetingId);
+                        continue;
+                    }
+                    // Backend is briefly unreachable, or hasn't synced this
+                    // meeting yet for a reason other than deletion — leave it
+                    // pending, next poll retries.
+                }
+            }
+        };
+
+        retryPendingLinks();
+        const interval = setInterval(retryPendingLinks, 15000);
+        return () => { cancelled = true; clearInterval(interval); };
+    }, []);
+
     const deleteMutation = useMutation<void, unknown, string, { prev?: Meeting[] }>(
-        (id) => meetingsApi.remove(id),
+        (id) => {
+            // 'live-meeting-current' is a local-only transient row (RAGManager
+            // inserts it to satisfy a FK constraint while a call is in progress —
+            // see DatabaseManager.getRecentMeetings) and never has a backend
+            // counterpart. It's normally filtered out of the list entirely, but
+            // as a defensive fallback (e.g. a stale cached row), skip the HTTP
+            // call and just clean it up locally instead of hitting a DELETE
+            // route that doesn't exist on the backend.
+            if (id === 'live-meeting-current') {
+                return Promise.resolve();
+            }
+            return meetingsApi.remove(id);
+        },
         {
             onMutate: async (id) => {
                 await queryClient.cancelQueries(['meetings']);
@@ -135,6 +221,9 @@ export function useLauncher({ onStartMeeting, ollamaPullStatus = 'idle', onPageC
     // re-firing chunk() on every subsequent poll tick once a meeting is done.
     const chunkedMeetingIdsRef = React.useRef<Set<string>>(new Set());
     const hasSeededChunkedRef = React.useRef(false);
+    // Dedupes trackCalendarEventsFetched() across fetchEvents()'s 60s poll —
+    // see fetchEvents below.
+    const lastTrackedEventsSignatureRef = React.useRef<string>('');
 
     // Fire /meetings/:id/chunking exactly once, the moment a meeting's
     // transcript + summary processing actually finishes (isProcessed: true).
@@ -180,13 +269,27 @@ export function useLauncher({ onStartMeeting, ollamaPullStatus = 'idle', onPageC
 
     const fetchEvents = () => {
         if (window.electronAPI && window.electronAPI.getUpcomingEvents) {
-            window.electronAPI.getUpcomingEvents().then(setUpcomingEvents).catch(err => console.error('Failed to fetch events:', err));
+            window.electronAPI.getUpcomingEvents()
+                .then((events) => {
+                    setUpcomingEvents(events);
+                    // Only fire when the set of events actually changed — fetchEvents
+                    // polls every 60s (see the interval below), and re-sending the
+                    // same unchanged events on every tick would just spam PostHog.
+                    const signature = (events ?? []).map((e: any) => e?.id).join(',');
+                    if (signature !== lastTrackedEventsSignatureRef.current) {
+                        lastTrackedEventsSignatureRef.current = signature;
+                        if (events && events.length > 0) {
+                            posthogAnalytics.trackCalendarEventsFetched(events);
+                        }
+                    }
+                })
+                .catch(err => console.error('Failed to fetch events:', err));
         }
     };
 
     const handleRefresh = async () => {
+        posthogAnalytics.trackLauncherRefresh();
         setIsRefreshing(true);
-        analytics.trackCommandExecuted('refresh_calendar');
         try {
             if (window.electronAPI && window.electronAPI.calendarRefresh) {
                 setShowNotification(true);
@@ -295,6 +398,30 @@ export function useLauncher({ onStartMeeting, ollamaPullStatus = 'idle', onPageC
             });
         }
 
+        // Patch the placeholder with its real, locally-resolvable id as soon as
+        // main.ts knows it — well before onMeetingsUpdated (background summary
+        // processing finishing) would otherwise be the first time we learn it.
+        let removeLiveCallEndedListener: (() => void) | undefined;
+        if (window.electronAPI?.onLiveCallEnded) {
+            removeLiveCallEndedListener = window.electronAPI.onLiveCallEnded(({ meetingId }) => {
+                if (!meetingId) return;
+                let placeholderId: string | null = null;
+                queryClient.setQueryData<Meeting[]>(['meetings'], (prev = []) => {
+                    const idx = prev.findIndex(m => m.title === 'Processing...' && m.isProcessed === false);
+                    if (idx === -1) return prev;
+                    placeholderId = prev[idx].id;
+                    const next = [...prev];
+                    next[idx] = { ...next[idx], id: meetingId };
+                    return next;
+                });
+                // selectedMeeting is a one-time snapshot, not cache-subscribed —
+                // patch it too or an already-open details view stays wedged.
+                if (placeholderId) {
+                    setSelectedMeeting(prev => (prev && prev.id === placeholderId ? { ...prev, id: meetingId } : prev));
+                }
+            });
+        }
+
         // Listen for background updates (e.g. after meeting processing finishes)
         const removeMeetingsListener = window.electronAPI.onMeetingsUpdated(() => {
             console.log('Received meetings-updated event');
@@ -309,6 +436,7 @@ export function useLauncher({ onStartMeeting, ollamaPullStatus = 'idle', onPageC
             if (removeMeetingsListener) removeMeetingsListener();
             if (removeUndetectableListener) removeUndetectableListener();
             if (removeMeetingStateListener) removeMeetingStateListener();
+            if (removeLiveCallEndedListener) removeLiveCallEndedListener();
             clearInterval(interval);
         };
         // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -373,8 +501,15 @@ export function useLauncher({ onStartMeeting, ollamaPullStatus = 'idle', onPageC
     const toggleDetectable = () => {
         const newState = !isDetectable;
         setIsDetectable(newState);
+        // isDetectable=true means visible/on-screen (ghost mode OFF);
+        // isDetectable=false means hidden from capture (ghost mode ON) —
+        // matches the inverted setUndetectable(!newState) call right below.
+        if (newState) {
+            posthogAnalytics.trackGhostModeOff();
+        } else {
+            posthogAnalytics.trackGhostModeOn();
+        }
         window.electronAPI?.setUndetectable(!newState); // Note: setUndetectable takes the *undetectable* state, which is inverse of *detectable*
-        analytics.trackModeSelected(newState ? 'launcher' : 'undetectable'); // If visible (detectable), mode is normal/launcher. If not detectable, mode is undetectable.
     };
 
     // ─── Meeting row navigation (back/forward + open) ───────────────────────
@@ -510,7 +645,7 @@ export function useLauncher({ onStartMeeting, ollamaPullStatus = 'idle', onPageC
             setIsGlobalChatOpen(prev => {
                 const next = !prev;
                 if (next) {
-                    analytics.trackCommandExecuted('open_global_chat_shortcut');
+                    posthogAnalytics.trackGlobalChatOpened();
                 } else {
                     setSubmittedGlobalQuery('');
                 }
@@ -524,10 +659,10 @@ export function useLauncher({ onStartMeeting, ollamaPullStatus = 'idle', onPageC
 
     const handleOpenMeeting = (meeting: Meeting) => {
         setForwardMeeting(null); // Clear forward history on new navigation
-        analytics.trackCommandExecuted('open_meeting_details');
         // Full detail (transcript + usage) loads in MeetingDetails via React Query
         // (meetingsApi.get → GET /meetings/{id}); the list row seeds it as initialData.
         setSelectedMeeting(meeting);
+        posthogAnalytics.trackMeetingDetailsView();
     };
 
     const handleBack = () => {
@@ -571,10 +706,8 @@ export function useLauncher({ onStartMeeting, ollamaPullStatus = 'idle', onPageC
         onStartMeetingClick: () => {
             if (isMeetingActive) {
                 window.electronAPI?.setWindowMode?.('overlay', true);
-                analytics.trackCommandExecuted('resume_meeting_from_launcher');
             } else {
                 onStartMeeting(nextMeeting);
-                analytics.trackCommandExecuted('start_natively_cta');
             }
         },
         showNotification,

@@ -4,6 +4,41 @@ export function cn(...classes: (string | undefined)[]) {
   return classes.filter(Boolean).join(" ")
 }
 
+/**
+ * Classifies a raw LLM-provider error string (thrown from
+ * LLMHelper.generateMeetingSummary, surfaced via the regenerate-summary IPC
+ * call) into a short machine-readable reason for PostHog and a human-readable
+ * message for the UI. Provider error text varies (Gemini's SDK throws things
+ * like "429 RESOURCE_EXHAUSTED...", Groq's throws "rate_limit_exceeded" /
+ * "on tokens per minute (TPM)..."), so this matches on substrings rather than
+ * a fixed error shape.
+ */
+export function classifyLLMError(rawError: string | undefined | null): { reason: string; message: string } {
+  const text = (rawError ?? '').toLowerCase();
+
+  const isGemini = text.includes('gemini') || text.includes('resource_exhausted') || text.includes('generativelanguage');
+  const isGroq = text.includes('groq');
+  const isRateLimited = text.includes('429') || text.includes('rate_limit') || text.includes('rate limit')
+    || text.includes('quota') || text.includes('resource_exhausted') || text.includes('exceeded');
+
+  if (isGemini && isRateLimited) {
+    return { reason: 'gemini_key_exhausted', message: 'The Gemini API key has hit its usage limit. Try again later, or check your API key/billing in Settings.' };
+  }
+  if (isGroq && isRateLimited) {
+    return { reason: 'groq_rate_limited', message: 'The Groq rate limit was exceeded. Please wait a moment and try again.' };
+  }
+  if (isRateLimited) {
+    return { reason: 'provider_rate_limited', message: 'The AI provider\u2019s usage limit was reached. Please wait a moment and try again.' };
+  }
+  if (text.includes('timeout') || text.includes('timed out')) {
+    return { reason: 'provider_timeout', message: 'The request timed out while regenerating the summary. Please try again.' };
+  }
+  if (!text) {
+    return { reason: 'unknown', message: 'Something went wrong while regenerating the summary. Please try again.' };
+  }
+  return { reason: 'provider_error', message: 'Failed to regenerate the summary — the AI provider returned an error. Please try again.' };
+}
+
 export const SCORECARD_CONFIGS: ScorecardConfig[] = [
   {
     meetingType: 'discovery',

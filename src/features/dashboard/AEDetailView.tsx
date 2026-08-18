@@ -17,14 +17,16 @@
  */
 
 import React from 'react';
+import { useEffect } from 'react';
 import { AnimatePresence, motion } from 'framer-motion';
 import { ArrowLeft, Info } from 'lucide-react';
 import { useResolvedTheme } from '@/hooks';
 import { useAeDetail } from '@/hooks/useAeDetail';
+import { posthogAnalytics } from '@/lib/analytics/posthog.service';
 import { MeetingDetails } from '@/features/meetings';
 import { AeDetailViewProps } from '@/types';
 import { avatarColorFor, initialsFor, AVATAR_PALETTE } from './shared';
-import { DimensionGaugeSkeleton, RecentCallsSkeleton, DimensionGauge, StrengthsAndGapsList, RecentCallsList } from './AeDetailWidgets';
+import { DimensionGaugeSkeleton, RecentCallsSkeleton, StrengthsAndGapsSkeleton, DimensionGauge, StrengthsAndGapsList, RecentCallsList } from './AeDetailWidgets';
 
 // ─── Main export ─────────────────────────────────────────────────────────────
 
@@ -32,6 +34,12 @@ export const AeDetailView: React.FC<AeDetailViewProps> = ({ ae, tenantId, onBack
 
     const isLight = useResolvedTheme() === 'light';
     const isOpen = ae !== null;
+
+    useEffect(() => {
+        if (isOpen) posthogAnalytics.trackAeProfileView();
+        if (isOpen) posthogAnalytics.trackPageView('ae_profile');
+        // eslint-disable-next-line react-hooks/exhaustive-deps
+    }, [ae?.userId]);
 
     const AeDetailsStates = useAeDetail({ ae, tenantId });
 
@@ -49,21 +57,33 @@ export const AeDetailView: React.FC<AeDetailViewProps> = ({ ae, tenantId, onBack
                     animate={{ opacity: 1 }}
                     exit={{ opacity: 0 }}
                     transition={{ duration: 0.2 }}
-                    className={`fixed inset-0 z-[60] mt-5 overflow-y-auto ${isLight ? 'bg-[#F8FAFC]' : 'bg-bg-main'}`}
+                    className={`fixed inset-0 z-[60] mt-5 flex flex-col overflow-hidden ${isLight ? 'bg-[#F8FAFC]' : 'bg-bg-main'}`}
                 >
-                    <div className="max-w-6xl mx-auto px-10 py-8">
-                        {/* Back link */}
-                        <button
-                            onClick={selectedMeeting ? () => setSelectedMeeting(null) : onBack}
-                            className="inline-flex items-center gap-1.5 text-sm font-semibold text-blue-400 hover:text-blue-300 transition-colors mb-4"
-                        >
-                            <ArrowLeft size={15} /> {selectedMeeting ? 'Back to AE overview' : 'Back to team'}
-                        </button>
+                    {selectedMeeting ? (
+                        // Meeting detail owns its own fixed-height layout + internal scroll
+                        // (mirrors how Launcher.tsx hosts MeetingDetails) so its chat
+                        // overlay stays sticky instead of resizing with page content.
+                        <div className="flex-1 flex flex-col overflow-hidden min-h-0">
+                            <button
+                                onClick={() => setSelectedMeeting(null)}
+                                className="inline-flex items-center gap-1.5 text-sm font-semibold text-blue-400 hover:text-blue-300 transition-colors mx-10 mt-8 mb-4 shrink-0"
+                            >
+                                <ArrowLeft size={15} /> Back to AE overview
+                            </button>
+                            <div className="flex-1 overflow-hidden min-h-0">
+                                <MeetingDetails meeting={selectedMeeting} viewContext="ae_review" />
+                            </div>
+                        </div>
+                    ) : (
+                        <div className="flex-1 overflow-y-auto">
+                            <div className="max-w-6xl mx-auto px-10 py-8">
+                                <button
+                                    onClick={onBack}
+                                    className="inline-flex items-center gap-1.5 text-sm font-semibold text-blue-400 hover:text-blue-300 transition-colors mb-4"
+                                >
+                                    <ArrowLeft size={15} /> Back to team
+                                </button>
 
-                        {selectedMeeting ? (
-                            <MeetingDetails meeting={selectedMeeting} />
-                        ) : (
-                            <>
                                 {detailError && (
                                     <div className={`rounded-2xl border px-6 py-4 mb-4 ${cardCls}`}>
                                         <p className="text-sm font-semibold text-red-400">{detailError}</p>
@@ -128,7 +148,7 @@ export const AeDetailView: React.FC<AeDetailViewProps> = ({ ae, tenantId, onBack
                                             What {displayName.split(' ')[0] || 'this rep'} does well and where they can improve
                                         </p>
                                         {isLoadingDetail ? (
-                                            <RecentCallsSkeleton isLight={isLight} />
+                                            <StrengthsAndGapsSkeleton isLight={isLight} />
                                         ) : (
                                             <StrengthsAndGapsList items={strengthsAndGaps} isLight={isLight} />
                                         )}
@@ -140,7 +160,7 @@ export const AeDetailView: React.FC<AeDetailViewProps> = ({ ae, tenantId, onBack
                                     <h3 className="text-sm font-bold text-text-primary mb-1">Recent calls</h3>
                                     <p className="text-xs text-text-tertiary mb-2">Click to open the post-call analysis</p>
                                     {isLoadingDetail ? (
-                                        <p className="text-sm text-text-tertiary py-6 text-center">Loading…</p>
+                                        <RecentCallsSkeleton isLight={isLight} />
                                     ) : (
                                         <RecentCallsList
                                             calls={recentCalls}
@@ -149,8 +169,9 @@ export const AeDetailView: React.FC<AeDetailViewProps> = ({ ae, tenantId, onBack
                                         />
                                     )}
                                 </div>
-                            </>)}
-                    </div>
+                            </div>
+                        </div>
+                    )}
                 </motion.div>
             )}
         </AnimatePresence>

@@ -4,6 +4,7 @@
 
 import { useState } from "react";
 import { CustomCategoryConfig, CustomScorecardConfig } from "@/types";
+import { posthogAnalytics } from "@/lib/analytics/posthog.service";
 
 interface UseMeetingTypeSectionArgs {
     config: CustomScorecardConfig;
@@ -32,6 +33,9 @@ export function useMeetingTypeSection({ config, onChange }: UseMeetingTypeSectio
     const handleCatSave = (cat: CustomCategoryConfig) => {
         if (isAddMode) {
             onChange({ ...config, categories: [...config.categories, cat] });
+            if (config.meetingType === 'discovery') posthogAnalytics.trackScoringCriteriaDisco();
+            else if (config.meetingType === 'demo') posthogAnalytics.trackScoringCriteriaDemo();
+            else if (config.meetingType === 'negotiation') posthogAnalytics.trackScoringCriteriaNego();
         } else {
             onChange({ ...config, categories: config.categories.map((c) => (c.key === cat.key ? cat : c)) });
         }

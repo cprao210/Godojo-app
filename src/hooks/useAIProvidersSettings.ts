@@ -8,6 +8,7 @@ import { useCallback, useEffect, useMemo, useState } from "react";
 import { STANDARD_CLOUD_MODELS, prettifyModelId } from "@/../utils/modelUtils";
 import { validateCurl } from "@/lib/curl-validator";
 import { AIProviderCustomProvider } from "@/types";
+import { settingsToast } from "@/lib/settingsToastBus";
 
 export type StandardProviderId = "gemini" | "groq" | "openai" | "claude";
 export type OllamaStatus = "checking" | "detected" | "not-found" | "fixing";
@@ -107,9 +108,13 @@ function useStandardProviders() {
                 setHasStoredKey((prev) => ({ ...prev, [provider]: true }));
                 setApiKeyValue(provider, "");
                 setTimeout(() => setSavedStatus((prev) => ({ ...prev, [provider]: false })), 2000);
+
+            } else {
+                settingsToast.error((result as any)?.error ?? `Failed to save ${provider} key.`);
             }
-        } catch (e) {
+        } catch (e: any) {
             console.error(`Failed to save ${provider} key:`, e);
+            settingsToast.error(e?.message ?? `Failed to save ${provider} key.`);
         } finally {
             setSavingStatus((prev) => ({ ...prev, [provider]: false }));
         }
@@ -239,11 +244,14 @@ function useCustomProviders() {
             if (result.success) {
                 await loadCustomProviders();
                 setIsEditingCustom(false);
+                settingsToast.success('Saved Successfully');
             } else {
                 setCurlError(result.error ?? null);
+                settingsToast.error(result.error ?? 'Failed to save provider.');
             }
         } catch (e: any) {
             setCurlError(e.message);
+            settingsToast.error(e.message ?? 'Failed to save provider.');
         }
     }, [customName, customCurl, customResponsePath, editingProvider, loadCustomProviders]);
 

@@ -25,7 +25,7 @@ const mockedApiFetch = vi.mocked(apiFetch);
 // response is retried this many times before the stream gives up and calls
 // onError). Kept in sync manually; if chatApi.ts's retry count changes,
 // update this too.
-const MAX_STREAM_RETRIES = 2;
+const MAX_STREAM_RETRIES = 3;
 
 /** Builds a fetch-compatible Response whose body streams the given SSE frames,
  * each already formatted as `event: ...\ndata: ...`. Frames are joined with a
@@ -106,11 +106,11 @@ describe('chatApi.queryGlobal', () => {
         mockedGetAuthHeaders.mockClear();
     });
 
-    it('POSTs to the global RAG query route with auth headers and the query body', async () => {
+    it('POSTs to the global RAG query route with auth headers, session_id, and history', async () => {
         fetchMock.mockResolvedValueOnce(sseResponse(['event: done\ndata: {}']));
         const { handlers, settled } = collectHandlers();
 
-        chatApi.queryGlobal('what changed last quarter?', handlers);
+        chatApi.queryGlobal('what changed last quarter?', null, [], handlers);
         await settled;
 
         expect(fetchMock).toHaveBeenCalledTimes(1);
@@ -118,7 +118,26 @@ describe('chatApi.queryGlobal', () => {
         expect(url).toBe('http://test-api/api/v1/chat/rag/query/global');
         expect(init.method).toBe('POST');
         expect(init.headers).toMatchObject({ Authorization: 'Bearer test-token' });
-        expect(JSON.parse(init.body)).toEqual({ query: 'what changed last quarter?' });
+        expect(JSON.parse(init.body)).toEqual({
+            query: 'what changed last quarter?',
+            session_id: null,
+            history: [],
+        });
+    });
+
+    it('sends the stored session_id and omits history on a resumed chat', async () => {
+        fetchMock.mockResolvedValueOnce(sseResponse(['event: done\ndata: {}']));
+        const { handlers, settled } = collectHandlers();
+
+        chatApi.queryGlobal('follow-up question', 'session-abc', [], handlers);
+        await settled;
+
+        const [, init] = fetchMock.mock.calls[0];
+        expect(JSON.parse(init.body)).toEqual({
+            query: 'follow-up question',
+            session_id: 'session-abc',
+            history: [],
+        });
     });
 
     it('dispatches token, status, source_ids, and rag_answer frames to the matching handlers', async () => {
@@ -134,7 +153,7 @@ describe('chatApi.queryGlobal', () => {
         );
         const result = collectHandlers();
 
-        chatApi.queryGlobal('hi', result.handlers);
+        chatApi.queryGlobal('hi', null, [], result.handlers);
         await result.settled;
 
         expect(result.statuses).toEqual(['searching']);
@@ -145,6 +164,26 @@ describe('chatApi.queryGlobal', () => {
         });
         expect(result.ragAnswer).toEqual({ answer: 'Hello there' });
         expect(result.done).toBe(true);
+    });
+
+    it('dispatches session_created and title_updated frames to the matching handlers', async () => {
+        fetchMock.mockResolvedValueOnce(
+            sseResponse([
+                'event: session_created\ndata: {"session_id":"new-session-id"}',
+                'event: token\ndata: {"chunk":"Hi"}',
+                'event: title_updated\ndata: {"title":"Pricing Follow-up"}',
+                'event: done\ndata: {}',
+            ]),
+        );
+        const result = collectHandlers();
+        const onSessionCreated = vi.fn();
+        const onTitleUpdated = vi.fn();
+
+        chatApi.queryGlobal('hi', null, [], { ...result.handlers, onSessionCreated, onTitleUpdated });
+        await result.settled;
+
+        expect(onSessionCreated).toHaveBeenCalledWith('new-session-id');
+        expect(onTitleUpdated).toHaveBeenCalledWith('Pricing Follow-up');
     });
 
     it('calls onError with the backend error envelope message on a non-ok response', async () => {
@@ -163,7 +202,7 @@ describe('chatApi.queryGlobal', () => {
         );
         const result = collectHandlers();
 
-        chatApi.queryGlobal('hi', result.handlers);
+        chatApi.queryGlobal('hi', null, [], result.handlers);
         await result.settled;
 
         expect(result.error).toBe('Something broke');
@@ -174,7 +213,7 @@ describe('chatApi.queryGlobal', () => {
         fetchMock.mockRejectedValue(new TypeError('Failed to fetch'));
         const result = collectHandlers();
 
-        chatApi.queryGlobal('hi', result.handlers);
+        chatApi.queryGlobal('hi', null, [], result.handlers);
         await result.settled;
 
         expect(result.error).toBe("Couldn't get a response. Please try again.");
@@ -195,7 +234,7 @@ describe('chatApi.queryGlobal', () => {
         const { handlers } = collectHandlers();
         const onError = vi.fn();
 
-        const handle = chatApi.queryGlobal('hi', { ...handlers, onError });
+        const handle = chatApi.queryGlobal('hi', null, [], { ...handlers, onError });
         handle.abort();
 
         // Give the rejected promise's catch block a tick to run.
@@ -212,16 +251,20 @@ describe('chatApi.queryMeeting', () => {
         vi.stubGlobal('fetch', fetchMock);
     });
 
-    it('POSTs to the per-meeting RAG route with the meeting id in the path', async () => {
+    it('POSTs to the per-meeting RAG route with the meeting id in the path, session_id, and history', async () => {
         fetchMock.mockResolvedValueOnce(sseResponse(['event: done\ndata: {}']));
         const { handlers, settled } = collectHandlers();
 
-        chatApi.queryMeeting('m1', 'what was decided?', handlers);
+        chatApi.queryMeeting('m1', 'what was decided?', null, [], handlers);
         await settled;
 
         const [url, init] = fetchMock.mock.calls[0];
         expect(url).toBe('http://test-api/api/v1/chat/rag/query/meeting/m1');
-        expect(JSON.parse(init.body)).toEqual({ query: 'what was decided?' });
+        expect(JSON.parse(init.body)).toEqual({
+            query: 'what was decided?',
+            session_id: null,
+            history: [],
+        });
     });
 });
 
@@ -273,4 +316,53 @@ describe('chatApi.linkMeetingInteractions', () => {
         expect(init.method).toBe('POST');
         expect(JSON.parse(init.body as string)).toEqual({ interaction_ids: [423, 434], meeting_id: 'meeting-123' });
     });
+});
+
+describe('chatApi.createSession / listSessions / getSessionMessages', () => {
+    beforeEach(() => mockedApiFetch.mockClear());
+
+    it('POSTs to /chat/sessions to pre-create a session', async () => {
+        mockedApiFetch.mockResolvedValueOnce({ session_id: 'new-id', title: 'New Chat' } as any);
+
+        const session = await chatApi.createSession();
+
+        expect(mockedApiFetch.mock.calls[0][0]).toBe('/chat/sessions');
+        expect((mockedApiFetch.mock.calls[0][1] as RequestInit).method).toBe('POST');
+        expect(session).toEqual({ session_id: 'new-id', title: 'New Chat' });
+    });
+
+    it('GETs /chat/sessions and unwraps the sessions array', async () => {
+        const sessions = [
+            { id: 's1', title: 'Lisa Pricing Discussion', created_at: '2026-08-13T10:30:00Z', updated_at: '2026-08-13T10:35:00Z' },
+        ];
+        mockedApiFetch.mockResolvedValueOnce({ sessions } as any);
+
+        const result = await chatApi.listSessions();
+
+        expect(mockedApiFetch.mock.calls[0][0]).toBe('/chat/sessions');
+        expect(result).toEqual(sessions);
+    });
+
+    it('GETs /chat/sessions/{id}/messages and unwraps the messages array', async () => {
+        const messages = [
+            { role: 'user', content: 'What did Lisa say about pricing?' },
+            { role: 'assistant', content: 'Lisa mentioned the budget is $50K...' },
+        ];
+        mockedApiFetch.mockResolvedValueOnce({ session_id: 's1', messages } as any);
+
+        const result = await chatApi.getSessionMessages('s1');
+
+        expect(mockedApiFetch.mock.calls[0][0]).toBe('/chat/sessions/s1/messages');
+        expect(result).toEqual(messages);
+    });
+
+    it('DELETEs /chat/sessions/{id}', async () => {
+        mockedApiFetch.mockResolvedValueOnce(undefined as any);
+
+        await chatApi.deleteSession('s1');
+
+        expect(mockedApiFetch.mock.calls[0][0]).toBe('/chat/sessions/s1');
+        expect((mockedApiFetch.mock.calls[0][1] as RequestInit).method).toBe('DELETE');
+    });
+
 });

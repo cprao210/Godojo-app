@@ -1,4 +1,3 @@
-import { useAppAnalytics } from './useAppAnalytics';
 import { useAppLifecycleListeners } from './useAppLifecycleListeners';
 import { useCalendarConnections } from './useCalendarConnections';
 import { useCompanyIntel, hasValue, pickValue, isIntelEmpty, openExternalUrl, LOADING_STAGES } from './useCompanyIntel';
@@ -57,9 +56,10 @@ import { useTranscriptVisibility } from "./useTranscriptVisibility";
 import { useSettingsOverlay } from "./useSettingsOverlay";
 import { useSttProviderSettings, STT_PROVIDER_KEY_URLS } from "./useSttProviderSettings";
 import { useCompanyContext, ALLOWED_EXTENSIONS, MAX_FILE_SIZE_BYTES, ASSET_CONFIG, STATUS_BADGE, normalizeContext } from "./useCompanyContext";
+import { useUpdateStatus } from "./useUpdateStatus";
+export type { UseUpdateStatusResult } from "./useUpdateStatus";
 
 export {
-    useAppAnalytics,
     useAppLifecycleListeners,
     useCalendarConnections,
     useCompanyIntel,
@@ -139,5 +139,6 @@ export {
     useCompanyContextSettings,
     useCalendarIntegrationSettings,
     useTranscriptVisibility,
-    useSettingsOverlay
+    useSettingsOverlay,
+    useUpdateStatus
 };

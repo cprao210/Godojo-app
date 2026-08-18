@@ -18,8 +18,7 @@
  * SCOPE: frontend (src) types only. Electron-specific types are excluded:
  *  - `ElectronAPI` and the `Window.electronAPI` augmentation from
  *    src/app/electron.d.ts
- *  - `Window` global augmentations from src/app/vite-env.d.ts and
- *    src/lib/analytics/analytics.service.ts
+ *  - `Window` global augmentations from src/app/vite-env.d.ts
  * These `declare global { interface Window { ... } }` / electron bridge
  * types must stay in their own ambient .d.ts / source files - moving them
  * here would break global merging and mixes electron/main concerns into
@@ -224,6 +223,14 @@ export interface ChatStreamHandlers {
   onRagAnswer?: (answer: RagAnswer) => void;
   /** Fired once, usually before the first token, with the retrieved chunk ids. */
   onSources?: (sources: ChatSources) => void;
+  /** Fired once, only on a brand-new chat (session_id was null in the
+   * request) — the backend just created the session. Store this id and send
+   * it as `session_id` on every subsequent turn in this conversation. */
+  onSessionCreated?: (sessionId: string) => void;
+  /** Fired when the backend auto-generates/updates the session's title from
+   * the first message (3-4 words) — update the sidebar entry for this
+   * session_id in place. */
+  onTitleUpdated?: (title: string) => void;
   /** Fired for each `status` frame — backend progress updates ("connected",
    * "searching", "generating", ...) sent before/while the answer is being
    * produced. Use to show the person what's happening instead of a static
@@ -251,6 +258,13 @@ export type ChatRole = "user" | "assistant";
 export interface ChatHistoryTurn {
   role: ChatRole;
   content: string;
+}
+
+export interface ChatSession {
+  id: string;
+  title: string;
+  created_at: string;
+  updated_at: string;
 }
 
 export interface LiveTranscriptSegment {
@@ -1171,47 +1185,6 @@ export interface ParsedReleaseNotes {
   url?: string;
 }
 
-// --- src/lib/analytics/analytics.service.ts ---
-export type ModelProviderType = 'cloud' | 'local';
-
-export type AssistantMode = 'launcher' | 'overlay' | 'undetectable' | string;
-
-export type AnalyticsEventName =
-  // App Lifecycle
-  | 'app_opened'
-  | 'app_closed'
-  | 'first_launch'
-  // Feature Usage
-  | 'assistant_started'
-  | 'assistant_stopped'
-  | 'mode_selected'
-  | 'copy_answer_clicked'
-  | 'calendar_connected'
-  | 'pdf_exported'
-  // Meeting Lifecycle
-  | 'meeting_started'
-  | 'meeting_ended'
-  // Model Usage
-  | 'model_used'
-  // Session
-  | 'session_duration'
-  // Engagement
-  | 'command_executed'
-  | 'conversation_started';
-
-export interface ModelUsedPayload {
-  model_name: string;
-  provider_type: ModelProviderType;
-  latency_ms: number;
-  tokens_used?: number;
-}
-
-export interface SessionDurationPayload {
-  duration_seconds: number;
-  assistant_active_seconds?: number;
-  idle_seconds?: number;
-}
-
 // --- src/lib/apiClient.ts ---
 export type RetryConfig = InternalAxiosRequestConfig & { _retry?: boolean };
 
@@ -1293,6 +1266,15 @@ export interface GlobalChatOverlayProps {
   onOpenMeeting?: (meetingId: string) => void;
 }
 
+export interface ChatSessionSidebarProps {
+  sessions: ChatSession[];
+  activeSessionId: string | null;
+  isLoading: boolean;
+  onSelectSession: (sessionId: string) => void;
+  onNewChat: () => void;
+  onDeleteSession: (sessionId: string) => void;
+}
+
 // --- src/features/common/AdCampaignToasters.tsx ---
 export interface AdCampaignToastersProps {
   /** Only rendered on the launcher main view, with Settings closed. */
@@ -1342,7 +1324,10 @@ export interface IncompatibleProviderBannerProps {
 export interface LauncherProps {
   onStartMeeting: (calendarEvent?: any) => void;
   onOpenSettings: (tab?: string) => void;
+  onCloseSettings?: () => void;
   onOpenManagerDashboard?: () => void;
+  isManagerDashboardOpen?: boolean;
+  isSettingsOpen?: boolean;
   onPageChange?: (isMain: boolean) => void;
   ollamaPullStatus?: 'idle' | 'downloading' | 'complete' | 'failed';
   ollamaPullPercent?: number;
@@ -1644,7 +1629,13 @@ export interface MeetingChatOverlayProps {
 }
 
 // --- src/features/meetings/components/MeetingDetails.tsx ---
-export interface MeetingDetailsProps { meeting: Meeting; }
+export interface MeetingDetailsProps {
+  meeting: Meeting;
+  // When rendered from a manager's AE-review flow (AEDetailView) rather
+  // than the normal launcher meeting list. Only affects which page-view
+  // name gets tracked — no other behavior differs.
+  viewContext?: 'ae_review';
+}
 
 export interface DetailAnalysisAccordionProps {
   scorecard: MeetingScorecardResult;
@@ -1919,6 +1910,7 @@ export interface UpdateModalProps {
   parsedNotes: ParsedReleaseNotes | null;
   onDismiss: () => void;
   onInstall: () => void;
+  onRemindLater?: () => void;
   downloadProgress: number;
   status: 'idle' | 'downloading' | 'ready' | 'error' | 'instructions';
   errorMessage?: string | null;

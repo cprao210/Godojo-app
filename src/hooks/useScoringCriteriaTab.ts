@@ -5,6 +5,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { MeetingType, ScoringCriteriaSettings, CustomScorecardConfig } from "@/types";
 import { SCORECARD_CONFIGS } from "@/lib/utils";
+import { settingsToast } from "@/lib/settingsToastBus";
 
 const MEETING_TYPES: MeetingType[] = ["discovery", "demo", "negotiation"];
 
@@ -74,11 +75,16 @@ export function useScoringCriteriaTab() {
             if (res?.success) {
                 savedSnapshot.current = settings;
                 setIsDirty(false);
+                settingsToast.success('Saved Successfully');
             } else {
-                setSaveError(res?.error ?? "Save failed. Please try again.");
+                const message = res?.error ?? "Save failed. Please try again.";
+                setSaveError(message);
+                settingsToast.error(message);
             }
         } catch (e: any) {
-            setSaveError(e.message ?? "Save failed.");
+            const message = e.message ?? "Save failed.";
+            setSaveError(message);
+            settingsToast.error(message);
         } finally {
             setIsSaving(false);
         }

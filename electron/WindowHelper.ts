@@ -739,8 +739,19 @@ export class WindowHelper {
     const win = this.launcherWindow;
     if (!win || win.isDestroyed()) return;
     if (this.opacityTimeout) clearTimeout(this.opacityTimeout);
-    // On Windows/Linux the 'close' event listener intercepts this
-    // and hides to tray unless the app is actually quitting.
-    win.close();
+    if (process.platform === 'darwin') {
+      // macOS convention: the red traffic-light close button hides the
+      // window but leaves the app running (Dock icon stays) — unchanged.
+      win.close();
+    } else {
+      // Windows/Linux: the titlebar ✕ button should fully exit the app,
+      // not minimize to tray. Mark quitting first so the 'close' listener's
+      // hide-to-tray guard in setupWindowListeners() lets this through,
+      // then quit so the process actually terminates and disappears from
+      // Task Manager (tray icon, background helpers, etc. all torn down
+      // via the existing "before-quit" cleanup in main.ts).
+      this.appState.setQuitting(true);
+      app.quit();
+    }
   }
 }

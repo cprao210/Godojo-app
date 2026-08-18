@@ -35,10 +35,10 @@ const UpdateModal: React.FC<UpdateModalProps> = ({
     parsedNotes,
     onDismiss,
     onInstall,
+    onRemindLater,
     downloadProgress,
     status,
     errorMessage,
-    instructionsArch
 }) => {
     // Helper to format version string
     const formatVersion = (v: string) => {
@@ -52,17 +52,9 @@ const UpdateModal: React.FC<UpdateModalProps> = ({
 
     const showFallback = !parsedNotes || (!parsedNotes.summary && (!parsedNotes.sections || parsedNotes.sections.length === 0));
 
-    const [copied, setCopied] = React.useState(false);
-
     // Auto-switch to progress view if status changes to downloading AND it was user-initiated
     const handleUpdateClick = () => {
         onInstall();
-    };
-
-    const handleCopyCommand = () => {
-        navigator.clipboard.writeText('xattr -cr /Applications/Godojo.ai.app');
-        setCopied(true);
-        setTimeout(() => setCopied(false), 2000);
     };
 
     // Auto-scroll logic
@@ -165,24 +157,44 @@ const UpdateModal: React.FC<UpdateModalProps> = ({
                                     </p>
                                 </div>
                                 <div className="flex-1 overflow-y-auto custom-scrollbar pr-2 mb-4 space-y-2 w-full">
-                                    <div className="space-y-1 w-full">
-                                        <p className="text-[12px] font-medium text-white/80">1. Clear quarantine on the downloaded file:</p>
-                                        <CopyBlock command={`xattr -cr ~/Downloads/Godojo.ai-${displayVersion.replace('v', '')}-${instructionsArch || 'arm64'}.dmg`} />
-                                    </div>
-                                    <div className="space-y-1 mt-1 pl-0.5">
-                                        <p className="text-[12px] font-medium text-white/80">2. Open the file and install Godojo.ai.</p>
+                                    <div className="space-y-1.5 w-full">
+                                        <div className="flex items-center justify-between gap-2">
+                                            <p className="text-[12px] font-medium text-white/80">1. Open the downloaded file and install GoDojo AI.</p>
+                                            <button
+                                                onClick={() => window.electronAPI.openKnownFolder('downloads')}
+                                                className="shrink-0 text-[10px] font-medium text-blue-400 hover:text-blue-300 underline underline-offset-2 whitespace-nowrap"
+                                            >
+                                                Open Downloads
+                                            </button>
+                                        </div>
                                     </div>
                                     <div className="space-y-1 mt-3 w-full">
-                                        <p className="text-[12px] font-medium text-white/80">3. Clear quarantine on the installed app:</p>
-                                        <CopyBlock command="xattr -cr /Applications/Godojo.ai.app" />
+                                        <div className="flex items-center justify-between gap-2">
+                                            <p className="text-[12px] font-medium text-white/80">2. Clear quarantine on the installed app:</p>
+                                            <button
+                                                onClick={() => window.electronAPI.openKnownFolder('applications')}
+                                                className="shrink-0 text-[10px] font-medium text-blue-400 hover:text-blue-300 underline underline-offset-2 whitespace-nowrap"
+                                            >
+                                                Open Applications
+                                            </button>
+                                        </div>
+                                        <CopyBlock command={`xattr -cr "/Applications/GoDojo AI.app"`} />
                                     </div>
                                 </div>
-                                <div className="flex items-center justify-center mt-auto w-full">
+                                <div className="flex flex-col items-center gap-2 mt-auto w-full">
                                     <button
                                         onClick={onDismiss}
                                         className="px-6 py-[6px] bg-white/10 hover:bg-white/20 text-white text-[13px] font-medium rounded-lg transition-colors w-[200px]"
                                     >
                                         Done
+                                    </button>
+                                    <button
+                                        onClick={() =>
+                                            window.electronAPI.openExternal('https://github.com/cprao210/Godojo-app/releases/latest')
+                                        }
+                                        className="text-[11px] font-medium text-white/30 hover:text-white/55 transition-colors"
+                                    >
+                                        Having trouble? Open the Releases page instead
                                     </button>
                                 </div>
                             </div>
@@ -219,22 +231,7 @@ const UpdateModal: React.FC<UpdateModalProps> = ({
                                     </div>
 
                                     {/* Code Block with Copy */}
-                                    <div className="flex items-center justify-between bg-black/20 rounded-lg pl-3 pr-1.5 py-1.5 border border-white/[0.03] group hover:border-white/10 transition-colors">
-                                        <code className="text-[10px] font-mono text-blue-400 truncate mr-2 select-all">
-                                            xattr -cr /Applications/Godojo.ai.app
-                                        </code>
-                                        <button
-                                            onClick={handleCopyCommand}
-                                            className="h-6 px-2.5 rounded-md bg-white/5 hover:bg-white/10 active:bg-white/15 flex items-center justify-center transition-colors border border-white/5"
-                                            title="Copy to clipboard"
-                                        >
-                                            {copied ? (
-                                                <span className="text-[10px] font-semibold text-green-400">Copied</span>
-                                            ) : (
-                                                <span className="text-[10px] font-medium text-white/50 group-hover:text-white/80">Copy</span>
-                                            )}
-                                        </button>
-                                    </div>
+                                    <CopyBlock command={`xattr -cr "/Applications/GoDojo AI.app"`} />
                                 </div>
 
                                 {/* 3. Progress Bar */}
@@ -316,10 +313,10 @@ const UpdateModal: React.FC<UpdateModalProps> = ({
                                 <div className="flex items-center justify-between flex-shrink-0">
                                     {/* Secondary Action - Left Aligned, Plain Text */}
                                     <button
-                                        onClick={onDismiss}
+                                        onClick={onRemindLater ?? onDismiss}
                                         className="text-[13px] font-medium text-white/40 hover:text-white/70 transition-colors"
                                     >
-                                        Not Now
+                                        Remind Me Later
                                     </button>
 
                                     {/* Primary Action - Right Aligned, System Blue */}

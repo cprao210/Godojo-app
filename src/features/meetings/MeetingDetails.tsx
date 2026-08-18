@@ -1,18 +1,18 @@
-import React, { useState } from 'react';
+import React, { useEffect, useState } from 'react';
 import { useResolvedTheme, useMeetingDetails, formatTime, cleanMarkdown, isSummaryEmpty } from '@/hooks';
 import { Mail, ChevronDown, BarChart3, ArrowUp, Copy, Check, TrendingUp, TriangleAlert, MessageSquare } from 'lucide-react';
 import { MessagesSquareIcon, ChartColumnIncreasing, CircleCheck, NotepadText, RefreshCcw, RefreshCw, NotebookPen, ClipboardList } from 'lucide-react';
 import { motion, AnimatePresence } from 'framer-motion';
 
 import { MeetingChatOverlay, FollowUpEmailModal, MeetingScorecardPanel } from '@/features/meetings';
+import { chatMarkdownComponents } from '@/features/chat';
 import { EditableTextBlock } from '@/features/common';
+import { posthogAnalytics } from '@/lib/analytics/posthog.service';
 import { IMAGES } from '@/lib/assets';
 import { LiveAnalysisContent } from '@/features/live-analysis/LiveAnalysisContent';
 import { MeetingDetailsProps, Meeting, DetailAnalysisAccordionProps } from '@/types';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
-import { Prism as SyntaxHighlighter } from 'react-syntax-highlighter';
-import { vscDarkPlus } from 'react-syntax-highlighter/dist/esm/styles/prism';
 
 // Skeleton pulse component
 const Skeleton: React.FC<{ className?: string }> = ({ className = '' }) => (
@@ -98,13 +98,14 @@ const DetailAnalysisAccordion: React.FC<DetailAnalysisAccordionProps> = ({ score
     );
 };
 
-const MeetingDetails: React.FC<MeetingDetailsProps> = ({ meeting: initialMeeting }) => {
+const MeetingDetails: React.FC<MeetingDetailsProps> = ({ meeting: initialMeeting, viewContext }) => {
 
     const isLight = useResolvedTheme() === 'light';
     const {
         meeting,
         isProcessing,
         isLoadingMeetingDetail,
+        isLoadingTranscript,
         scorecard,
         activeTab, setActiveTab,
         aiInteractionsData, isLoadingAiInteractions,
@@ -131,6 +132,29 @@ const MeetingDetails: React.FC<MeetingDetailsProps> = ({ meeting: initialMeeting
         queryClient,
         meetingKey,
     } = useMeetingDetails(initialMeeting);
+
+    // Fires once per mount, independent of activeTab — matches "no matter
+    // of what tab is selected" in the spec. Re-fires if the user backs out
+    // and opens a different meeting, since that's a genuinely new view.
+    useEffect(() => {
+        posthogAnalytics.trackPageView(viewContext === 'ae_review' ? 'ae_meeting_details' : 'meeting_details');
+        // eslint-disable-next-line react-hooks/exhaustive-deps
+    }, [initialMeeting?.id]);
+
+    // Regenerate is triggered from three separate buttons in this file (tab
+    // bar + two empty-state variants) — wrap once here so all three fire the
+    // same tracked call instead of instrumenting each onClick separately.
+    const handleRegenerateSummaryTracked = () => {
+        posthogAnalytics.trackSummaryRegenerate();
+        handleRegenerateSummary();
+    };
+
+    const TAB_TRACKERS: Record<'summary' | 'transcript' | 'usage' | 'analysis', (() => void) | null> = {
+        summary: null,
+        transcript: () => posthogAnalytics.trackTranscriptTabView(),
+        usage: () => posthogAnalytics.trackAskDojoTabView(),
+        analysis: () => posthogAnalytics.trackCallAnalysisTabView(),
+    };
 
     return (
         <div className={`relative h-full w-full flex flex-col font-sans overflow-hidden ${isLight ? 'bg-[#f0f2f8] text-slate-700' : 'bg-[#0a0c14] text-slate-300'}`}>
@@ -165,7 +189,10 @@ const MeetingDetails: React.FC<MeetingDetailsProps> = ({ meeting: initialMeeting
 
                                 {/* Follow-up email — bordered pill button */}
                                 <button
-                                    onClick={handleFollowUpEmail}
+                                    onClick={() => {
+                                        posthogAnalytics.trackFollowUpMail();
+                                        handleFollowUpEmail();
+                                    }}
                                     disabled={isRegenerating || isProcessing}
                                     className={`
                                         shrink-0 flex items-center gap-2 px-3.5 py-2 rounded-lg text-[13px] font-medium
@@ -199,7 +226,10 @@ const MeetingDetails: React.FC<MeetingDetailsProps> = ({ meeting: initialMeeting
                             {(['summary', 'transcript', 'usage', 'analysis'] as const).map((tab) => (
                                 <button
                                     key={tab}
-                                    onClick={() => setActiveTab(tab)}
+                                    onClick={() => {
+                                        TAB_TRACKERS[tab]?.();
+                                        setActiveTab(tab);
+                                    }}
                                     className={`
                                         relative px-3.5 py-1.5 text-[13px] font-medium rounded-lg transition-all duration-200 z-10
                                         ${activeTab === tab
@@ -226,7 +256,7 @@ const MeetingDetails: React.FC<MeetingDetailsProps> = ({ meeting: initialMeeting
 
                             {/* Regenerate */}
                             <button
-                                onClick={handleRegenerateSummary}
+                                onClick={handleRegenerateSummaryTracked}
                                 disabled={isRegenerating || isProcessing}
                                 title={isProcessing ? 'Wait for analysis to complete first' : 'Regenerate summary'}
                                 className={`
@@ -325,7 +355,7 @@ const MeetingDetails: React.FC<MeetingDetailsProps> = ({ meeting: initialMeeting
                                                     <p className={`text-[12px] ${isLight ? 'text-slate-400' : 'text-white/25'}`}>Summary will appear here once the meeting is processed</p>
                                                 </div>
                                                 <button
-                                                    onClick={handleRegenerateSummary}
+                                                    onClick={handleRegenerateSummaryTracked}
                                                     className={`mt-1 flex items-center gap-2 px-4 py-2 rounded-lg text-[12px] font-medium transition-all ${isLight ? 'bg-white border border-slate-200 text-slate-600 hover:bg-slate-50 shadow-sm' : 'bg-white/[0.05] border border-white/[0.1] text-white/60 hover:bg-white/[0.08]'}`}
                                                 >
                                                     <RefreshCcw size={12} strokeWidth={1.8} />
@@ -719,7 +749,7 @@ const MeetingDetails: React.FC<MeetingDetailsProps> = ({ meeting: initialMeeting
                                                             <div className={`p-4 rounded-xl border ${isLight ? 'bg-red-50 border-red-200' : 'bg-red-500/10 border-red-500/20'}`}>
                                                                 <div className='flex gap-3 mb-3'>
                                                                     <div><TriangleAlert className='text-red-400' size={18} /></div>
-                                                                    <div className="text-sm font-bold text-red-400 tracking-wider mb-3">MISSED COMPLETELY</div>
+                                                                    <div className="text-sm font-bold text-red-400 tracking-wider mb-3">ROOM TO IMPROVE</div>
                                                                 </div>
                                                                 {validMissedItems.map(({ label, content }, i) => (
                                                                     <div key={i} className="flex items-start gap-3 mb-4">
@@ -961,7 +991,13 @@ const MeetingDetails: React.FC<MeetingDetailsProps> = ({ meeting: initialMeeting
 
                         {activeTab === 'transcript' && (
                             <motion.section initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }}>
-                                {isLoadingMeetingDetail ? (
+                                {/* Local-first: don't gate this on isLoadingMeetingDetail (the
+                                    backend HTTP fetch) or isProcessing (summary generation) —
+                                    the transcript is written to local SQLite synchronously the
+                                    moment the meeting ends, well before either of those finish.
+                                    isLoadingTranscript reflects that local-first source directly,
+                                    so this tab shows content the instant it's actually available. */}
+                                {isLoadingTranscript ? (
                                     <div className="space-y-3">
                                         <Skeleton className="h-8 w-40 mb-4" />
                                         {Array.from({ length: 6 }).map((_, i) => (
@@ -1168,56 +1204,17 @@ const MeetingDetails: React.FC<MeetingDetailsProps> = ({ meeting: initialMeeting
                                                             <ReactMarkdown
                                                                 remarkPlugins={[remarkGfm]}
                                                                 components={{
-                                                                    h1: ({ node, ...props }) => <p className="text-[15px] text-text-secondary font-normal leading-relaxed mb-2 whitespace-pre-wrap" {...props} />,
-                                                                    h2: ({ node, ...props }) => <p className="text-[15px] text-text-secondary font-normal leading-relaxed mb-2 whitespace-pre-wrap" {...props} />,
-                                                                    h3: ({ node, ...props }) => <p className="text-[15px] text-text-secondary font-normal leading-relaxed mb-2 whitespace-pre-wrap" {...props} />,
-                                                                    p: ({ node, ...props }) => <p className="text-[15px] text-text-secondary font-normal leading-relaxed mb-2 whitespace-pre-wrap" {...props} />,
-                                                                    ul: ({ node, ...props }) => <ul className="list-disc ml-4 mb-2 space-y-1" {...props} />,
-                                                                    ol: ({ node, ...props }) => <ol className="list-decimal ml-4 mb-2 space-y-1" {...props} />,
-                                                                    li: ({ node, ...props }) => <li className="text-[15px] text-text-secondary font-normal" {...props} />,
-                                                                    strong: ({ node, ...props }) => <span className="font-normal text-text-secondary" {...props} />,
-                                                                    a: ({ node, ...props }: any) => <a className="text-blue-500 hover:underline" {...props} />,
-                                                                    pre: ({ children }: any) => <div className="not-prose mb-4">{children}</div>,
-                                                                    code: ({ node, inline, className, children, ...props }: any) => {
-                                                                        const match = /language-(\w+)/.exec(className || '');
-                                                                        const isInline = inline ?? false;
-                                                                        const lang = match ? match[1] : '';
-
-                                                                        return !isInline ? (
-                                                                            <div className="my-3 rounded-xl overflow-hidden border border-white/[0.08] shadow-lg bg-zinc-800/60 backdrop-blur-md">
-                                                                                <div className="bg-white/[0.04] px-3 py-1.5 border-b border-white/[0.08]">
-                                                                                    <span className="text-[10px] uppercase tracking-widest font-semibold text-white/40 font-mono">
-                                                                                        {lang || 'CODE'}
-                                                                                    </span>
-                                                                                </div>
-                                                                                <div className="bg-transparent">
-                                                                                    <SyntaxHighlighter
-                                                                                        language={lang || 'text'}
-                                                                                        style={vscDarkPlus}
-                                                                                        customStyle={{
-                                                                                            margin: 0,
-                                                                                            borderRadius: 0,
-                                                                                            fontSize: '13px',
-                                                                                            lineHeight: '1.6',
-                                                                                            background: 'transparent',
-                                                                                            padding: '16px',
-                                                                                            fontFamily: 'ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace'
-                                                                                        }}
-                                                                                        wrapLongLines={true}
-                                                                                        showLineNumbers={true}
-                                                                                        lineNumberStyle={{ minWidth: '2.5em', paddingRight: '1.2em', color: 'rgba(255,255,255,0.2)', textAlign: 'right', fontSize: '11px' }}
-                                                                                        {...props}
-                                                                                    >
-                                                                                        {String(children).replace(/\n$/, '')}
-                                                                                    </SyntaxHighlighter>
-                                                                                </div>
-                                                                            </div>
-                                                                        ) : (
-                                                                            <code className="bg-bg-tertiary px-1.5 py-0.5 rounded text-[13px] font-mono text-text-primary border border-border-subtle whitespace-pre-wrap" {...props}>
-                                                                                {children}
-                                                                            </code>
-                                                                        );
-                                                                    }
+                                                                    ...chatMarkdownComponents,
+                                                                    // Ask Dojo tab keeps headings/paragraphs down to plain
+                                                                    // body copy (no bold/large text) unlike the chat overlays.
+                                                                    h1: ({ node, ...props }: any) => <p className="text-[15px] text-text-secondary font-normal leading-relaxed mb-2 whitespace-pre-wrap" {...props} />,
+                                                                    h2: ({ node, ...props }: any) => <p className="text-[15px] text-text-secondary font-normal leading-relaxed mb-2 whitespace-pre-wrap" {...props} />,
+                                                                    h3: ({ node, ...props }: any) => <p className="text-[15px] text-text-secondary font-normal leading-relaxed mb-2 whitespace-pre-wrap" {...props} />,
+                                                                    p: ({ node, ...props }: any) => <p className="text-[15px] text-text-secondary font-normal leading-relaxed mb-2 whitespace-pre-wrap" {...props} />,
+                                                                    ul: ({ node, ...props }: any) => <ul className="list-disc ml-4 mb-2 space-y-1" {...props} />,
+                                                                    ol: ({ node, ...props }: any) => <ol className="list-decimal ml-4 mb-2 space-y-1" {...props} />,
+                                                                    li: ({ node, ...props }: any) => <li className="text-[15px] text-text-secondary font-normal" {...props} />,
+                                                                    strong: ({ node, ...props }: any) => <span className="font-normal text-text-secondary" {...props} />,
                                                                 }}
                                                             >
                                                                 {cleanMarkdown(interaction.ai_response || '')}

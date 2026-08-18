@@ -1,6 +1,6 @@
 // ipcHandlers.ts
 
-import { app, ipcMain, shell, dialog, desktopCapturer, systemPreferences, BrowserWindow, screen } from "electron"
+import { app, ipcMain, shell, dialog, desktopCapturer, systemPreferences, BrowserWindow, screen, session } from "electron"
 import { AppState } from "./main"
 import { GEMINI_FLASH_MODEL } from "./IntelligenceManager"
 import { DatabaseManager } from "./db/DatabaseManager"; // Import Database Manager
@@ -20,6 +20,8 @@ import {
 } from './utils/companyKnowledge';
 import { AuthManager } from './services/AuthManager';
 import { PendingLiveChatStore } from './PendingLiveChatStore';
+import { posthogMain } from './services/PostHogMainService';
+import { tenantContext } from './services/TenantContext';
 
 const BACKEND_URL = process.env.VITE_API_BASE_URL ?? "http://127.0.0.1:8000";
 
@@ -32,6 +34,34 @@ export function initializeIpcHandlers(appState: AppState): void {
     ipcMain.removeHandler(channel);
     ipcMain.handle(channel, listener);
   };
+
+  // Relays renderer-side errors (currently: ErrorBoundary.componentDidCatch,
+  // see src/features/common/ErrorBoundary.tsx) into main-process error
+  // tracking. The renderer already reports these to PostHog directly via
+  // posthog-js — this channel exists so the SAME event is also visible from
+  // main's perspective (which window/context it hit, main-process-side
+  // correlation), and as a fallback in case the renderer crashes before its
+  // own posthog-js capture() call completes.
+  safeHandle('log-error-to-main', async (_event, payload: {
+    type?: string;
+    context?: string;
+    message?: string;
+    stack?: string;
+    componentStack?: string;
+  }) => {
+    try {
+      const error = new Error(payload?.message ?? 'Unknown renderer error');
+      if (payload?.stack) error.stack = payload.stack;
+      posthogMain.captureException(error, 'renderer-error-boundary', {
+        rendererContext: payload?.context,
+        componentStack: payload?.componentStack,
+      });
+      return { success: true };
+    } catch (e: any) {
+      console.error('[ipc] log-error-to-main failed:', e);
+      return { success: false, error: e?.message ?? String(e) };
+    }
+  });
 
   // --- NEW Test Helper ---
   safeHandle("test-release-fetch", async () => {
@@ -551,9 +581,21 @@ export function initializeIpcHandlers(appState: AppState): void {
     return { success: true };
   });
 
+  safeHandle("set-live-analysis-in-flight", async (event, inFlight: boolean) => {
+    appState.setLiveAnalysisInFlight(inFlight);
+    return { success: true };
+  });
+
   safeHandle("quit-app", () => {
     app.quit()
   })
+
+  // Reload bypassing cache — same as Cmd/Ctrl+Shift+R via the app menu's
+  // { role: 'forceReload' } items already in WindowHelper.ts/KeybindManager.ts.
+  safeHandle("hard-refresh", (event) => {
+    BrowserWindow.fromWebContents(event.sender)?.webContents.reloadIgnoringCache();
+    return { success: true };
+  });
 
   safeHandle("quit-and-install-update", async () => {
     try {
@@ -571,6 +613,13 @@ export function initializeIpcHandlers(appState: AppState): void {
   });
 
   safeHandle("check-for-updates", async () => {
+    // Updates are a production-only feature — electron-updater has no signed/
+    // published feed to check against in a dev build, so refuse up front
+    // instead of letting it silently no-op or hit a manual fallback.
+    if (!app.isPackaged) {
+      console.log('[IPC] check-for-updates ignored: running unpackaged (development)')
+      return { success: false, error: 'Updates are disabled in development builds' }
+    }
     try {
       console.log('[IPC] Manual update check requested')
       await appState.checkForUpdates()
@@ -582,6 +631,10 @@ export function initializeIpcHandlers(appState: AppState): void {
   })
 
   safeHandle("download-update", async () => {
+    if (!app.isPackaged) {
+      console.log('[IPC] download-update ignored: running unpackaged (development)')
+      return { success: false, error: 'Updates are disabled in development builds' }
+    }
     try {
       console.log('[IPC] Download update requested')
       appState.downloadUpdate()
@@ -590,6 +643,30 @@ export function initializeIpcHandlers(appState: AppState): void {
       console.error('[IPC] download-update failed:', err)
       return { success: false, error: err.message }
     }
+  })
+
+  safeHandle("get-app-version", async () => {
+    return app.getVersion()
+  })
+
+  // Opens a small allow-listed set of folders in Finder/Explorer (e.g. for the
+  // macOS manual-update instructions: "Open Downloads", "Open Applications").
+  // Intentionally a fixed key -> path map rather than taking an arbitrary path
+  // from the renderer, so this can't be used to open/reveal anything else.
+  safeHandle("open-known-folder", async (event, key: 'downloads' | 'applications') => {
+    const target = key === 'downloads' ? app.getPath('downloads') : '/Applications';
+    try {
+      await shell.openPath(target);
+    } catch (err) {
+      console.warn(`[IPC] Failed to open folder "${key}":`, err);
+    }
+  });
+
+  // Lets the renderer distinguish a production/packaged build from a local
+  // dev run so it can hide/disable the Updates UI accordingly, without
+  // relying on process.env.NODE_ENV (unreliable inside Electron).
+  safeHandle("is-app-packaged", async () => {
+    return app.isPackaged
   })
 
   // Window movement handlers
@@ -1034,8 +1111,8 @@ export function initializeIpcHandlers(appState: AppState): void {
       const hasKey = (key?: string) => !!(key && key.trim().length > 0);
 
       return {
-        hasGeminiKey: hasKey(creds.geminiApiKey),
-        hasGroqKey: hasKey(creds.groqApiKey),
+        hasGeminiKey: hasKey(creds.geminiApiKey || process.env.GEMINI_API_KEY),
+        hasGroqKey: hasKey(creds.groqApiKey || process.env.GROQ_API_KEY),
         hasOpenaiKey: hasKey(creds.openaiApiKey),
         hasClaudeKey: hasKey(creds.claudeApiKey),
         googleServiceAccountPath: creds.googleServiceAccountPath || null,
@@ -1043,14 +1120,14 @@ export function initializeIpcHandlers(appState: AppState): void {
         groqSttModel: creds.groqSttModel || 'whisper-large-v3-turbo',
         hasSttGroqKey: hasKey(creds.groqSttApiKey),
         hasSttOpenaiKey: hasKey(creds.openAiSttApiKey),
-        hasDeepgramKey: hasKey(creds.deepgramApiKey),
+        hasDeepgramKey: hasKey(creds.deepgramApiKey || process.env.DEEPGRAM_API_KEY),
         hasElevenLabsKey: hasKey(creds.elevenLabsApiKey),
         hasAzureKey: hasKey(creds.azureApiKey),
         azureRegion: creds.azureRegion || 'eastus',
         hasIbmWatsonKey: hasKey(creds.ibmWatsonApiKey),
         ibmWatsonRegion: creds.ibmWatsonRegion || 'us-south',
         hasSonioxKey: hasKey(creds.sonioxApiKey),
-        hasTavilyKey: hasKey(creds.tavilyApiKey),
+        hasTavilyKey: hasKey(creds.tavilyApiKey || process.env.TAVILY_API_KEY),
         // Dynamic Model Discovery - preferred models
         geminiPreferredModel: creds.geminiPreferredModel || undefined,
         groqPreferredModel: creds.groqPreferredModel || undefined,
@@ -1058,7 +1135,7 @@ export function initializeIpcHandlers(appState: AppState): void {
         claudePreferredModel: creds.claudePreferredModel || undefined,
       };
     } catch (error: any) {
-      return { hasGeminiKey: false, hasGroqKey: false, hasOpenaiKey: false, hasClaudeKey: false, googleServiceAccountPath: null, sttProvider: 'deepgram', groqSttModel: 'whisper-large-v3-turbo', hasSttGroqKey: false, hasSttOpenaiKey: false, hasDeepgramKey: false, hasElevenLabsKey: false, hasAzureKey: false, azureRegion: 'southeastasia', hasIbmWatsonKey: false, ibmWatsonRegion: 'us-south', hasSonioxKey: false, hasTavilyKey: false };
+      return { hasGeminiKey: process.env.GEMINI_API_KEY !== null, hasGroqKey: process.env.GROQ_API_KEY !== null, hasOpenaiKey: false, hasClaudeKey: false, googleServiceAccountPath: null, sttProvider: 'deepgram', groqSttModel: 'whisper-large-v3-turbo', hasSttGroqKey: false, hasSttOpenaiKey: false, hasDeepgramKey: process.env.DEEPGRAM_API_KEY !== null, hasElevenLabsKey: false, hasAzureKey: false, azureRegion: 'southeastasia', hasIbmWatsonKey: false, ibmWatsonRegion: 'us-south', hasSonioxKey: false, hasTavilyKey: process.env.TAVILY_API_KEY !== null };
     }
   });
 
@@ -1760,6 +1837,15 @@ export function initializeIpcHandlers(appState: AppState): void {
     }
   });
 
+  safeHandle("live-chat:get-all-pending-meeting-ids", async () => {
+    try {
+      return PendingLiveChatStore.getInstance().getAllPendingMeetingIds();
+    } catch (error: any) {
+      console.error("Error reading all pending live chat meeting ids:", error);
+      return [];
+    }
+  });
+
   safeHandle("pause-meeting", async () => {
     try {
       appState.pauseMeeting();
@@ -1847,10 +1933,10 @@ export function initializeIpcHandlers(appState: AppState): void {
         return { success: true, meeting: updated };
       }
       return { success: false };
-    } catch (e) {
+    } catch (e: any) {
 
       console.error('[ipcHandlers] regenerate-meeting-summary error:', e);
-      return { success: false, error: String(e) };
+      return { success: false, error: e?.message || String(e) };
 
     }
 
@@ -2285,11 +2371,7 @@ export function initializeIpcHandlers(appState: AppState): void {
 
       // 2. Build prompt
       const contextString = buildSalesBriefContext(eventData);
-      const ownCompanyBlock = buildOwnCompanyBlockFromOrchestrator(appState.getKnowledgeOrchestrator());
-      const fullContext = ownCompanyBlock
-        ? `${ownCompanyBlock}\n\n${contextString}`
-        : contextString;
-      const userMessage = `Generate a complete sales meeting brief for this meeting:\n\n${fullContext}`;
+      const userMessage = `Generate a complete sales meeting brief for this meeting:\n\n${contextString}`;
 
       console.log("Sales Brief PRMOPT: ", userMessage);
 
@@ -2624,135 +2706,25 @@ export function initializeIpcHandlers(appState: AppState): void {
           db.saveAssetFile(asset.id, asset.fileName, asset.mimeType, fileBuffer);
 
           // Chunk + embed synchronously (awaited) so the caller (handleSave) can
-          // be certain embeddings are actually written before it returns success —
-          // this is what /reindex depends on downstream.
-
-          if (asset.mimeType !== "application/pdf") {
-
-            await (async () => {
-              try {
-                const { extractTextFromBuffer } = require('./utils/documentParser');
-                const { estimateTokens } = require('./rag');
-
-                const rawText: string = await extractTextFromBuffer(fileBuffer, asset.mimeType);
-
-                const MAX_TOKENS = 400;
-                const sentences = rawText.split(/(?<=[.!?])\s+/);
-                const chunks: Array<{ index: number; text: string; tokenCount: number }> = [];
-                let current = '';
-                let idx = 0;
-                for (const sentence of sentences) {
-                  const combined = current ? `${current} ${sentence}` : sentence;
-                  if (estimateTokens(combined) > MAX_TOKENS && current) {
-                    chunks.push({ index: idx++, text: current.trim(), tokenCount: estimateTokens(current) });
-                    current = sentence;
-                  } else {
-                    current = combined;
-                  }
-                }
-                if (current.trim()) {
-                  chunks.push({ index: idx, text: current.trim(), tokenCount: estimateTokens(current) });
-                }
-
-                db.saveAssetChunks(asset.id, chunks);
-
-                const ragManager = appState.getRAGManager?.();
-                if (!ragManager) {
-                  // RAG pipeline not available — mark error so the UI shows the real state
-                  // instead of silently lying with 'mapped'
-                  db.upsertCompanyAsset({ id: asset.id, type: asset.type, label: asset.label, status: 'error' });
-                  console.warn(`[IPC] company:saveContext — ragManager not available, skipping embeddings for asset ${asset.id}`);
-                  // Still link chunks (text-only, no embeddings) to the orchestrator
-                  try {
-                    const orchestrator = appState.getKnowledgeOrchestrator();
-                    if (orchestrator && typeof orchestrator.ingestDocument === 'function') {
-                      await orchestrator.ingestDocument({ id: asset.id, type: asset.type, label: asset.label, mimeType: asset.mimeType });
-                    }
-                  } catch (_) { }
-                  return;
-                }
-
-                const pipeline = ragManager.getEmbeddingPipeline();
-
-                // Bug 2 fix: wait for the pipeline to finish initializing before embedding
-                try {
-                  await pipeline.waitForReady(20000);
-                } catch (readyErr: any) {
-                  console.error(`[IPC] company:saveContext — embedding pipeline not ready for asset ${asset.id}:`, readyErr.message);
-                  db.upsertCompanyAsset({ id: asset.id, type: asset.type, label: asset.label, status: 'error' });
-                  try {
-                    const orchestrator = appState.getKnowledgeOrchestrator();
-                    if (orchestrator && typeof orchestrator.ingestDocument === 'function') {
-                      await orchestrator.ingestDocument({ id: asset.id, type: asset.type, label: asset.label, mimeType: asset.mimeType });
-                    }
-                  } catch (_) { }
-                  return;
-                }
-
-                let embeddingsFailed = 0;
-                const storedChunks = db.getAssetChunksWithoutEmbeddings(asset.id);
-                for (const c of storedChunks) {
-                  try {
-                    const vector = await pipeline.getEmbedding(c.chunk_text);
-                    const blob = Buffer.from(new Float32Array(vector).buffer);
-                    db.saveAssetChunkEmbedding(c.id, blob);
-                  } catch (embErr: any) {
-                    embeddingsFailed++;
-                    console.warn(`[IPC] company:saveContext — embedding failed for chunk ${c.id}:`, embErr.message);
-                  }
-                }
-
-                // Only mark 'mapped' if all embeddings succeeded
-                const finalStatus = embeddingsFailed === 0 ? 'mapped' : 'error';
-                if (embeddingsFailed > 0) {
-                  console.error(`[IPC] company:saveContext — ${embeddingsFailed}/${storedChunks.length} chunks failed to embed for asset ${asset.id}`);
-                }
-                db.upsertCompanyAsset({ id: asset.id, type: asset.type, label: asset.label, status: finalStatus });
-
-                // [NEW] Link the indexed document to the orchestrator
-                try {
-                  const orchestrator = appState.getKnowledgeOrchestrator();
-                  if (orchestrator && typeof orchestrator.ingestDocument === 'function') {
-                    // Do NOT pass extractedText here — chunks + embeddings are already
-                    // written to DB above. Passing extractedText triggers Mode A which
-                    // re-embeds inline and produces null embeddings if the pipeline is
-                    // momentarily busy, making all chunks invisible to semantic search.
-                    // Mode B (no extractedText) reads the already-embedded chunks from DB.
-                    await orchestrator.ingestDocument({
-                      id: asset.id,
-                      type: asset.type,        // 'sales_deck' | 'product_specs' | 'case_studies' | 'custom'
-                      label: asset.label,
-                      mimeType: asset.mimeType,
-                    });
-                    console.log(`[IPC] company:saveContext — orchestrator.ingestDocument linked for asset ${asset.id}`);
-                  }
-                } catch (ingestErr: any) {
-                  // Non-fatal: orchestrator link failure should not block the save flow
-                  console.warn(`[IPC] company:saveContext — orchestrator.ingestDocument failed for ${asset.id}:`, ingestErr.message);
-                }
-
-                console.log(`[IPC] company:saveContext — asset ${asset.id} fully indexed`);
-              } catch (indexErr: any) {
-                console.error(`[IPC] company:saveContext — indexing failed for asset ${asset.id}:`, indexErr.message);
-                db.upsertCompanyAsset({ id: asset.id, type: asset.type, label: asset.label, status: 'error' });
-              }
-            })();
-
-          } else {
-
-            try {
+          // be certain the asset is actually indexed before it returns success.
+          //
+          // All supported types (pdf/doc/docx/ppt/pptx/csv/xlsx) now go through
+          // the backend's /company-assets/upload endpoint: docx/pptx/xlsx/csv get
+          // precise native text extraction there, PDFs/legacy doc/ppt fall back
+          // to Document AI. This replaces the old split where non-PDF types were
+          // extracted+embedded locally — one code path, one source of truth for
+          // "is this asset actually indexed".
+          try {
+            const token = getAuthToken();
+            if (!token) {
+              db.upsertCompanyAsset({ id: asset.id, type: asset.type, label: asset.label, status: 'error' });
+              console.error(`[IPC] company:saveContext — no auth token available for asset ${asset.id}`);
+            } else {
               const form = new FormData();
               form.append('file', new Blob([fileBuffer], { type: asset.mimeType }), asset.fileName);
               form.append('asset_id', asset.id);
               form.append('label', asset.label);
               form.append('asset_type', asset.type);
-
-              const token = getAuthToken();
-              if (!token) {
-                db.upsertCompanyAsset({ id: asset.id, type: asset.type, label: asset.label, status: 'error' });
-                console.error(`[IPC] no auth token available — user not signed in?`);
-                return;
-              }
 
               const resp = await fetch(`${BACKEND_URL}/api/v1/intelligence/company-assets/upload`, {
                 method: 'POST',
@@ -2761,17 +2733,17 @@ export function initializeIpcHandlers(appState: AppState): void {
               });
 
               const result = await resp.json();
-              console.log("SAVE_CONTEXT UPLOAD RESULT: ", result);
+              console.log(`[IPC] company:saveContext — upload result for ${asset.id}:`, result);
               db.upsertCompanyAsset({
                 id: asset.id, type: asset.type, label: asset.label,
                 status: result.status === 'indexed' ? 'mapped' : 'error',
               });
-            } catch (uploadErr: any) {
-              console.error(`[IPC] upload failed for asset ${asset.id}:`, uploadErr.message);
-              db.upsertCompanyAsset({ id: asset.id, type: asset.type, label: asset.label, status: 'error' });
             }
-
+          } catch (uploadErr: any) {
+            console.error(`[IPC] company:saveContext — upload failed for asset ${asset.id}:`, uploadErr.message);
+            db.upsertCompanyAsset({ id: asset.id, type: asset.type, label: asset.label, status: 'error' });
           }
+
 
         } else {
           // Existing asset already in DB — just keep its current status
@@ -2883,6 +2855,8 @@ export function initializeIpcHandlers(appState: AppState): void {
         docx: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
         ppt: 'application/vnd.ms-powerpoint',
         pptx: 'application/vnd.openxmlformats-officedocument.presentationml.presentation',
+        csv: 'text/csv',
+        xlsx: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
       };
       const mimeType = MIME_MAP[ext] ?? 'application/octet-stream';
 
@@ -2916,6 +2890,29 @@ export function initializeIpcHandlers(appState: AppState): void {
 
   safeHandle('company:deleteAsset', async (_, assetId: string) => {
     try {
+      // Purge backend (Supabase vectors + cached chat answers) first — if this
+      // fails we keep the local copy so the user can retry, instead of silently
+      // leaving orphaned vectors that chat/live-analysis RAG can still surface.
+      const token = getAuthToken();
+      if (token) {
+        try {
+          const resp = await fetch(
+            `${BACKEND_URL}/api/v1/intelligence/company-assets/${encodeURIComponent(assetId)}`,
+            { method: 'DELETE', headers: { Authorization: `Bearer ${token}` } }
+          );
+          if (!resp.ok && resp.status !== 404) {
+            // 404 is fine — asset was never uploaded to backend (e.g. local-only
+            // asset that errored before reaching /upload). Anything else, surface it.
+            const body = await resp.text();
+            throw new Error(`Backend delete failed (${resp.status}): ${body}`);
+          }
+        } catch (backendErr: any) {
+          console.error('[IPC] company:deleteAsset — backend delete failed:', backendErr.message);
+          return { success: false, error: backendErr.message || 'Failed to delete from server' };
+        }
+      } else {
+        console.warn('[IPC] company:deleteAsset — no auth token, skipping backend delete (local-only cleanup)');
+      }
       DatabaseManager.getInstance().deleteAssetFiles(assetId);
       return { success: true };
     } catch (error: any) {
@@ -3082,9 +3079,39 @@ export function initializeIpcHandlers(appState: AppState): void {
       console.log("=> generate follow-up email (groqPrompt): ", groqPrompt);
 
       // Use chatWithGemini with alternateGroqMessage for fallback
-      const emailBody = await llmHelper.chatWithGemini(geminiPrompt, undefined, undefined, true, groqPrompt);
+      try {
+        const emailBody = await llmHelper.chatWithGemini(geminiPrompt, undefined, undefined, true, groqPrompt);
+        if (!emailBody || !emailBody.trim()) {
+          throw new Error('Empty response from Gemini/Groq for follow-up email');
+        }
+        posthogMain.capture('llm_generation_source', {
+          task: 'followup_email',
+          source: 'electron_native',
+        });
+        return emailBody;
+      } catch (directError: any) {
+        console.warn(`[IPC] generate-followup-email: direct Gemini/Groq failed (${directError.message}). Falling back to backend...`);
+        const token = getAuthToken();
+        if (!token) throw directError;
 
-      return emailBody;
+        const resp = await fetch(`${BACKEND_URL}/api/v1/llm/fallback/generate`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
+          body: JSON.stringify({
+            task: 'followup_email',
+            context: enrichedContext,
+            custom_prompt: FOLLOWUP_EMAIL_PROMPT,
+          }),
+        });
+        if (!resp.ok) throw directError;
+        const data = await resp.json();
+        posthogMain.capture('llm_generation_source', {
+          task: 'followup_email',
+          source: 'backend_fallback',
+          provider: data?.provider_order?.[0] ?? null,
+        });
+        return data.text;
+      }
     } catch (error: any) {
       console.error("Error generating follow-up email:", error);
       throw error;
@@ -3647,13 +3674,14 @@ export function initializeIpcHandlers(appState: AppState): void {
 
   safeHandle('tenant:set-current', async (_, tenantId: string | null) => {
     currentTenantId = tenantId ?? null;
+    tenantContext.set(currentTenantId);
     BrowserWindow.getAllWindows().forEach(win => {
       if (!win.isDestroyed()) win.webContents.send('tenant:state-changed', currentTenantId);
     });
     return { success: true };
   });
 
-  safeHandle('tenant:get-current', async () => currentTenantId);
+  safeHandle('tenant:get-current', async () => tenantContext.get());
 
   safeHandle('auth:set-id-token', async (_, session: {
     idToken: string;
@@ -3807,4 +3835,145 @@ export function initializeIpcHandlers(appState: AppState): void {
       return { success: false, error: error?.message ?? String(error) };
     }
   });
+
+  // Shared by 'reset-app-data' and 'dev:wipe-local-account-data': deletes
+  // this install's entire userData directory itself — credentials.enc,
+  // settings.json, natively.db (+ its -wal/-shm files and Supabase mirror
+  // queue), cached auth session, the persist:google-auth partition, and
+  // the godojo-ai/godojo-ai-dev folder that contains them (depending on
+  // isPackaged) — then relaunches. Electron recreates an empty userData
+  // directory on the next launch, so the app comes back up exactly as it
+  // would on a brand-new install: sign-in screen, no local data anywhere
+  // on disk. Callers are responsible for confirming with the user *before*
+  // calling this — it does not prompt itself.
+  async function wipeLocalUserDataAndRelaunch(logPrefix: string): Promise<{ success: boolean; error?: string }> {
+    try {
+      // Release the sqlite file handle before touching userData — on
+      // Windows the delete below fails (or leaves natively.db behind)
+      // if it's still open.
+      try { DatabaseManager.getInstance().close(); } catch (e) {
+        console.warn(`[ipc] ${logPrefix}: DatabaseManager.close() failed (continuing):`, e);
+      }
+
+      // Chromium's own HTTP disk cache (userData/Cache/Cache_Data/*) is held
+      // open by this running process. On Windows an open handle blocks
+      // unlink, so without this the rmSync below throws EPERM on those
+      // cache files specifically. Clearing the session cache/storage first
+      // makes Chromium release its handles before we delete the directory.
+      //
+      // The Google sign-in popup (see WindowHelper.ts) runs in its own
+      // 'persist:google-auth' partition — a completely separate Chromium
+      // session from defaultSession, with its own cookies/IndexedDB/cache
+      // under userData/Partitions/google-auth. It needs the exact same
+      // clear-before-delete treatment, or its open handles can either block
+      // the wipe (Windows EPERM) or simply leave that stored Google auth
+      // session behind.
+
+      try {
+        await session.defaultSession.clearCache();
+        await session.defaultSession.clearStorageData();
+      } catch (e) {
+        console.warn(`[ipc] ${logPrefix}: clearing session cache failed (continuing):`, e);
+      }
+
+      try {
+        const googleAuthSession = session.fromPartition('persist:google-auth');
+        await googleAuthSession.clearCache();
+        await googleAuthSession.clearStorageData();
+      } catch (e) {
+        console.warn(`[ipc] ${logPrefix}: clearing google-auth session failed (continuing):`, e);
+      }
+
+      const userDataPath = app.getPath('userData');
+      // Guard against ever deleting something unexpected (e.g. if
+      // userData somehow resolved to a root-ish path).
+      if (!userDataPath || path.basename(userDataPath).indexOf('godojo-ai') !== 0) {
+        throw new Error(`Refusing to wipe — unexpected userData path: ${userDataPath}`);
+      }
+
+      // Delete the ENTIRE userData directory — not just its contents — so
+      // the godojo-ai/godojo-ai-dev folder itself is gone, not left behind
+      // empty. Electron recreates this directory automatically the next
+      // time the app calls app.getPath('userData') on relaunch, so removing
+      // it outright here is safe.
+      let lastDeleteError: unknown;
+      let deleted = false;
+      for (let attempt = 1; attempt <= 5; attempt++) {
+        try {
+          fs.rmSync(userDataPath, { recursive: true, force: true });
+          deleted = true;
+          break;
+        } catch (e) {
+          lastDeleteError = e;
+          await new Promise((resolve) => setTimeout(resolve, 150));
+        }
+      }
+      if (!deleted) {
+        throw lastDeleteError instanceof Error ? lastDeleteError : new Error(String(lastDeleteError));
+      }
+
+      app.relaunch();
+      app.exit(0);
+      return { success: true };
+    } catch (error: any) {
+      console.error(`[ipc] ${logPrefix} failed:`, error);
+      return { success: false, error: error?.message ?? String(error) };
+    }
+  }
+
+  // "Reset app data" (Settings > General > Danger Zone). Native confirm
+  // dialog lives here (not the renderer) so this can't be triggered by a
+  // spoofed IPC call alone — it always requires an OS-level dialog click.
+  safeHandle('reset-app-data', async (event) => {
+    const win = BrowserWindow.fromWebContents(event.sender) ?? undefined;
+    const messageBoxOptions: Electron.MessageBoxOptions = {
+      type: 'warning',
+      buttons: ['Cancel', 'Reset App Data'],
+      defaultId: 0,
+      cancelId: 0,
+      title: 'Reset App Data',
+      message: 'Reset all local app data?',
+      detail:
+        'This permanently deletes your local credentials, settings, and offline data on this device, and signs you out. This cannot be undone.\n\nThe app will restart automatically.',
+    };
+    const { response }: Electron.MessageBoxReturnValue = win
+      ? await dialog.showMessageBox(win, messageBoxOptions)
+      : await dialog.showMessageBox(messageBoxOptions);
+    if (response !== 1) {
+      return { success: false, cancelled: true };
+    }
+    return wipeLocalUserDataAndRelaunch('reset-app-data');
+  });
+
+  // DEV-ONLY: local-data half of "Delete My Account" (Settings > General >
+  // Danger Zone). The renderer calls this *after* the Supabase rows +
+  // Firebase Auth user have already been deleted server-side, so unlike
+  // 'reset-app-data' this does NOT show its own confirm dialog — the
+  // account deletion the user just confirmed is already irreversible by
+  // the time this runs, and a second native prompt here would just leave
+  // local data behind (stale natively.db, cached session) if they misread
+  // it as a fresh, cancellable action. Reuses the exact same wipe path as
+  // 'reset-app-data' so local state ends up identically clean.
+  safeHandle('dev:wipe-local-account-data', async () => {
+    return wipeLocalUserDataAndRelaunch('dev:wipe-local-account-data');
+  });
+
+  safeHandle('confirm-delete-account', async (event) => {
+    const win = BrowserWindow.fromWebContents(event.sender) ?? undefined;
+    const messageBoxOptions: Electron.MessageBoxOptions = {
+      type: 'warning',
+      buttons: ['Cancel', 'Delete My Account'],
+      defaultId: 0,
+      cancelId: 0,
+      title: 'Delete My Account',
+      message: 'Permanently delete your account?',
+      detail:
+        'This permanently deletes your account and all associated data from our servers, then clears everything stored on this device. This cannot be undone.\n\nThe app will restart automatically.',
+    };
+    const { response } = win
+      ? await dialog.showMessageBox(win, messageBoxOptions)
+      : await dialog.showMessageBox(messageBoxOptions);
+    return { confirmed: response === 1 };
+  });
+
 }

@@ -19,9 +19,11 @@
  */
 
 import React from 'react';
+import { useEffect } from 'react';
 import { AnimatePresence, motion } from 'framer-motion';
 import { Users, Phone, Target, Calendar, ChevronDown, Trophy, AlertTriangle, X, FileIcon, FileText } from 'lucide-react';
 import { useResolvedTheme, useManagerDashboard, PERIOD_OPTIONS } from '@/hooks';
+import { posthogAnalytics } from '@/lib/analytics/posthog.service';
 import AeDetailView from './AEDetailView';
 import { ManagerDashboardProps } from '@/types';
 import { StatCard, StatCardSkeleton, ChartSkeleton, ListSkeleton, TableSkeleton, TeamScoreChart } from './ManagerDashboardWidgets';
@@ -30,6 +32,11 @@ import { TopObjectionsList, RankedRepList, AllAEsTable, SectionCard } from './Ma
 // ─── Main export ─────────────────────────────────────────────────────────────
 
 export const ManagerDashboard: React.FC<ManagerDashboardProps> = ({ isOpen }) => {
+
+    useEffect(() => {
+        if (isOpen) posthogAnalytics.trackAdminDashboardView();
+        if (isOpen) posthogAnalytics.trackPageView('manager_dashboard');
+    }, [isOpen]);
 
     const isLight = useResolvedTheme() === 'light';
 

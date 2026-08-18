@@ -1,6 +1,7 @@
 import { useState, useCallback, useRef, useEffect } from 'react';
 import { LiveAnalysisData, LiveAnalysisTurn, MeetingType } from '@/types';
 import { intelligenceApi } from '@/api/intelligenceApi';
+import { posthogAnalytics } from '@/lib/analytics/posthog.service';
 
 // ─── Prompt builders ─────────────────────────────────────────────────────────
 //
@@ -635,6 +636,11 @@ export const useLiveAnalysis = (
   const [isRefreshRun, setIsRefreshRun] = useState(false);
   // Ref-based in-flight guard — avoids stale closure issues that a state-based check would have.
   const isLoadingRef = useRef(false);
+  // Bumped by resetAnalysis() every time a new session starts. runAnalysis snapshots
+  // this at call time and re-checks it after its await — if the next meeting starts
+  // while a request from the PREVIOUS meeting is still in flight, that stale response
+  // must never be written into the new meeting's state.
+  const sessionIdRef = useRef(0);
   // Cursor: index into the FILTERED humanTurns array (system/ai/assistant/model excluded)
   // of the last entry included in the previous analysis run.
   // IMPORTANT: this must track humanTurns indices, NOT raw transcript.length, because
@@ -699,12 +705,18 @@ export const useLiveAnalysis = (
       return;
     }
 
+    // force=true is the manual "Refresh" button (and the first-open kick);
+    // force=false is the unattended auto-refresh timer firing on its own.
+    posthogAnalytics.trackLiveAnalysisRefresh(force ? 'manual' : 'auto');
+
     isLoadingRef.current = true;
     setIsLoading(true);
     setError(null);
+    window.electronAPI?.setLiveAnalysisInFlight?.(true).catch(() => { });
 
     // Snapshot cursor and prior state at call time to avoid stale closures
     const priorState = analysisDataRef.current;
+    const runSessionId = sessionIdRef.current;
 
     try {
       // ── Build transcript strings ─────────────────────────────────────
@@ -828,6 +840,10 @@ export const useLiveAnalysis = (
           previousAnalysis: priorState,
         });
 
+        // Stale-session guard: discard a response that belongs to a meeting
+        // that's no longer current instead of writing it into the new one.
+        if (sessionIdRef.current !== runSessionId) return;
+
         // Backend already merged (see stampIds note); just re-stamp stable ids + dedupe.
         const merged = stampIds(parsed);
 
@@ -845,6 +861,7 @@ export const useLiveAnalysis = (
         // No backend merge on this path — livePrompt asks the LLM to merge, and
         // mergeWithPrior is the deterministic safety net on top (append guard + ids).
         const parsed = await runAnalysisViaAnthropicAPI(livePrompt);
+        if (sessionIdRef.current !== runSessionId) return;
         const merged = mergeWithPrior(parsed, priorState);
         lastAnalyzedIndexRef.current = currentEndIndex;
         lastAnalysisTimeRef.current = Date.now();
@@ -856,9 +873,16 @@ export const useLiveAnalysis = (
       }
     } catch (e: any) {
       setError(e?.message || 'Analysis failed');
+      // A stale request failing must not surface an error banner on the new session.
+      if (sessionIdRef.current === runSessionId) {
+        setError(e?.message || 'Analysis failed');
+      }
     } finally {
+      // Unconditional: this gates whether the NEXT session's runAnalysis can run at
+      // all — must always clear regardless of which session it belonged to.
       isLoadingRef.current = false;
       setIsLoading(false);
+      window.electronAPI?.setLiveAnalysisInFlight?.(false).catch(() => { });
     }
   }, [transcriptRef, isMeetingPaused, setAnalysisDataAndRef]);
 
@@ -892,6 +916,7 @@ export const useLiveAnalysis = (
   }, [transcriptRef, isMeetingPaused, runAnalysis]);
 
   const resetAnalysis = useCallback(() => {
+    sessionIdRef.current += 1;
     analysisDataRef.current = null;
     lastAnalyzedIndexRef.current = 0;
     lastAnalysisTimeRef.current = 0;

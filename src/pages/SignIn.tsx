@@ -6,16 +6,25 @@
  * live in useSignIn; this component only owns rendering.
  */
 
+import { useEffect } from "react";
 import { LoaderCircle, X } from "lucide-react";
 import { motion } from "framer-motion";
 import { useResolvedTheme, useSignIn } from '@/hooks';
 import { SignInProps } from "@/types";
 import { AuthBackground, AuthDecorativeLines, AuthLogo, AuthPageShell } from '@/features/auth';
 import { AuthFormField, PasswordField, fieldVariants, GoogleIcon } from '@/features/auth';
+import { posthogAnalytics } from "@/lib/analytics/posthog.service";
 
 export const SignIn: React.FC<SignInProps> = ({ bannerMessage, onBannerDismiss }) => {
 
     const isLight = useResolvedTheme() === 'light';
+
+    // Fires once on mount, independent of which mode (sign-in / sign-up /
+    // reset) the user lands on or later switches to — this is one screen
+    // for page-view purposes, per the spec ("no matter of login or signup").
+    useEffect(() => {
+        posthogAnalytics.trackPageView('registration');
+    }, []);
 
     const signInStates = useSignIn();
 
@@ -165,7 +174,10 @@ export const SignIn: React.FC<SignInProps> = ({ bannerMessage, onBannerDismiss }
                                     />
                                 )}
 
-                                {mode === "sign-in" && <button type="button" onClick={() => setMode("reset")} className="text-xs mb-4 w-full flex justify-end text-blue-500 hover:text-blue-400">
+                                {mode === "sign-in" && <button type="button" onClick={() => {
+                                    posthogAnalytics.trackForgotPasswordClicked();
+                                    setMode("reset");
+                                }} className="text-xs mb-4 w-full flex justify-end text-blue-500 hover:text-blue-400">
                                     Forgot password?
                                 </button>}
 

@@ -10,7 +10,102 @@ import { LiveAnalysisData, MeetingScorecardResult } from '../src/types';
 import { AppState } from './main';
 import { buildCompanyContextBlock } from '../electron/utils/salesBriefUtils';
 import { buildScorecardPrompt } from './llm/ScoreCardLLM';
+import { BANT_ORDER, MEDDICC_ORDER } from '../src/lib/bantMeddic';
+
 const crypto = require('crypto');
+
+// ── BANT/MEDDIC reconciliation ──────────────────────────────────────────────
+// buildSummaryPrompt() TELLS the LLM live analysis is authoritative and to
+// "copy these values directly" — but that's a prompt instruction, not a
+// guarantee. The LLM can paraphrase evidence, misapply the status mapping,
+// or re-derive a field from the transcript instead of trusting the supplied
+// value, especially on a fallback-tier provider. This function makes that
+// guarantee real: it overwrites summaryData.bant/meddicc in code, directly
+// from liveAnalysisData, so the Summary tab and the Call Analysis tab can
+// never disagree on BANT/MEDDIC status or evidence.
+
+// salesCoachReview.whatIDidRight's BANT/MEDDICC-labelled items are reconciled
+// the same way (see buildConfirmedWhatIDidRight below): the LLM was previously
+// free to cherry-pick up to 6 "wins" from the transcript on its own judgment,
+// which routinely disagreed with the Confirmed set shown in Call Analysis.
+// Those items are now derived deterministically from the same
+// liveAnalysis-backed bant/meddicc objects below, so "Sales Self-Analysis"
+// can never show a different confirmed count than the live Call Analysis tab.
+// Only fields that legitimately require transcript reasoning (overview,
+// dealStatus, whatICouldHaveDoneBetter, whatIMissedCompletely,
+// nextCallPlaybook, keyPoints, actionItems) are left for the LLM.
+
+const toComponentName = (camelKey: string): string => camelKey.charAt(0).toUpperCase() + camelKey.slice(1);
+
+function buildConfirmedWhatIDidRight(
+    bant: Record<string, { status: string; detail: string }>,
+    meddicc: Record<string, { status: string; detail: string }>,
+): string[] {
+    const meddiccItems = MEDDICC_ORDER
+        .filter((key) => meddicc[key]?.status === 'Clear')
+        .map((key) => `MEDDICC ${toComponentName(key)}: ${meddicc[key].detail}`);
+
+    const bantItems = BANT_ORDER
+        .filter((key) => bant[key]?.status === 'Clear')
+        .map((key) => `BANT ${toComponentName(key)}: ${bant[key].detail}`);
+
+    return [...meddiccItems, ...bantItems];
+}
+const STATUS_MAP: Record<string, string> = {
+    confirmed: 'Clear',
+    partial: 'Partial',
+    missing: 'Missing',
+    '': 'Missing',
+};
+
+function reconcileBantMeddicWithLiveAnalysis(
+    summaryData: any,
+    liveAnalysis: LiveAnalysisData | null | undefined,
+): any {
+
+    if (!liveAnalysis) return summaryData; // nothing to reconcile against — leave LLM output as-is
+
+    const field = (f: { status: string; evidence: string } | undefined) => ({
+        status: STATUS_MAP[f?.status ?? ''] ?? 'Missing',
+        detail: f?.evidence || '',
+    });
+
+    const reconciledBant = {
+        budget: field(liveAnalysis.bant?.budget),
+        authority: field(liveAnalysis.bant?.authority),
+        need: field(liveAnalysis.bant?.need),
+        timeline: field(liveAnalysis.bant?.timeline),
+    };
+
+    const reconciledMeddicc = {
+        metrics: field(liveAnalysis.meddic?.metrics),
+        economicBuyer: field(liveAnalysis.meddic?.economic_buyer),
+        decisionCriteria: field(liveAnalysis.meddic?.decision_criteria),
+        decisionProcess: field(liveAnalysis.meddic?.decision_process),
+        identifyPain: field(liveAnalysis.meddic?.identify_pain),
+        champion: field(liveAnalysis.meddic?.champion),
+        competition: field(liveAnalysis.meddic?.competition),
+        // gaps is genuinely a summarization task (which of the 7 fields
+        // are weak) — keep the LLM's own list rather than recomputing it
+        // here, but fall back to deriving it from the reconciled statuses
+        // above if the LLM omitted it.
+        gaps: summaryData?.meddicc?.gaps?.length
+            ? summaryData.meddicc.gaps
+            : (['metrics', 'economic_buyer', 'decision_criteria', 'decision_process', 'identify_pain', 'champion', 'competition'] as const)
+                .filter((k) => (liveAnalysis.meddic as any)?.[k]?.status !== 'confirmed')
+                .map((k) => k),
+    };
+
+    return {
+        ...summaryData,
+        bant: reconciledBant,
+        meddicc: reconciledMeddicc,
+        salesCoachReview: {
+            ...summaryData?.salesCoachReview,
+            whatIDidRight: buildConfirmedWhatIDidRight(reconciledBant, reconciledMeddicc),
+        },
+    };
+}
 
 const buildSummaryPrompt = (liveAnalysis?: LiveAnalysisData | null, companyIntel?: Record<string, any> | null): string => {
 
@@ -324,7 +419,13 @@ export class MeetingPersistence {
             durationMs: durationMs,
             summary: "Generating summary...",
             detailedSummary: { actionItems: [], keyPoints: [] },
-            transcript: [],
+            // Real transcript, not empty — it's already captured in `snapshot`
+            // above and there's no reason to make the Transcript tab wait on
+            // background summary/scorecard processing to see it. saveMeeting()
+            // now clears-and-reinserts transcript rows on every call, so the
+            // later final save in processAndSaveMeeting() safely replaces this
+            // rather than duplicating it.
+            transcript: snapshot.transcript,
             usage: [],
             tenantId: tenantId || null,
             isProcessed: false
@@ -396,6 +497,8 @@ export class MeetingPersistence {
             })
             .join('\n');
 
+        console.log("data.transcript: -> ", data.transcript);
+
         try {
             // Generate Title (only if not set by calendar)
             if (!metadata || !metadata.title) {
@@ -409,7 +512,7 @@ export class MeetingPersistence {
                     .join('\n')
                     .substring(0, 5000);
 
-                const generatedTitle = await this.llmHelper.generateMeetingSummary(titlePrompt, titleContext, groqTitlePrompt);
+                const generatedTitle = await this.llmHelper.generateMeetingSummary(titlePrompt, titleContext, groqTitlePrompt, 'title');
                 if (generatedTitle) title = generatedTitle.replace(/[\"*]/g, '').trim();
             }
 
@@ -428,13 +531,22 @@ export class MeetingPersistence {
                     ? GROQ_SUMMARY_JSON_PROMPT + '\n\n' + liveAnalysisGroqBlock
                     : GROQ_SUMMARY_JSON_PROMPT;
 
-                const generatedSummary = await this.llmHelper.generateMeetingSummary(buildSummaryPrompt(liveAnalysisData, companyIntel), fullTranscriptText, groqSummaryPrompt);
+                const generatedSummary = await this.llmHelper.generateMeetingSummary(buildSummaryPrompt(liveAnalysisData, companyIntel), fullTranscriptText, groqSummaryPrompt, 'summary');
 
                 if (generatedSummary) {
                     const jsonMatch = generatedSummary.match(/```json\n([\s\S]*?)\n```/) || [null, generatedSummary];
                     const jsonStr = (jsonMatch[1] || generatedSummary).trim();
                     try {
-                        summaryData = JSON.parse(jsonStr);
+                        // Parse the LLM's structured summary FIRST — this carries
+                        // overview/keyPoints/actionItems/dealStatus/salesCoachReview/
+                        // nextCallPlaybook. Losing this step means the summary tab
+                        // renders empty even though bant/meddicc still get filled in
+                        // below from live analysis.
+                        const parsedSummary = JSON.parse(jsonStr);
+                        // Guarantee BANT/MEDDIC in the summary matches live
+                        // analysis exactly — see reconcileBantMeddicWithLiveAnalysis
+                        // for why the prompt instruction alone isn't enough.
+                        summaryData = reconcileBantMeddicWithLiveAnalysis({ ...summaryData, ...parsedSummary }, liveAnalysisData);
                     } catch (e) { console.error("Failed to parse summary JSON", e); }
                 }
             } else {
@@ -570,6 +682,12 @@ export class MeetingPersistence {
             // Notify Frontend to refresh list
             const wins = require('electron').BrowserWindow.getAllWindows();
             wins.forEach((w: any) => w.webContents.send('meetings-updated'));
+            // Separate, analytics-specific signal from 'meetings-updated' above —
+            // that event also fires on paths that aren't "a meeting successfully
+            // finished processing" (e.g. list refreshes), so it's not a safe
+            // proxy for counting completed meetings. This one fires exactly once
+            // per successfully saved meeting.
+            wins.forEach((w: any) => w.webContents.send('meeting-completed'));
 
         } catch (error) {
             console.error('[MeetingPersistence] Failed to save meeting:', error);
@@ -608,7 +726,8 @@ export class MeetingPersistence {
             const scorecardRaw = await this.llmHelper.generateMeetingSummary(
                 scorecardPrompt,
                 transcriptText,
-                scorecardPrompt
+                scorecardPrompt,
+                'meeting_score'
             );
             if (scorecardRaw) {
                 const clean = scorecardRaw.replace(/```json|```/g, '').trim();
@@ -631,6 +750,31 @@ export class MeetingPersistence {
 
         if (!scorecardResult) {
             return { scorecardResult: null, persisted: false };
+        }
+
+        // Merge with any previously-saved scorecard so that a regenerate run
+        // which only re-detects a subset of types (LLM output isn't fully
+        // deterministic run-to-run) doesn't blow away scores for types that
+        // aren't returned this time. New results win per-type; older types
+        // not present in this run are carried forward as-is.
+        const previousScorecard = DatabaseManager.getInstance().getMeetingScorecard(meetingId);
+        if (previousScorecard?.scorecards?.length) {
+            const newTypes = new Set(scorecardResult.scorecards.map(sc => sc.meetingType));
+            const carriedOver = previousScorecard.scorecards.filter(sc => !newTypes.has(sc.meetingType));
+            const mergedScorecards = [...scorecardResult.scorecards, ...carriedOver];
+            const mergedDetectedTypes = Array.from(new Set([
+                ...scorecardResult.detectedTypes,
+                ...carriedOver.map(sc => sc.meetingType),
+            ]));
+            const mergedOverallScore = mergedScorecards.length
+                ? mergedScorecards.reduce((sum, sc) => sum + (sc.overallScore ?? 0), 0) / mergedScorecards.length
+                : scorecardResult.overallWeightedScore;
+
+            scorecardResult = {
+                scorecards: mergedScorecards,
+                detectedTypes: mergedDetectedTypes,
+                overallWeightedScore: mergedOverallScore,
+            };
         }
 
         // Write scorecard to its dedicated table — NOT into summary_json
@@ -712,34 +856,44 @@ export class MeetingPersistence {
             const generatedSummary = await this.llmHelper.generateMeetingSummary(
                 buildSummaryPrompt(existingLiveAnalysis),
                 fullRegenerateContext,
-                groqSummaryPrompt
+                groqSummaryPrompt,
+                'summary'
             );
 
             if (!generatedSummary) return false;
 
             const jsonMatch = generatedSummary.match(/```json\n([\s\S]*?)\n```/) || [null, generatedSummary];
             const jsonStr = (jsonMatch[1] || generatedSummary).trim();
-            const summaryData = JSON.parse(jsonStr);
+            let summaryData = JSON.parse(jsonStr);
+            // Same guarantee as the initial save path — regenerating must not
+            // let BANT/MEDDIC drift from the meeting's stored live analysis.
+            summaryData = reconcileBantMeddicWithLiveAnalysis(summaryData, existingLiveAnalysis);
 
             DatabaseManager.getInstance().updateMeetingSummary(meetingId, summaryData);
             console.log(`[MeetingPersistence] Regenerated summary for meeting ${meetingId}`);
 
             // Re-score using the latest criteria so any criteria changes made before
             // clicking "regenerate" are reflected in the scorecard shown in the UI.
-            const existingTypes = (meeting.detailedSummary as any)?.scorecard?.detectedTypes ?? null;
-            try {
-                await this.regenerateScorecard(meetingId, fullRegenerateContext, existingTypes);
-            } catch (scorecardErr) {
-                // Non-fatal: text summary was already saved; log and continue.
-                console.warn('[MeetingPersistence] Scorecard regeneration failed (non-fatal):', scorecardErr);
-            }
+            // const existingTypes = (meeting.detailedSummary as any)?.scorecard?.detectedTypes ?? null;
+            // try {
+            //     await this.regenerateScorecard(meetingId, fullRegenerateContext, existingTypes);
+            // } catch (scorecardErr) {
+            //     // Non-fatal: text summary was already saved; log and continue.
+            //     console.warn('[MeetingPersistence] Scorecard regeneration failed (non-fatal):', scorecardErr);
+            // }
 
             return true;
 
         } catch (e) {
 
             console.error('[MeetingPersistence] Failed to regenerate summary:', e);
-            return false;
+            // Previously swallowed to `return false` here, which lost the actual
+            // provider error (e.g. Gemini "RESOURCE_EXHAUSTED" / Groq rate-limit
+            // text set on `e` by LLMHelper.generateMeetingSummary) — the caller
+            // only ever saw a generic failure. Rethrow so it reaches the
+            // regenerate-meeting-summary IPC handler's catch, which returns
+            // { success: false, error } with the real message intact.
+            throw e;
 
         }
     }
@@ -822,7 +976,10 @@ export class MeetingPersistence {
                 durationMs: durationMs,
                 summary: 'Generating summary...',
                 detailedSummary: { actionItems: [], keyPoints: [] },
-                transcript: [],
+                // Same reasoning as the live-meeting placeholder — the full
+                // transcript is already parsed and sitting in memory at this
+                // point, no reason to withhold it until background processing.
+                transcript,
                 usage: [],
                 isProcessed: false,
             };
