@@ -1,5 +1,26 @@
 import { LiveAnalysisData } from "@/types";
 
+/** macOS TCC state for a single privacy service. */
+export type PermissionStatus = 'granted' | 'denied' | 'not-determined' | 'restricted'
+
+/**
+ * An audio capture problem the user should know about.
+ *
+ * `stuck` means the capture is producing nothing useful (no chunks, or nothing
+ * but silence) — the signature of a revoked Screen Recording grant, which macOS
+ * reports by zero-filling rather than by erroring. `terminal` means recovery was
+ * attempted and abandoned. Transient failures set neither and should not be
+ * surfaced, since recovery usually succeeds within a second or two.
+ */
+export interface AudioCaptureFailure {
+  channel: 'system' | 'mic'
+  message: string
+  attempt: number
+  maxAttempts: number
+  terminal?: boolean
+  stuck?: boolean
+}
+
 export interface ElectronAPI {
   // ===========================================================================
   // Window Management
@@ -192,9 +213,31 @@ export interface ElectronAPI {
   getInputDevices: () => Promise<Array<{ id: string; name: string }>>
   getOutputDevices: () => Promise<Array<{ id: string; name: string }>>
   getPlatform: () => string
-  checkPermissions: () => Promise<{ microphone: boolean; systemAudio: boolean; screenCapture: boolean }>
+  checkPermissions: () => Promise<{
+    microphone: boolean
+    systemAudio: boolean
+    screenCapture: boolean
+    /** Full TCC tri-state, so the UI can tell "never asked" from "denied". */
+    microphoneStatus: PermissionStatus
+    screenStatus: PermissionStatus
+    platform: string
+  }>
   requestPermission: (type: 'microphone' | 'screen') => Promise<boolean>
-  openPermissionSettings: () => Promise<void>
+  /** `pane` picks which macOS Privacy pane to open. Defaults to microphone. */
+  openPermissionSettings: (pane?: 'microphone' | 'screen') => Promise<void>
+  /**
+   * Replays the last screen-capture warning latched by the main process. Needed
+   * because the startup denial check can fire before a renderer has subscribed.
+   */
+  getSystemAudioPermissionWarning: () => Promise<string | null>
+  /** Runs `tccutil reset` for Microphone + ScreenCapture. macOS only. */
+  repairTccPermissions: () => Promise<{
+    ok: boolean
+    bundleId?: string
+    results?: Array<{ service: string; ok: boolean; output: string }>
+    promptRelaunch?: boolean
+    message: string
+  }>
 
   // ===========================================================================
   // Native Audio Service Events
@@ -204,10 +247,16 @@ export interface ElectronAPI {
   onNativeAudioConnected: (callback: () => void) => () => void
   onNativeAudioDisconnected: (callback: () => void) => () => void
   onMeetingAudioWarning: (callback: (message: string) => void) => () => void
+  onMeetingAudioError: (callback: (message: string) => void) => () => void
+  onSystemAudioPermissionDenied: (callback: (message: string) => void) => () => void
+  onAudioCaptureFailed: (callback: (payload: AudioCaptureFailure) => void) => () => void
   getNativeAudioStatus: () => Promise<{ connected: boolean }>
   startAudioTest: (deviceId?: string) => Promise<{ success: boolean }>
   stopAudioTest: () => Promise<{ success: boolean }>
   onAudioTestLevel: (callback: (level: number) => void) => () => void
+  /** System-audio probe, emitted during the same startAudioTest lifecycle. */
+  onAudioTestSystemLevel: (callback: (level: number) => void) => () => void
+  onAudioTestSystemError: (callback: (errorMessage: string) => void) => () => void
 
   // ===========================================================================
   // Intelligence Mode (Assist / What-To-Say / Clarify / Hints / Recap / etc.)

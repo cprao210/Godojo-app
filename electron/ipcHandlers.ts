@@ -1,7 +1,13 @@
 // ipcHandlers.ts
 
 import { app, ipcMain, shell, dialog, desktopCapturer, systemPreferences, BrowserWindow, screen, session } from "electron"
-import { AppState } from "./main"
+import { AppState, getLatestSystemAudioPermissionWarning } from "./main"
+import {
+  getMacMicrophoneStatus,
+  getMacScreenCaptureStatus,
+  MAC_SETTINGS_PANES,
+  type MacSettingsPane,
+} from './utils/macPermissions';
 import { GEMINI_FLASH_MODEL } from "./IntelligenceManager"
 import { DatabaseManager } from "./db/DatabaseManager"; // Import Database Manager
 import { SupabaseReadService } from "./db/SupabaseReadService";
@@ -3720,18 +3726,38 @@ export function initializeIpcHandlers(appState: AppState): void {
   // ==========================================
   safeHandle("check-permissions", async () => {
     const isMac = process.platform === 'darwin';
-    
-    // Default to true on Windows, check explicitly on Mac
-    let mic = true;
-    let screenPerm = true; 
 
-    if (isMac) {
-        mic = systemPreferences.getMediaAccessStatus('microphone') === 'granted';
-        // Screen capture permission is required for system audio on Mac (ScreenCaptureKit)
-        screenPerm = systemPreferences.getMediaAccessStatus('screen') === 'granted';
+    // Windows/Linux have no screen-capture gate (WASAPI loopback is ungated) and
+    // handle the microphone at first use, so report both as available there.
+    if (!isMac) {
+      return {
+        microphone: true,
+        systemAudio: true,
+        screenCapture: true,
+        microphoneStatus: 'granted',
+        screenStatus: 'granted',
+        platform: process.platform,
+      };
     }
 
-    return { microphone: mic, systemAudio: screenPerm, screenCapture: screenPerm };
+    // Routed through the shared helper rather than systemPreferences directly so
+    // the dev bypass applies consistently — otherwise the tray would report
+    // "denied" while the audio pipeline believed it was granted.
+    const screenStatus = getMacScreenCaptureStatus();
+    const microphoneStatus = getMacMicrophoneStatus();
+    const screenPerm = screenStatus === 'granted';
+
+    return {
+      // Booleans kept for the existing callers (AudioStatusTray, meeting gate).
+      microphone: microphoneStatus === 'granted',
+      systemAudio: screenPerm,
+      screenCapture: screenPerm,
+      // Full tri-state, so the UI can tell "never asked" from "actively denied"
+      // and word its prompt accordingly.
+      microphoneStatus,
+      screenStatus,
+      platform: process.platform,
+    };
   });
 
   safeHandle("request-permission", async (_, type: 'microphone' | 'screen') => {
@@ -3740,20 +3766,90 @@ export function initializeIpcHandlers(appState: AppState): void {
     if (type === 'microphone') {
         return await systemPreferences.askForMediaAccess('microphone');
     } else if (type === 'screen') {
-        // macOS does not have an "ask" API for screen recording, it only prompts 
-        // automatically when a capture is attempted, or we direct them to settings.
-        shell.openExternal('x-apple.systempreferences:com.apple.preference.security?Privacy_ScreenCapture');
-        return false; // User must restart app after granting this
+        // There is no askForMediaAccess('screen'). macOS only raises the sheet
+        // when a protected API is called, and once denied it cannot be
+        // re-prompted at all — the user has to toggle it in System Settings.
+        shell.openExternal(MAC_SETTINGS_PANES.screen);
+        return false; // Requires a restart after granting.
     }
     return false;
   });
 
-  safeHandle("open-permission-settings", async () => {
+  // `pane` selects which Privacy pane to open. It previously always opened
+  // Microphone, so the System Audio row's "Settings" link sent users to the
+  // wrong place entirely.
+  safeHandle("open-permission-settings", async (_, pane: MacSettingsPane = 'microphone') => {
+    const target: MacSettingsPane = pane === 'screen' ? 'screen' : 'microphone';
     if (process.platform === 'darwin') {
-        shell.openExternal('x-apple.systempreferences:com.apple.preference.security?Privacy_Microphone');
+        shell.openExternal(MAC_SETTINGS_PANES[target]);
     } else {
+        // Windows has no screen-capture pane; microphone is the only mapping.
         shell.openExternal('ms-settings:privacy-microphone');
     }
+  });
+
+  // Replays the most recent screen-capture warning. The startup denial check
+  // runs ~800ms after window creation, which can be before a renderer has
+  // subscribed — without a replay the user would never see that warning.
+  safeHandle("get-system-audio-permission-warning", async () => {
+    return getLatestSystemAudioPermissionWarning();
+  });
+
+  // In-app TCC repair.
+  //
+  // macOS binds a TCC grant to the binary's cdhash. This build is ad-hoc signed
+  // (mac.identity is null + scripts/ad-hoc-sign.js), so the cdhash changes on
+  // every rebuild and the grant is orphaned — System Settings still shows the
+  // app as allowed while capture is silently zero-filled. Resetting the entries
+  // lets macOS prompt cleanly again, which is the only user-accessible fix short
+  // of Developer ID signing.
+  safeHandle("repair-tcc-permissions", async () => {
+    if (process.platform !== 'darwin') {
+      return { ok: false, message: 'Permission repair is only available on macOS.' };
+    }
+
+    // In dev, TCC entries land against the Electron binary's own bundle id, not
+    // ours — resetting our appId there would be a no-op.
+    const bundleId = app.isPackaged ? 'com.electron.meeting-notes' : 'com.github.Electron';
+
+    const { execFile } = require('node:child_process');
+    const { promisify } = require('node:util');
+    const execFileAsync = promisify(execFile);
+
+    // Capitalisation matters: tccutil rejects lowercase service names with
+    // "Invalid Service Name".
+    const services = ['Microphone', 'ScreenCapture'];
+    const results: Array<{ service: string; ok: boolean; output: string }> = [];
+
+    for (const service of services) {
+      try {
+        // Absolute path, not the bare name: tccutil is a SIP-protected stock
+        // binary, and resolving via inherited PATH could be redirected.
+        const { stdout, stderr } = await execFileAsync(
+          '/usr/bin/tccutil', ['reset', service, bundleId], { timeout: 5000 },
+        );
+        results.push({ service, ok: true, output: (stdout || stderr || '').toString().trim() });
+        console.log(`[IPC] tccutil reset ${service} ${bundleId}: OK`);
+      } catch (err: any) {
+        const msg = (err?.stderr?.toString?.() || err?.message || String(err)).trim();
+        results.push({ service, ok: false, output: msg });
+        console.warn(`[IPC] tccutil reset ${service} ${bundleId} failed: ${msg}`);
+      }
+    }
+
+    const anyOk = results.some((r) => r.ok);
+    return {
+      ok: anyOk,
+      bundleId,
+      results,
+      promptRelaunch: anyOk,
+      message: anyOk
+        ? 'Permissions reset. Quit GoDojo AI completely (Cmd+Q) and reopen — macOS will ask for Microphone and Screen Recording again. Approve both to restore audio capture.'
+        : `Permission reset failed for ${bundleId}. ${results
+            .filter((r) => !r.ok)
+            .map((r) => `${r.service}: ${r.output}`)
+            .join('; ')}`,
+    };
   });
 
   safeHandle('auth:get-state', async () => {

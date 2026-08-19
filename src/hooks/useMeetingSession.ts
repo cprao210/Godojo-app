@@ -148,12 +148,24 @@ export function useMeetingSession(
 
     const handleStartMeeting = async (calendarEvent?: any) => {
         if (isStartingRef.current) return;
-        
-        const perms = await window.electronAPI.checkPermissions();
-        if (!perms.microphone || !perms.systemAudio) {
-            setPendingEvent(calendarEvent);
-            setShowPermissionTray(true);
-            return;
+
+        // Optional-chained and wrapped: an unguarded reject here escaped the
+        // click handler as an unhandled rejection, leaving the button dead with
+        // no feedback. A permission check failing must never be worse than
+        // proceeding, so on error we fall through and let the main-process gates
+        // (which re-check anyway) make the call.
+        try {
+            const perms = await window.electronAPI?.checkPermissions?.();
+            // screenCapture is included because the tray's "all granted" state
+            // requires it — checking only microphone/systemAudio meant the tray
+            // could never be satisfied and the user got stuck behind it.
+            if (perms && (!perms.microphone || !perms.systemAudio || !perms.screenCapture)) {
+                setPendingEvent(calendarEvent);
+                setShowPermissionTray(true);
+                return;
+            }
+        } catch (err) {
+            console.warn('[useMeetingSession] Permission pre-check failed; continuing to start:', err);
         }
 
         await handleStartMeetingRaw(calendarEvent);

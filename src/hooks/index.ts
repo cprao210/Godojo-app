@@ -57,6 +57,7 @@ import { useSettingsOverlay } from "./useSettingsOverlay";
 import { useSttProviderSettings, STT_PROVIDER_KEY_URLS } from "./useSttProviderSettings";
 import { useCompanyContext, ALLOWED_EXTENSIONS, MAX_FILE_SIZE_BYTES, ASSET_CONFIG, STATUS_BADGE, normalizeContext } from "./useCompanyContext";
 import { useUpdateStatus } from "./useUpdateStatus";
+import { useSystemAudioPermission } from "./useSystemAudioPermission";
 export type { UseUpdateStatusResult } from "./useUpdateStatus";
 
 export {
@@ -140,5 +141,6 @@ export {
     useCalendarIntegrationSettings,
     useTranscriptVisibility,
     useSettingsOverlay,
-    useUpdateStatus
+    useUpdateStatus,
+    useSystemAudioPermission
 };

@@ -18,6 +18,12 @@ export function useAudioDeviceSettings({ isOpen, activeTab }: UseAudioDeviceSett
     const [selectedInput, setSelectedInput] = useState('');
     const [selectedOutput, setSelectedOutput] = useState('');
     const [micLevel, setMicLevel] = useState(0);
+    // The system-audio side of the same test. Separate from micLevel because the
+    // two can fail independently — a denied Screen Recording grant leaves the mic
+    // meter working perfectly, which is exactly how users concluded audio was fine.
+    const [systemAudioLevel, setSystemAudioLevel] = useState(0);
+    const [systemAudioError, setSystemAudioError] = useState<string | null>(null);
+    const [micError, setMicError] = useState<string | null>(null);
     const [useExperimentalSck, setUseExperimentalSck] = useState(isMac);
 
     // ── Load devices + saved preferences whenever the overlay opens ─────────
@@ -68,10 +74,16 @@ export function useAudioDeviceSettings({ isOpen, activeTab }: UseAudioDeviceSett
         // Re-run if isOpen changes, or if a selected device was cleared elsewhere.
     }, [isOpen, selectedInput, selectedOutput]);
 
-    // ── Live mic-level test, only while the Audio tab is actually visible ───
+    // ── Live mic + system-audio test, only while the Audio tab is visible ───
+    //
+    // One startAudioTest drives both meters: the main process runs a mic capture
+    // and an independent system-audio probe, reporting them on separate channels.
     useEffect(() => {
         if (!(isOpen && activeTab === 'audio')) {
             setMicLevel(0);
+            setSystemAudioLevel(0);
+            setSystemAudioError(null);
+            setMicError(null);
             window.electronAPI?.stopAudioTest?.().catch((error) =>
                 console.error('[useAudioDeviceSettings] Error stopping microphone test:', error),
             );
@@ -81,18 +93,33 @@ export function useAudioDeviceSettings({ isOpen, activeTab }: UseAudioDeviceSett
         const unsubscribe = window.electronAPI?.onAudioTestLevel?.((level: number) => {
             setMicLevel(Math.max(0, Math.min(100, level * 100)));
         });
+        const unsubscribeSystemLevel = window.electronAPI?.onAudioTestSystemLevel?.((level: number) => {
+            // Any sample arriving means the probe is alive, so clear a stale error.
+            setSystemAudioError(null);
+            setSystemAudioLevel(Math.max(0, Math.min(100, level * 100)));
+        });
+        const unsubscribeSystemError = window.electronAPI?.onAudioTestSystemError?.((message: string) => {
+            setSystemAudioError(message);
+            setSystemAudioLevel(0);
+        });
 
         window.electronAPI?.startAudioTest(selectedInput || undefined).catch((error) => {
             console.error('[useAudioDeviceSettings] Error starting microphone test:', error);
             setMicLevel(0);
+            // Surface it instead of silently flatlining the meter — a mic-denied
+            // rejection used to look identical to a muted microphone.
+            setMicError(error?.message || 'Microphone test failed to start.');
         });
 
         return () => {
             unsubscribe?.();
+            unsubscribeSystemLevel?.();
+            unsubscribeSystemError?.();
             window.electronAPI?.stopAudioTest?.().catch((error) =>
                 console.error('[useAudioDeviceSettings] Error stopping microphone test:', error),
             );
             setMicLevel(0);
+            setSystemAudioLevel(0);
         };
     }, [isOpen, activeTab, selectedInput]);
 
@@ -155,6 +182,9 @@ export function useAudioDeviceSettings({ isOpen, activeTab }: UseAudioDeviceSett
         selectedInput,
         selectedOutput,
         micLevel,
+        micError,
+        systemAudioLevel,
+        systemAudioError,
         useExperimentalSck,
         selectInputDevice,
         selectOutputDevice,

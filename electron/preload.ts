@@ -83,12 +83,43 @@ interface ElectronAPI {
   onNativeAudioConnected: (callback: () => void) => () => void
   onNativeAudioDisconnected: (callback: () => void) => () => void
   onMeetingAudioWarning: (callback: (message: string) => void) => () => void
+  onMeetingAudioError: (callback: (message: string) => void) => () => void
+  onSystemAudioPermissionDenied: (callback: (message: string) => void) => () => void
+  onAudioCaptureFailed: (
+    callback: (payload: {
+      channel: 'system' | 'mic'
+      message: string
+      attempt: number
+      maxAttempts: number
+      terminal?: boolean
+      stuck?: boolean
+    }) => void,
+  ) => () => void
   onSuggestionGenerated: (callback: (data: { question: string; suggestion: string; confidence: number }) => void) => () => void
   onSuggestionProcessingStart: (callback: () => void) => () => void
   onSuggestionError: (callback: (error: { error: string }) => void) => () => void
   generateSuggestion: (context: string, lastQuestion: string) => Promise<{ suggestion: string }>
   getInputDevices: () => Promise<Array<{ id: string; name: string }>>
   getOutputDevices: () => Promise<Array<{ id: string; name: string }>>
+  getPlatform: () => string
+  checkPermissions: () => Promise<{
+    microphone: boolean
+    systemAudio: boolean
+    screenCapture: boolean
+    microphoneStatus: 'granted' | 'denied' | 'not-determined' | 'restricted'
+    screenStatus: 'granted' | 'denied' | 'not-determined' | 'restricted'
+    platform: string
+  }>
+  requestPermission: (type: 'microphone' | 'screen') => Promise<boolean>
+  openPermissionSettings: (pane?: 'microphone' | 'screen') => Promise<void>
+  getSystemAudioPermissionWarning: () => Promise<string | null>
+  repairTccPermissions: () => Promise<{
+    ok: boolean
+    bundleId?: string
+    results?: Array<{ service: string; ok: boolean; output: string }>
+    promptRelaunch?: boolean
+    message: string
+  }>
   setRecognitionLanguage: (key: string) => Promise<{ success: boolean; error?: string }>
   getAiResponseLanguages: () => Promise<Array<{ label: string; code: string }>>
   setAiResponseLanguage: (language: string) => Promise<{ success: boolean; error?: string }>
@@ -184,6 +215,10 @@ interface ElectronAPI {
   startAudioTest: (deviceId?: string) => Promise<{ success: boolean }>
   stopAudioTest: () => Promise<{ success: boolean }>
   onAudioTestLevel: (callback: (level: number) => void) => () => void
+  // System-audio probe, emitted during the same startAudioTest lifecycle as the
+  // mic meter above.
+  onAudioTestSystemLevel: (callback: (level: number) => void) => () => void
+  onAudioTestSystemError: (callback: (errorMessage: string) => void) => () => void
 
   // Database
   flushDatabase: () => Promise<{ success: boolean }>
@@ -739,6 +774,38 @@ contextBridge.exposeInMainWorld("electronAPI", {
       ipcRenderer.removeListener("meeting-audio-warning", subscription)
     }
   },
+  // Main broadcasts this from three sites but it was never bridged, so every
+  // one of them was unreachable from the renderer.
+  onMeetingAudioError: (callback: (message: string) => void) => {
+    const subscription = (_: any, message: string) => callback(message)
+    ipcRenderer.on("meeting-audio-error", subscription)
+    return () => {
+      ipcRenderer.removeListener("meeting-audio-error", subscription)
+    }
+  },
+  onSystemAudioPermissionDenied: (callback: (message: string) => void) => {
+    const subscription = (_: any, message: string) => callback(message)
+    ipcRenderer.on("system-audio-permission-denied", subscription)
+    return () => {
+      ipcRenderer.removeListener("system-audio-permission-denied", subscription)
+    }
+  },
+  onAudioCaptureFailed: (
+    callback: (payload: {
+      channel: 'system' | 'mic'
+      message: string
+      attempt: number
+      maxAttempts: number
+      terminal?: boolean
+      stuck?: boolean
+    }) => void,
+  ) => {
+    const subscription = (_: any, payload: any) => callback(payload)
+    ipcRenderer.on("audio-capture-failed", subscription)
+    return () => {
+      ipcRenderer.removeListener("audio-capture-failed", subscription)
+    }
+  },
   onSuggestionGenerated: (callback: (data: { question: string; suggestion: string; confidence: number }) => void) => {
     const subscription = (_: any, data: any) => callback(data)
     ipcRenderer.on("suggestion-generated", subscription)
@@ -769,7 +836,9 @@ contextBridge.exposeInMainWorld("electronAPI", {
   getPlatform: () => process.platform,
   checkPermissions: () => ipcRenderer.invoke("check-permissions"),
   requestPermission: (type: 'microphone' | 'screen') => ipcRenderer.invoke("request-permission", type),
-  openPermissionSettings: () => ipcRenderer.invoke("open-permission-settings"),
+  openPermissionSettings: (pane?: 'microphone' | 'screen') => ipcRenderer.invoke("open-permission-settings", pane),
+  getSystemAudioPermissionWarning: () => ipcRenderer.invoke("get-system-audio-permission-warning"),
+  repairTccPermissions: () => ipcRenderer.invoke("repair-tcc-permissions"),
   setCompanyIntel: (intel: Record<string, any> | null) =>
     ipcRenderer.invoke('set-company-intel', intel),
   setRecognitionLanguage: (key: string) => ipcRenderer.invoke("set-recognition-language", key),
@@ -1018,6 +1087,20 @@ contextBridge.exposeInMainWorld("electronAPI", {
     ipcRenderer.on('audio-test-level', subscription)
     return () => {
       ipcRenderer.removeListener('audio-test-level', subscription)
+    }
+  },
+  onAudioTestSystemLevel: (callback: (level: number) => void) => {
+    const subscription = (_: any, level: number) => callback(level)
+    ipcRenderer.on('audio-test-system-level', subscription)
+    return () => {
+      ipcRenderer.removeListener('audio-test-system-level', subscription)
+    }
+  },
+  onAudioTestSystemError: (callback: (errorMessage: string) => void) => {
+    const subscription = (_: any, errorMessage: string) => callback(errorMessage)
+    ipcRenderer.on('audio-test-system-error', subscription)
+    return () => {
+      ipcRenderer.removeListener('audio-test-system-error', subscription)
     }
   },
 

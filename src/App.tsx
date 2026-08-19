@@ -28,7 +28,7 @@ import { StartupSequence } from "@/features/onboarding";
 // ---------------------------------------------------------------------------
 import { ToastProvider, ToastViewport } from "@/features/ui/toast";
 import { ModelSelectorWindow, GodojoInterface, Launcher, ErrorBoundary } from "@/features/common";
-import { IncompatibleProviderBanner, AdCampaignToasters } from "@/features/common";
+import { IncompatibleProviderBanner, AdCampaignToasters, SystemAudioPermissionBanner } from "@/features/common";
 // import { SupportToaster } from "@/features/common";
 
 // ---------------------------------------------------------------------------
@@ -154,6 +154,11 @@ const App: React.FC = () => {
                   transition: "background-color 75ms ease, border-color 75ms ease, box-shadow 75ms ease",
                 } as React.CSSProperties}
               >
+                {/* Permission warnings render above the meeting UI. The overlay
+                    window is created hidden and only appears once a meeting starts,
+                    so this is the first point at which an in-meeting denial can
+                    actually be seen. */}
+                <SystemAudioPermissionBanner />
                 <GodojoInterface onEndMeeting={handleEndMeeting} overlayOpacity={overlayOpacity} />
               </div>
               <ToastViewport />

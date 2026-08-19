@@ -15,6 +15,11 @@ export class SystemAudioCapture extends EventEmitter {
     private _chunkCount: number = 0;
     private _stallOuterTimer: NodeJS.Timeout | null = null;
     private _stallInnerTimer: NodeJS.Timeout | null = null; // tracked so stop() can cancel it
+    // Consecutive stall-triggered restarts. Capped so a permanently broken
+    // capture (revoked permission, missing device) stops silently thrashing and
+    // instead reports itself once. Reset whenever chunks flow again.
+    private _stallRestartAttempts: number = 0;
+    private static readonly MAX_STALL_RESTARTS = 5;
     private _sampleRateEmitted: boolean = false;
     private _echoMode: string | undefined;
 
@@ -147,8 +152,23 @@ export class SystemAudioCapture extends EventEmitter {
                         this._stallInnerTimer = null;
                         if (!this.isRecording) return; // guard stale callback after stop()
                         if (this._chunkCount === countSnapshot) {
-                            // No new chunks in the window — native capture has stalled/died. Restart.
-                            console.warn(`[SystemAudioCapture] Capture stall detected (no chunks in ${stallWindowMs}ms, featureLevel=${featureLevel}) — restarting capture`);
+                            // No new chunks in the window — native capture has stalled/died.
+                            if (this._stallRestartAttempts >= SystemAudioCapture.MAX_STALL_RESTARTS) {
+                                // Restarting is not helping. Something structural is wrong
+                                // (permission revoked, device gone), so stop thrashing and
+                                // say so once — an unbounded retry loop just hides the cause.
+                                console.error(`[SystemAudioCapture] Capture stalled after ${this._stallRestartAttempts} restart attempts — giving up.`);
+                                try { this.monitor?.stop(); } catch { }
+                                this.isRecording = false;
+                                this._shouldBeRecording = false;
+                                this.emit('capture-failed', {
+                                    attempts: this._stallRestartAttempts,
+                                    maxAttempts: SystemAudioCapture.MAX_STALL_RESTARTS,
+                                });
+                                return;
+                            }
+                            this._stallRestartAttempts++;
+                            console.warn(`[SystemAudioCapture] Capture stall detected (no chunks in ${stallWindowMs}ms, featureLevel=${featureLevel}) — restarting capture (attempt ${this._stallRestartAttempts}/${SystemAudioCapture.MAX_STALL_RESTARTS})`);
                             try { this.monitor?.stop(); } catch { }
                             this.isRecording = false;
                             this._chunkCount = 0;
@@ -158,7 +178,9 @@ export class SystemAudioCapture extends EventEmitter {
                                 }
                             }, 150);
                         } else {
-                            // Chunks still flowing — keep watching (always re-arm).
+                            // Chunks flowing again — the capture recovered, so forget the
+                            // earlier attempts and keep watching (always re-arm).
+                            this._stallRestartAttempts = 0;
                             scheduleStallCheck();
                         }
                     }, stallWindowMs);
