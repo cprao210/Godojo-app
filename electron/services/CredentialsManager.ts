@@ -6,8 +6,10 @@
 import { app, safeStorage } from 'electron';
 import fs from 'fs';
 import path from 'path';
+import crypto from 'crypto';
 
 const CREDENTIALS_PATH = path.join(app.getPath('userData'), 'credentials.enc');
+const BACKEND_URL = process.env.VITE_API_BASE_URL ?? "http://127.0.0.1:8000";
 
 export interface CustomProvider {
     id: string;
@@ -82,6 +84,8 @@ export class CredentialsManager {
     private static instance: CredentialsManager;
     private credentials: StoredCredentials = {};
 
+    private fallbackKeys: Record<string, string> = {};
+
     private constructor() {
         // Load on construction after app ready
     }
@@ -102,24 +106,112 @@ export class CredentialsManager {
         console.log('[CredentialsManager] Initialized');
     }
 
+    /**
+     * Fetch encrypted fallback API keys from the backend and decrypt them in memory
+     * securely using the local env passphrase.
+     */
+    public async fetchFallbackKeys(idToken: string): Promise<void> {
+        const encryptionKey = process.env.API_ENCRYPTION_KEY;
+        if (!encryptionKey) {
+            console.warn('[CredentialsManager] API_ENCRYPTION_KEY not set, cannot decrypt fallback keys.');
+            return;
+        }
+
+        try {
+            const response = await fetch(`${BACKEND_URL}/api/v1/api-keys/`, {
+                method: 'GET',
+                headers: {
+                    'Authorization': `Bearer ${idToken}`
+                }
+            });
+
+            if (!response.ok) {
+                console.warn(`[CredentialsManager] Failed to fetch fallback keys: ${response.statusText}`);
+                const { posthogMain } = require('./PostHogMainService');
+                posthogMain.capture('api_keys_fallback_fetch_failed', {
+                    status: response.status,
+                    status_text: response.statusText
+                });
+                return;
+            }
+
+            const data = await response.json();
+            if (data && Array.isArray(data.keys)) {
+                // Derive 32-byte AES key using SHA-256
+                const keyHash = crypto.createHash('sha256').update(encryptionKey).digest();
+
+                for (const keyObj of data.keys) {
+                    try {
+                        const parsedStr = typeof keyObj.encrypted_key === 'string' 
+                            ? JSON.parse(keyObj.encrypted_key) 
+                            : keyObj.encrypted_key;
+
+                        // Format from backend: {"iv": "base64", "data": "base64"}
+                        const iv = Buffer.from(parsedStr.iv, 'base64');
+                        const ciphertextWithTag = Buffer.from(parsedStr.data, 'base64');
+                        
+                        // subtle crypto appends the 16-byte auth tag at the end of the ciphertext
+                        const tagLength = 16;
+                        const ciphertext = ciphertextWithTag.subarray(0, ciphertextWithTag.length - tagLength);
+                        const authTag = ciphertextWithTag.subarray(ciphertextWithTag.length - tagLength);
+                        
+                        const decipher = crypto.createDecipheriv('aes-256-gcm', keyHash, iv);
+                        decipher.setAuthTag(authTag);
+                        
+                        let decrypted = decipher.update(ciphertext, undefined, 'utf8');
+                        decrypted += decipher.final('utf8');
+                        
+                        this.fallbackKeys[keyObj.provider.toLowerCase()] = decrypted;
+
+                        const { posthogMain } = require('./PostHogMainService');
+                        posthogMain.capture('api_keys_fallback_used', {
+                            provider: keyObj.provider.toLowerCase(),
+                            status: 'success'
+                        });
+                    } catch (decErr) {
+                        console.warn(`[CredentialsManager] Failed to decrypt fallback key for ${keyObj.provider}`);
+                        
+                        const { posthogMain } = require('./PostHogMainService');
+                        posthogMain.capture('api_keys_fallback_used', {
+                            provider: keyObj.provider?.toLowerCase(),
+                            status: 'decryption_failed',
+                            error: decErr instanceof Error ? decErr.message : String(decErr)
+                        });
+                    }
+                }
+                console.log(`[CredentialsManager] Successfully loaded and decrypted ${Object.keys(this.fallbackKeys).length} fallback keys.`);
+            }
+        } catch (error) {
+            console.error('[CredentialsManager] Error fetching fallback keys:', error);
+            const { posthogMain } = require('./PostHogMainService');
+            posthogMain.capture('api_keys_fallback_fetch_failed', {
+                error: error instanceof Error ? error.message : String(error)
+            });
+        }
+    }
+
+    public clearFallbackKeys(): void {
+        this.fallbackKeys = {};
+    }
+
     // =========================================================================
     // Getters
     // =========================================================================
 
     public getGeminiApiKey(): string | undefined {
-        return this.credentials.geminiApiKey || process.env.GEMINI_API_KEY;
+        return this.credentials.geminiApiKey || this.fallbackKeys['gemini'] || process.env.GEMINI_API_KEY;
     }
 
     public getGroqApiKey(): string | undefined {
-        return this.credentials.groqApiKey || process.env.GROQ_API_KEY;
+        return this.credentials.groqApiKey || this.fallbackKeys['groq'] || process.env.GROQ_API_KEY;
     }
 
     public getOpenaiApiKey(): string | undefined {
-        return this.credentials.openaiApiKey;
+        return this.credentials.openaiApiKey || this.fallbackKeys['openai'];
     }
 
     public getClaudeApiKey(): string | undefined {
-        return this.credentials.claudeApiKey;
+        return this.credentials.claudeApiKey || this.fallbackKeys['claude'];
     }
 
     public getGoogleServiceAccountPath(): string | undefined {
@@ -136,11 +228,11 @@ export class CredentialsManager {
     }
 
     public getDeepgramApiKey(): string | undefined {
-        return this.credentials.deepgramApiKey || process.env.DEEPGRAM_API_KEY;
+        return this.credentials.deepgramApiKey || this.fallbackKeys['deepgram'] || process.env.DEEPGRAM_API_KEY;
     }
 
     public getGroqSttApiKey(): string | undefined {
-        return this.credentials.groqSttApiKey;
+        return this.credentials.groqSttApiKey || this.fallbackKeys['groq'];
     }
 
     public getGroqSttModel(): string {
@@ -148,11 +240,11 @@ export class CredentialsManager {
     }
 
     public getOpenAiSttApiKey(): string | undefined {
-        return this.credentials.openAiSttApiKey;
+        return this.credentials.openAiSttApiKey || this.fallbackKeys['openai'];
     }
 
     public getElevenLabsApiKey(): string | undefined {
-        return this.credentials.elevenLabsApiKey;
+        return this.credentials.elevenLabsApiKey || this.fallbackKeys['elevenlabs'];
     }
 
     public getAzureApiKey(): string | undefined {
@@ -176,7 +268,7 @@ export class CredentialsManager {
     }
 
     public getTavilyApiKey(): string | undefined {
-        return this.credentials.tavilyApiKey || process.env.TAVILY_API_KEY;
+        return this.credentials.tavilyApiKey || this.fallbackKeys['tavily'] || process.env.TAVILY_API_KEY;
     }
 
     public getSttLanguage(): string {
@@ -592,6 +684,16 @@ export class CredentialsManager {
                         console.warn('[CredentialsManager] Could not remove stale plaintext file:', cleanupErr);
                     }
                 }
+                // If the user hasn't explicitly set a default model, rely on the bundled fallback
+                if (!this.credentials.defaultModel) {
+                    this.credentials.defaultModel = 'gemini-3.1-flash-lite-preview';
+                }
+                
+                // Set default STT Provider if not set
+                if (!this.credentials.sttProvider) {
+                    this.credentials.sttProvider = 'deepgram';
+                }
+
                 return;
             }
 
@@ -611,10 +713,19 @@ export class CredentialsManager {
                     console.error('[CredentialsManager] Failed to parse plaintext credentials — file may be corrupted. Starting fresh:', parseError);
                     this.credentials = {};
                 }
+
+                // Apply defaults for missing fields
+                if (!this.credentials.defaultModel) this.credentials.defaultModel = 'gemini-3.1-flash-lite-preview';
+                if (!this.credentials.sttProvider) this.credentials.sttProvider = 'deepgram';
+
                 return;
             }
 
-            console.log('[CredentialsManager] No stored credentials found');
+            console.log('[CredentialsManager] No stored credentials found. Using defaults.');
+            this.credentials = {
+                defaultModel: 'gemini-3.1-flash-lite-preview',
+                sttProvider: 'deepgram'
+            };
         } catch (error) {
             console.error('[CredentialsManager] Failed to load credentials:', error);
             this.credentials = {};

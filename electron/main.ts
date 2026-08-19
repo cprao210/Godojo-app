@@ -3453,6 +3453,39 @@ async function initializeApp() {
     console.warn('[Main] SupabaseMirrorService init failed (non-fatal):', e);
   }
 
+  // 3b. Fetch Fallback Keys from Backend securely (requires AuthToken)
+  try {
+    const { AuthManager } = require('./services/AuthManager');
+    const auth = AuthManager.getInstance();
+    
+    const fetchFallback = async () => {
+      try {
+        const token = auth.getIdToken();
+        if (token) {
+          const { CredentialsManager } = require('./services/CredentialsManager');
+          await CredentialsManager.getInstance().fetchFallbackKeys(token);
+          // Re-initialize LLM models and Audio pipeline if they had failed without keys
+          appState?.getIntelligenceManager().reinitializeLLMs();
+        }
+      } catch (e) {
+        console.warn('[Main] Failed to fetch fallback keys:', e);
+      }
+    };
+
+    if (auth.isSignedIn()) {
+      fetchFallback();
+    } else {
+      auth.once('signed-in', fetchFallback);
+    }
+    
+    auth.on('auth-changed', (snap: any) => {
+      if (snap.signedIn) fetchFallback();
+      else CredentialsManager.getInstance().clearFallbackKeys();
+    });
+  } catch (e) {
+    console.warn('[Main] Fallback keys wiring failed:', e);
+  }
+
   // 4. Initialize State
   const appState = AppState.getInstance()
 
