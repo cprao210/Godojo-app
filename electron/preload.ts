@@ -766,6 +766,10 @@ contextBridge.exposeInMainWorld("electronAPI", {
   getNativeAudioStatus: () => ipcRenderer.invoke("native-audio-status"),
   getInputDevices: () => ipcRenderer.invoke("get-input-devices"),
   getOutputDevices: () => ipcRenderer.invoke("get-output-devices"),
+  getPlatform: () => process.platform,
+  checkPermissions: () => ipcRenderer.invoke("check-permissions"),
+  requestPermission: (type: 'microphone' | 'screen') => ipcRenderer.invoke("request-permission", type),
+  openPermissionSettings: () => ipcRenderer.invoke("open-permission-settings"),
   setCompanyIntel: (intel: Record<string, any> | null) =>
     ipcRenderer.invoke('set-company-intel', intel),
   setRecognitionLanguage: (key: string) => ipcRenderer.invoke("set-recognition-language", key),

@@ -81,6 +81,9 @@ export interface FirebaseAuthState {
 export interface MeetingSessionControls {
   handleStartMeeting: (calendarEvent?: any) => Promise<void>;
   handleEndMeeting: (meetingTypes?: ("discovery" | "demo" | "negotiation")[]) => Promise<void>;
+  showPermissionTray: boolean;
+  setShowPermissionTray: React.Dispatch<React.SetStateAction<boolean>>;
+  proceedWithMeeting: () => void;
 }
 
 // --- src/hooks/useResolvedTheme.ts ---
@@ -1334,6 +1337,9 @@ export interface LauncherProps {
   ollamaPullMessage?: string;
   authUser?: { displayName?: string | null; email?: string | null; photoURL?: string | null } | null;
   onSignOut?: () => void;
+  showPermissionTray?: boolean;
+  setShowPermissionTray?: React.Dispatch<React.SetStateAction<boolean>>;
+  proceedWithMeeting?: () => void;
 }
 
 // --- src/features/common/GodojoInterface.tsx ---

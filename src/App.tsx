@@ -72,7 +72,7 @@ const App: React.FC = () => {
   const { hasProfile, isPremiumActive, setIsPremiumActive, isProcessingMeeting, setIsProcessingMeeting } = AppLifecycleStates;
   const { lastMeetingEndTime, appStartTime, ollamaPull, incompatibleWarning, dismissIncompatibleWarning, reindexIncompatibleMeetings } = AppLifecycleStates;
 
-  const { handleStartMeeting, handleEndMeeting } = useMeetingSession(tenantId, setIsProcessingMeeting);
+  const { handleStartMeeting, handleEndMeeting, showPermissionTray, setShowPermissionTray, proceedWithMeeting } = useMeetingSession(tenantId, setIsProcessingMeeting);
 
   // --- Local UI state ----------------------------------------------------
   const [showStartup, setShowStartup] = useState(true);
@@ -248,6 +248,9 @@ const App: React.FC = () => {
                           ollamaPullMessage={ollamaPull.message}
                           authUser={authUser}
                           onSignOut={signOut}
+                          showPermissionTray={showPermissionTray}
+                          setShowPermissionTray={setShowPermissionTray}
+                          proceedWithMeeting={proceedWithMeeting}
                         />
                       </div>
                       <SettingsOverlay

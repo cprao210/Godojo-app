@@ -3715,6 +3715,47 @@ export function initializeIpcHandlers(appState: AppState): void {
     }
   });
 
+  // ==========================================
+  // Permissions (Mac/Windows)
+  // ==========================================
+  safeHandle("check-permissions", async () => {
+    const isMac = process.platform === 'darwin';
+    
+    // Default to true on Windows, check explicitly on Mac
+    let mic = true;
+    let screenPerm = true; 
+
+    if (isMac) {
+        mic = systemPreferences.getMediaAccessStatus('microphone') === 'granted';
+        // Screen capture permission is required for system audio on Mac (ScreenCaptureKit)
+        screenPerm = systemPreferences.getMediaAccessStatus('screen') === 'granted';
+    }
+
+    return { microphone: mic, systemAudio: screenPerm, screenCapture: screenPerm };
+  });
+
+  safeHandle("request-permission", async (_, type: 'microphone' | 'screen') => {
+    if (process.platform !== 'darwin') return true;
+
+    if (type === 'microphone') {
+        return await systemPreferences.askForMediaAccess('microphone');
+    } else if (type === 'screen') {
+        // macOS does not have an "ask" API for screen recording, it only prompts 
+        // automatically when a capture is attempted, or we direct them to settings.
+        shell.openExternal('x-apple.systempreferences:com.apple.preference.security?Privacy_ScreenCapture');
+        return false; // User must restart app after granting this
+    }
+    return false;
+  });
+
+  safeHandle("open-permission-settings", async () => {
+    if (process.platform === 'darwin') {
+        shell.openExternal('x-apple.systempreferences:com.apple.preference.security?Privacy_Microphone');
+    } else {
+        shell.openExternal('ms-settings:privacy-microphone');
+    }
+  });
+
   safeHandle('auth:get-state', async () => {
     try {
       const { AuthManager } = require('./services/AuthManager');

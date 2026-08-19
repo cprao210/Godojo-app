@@ -191,6 +191,10 @@ export interface ElectronAPI {
   onSpeakerNamesResolved: (callback: (names: { user: string; client: string }) => void) => () => void
   getInputDevices: () => Promise<Array<{ id: string; name: string }>>
   getOutputDevices: () => Promise<Array<{ id: string; name: string }>>
+  getPlatform: () => string
+  checkPermissions: () => Promise<{ microphone: boolean; systemAudio: boolean; screenCapture: boolean }>
+  requestPermission: (type: 'microphone' | 'screen') => Promise<boolean>
+  openPermissionSettings: () => Promise<void>
 
   // ===========================================================================
   // Native Audio Service Events

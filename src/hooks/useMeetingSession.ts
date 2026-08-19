@@ -1,4 +1,4 @@
-import { useEffect, useRef } from "react";
+import { useEffect, useRef, useState } from "react";
 import { verifySessionIsActive, signOut as fbSignOut } from "../lib/firebase";
 import { TranscriptSegmentInput, MeetingSessionControls } from "@/types";
 import { posthogAnalytics } from "@/lib/analytics/posthog.service";
@@ -29,6 +29,9 @@ export function useMeetingSession(
     // the renderer-side half of the same fix.
     const isStartingRef = useRef(false);
 
+    const [showPermissionTray, setShowPermissionTray] = useState(false);
+    const [pendingEvent, setPendingEvent] = useState<any>(null);
+
     // Buffer transcript turns while a backend meeting session is active.
     useEffect(() => {
         const cleanup = window.electronAPI?.onNativeAudioTranscript?.((t) => {
@@ -44,7 +47,7 @@ export function useMeetingSession(
         return () => cleanup?.();
     }, []);
 
-    const handleStartMeeting = async (calendarEvent?: any) => {
+    const handleStartMeetingRaw = async (calendarEvent?: any) => {
 
         if (isStartingRef.current) {
             console.warn("[useMeetingSession] startMeeting already in flight — ignoring duplicate call.");
@@ -143,5 +146,31 @@ export function useMeetingSession(
         }
     };
 
-    return { handleStartMeeting, handleEndMeeting };
+    const handleStartMeeting = async (calendarEvent?: any) => {
+        if (isStartingRef.current) return;
+        
+        const perms = await window.electronAPI.checkPermissions();
+        if (!perms.microphone || !perms.systemAudio) {
+            setPendingEvent(calendarEvent);
+            setShowPermissionTray(true);
+            return;
+        }
+
+        await handleStartMeetingRaw(calendarEvent);
+    };
+
+    const proceedWithMeeting = () => {
+        if (!showPermissionTray) return; // Prevent proceeding if not explicitly triggered
+        setShowPermissionTray(false);
+        handleStartMeetingRaw(pendingEvent);
+        setPendingEvent(null);
+    };
+
+    return { 
+        handleStartMeeting, 
+        handleEndMeeting, 
+        showPermissionTray, 
+        setShowPermissionTray, 
+        proceedWithMeeting 
+    };
 }
