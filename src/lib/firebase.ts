@@ -349,6 +349,34 @@ export async function reloadAndCheckVerified(user: User): Promise<boolean> {
 }
 
 /**
+ * Attempts to force-refresh the ID token with an exponential backoff retry policy.
+ * Only retries on network-related errors (e.g., waking from sleep with no Wi-Fi yet).
+ * Fatal errors (auth/user-disabled, auth/user-token-expired) throw immediately.
+ */
+async function getIdTokenWithRetry(user: User, maxRetries = 3): Promise<string> {
+    let attempt = 0;
+    while (attempt < maxRetries) {
+        try {
+            return await user.getIdToken(true);
+        } catch (e: any) {
+            const code = e?.code || '';
+            // Only retry on network issues or timeouts
+            if (code === 'auth/network-request-failed' || code === 'auth/internal-error' || code === 'auth/timeout') {
+                attempt++;
+                if (attempt >= maxRetries) throw e;
+                const delayMs = Math.min(1000 * Math.pow(2, attempt), 8000); // 2s, 4s, 8s...
+                console.warn(`[firebase] Token refresh failed due to network (${code}). Retrying in ${delayMs}ms (Attempt ${attempt}/${maxRetries})...`);
+                await new Promise(r => setTimeout(r, delayMs));
+            } else {
+                // Fatal error (user disabled, token revoked, etc) - do not retry
+                throw e;
+            }
+        }
+    }
+    throw new Error('Max retries exceeded');
+}
+
+/**
  * Force-refreshes the current user's ID token against Firebase servers.
  * Returns false if the account has been deleted, disabled, or session revoked.
  * This is the only reliable way to detect a server-side deletion since the
@@ -359,10 +387,19 @@ export async function verifySessionIsActive(): Promise<boolean> {
     const user = auth.currentUser;
     if (!user) return false;
     try {
-        await user.getIdToken(/* forceRefresh */ true);
+        await getIdTokenWithRetry(user);
         return true;
     } catch (e: any) {
-        console.warn('[firebase] verifySessionIsActive failed:', e?.code ?? e);
+        const code = e?.code || '';
+        // If it's *still* just a network failure after all retries, don't permanently
+        // assume the account is deleted. Let them proceed with the cached token rather 
+        // than hard-blocking the meeting start just because of bad hotel Wi-Fi.
+        if (code === 'auth/network-request-failed') {
+            console.warn('[firebase] verifySessionIsActive: Network is down, skipping hard session invalidation.');
+            return true; 
+        }
+        
+        console.warn('[firebase] verifySessionIsActive failed (fatal):', e?.code ?? e);
         return false;
     }
 }
@@ -381,13 +418,20 @@ export function installSessionGuard(onInvalidSession: (errorCode?: string) => vo
     const unsub = onIdTokenChanged(auth, async (user) => {
         if (!user) return; // null during init or after sign-out — not an error
         try {
-            await user.getIdToken(/* forceRefresh */ true);
+            await getIdTokenWithRetry(user);
         } catch (e: any) {
+            const code = e?.code || '';
+            // Do NOT log the user out just because their Wi-Fi dropped during a background refresh
+            if (code === 'auth/network-request-failed' || code === 'auth/internal-error') {
+                console.warn('[firebase] Session guard: network down during refresh, ignoring.');
+                return;
+            }
+
             // Firebase throws here when the account is disabled, deleted, or
-            // the session is revoked. Treat any token refresh failure as
+            // the session is revoked. Treat any fatal token refresh failure as
             // an invalid session and force the user back to sign-in.
-            console.warn('[firebase] Session guard: token refresh failed, signing out.', e?.code ?? e);
-            onInvalidSession(e?.code);
+            console.warn('[firebase] Session guard: token refresh failed fatally, signing out.', code ?? e);
+            onInvalidSession(code);
         }
     });
     return unsub;
@@ -425,10 +469,17 @@ export async function guardSession(): Promise<{ valid: boolean; message?: string
     const user = auth.currentUser;
     if (!user) return { valid: false, message: 'You are not signed in.' };
     try {
-        await user.getIdToken(/* forceRefresh */ true);
+        await getIdTokenWithRetry(user);
         return { valid: true };
     } catch (e: any) {
-        console.warn('[firebase] guardSession: token refresh failed, signing out.', e?.code ?? e);
+        const code = e?.code || '';
+        // Same here: do not nuke the user's session if it's just a network timeout
+        if (code === 'auth/network-request-failed') {
+            console.warn('[firebase] guardSession: Network is down, passing optimistically.');
+            return { valid: true };
+        }
+
+        console.warn('[firebase] guardSession: token refresh failed, signing out.', code ?? e);
         await fbSignOut(auth).catch(() => { });
         return { valid: false, message: getAuthErrorMessage(e) || 'Session expired. Please sign in again.' };
     }
