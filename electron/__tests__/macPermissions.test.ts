@@ -44,6 +44,7 @@ import {
   getMacMicrophoneStatus,
   getMacScreenCaptureStatus,
   isDevTccBypassEnabled,
+  confirmScreenCaptureWorks,
   peakToPeak,
   resolveMacScreenCaptureCapability,
   SILENCE_PEAK_TO_PEAK_THRESHOLD,
@@ -285,6 +286,60 @@ describe('formatPermissionMessage', () => {
   });
 });
 
+describe('confirmScreenCaptureWorks', () => {
+  // This exists because getMediaAccessStatus is useless in the one case that
+  // matters: a grant made against a previous build's signature still reports
+  // 'granted' while capture is silently zero-filled. Only a real capture
+  // attempt tells them apart, so these tests pin that it ignores the status.
+  it('confirms when sources come back even though status reads granted', async () => {
+    state.screenStatus = 'granted';
+    state.screenSources = ['screen:0:0'];
+    await expect(confirmScreenCaptureWorks('t')).resolves.toBe(true);
+    expect(state.getSourcesCalls).toBe(1);
+  });
+
+  it('reports broken when no screen sources come back despite a granted status', async () => {
+    state.screenStatus = 'granted';
+    state.screenSources = [];
+    await expect(confirmScreenCaptureWorks('t')).resolves.toBe(false);
+  });
+
+  it('ignores window sources — only a screen source proves screen capture', async () => {
+    state.screenSources = ['window:1:0'];
+    await expect(confirmScreenCaptureWorks('t')).resolves.toBe(false);
+  });
+
+  it('reports broken when the probe throws', async () => {
+    state.probeError = new Error('NotAllowedError');
+    vi.spyOn(console, 'warn').mockImplementation(() => {});
+    await expect(confirmScreenCaptureWorks('t')).resolves.toBe(false);
+  });
+
+  it('reports broken when the probe hangs past the timeout', async () => {
+    vi.useFakeTimers();
+    state.probeHangs = true;
+    vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const pending = confirmScreenCaptureWorks('hang');
+    await vi.advanceTimersByTimeAsync(5000);
+    await expect(pending).resolves.toBe(false);
+  });
+
+  it('short-circuits to true off darwin without probing', async () => {
+    setPlatform('win32');
+    state.screenSources = [];
+    await expect(confirmScreenCaptureWorks('t')).resolves.toBe(true);
+    expect(state.getSourcesCalls).toBe(0);
+  });
+
+  it('short-circuits to true under the dev bypass without probing', async () => {
+    state.isPackaged = false;
+    process.env.NATIVELY_DEV_BYPASS_SCREEN_TCC = '1';
+    state.screenSources = [];
+    await expect(confirmScreenCaptureWorks('t')).resolves.toBe(true);
+    expect(state.getSourcesCalls).toBe(0);
+  });
+});
+
 describe('peakToPeak', () => {
   const pcm = (samples: number[]): Buffer => {
     const buf = Buffer.alloc(samples.length * 2);
@@ -331,5 +386,18 @@ describe('peakToPeak', () => {
 
   it('returns zero for an empty buffer rather than a negative range', () => {
     expect(peakToPeak(Buffer.alloc(0))).toBe(0);
+  });
+
+  // The native module emits `vec![0u8; n]` keepalives during render-idle
+  // (FrameAction::SendSilence). Those are byte-identical to what TCC zero-fill
+  // produces, which is why silence alone must never be reported as a permission
+  // failure without confirmScreenCaptureWorks() agreeing. A quiet meeting
+  // opening used to raise a permanent "every sample is silent" banner over a
+  // perfectly working call.
+  it('cannot distinguish a native silence keepalive from TCC zero-fill', () => {
+    const keepalive = Buffer.alloc(320 * 2, 0); // what SendSilence emits
+    const tccZeroFill = Buffer.alloc(320 * 2, 0);
+    expect(peakToPeak(keepalive)).toBe(peakToPeak(tccZeroFill));
+    expect(peakToPeak(keepalive)).toBeLessThanOrEqual(SILENCE_PEAK_TO_PEAK_THRESHOLD);
   });
 });

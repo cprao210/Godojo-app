@@ -45,6 +45,7 @@ import { posthogMain } from './services/PostHogMainService';
 posthogMain.init();
 
 import {
+  confirmScreenCaptureWorks,
   formatPermissionMessage,
   getMacScreenCaptureStatus,
   isDevTccBypassEnabled,
@@ -639,6 +640,18 @@ export class AppState {
     this.sendToMeetingSurfaces('system-audio-permission-denied', message);
   }
 
+  /**
+   * Tell the UI a previously reported system-audio problem has resolved.
+   *
+   * Without this, a warning raised during a quiet stretch would sit on screen
+   * over a meeting that is transcribing perfectly — the banner has no way to
+   * know audio came back, and waiting for the user to refocus the window is not
+   * good enough during a live call.
+   */
+  public sendSystemAudioRecovered(): void {
+    this.sendToMeetingSurfaces('system-audio-recovered');
+  }
+
   public sendAudioCaptureFailed(payload: {
     channel: 'system' | 'mic';
     message: string;
@@ -717,10 +730,24 @@ export class AppState {
     capture.on('start', armStuckWatchdog);
     capture.on('stop', disarmStuckWatchdog);
 
-    // ── Detector 2: chunks flowing, all silent (TCC zero-fill) ──────────────
-    let firstChunkAt = 0;
-    let zerofillLatched = false;   // a non-silent chunk was seen — detector off for good
-    let zerofillTriggered = false; // already reported — don't repeat
+    // ── Detector 2: chunks flowing, all silent ──────────────────────────────
+    //
+    // Silence is NOT by itself evidence of a permission problem. The native
+    // module synthesises bit-exact zero keepalives while the render side is idle
+    // (FrameAction::SendSilence), so a meeting where nobody has spoken yet looks
+    // byte-identical to TCC zero-filling us. Blaming permissions on amplitude
+    // alone therefore fires on every quiet meeting opening.
+    //
+    // So: measure a ROLLING run of silence (reset by any real audio), and when it
+    // gets long enough, actively confirm whether capture still works before
+    // saying anything. The confirmation is the only signal that discriminates —
+    // an orphaned grant still reports 'granted' but cannot actually capture.
+    let silenceRunStartedAt = 0;   // 0 = not currently in a silent run
+    let sawRealAudio = false;
+    let zerofillReported = false;  // a banner is currently showing
+    let confirmInFlight = false;
+    let nextConfirmAllowedAt = 0;  // rate-limits the probe during long quiet spells
+    const CONFIRM_COOLDOWN_MS = 60000;
 
     capture.on('data', (chunk: Buffer) => {
       chunkCount++;
@@ -729,23 +756,58 @@ export class AppState {
       // macOS-only: WASAPI loopback on Windows does not zero-fill on permission
       // change, so the detector has no diagnostic value there and its suggested
       // fix (System Settings → Screen Recording) does not exist.
-      if (process.platform === 'darwin' && !zerofillLatched && !zerofillTriggered) {
-        if (firstChunkAt === 0) firstChunkAt = Date.now();
+      // The dev bypass means "treat screen capture as granted", so it must
+      // suppress this too, or dev runs contradict themselves.
+      if (process.platform === 'darwin' && !isDevTccBypassEnabled()) {
+        const isSilent = peakToPeak(chunk) <= SILENCE_PEAK_TO_PEAK_THRESHOLD;
 
-        if (peakToPeak(chunk) > SILENCE_PEAK_TO_PEAK_THRESHOLD) {
-          // Real audio, or at least a live noise floor — stop watching.
-          zerofillLatched = true;
-        } else if (Date.now() - firstChunkAt >= ZEROFILL_OBSERVATION_MS) {
-          zerofillTriggered = true;
-          console.warn(`${prefix}SystemAudio chunks all silent (peak-to-peak < ${SILENCE_PEAK_TO_PEAK_THRESHOLD}) for ${ZEROFILL_OBSERVATION_MS / 1000}s — Screen Recording grant likely does not apply to this build.`);
-          this.sendAudioCaptureFailed({
-            channel: 'system',
-            message: formatPermissionMessage('mac-screen-recording-revoked-rebuild'),
-            attempt: 0,
-            maxAttempts: 3,
-            terminal: false,
-            stuck: true,
-          });
+        if (!isSilent) {
+          silenceRunStartedAt = 0;
+          if (!sawRealAudio) {
+            sawRealAudio = true;
+            console.log(`${prefix}System audio confirmed live (real samples received).`);
+          }
+          // Audio came back after we complained. Retract rather than leaving a
+          // stale "every sample is silent" banner over a working meeting.
+          if (zerofillReported) {
+            zerofillReported = false;
+            console.log(`${prefix}System audio recovered — clearing the silent-capture warning.`);
+            this.sendSystemAudioRecovered();
+          }
+        } else {
+          if (silenceRunStartedAt === 0) silenceRunStartedAt = Date.now();
+          const now = Date.now();
+          const silentFor = now - silenceRunStartedAt;
+
+          if (!zerofillReported && !confirmInFlight
+              && silentFor >= ZEROFILL_OBSERVATION_MS && now >= nextConfirmAllowedAt) {
+            confirmInFlight = true;
+            void (async () => {
+              try {
+                const works = await confirmScreenCaptureWorks('system audio silence check');
+                if (this.systemAudioCapture !== capture) return; // replaced mid-check
+                if (works) {
+                  // Capture is fine — the room is just quiet. Say nothing, and
+                  // back off so a long silence does not re-probe every 12s.
+                  silenceRunStartedAt = 0;
+                  nextConfirmAllowedAt = Date.now() + CONFIRM_COOLDOWN_MS;
+                } else {
+                  zerofillReported = true;
+                  console.warn(`${prefix}System audio silent for ${Math.round(silentFor / 1000)}s AND screen capture could not be confirmed — Screen Recording grant likely does not apply to this build.`);
+                  this.sendAudioCaptureFailed({
+                    channel: 'system',
+                    message: formatPermissionMessage('mac-screen-recording-revoked-rebuild'),
+                    attempt: 0,
+                    maxAttempts: 3,
+                    terminal: false,
+                    stuck: true,
+                  });
+                }
+              } finally {
+                confirmInFlight = false;
+              }
+            })();
+          }
         }
       }
 

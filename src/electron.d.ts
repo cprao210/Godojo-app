@@ -249,6 +249,8 @@ export interface ElectronAPI {
   onMeetingAudioWarning: (callback: (message: string) => void) => () => void
   onMeetingAudioError: (callback: (message: string) => void) => () => void
   onSystemAudioPermissionDenied: (callback: (message: string) => void) => () => void
+  /** Fires when a previously reported system-audio problem has resolved. */
+  onSystemAudioRecovered: (callback: () => void) => () => void
   onAudioCaptureFailed: (callback: (payload: AudioCaptureFailure) => void) => () => void
   getNativeAudioStatus: () => Promise<{ connected: boolean }>
   startAudioTest: (deviceId?: string) => Promise<{ success: boolean }>

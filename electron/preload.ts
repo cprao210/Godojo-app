@@ -85,6 +85,7 @@ interface ElectronAPI {
   onMeetingAudioWarning: (callback: (message: string) => void) => () => void
   onMeetingAudioError: (callback: (message: string) => void) => () => void
   onSystemAudioPermissionDenied: (callback: (message: string) => void) => () => void
+  onSystemAudioRecovered: (callback: () => void) => () => void
   onAudioCaptureFailed: (
     callback: (payload: {
       channel: 'system' | 'mic'
@@ -788,6 +789,13 @@ contextBridge.exposeInMainWorld("electronAPI", {
     ipcRenderer.on("system-audio-permission-denied", subscription)
     return () => {
       ipcRenderer.removeListener("system-audio-permission-denied", subscription)
+    }
+  },
+  onSystemAudioRecovered: (callback: () => void) => {
+    const subscription = () => callback()
+    ipcRenderer.on("system-audio-recovered", subscription)
+    return () => {
+      ipcRenderer.removeListener("system-audio-recovered", subscription)
     }
   },
   onAudioCaptureFailed: (

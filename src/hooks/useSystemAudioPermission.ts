@@ -114,6 +114,19 @@ export function useSystemAudioPermission() {
         return () => unsub?.();
     }, []);
 
+    // Main tells us when audio starts flowing again. Needed because a warning
+    // raised during a quiet stretch would otherwise sit on screen over a meeting
+    // that is transcribing fine, and the focus re-check above cannot help during
+    // a live call the user is not clicking away from.
+    useEffect(() => {
+        const unsub = window.electronAPI?.onSystemAudioRecovered?.(() => {
+            setWarning((current) =>
+                current?.kind === 'audio-capture-failure' && current.channel === 'system' ? null : current,
+            );
+        });
+        return () => unsub?.();
+    }, []);
+
     const dismiss = useCallback(() => setWarning(null), []);
 
     const openPane = useCallback((pane: 'microphone' | 'screen') => {

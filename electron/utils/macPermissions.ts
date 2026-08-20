@@ -62,6 +62,13 @@ export const ZEROFILL_OBSERVATION_MS = 12000;
  * carrying no signal — that false-latched the detector permanently, so the user
  * got no banner even when audio was genuinely dead. Ranges by source: pure DC
  * 0; quantisation noise ~2-4; thermal mic noise ~20-100; quiet speech >500.
+ *
+ * IMPORTANT: crossing this threshold downward does NOT imply a permission
+ * problem. The native module synthesises bit-exact zero keepalives during
+ * render-idle (FrameAction::SendSilence in native-module/src/lib.rs), which are
+ * byte-identical to TCC zero-fill. A quiet meeting and a revoked grant look the
+ * same at this layer, so anything that blames permissions on silence MUST
+ * confirm with confirmScreenCaptureWorks() first.
  */
 export const SILENCE_PEAK_TO_PEAK_THRESHOLD = 100;
 
@@ -202,6 +209,38 @@ export async function resolveMacScreenCaptureCapability(
     remember(message);
     console.warn(`[Permissions] Screen Recording probe failed during ${context}: ${errorMessage}`);
     return { status, capturable: false, effectiveDenied: true, sourceCount: 0, message, error: errorMessage };
+  }
+}
+
+/**
+ * Actively confirm that screen capture works RIGHT NOW, ignoring the reported
+ * TCC status.
+ *
+ * Needed because the status is unreliable in precisely the case that matters
+ * most. When a grant was made against a previous build's code signature, macOS
+ * keeps reporting 'granted' while silently zero-filling captured audio — so
+ * `getMediaAccessStatus` cannot detect the very failure the zero-fill detector
+ * exists to catch. Attempting a real capture is the only thing that separates
+ * "the permission is broken" from "nothing is playing right now".
+ *
+ * Returns true when capture demonstrably works, and true on non-darwin (nothing
+ * gates it there). A timeout counts as failure.
+ */
+export async function confirmScreenCaptureWorks(context: string): Promise<boolean> {
+  if (process.platform !== 'darwin') return true;
+  if (isDevTccBypassEnabled()) return true;
+
+  try {
+    const sources = await withTimeout(
+      desktopCapturer.getSources({ types: ['screen'], thumbnailSize: { width: 1, height: 1 } }),
+      SCREEN_CAPTURE_PROBE_TIMEOUT_MS,
+      `screen-capture-confirm-timeout-${context}`,
+    );
+    return sources.some((source) => source.id.startsWith('screen:'));
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    console.warn(`[Permissions] Screen capture confirmation failed during ${context}: ${message}`);
+    return false;
   }
 }
 
