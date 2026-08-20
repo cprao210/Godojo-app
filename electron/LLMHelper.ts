@@ -800,6 +800,15 @@ export class LLMHelper {
     console.log(`[LLMHelper] AI Response Language set to: ${language}`);
   }
 
+  /**
+   * Public entry point for call sites (e.g. ipcHandlers) that build their own
+   * full prompt string outside chat()/chatWithGemini() and so can't rely on
+   * those methods' automatic injection.
+   */
+  public applyLanguageInstruction(systemPrompt: string): string {
+    return this.injectLanguageInstruction(systemPrompt);
+  }
+
   public setSttLanguage(language: string) {
     this.sttLanguage = language;
     console.log(`[LLMHelper] STT Language set to: ${language}`);
@@ -829,8 +838,9 @@ export class LLMHelper {
     // switch from English to Hindi mid-conversation and the AI follows).
     if (!this.aiResponseLanguage || this.aiResponseLanguage === 'auto') {
       const autoHeader = `[LANGUAGE INSTRUCTION — HIGHEST PRIORITY]
-        Detect the language of the user's most recent message and ALWAYS respond in that exact same language.
-        If the user writes in Hindi, respond in Hindi. If in Spanish, respond in Spanish. If in English, respond in English.
+        Detect the language of the user's most recent message and ALWAYS respond in that exact same language,
+        with ONE exception: if the message (or transcript) is in Hindi, ALWAYS respond in English instead.
+        If in Spanish, respond in Spanish. If in English, respond in English. If in Hindi, respond in English.
         If the language is ambiguous, default to English.
         You may mix scripts naturally (e.g. code stays in English even when the explanation is in another language).
         [END LANGUAGE INSTRUCTION]\n\n`;
@@ -3445,8 +3455,13 @@ export class LLMHelper {
    * 3. Gemini Flash (Retry 2x)
    * 4. Gemini Pro (Retry 5x)
    */
-  public async generateMeetingSummary(systemPrompt: string, context: string, groqSystemPrompt?: string): Promise<string> {
+  public async generateMeetingSummary(systemPromptRaw: string, context: string, groqSystemPromptRaw?: string): Promise<string> {
     console.log(`[LLMHelper] generateMeetingSummary called. Context length: ${context.length}`);
+
+    // Summaries/titles are generated from the full transcript, which may be in
+    // Hindi — apply the same language gate every other LLM call site honours.
+    const systemPrompt = this.injectLanguageInstruction(systemPromptRaw);
+    const groqSystemPrompt = groqSystemPromptRaw ? this.injectLanguageInstruction(groqSystemPromptRaw) : groqSystemPromptRaw;
 
     // Helper: Estimate tokens (crude approximation: 4 chars = 1 token)
     const estimateTokens = (text: string) => Math.ceil(text.length / 4);

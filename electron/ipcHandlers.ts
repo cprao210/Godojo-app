@@ -3034,8 +3034,8 @@ export function initializeIpcHandlers(appState: AppState): void {
       let enrichedContext = contextString;
       if (prospectBlock) enrichedContext = `${prospectBlock}\n\n${enrichedContext}`;
       if (ownCompanyBlock) enrichedContext = `${ownCompanyBlock}\n\n${enrichedContext}`;
-      const geminiPrompt = `${FOLLOWUP_EMAIL_PROMPT}\n\nMEETING DETAILS:\n${enrichedContext}`;
-      const groqPrompt = `${GROQ_FOLLOWUP_EMAIL_PROMPT}\n\nMEETING DETAILS:\n${enrichedContext}`;
+      const geminiPrompt = `${llmHelper.applyLanguageInstruction(FOLLOWUP_EMAIL_PROMPT)}\n\nMEETING DETAILS:\n${enrichedContext}`;
+      const groqPrompt = `${llmHelper.applyLanguageInstruction(GROQ_FOLLOWUP_EMAIL_PROMPT)}\n\nMEETING DETAILS:\n${enrichedContext}`;
 
       console.log("=> generate follow-up email (geminiPrompt): ", geminiPrompt);
       console.log("=> generate follow-up email (groqPrompt): ", groqPrompt);

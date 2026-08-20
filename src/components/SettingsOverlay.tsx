@@ -712,7 +712,7 @@ const SettingsOverlay: React.FC<SettingsOverlayProps> = ({ isOpen, onClose, init
                         (config.alternates && config.alternates.includes(systemLocale))
                     );
 
-                    currentLangKey = match ? match[0] : 'english-us';
+                    currentLangKey = match ? match[0] : 'multilingual';
 
                     // Save the auto-detected default
                     if (window.electronAPI?.setRecognitionLanguage) {
