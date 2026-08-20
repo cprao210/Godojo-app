@@ -2,6 +2,7 @@
 import { BrowserWindow, screen, app, Menu } from "electron"
 import { AppState } from "./main"
 import { KeybindManager } from "./services/KeybindManager"
+import { startStaticServer } from "./staticServer"
 import path from "node:path"
 
 const isEnvDev = process.env.NODE_ENV === "development"
@@ -13,9 +14,14 @@ console.log(`[WindowHelper] isEnvDev: ${isEnvDev}, isPackaged: ${isPackaged}, in
 // Force production mode if running as packaged app or inside app bundle
 const isDev = isEnvDev && !isPackaged;
 
-const startUrl = isDev
-  ? "http://localhost:5180"
-  : `file://${path.join(__dirname, "../../dist/index.html")}`
+let startUrl = isDev ? "http://localhost:5180" : ""
+
+/** Must be awaited before the first createWindow() call in production. */
+export async function initRendererUrl(): Promise<void> {
+  if (isDev) return
+  const distDir = path.join(__dirname, "../../dist")
+  startUrl = await startStaticServer(distDir)
+}
 
 export class WindowHelper {
   private launcherWindow: BrowserWindow | null = null
@@ -149,7 +155,19 @@ export class WindowHelper {
       show: false, // DEBUG: Force show -> Fixed white screen, now relies on ready-to-show
       // Platform-specific frame settings
       ...(isMac
-        ? { titleBarStyle: 'hiddenInset' as const, trafficLightPosition: { x: 14, y: 14 } }
+        ? {
+          titleBarStyle: 'hiddenInset' as const,
+          trafficLightPosition: { x: 14, y: 14 },
+          // Without this, the green traffic-light button enters native
+          // macOS fullscreen (a new Space) instead of a simple maximize —
+          // that's what the dock/menu-bar auto-hiding into floating
+          // overlays actually is. Combined with transparent + vibrancy
+          // below, that fullscreen Space transition is a known Electron/
+          // macOS bug where the vibrant surface fails to repaint and goes
+          // solid black. Disabling native fullscreen makes the button do
+          // a plain zoom-to-screen-bounds instead, avoiding both.
+          fullscreenable: false,
+        }
         : { frame: false, titleBarOverlay: false, autoHideMenuBar: true }),
       ...(isMac ? { vibrancy: 'under-window' as const, visualEffectState: 'followWindow' as const } : {}),
       transparent: isMac,
@@ -721,8 +739,19 @@ export class WindowHelper {
     const win = this.launcherWindow;
     if (!win || win.isDestroyed()) return;
     if (this.opacityTimeout) clearTimeout(this.opacityTimeout);
-    // On Windows/Linux the 'close' event listener intercepts this
-    // and hides to tray unless the app is actually quitting.
-    win.close();
+    if (process.platform === 'darwin') {
+      // macOS convention: the red traffic-light close button hides the
+      // window but leaves the app running (Dock icon stays) — unchanged.
+      win.close();
+    } else {
+      // Windows/Linux: the titlebar ✕ button should fully exit the app,
+      // not minimize to tray. Mark quitting first so the 'close' listener's
+      // hide-to-tray guard in setupWindowListeners() lets this through,
+      // then quit so the process actually terminates and disappears from
+      // Task Manager (tray icon, background helpers, etc. all torn down
+      // via the existing "before-quit" cleanup in main.ts).
+      this.appState.setQuitting(true);
+      app.quit();
+    }
   }
 }

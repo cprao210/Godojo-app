@@ -1,20 +1,4 @@
-import type React from 'react';
-
-export type OverlayTheme = 'light' | 'dark';
-
-export interface OverlayAppearance {
-    shellStyle: React.CSSProperties;
-    pillStyle: React.CSSProperties;
-    transcriptStyle: React.CSSProperties;
-    subtleStyle: React.CSSProperties;
-    chipStyle: React.CSSProperties;
-    inputStyle: React.CSSProperties;
-    controlStyle: React.CSSProperties;
-    iconStyle: React.CSSProperties;
-    codeBlockStyle: React.CSSProperties;
-    codeHeaderStyle: React.CSSProperties;
-    dividerStyle: React.CSSProperties;
-}
+import { OverlayAppearance, OverlayTheme } from '@/types';
 
 const clamp = (value: number, min: number, max: number) => Math.min(max, Math.max(min, value));
 const mix = (min: number, max: number, value: number) => min + ((max - min) * value);

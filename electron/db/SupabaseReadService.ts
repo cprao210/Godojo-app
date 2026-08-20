@@ -14,6 +14,7 @@
 
 import { SupabaseClientManager } from './SupabaseClient';
 import { Meeting, formatDuration } from './DatabaseManager';
+import { AuthManager } from '../services/AuthManager';
 
 export class SupabaseReadService {
     /** True iff the project is configured AND a Firebase user is signed in. */
@@ -191,6 +192,78 @@ export class SupabaseReadService {
             source: meetingRow.source,
             transcript: transcript,
             usage: usage
+        };
+    }
+
+    /**
+     * Company Context — read directly from Supabase (source of truth for the
+     * Company Context settings screen). Falls back to null on any failure so
+     * callers can fall back to the local SQLite cache.
+     *
+     * RLS scopes rows by auth.jwt() 'sub', but we still filter by user_id
+     * explicitly to match the local DB's composite (user_id, id) key shape
+     * and to be defensive if RLS is ever loosened.
+     */
+    static async getCompanyContext(): Promise<any | null> {
+        const client = SupabaseClientManager.getClient();
+        if (!client) return null;
+        const uid = AuthManager.getInstance().getUid();
+        if (!uid) return null;
+
+        const [identityRes, assetsRes, personasRes, competitorsRes] = await Promise.all([
+            client.from('company_context').select('*').eq('user_id', uid).eq('id', 1).maybeSingle(),
+            client.from('company_assets').select('*').eq('user_id', uid).order('last_updated', { ascending: false }),
+            client.from('company_personas').select('*').eq('user_id', uid).order('sort_order', { ascending: true }),
+            client.from('company_competitors').select('*').eq('user_id', uid).order('sort_order', { ascending: true }),
+        ]);
+
+        if (identityRes.error) throw identityRes.error;
+        const identity = identityRes.data as any;
+        // No row on the cloud side (e.g. the user deleted it) — this is a
+        // legitimate "no context" state, not a fallback-worthy failure.
+        if (!identity) return null;
+
+        if (assetsRes.error) throw assetsRes.error;
+        if (personasRes.error) throw personasRes.error;
+        if (competitorsRes.error) throw competitorsRes.error;
+
+        const assets = assetsRes.data ?? [];
+        const personas = personasRes.data ?? [];
+        const competitors = competitorsRes.data ?? [];
+
+        return {
+            identity: {
+                name: identity.name ?? '',
+                website: identity.website ?? '',
+                industry: identity.industry ?? '',
+                personaEngineEnabled: !!identity.persona_engine_enabled,
+            },
+            coreValueProposition: identity.core_value_proposition ?? '',
+            assets: assets.map((a: any) => ({
+                id: a.id,
+                type: a.type,
+                label: a.label,
+                status: a.status,
+                lastUpdated: a.last_updated,
+            })),
+            targetPersonas: personas.map((p: any) => ({
+                id: p.id,
+                role: p.role,
+                description: p.description ?? '',
+            })),
+            competitors: competitors.map((c: any) => ({
+                id: c.id,
+                name: c.name,
+                moat: c.moat ?? '',
+                winRate: c.win_rate ?? 0,
+            })),
+            dataCompleteness: identity.data_completeness ?? 0,
+            completenessBreakdown: {
+                hasIdentity: !!(identity.name && identity.industry),
+                hasValueProp: (identity.core_value_proposition ?? '').trim().length > 20,
+                hasAssets: assets.some((a: any) => a.status === 'mapped'),
+                hasPersonaEngine: !!identity.persona_engine_enabled,
+            },
         };
     }
 }

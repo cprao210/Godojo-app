@@ -299,9 +299,7 @@ export async function searchCompany(query: string, cacheKey?: string): Promise<T
     }
 
     // ── Resolve API key ──────────────────────────────────────────────
-    const apiKey =
-        CredentialsManager.getInstance().getTavilyApiKey() ??
-        process.env.TAVILY_API_KEY;
+    const apiKey = CredentialsManager.getInstance().getTavilyApiKey();
 
     if (!apiKey) {
         console.warn('[TavilyService] No Tavily API key configured — skipping search.');
@@ -462,6 +460,5 @@ export function invalidateCacheEntry(cacheKey: string): void {
  * Safe to call synchronously in any context.
  */
 export function isTavilyConfigured(): boolean {
-    const fromCredentials = CredentialsManager.getInstance().getTavilyApiKey();
-    return !!(fromCredentials ?? process.env.TAVILY_API_KEY);
+    return !!CredentialsManager.getInstance().getTavilyApiKey();
 }

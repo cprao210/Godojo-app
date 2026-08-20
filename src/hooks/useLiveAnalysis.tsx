@@ -1,6 +1,8 @@
 import { useState, useCallback, useRef, useEffect } from 'react';
-import { LiveAnalysisData, LiveAnalysisTurn, MeetingType } from '../types/liveAnalysis';
-import { intelligenceApi } from '../lib/intelligenceApi';
+import { LiveAnalysisData, LiveAnalysisTurn, MeetingType, Objection } from '@/types';
+import { intelligenceApi } from '@/api/intelligenceApi';
+import { posthogAnalytics } from '@/lib/analytics/posthog.service';
+import { stableId } from '@/lib/objections';
 
 // ─── Prompt builders ─────────────────────────────────────────────────────────
 //
@@ -372,10 +374,7 @@ const getFirstRunPrompt = (fullProspectContext: string): string =>
 `;
 
 // ── PROMPT 2: Refresh run — prior state + new prospect delta only ─────────────
-const getRefreshPrompt = (
-  priorState: LiveAnalysisData,
-  newProspectDelta: string
-): string =>
+const getRefreshPrompt = (priorState: LiveAnalysisData, newProspectDelta: string): string =>
   `You are an expert real-time sales intelligence engine updating a live analysis mid-call. Return ONLY valid JSON. No explanation, no markdown, no text outside the JSON object.
 
     ═══════════════════════════════════════
@@ -488,9 +487,9 @@ const isSimilar = (a: string, b: string): boolean => {
 const STATUS_RANK: Record<string, number> = { missing: 0, partial: 1, confirmed: 2 };
 
 const guardBANTField = (
-  incoming: import('../types/liveAnalysis').BANTField,
-  prior: import('../types/liveAnalysis').BANTField
-): import('../types/liveAnalysis').BANTField => {
+  incoming: import('@/types').BANTField,
+  prior: import('@/types').BANTField
+): import('@/types').BANTField => {
   const incomingRank = STATUS_RANK[incoming.status] ?? 0;
   const priorRank = STATUS_RANK[prior.status] ?? 0;
   // If the new result regressed (e.g. confirmed → missing), restore prior
@@ -499,21 +498,17 @@ const guardBANTField = (
 };
 
 const guardMEDDICField = (
-  incoming: import('../types/liveAnalysis').MEDDICField,
-  prior: import('../types/liveAnalysis').MEDDICField
-): import('../types/liveAnalysis').MEDDICField => {
+  incoming: import('@/types').MEDDICField,
+  prior: import('@/types').MEDDICField
+): import('@/types').MEDDICField => {
   const incomingRank = STATUS_RANK[incoming.status] ?? 0;
   const priorRank = STATUS_RANK[prior.status] ?? 0;
   if (incomingRank < priorRank) return prior;
   return incoming;
 };
 
-/** Deterministic short id from a quote string — djb2 hash, base-36, 6 chars. */
-const stableId = (quote: string): string => {
-  let h = 5381;
-  for (let i = 0; i < quote.length; i++) h = ((h << 5) + h) ^ quote.charCodeAt(i);
-  return (h >>> 0).toString(36).slice(0, 6);
-};
+// `stableId` now lives in @/lib/objections (imported above) so the objection watcher,
+// this hook, and the UI's `obj.id ?? obj.quote` keys all derive ids the same way.
 
 const mergeWithPrior = (
   incoming: LiveAnalysisData,
@@ -628,7 +623,14 @@ export const useLiveAnalysis = (
   companyIntel?: Record<string, any> | null,
   // Meeting Type multi-select state (owned by FloatingDock). Sent to the backend as
   // `meeting_types`; dealOptimizer is produced only when it includes 'negotiation'.
-  meetingTypes: MeetingType[] = []
+  meetingTypes: MeetingType[] = [],
+  // The client-owned objection list from useObjectionWatch. When provided, the fast
+  // /intelligence/objection-handler route is the SOLE producer of objections: this
+  // hook posts the list as `previous_analysis.objections` (the backend carries it
+  // through verbatim) and overrides the response's objections with it.
+  // Pass null to fall back to the response's own objections — the behaviour against a
+  // backend that hasn't shipped the split yet.
+  objectionsRef: React.MutableRefObject<Objection[]> | null = null
 ) => {
   const [analysisData, setAnalysisData] = useState<LiveAnalysisData | null>(null);
   const [isLoading, setIsLoading] = useState(false);
@@ -701,6 +703,10 @@ export const useLiveAnalysis = (
       console.warn('[useLiveAnalysis] Analysis already in-flight, skipping duplicate call.');
       return;
     }
+
+    // force=true is the manual "Refresh" button (and the first-open kick);
+    // force=false is the unattended auto-refresh timer firing on its own.
+    posthogAnalytics.trackLiveAnalysisRefresh(force ? 'manual' : 'auto');
 
     isLoadingRef.current = true;
     setIsLoading(true);
@@ -828,11 +834,24 @@ export const useLiveAnalysis = (
         const parsed = await intelligenceApi.analyzeLive(turns, null, {
           meetingTypes: meetingTypesRef.current,
           // null on the first run → backend analyses `turns` as the full call.
-          previousAnalysis: priorState,
+          // When the objection watcher is active, the objections we send are the
+          // client-owned accumulated list, not whatever the last response happened
+          // to contain — the client is the owner of that slice of state.
+          previousAnalysis:
+            priorState && objectionsRef
+              ? { ...priorState, objections: objectionsRef.current }
+              : priorState,
         });
 
         // Backend already merged (see stampIds note); just re-stamp stable ids + dedupe.
-        const merged = stampIds(parsed);
+        // Objections are then overridden from the watcher's ref read HERE, at response
+        // time rather than request time: this call can be in flight for seconds while
+        // several objection ticks land, and without this the slow response would clobber
+        // the newer ones.
+        const stamped = stampIds(parsed);
+        const merged = objectionsRef
+          ? { ...stamped, objections: objectionsRef.current }
+          : stamped;
 
         // Advance cursor so next delta run only processes new turns
         lastAnalyzedIndexRef.current = currentEndIndex;

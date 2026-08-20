@@ -1,6 +1,7 @@
-import { defineConfig } from 'vitest/config';
+import { defineConfig, mergeConfig } from 'vitest/config';
+import viteConfig from './vite.config.mts';
 
-export default defineConfig({
+export default mergeConfig(viteConfig, defineConfig({
   test: {
     environment: 'node',
     include: [
@@ -13,4 +14,4 @@ export default defineConfig({
       'dist-electron/**',
     ],
   },
-});
+}));

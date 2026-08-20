@@ -12,12 +12,24 @@
     "rootDir": "..",
     "outDir": "../dist-electron",
     "moduleResolution": "node",
-    "resolveJsonModule": true
+    "resolveJsonModule": true,
+    "paths": {
+      "@/*": [
+        "../src/*"
+      ],
+      "@/types": [
+        "../src/types/index.tsx"
+      ],
+      "@/types/*": [
+        "../src/types/*"
+      ]
+    }
   },
   "include": [
     "**/*.ts",
     "**/*.js",
-    "../premium/electron/**/*.ts"
+    "../premium/electron/**/*.ts",
+    "../src/app/vite-env.d.ts"
   ],
   "exclude": [
     "db/seedDemo.ts",

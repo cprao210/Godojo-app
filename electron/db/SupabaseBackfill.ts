@@ -27,7 +27,7 @@ const BACKFILL_CURSOR_PREFIX = 'supabase_backfill_cursor_';
 // already does for the live mirror path. TODO(supabase): once these columns
 // are added to the cloud schema, delete the corresponding entry here.
 const LOCAL_ONLY_COLUMNS: Record<string, string[]> = {
-    meetings: ['meeting_types'],
+    meetings: ['meeting_types', 'owner_uid'],
     transcripts: ['speaker_index'],
 };
 

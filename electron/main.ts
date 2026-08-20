@@ -2,6 +2,28 @@ import { app, BrowserWindow, Tray, Menu, nativeImage, ipcMain, shell, systemPref
 import path from "path"
 import fs from "fs"
 import { autoUpdater } from "electron-updater"
+
+// ─── Separate userData directories for dev vs. production ──────────────────
+// Electron's default userData folder name comes from app.getName(), which
+// reads the `name` field in package.json ("godojo-ai") — and that's the
+// SAME package.json electron-builder ships inside the packaged app. So a
+// `npm run dev` session and a real production install both default to the
+// identical folder (e.g. %APPDATA%\godojo-ai on Windows, ~/Library/Application
+// Support/godojo-ai on macOS), which is why new users created in dev were
+// showing up against the production Supabase config, and vice versa:
+// CredentialsManager, SettingsManager, and DatabaseManager all read/write
+// through app.getPath('userData').
+//
+// This MUST run before those modules are imported (they resolve
+// app.getPath('userData') at import/construction time) — hence its
+// placement here, immediately after the electron/path imports and before
+// anything else in this file. Because electron/tsconfig.json targets
+// CommonJS, imports below compile to sequential require() calls in source
+// order, not ES-module hoisting, so this genuinely executes first.
+const userDataDirName = app.isPackaged ? 'godojo-ai' : 'godojo-ai-dev';
+app.setPath('userData', path.join(app.getPath('appData'), userDataDirName));
+console.log(`[Main] userData path: ${app.getPath('userData')} (isPackaged=${app.isPackaged})`);
+
 // Load app-level config (Supabase, Google/Zoom OAuth client credentials, Firebase).
 // In dev this reads the repo-root `.env`. In a packaged build it reads the `.env`
 // shipped via `extraResources` (written by CI from GitHub Actions secrets — see
@@ -16,6 +38,40 @@ const runtimeEnvPath = app.isPackaged
   ? path.join(process.resourcesPath, '.env')
   : path.join(app.getAppPath(), '.env');
 require('dotenv').config({ path: runtimeEnvPath }); // no-ops safely if the file is missing
+
+import { posthogMain } from './services/PostHogMainService';
+// Init as early as possible so it's live before the uncaughtException/
+// unhandledRejection handlers below can fire.
+posthogMain.init();
+
+// One-time, masked diagnostic so a "keys not falling back to env" report can
+// be triaged directly from a shipped build's logs (Console.app on mac,
+// %APPDATA% logs on Windows) AND from PostHog, instead of guessing blind or
+// needing someone to pull local logs off a user's machine. Never logs or
+// sends actual key values — presence/absence + length only.
+{
+  const envFileExists = fs.existsSync(runtimeEnvPath);
+  const mask = (v?: string) => (v ? `present (${v.length} chars)` : 'MISSING');
+  const keyPresent = (v?: string) => !!v && v.trim().length > 0;
+  console.log(
+    `[Main] Runtime .env: path=${runtimeEnvPath} exists=${envFileExists} | ` +
+    `DEEPGRAM_API_KEY=${mask(process.env.DEEPGRAM_API_KEY)} ` +
+    `GEMINI_API_KEY=${mask(process.env.GEMINI_API_KEY)} ` +
+    `GROQ_API_KEY=${mask(process.env.GROQ_API_KEY)} ` +
+    `TAVILY_API_KEY=${mask(process.env.TAVILY_API_KEY)}`
+  );
+  posthogMain.capture('env_fallback_keys_status', {
+    platform: process.platform,
+    appVersion: app.getVersion(),
+    isPackaged: app.isPackaged,
+    envFileExists,
+    deepgramEnvPresent: keyPresent(process.env.DEEPGRAM_API_KEY),
+    geminiEnvPresent: keyPresent(process.env.GEMINI_API_KEY),
+    groqEnvPresent: keyPresent(process.env.GROQ_API_KEY),
+    tavilyEnvPresent: keyPresent(process.env.TAVILY_API_KEY),
+  });
+}
+
 
 // Handle stdout/stderr errors at the process level to prevent EIO crashes
 // This is critical for Electron apps that may have their terminal detached
@@ -80,10 +136,12 @@ app.on('open-url', (event, url) => {
 
 process.on('uncaughtException', (err) => {
   logToFile('[CRITICAL] Uncaught Exception: ' + (err.stack || err.message || err));
+  posthogMain.captureException(err, 'uncaughtException');
 });
 
 process.on('unhandledRejection', (reason, promise) => {
   logToFile('[CRITICAL] Unhandled Rejection at: ' + promise + ' reason: ' + (reason instanceof Error ? reason.stack : reason));
+  posthogMain.captureException(reason, 'unhandledRejection', { promise: String(promise) });
 });
 
 // CQ-04 fix: do NOT call app.getPath() at module load time.
@@ -180,7 +238,7 @@ console.error = (...args: any[]) => {
 };
 
 import { initializeIpcHandlers } from "./ipcHandlers"
-import { WindowHelper } from "./WindowHelper"
+import { WindowHelper, initRendererUrl } from "./WindowHelper"
 import { SettingsWindowHelper } from "./SettingsWindowHelper"
 import { ModelSelectorWindowHelper } from "./ModelSelectorWindowHelper"
 import { CropperWindowHelper } from "./CropperWindowHelper"
@@ -243,7 +301,7 @@ import { SettingsManager } from "./services/SettingsManager"
 import { setVerboseLoggingFlag } from "./verboseLog"
 import { ReleaseNotesManager } from "./update/ReleaseNotesManager"
 import { OllamaManager } from './services/OllamaManager'
-import { LiveAnalysisData } from "../src/types/liveAnalysis";
+import { LiveAnalysisData } from "../src/types";
 
 export class AppState {
   private static instance: AppState | null = null
@@ -562,7 +620,7 @@ export class AppState {
             const cm = CredentialsManager.getInstance();
             this.ragManager.initializeEmbeddings({
               openaiKey: cm.getOpenaiApiKey() || process.env.OPENAI_API_KEY || undefined,
-              geminiKey: cm.getGeminiApiKey() || process.env.GOOGLE_API_KEY || process.env.GEMINI_API_KEY || undefined,
+              geminiKey: cm.getGeminiApiKey() || process.env.GOOGLE_API_KEY || undefined,
               ollamaUrl: process.env.OLLAMA_URL || "http://localhost:11434"
             });
           }
@@ -582,7 +640,7 @@ export class AppState {
         const { CredentialsManager } = require('./services/CredentialsManager');
         const cm = CredentialsManager.getInstance();
         const openaiKey = cm.getOpenaiApiKey() || process.env.OPENAI_API_KEY;
-        const geminiKey = cm.getGeminiApiKey() || process.env.GOOGLE_API_KEY || process.env.GEMINI_API_KEY;
+        const geminiKey = cm.getGeminiApiKey() || process.env.GOOGLE_API_KEY;
 
         this.ragManager = new RAGManager({
           db: sqliteDb,
@@ -766,12 +824,20 @@ export class AppState {
       this.broadcast("update-downloaded", info)
     })
 
-    // Start checking for updates with a 10-second delay
+    // Start checking for updates with a 10-second delay.
+    // Gate on app.isPackaged rather than process.env.NODE_ENV: NODE_ENV isn't
+    // guaranteed to be set (or set correctly) in a packaged build, whereas
+    // isPackaged is Electron's own reliable dev-vs-production signal.
     setTimeout(() => {
-      if (process.env.NODE_ENV === "development") {
-        console.log("[AutoUpdater] Development mode: Skipping auto check (use manual button)");
+      if (!app.isPackaged) {
+        console.log("[AutoUpdater] Development build: skipping auto check entirely");
       } else {
         autoUpdater.checkForUpdatesAndNotify().catch(err => {
+          if (this.isNoReleaseAvailableError(err)) {
+            console.log("[AutoUpdater] No published release found on GitHub — treating as up to date");
+            this.broadcast("update-not-available", { version: app.getVersion() });
+            return;
+          }
           console.error("[AutoUpdater] Failed to check for updates:", err);
         });
       }
@@ -877,18 +943,40 @@ export class AppState {
 
   public async checkForUpdates(): Promise<void> {
     console.log('[AutoUpdater] Manual check for updates requested')
+    // Production-only: don't fall back to the manual GitHub API check in dev
+    // either — that previously let "Check for Updates" work locally even
+    // though the feature is meant to be production-only.
+    if (!app.isPackaged) {
+      console.log('[AutoUpdater] Skipping: development build (updates are production-only)')
+      this.broadcast("update-error", "Updates are disabled in development builds")
+      return
+    }
     try {
-      // In development mode, use manual GitHub API check (electron-updater skips in dev)
-      if (process.env.NODE_ENV === "development") {
-        await this.checkForUpdatesManual()
-      } else {
-        await autoUpdater.checkForUpdatesAndNotify()
-      }
+      await autoUpdater.checkForUpdatesAndNotify()
     } catch (err: any) {
       console.error('[AutoUpdater] checkForUpdates failed:', err)
-      const errorMessage = err.message || err.toString() || 'Update check failed'
+      // electron-updater throws (typically a 404 fetching latest.yml) when
+      // GitHub has no published release yet — e.g. right after deleting all
+      // releases, or before the first one is published. That's not a real
+      // failure, it just means there's nothing to update to yet.
+      if (this.isNoReleaseAvailableError(err)) {
+        console.log('[AutoUpdater] No published release found on GitHub — treating as up to date')
+        this.broadcast("update-not-available", { version: app.getVersion() })
+        return
+      }
+      const errorMessage = err.message || err.toString() || 'Download failed'
       this.broadcast("update-error", errorMessage)
     }
+  }
+
+  private isNoReleaseAvailableError(err: any): boolean {
+    const msg = (err?.message || err?.toString() || '').toLowerCase()
+    return (
+      msg.includes('404') ||
+      msg.includes('cannot find latest') ||
+      msg.includes('no published versions') ||
+      msg.includes('not found')
+    )
   }
 
   public downloadUpdate(): void {
@@ -1098,7 +1186,7 @@ export class AppState {
     let stt: STTProvider;
 
     if (sttProvider === 'deepgram') {
-      const apiKey = CredentialsManager.getInstance().getDeepgramApiKey();
+      const apiKey = CredentialsManager.getInstance().getDeepgramApiKey() || process.env.DEEPGRAM_API_KEY;
       if (apiKey) {
         // Diarization only on the client (system-audio) stream: the mic is
         // single-speaker by role, and diarize is a paid streaming add-on.
@@ -1683,6 +1771,20 @@ export class AppState {
   public async startMeeting(metadata?: any): Promise<void> {
     console.log('[Main] Starting Meeting...', metadata);
 
+    // Idempotency guard: a duplicate call (double-click on Start before the UI
+    // switches to overlay mode, a calendar auto-join racing a manual start, an
+    // IPC retry, etc.) must be a no-op. Without this, resetSessionTimer() below
+    // would silently re-anchor sessionStartTime to "now" and zero out
+    // totalPausedMs mid-meeting — the clock and pause history for the meeting
+    // already in progress get wiped, and stopMeeting() later computes a
+    // technically-correct duration/start/pause set from those now-wrong inputs.
+    // This is the root cause of duration/start/end/pause values coming out
+    // wrong at save time despite the math itself being correct.
+    if (this.isMeetingActive) {
+      console.warn('[Main] startMeeting() called while a meeting is already active — ignoring duplicate call.');
+      return;
+    }
+
     if (!(await ensureMacMicrophoneAccess('meeting start'))) {
       const message = 'Microphone access denied. Please allow microphone access in System Settings.';
       this.broadcast('meeting-audio-error', message);
@@ -1690,12 +1792,19 @@ export class AppState {
     }
 
     this.isMeetingActive = true;
-
     this._pendingLiveAnalysisMeetingId = null;
     this._liveAnalysisInFlight = false;
     this._clientSpeakerIndicesSeen.clear();
     this._echoFilter.reset();
     this._userPartialPending = false;
+    // Reset the session clock HERE, synchronously, the same instant the
+    // meeting is marked active — not inside the setTimeout(0) callback
+    // below. That callback can be delayed (audio device checks, mic
+    // permission prompts, etc.), leaving a real gap where a fast
+    // stop→restart can compute the next meeting's duration against a
+    // stale sessionStartTime from the previous session. Resetting here
+    // ties the timer directly to "meeting marked active," with no gap.
+    this.intelligenceManager.resetSessionTimer();
     this.broadcastMeetingState();
 
     // Pass metadata directly to SessionTracker, which owns all name-resolution logic:
@@ -1731,6 +1840,7 @@ export class AppState {
         return;
       }
       try {
+
         // Check for audio configuration preference
         if (metadata?.audio) {
           await this.reconfigureAudio(metadata.audio.inputDeviceId, metadata.audio.outputDeviceId);
@@ -1762,11 +1872,6 @@ export class AppState {
         this.googleSTT?.setAudioChannelCount?.(1);
         this.googleSTT_User?.setSampleRate(16000);
         this.googleSTT_User?.setAudioChannelCount?.(1);
-
-        // Reset session timer here — not at the previous stopMeeting() — so that
-        // duration = (stopTime − startTime) equals actual recording length only,
-        // with no idle-between-meetings inflation.
-        this.intelligenceManager.resetSessionTimer();
 
         this.googleSTT?.start();
         this.googleSTT_User?.start();
@@ -1828,8 +1933,14 @@ export class AppState {
         // Field telemetry for the echo pipeline (ERLE, gate state, mute ratio).
         this._startPipelineStatsPolling();
         console.log('[Main] Audio pipeline started successfully.');
+
       } catch (err) {
         console.error('[Main] Error initializing audio pipeline:', err);
+        // Audio init failed after resetSessionTimer() already ran — the
+        // clock is correctly anchored, but there's no working pipeline to
+        // record anything. Don't leave the app believing a meeting is live.
+        this.isMeetingActive = false;
+        this.broadcastMeetingState();
         // Notify UI so user knows microphone/audio failed to start
         this.broadcast('meeting-audio-error', (err as Error).message || 'Audio pipeline failed to start');
       }
@@ -1861,6 +1972,17 @@ export class AppState {
     // rather than getRecentMeetings(1) which could return a different meeting if the
     // user starts a new session before background processing finishes.
     const meetingId = await this.intelligenceManager.stopMeeting(meetingTypes, tenantId);
+    // Tell the overlay window EXACTLY which meeting this call became — don't
+    // make it infer this from getRecentMeetings()[0]. That list is sorted by
+    // `date`, and MeetingPersistence rewrites `date` to "now" a SECOND time
+    // when a meeting's background processing finishes (which can complete
+    // well after a later call has already ended) — so an older meeting can
+    // briefly outrank the current one in "most recent" order. This broadcast
+    // is the one authoritative, race-free source for "which meeting did the
+    // call I just ended turn into".
+    if (meetingId) {
+      this.broadcast('live-call-ended', { meetingId });
+    }
     // If an analysis call is currently in-flight, record the meetingId so
     // setCurrentLiveAnalysis() can patch the DB when the result arrives.
     if (this._liveAnalysisInFlight) {
@@ -3433,6 +3555,8 @@ async function initializeApp() {
 
   console.log("App is ready")
 
+  await initRendererUrl()
+
   appState.createWindow()
 
   // If a deep link arrived before the window existed (cold start), deliver
@@ -3505,6 +3629,27 @@ async function initializeApp() {
 
   // Note: We do NOT force dock show here anymore, respecting stealth mode.
 
+  // Renderer crashes (OOM kill, GPU crash, sandbox violation, etc.) never
+  // reach window.onerror in the crashed renderer — the process is gone
+  // before it could report anything. This is the only place these surface.
+  app.on('render-process-gone', (_event, webContents, details) => {
+    console.error('[Main] Renderer process gone:', details.reason, webContents.getURL());
+    posthogMain.captureException(
+      new Error(`Renderer process gone: ${details.reason}`),
+      'render-process-gone',
+      { reason: details.reason, exitCode: details.exitCode, url: webContents.getURL() }
+    );
+  });
+
+  app.on('child-process-gone', (_event, details) => {
+    console.error('[Main] Child process gone:', details.type, details.reason);
+    posthogMain.captureException(
+      new Error(`Child process gone: ${details.type} — ${details.reason}`),
+      'child-process-gone',
+      { type: details.type, reason: details.reason, exitCode: details.exitCode }
+    );
+  });
+
   app.on("activate", () => {
     console.log("App activated")
     if (process.platform === 'darwin') {
@@ -3546,6 +3691,10 @@ async function initializeApp() {
 
     // Kill Ollama if we started it
     OllamaManager.getInstance().stop();
+
+    // Flush any buffered error-tracking events (fire-and-forget — we don't
+    // want to delay quit waiting on this)
+    posthogMain.shutdown();
 
     try {
       const { CredentialsManager } = require('./services/CredentialsManager');

@@ -205,10 +205,23 @@ export class SupabaseMirrorService {
     // in the local outbox and replay automatically on sign-in.
     // ============================================
 
-    /** Mirror a single row upsert to a Supabase table. */
-    upsertRow(table: string, row: Record<string, any>): void {
+    /**
+     * Mirror a single row upsert to a Supabase table.
+     *
+     * @param ownerUid Pin the mirror row's user_id to this uid instead of
+     *   re-resolving "the current signed-in user" at enqueue time. Callers
+     *   that write the SAME logical entity across multiple, separated-in-time
+     *   calls (e.g. a meeting's placeholder save, then its title/summary
+     *   updates minutes later) MUST pass the uid captured when that entity
+     *   was first created — otherwise a signed-in-user change in between
+     *   (account switch, session handoff) stamps later writes with a
+     *   different user_id and, for composite-PK tables like meetings
+     *   (user_id, id), silently creates a second row instead of updating
+     *   the first. Omit only for genuinely one-shot / first-write calls.
+     */
+    upsertRow(table: string, row: Record<string, any>, ownerUid?: string | null): void {
         if (!this.enabled) return;
-        this._enqueue({ op: 'upsert', table, payload: row, retries: 0 });
+        this._enqueue({ op: 'upsert', table, payload: row, retries: 0 }, ownerUid);
     }
 
     private _conflictTargetForTable(table: string, row: Record<string, any>): string | null {
@@ -255,7 +268,9 @@ export class SupabaseMirrorService {
             case 'scoring_criteria':
                 return row.user_id != null ? 'user_id,id' : 'id';
             case 'company_asset_chunks':
-                return row.user_id != null && row.id != null ? 'user_id,id' : (row.id != null ? 'id' : null);
+                return row.user_id != null && row.asset_id != null && row.chunk_index != null
+                    ? 'user_id,asset_id,chunk_index'
+                    : (row.id != null ? 'id' : null);
             default:
                 if (table.startsWith('rag_chunk_vectors_')) {
                     return row.user_id != null ? 'user_id,chunk_id' : 'chunk_id';
@@ -314,24 +329,52 @@ export class SupabaseMirrorService {
      * leftover transcript items ahead of it. A single batched upsert call
      * is both faster (one request) and can't block later items for long.
      */
-    upsertRows(table: string, rows: Record<string, any>[]): void {
+    upsertRows(table: string, rows: Record<string, any>[], ownerUid?: string | null): void {
         if (!this.enabled || rows.length === 0) return;
-        this._enqueue({ op: 'upsertBatch', table, payload: rows, retries: 0 });
+        this._enqueue({ op: 'upsertBatch', table, payload: rows, retries: 0 }, ownerUid);
     }
 
     // ============================================
     // Private queue / drain machinery
     // ============================================
 
-    private _enqueue(item: Omit<OutboxItem, 'id' | 'ownerUid'>): void {
+    private _enqueue(item: Omit<OutboxItem, 'id' | 'ownerUid'>, ownerUid?: string | null): void {
         const entry: OutboxItem = {
             id: ++this.counter,
-            ownerUid: item.table === 'users' ? null : SupabaseClientManager.getCurrentUserId(),
+            // Explicit ownerUid (passed by callers that must keep a multi-step
+            // entity's writes under one identity) wins. Otherwise fall back to
+            // resolving "current user" fresh — fine for genuine one-shot writes.
+            ownerUid: item.table === 'users' ? null : (ownerUid ?? SupabaseClientManager.getCurrentUserId()),
             ...item,
         };
         this.outbox.push(entry);
         this._persistOutboxItem(entry);
         if (!this.draining) this._drain();
+    }
+
+    /**
+     * Wait for all currently-queued mirror ops to actually reach Supabase.
+     *
+     * The outbox is normally fire-and-forget (by design, so local writes
+     * never block on network). But some callers persist a change locally and
+     * then immediately turn around and read it back FROM Supabase (e.g.
+     * company:saveContext deleting an asset, followed by the Company
+     * Context tab re-fetching on next tab switch via SupabaseReadService).
+     * For those, the caller must await this after the local write so the
+     * delete/upsert has actually landed before anything reads the cloud
+     * copy again.
+     *
+     * Resolves once the outbox is empty, or after `timeoutMs` — we never want
+     * to hang indefinitely (e.g. offline); the outbox keeps retrying on its
+     * own regardless of whether anyone awaited this.
+     */
+    async flush(timeoutMs: number = 8000): Promise<void> {
+        if (this.outbox.length === 0 && !this.draining) return;
+        const start = Date.now();
+        if (!this.draining) this._drain();
+        while ((this.outbox.length > 0 || this.draining) && Date.now() - start < timeoutMs) {
+            await new Promise(r => setTimeout(r, 100));
+        }
     }
 
     /**
@@ -479,8 +522,23 @@ export class SupabaseMirrorService {
                 // anyway, but belt-and-braces).
                 let q: any = client.from(item.table).delete();
                 if (needsUserId) q = q.eq('user_id', userId);
-                const { error } = await q.eq(pkColumn, pkValue);
+                // Request the deleted rows back. Supabase-js returns NO error
+                // when a delete matches zero rows (whether because the row
+                // is already gone, or — critically — because an RLS policy
+                // silently excludes it from the DELETE). Without .select(),
+                // that "0 rows affected" case is indistinguishable from a
+                // real success, so a permission problem never surfaces —
+                // it just looks like the row is stuck forever on the client.
+                const { data, error } = await q.eq(pkColumn, pkValue).select('*');
                 if (error) throw error;
+                if (!data || data.length === 0) {
+                    console.warn(
+                        `[SupabaseMirrorService] delete on ${item.table} (${pkColumn}=${pkValue}, user_id=${userId}) ` +
+                        `matched 0 rows. If the row is visible in the Supabase dashboard, this is almost ` +
+                        `certainly a missing/incorrect RLS DELETE policy on "${item.table}", not a bug in ` +
+                        `this client — the request succeeded but the database silently declined to remove anything.`
+                    );
+                }
 
             } else if (item.op === 'upsertVector') {
                 const { type, local_id, meeting_id, dim, embedding, ...rest } = item.payload;
@@ -643,6 +701,8 @@ CREATE TABLE IF NOT EXISTS meetings (
     id                   TEXT NOT NULL,
     title                TEXT,
     start_time           BIGINT,
+    end_time             BIGINT,
+    total_paused_ms      BIGINT DEFAULT 0,
     duration_ms          BIGINT,
     summary_json         JSONB,
     created_at           TIMESTAMPTZ,

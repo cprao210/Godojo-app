@@ -3,9 +3,9 @@ const sharp = require('sharp');
 const path = require('path');
 const fs = require('fs');
 
-const inputPath = path.join(__dirname, 'src/components/icon.png');
+const inputPath = path.join(__dirname, 'src/icons/icon_64x64.png');
 const outputAssets = path.join(__dirname, 'assets/iconTemplate.png');
-const outputComponents = path.join(__dirname, 'src/components/iconTemplate.png');
+const outputComponents = path.join(__dirname, 'assets/iconTemplate.png');
 
 async function processIcon() {
     try {
