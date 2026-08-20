@@ -92,8 +92,8 @@ describe('intelligenceApi.detectObjections', () => {
 
     expect(mockedApiFetch.mock.calls[0][0]).toBe('/intelligence/objection-handler');
     const body = bodyOfCall();
-    // AE turns are included — the backend needs them to detect ae_deferrals and to
-    // judge whether an open objection was actually answered.
+    // formatTranscript labels whatever it is handed; the live caller
+    // (useObjectionWatch) posts prospect turns only.
     expect(body.transcript).toBe('SALES PERSON: so about pricing\nPROSPECT: the price is too high');
     expect(body.meeting_id).toBeNull();
     expect(body.open_objections).toEqual(['we already use Salesforce']);

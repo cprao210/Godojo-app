@@ -121,14 +121,14 @@ export const useObjectionWatch = (transcriptRef: TranscriptRef, isMeetingPaused:
                 return;
             }
 
-            // Include AE turns in the window: the backend needs them to detect
-            // `ae_deferral` objections and to judge whether an open objection was
-            // actually answered. The small overlap keeps a quote that straddles the
+            // PROSPECT TURNS ONLY. The rep's own speech is never an objection, so it
+            // is excluded from the posted window — the backend sees only what the
+            // client said. The small overlap keeps a quote that straddles the
             // previous boundary from being lost.
             const windowStart = Math.max(cursorRef.current - OBJECTION_OVERLAP_TURNS, 0);
             const turns = humanTurns
                 .slice(windowStart)
-                .filter(t => (t.speaker === 'user' || t.speaker === 'client') && t.text?.trim())
+                .filter(t => t.speaker === 'client' && t.text?.trim())
                 .map(t => ({ speaker: t.speaker, text: t.text }));
 
             if (turns.length === 0) {

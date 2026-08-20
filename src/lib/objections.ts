@@ -150,9 +150,8 @@ export interface TickDecisionArgs {
  * the timing rules are testable without React.
  *
  * An AE-only delta returns false — the caller advances the cursor without a request,
- * because the rep talking is not itself an objection. (AE turns are still INCLUDED in
- * the window when a tick does fire: the backend needs them to spot `ae_deferral`
- * objections and to judge whether an open objection was actually answered.)
+ * because the rep talking is not itself an objection. (AE turns are also EXCLUDED from
+ * the window when a tick does fire: only prospect speech is posted to the route.)
  */
 export const shouldTick = (args: TickDecisionArgs): boolean => {
   const {
