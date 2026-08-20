@@ -18,6 +18,7 @@ export interface ElectronAPI {
   onWindowMaximizedChanged: (callback: (isMaximized: boolean) => void) => () => void
   onEnsureExpanded: (callback: () => void) => () => void
   quitApp: () => Promise<void>
+  hardRefresh: () => Promise<{ success: boolean }>
   toggleWindow: () => Promise<void>
   showWindow: (inactive?: boolean) => Promise<void>
   hideWindow: () => Promise<void>
@@ -41,7 +42,9 @@ export interface ElectronAPI {
     stack?: string
     componentStack?: string | null
   }) => Promise<{ success: boolean; error?: string }>
+  confirmDeleteAccount: () => Promise<{ confirmed: boolean }>,
   resetAppData: () => Promise<{ success: boolean; cancelled?: boolean; error?: string }>
+  wipeLocalAccountData: () => Promise<{ success: boolean; error?: string }>
   onScreenshotTaken: (callback: (data: { path: string; preview: string }) => void) => () => void
   onScreenshotAttached: (callback: (data: { path: string; preview: string }) => void) => () => void
   onCaptureAndProcess: (callback: (data: { path: string; preview: string }) => void) => () => void
@@ -263,6 +266,7 @@ export interface ElectronAPI {
 
   // Live Analysis
   updateLiveAnalysis: (data: LiveAnalysisData) => Promise<{ success: boolean }>
+  setLiveAnalysisInFlight: (inFlight: boolean) => Promise<{ success: boolean }>;
 
   // ===========================================================================
   // Chat (Gemini Streaming)

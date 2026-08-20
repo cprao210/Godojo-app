@@ -398,6 +398,30 @@ export function useLauncher({ onStartMeeting, ollamaPullStatus = 'idle', onPageC
             });
         }
 
+        // Patch the placeholder with its real, locally-resolvable id as soon as
+        // main.ts knows it — well before onMeetingsUpdated (background summary
+        // processing finishing) would otherwise be the first time we learn it.
+        let removeLiveCallEndedListener: (() => void) | undefined;
+        if (window.electronAPI?.onLiveCallEnded) {
+            removeLiveCallEndedListener = window.electronAPI.onLiveCallEnded(({ meetingId }) => {
+                if (!meetingId) return;
+                let placeholderId: string | null = null;
+                queryClient.setQueryData<Meeting[]>(['meetings'], (prev = []) => {
+                    const idx = prev.findIndex(m => m.title === 'Processing...' && m.isProcessed === false);
+                    if (idx === -1) return prev;
+                    placeholderId = prev[idx].id;
+                    const next = [...prev];
+                    next[idx] = { ...next[idx], id: meetingId };
+                    return next;
+                });
+                // selectedMeeting is a one-time snapshot, not cache-subscribed —
+                // patch it too or an already-open details view stays wedged.
+                if (placeholderId) {
+                    setSelectedMeeting(prev => (prev && prev.id === placeholderId ? { ...prev, id: meetingId } : prev));
+                }
+            });
+        }
+
         // Listen for background updates (e.g. after meeting processing finishes)
         const removeMeetingsListener = window.electronAPI.onMeetingsUpdated(() => {
             console.log('Received meetings-updated event');
@@ -412,6 +436,7 @@ export function useLauncher({ onStartMeeting, ollamaPullStatus = 'idle', onPageC
             if (removeMeetingsListener) removeMeetingsListener();
             if (removeUndetectableListener) removeUndetectableListener();
             if (removeMeetingStateListener) removeMeetingStateListener();
+            if (removeLiveCallEndedListener) removeLiveCallEndedListener();
             clearInterval(interval);
         };
         // eslint-disable-next-line react-hooks/exhaustive-deps

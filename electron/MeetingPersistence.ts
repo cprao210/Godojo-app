@@ -512,7 +512,7 @@ export class MeetingPersistence {
                     .join('\n')
                     .substring(0, 5000);
 
-                const generatedTitle = await this.llmHelper.generateMeetingSummary(titlePrompt, titleContext, groqTitlePrompt);
+                const generatedTitle = await this.llmHelper.generateMeetingSummary(titlePrompt, titleContext, groqTitlePrompt, 'title');
                 if (generatedTitle) title = generatedTitle.replace(/[\"*]/g, '').trim();
             }
 
@@ -531,7 +531,7 @@ export class MeetingPersistence {
                     ? GROQ_SUMMARY_JSON_PROMPT + '\n\n' + liveAnalysisGroqBlock
                     : GROQ_SUMMARY_JSON_PROMPT;
 
-                const generatedSummary = await this.llmHelper.generateMeetingSummary(buildSummaryPrompt(liveAnalysisData, companyIntel), fullTranscriptText, groqSummaryPrompt);
+                const generatedSummary = await this.llmHelper.generateMeetingSummary(buildSummaryPrompt(liveAnalysisData, companyIntel), fullTranscriptText, groqSummaryPrompt, 'summary');
 
                 if (generatedSummary) {
                     const jsonMatch = generatedSummary.match(/```json\n([\s\S]*?)\n```/) || [null, generatedSummary];
@@ -726,7 +726,8 @@ export class MeetingPersistence {
             const scorecardRaw = await this.llmHelper.generateMeetingSummary(
                 scorecardPrompt,
                 transcriptText,
-                scorecardPrompt
+                scorecardPrompt,
+                'meeting_score'
             );
             if (scorecardRaw) {
                 const clean = scorecardRaw.replace(/```json|```/g, '').trim();
@@ -855,7 +856,8 @@ export class MeetingPersistence {
             const generatedSummary = await this.llmHelper.generateMeetingSummary(
                 buildSummaryPrompt(existingLiveAnalysis),
                 fullRegenerateContext,
-                groqSummaryPrompt
+                groqSummaryPrompt,
+                'summary'
             );
 
             if (!generatedSummary) return false;

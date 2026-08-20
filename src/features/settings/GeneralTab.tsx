@@ -1,7 +1,11 @@
 import React, { useState } from 'react';
-import { Ghost, PointerOff, Power, Terminal, MessageSquare, Palette, Monitor, Sun, Moon, Globe, ChevronDown, Eye, Layout, Settings, Activity, RotateCcw } from 'lucide-react';
+import { Ghost, PointerOff, Power, Terminal, MessageSquare, Palette, Monitor, Sun, Moon, Globe, ChevronDown, Eye, Layout, Settings, Activity, RotateCcw, Skull } from 'lucide-react';
 import { OVERLAY_OPACITY_MIN } from '@/lib/overlayAppearance';
 import { useSettingsOverlay } from '@/hooks';
+import { getFirebaseAuth } from '@/lib/firebase';
+import { encryptDangerousKey } from '@/lib/dangerousKey';
+import { API_BASE } from '@/lib/apiClient';
+import { posthogAnalytics } from '@/lib/analytics/posthog.service';
 import MockupDock from './MockupDock';
 
 type SettingsOverlayHook = ReturnType<typeof useSettingsOverlay>;
@@ -39,6 +43,7 @@ const GeneralTab: React.FC<{ overlay: SettingsOverlayHook }> = ({ overlay }) => 
     const [resetError, setResetError] = useState<string | null>(null);
 
     const handleResetAppData = async () => {
+        posthogAnalytics.trackResetAppDataClicked();
         setResetError(null);
         setIsResetting(true);
         try {
@@ -52,6 +57,66 @@ const GeneralTab: React.FC<{ overlay: SettingsOverlayHook }> = ({ overlay }) => 
             setResetError(e?.message || 'Reset failed. Please try again.');
         } finally {
             setIsResetting(false);
+        }
+    };
+
+    // DEV-ONLY: "Delete My Account" — self-service full wipe of the signed-in
+    // user's data (Supabase rows across every user-scoped table, then the
+    // Firebase Auth user, then local app data). See ipcHandlers.ts
+    // 'dev:delete-current-user-account' for why this can only ever target
+    // the currently signed-in user, never an arbitrary account.
+    const [isDeletingAccount, setIsDeletingAccount] = useState(false);
+    const [deleteAccountError, setDeleteAccountError] = useState<string | null>(null);
+
+    const handleDeleteCurrentUserAccount = async () => {
+        setDeleteAccountError(null);
+        const { confirmed } = await window.electronAPI.confirmDeleteAccount();
+        if (!confirmed) return;
+        setIsDeletingAccount(true);
+        try {
+            const uid = getFirebaseAuth().currentUser?.uid;
+            if (!uid) {
+                setDeleteAccountError('No signed-in user found locally — cannot determine which account to delete.');
+                return;
+            }
+
+            // Token-free by design: this hits the backend directly with a
+            // DANGEROUS_KEY proof instead of a Firebase ID token. See
+            // src/lib/dangerousKey.ts and the backend's
+            // app/core/dangerous_key.py for the shared-secret scheme.
+            const encrypted_key = await encryptDangerousKey();
+            const res = await fetch(`${API_BASE}/auth/dangerous/delete-user`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ uid, encrypted_key }),
+            });
+            const body = await res.json().catch(() => ({}));
+            if (!res.ok) {
+                // Backend's error envelope is {"error":{"code","message"}} —
+                // for a bad/missing key this is literally "Key required to
+                // do this operation" (see dangerous_key.py's _GENERIC_DENIAL).
+                setDeleteAccountError(body?.error?.message || `Delete failed (${res.status}).`);
+                return;
+            }
+            if (body?.failed_tables?.length) {
+                console.warn('[settings] account deletion: some Supabase tables failed to clear:', body.failed_tables);
+            }
+
+            // Server-side rows + the Firebase Auth user are gone at this
+            // point — now clear this device: natively.db, cached session,
+            // credentials.enc. This relaunches the app on success, so
+            // there's no further state to set here.
+            const wipeResult = await window.electronAPI.wipeLocalAccountData();
+            if (!wipeResult.success) {
+                setDeleteAccountError(
+                    wipeResult.error || 'Account deleted, but clearing local data failed. Please use "Reset App Data" below.'
+                );
+            }
+
+        } catch (e: any) {
+            setDeleteAccountError(e?.message || 'Account deletion failed. Please try again.');
+        } finally {
+            setIsDeletingAccount(false);
         }
     };
 
@@ -362,6 +427,37 @@ const GeneralTab: React.FC<{ overlay: SettingsOverlayHook }> = ({ overlay }) => 
                     </button>
                 </div>
             </div>
+
+            {/* DEV-ONLY Danger Zone: full account deletion (Supabase + Firebase Auth) */}
+            {import.meta.env.DEV && (
+                <div className={`rounded-xl p-5 border border-red-500/30 ${isLight ? 'bg-red-50/60' : 'bg-red-950/20'}`}>
+                    <div className="flex items-center justify-between gap-4">
+                        <div className="flex flex-col gap-1">
+                            <div className="flex items-center gap-2">
+                                <h3 className="text-sm font-bold text-red-500">Delete My Account (Dev Only)</h3>
+                                <span className="text-[10px] font-bold uppercase tracking-wide px-1.5 py-0.5 rounded bg-red-500/20 text-red-500">Dev</span>
+                            </div>
+                            <p className="text-xs text-text-secondary max-w-md">
+                                Permanently deletes THIS signed-in user from every Supabase table (regardless of foreign
+                                key constraints) and from Firebase Authentication, then wipes local data. Authorized by
+                                DANGEROUS_KEY, not your session token — requires VITE_DANGEROUS_KEY to match the
+                                backend's DANGEROUS_KEY. This can't be undone.
+                            </p>
+                            {deleteAccountError && (
+                                <p className="text-xs text-red-500 mt-1">{deleteAccountError}</p>
+                            )}
+                        </div>
+                        <button
+                            onClick={handleDeleteCurrentUserAccount}
+                            disabled={isDeletingAccount}
+                            className="shrink-0 flex items-center gap-2 px-3.5 py-2 rounded-lg text-xs font-medium border border-red-500/40 text-red-500 hover:bg-red-500/10 disabled:opacity-50 disabled:cursor-not-allowed transition-all"
+                        >
+                            <Skull size={13} className={isDeletingAccount ? 'animate-pulse' : ''} />
+                            {isDeletingAccount ? 'Deleting…' : 'Delete My Account'}
+                        </button>
+                    </div>
+                </div>
+            )}
 
         </div>
     );

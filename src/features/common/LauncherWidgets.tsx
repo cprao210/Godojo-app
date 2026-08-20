@@ -174,6 +174,22 @@ export const LauncherHeader: React.FC<LauncherHeaderProps> = ({
             {/* Right: Settings + Profile */}
             <div className={`flex items-center gap-2 no-drag shrink-0 ${isMac ? 'mr-1' : ''}`}>
 
+                {/* Hard Refresh */}
+                <button
+                    onClick={() => window.electronAPI?.hardRefresh?.()}
+                    className={[
+                        'inline-flex items-center justify-center rounded-full transition-all no-drag',
+                        isMac ? 'h-9 w-9' : 'h-7 w-7',   // ← shrink on Windows
+                        isLight
+                            ? 'border border-border-muted bg-bg-elevated/80 text-text-secondary hover:bg-bg-elevated hover:text-text-primary'
+                            : 'border border-border-subtle bg-bg-item-surface text-text-secondary hover:bg-white/[0.08] hover:text-white',
+                    ].join(' ')}
+                    title={isMac ? 'Hard Refresh (⌘⇧R)' : 'Hard Refresh (Ctrl+Shift+R)'}
+                    aria-label="Hard Refresh"
+                >
+                    <RefreshCw size={15} />
+                </button>
+
                 {/* Settings */}
                 <button
                     onClick={() => {

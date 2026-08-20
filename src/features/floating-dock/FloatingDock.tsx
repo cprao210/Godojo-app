@@ -45,7 +45,7 @@ export const FloatingDock: React.FC<FloatingDockProps> = ({
         posthogAnalytics.trackPageView('floating_dock');
     }, []);
 
-    const { activePanel, togglePanel, isFrozen, dockOpacity, handleDockOpacityChange, dockRef } = floatingDockStates;
+    const { activePanel, togglePanel, isFrozen, dockOpacity, handleDockOpacityChange, dockRef, ensureFinalAnalysisBeforeEndCall } = floatingDockStates;
     const { panelTopOffset, meetingTypes, setMeetingTypes, analysisData, analysisLoading, analysisError } = floatingDockStates;
     const { runAnalysis, isRefreshRun, chatMessages, setChatMessages, autoRefreshInterval, setAutoRefreshInterval } = floatingDockStates;
     const { intelligencePanelFirstOpenedAt, noAnalysisCaptured, handleInteractionId } = floatingDockStates;
@@ -239,7 +239,10 @@ export const FloatingDock: React.FC<FloatingDockProps> = ({
                             isActive={false}
                             dangerColor
                             frozen={isFrozen}
-                            onClick={() => onEndCall(meetingTypes)}
+                            onClick={async () => {
+                                await ensureFinalAnalysisBeforeEndCall();
+                                onEndCall(meetingTypes);
+                            }}
                         />
 
                         {/* Settings */}

@@ -311,6 +311,10 @@ class PostHogService {
         this.trackEvent('main_settings_opened', { tab });
     }
 
+    public trackResetAppDataClicked(): void {
+        this.trackEvent('reset_app_data_clicked');
+    }
+
     // --- Error Tracking ---
 
     /**

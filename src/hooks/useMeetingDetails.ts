@@ -53,6 +53,42 @@ export function isSummaryEmpty(ds: NonNullable<Meeting['detailedSummary']>): boo
     );
 }
 
+/**
+ * Collapses exact back-to-back duplicate transcript lines — same speaker,
+ * same text, timestamps within 500ms of each other — regardless of which
+ * source (local SQLite or the backend/Supabase mirror) produced them.
+ *
+ * Mirrors the same adjacency + threshold rule SessionTracker.addTranscript
+ * already uses on the capture side, so a transcript is deduped consistently
+ * no matter where the duplication actually originates: a capture-time
+ * double-emit that slipped past that check, or the Supabase mirror pipeline
+ * re-enqueuing the same rows (e.g. from saveMeeting()'s placeholder-save +
+ * final-save sequence) without the local-side "clear before reinsert"
+ * transaction that keeps SQLite itself duplicate-free.
+ *
+ * Only ever removes an EXACT adjacent repeat — a phrase legitimately spoken
+ * again later in the conversation, with other lines in between, is untouched.
+ */
+function dedupeTranscript<T extends { speaker: string; text: string; timestamp: number }>(
+    transcript: T[] | undefined,
+): T[] {
+    if (!transcript || transcript.length === 0) return transcript ?? [];
+    const result: T[] = [];
+    for (const seg of transcript) {
+        const prev = result[result.length - 1];
+        if (
+            prev &&
+            prev.speaker === seg.speaker &&
+            prev.text === seg.text &&
+            Math.abs(prev.timestamp - seg.timestamp) < 500
+        ) {
+            continue; // exact adjacent duplicate — drop it
+        }
+        result.push(seg);
+    }
+    return result;
+}
+
 function computeTalkTime(transcript: { speaker: string; text: string; timestamp: number }[] | undefined) {
     if (!transcript || transcript.length === 0) return { user: 0, client: 0, userWords: 0, clientWords: 0 };
     let userWords = 0, clientWords = 0;
@@ -85,6 +121,13 @@ export function useMeetingDetails(initialMeeting: Meeting) {
     // never fire a request for it.
     const isLiveMeetingPlaceholder = initialMeeting.id === 'live-meeting-current';
 
+    // Same problem as `isLiveMeetingPlaceholder` above, for the other kind of
+    // client-only id: useLauncher.ts prepends a `Meeting` with id
+    // `optimistic-${Date.now()}` (post-call processing skeleton) or
+    // `optimistic-upload-${Date.now()}` (transcript upload) the instant the
+    // placeholder is created, well before the backend has a row for it.
+    const isOptimisticMeetingId = (id?: string) => !!id && id.startsWith('optimistic-');
+
     // Tracks the post-call processing skeleton. While processing we don't fetch detail
     // over HTTP (the row may not be in the backend yet); the onMeetingsUpdated effect
     // below pulls it once main signals it's ready.
@@ -97,7 +140,10 @@ export function useMeetingDetails(initialMeeting: Meeting) {
     const { data: meetingData = initialMeeting, isLoading: isLoadingMeetingDetail, dataUpdatedAt } = useQuery<Meeting>(
         meetingKey,
         () => meetingsApi.get(initialMeeting.id),
-        { initialData: initialMeeting, enabled: !isProcessing && !isLiveMeetingPlaceholder },
+        {
+            initialData: initialMeeting,
+            enabled: !isProcessing && !isLiveMeetingPlaceholder && !isOptimisticMeetingId(initialMeeting.id),
+        },
     );
 
     // /chat/live interaction_ids collected during the live call can't be
@@ -171,11 +217,18 @@ export function useMeetingDetails(initialMeeting: Meeting) {
     // backend one, which the user would see as the transcript changing shape /
     // duplicating rather than a clean overwrite. Once `localTranscript` is
     // populated, keep showing it — don't fall back to `meetingData.transcript`.
+    //
+    // dedupeTranscript() is a second, independent safety net: whichever source
+    // ends up being used (local OR the Supabase-mirrored backend copy, if the
+    // mirror pipeline enqueues the same segments more than once — see its own
+    // comment), collapse exact back-to-back duplicate lines before they ever
+    // reach the UI. This does NOT change which source is picked — that logic
+    // above is untouched — it only cleans the result of whichever one wins.
     const meeting: Meeting = useMemo(
         () =>
             localTranscript && localTranscript.length > 0
-                ? { ...meetingData, transcript: localTranscript }
-                : { ...meetingData, transcript: meetingData.transcript },
+                ? { ...meetingData, transcript: dedupeTranscript(localTranscript) }
+                : { ...meetingData, transcript: dedupeTranscript(meetingData.transcript) },
         [meetingData, localTranscript]
     );
 
@@ -203,7 +256,7 @@ export function useMeetingDetails(initialMeeting: Meeting) {
             const res = await window.electronAPI?.meetingGetScorecard?.(initialMeeting.id);
             return res?.success ? (res.data ?? null) : null;
         },
-        { enabled: !isProcessing && !!initialMeeting.id },
+        { enabled: !isProcessing && !!initialMeeting.id && !isOptimisticMeetingId(initialMeeting.id) },
     );
     // Prefer the dedicated-table scorecard; the summary_json-embedded blob is only the
     // legacy / DB-write-failure fallback (same precedence as DatabaseManager.getMeetingDetails).
@@ -259,7 +312,12 @@ export function useMeetingDetails(initialMeeting: Meeting) {
         ['ai-interactions', meeting?.id],
         () => meetingsApi.getAiInteractions(meeting!.id),
         {
-            enabled: activeTab === 'usage' && !!meeting?.id && !isLiveMeetingPlaceholder,
+            enabled:
+                activeTab === 'usage' &&
+                !!meeting?.id &&
+                !isLiveMeetingPlaceholder &&
+                !isOptimisticMeetingId(meeting?.id) &&
+                !isProcessing,
             staleTime: 30_000,
         }
     );
@@ -311,6 +369,10 @@ export function useMeetingDetails(initialMeeting: Meeting) {
     useEffect(() => {
         if (!isProcessing) return;
 
+        // Optimistic/live-placeholder ids have no backend row — HTTP can
+        // never resolve them, so skip it and rely on local IPC only.
+        const canUseHttp = !isOptimisticMeetingId(initialMeeting.id) && !isLiveMeetingPlaceholder;
+
         // IMPORTANT: onMeetingsUpdated fires once, whenever background processing
         // actually finishes — which is very often *before* this component ever
         // mounts (the user is usually still looking at the Launcher card, not
@@ -343,44 +405,39 @@ export function useMeetingDetails(initialMeeting: Meeting) {
         const isHttpResultComplete = (m: Meeting) =>
             !!m.isProcessed && (m.transcript?.length ?? 0) > 0 && !!m.detailedSummary?.scorecard;
 
-        meetingsApi.get(initialMeeting.id)
-            .then((updated) => {
-                if (updated && isHttpResultComplete(updated)) {
-                    queryClient.setQueryData<Meeting>(meetingKey, updated);
-                    setIsProcessing(false);
-                    void queryClient.invalidateQueries(scorecardKey);
-                } else {
-                    if (updated?.isProcessed) {
-                        // Still stop showing the "processing" skeleton — the
-                        // summary IS ready — but let unblockFromLocal fill in
-                        // the transcript/scorecard from the reliable local copy.
-                        queryClient.setQueryData<Meeting>(meetingKey, updated);
-                    }
-                    void unblockFromLocal();
-                }
-            })
-            .catch(() => void unblockFromLocal());
-
-        if (!window.electronAPI?.onMeetingsUpdated) return;
-
-        const unsubscribe = window.electronAPI.onMeetingsUpdated(() => {
+        const checkViaHttpThenLocal = () =>
             meetingsApi.get(initialMeeting.id)
                 .then((updated) => {
                     if (updated && isHttpResultComplete(updated)) {
                         queryClient.setQueryData<Meeting>(meetingKey, updated);
-                        setIsProcessing(false); // ← stop skeleton
-                        // Scorecard is generated during background processing (before the
-                        // final save) — fetch it now that processing is done. The query was
-                        // disabled while processing, so kick it explicitly.
+                        setIsProcessing(false);
                         void queryClient.invalidateQueries(scorecardKey);
                     } else {
                         if (updated?.isProcessed) {
+                            // Still stop showing the "processing" skeleton — the
+                            // summary IS ready — but let unblockFromLocal fill in
+                            // the transcript/scorecard from the reliable local copy.
                             queryClient.setQueryData<Meeting>(meetingKey, updated);
                         }
                         void unblockFromLocal();
                     }
                 })
                 .catch(() => void unblockFromLocal());
+
+        if (canUseHttp) {
+            void checkViaHttpThenLocal();
+        } else {
+            void unblockFromLocal();
+        }
+
+        if (!window.electronAPI?.onMeetingsUpdated) return;
+
+        const unsubscribe = window.electronAPI.onMeetingsUpdated(() => {
+            if (canUseHttp) {
+                void checkViaHttpThenLocal();
+            } else {
+                void unblockFromLocal();
+            }
         });
 
         return () => unsubscribe();

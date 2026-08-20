@@ -20,7 +20,13 @@ import { exec } from 'child_process';
 import { promisify } from 'util';
 import axios from 'axios';
 import { createProviderRateLimiters, RateLimiter } from './services/RateLimiter';
+import { AuthManager } from './services/AuthManager';
+import { posthogMain } from './services/PostHogMainService';
 const execAsync = promisify(exec);
+
+// FastAPI backend base URL — same env var/default used by ipcHandlers.ts for
+// other Electron -> backend calls.
+const BACKEND_URL = process.env.VITE_API_BASE_URL ?? "http://127.0.0.1:8000";
 
 interface OllamaResponse {
   response: string
@@ -3447,15 +3453,84 @@ export class LLMHelper {
   }
 
   /**
+   * Fires a PostHog event recording which path produced a given generation:
+   * 'electron_native' (this process called Gemini/Groq/etc directly) vs
+   * 'backend_fallback' (this process's own attempts were exhausted and the
+   * FastAPI backend generated it instead). `provider` is the specific
+   * provider that actually returned the result, when known.
+   */
+  private trackLLMSource(
+    task: 'summary' | 'followup_email' | 'meeting_score' | 'title',
+    source: 'electron_native' | 'backend_fallback',
+    provider?: string,
+  ): void {
+    try {
+      posthogMain.capture('llm_generation_source', {
+        task,
+        source,
+        provider: provider ?? null,
+      });
+    } catch (e) {
+      console.warn('[LLMHelper] Failed to capture llm_generation_source event:', e);
+    }
+  }
+
+  /**
+   * Last-resort fallback: call the FastAPI backend's /llm/fallback/generate
+   * endpoint, which retries the same task (Gemini -> Groq -> ...) using the
+   * backend's own, separately-quota'd credentials. Used when every direct
+   * provider call from this process has failed or hit a rate limit.
+   */
+  private async callBackendFallback(
+    task: 'summary' | 'followup_email' | 'meeting_score' | 'title',
+    context: string,
+    customPrompt?: string,
+  ): Promise<string> {
+    const token = AuthManager.getInstance().getIdToken();
+    if (!token) {
+      throw new Error('No auth token available — cannot call backend LLM fallback');
+    }
+
+    console.log(`[LLMHelper] ⚠️ All direct providers exhausted. Calling backend fallback for task='${task}'...`);
+    const response = await this.withTimeout(
+      axios.post(
+        `${BACKEND_URL}/api/v1/llm/fallback/generate`,
+        { task, context, custom_prompt: customPrompt ?? null },
+        { headers: { Authorization: `Bearer ${token}` } },
+      ),
+      60000,
+      `Backend Fallback (${task})`,
+    );
+
+    const data = (response as any).data;
+    const text: string = data?.text ?? '';
+    if (!text.trim()) {
+      throw new Error('Backend fallback returned an empty response');
+    }
+
+    console.log(`[LLMHelper] ✅ Backend fallback succeeded for task='${task}' (providers tried: ${data?.provider_order?.join(', ')})`);
+    this.trackLLMSource(task, 'backend_fallback', data?.provider_order?.[0]);
+    return text;
+  }
+
+  /**
    * Robust Meeting Summary Generation
    * Strategy:
    * 0. Custom / cURL Provider (if user selected one — always takes priority)
-   * 1. Natively API (if configured)
-   * 2. Groq (if context text < 100k tokens approx)
-   * 3. Gemini Flash (Retry 2x)
-   * 4. Gemini Pro (Retry 5x)
+   * 1. Groq (if context text < 100k tokens approx)
+   * 2. Gemini Flash (Retry 2x)
+   * 3. Gemini Pro (Retry 5x)
+   * 4. Backend fallback (FastAPI, own credentials — last resort)
+   *
+   * Deliberately does NOT fall back to the Natively API — Natively wraps
+   * open-source models and isn't an acceptable fallback for this flow.
    */
-  public async generateMeetingSummary(systemPromptRaw: string, context: string, groqSystemPromptRaw?: string): Promise<string> {
+  public async generateMeetingSummary(
+    systemPromptRaw: string,
+    context: string,
+    groqSystemPromptRaw?: string,
+    task: 'summary' | 'followup_email' | 'meeting_score' | 'title' = 'summary',
+  ): Promise<string> {
     console.log(`[LLMHelper] generateMeetingSummary called. Context length: ${context.length}`);
 
     // Summaries/titles are generated from the full transcript, which may be in
@@ -3493,29 +3568,11 @@ export class LLMHelper {
         const text = await this.withTimeout(collectChunks(), 60000, 'Custom Provider Summary');
         if (text.trim().length > 0) {
           console.log(`[LLMHelper] ✅ Custom provider summary generated successfully.`);
+          this.trackLLMSource(task, 'electron_native', this.customProvider?.name || 'custom_curl');
           return this.processResponse(text);
         }
       } catch (e: any) {
         console.warn(`[LLMHelper] ⚠️ Custom provider summary failed: ${e.message}. Falling back...`);
-        lastProviderError = e;
-      }
-    }
-
-    // ATTEMPT 1: Natively API (if configured — first in chain)
-    if (this.hasNatively()) {
-      try {
-        console.log(`[LLMHelper] Attempting Natively API for summary...`);
-        const text = await this.withTimeout(
-          this.generateWithNatively(`Context:\n${context}`, systemPrompt),
-          60000,
-          'Natively Summary'
-        );
-        if (text.trim().length > 0) {
-          console.log(`[LLMHelper] ✅ Natively API summary generated successfully.`);
-          return this.processResponse(text);
-        }
-      } catch (e: any) {
-        console.warn(`[LLMHelper] ⚠️ Natively API summary failed: ${e.message}. Falling back...`);
         lastProviderError = e;
       }
     }
@@ -3542,6 +3599,7 @@ export class LLMHelper {
         const text = response.choices[0]?.message?.content || "";
         if (text.trim().length > 0) {
           console.log(`[LLMHelper] ✅ Groq summary generated successfully.`);
+          this.trackLLMSource(task, 'electron_native', 'groq');
           return this.processResponse(text);
         }
       } catch (e: any) {
@@ -3554,7 +3612,7 @@ export class LLMHelper {
       }
     }
 
-    // ATTEMPT 3: Gemini Flash (with 2 retries = 3 attempts total)
+    // ATTEMPT 2: Gemini Flash (with 2 retries = 3 attempts total)
     console.log(`[LLMHelper] Attempting Gemini Flash for summary...`);
     const contents = [{ text: `${systemPrompt}\n\nCONTEXT:\n${context}` }];
 
@@ -3567,6 +3625,7 @@ export class LLMHelper {
         );
         if (text.trim().length > 0) {
           console.log(`[LLMHelper] ✅ Gemini Flash summary generated successfully (Attempt ${attempt}).`);
+          this.trackLLMSource(task, 'electron_native', 'gemini_flash');
           return this.processResponse(text);
         }
       } catch (e: any) {
@@ -3578,7 +3637,7 @@ export class LLMHelper {
       }
     }
 
-    // ATTEMPT 4: Gemini Pro
+    // ATTEMPT 3: Gemini Pro
     console.log(`[LLMHelper] ⚠️ Flash exhausted. Switching to Gemini Pro for robust retry...`);
     const maxProRetries = 5;
 
@@ -3603,6 +3662,7 @@ export class LLMHelper {
 
           if (text.trim().length > 0) {
             console.log(`[LLMHelper] ✅ Gemini Pro summary generated successfully.`);
+            this.trackLLMSource(task, 'electron_native', 'gemini_pro');
             return this.processResponse(text);
           }
         } catch (e: any) {
@@ -3616,6 +3676,15 @@ export class LLMHelper {
       }
     } else {
       console.log(`[LLMHelper] Gemini client not initialized — skipping Gemini Pro.`);
+    }
+
+    // ATTEMPT 4: Backend fallback (FastAPI, own credentials — last resort)
+    try {
+      const text = await this.callBackendFallback(task, context, systemPrompt);
+      return this.processResponse(text);
+    } catch (e: any) {
+      console.warn(`[LLMHelper] ⚠️ Backend fallback also failed: ${e.message}`);
+      lastProviderError = e;
     }
 
     throw new Error(lastProviderError?.message || "Failed to generate summary after all fallback attempts.");

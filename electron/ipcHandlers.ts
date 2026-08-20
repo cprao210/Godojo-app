@@ -581,9 +581,21 @@ export function initializeIpcHandlers(appState: AppState): void {
     return { success: true };
   });
 
+  safeHandle("set-live-analysis-in-flight", async (event, inFlight: boolean) => {
+    appState.setLiveAnalysisInFlight(inFlight);
+    return { success: true };
+  });
+
   safeHandle("quit-app", () => {
     app.quit()
   })
+
+  // Reload bypassing cache — same as Cmd/Ctrl+Shift+R via the app menu's
+  // { role: 'forceReload' } items already in WindowHelper.ts/KeybindManager.ts.
+  safeHandle("hard-refresh", (event) => {
+    BrowserWindow.fromWebContents(event.sender)?.webContents.reloadIgnoringCache();
+    return { success: true };
+  });
 
   safeHandle("quit-and-install-update", async () => {
     try {
@@ -3090,9 +3102,39 @@ export function initializeIpcHandlers(appState: AppState): void {
       console.log("=> generate follow-up email (groqPrompt): ", groqPrompt);
 
       // Use chatWithGemini with alternateGroqMessage for fallback
-      const emailBody = await llmHelper.chatWithGemini(geminiPrompt, undefined, undefined, true, groqPrompt);
+      try {
+        const emailBody = await llmHelper.chatWithGemini(geminiPrompt, undefined, undefined, true, groqPrompt);
+        if (!emailBody || !emailBody.trim()) {
+          throw new Error('Empty response from Gemini/Groq for follow-up email');
+        }
+        posthogMain.capture('llm_generation_source', {
+          task: 'followup_email',
+          source: 'electron_native',
+        });
+        return emailBody;
+      } catch (directError: any) {
+        console.warn(`[IPC] generate-followup-email: direct Gemini/Groq failed (${directError.message}). Falling back to backend...`);
+        const token = getAuthToken();
+        if (!token) throw directError;
 
-      return emailBody;
+        const resp = await fetch(`${BACKEND_URL}/api/v1/llm/fallback/generate`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
+          body: JSON.stringify({
+            task: 'followup_email',
+            context: enrichedContext,
+            custom_prompt: FOLLOWUP_EMAIL_PROMPT,
+          }),
+        });
+        if (!resp.ok) throw directError;
+        const data = await resp.json();
+        posthogMain.capture('llm_generation_source', {
+          task: 'followup_email',
+          source: 'backend_fallback',
+          provider: data?.provider_order?.[0] ?? null,
+        });
+        return data.text;
+      }
     } catch (error: any) {
       console.error("Error generating follow-up email:", error);
       throw error;
@@ -3817,40 +3859,23 @@ export function initializeIpcHandlers(appState: AppState): void {
     }
   });
 
-  // "Reset app data" (Settings > General > Danger Zone). Wipes this
-  // install's entire userData directory (credentials.enc, settings.json,
-  // natively.db + its Supabase mirror queue, cached auth session — the
-  // full contents of app.getPath('userData'), i.e. godojo-ai or
-  // godojo-ai-dev depending on isPackaged) and relaunches, so the app
-  // comes back up exactly as it would on a brand-new install: sign-in
-  // screen, no local data. Native confirm dialog lives here (not the
-  // renderer) so this can't be triggered by a spoofed IPC call alone —
-  // it always requires an OS-level dialog click.
-  safeHandle('reset-app-data', async (event) => {
+  // Shared by 'reset-app-data' and 'dev:wipe-local-account-data': deletes
+  // this install's entire userData directory itself — credentials.enc,
+  // settings.json, natively.db (+ its -wal/-shm files and Supabase mirror
+  // queue), cached auth session, the persist:google-auth partition, and
+  // the godojo-ai/godojo-ai-dev folder that contains them (depending on
+  // isPackaged) — then relaunches. Electron recreates an empty userData
+  // directory on the next launch, so the app comes back up exactly as it
+  // would on a brand-new install: sign-in screen, no local data anywhere
+  // on disk. Callers are responsible for confirming with the user *before*
+  // calling this — it does not prompt itself.
+  async function wipeLocalUserDataAndRelaunch(logPrefix: string): Promise<{ success: boolean; error?: string }> {
     try {
-      const win = BrowserWindow.fromWebContents(event.sender) ?? undefined;
-      const messageBoxOptions: Electron.MessageBoxOptions = {
-        type: 'warning',
-        buttons: ['Cancel', 'Reset App Data'],
-        defaultId: 0,
-        cancelId: 0,
-        title: 'Reset App Data',
-        message: 'Reset all local app data?',
-        detail:
-          'This permanently deletes your local credentials, settings, and offline data on this device, and signs you out. This cannot be undone.\n\nThe app will restart automatically.',
-      };
-      const { response }: Electron.MessageBoxReturnValue = win
-        ? await dialog.showMessageBox(win, messageBoxOptions)
-        : await dialog.showMessageBox(messageBoxOptions);
-      if (response !== 1) {
-        return { success: false, cancelled: true };
-      }
-
       // Release the sqlite file handle before touching userData — on
       // Windows the delete below fails (or leaves natively.db behind)
       // if it's still open.
       try { DatabaseManager.getInstance().close(); } catch (e) {
-        console.warn('[ipc] reset-app-data: DatabaseManager.close() failed (continuing):', e);
+        console.warn(`[ipc] ${logPrefix}: DatabaseManager.close() failed (continuing):`, e);
       }
 
       // Chromium's own HTTP disk cache (userData/Cache/Cache_Data/*) is held
@@ -3858,55 +3883,120 @@ export function initializeIpcHandlers(appState: AppState): void {
       // unlink, so without this the rmSync below throws EPERM on those
       // cache files specifically. Clearing the session cache/storage first
       // makes Chromium release its handles before we delete the directory.
+      //
+      // The Google sign-in popup (see WindowHelper.ts) runs in its own
+      // 'persist:google-auth' partition — a completely separate Chromium
+      // session from defaultSession, with its own cookies/IndexedDB/cache
+      // under userData/Partitions/google-auth. It needs the exact same
+      // clear-before-delete treatment, or its open handles can either block
+      // the wipe (Windows EPERM) or simply leave that stored Google auth
+      // session behind.
+
       try {
         await session.defaultSession.clearCache();
         await session.defaultSession.clearStorageData();
       } catch (e) {
-        console.warn('[ipc] reset-app-data: clearing session cache failed (continuing):', e);
+        console.warn(`[ipc] ${logPrefix}: clearing session cache failed (continuing):`, e);
+      }
+
+      try {
+        const googleAuthSession = session.fromPartition('persist:google-auth');
+        await googleAuthSession.clearCache();
+        await googleAuthSession.clearStorageData();
+      } catch (e) {
+        console.warn(`[ipc] ${logPrefix}: clearing google-auth session failed (continuing):`, e);
       }
 
       const userDataPath = app.getPath('userData');
       // Guard against ever deleting something unexpected (e.g. if
       // userData somehow resolved to a root-ish path).
       if (!userDataPath || path.basename(userDataPath).indexOf('godojo-ai') !== 0) {
-        throw new Error(`Refusing to reset — unexpected userData path: ${userDataPath}`);
+        throw new Error(`Refusing to wipe — unexpected userData path: ${userDataPath}`);
       }
 
-      // Delete everything except the disposable Chromium HTTP cache first.
-      // The Cache dir (Cache/Cache_Data/*) can still be held open by this
-      // process's network service on Windows even after clearCache() above,
-      // and we don't want a lock on a regenerable cache file to abort the
-      // deletion of the data that actually matters (credentials, settings,
-      // db). Any real (non-cache) file that's still locked will still throw
-      // and correctly fail the whole reset.
-      const cacheDirPath = path.join(userDataPath, 'Cache');
-      for (const entry of fs.readdirSync(userDataPath)) {
-        if (entry === 'Cache') continue;
-        fs.rmSync(path.join(userDataPath, entry), { recursive: true, force: true });
-      }
-
-      // Cache itself: best-effort, with a couple of short retries for a
-      // transient Windows file lock, but never fatal to the reset.
-      for (let attempt = 1; attempt <= 3; attempt++) {
+      // Delete the ENTIRE userData directory — not just its contents — so
+      // the godojo-ai/godojo-ai-dev folder itself is gone, not left behind
+      // empty. Electron recreates this directory automatically the next
+      // time the app calls app.getPath('userData') on relaunch, so removing
+      // it outright here is safe.
+      let lastDeleteError: unknown;
+      let deleted = false;
+      for (let attempt = 1; attempt <= 5; attempt++) {
         try {
-          fs.rmSync(cacheDirPath, { recursive: true, force: true });
+          fs.rmSync(userDataPath, { recursive: true, force: true });
+          deleted = true;
           break;
         } catch (e) {
-          if (attempt === 3) {
-            console.warn('[ipc] reset-app-data: could not fully clear Cache dir (non-fatal, will regenerate):', e);
-          } else {
-            await new Promise((resolve) => setTimeout(resolve, 150));
-          }
+          lastDeleteError = e;
+          await new Promise((resolve) => setTimeout(resolve, 150));
         }
+      }
+      if (!deleted) {
+        throw lastDeleteError instanceof Error ? lastDeleteError : new Error(String(lastDeleteError));
       }
 
       app.relaunch();
       app.exit(0);
       return { success: true };
     } catch (error: any) {
-      console.error('[ipc] reset-app-data failed:', error);
+      console.error(`[ipc] ${logPrefix} failed:`, error);
       return { success: false, error: error?.message ?? String(error) };
     }
+  }
+
+  // "Reset app data" (Settings > General > Danger Zone). Native confirm
+  // dialog lives here (not the renderer) so this can't be triggered by a
+  // spoofed IPC call alone — it always requires an OS-level dialog click.
+  safeHandle('reset-app-data', async (event) => {
+    const win = BrowserWindow.fromWebContents(event.sender) ?? undefined;
+    const messageBoxOptions: Electron.MessageBoxOptions = {
+      type: 'warning',
+      buttons: ['Cancel', 'Reset App Data'],
+      defaultId: 0,
+      cancelId: 0,
+      title: 'Reset App Data',
+      message: 'Reset all local app data?',
+      detail:
+        'This permanently deletes your local credentials, settings, and offline data on this device, and signs you out. This cannot be undone.\n\nThe app will restart automatically.',
+    };
+    const { response }: Electron.MessageBoxReturnValue = win
+      ? await dialog.showMessageBox(win, messageBoxOptions)
+      : await dialog.showMessageBox(messageBoxOptions);
+    if (response !== 1) {
+      return { success: false, cancelled: true };
+    }
+    return wipeLocalUserDataAndRelaunch('reset-app-data');
+  });
+
+  // DEV-ONLY: local-data half of "Delete My Account" (Settings > General >
+  // Danger Zone). The renderer calls this *after* the Supabase rows +
+  // Firebase Auth user have already been deleted server-side, so unlike
+  // 'reset-app-data' this does NOT show its own confirm dialog — the
+  // account deletion the user just confirmed is already irreversible by
+  // the time this runs, and a second native prompt here would just leave
+  // local data behind (stale natively.db, cached session) if they misread
+  // it as a fresh, cancellable action. Reuses the exact same wipe path as
+  // 'reset-app-data' so local state ends up identically clean.
+  safeHandle('dev:wipe-local-account-data', async () => {
+    return wipeLocalUserDataAndRelaunch('dev:wipe-local-account-data');
+  });
+
+  safeHandle('confirm-delete-account', async (event) => {
+    const win = BrowserWindow.fromWebContents(event.sender) ?? undefined;
+    const messageBoxOptions: Electron.MessageBoxOptions = {
+      type: 'warning',
+      buttons: ['Cancel', 'Delete My Account'],
+      defaultId: 0,
+      cancelId: 0,
+      title: 'Delete My Account',
+      message: 'Permanently delete your account?',
+      detail:
+        'This permanently deletes your account and all associated data from our servers, then clears everything stored on this device. This cannot be undone.\n\nThe app will restart automatically.',
+    };
+    const { response } = win
+      ? await dialog.showMessageBox(win, messageBoxOptions)
+      : await dialog.showMessageBox(messageBoxOptions);
+    return { confirmed: response === 1 };
   });
 
 }
