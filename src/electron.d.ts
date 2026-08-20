@@ -178,6 +178,8 @@ export interface ElectronAPI {
   testSttConnection: (provider: 'groq' | 'openai' | 'deepgram' | 'elevenlabs' | 'azure' | 'ibmwatson' | 'soniox', apiKey: string, region?: string) => Promise<{ success: boolean; error?: string }>
   setDiarizeClientEnabled: (enabled: boolean) => Promise<{ success: boolean; error?: string }>
   getDiarizeClientEnabled: () => Promise<boolean>
+  setTranslateTranscripts: (enabled: boolean) => Promise<{ success: boolean; error?: string }>
+  getTranslateTranscripts: () => Promise<boolean>
   getAudioPipelineStats: () => Promise<Record<string, unknown> | null>
   getOutputRoute: () => Promise<{ kind: string; transport: string; name: string } | null>
   getRecognitionLanguages: () => Promise<Record<string, any>>

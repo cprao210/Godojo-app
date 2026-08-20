@@ -78,6 +78,62 @@ describe('intelligenceApi.analyzeLive', () => {
   });
 });
 
+describe('intelligenceApi.detectObjections', () => {
+  beforeEach(() => mockedApiFetch.mockClear());
+
+  it('POSTs the delta contract to the objection-handler route', async () => {
+    await intelligenceApi.detectObjections(
+      [
+        { speaker: 'user', text: ' so about pricing ' },
+        { speaker: 'client', text: 'the price is too high' },
+      ],
+      ['we already use Salesforce'],
+    );
+
+    expect(mockedApiFetch.mock.calls[0][0]).toBe('/intelligence/objection-handler');
+    const body = bodyOfCall();
+    // formatTranscript labels whatever it is handed; the live caller
+    // (useObjectionWatch) posts prospect turns only.
+    expect(body.transcript).toBe('SALES PERSON: so about pricing\nPROSPECT: the price is too high');
+    expect(body.meeting_id).toBeNull();
+    expect(body.open_objections).toEqual(['we already use Salesforce']);
+    // No BANT/MEDDIC knobs on this route.
+    expect(body).not.toHaveProperty('mode');
+    expect(body).not.toHaveProperty('meeting_types');
+    expect(body).not.toHaveProperty('previous_analysis');
+  });
+
+  it('sends only the recent window, not the whole call', async () => {
+    const turns = Array.from({ length: 40 }, (_, i) => ({ speaker: 'client', text: `turn ${i}` }));
+    await intelligenceApi.detectObjections(turns);
+
+    const lines = bodyOfCall().transcript.split('\n');
+    expect(lines).toHaveLength(16);            // OBJECTION_WINDOW_TURNS
+    expect(lines[0]).toBe('PROSPECT: turn 24'); // trailing window
+    expect(lines[15]).toBe('PROSPECT: turn 39');
+  });
+
+  it('truncates open_objections to the backend max_length of 25', async () => {
+    const open = Array.from({ length: 40 }, (_, i) => `objection ${i}`);
+    await intelligenceApi.detectObjections([{ speaker: 'client', text: 'x' }], open);
+
+    expect(bodyOfCall().open_objections).toHaveLength(25);
+  });
+
+  it('defaults open_objections to empty and forwards the abort signal', async () => {
+    const controller = new AbortController();
+    await intelligenceApi.detectObjections(
+      [{ speaker: 'client', text: 'x' }],
+      undefined,
+      null,
+      controller.signal,
+    );
+
+    expect(bodyOfCall().open_objections).toEqual([]);
+    expect((mockedApiFetch.mock.calls[0][1] as RequestInit).signal).toBe(controller.signal);
+  });
+});
+
 describe('intelligenceApi.reindexCompanyAssets', () => {
   beforeEach(() => mockedApiFetch.mockClear());
 

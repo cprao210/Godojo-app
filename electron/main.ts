@@ -251,6 +251,7 @@ import { SystemAudioCapture } from "./audio/SystemAudioCapture"
 import { MicrophoneCapture } from "./audio/MicrophoneCapture"
 import { loadNativeModule } from "./audio/nativeModuleLoader"
 import { TranscriptEchoFilter, type AecTelemetry } from "./audio/TranscriptEchoFilter"
+import { TranscriptTranslator } from "./services/TranscriptTranslator"
 import type { SttWord } from "./audio/sttWordUtils"
 import { GoogleSTT } from "./audio/GoogleSTT"
 import { RestSTT } from "./audio/RestSTT"
@@ -1143,6 +1144,40 @@ export class AppState {
   // so 1:1 calls render exactly as before diarization existed.
   private _clientSpeakerIndicesSeen: Set<number> = new Set();
 
+  // Set when transcript translation is enabled AND an LLM key exists; null
+  // otherwise, which makes the translation branch in the STT handler inert.
+  private _transcriptTranslator: TranscriptTranslator | null = null;
+
+  /**
+   * Build the translator for this meeting, or null when translation is off or
+   * no LLM key is configured. Called at STT setup so a settings change applies
+   * to the next meeting without a restart.
+   */
+  private _initTranscriptTranslator(): void {
+    const creds = CredentialsManager.getInstance();
+    if (!creds.getTranslateTranscriptsToEnglish()) {
+      this._transcriptTranslator = null;
+      console.log('[Main] Transcript translation disabled');
+      return;
+    }
+
+    const translator = new TranscriptTranslator({
+      getGroqApiKey: () => creds.getGroqApiKey(),
+      getGeminiApiKey: () => creds.getGeminiApiKey(),
+      getOpenaiApiKey: () => creds.getOpenaiApiKey(),
+      getClaudeApiKey: () => creds.getClaudeApiKey(),
+    });
+
+    if (!translator.isAvailable()) {
+      this._transcriptTranslator = null;
+      console.warn('[Main] Transcript translation on, but no LLM API key configured — transcripts stay in the spoken language');
+      return;
+    }
+
+    this._transcriptTranslator = translator;
+    console.log('[Main] Transcript translation enabled (non-Latin finals → English)');
+  }
+
   private createSTTProvider(speaker: 'client' | 'user'): STTProvider {
     const { CredentialsManager } = require('./services/CredentialsManager');
     const sttProvider = CredentialsManager.getInstance().getSttProvider();
@@ -1309,62 +1344,40 @@ export class AppState {
         this._clientSpeakerIndicesSeen.add(segment.speakerIndex);
       }
 
-      this.intelligenceManager.handleTranscript({
-        speaker: speaker,
-        text: segment.text,
-        timestamp: Date.now(),
-        final: segment.isFinal,
-        confidence: segment.confidence,
-        speakerIndex: segment.speakerIndex
-      });
-
-      // Feed final transcript to JIT RAG indexer
-      if (segment.isFinal && this.ragManager) {
-        this.ragManager.feedLiveTranscript([{
-          speaker: speaker,
-          text: segment.text,
-          timestamp: Date.now()
-        }]);
-      }
-
-      const helper = this.getWindowHelper();
-      // Resolve real display name at emit-time so the renderer always gets
-      // a human-readable label, even before a speaker-names-resolved event fires.
-      const speakerNameMap = this.intelligenceManager.getSpeakerNameMap();
-      let displayName = speaker === 'user'
-        ? (speakerNameMap.user || 'Me')
-        : (speakerNameMap.client || 'Them');
-      if (
-        speaker === 'client' &&
-        segment.speakerIndex !== undefined &&
-        this._clientSpeakerIndicesSeen.size >= 2
-      ) {
-        displayName = `${displayName} · Speaker ${segment.speakerIndex + 1}`;
-      }
-      const payload = {
-        speaker: speaker,          // internal role — kept for renderer routing logic
-        displayName: displayName,  // resolved human name for UI display
-        text: segment.text,
-        timestamp: Date.now(),
-        final: segment.isFinal,
-        confidence: segment.confidence,
-        speakerIndex: segment.speakerIndex
-        // NOTE: segment.words stays main-process internal (echo filter input) —
-        // deliberately NOT serialized into the 10+/sec IPC stream.
-      };
-      helper.getLauncherWindow()?.webContents.send('native-audio-transcript', payload);
-      helper.getOverlayWindow()?.webContents.send('native-audio-transcript', payload);
-
       // Track whether the renderer's latest user event is an un-finalized
       // partial — an echo-dropped final must then retract it explicitly.
+      // Keyed on ARRIVAL rather than dispatch: a final that is off being
+      // translated has already superseded its own partial, and an interim
+      // landing during that wait re-raises the flag for the newer partial it
+      // puts on screen.
       if (speaker === 'user') {
         this._userPartialPending = !segment.isFinal;
       }
 
-      // Feed final recruiter (system audio) transcripts to negotiation tracker
-      if (segment.isFinal && speaker === 'client') {
-        this.knowledgeOrchestrator?.feedInterviewerUtterance?.(segment.text);
+      // Everything above this point runs on the ORIGINAL recognized text: the
+      // echo filter compares mic audio against far-end audio, and both sides
+      // are in the spoken language, so translating first would break the match.
+      //
+      // Everything below is what a human reads or the AI reasons over, so it
+      // gets the English rendering when transcript translation is on. Finals go
+      // through a per-speaker queue to stay in spoken order; interims skip
+      // translation entirely and dispatch synchronously.
+      const dispatch = (text: string) => this._dispatchTranscript(speaker, { ...segment, text });
+
+      if (segment.isFinal && this._transcriptTranslator && segment.text.trim()) {
+        const original = segment.text;
+        this._transcriptTranslator.enqueue(speaker, async () => {
+          const text = await this._transcriptTranslator!.translate(original);
+          if (text !== original) {
+            console.log(`[Main] Translated (${speaker}): "${original}" → "${text}"`);
+          }
+          if (!this.isMeetingActive || this.isMeetingPaused) return;
+          dispatch(text);
+        });
+        return;
       }
+
+      dispatch(segment.text);
     });
 
     stt.on('error', (err: Error) => {
@@ -1372,6 +1385,67 @@ export class AppState {
     });
 
     return stt;
+  }
+
+  /**
+   * Fan a transcript segment out to the intelligence layer, the RAG indexer and
+   * the renderer windows. Split out of the STT handler so a final can be
+   * dispatched later than it arrived, once its translation resolves.
+   */
+  private _dispatchTranscript(
+    speaker: 'client' | 'user',
+    segment: { text: string; isFinal: boolean; confidence: number; speakerIndex?: number },
+  ): void {
+    this.intelligenceManager.handleTranscript({
+      speaker: speaker,
+      text: segment.text,
+      timestamp: Date.now(),
+      final: segment.isFinal,
+      confidence: segment.confidence,
+      speakerIndex: segment.speakerIndex
+    });
+
+    // Feed final transcript to JIT RAG indexer
+    if (segment.isFinal && this.ragManager) {
+      this.ragManager.feedLiveTranscript([{
+        speaker: speaker,
+        text: segment.text,
+        timestamp: Date.now()
+      }]);
+    }
+
+    const helper = this.getWindowHelper();
+    // Resolve real display name at emit-time so the renderer always gets
+    // a human-readable label, even before a speaker-names-resolved event fires.
+    const speakerNameMap = this.intelligenceManager.getSpeakerNameMap();
+    let displayName = speaker === 'user'
+      ? (speakerNameMap.user || 'Me')
+      : (speakerNameMap.client || 'Them');
+    if (
+      speaker === 'client' &&
+      segment.speakerIndex !== undefined &&
+      this._clientSpeakerIndicesSeen.size >= 2
+    ) {
+      displayName = `${displayName} · Speaker ${segment.speakerIndex + 1}`;
+    }
+    const payload = {
+      speaker: speaker,          // internal role — kept for renderer routing logic
+      displayName: displayName,  // resolved human name for UI display
+      text: segment.text,
+      timestamp: Date.now(),
+      final: segment.isFinal,
+      confidence: segment.confidence,
+      speakerIndex: segment.speakerIndex
+      // NOTE: segment.words stays main-process internal (echo filter input) —
+      // deliberately NOT serialized into the 10+/sec IPC stream.
+    };
+    helper.getLauncherWindow()?.webContents.send('native-audio-transcript', payload);
+    helper.getOverlayWindow()?.webContents.send('native-audio-transcript', payload);
+
+    // Feed final recruiter (system audio) transcripts to negotiation tracker
+    if (segment.isFinal && speaker === 'client') {
+      this.knowledgeOrchestrator?.feedInterviewerUtterance?.(segment.text);
+    }
   }
 
   private setupSystemAudioPipeline(inputDeviceId?: string, outputDeviceId?: string): void {
@@ -1427,6 +1501,7 @@ export class AppState {
       }
 
       // 2. Initialize STT Services if missing
+      this._initTranscriptTranslator();
       if (!this.googleSTT) {
         this.googleSTT = this.createSTTProvider('client');
       }

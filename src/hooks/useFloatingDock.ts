@@ -5,11 +5,13 @@
 // Kept separate from the component so the component only owns rendering —
 // same split as useManagerDashboard / useSignIn.
 
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 // Imported directly (not via the './index' barrel) to avoid a circular
 // import — this hook is itself re-exported from that barrel.
 import { useLiveAnalysis } from './useLiveAnalysis';
-import { ActivePanel, ChatMessage, MeetingType } from '@/types';
+import { useObjectionWatch } from './useObjectionWatch';
+import { ActivePanel, ChatMessage, LiveAnalysisData, MeetingType } from '@/types';
+import { objectionsOnlyAnalysis } from '@/lib/objections';
 import { posthogAnalytics } from '@/lib/analytics/posthog.service';
 
 const OPACITY_STORAGE_KEY = 'gd_dock_opacity';
@@ -107,9 +109,70 @@ export function useFloatingDock({ transcriptRef, isMeetingPaused, companyIntel }
 
     const panelTopOffset = dockHeight + PANEL_DOCK_GAP;
 
+    // ── Fast objection watcher — ticks in seconds, not minutes ──────────────
+    // Owns the objection list outright (delta-in/delta-out contract with
+    // /intelligence/objection-handler). Lifted here for the same reason the analysis
+    // session is: it must survive panel switches and remounts.
+    const {
+        active: activeObjections,
+        resolved: resolvedObjections,
+        objectionsRef,
+        isEnabled: objectionWatchEnabled,
+        resetObjections,
+    } = useObjectionWatch(transcriptRef, isMeetingPaused);
+
     // ── Lifted analysis session — survives panel switches/remounts ──────────
     const { analysisData, isLoading: analysisLoading, error: analysisError, runAnalysis, resetAnalysis, isRefreshRun } =
-        useLiveAnalysis(transcriptRef, isMeetingPaused, companyIntel, meetingTypes);
+        useLiveAnalysis(
+            transcriptRef,
+            isMeetingPaused,
+            companyIntel,
+            meetingTypes,
+            // null while the watcher is disabled (backend without the route) so
+            // live-analysis keeps producing objections the way it does today.
+            objectionWatchEnabled ? objectionsRef : null,
+        );
+
+    // What the panel actually renders: the slow analysis, with the objection slice
+    // replaced by the list the watcher owns. Resolved objections stay in the array
+    // (LiveAnalysisContent partitions them into a collapsed group) so they still
+    // reach `previous_analysis.objections` and the post-call summary.
+    //
+    // Objections do NOT depend on live analysis. They come from their own endpoint on
+    // a seconds cadence, so when there is no analysis yet — first minutes of a call,
+    // or live analysis failing/timing out for the whole call — they get an empty
+    // container to ride in rather than being dropped. Previously this returned null
+    // whenever `analysisData` was null, which meant the fast route could answer in
+    // ~1.5s and the rep would still see the countdown placeholder.
+    const displayAnalysisData = useMemo<LiveAnalysisData | null>(() => {
+        if (!objectionWatchEnabled) return analysisData;
+        const watched = [...activeObjections, ...resolvedObjections];
+        if (analysisData) return { ...analysisData, objections: watched };
+        // Stay null on an empty list so the panel keeps showing its countdown /
+        // waiting placeholder instead of an all-missing shell with nothing in it.
+        return watched.length > 0 ? objectionsOnlyAnalysis(watched) : null;
+    }, [analysisData, activeObjections, resolvedObjections, objectionWatchEnabled]);
+
+    // Objections tick far more often than live analysis runs, so re-push the composed
+    // result to the main process in between — that's what ends up in
+    // `summary_json.liveAnalysis` at meeting end.
+    //
+    // Gated on the REAL analysisData, not displayAnalysisData: an objections-only
+    // payload would carry empty BANT/MEDDIC into reconcileBantMeddicWithLiveAnalysis
+    // (MeetingPersistence), which treats live analysis as authoritative and would wipe
+    // the summary LLM's own BANT. displayAnalysisData is now deliberately non-null
+    // before the first analysis lands (see above), so this check has to name
+    // analysisData explicitly — the objections-only shell must never be persisted.
+    // Debounced so a burst of ticks is one IPC call.
+    useEffect(() => {
+        if (!analysisData || !displayAnalysisData) return;
+        const id = setTimeout(() => {
+            window.electronAPI?.updateLiveAnalysis?.(displayAnalysisData).catch((err: any) =>
+                console.error('[useFloatingDock] Failed to persist objections:', err),
+            );
+        }, 1000);
+        return () => clearTimeout(id);
+    }, [analysisData, displayAnalysisData]);
 
     // Stable ref to runAnalysis — prevents the timer effect below from
     // re-running (and resetting the countdown) whenever runAnalysis's
@@ -282,6 +345,7 @@ export function useFloatingDock({ transcriptRef, isMeetingPaused, companyIntel }
         if (!window.electronAPI?.onSessionReset) return;
         const unsubscribe = window.electronAPI.onSessionReset(() => {
             resetAnalysis();                     // clears analysisData + error in the hook
+            resetObjections();                   // clears the owned objection list + cursor
             analysisInitiatedRef.current = false; // allows first-open to trigger fresh analysis
             setChatMessages([]);                 // clears chat history
             setActivePanel(null);                // close any open panel
@@ -289,7 +353,7 @@ export function useFloatingDock({ transcriptRef, isMeetingPaused, companyIntel }
             setSessionKey((k) => k + 1);         // forces the countdown timer effect to restart fresh
         });
         return () => unsubscribe();
-    }, [resetAnalysis]);
+    }, [resetAnalysis, resetObjections]);
 
     return {
         // panel switching / freeze
@@ -306,8 +370,8 @@ export function useFloatingDock({ transcriptRef, isMeetingPaused, companyIntel }
         // meeting types
         meetingTypes,
         setMeetingTypes,
-        // analysis session (lifted)
-        analysisData,
+        // analysis session (lifted) — `analysisData` carries the watcher's objections
+        analysisData: displayAnalysisData,
         analysisLoading,
         analysisError,
         runAnalysis,

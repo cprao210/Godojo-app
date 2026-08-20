@@ -436,11 +436,14 @@ export const FloatingIntelligencePanel: React.FC<FloatingIntelligencePanelProps>
 }) => {
     const [showRefreshPicker, setShowRefreshPicker] = useState(false);
     const refreshPickerRef = useRef<HTMLDivElement>(null);
-    const [activeTab, setActiveTab] = useState<'meddicc' | 'bant' | 'signals' | 'objections' | 'deal_optimizer'>('meddicc');
+    // Objections lead: they arrive in ~1.5s from the dedicated objection-handler route,
+    // they're the one output the rep needs while the prospect is still talking, and
+    // everything else on this panel is a slower-cadence read.
+    const [activeTab, setActiveTab] = useState<'meddicc' | 'bant' | 'signals' | 'objections' | 'deal_optimizer'>('objections');
 
     // Reset to default tab whenever the panel is opened
     useEffect(() => {
-        if (isOpen) setActiveTab('meddicc');
+        if (isOpen) setActiveTab('objections');
     }, [isOpen]);
 
     // If Negotiation is unchecked while on deal_optimizer tab, jump back to meddicc
@@ -450,12 +453,20 @@ export const FloatingIntelligencePanel: React.FC<FloatingIntelligencePanelProps>
         }
     }, [meetingTypes, activeTab]);
 
-    // Treat an all-missing analysis the same as no data (show WaitingPlaceholder)
-    const isAllMissing = (data: LiveAnalysisData) =>
-        Object.values(data.bant).every(f => f.status === 'missing') &&
-        Object.values(data.meddic).every(f => f.status === 'missing');
+    // Show the panel as soon as ANY section has something to say — not just BANT/MEDDIC.
+    // The previous all-missing check nulled displayData whenever every BANT and MEDDIC
+    // field was still 'missing', which is exactly the state in the first seconds of a
+    // call: objections now land in ~1.5s from their own endpoint, long before the slow
+    // extract has confirmed a single BANT field, and would otherwise have been fetched
+    // and then hidden behind the WaitingPlaceholder.
+    const hasContent = (data: LiveAnalysisData) =>
+        data.objections.length > 0 ||
+        data.signals.length > 0 ||
+        (data.dealOptimizer?.length ?? 0) > 0 ||
+        Object.values(data.bant).some(f => f.status !== 'missing') ||
+        Object.values(data.meddic).some(f => f.status !== 'missing');
 
-    const displayData = analysisData && !isAllMissing(analysisData) ? analysisData : null;
+    const displayData = analysisData && hasContent(analysisData) ? analysisData : null;
 
     // Close dropdown when clicking outside
     useEffect(() => {
@@ -644,12 +655,17 @@ export const FloatingIntelligencePanel: React.FC<FloatingIntelligencePanelProps>
             />
 
             {/* Tab bar — shown whenever there is live data, including while a
-                background refresh of that data is in flight. Only hide it
-                for the initial/no-data loading state (matches the content
-                area's isLoading && !isRefreshRun check below), otherwise a
-                refresh would unmount the tabs even though displayData is
-                still valid. */}
-            {displayData && (!isLoading || isRefreshRun) && (
+                background refresh of that data is in flight, so a refresh never
+                unmounts the tabs while displayData is still valid.
+
+                Gated on displayData alone: the content area below renders
+                LiveAnalysisContent for ANY non-null displayData, and falls back to
+                the skeleton/placeholders only when it's null, so those two are the
+                same condition. The old `(!isLoading || isRefreshRun)` term is what
+                made objections-before-first-analysis render content with no tab bar
+                above it — the initial live-analysis call holds isLoading true for
+                minutes, long after the fast objection route has answered. */}
+            {displayData && (
                 <div
                     className="shrink-0 overflow-x-auto"
                     style={{ borderBottom: '1px solid rgba(255,255,255,0.06)', scrollbarWidth: 'none' }}
@@ -657,6 +673,17 @@ export const FloatingIntelligencePanel: React.FC<FloatingIntelligencePanelProps>
                     <div className="flex items-center gap-0.5 px-3 pt-2.5 pb-0 w-max min-w-full">
                         {(
                             [
+                                {
+                                    // First tab: the fast, act-on-it-now output.
+                                    // Badge counts OPEN objections only — resolved ones
+                                    // move to a collapsed group and shouldn't inflate it.
+                                    key: 'objections' as const,
+                                    label: 'Objections',
+                                    badge: (() => {
+                                        const open = displayData.objections.filter(o => !o.resolved).length;
+                                        return open > 0 ? `${open}` : null;
+                                    })(),
+                                },
                                 {
                                     key: 'meddicc' as const,
                                     label: 'MEDDICC',
@@ -671,11 +698,6 @@ export const FloatingIntelligencePanel: React.FC<FloatingIntelligencePanelProps>
                                     key: 'signals' as const,
                                     label: 'Signals',
                                     badge: displayData.signals.length > 0 ? `${displayData.signals.length}` : null,
-                                },
-                                {
-                                    key: 'objections' as const,
-                                    label: 'Objections',
-                                    badge: displayData.objections.length > 0 ? `${displayData.objections.length}` : null,
                                 },
                                 ...(meetingTypes.includes('negotiation') ? [{
                                     key: 'deal_optimizer' as const,

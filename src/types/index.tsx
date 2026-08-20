@@ -467,6 +467,17 @@ export interface Objection {
   suggested_answer?: string;
   /** Stable content-derived id stamped at merge time. Never changes after first assignment. */
   id?: string;
+  /** Semantic category id from the backend objection classifier (e.g. "pricing_too_high"). */
+  category?: string;
+  /** Human-readable form of `category`, safe to render directly. */
+  category_label?: string;
+  /** Classifier cosine similarity, 0–1. */
+  confidence?: number;
+  /** Classifier confidence fell below the review threshold. */
+  needs_review?: boolean;
+  /** Client-only: the objection-handler endpoint echoed this quote in `resolved`.
+   *  Never sent as input — the client is the owner of this flag. */
+  resolved?: boolean;
 }
 
 export interface Signal {
