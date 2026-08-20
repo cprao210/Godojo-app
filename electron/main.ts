@@ -1,4 +1,4 @@
-import { app, BrowserWindow, Tray, Menu, nativeImage, ipcMain, shell, systemPreferences, screen } from "electron"
+import { app, BrowserWindow, Tray, Menu, nativeImage, ipcMain, shell, systemPreferences, screen, desktopCapturer, powerMonitor } from "electron"
 import path from "path"
 import fs from "fs"
 import { autoUpdater } from "electron-updater"
@@ -43,6 +43,19 @@ import { posthogMain } from './services/PostHogMainService';
 // Init as early as possible so it's live before the uncaughtException/
 // unhandledRejection handlers below can fire.
 posthogMain.init();
+
+import {
+  confirmScreenCaptureWorks,
+  formatPermissionMessage,
+  getMacScreenCaptureStatus,
+  isDevTccBypassEnabled,
+  peakToPeak,
+  resolveMacScreenCaptureCapability as resolveMacScreenCaptureCapabilityRaw,
+  SILENCE_PEAK_TO_PEAK_THRESHOLD,
+  STUCK_WATCHDOG_MS,
+  ZEROFILL_OBSERVATION_MS,
+  type MacScreenCaptureCapability,
+} from './utils/macPermissions';
 
 // One-time, masked diagnostic so a "keys not falling back to env" report can
 // be triaged directly from a shipped build's logs (Console.app on mac,
@@ -189,6 +202,33 @@ function logToFile(msg: string) {
   } catch (e) {
     // Ignore logging errors
   }
+}
+
+// ─── Screen Recording (system audio) permission state ──────────────────────
+//
+// The most recent screen-capture warning, latched so a renderer that mounts
+// AFTER the warning was emitted can still display it. Without this, the startup
+// denial check (which runs ~800ms after createWindow, before the overlay window
+// exists) would emit into the void — the user would learn nothing until they
+// tried to start a meeting.
+let latestSystemAudioPermissionWarning: string | null = null;
+
+export function getLatestSystemAudioPermissionWarning(): string | null {
+  return latestSystemAudioPermissionWarning;
+}
+
+/**
+ * Resolve screen-capture capability and keep the replay latch in sync.
+ *
+ * Always prefer this over the raw helper so every resolution path updates the
+ * latch — including the ones that CLEAR it, so a resolved permission stops
+ * being replayed to newly mounted renderers.
+ */
+async function resolveMacScreenCaptureCapability(context: string): Promise<MacScreenCaptureCapability> {
+  return resolveMacScreenCaptureCapabilityRaw(context, {
+    onWarning: (message) => { latestSystemAudioPermissionWarning = message; },
+    onClear: () => { latestSystemAudioPermissionWarning = null; },
+  });
 }
 
 async function ensureMacMicrophoneAccess(context: string): Promise<boolean> {
@@ -563,6 +603,265 @@ export class AppState {
         win.webContents.send(channel, ...args);
       }
     });
+  }
+
+  private sendToWindow(win: BrowserWindow | null | undefined, channel: string, ...args: any[]): boolean {
+    if (!win || win.isDestroyed()) return false;
+    try {
+      win.webContents.send(channel, ...args);
+      return true;
+    } catch {
+      return false;
+    }
+  }
+
+  /**
+   * Send to the two windows that can show meeting-time audio state: the
+   * launcher (which owns the permanent AudioStatusTray) and the meeting overlay.
+   *
+   * The launcher matters as much as the overlay here — the overlay is created
+   * with `show: false` and only appears once a meeting starts, so a permission
+   * warning emitted at startup would otherwise reach nothing the user can see.
+   */
+  private sendToMeetingSurfaces(channel: string, ...args: any[]): void {
+    const sent = new Set<number>();
+    const sendOnce = (win: BrowserWindow | null | undefined) => {
+      if (!win || sent.has(win.id)) return;
+      if (this.sendToWindow(win, channel, ...args)) sent.add(win.id);
+    };
+    const helper = this.getWindowHelper();
+    sendOnce(helper.getLauncherWindow());
+    sendOnce(helper.getOverlayWindow());
+  }
+
+  // Public so the startup permission check in initializeApp can emit banners
+  // symmetrically with the in-class call sites.
+  public sendSystemAudioPermissionDenied(message: string): void {
+    this.sendToMeetingSurfaces('system-audio-permission-denied', message);
+  }
+
+  /**
+   * Tell the UI a previously reported system-audio problem has resolved.
+   *
+   * Without this, a warning raised during a quiet stretch would sit on screen
+   * over a meeting that is transcribing perfectly — the banner has no way to
+   * know audio came back, and waiting for the user to refocus the window is not
+   * good enough during a live call.
+   */
+  public sendSystemAudioRecovered(): void {
+    this.sendToMeetingSurfaces('system-audio-recovered');
+  }
+
+  public sendAudioCaptureFailed(payload: {
+    channel: 'system' | 'mic';
+    message: string;
+    attempt: number;
+    maxAttempts: number;
+    terminal?: boolean;
+    stuck?: boolean;
+  }): void {
+    this.sendToMeetingSurfaces('audio-capture-failed', payload);
+  }
+
+  /**
+   * Resolve screen-capture capability and, when it is denied, tell the UI.
+   *
+   * Returns `true` when system audio may be captured. Every system-audio entry
+   * point funnels through here so a denial produces exactly one behaviour:
+   * don't construct the capture, and surface why.
+   */
+  private async ensureSystemAudioCapability(context: string): Promise<boolean> {
+    const capability = await resolveMacScreenCaptureCapability(context);
+    if (!capability.effectiveDenied) return true;
+
+    const message = capability.message ?? formatPermissionMessage('screen-recording-denied');
+    console.warn(`[Main] System audio unavailable during ${context}: ${message}`);
+    this.sendSystemAudioPermissionDenied(message);
+    return false;
+  }
+
+  /**
+   * Wire a SystemAudioCapture to STT and to the two silent-capture detectors.
+   *
+   * Single home for this wiring so the pipeline-setup and reconfigure paths
+   * cannot drift — previously each had its own copy, and the reconfigure copy
+   * silently swallowed permission errors instead of surfacing them.
+   *
+   * Two distinct failure modes are watched, because they look nothing alike:
+   *   - NO chunks at all → capture never started (route mismatch, SCK failure).
+   *   - Chunks arriving, every sample silent → macOS is zero-filling us, which
+   *     is what TCC does when the Screen Recording grant doesn't apply to this
+   *     binary. Nothing errors; the pipeline looks perfectly healthy.
+   */
+  private wireSystemCapture(capture: SystemAudioCapture, label: string = ''): void {
+    const prefix = label ? `[Main] ${label} ` : '[Main] ';
+    let chunkCount = 0;
+
+    // ── Detector 1: no chunks at all ────────────────────────────────────────
+    let stuckTimer: NodeJS.Timeout | null = null;
+    const disarmStuckWatchdog = () => {
+      if (stuckTimer) { clearTimeout(stuckTimer); stuckTimer = null; }
+    };
+    // Exposed synchronously on the instance so endMeeting() can cancel the
+    // watchdog BEFORE stop() — relying on the 'stop' event alone lets a short
+    // meeting that produced no chunks fire a false banner seconds after the
+    // user already stopped recording.
+    (capture as any).__disarmStuckWatchdog = disarmStuckWatchdog;
+
+    const armStuckWatchdog = () => {
+      disarmStuckWatchdog();
+      stuckTimer = setTimeout(() => {
+        if (this.systemAudioCapture !== capture) return; // replaced
+        if (chunkCount > 0) return;                      // producing fine
+        if (!this.isMeetingActive) return;               // meeting ended
+
+        console.warn(`${prefix}SystemAudioCapture produced 0 chunks in ${STUCK_WATCHDOG_MS / 1000}s — silent capture (route mismatch or permission revoked).`);
+        this.sendAudioCaptureFailed({
+          channel: 'system',
+          message: formatPermissionMessage('system-audio-stuck'),
+          attempt: 0,
+          maxAttempts: 3,
+          terminal: false,
+          stuck: true,
+        });
+      }, STUCK_WATCHDOG_MS);
+    };
+
+    capture.on('start', armStuckWatchdog);
+    capture.on('stop', disarmStuckWatchdog);
+
+    // ── Detector 2: chunks flowing, all silent ──────────────────────────────
+    //
+    // Silence is NOT by itself evidence of a permission problem. The native
+    // module synthesises bit-exact zero keepalives while the render side is idle
+    // (FrameAction::SendSilence), so a meeting where nobody has spoken yet looks
+    // byte-identical to TCC zero-filling us. Blaming permissions on amplitude
+    // alone therefore fires on every quiet meeting opening.
+    //
+    // So: measure a ROLLING run of silence (reset by any real audio), and when it
+    // gets long enough, actively confirm whether capture still works before
+    // saying anything. The confirmation is the only signal that discriminates —
+    // an orphaned grant still reports 'granted' but cannot actually capture.
+    let silenceRunStartedAt = 0;   // 0 = not currently in a silent run
+    let sawRealAudio = false;
+    let zerofillReported = false;  // a banner is currently showing
+    let confirmInFlight = false;
+    let nextConfirmAllowedAt = 0;  // rate-limits the probe during long quiet spells
+    const CONFIRM_COOLDOWN_MS = 60000;
+
+    capture.on('data', (chunk: Buffer) => {
+      chunkCount++;
+      if (chunkCount === 1) disarmStuckWatchdog();
+
+      // macOS-only: WASAPI loopback on Windows does not zero-fill on permission
+      // change, so the detector has no diagnostic value there and its suggested
+      // fix (System Settings → Screen Recording) does not exist.
+      // The dev bypass means "treat screen capture as granted", so it must
+      // suppress this too, or dev runs contradict themselves.
+      if (process.platform === 'darwin' && !isDevTccBypassEnabled()) {
+        const isSilent = peakToPeak(chunk) <= SILENCE_PEAK_TO_PEAK_THRESHOLD;
+
+        if (!isSilent) {
+          silenceRunStartedAt = 0;
+          if (!sawRealAudio) {
+            sawRealAudio = true;
+            console.log(`${prefix}System audio confirmed live (real samples received).`);
+          }
+          // Audio came back after we complained. Retract rather than leaving a
+          // stale "every sample is silent" banner over a working meeting.
+          if (zerofillReported) {
+            zerofillReported = false;
+            console.log(`${prefix}System audio recovered — clearing the silent-capture warning.`);
+            this.sendSystemAudioRecovered();
+          }
+        } else {
+          if (silenceRunStartedAt === 0) silenceRunStartedAt = Date.now();
+          const now = Date.now();
+          const silentFor = now - silenceRunStartedAt;
+
+          if (!zerofillReported && !confirmInFlight
+              && silentFor >= ZEROFILL_OBSERVATION_MS && now >= nextConfirmAllowedAt) {
+            confirmInFlight = true;
+            void (async () => {
+              try {
+                const works = await confirmScreenCaptureWorks('system audio silence check');
+                if (this.systemAudioCapture !== capture) return; // replaced mid-check
+                if (works) {
+                  // Capture is fine — the room is just quiet. Say nothing, and
+                  // back off so a long silence does not re-probe every 12s.
+                  silenceRunStartedAt = 0;
+                  nextConfirmAllowedAt = Date.now() + CONFIRM_COOLDOWN_MS;
+                } else {
+                  zerofillReported = true;
+                  console.warn(`${prefix}System audio silent for ${Math.round(silentFor / 1000)}s AND screen capture could not be confirmed — Screen Recording grant likely does not apply to this build.`);
+                  this.sendAudioCaptureFailed({
+                    channel: 'system',
+                    message: formatPermissionMessage('mac-screen-recording-revoked-rebuild'),
+                    attempt: 0,
+                    maxAttempts: 3,
+                    terminal: false,
+                    stuck: true,
+                  });
+                }
+              } finally {
+                confirmInFlight = false;
+              }
+            })();
+          }
+        }
+      }
+
+      this.googleSTT?.write(chunk);
+    });
+
+    capture.on('speech_ended', () => {
+      this.googleSTT?.notifySpeechEnded?.();
+    });
+
+    capture.on('error', (err: Error) => {
+      console.error(`${prefix}SystemAudioCapture Error:`, err);
+      // Surface SCK/CoreAudio permission failures so the user knows to grant
+      // Screen Recording access. Previously the reconfigure path only logged
+      // this, which made a post-device-change denial invisible.
+      this.broadcast('meeting-audio-warning', err.message || 'System audio capture failed');
+    });
+
+    capture.on('sample-rate-detected', (rate: number) => {
+      console.log(`${prefix}System audio true rate detected: ${rate}Hz — resyncing STT`);
+      this.googleSTT?.setSampleRate(rate);
+    });
+
+    // The capture gave up restarting itself. Repeated stalls with no recovery
+    // are usually a revoked grant or a vanished device, so re-resolve the
+    // permission to pick the accurate message rather than guessing.
+    capture.on('capture-failed', (payload: { attempts: number; maxAttempts: number }) => {
+      console.error(`${prefix}System audio capture failed terminally after ${payload.attempts} attempts.`);
+      void (async () => {
+        const capability = await resolveMacScreenCaptureCapability('system audio recovery');
+        this.sendAudioCaptureFailed({
+          channel: 'system',
+          message: capability.effectiveDenied
+            ? (capability.message ?? formatPermissionMessage('screen-recording-denied'))
+            : formatPermissionMessage('system-audio-stuck'),
+          attempt: payload.attempts,
+          maxAttempts: payload.maxAttempts,
+          terminal: true,
+          stuck: true,
+        });
+      })();
+    });
+  }
+
+  /**
+   * Cancel the current capture's stuck watchdog synchronously.
+   *
+   * Must be called before any deliberate stop() — pause, end, provider swap.
+   * The watchdog's own 'stop' listener is not enough: a pause keeps
+   * isMeetingActive true, so pausing within the watchdog window would otherwise
+   * report "no audio detected" about a capture the user intentionally stopped.
+   */
+  private disarmSystemCaptureWatchdog(): void {
+    (this.systemAudioCapture as any)?.__disarmStuckWatchdog?.();
   }
 
   public getIsMeetingActive(): boolean {
@@ -996,6 +1295,13 @@ export class AppState {
   private microphoneCapture: MicrophoneCapture | null = null;
   private audioTestCapture: MicrophoneCapture | null = null; // For audio settings test
   private _audioTestStarting = false;               // P2-12: in-flight guard against concurrent calls
+  private audioTestSystemCapture: SystemAudioCapture | null = null; // system-audio probe, parallel to the mic test
+  // Bumped on every start AND stop of the audio test. The system-audio probe
+  // awaits a permission resolution that can take seconds; if the user closes the
+  // Audio tab during that await, stopAudioTest fires but the subsequent
+  // construct-and-start would orphan a capture with no shutdown path. Snapshot
+  // this before awaiting and bail if it changed.
+  private _audioTestEpoch = 0;
   private googleSTT: STTProvider | null = null; // Client
   private googleSTT_User: STTProvider | null = null; // User
   // Echo-pipeline telemetry poll (ERLE, gate state, mute ratio) — meeting-scoped.
@@ -1277,8 +1583,7 @@ export class AppState {
               final: false,
               retract: true
             };
-            helper.getLauncherWindow()?.webContents.send('native-audio-transcript', retraction);
-            helper.getOverlayWindow()?.webContents.send('native-audio-transcript', retraction);
+            this.sendToMeetingSurfaces('native-audio-transcript', retraction);
             this._userPartialPending = false;
             this._echoFilter.noteRetractionEmitted();
           }
@@ -1352,8 +1657,7 @@ export class AppState {
         // NOTE: segment.words stays main-process internal (echo filter input) —
         // deliberately NOT serialized into the 10+/sec IPC stream.
       };
-      helper.getLauncherWindow()?.webContents.send('native-audio-transcript', payload);
-      helper.getOverlayWindow()?.webContents.send('native-audio-transcript', payload);
+      this.sendToMeetingSurfaces('native-audio-transcript', payload);
 
       // Track whether the renderer's latest user event is an un-finalized
       // partial — an echo-dropped final must then retract it explicitly.
@@ -1374,34 +1678,33 @@ export class AppState {
     return stt;
   }
 
-  private setupSystemAudioPipeline(inputDeviceId?: string, outputDeviceId?: string): void {
+  private async setupSystemAudioPipeline(inputDeviceId?: string, outputDeviceId?: string): Promise<void> {
     // REMOVED EARLY RETURN: if (this.systemAudioCapture && this.microphoneCapture) return; // Already initialized
+
+    // Screen Recording gates system audio on macOS. Resolve it BEFORE touching
+    // SystemAudioCapture: the native module retries CoreAudio → SCK on every
+    // VAD-lockout restart, and each SCK attempt re-raises the TCC dialog, so a
+    // denied user would be prompted every couple of seconds for the whole
+    // meeting. Not constructing the capture at all is what stops that.
+    const systemAudioAllowed = await this.ensureSystemAudioCapability('system audio pipeline setup');
+
+    if (!systemAudioAllowed && this.systemAudioCapture) {
+      // The grant can be revoked between meetings while a capture object from
+      // the previous session is still around. Tear it down rather than let it
+      // keep feeding zero-filled audio into STT.
+      console.warn('[Main] Screen Recording unavailable — tearing down the existing system audio capture.');
+      try { this.systemAudioCapture.stop(); } catch { /* already stopped */ }
+      this.systemAudioCapture = null;
+    }
 
     try {
       // 1. Initialize Captures if missing.
       // If they already exist (e.g. from reconfigureAudio) they are already
       // wired to write to this.googleSTT / googleSTT_User.
 
-      if (!this.systemAudioCapture) {
+      if (systemAudioAllowed && !this.systemAudioCapture) {
         this.systemAudioCapture = new SystemAudioCapture(undefined, { echoMode: this._echoMode() });
-        // Wire Capture -> STT
-        this.systemAudioCapture.on('data', (chunk: Buffer) => {
-          this.googleSTT?.write(chunk);
-        });
-        this.systemAudioCapture.on('speech_ended', () => {
-          this.googleSTT?.notifySpeechEnded?.();
-        });
-        this.systemAudioCapture.on('error', (err: Error) => {
-          console.error('[Main] SystemAudioCapture Error:', err);
-          // Surface SCK permission failures (macOS) to the user so they know to grant
-          // Screen Recording access in System Settings > Privacy & Security.
-          this.broadcast('meeting-audio-warning', err.message || 'System audio capture failed');
-        });
-        // Re-sync STT sample rate when the native hardware rate is discovered post-start
-        this.systemAudioCapture.on('sample-rate-detected', (rate: number) => {
-          console.log(`[Main] System audio true rate detected: ${rate}Hz — resyncing STT`);
-          this.googleSTT?.setSampleRate(rate);
-        });
+        this.wireSystemCapture(this.systemAudioCapture, 'pipeline');
       }
 
       if (!this.microphoneCapture) {
@@ -1466,36 +1769,31 @@ export class AppState {
       this.systemAudioCapture = null;
     }
 
-    const wireSystemAudio = (capture: typeof this.systemAudioCapture) => {
-      if (!capture) return;
-      capture.on('data', (chunk: Buffer) => {
-        this.googleSTT?.write(chunk);
-      });
-      capture.on('speech_ended', () => {
-        this.googleSTT?.notifySpeechEnded?.();
-      });
-      capture.on('error', (err: Error) => {
-        console.error('[Main] SystemAudioCapture Error:', err);
-      });
-      capture.on('sample-rate-detected', (rate: number) => {
-        console.log(`[Main] System audio true rate detected: ${rate}Hz — resyncing STT`);
-        this.googleSTT?.setSampleRate(rate);
-      });
-    };
+    // A device change is one of the moments a revoked grant tends to surface,
+    // so re-resolve rather than trusting the check from meeting start.
+    const systemAudioAllowed = await this.ensureSystemAudioCapability('audio reconfigure');
 
-    try {
-      console.log('[Main] Initializing SystemAudioCapture...');
-      this.systemAudioCapture = new SystemAudioCapture(outputDeviceId || undefined, { echoMode: this._echoMode() });
-      wireSystemAudio(this.systemAudioCapture);
-      console.log('[Main] SystemAudioCapture initialized.');
-    } catch (err) {
-      console.warn('[Main] Failed to initialize SystemAudioCapture with preferred device. Falling back to default.', err);
+    if (!systemAudioAllowed) {
+      console.warn('[Main] Skipping SystemAudioCapture init — Screen Recording unavailable. Meeting continues mic-only.');
+    } else {
       try {
-        this.systemAudioCapture = new SystemAudioCapture(undefined, { echoMode: this._echoMode() });
-        wireSystemAudio(this.systemAudioCapture);
-        console.log('[Main] SystemAudioCapture (Default) initialized.');
-      } catch (err2) {
-        console.error('[Main] Failed to initialize SystemAudioCapture (Default):', err2);
+        console.log('[Main] Initializing SystemAudioCapture...');
+        this.systemAudioCapture = new SystemAudioCapture(outputDeviceId || undefined, { echoMode: this._echoMode() });
+        this.wireSystemCapture(this.systemAudioCapture, 'reconfigure');
+        console.log('[Main] SystemAudioCapture initialized.');
+      } catch (err) {
+        console.warn('[Main] Failed to initialize SystemAudioCapture with preferred device. Falling back to default.', err);
+        try {
+          this.systemAudioCapture = new SystemAudioCapture(undefined, { echoMode: this._echoMode() });
+          this.wireSystemCapture(this.systemAudioCapture, 'reconfigure-default');
+          console.log('[Main] SystemAudioCapture (Default) initialized.');
+        } catch (err2) {
+          console.error('[Main] Failed to initialize SystemAudioCapture (Default):', err2);
+          // Previously this only logged, so a permission failure after a device
+          // change never reached the UI.
+          this.broadcast('meeting-audio-warning',
+            (err2 as Error)?.message || formatPermissionMessage('screen-recording-denied'));
+        }
       }
     }
 
@@ -1557,6 +1855,7 @@ export class AppState {
     // before we null-out the STT instances. Without this, buffered 'data' events
     // still in-flight call this.googleSTT?.write() while googleSTT is already null.
     if (this.isMeetingActive) {
+      this.disarmSystemCaptureWatchdog();
       this.systemAudioCapture?.stop();
       this.microphoneCapture?.stop();
     }
@@ -1574,7 +1873,7 @@ export class AppState {
     }
 
     // Reinitialize the pipeline (will pick up the new provider from CredentialsManager)
-    this.setupSystemAudioPipeline();
+    await this.setupSystemAudioPipeline();
 
     // Restart STT first, then audio — same order as startMeeting to ensure
     // write() calls are not dropped while isActive=false.
@@ -1603,43 +1902,68 @@ export class AppState {
 
   private async _startAudioTestImpl(deviceId?: string): Promise<void> {
     console.log(`[Main] Starting Audio Test on device: ${deviceId || 'default'}`);
-    this.stopAudioTest(); // Stop any existing test
+    this.stopAudioTest(); // Stop any existing test (also bumps _audioTestEpoch)
+    const startEpoch = ++this._audioTestEpoch;
+    const isCurrentTest = () => this._audioTestEpoch === startEpoch;
 
     if (!(await ensureMacMicrophoneAccess('audio test'))) {
-      throw new Error('Microphone access denied. Please allow microphone access in System Settings and try again.');
+      throw new Error(formatPermissionMessage('mic-denied'));
     }
+
+    const broadcastTargets = (): BrowserWindow[] =>
+      [
+        this.settingsWindowHelper.getSettingsWindow(),
+        this.getWindowHelper().getLauncherWindow(),
+        this.getWindowHelper().getOverlayWindow(),
+      ].filter((win): win is BrowserWindow => !!win && !win.isDestroyed());
+
+    const computeRmsLevel = (chunk: Buffer): number => {
+      let sum = 0;
+      const step = 10;
+      const len = chunk.length;
+      for (let i = 0; i < len; i += 2 * step) {
+        const val = chunk.readInt16LE(i);
+        sum += val * val;
+      }
+      const count = len / (2 * step);
+      if (count <= 0) return 0;
+      const rms = Math.sqrt(sum / count);
+      return Math.min(rms / 10000, 1.0);
+    };
 
     const attachAudioTestListeners = (capture: MicrophoneCapture) => {
       capture.on('data', (chunk: Buffer) => {
-        const targets = [
-          this.settingsWindowHelper.getSettingsWindow(),
-          this.getWindowHelper().getLauncherWindow(),
-          this.getWindowHelper().getOverlayWindow(),
-        ].filter((win): win is BrowserWindow => !!win && !win.isDestroyed());
-
+        const targets = broadcastTargets();
         if (targets.length === 0) return;
-
-        let sum = 0;
-        const step = 10;
-        const len = chunk.length;
-
-        for (let i = 0; i < len; i += 2 * step) {
-          const val = chunk.readInt16LE(i);
-          sum += val * val;
-        }
-
-        const count = len / (2 * step);
-        if (count > 0) {
-          const rms = Math.sqrt(sum / count);
-          const level = Math.min(rms / 10000, 1.0);
-          for (const target of targets) {
-            target.webContents.send('audio-test-level', level);
-          }
+        const level = computeRmsLevel(chunk);
+        for (const target of targets) {
+          target.webContents.send('audio-test-level', level);
         }
       });
 
       capture.on('error', (err: Error) => {
         console.error('[Main] AudioTest Error:', err);
+      });
+    };
+
+    // System-audio probe, wired alongside the mic test so Settings → Audio can
+    // verify the interviewer-audio path BEFORE a meeting starts. Runs
+    // independently: a screen-recording denial reports itself and leaves the
+    // mic meter working.
+    const attachSystemTestListeners = (capture: SystemAudioCapture) => {
+      capture.on('data', (chunk: Buffer) => {
+        const targets = broadcastTargets();
+        if (targets.length === 0) return;
+        const level = computeRmsLevel(chunk);
+        for (const target of targets) {
+          target.webContents.send('audio-test-system-level', level);
+        }
+      });
+      capture.on('error', (err: Error) => {
+        console.error('[Main] AudioTest System Error:', err);
+        for (const target of broadcastTargets()) {
+          target.webContents.send('audio-test-system-error', err.message || String(err));
+        }
       });
     };
 
@@ -1674,13 +1998,52 @@ export class AppState {
         throw fallbackErr;
       }
     }
+
+    // Independent system-audio probe — a failure here must NOT abort the mic
+    // test, so it gets its own try/catch and reports through
+    // 'audio-test-system-error' rather than throwing.
+    try {
+      const capability = await resolveMacScreenCaptureCapability('settings audio test');
+      if (!isCurrentTest()) {
+        console.log('[Main] Audio test was stopped during the permission probe — skipping system capture.');
+        return;
+      }
+
+      if (capability.effectiveDenied) {
+        const message = capability.message ?? formatPermissionMessage('screen-recording-denied');
+        for (const target of broadcastTargets()) {
+          target.webContents.send('audio-test-system-error', message);
+        }
+      } else {
+        this.audioTestSystemCapture = new SystemAudioCapture(undefined, { echoMode: this._echoMode() });
+        attachSystemTestListeners(this.audioTestSystemCapture);
+        this.audioTestSystemCapture.start();
+        // Re-check: stopAudioTest may have fired while we were constructing.
+        if (!isCurrentTest()) {
+          try { this.audioTestSystemCapture?.stop(); } catch { /* ignore */ }
+          this.audioTestSystemCapture = null;
+        }
+      }
+    } catch (sysErr: any) {
+      console.warn('[Main] Failed to start the system-audio probe:', sysErr);
+      for (const target of broadcastTargets()) {
+        target.webContents.send('audio-test-system-error', sysErr?.message || 'System audio probe failed to start.');
+      }
+    }
   }
 
   public stopAudioTest(): void {
+    // Invalidate any in-flight _startAudioTestImpl that is mid-await.
+    this._audioTestEpoch++;
     if (this.audioTestCapture) {
       console.log('[Main] Stopping Audio Test');
       this.audioTestCapture.stop();
       this.audioTestCapture = null;
+    }
+    if (this.audioTestSystemCapture) {
+      console.log('[Main] Stopping Audio Test (system probe)');
+      try { this.audioTestSystemCapture.stop(); } catch { /* ignore */ }
+      this.audioTestSystemCapture = null;
     }
   }
 
@@ -1711,10 +2074,17 @@ export class AppState {
     }
 
     if (!(await ensureMacMicrophoneAccess('meeting start'))) {
-      const message = 'Microphone access denied. Please allow microphone access in System Settings.';
+      const message = formatPermissionMessage('mic-denied');
       this.broadcast('meeting-audio-error', message);
       throw new Error(message);
     }
+
+    // Screen Recording is checked here too, but it is deliberately NOT fatal:
+    // a meeting with only the user's microphone is still worth having, so we
+    // warn and continue mic-only rather than refusing to start. We also do not
+    // re-prompt or auto-open System Settings — that hijacks focus on every
+    // single meeting start, and the grant cannot be re-requested once denied.
+    await this.ensureSystemAudioCapability('meeting start');
 
     this.isMeetingActive = true;
     this._pendingLiveAnalysisMeetingId = null;
@@ -1749,8 +2119,7 @@ export class AppState {
     }, 100);
 
     // Emit session reset to clear UI state immediately
-    this.getWindowHelper().getOverlayWindow()?.webContents.send('session-reset');
-    this.getWindowHelper().getLauncherWindow()?.webContents.send('session-reset');
+    this.sendToMeetingSurfaces('session-reset');
 
     // ★ ASYNC AUDIO INIT: Return INSTANTLY so the IPC response goes back
     // to the renderer immediately, allowing the UI to switch to overlay
@@ -1772,7 +2141,7 @@ export class AppState {
         }
 
         // LAZY INIT: Ensure pipeline is ready (if not reconfigured above)
-        this.setupSystemAudioPipeline();
+        await this.setupSystemAudioPipeline();
 
         // Loopback-input guard (warn only): a virtual/loopback device as the
         // mic feeds far-end playback straight back as "user" speech — no echo
@@ -1886,6 +2255,7 @@ export class AppState {
 
     // Stop audio captures synchronously — these are fire-and-forget internally
     this._stopPipelineStatsPolling();
+    this.disarmSystemCaptureWatchdog();
     this.systemAudioCapture?.stop();
     this.googleSTT?.stop();
     this.microphoneCapture?.stop();
@@ -2135,6 +2505,7 @@ export class AppState {
     // 1. Stop audio capture — drop incoming audio chunks on the floor.
     //    We call stop() (not destroy) so we can restart without re-initializing
     //    the capture objects. The STT streams stay alive but receive no new data.
+    this.disarmSystemCaptureWatchdog();
     this.systemAudioCapture?.stop();
     this.microphoneCapture?.stop();
 
@@ -2195,6 +2566,15 @@ export class AppState {
       // Chunks that arrive before the WebSocket handshake completes go into the STT
       // ring buffer which is flushed on 'open', still assigned to the correct instance.
 
+      // 0. A pause can be long, and Screen Recording can be revoked during it.
+      //    Re-resolve before restarting the capture so we surface the denial
+      //    instead of restarting into silent, zero-filled audio.
+      const systemAudioAllowed = await this.ensureSystemAudioCapability('resume meeting');
+      if (!systemAudioAllowed && this.systemAudioCapture) {
+        try { this.systemAudioCapture.stop(); } catch { /* already stopped */ }
+        this.systemAudioCapture = null;
+      }
+
       // 1. Re-sync rates in case the device changed while paused.
       const resumeSysRate = this.systemAudioCapture?.getOutputSampleRate() || 16000;
       const resumeMicRate = this.microphoneCapture?.getOutputSampleRate() || 16000;
@@ -2206,6 +2586,7 @@ export class AppState {
       this.googleSTT_User?.start();
 
       // 2. NOW start audio — data events go to already-active STT instances.
+      //    systemAudioCapture is null when the grant is gone; mic-only resume.
       this.systemAudioCapture?.start();
       this.microphoneCapture?.start();
 
@@ -3542,6 +3923,102 @@ async function initializeApp() {
     appState.showTray();
   }
   // Stealth mode: dock is already hidden, tray stays hidden, no action needed here.
+
+  // ─── One-time macOS Screen Recording permission prompt ────────────────────
+  //
+  // This must run AFTER createWindow() because macOS anchors the TCC sheet to
+  // the frontmost application window on Ventura+. Without a visible window the
+  // sheet can appear behind other apps. The 800ms delay lets the launcher's
+  // ready-to-show animation finish so the window is fully composited first.
+  //
+  // TCC caches the answer permanently, so the not-determined branch runs exactly
+  // once per unique binary; every later launch reads 'granted' or 'denied'.
+  if (process.platform === 'darwin') {
+    setTimeout(async () => {
+      try {
+        if (isDevTccBypassEnabled()) {
+          console.log('[Init] Dev TCC bypass enabled — skipping the startup screen-recording check.');
+          return;
+        }
+
+        const screenStatus = getMacScreenCaptureStatus();
+        console.log(`[Init] Screen recording permission at startup: ${screenStatus}`);
+
+        if (screenStatus === 'not-determined') {
+          // Trigger the one-time sheet with a minimal capture call.
+          console.log('[Init] Screen recording not-determined — raising the one-time TCC dialog.');
+          try {
+            await desktopCapturer.getSources({ types: ['screen'], thumbnailSize: { width: 1, height: 1 } });
+          } catch (e) {
+            // Some Electron builds throw while the decision is pending. The
+            // sheet has still been raised, which is all we wanted.
+            console.log('[Init] getSources threw while TCC was pending (expected):', (e as Error).message);
+          }
+          // Deliberately do NOT re-read the status here — the dialog is still
+          // open, so any value we read would be stale. The gate at meeting
+          // start reads it when it actually matters.
+        } else if (screenStatus === 'denied') {
+          // Returning user who previously denied. Tell them now, at launch,
+          // rather than letting them discover it mid-meeting.
+          const capability = await resolveMacScreenCaptureCapability('startup permission check');
+          if (capability.effectiveDenied) {
+            console.warn('[Init] Screen recording was previously denied — notifying the UI.');
+            appState.sendSystemAudioPermissionDenied(
+              capability.message ?? formatPermissionMessage('screen-recording-denied'),
+            );
+          }
+        } else {
+          console.log(`[Init] Screen recording already resolved: ${screenStatus}`);
+        }
+
+        // Same treatment for the microphone, so a denied mic is visible before
+        // the user tries to start a meeting.
+        try {
+          const micStatus = systemPreferences.getMediaAccessStatus('microphone');
+          console.log(`[Init] Microphone permission at startup: ${micStatus}`);
+          if (micStatus === 'denied' || micStatus === 'restricted') {
+            appState.sendAudioCaptureFailed({
+              channel: 'mic',
+              message: micStatus === 'restricted'
+                ? 'Microphone access is restricted by device policy. Contact your administrator to enable microphone access for GoDojo AI.'
+                : formatPermissionMessage('mic-denied'),
+              attempt: 0,
+              maxAttempts: 0,
+              terminal: true,
+              stuck: false,
+            });
+          }
+          // 'not-determined' resolves at first meeting start via
+          // ensureMacMicrophoneAccess, which can actually prompt.
+        } catch (micErr) {
+          console.warn('[Init] Startup microphone permission check failed:', micErr);
+        }
+      } catch (e) {
+        console.warn('[Init] Startup permission check failed:', e);
+      }
+    }, 800);
+  }
+
+  // Re-validate after sleep: a grant can be revoked while the machine is
+  // suspended, and an in-progress meeting would otherwise resume into silent
+  // zero-filled audio with no explanation.
+  if (process.platform === 'darwin') {
+    powerMonitor.on('resume', () => {
+      void (async () => {
+        try {
+          const capability = await resolveMacScreenCaptureCapability('power resume');
+          if (capability.effectiveDenied) {
+            appState.sendSystemAudioPermissionDenied(
+              capability.message ?? formatPermissionMessage('screen-recording-denied'),
+            );
+          }
+        } catch (e) {
+          console.warn('[Main] Post-resume permission check failed:', e);
+        }
+      })();
+    });
+  }
+
   // Register global shortcuts using KeybindManager
   KeybindManager.getInstance().registerGlobalShortcuts()
 

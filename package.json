@@ -94,6 +94,13 @@
       "icon": "assets/natively.icns",
       "identity": null,
       "hardenedRuntime": true,
+      "entitlements": "assets/entitlements.mac.plist",
+      "entitlementsInherit": "assets/entitlements.mac.plist",
+      "extendInfo": {
+        "NSScreenCaptureUsageDescription": "GoDojo AI needs Screen Recording permission to capture system audio for meeting transcription.",
+        "NSMicrophoneUsageDescription": "GoDojo AI needs microphone access to transcribe your voice during meetings.",
+        "NSAudioCaptureUsageDescription": "GoDojo AI needs system audio access to transcribe meeting audio."
+      },
       "artifactName": "GoDojo.AI-${version}-${arch}.${ext}"
     },
     "win": {
