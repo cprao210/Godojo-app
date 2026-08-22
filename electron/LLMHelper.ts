@@ -49,6 +49,7 @@ const MAX_OUTPUT_TOKENS = 65536
 // Using named aliases here makes call-sites self-documenting.
 const MAX_TOKENS_STRUCTURED = MODE_TOKEN_LIMITS.structured  // 4096 — JSON generation
 const MAX_TOKENS_SUMMARY = MODE_TOKEN_LIMITS.summary     // 2048 — recap/summary/email
+const MAX_TOKENS_SUMMARY_JSON = MODE_TOKEN_LIMITS.summaryJson  // 8192 — structured post-call summary JSON
 
 const CLAUDE_MAX_OUTPUT_TOKENS = 64000
 const CLAUDE_MAX_OUTPUT_TOKENS_NONSTREAM = 4096 // safe ceiling for non-streaming calls
@@ -422,24 +423,35 @@ export class LLMHelper {
   /**
    * Post-process the response
    * NOTE: Truncation/clamping removed - response length is handled in prompts
+   *
+   * `filterFallback` exists for the live-advisor modes (answer/assist), where a
+   * hedging reply IS the failure and should be retried on another provider.
+   * It must be OFF for structured/JSON tasks: those prompts instruct the model
+   * to quote prospect evidence verbatim, so a prospect saying "it depends on
+   * seat count" or "I don't know who signs off" would otherwise be classified
+   * as a provider failure and burn the entire fallback ladder.
    */
-  private processResponse(text: string): string {
+  private processResponse(text: string, opts: { filterFallback?: boolean } = {}): string {
+    const { filterFallback = true } = opts;
+
     // Basic cleaning
     let clean = this.cleanJsonResponse(text);
 
     // Truncation/clamping removed - prompts already handle response length
     // clean = clampResponse(clean, 3, 60);
 
-    // Filter out fallback phrases
-    const fallbackPhrases = [
-      "I'm not sure",
-      "It depends",
-      "I can't answer",
-      "I don't know"
-    ];
+    if (filterFallback) {
+      // Filter out fallback phrases
+      const fallbackPhrases = [
+        "I'm not sure",
+        "It depends",
+        "I can't answer",
+        "I don't know"
+      ];
 
-    if (fallbackPhrases.some(phrase => clean.toLowerCase().includes(phrase.toLowerCase()))) {
-      throw new Error("Filtered fallback response");
+      if (fallbackPhrases.some(phrase => clean.toLowerCase().includes(phrase.toLowerCase()))) {
+        throw new Error("Filtered fallback response");
+      }
     }
 
     return clean;
@@ -3569,7 +3581,7 @@ export class LLMHelper {
         if (text.trim().length > 0) {
           console.log(`[LLMHelper] ✅ Custom provider summary generated successfully.`);
           this.trackLLMSource(task, 'electron_native', this.customProvider?.name || 'custom_curl');
-          return this.processResponse(text);
+          return this.processResponse(text, { filterFallback: false });
         }
       } catch (e: any) {
         console.warn(`[LLMHelper] ⚠️ Custom provider summary failed: ${e.message}. Falling back...`);
@@ -3600,8 +3612,9 @@ export class LLMHelper {
         if (text.trim().length > 0) {
           console.log(`[LLMHelper] ✅ Groq summary generated successfully.`);
           this.trackLLMSource(task, 'electron_native', 'groq');
-          return this.processResponse(text);
+          return this.processResponse(text, { filterFallback: false });
         }
+        throw new Error('Groq returned an empty response');
       } catch (e: any) {
         console.warn(`[LLMHelper] ⚠️ Groq summary failed: ${e.message}. Falling back to Gemini...`);
         lastProviderError = e;
@@ -3626,8 +3639,9 @@ export class LLMHelper {
         if (text.trim().length > 0) {
           console.log(`[LLMHelper] ✅ Gemini Flash summary generated successfully (Attempt ${attempt}).`);
           this.trackLLMSource(task, 'electron_native', 'gemini_flash');
-          return this.processResponse(text);
+          return this.processResponse(text, { filterFallback: false });
         }
+        throw new Error('Gemini Flash returned an empty response (no text part)');
       } catch (e: any) {
         console.warn(`[LLMHelper] ⚠️ Gemini Flash attempt ${attempt}/3 failed: ${e.message}`);
         lastProviderError = e;
@@ -3645,14 +3659,25 @@ export class LLMHelper {
       for (let attempt = 1; attempt <= maxProRetries; attempt++) {
         try {
           console.log(`[LLMHelper] 🔄 Gemini Pro Attempt ${attempt}/${maxProRetries}...`);
+          // Every other Gemini path acquires this; the summary path was the one
+          // that did not, so the post-meeting burst (title + summary + scorecard)
+          // fired unthrottled.
+          await this.rateLimiters.gemini.acquire();
           const response = await this.withTimeout(
             // @ts-ignore
             this.client.models.generateContent({
               model: GEMINI_PRO_MODEL,
               contents: contents,
               config: {
-                maxOutputTokens: MAX_TOKENS_SUMMARY,
+                // MAX_TOKENS_SUMMARY (2048) is below the floor for a populated
+                // summary JSON, and GEMINI_PRO_MODEL is a thinking model whose
+                // thought parts count against this budget while the SDK's `text`
+                // getter skips them — so a 2048 cap here returns empty text, not
+                // truncated JSON. Raise the cap and disable thinking for a task
+                // that is pure structured extraction.
+                maxOutputTokens: MAX_TOKENS_SUMMARY_JSON,
                 temperature: 0.3,
+                thinkingConfig: { thinkingBudget: 0 },
               }
             }),
             60000,
@@ -3663,15 +3688,28 @@ export class LLMHelper {
           if (text.trim().length > 0) {
             console.log(`[LLMHelper] ✅ Gemini Pro summary generated successfully.`);
             this.trackLLMSource(task, 'electron_native', 'gemini_pro');
-            return this.processResponse(text);
+            this.rateLimiters.gemini.markSuccess();
+            return this.processResponse(text, { filterFallback: false });
           }
+
+          // An empty response is a real failure, not a no-op. Left unrecorded it
+          // burned all 5 retries back-to-back with no backoff and left
+          // lastProviderError null, so the final throw carried a generic message
+          // and the true cause was invisible.
+          throw new Error('Gemini Pro returned an empty response (no text part)');
         } catch (e: any) {
           console.warn(`[LLMHelper] ⚠️ Gemini Pro attempt ${attempt} failed: ${e.message}`);
           lastProviderError = e;
-          // Aggressive backoff for Pro: 2s, 4s, 8s, 16s, 32s
-          const backoff = 2000 * Math.pow(2, attempt - 1);
-          console.log(`[LLMHelper] Waiting ${backoff}ms before next retry...`);
-          await new Promise(r => setTimeout(r, backoff));
+          // Only real 429s trip the circuit breaker — same convention as generateWithGroq.
+          if (e?.status === 429 || e?.message?.includes('rate limit') || e?.message?.includes('429')) {
+            this.rateLimiters.gemini.markRateLimitError();
+          }
+          if (attempt < maxProRetries) {
+            // Aggressive backoff for Pro: 2s, 4s, 8s, 16s
+            const backoff = 2000 * Math.pow(2, attempt - 1);
+            console.log(`[LLMHelper] Waiting ${backoff}ms before next retry...`);
+            await new Promise(r => setTimeout(r, backoff));
+          }
         }
       }
     } else {
@@ -3681,7 +3719,7 @@ export class LLMHelper {
     // ATTEMPT 4: Backend fallback (FastAPI, own credentials — last resort)
     try {
       const text = await this.callBackendFallback(task, context, systemPrompt);
-      return this.processResponse(text);
+      return this.processResponse(text, { filterFallback: false });
     } catch (e: any) {
       console.warn(`[LLMHelper] ⚠️ Backend fallback also failed: ${e.message}`);
       lastProviderError = e;

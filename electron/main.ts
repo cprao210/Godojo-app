@@ -1394,12 +1394,21 @@ export class AppState {
    */
   private _dispatchTranscript(
     speaker: 'client' | 'user',
-    segment: { text: string; isFinal: boolean; confidence: number; speakerIndex?: number },
+    segment: { text: string; isFinal: boolean; confidence: number; speakerIndex?: number; words?: { startMs: number }[] },
   ): void {
+    // SPEECH time, not arrival time. Deepgram's SttWord.startMs is already
+    // wall-clock, and client finals routinely lag mic finals by hundreds of ms
+    // (VAD-lockout restarts delay them further). Stamping Date.now() therefore
+    // ordered the transcript by STT arrival, which put a rep's reply BEFORE the
+    // client turn it answered — destroying the Q→A adjacency that every
+    // cause-and-effect claim in the summary and scorecard depends on.
+    // Falls back to arrival time when the provider gives no word timings.
+    const speechStartMs = segment.words?.length ? segment.words[0].startMs : Date.now();
+
     this.intelligenceManager.handleTranscript({
       speaker: speaker,
       text: segment.text,
-      timestamp: Date.now(),
+      timestamp: speechStartMs,
       final: segment.isFinal,
       confidence: segment.confidence,
       speakerIndex: segment.speakerIndex
@@ -1410,7 +1419,7 @@ export class AppState {
       this.ragManager.feedLiveTranscript([{
         speaker: speaker,
         text: segment.text,
-        timestamp: Date.now()
+        timestamp: speechStartMs
       }]);
     }
 
@@ -1794,6 +1803,12 @@ export class AppState {
     this.isMeetingActive = true;
     this._pendingLiveAnalysisMeetingId = null;
     this._liveAnalysisInFlight = false;
+    // Clear the previous call's analysis. Without this, a late result from the
+    // PREVIOUS meeting re-populated _currentLiveAnalysis after endMeeting had
+    // cleared it, and this meeting's summary was then built from — and
+    // force-reconciled to — the previous call's BANT/MEDDIC evidence.
+    this._currentLiveAnalysis = null;
+    this._companyIntel = null;
     this._clientSpeakerIndicesSeen.clear();
     this._echoFilter.reset();
     this._userPartialPending = false;
@@ -2341,10 +2356,16 @@ export class AppState {
         const meeting = db.getMeetingDetails(meetingId);
         if (meeting) {
           const existing = meeting.detailedSummary || { actionItems: [], keyPoints: [] };
+          // Re-run the SAME reconciliation the initial save path applies. Patching
+          // only `liveAnalysis` left the summary's bant/meddicc/whatIDidRight
+          // holding the LLM's unreconciled guess, so the Summary tab and the Call
+          // Analysis tab disagreed permanently.
+          const { reconcileBantMeddicWithLiveAnalysis } = require('./summary/reconcile');
+          const reconciled = reconcileBantMeddicWithLiveAnalysis({ ...existing }, data);
           db.updateMeeting(meetingId, {
-            detailedSummary: { ...existing, liveAnalysis: data }
+            detailedSummary: { ...reconciled, liveAnalysis: data }
           });
-          console.log(`[AppState] Late-arriving live analysis patched into meeting ${meetingId}`);
+          console.log(`[AppState] Late-arriving live analysis patched + reconciled into meeting ${meetingId}`);
         }
       } catch (err) {
         console.error('[AppState] Failed to patch late live analysis:', err);

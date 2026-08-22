@@ -10,102 +10,16 @@ import { LiveAnalysisData, MeetingScorecardResult } from '../src/types';
 import { AppState } from './main';
 import { buildCompanyContextBlock } from '../electron/utils/salesBriefUtils';
 import { buildScorecardPrompt } from './llm/ScoreCardLLM';
-import { BANT_ORDER, MEDDICC_ORDER } from '../src/lib/bantMeddic';
+import { buildCanonicalTranscript, TRANSCRIPT_FORMAT_CONTRACT } from './summary/transcript';
+import { extractJsonObject } from './summary/jsonParse';
 
 const crypto = require('crypto');
 
-// ── BANT/MEDDIC reconciliation ──────────────────────────────────────────────
-// buildSummaryPrompt() TELLS the LLM live analysis is authoritative and to
-// "copy these values directly" — but that's a prompt instruction, not a
-// guarantee. The LLM can paraphrase evidence, misapply the status mapping,
-// or re-derive a field from the transcript instead of trusting the supplied
-// value, especially on a fallback-tier provider. This function makes that
-// guarantee real: it overwrites summaryData.bant/meddicc in code, directly
-// from liveAnalysisData, so the Summary tab and the Call Analysis tab can
-// never disagree on BANT/MEDDIC status or evidence.
-
-// salesCoachReview.whatIDidRight's BANT/MEDDICC-labelled items are reconciled
-// the same way (see buildConfirmedWhatIDidRight below): the LLM was previously
-// free to cherry-pick up to 6 "wins" from the transcript on its own judgment,
-// which routinely disagreed with the Confirmed set shown in Call Analysis.
-// Those items are now derived deterministically from the same
-// liveAnalysis-backed bant/meddicc objects below, so "Sales Self-Analysis"
-// can never show a different confirmed count than the live Call Analysis tab.
-// Only fields that legitimately require transcript reasoning (overview,
-// dealStatus, whatICouldHaveDoneBetter, whatIMissedCompletely,
-// nextCallPlaybook, keyPoints, actionItems) are left for the LLM.
-
-const toComponentName = (camelKey: string): string => camelKey.charAt(0).toUpperCase() + camelKey.slice(1);
-
-function buildConfirmedWhatIDidRight(
-    bant: Record<string, { status: string; detail: string }>,
-    meddicc: Record<string, { status: string; detail: string }>,
-): string[] {
-    const meddiccItems = MEDDICC_ORDER
-        .filter((key) => meddicc[key]?.status === 'Clear')
-        .map((key) => `MEDDICC ${toComponentName(key)}: ${meddicc[key].detail}`);
-
-    const bantItems = BANT_ORDER
-        .filter((key) => bant[key]?.status === 'Clear')
-        .map((key) => `BANT ${toComponentName(key)}: ${bant[key].detail}`);
-
-    return [...meddiccItems, ...bantItems];
-}
-const STATUS_MAP: Record<string, string> = {
-    confirmed: 'Clear',
-    partial: 'Partial',
-    missing: 'Missing',
-    '': 'Missing',
-};
-
-function reconcileBantMeddicWithLiveAnalysis(
-    summaryData: any,
-    liveAnalysis: LiveAnalysisData | null | undefined,
-): any {
-
-    if (!liveAnalysis) return summaryData; // nothing to reconcile against — leave LLM output as-is
-
-    const field = (f: { status: string; evidence: string } | undefined) => ({
-        status: STATUS_MAP[f?.status ?? ''] ?? 'Missing',
-        detail: f?.evidence || '',
-    });
-
-    const reconciledBant = {
-        budget: field(liveAnalysis.bant?.budget),
-        authority: field(liveAnalysis.bant?.authority),
-        need: field(liveAnalysis.bant?.need),
-        timeline: field(liveAnalysis.bant?.timeline),
-    };
-
-    const reconciledMeddicc = {
-        metrics: field(liveAnalysis.meddic?.metrics),
-        economicBuyer: field(liveAnalysis.meddic?.economic_buyer),
-        decisionCriteria: field(liveAnalysis.meddic?.decision_criteria),
-        decisionProcess: field(liveAnalysis.meddic?.decision_process),
-        identifyPain: field(liveAnalysis.meddic?.identify_pain),
-        champion: field(liveAnalysis.meddic?.champion),
-        competition: field(liveAnalysis.meddic?.competition),
-        // gaps is genuinely a summarization task (which of the 7 fields
-        // are weak) — keep the LLM's own list rather than recomputing it
-        // here, but fall back to deriving it from the reconciled statuses
-        // above if the LLM omitted it.
-        gaps: summaryData?.meddicc?.gaps?.length
-            ? summaryData.meddicc.gaps
-            : (['metrics', 'economic_buyer', 'decision_criteria', 'decision_process', 'identify_pain', 'champion', 'competition'] as const)
-                .filter((k) => (liveAnalysis.meddic as any)?.[k]?.status !== 'confirmed')
-                .map((k) => k),
-    };
-
-    return {
-        ...summaryData,
-        bant: reconciledBant,
-        meddicc: reconciledMeddicc,
-        salesCoachReview: {
-            ...summaryData?.salesCoachReview,
-            whatIDidRight: buildConfirmedWhatIDidRight(reconciledBant, reconciledMeddicc),
-        },
-    };
-}
+// BANT/MEDDIC reconciliation now lives in ./summary/reconcile so it can be
+// unit-tested without loading main.ts. Re-exported here because main.ts's
+// late-live-analysis patch imports it from this module.
+import { reconcileBantMeddicWithLiveAnalysis } from './summary/reconcile';
+export { reconcileBantMeddicWithLiveAnalysis };
 
 const buildSummaryPrompt = (liveAnalysis?: LiveAnalysisData | null, companyIntel?: Record<string, any> | null): string => {
 
@@ -118,17 +32,40 @@ const buildSummaryPrompt = (liveAnalysis?: LiveAnalysisData | null, companyIntel
     //   • Overview, dealStatus, followUpEmail, salesCoachReview, nextCallPlaybook
     //     → derive from the full transcript as normal.
     if (liveAnalysis) {
-        const objectionsBlock = liveAnalysis.objections.length > 0
-            ? liveAnalysis.objections.map(o => `  - [${o.type}] ${o.quote} (${o.status})`).join('\n')
+        // Everything below is optional-chained. liveAnalysis arrives from an HTTP
+        // response cast straight to LiveAnalysisData with no runtime validation,
+        // so one missing key used to throw a TypeError inside the caller's try
+        // and surface as a silently empty summary.
+        const objections = liveAnalysis.objections ?? [];
+        const signals = liveAnalysis.signals ?? [];
+        const dealAlerts = liveAnalysis.dealOptimizer ?? [];
+
+        const objectionsBlock = objections.length > 0
+            ? objections.map(o => `  - [${o?.type ?? 'unknown'}] ${o?.quote ?? ''} (${o?.status ?? 'open'})`).join('\n')
             : '  None captured';
 
-        const signalsBlock = liveAnalysis.signals.length > 0
-            ? liveAnalysis.signals.slice(0, 8).map(s => `  - [${s.category}/${s.intensity}] ${s.quote}`).join('\n')
+        // Rank by intensity before truncating so the strongest signals survive,
+        // rather than taking whatever happened to be first.
+        const INTENSITY_RANK: Record<string, number> = { high: 0, medium: 1, low: 2 };
+        const rankedSignals = signals
+            .slice()
+            .sort((a, b) => (INTENSITY_RANK[a?.intensity ?? 'low'] ?? 2) - (INTENSITY_RANK[b?.intensity ?? 'low'] ?? 2));
+        const SIGNAL_LIMIT = 12;
+        const signalsBlock = rankedSignals.length > 0
+            ? rankedSignals.slice(0, SIGNAL_LIMIT).map(s => `  - [${s?.category ?? 'neutral'}/${s?.intensity ?? 'low'}] ${s?.quote ?? ''}`).join('\n')
+            : '  None captured';
+
+        // dealOptimizer alerts were persisted but never reached any prompt.
+        const dealOptimizerBlock = dealAlerts.length > 0
+            ? dealAlerts.map(a => `  - [${a?.trigger ?? 'unknown'}/${a?.intensity ?? 'low'}] ${a?.headline ?? ''} — ${a?.quote ?? ''}`).join('\n')
             : '  None captured';
 
         const companySection = buildCompanyContextBlock(companyIntel ?? null);
-        return `You are an expert B2B sales analyst. A sales call just ended. Generate a structured post-call summary. Return ONLY valid JSON (no markdown code blocks, no commentary).
-            ${companySection ? `\n${companySection}\nUse the company intelligence above to enrich your analysis — recognise their known products, competitors, and business model in the transcript.\n` : ''} Generate a structured post-call summary. Return ONLY valid JSON (no markdown code blocks, no commentary).
+        return `You are an expert B2B sales analyst. A sales call just ended.
+
+${TRANSCRIPT_FORMAT_CONTRACT}
+${companySection ? `\n${companySection}\nUse the company intelligence above to enrich your analysis — recognise their known products, competitors, and business model in the transcript.\n` : ''}
+            Generate a structured post-call summary. Return ONLY valid JSON (no markdown code blocks, no commentary).
 
             ═══════════════════════════════════════
             LIVE ANALYSIS — AUTHORITATIVE BANT + MEDDIC DATA
@@ -139,28 +76,31 @@ const buildSummaryPrompt = (liveAnalysis?: LiveAnalysisData | null, companyIntel
             unambiguous new evidence. Never downgrade without a clear contradiction in the transcript.
 
             BANT:
-            - Budget:    ${liveAnalysis.bant.budget.status} | ${liveAnalysis.bant.budget.evidence || 'No evidence'}
-            - Authority: ${liveAnalysis.bant.authority.status} | ${liveAnalysis.bant.authority.evidence || 'No evidence'}
-            - Need:      ${liveAnalysis.bant.need.status} | ${liveAnalysis.bant.need.evidence || 'No evidence'}
-            - Timeline:  ${liveAnalysis.bant.timeline.status} | ${liveAnalysis.bant.timeline.evidence || 'No evidence'}
+            - Budget:    ${liveAnalysis.bant?.budget?.status || 'missing'} | ${liveAnalysis.bant?.budget?.evidence || 'No evidence'}
+            - Authority: ${liveAnalysis.bant?.authority?.status || 'missing'} | ${liveAnalysis.bant?.authority?.evidence || 'No evidence'}
+            - Need:      ${liveAnalysis.bant?.need?.status || 'missing'} | ${liveAnalysis.bant?.need?.evidence || 'No evidence'}
+            - Timeline:  ${liveAnalysis.bant?.timeline?.status || 'missing'} | ${liveAnalysis.bant?.timeline?.evidence || 'No evidence'}
 
             MEDDIC:
-            - Metrics:           ${liveAnalysis.meddic.metrics.status} | ${liveAnalysis.meddic.metrics.evidence || 'No evidence'}
-            - Economic Buyer:    ${liveAnalysis.meddic.economic_buyer.status} | ${liveAnalysis.meddic.economic_buyer.evidence || 'No evidence'}
-            - Decision Criteria: ${liveAnalysis.meddic.decision_criteria.status} | ${liveAnalysis.meddic.decision_criteria.evidence || 'No evidence'}
-            - Decision Process:  ${liveAnalysis.meddic.decision_process.status} | ${liveAnalysis.meddic.decision_process.evidence || 'No evidence'}
-            - Identify Pain:     ${liveAnalysis.meddic.identify_pain.status} | ${liveAnalysis.meddic.identify_pain.evidence || 'No evidence'}
-            - Champion:          ${liveAnalysis.meddic.champion.status} | ${liveAnalysis.meddic.champion.evidence || 'No evidence'}
-            - Competition:       ${liveAnalysis.meddic.competition.status} | ${liveAnalysis.meddic.competition.evidence || 'No evidence'}
+            - Metrics:           ${liveAnalysis.meddic?.metrics?.status || 'missing'} | ${liveAnalysis.meddic?.metrics?.evidence || 'No evidence'}
+            - Economic Buyer:    ${liveAnalysis.meddic?.economic_buyer?.status || 'missing'} | ${liveAnalysis.meddic?.economic_buyer?.evidence || 'No evidence'}
+            - Decision Criteria: ${liveAnalysis.meddic?.decision_criteria?.status || 'missing'} | ${liveAnalysis.meddic?.decision_criteria?.evidence || 'No evidence'}
+            - Decision Process:  ${liveAnalysis.meddic?.decision_process?.status || 'missing'} | ${liveAnalysis.meddic?.decision_process?.evidence || 'No evidence'}
+            - Identify Pain:     ${liveAnalysis.meddic?.identify_pain?.status || 'missing'} | ${liveAnalysis.meddic?.identify_pain?.evidence || 'No evidence'}
+            - Champion:          ${liveAnalysis.meddic?.champion?.status || 'missing'} | ${liveAnalysis.meddic?.champion?.evidence || 'No evidence'}
+            - Competition:       ${liveAnalysis.meddic?.competition?.status || 'missing'} | ${liveAnalysis.meddic?.competition?.evidence || 'No evidence'}
 
             Status mapping for the output fields below: confirmed → Clear | partial → Partial | missing → Missing
             Evidence strings above map verbatim to the "detail" fields in the output.
 
-            Objections captured during the call (${liveAnalysis.objections.length}):
+            Objections captured during the call (${objections.length}):
             ${objectionsBlock}
 
-            Key signals captured during the call (${liveAnalysis.signals.length} total, top 8 shown):
+            Key signals captured during the call (${signals.length} total, strongest ${Math.min(signals.length, SIGNAL_LIMIT)} shown):
             ${signalsBlock}
+
+            Deal-optimizer alerts raised during the call (${dealAlerts.length}):
+            ${dealOptimizerBlock}
 
             ═══════════════════════════════════════
             YOUR TASK (use the FULL TRANSCRIPT for these sections only):
@@ -215,45 +155,53 @@ const buildSummaryPrompt = (liveAnalysis?: LiveAnalysisData | null, companyIntel
                         "Should have pushed harder on [specific topic from call] — ask: [exact question]",
                         "Missed opportunity to [specific action] when prospect said [trigger phrase from transcript]"
                     ],
-                    "whatIMissedCompletely": [
-                        "Identify Champion: [specific gap]",
-                        "Metrics: [specific metric never asked about]",
-                        "Authority: [specific authority gap]",
-                        "Process: [specific process skipped]",
-                        "Pain: [specific pain never addressed]"
-                    ]
+                    "whatIMissedCompletely": ["<Category>: <what was never addressed> — include ONLY categories genuinely never covered; empty array if the call covered everything"]
                 },
 
                 "nextCallPlaybook": {
                     "openingRecap": "2-3 sentences to open the next call recapping where things stand",
-                    "questionsToAsk": ["5 high-value questions to fill the biggest BANT/MEDDIC gaps identified above"],
+                    "questionsToAsk": ["up to 5 high-value questions targeting the biggest BANT/MEDDIC gaps above — fewer is fine, omit any the customer already answered"],
                     "valueAndROI": {
-                        "quantitative": ["2-3 measurable ROI points to reinforce"],
-                        "qualitative": ["2-3 strategic or emotional value points to reinforce"]
+                        "quantitative": ["0-3 measurable ROI points, each using only figures actually stated in the call — empty array if no numbers were discussed"],
+                        "qualitative": ["0-3 strategic or emotional value points to reinforce"]
                     }
                 },
 
-                "keyPoints": ["4-6 bullets — top things to know about this deal right now"],
-                "actionItems": ["specific next steps with owners if mentioned, or implied follow-ups"]
+                "keyPoints": ["4-6 bullets — top things to know about this deal right now, drawn from across the WHOLE call including its final minutes"],
+                "actionItems": ["specific next steps, each with an owner when one was named in the call"]
             }
 
             RULES:
-            - Do NOT invent information not in the transcript
+            - Do NOT invent information not in the transcript. This overrides every
+              length or count guidance below.
+            - EVERY array may be shorter than the suggested range, or empty, when the
+              transcript does not support more items. An empty array is a correct
+              answer. Never pad, never invent a plausible-sounding item to reach a count.
+            - Every number, currency amount, percentage and date you output MUST appear
+              in the transcript. If you cannot find it there, omit the claim entirely.
             - BANT/MEDDIC: use live analysis values verbatim unless the transcript clearly contradicts them
             - Sales coach review must reference actual call moments — not generic advice
             - Next call questions must target the weakest BANT/MEDDIC areas from the live analysis above
             - Return ONLY valid JSON — no markdown, no code blocks, no explanation
             - leadName and company: extract from transcript introductions. Return null if not found.
-            - salesCoachReview.whatIMissedCompletely: EVERY item MUST start with a gap category: Identify Champion: | Metrics: | Authority: | Process: | Pain: | Timeline: | Budget:
-            - salesCoachReview.whatIDidRight: EVERY item MUST start with a framework label: "MEDDICC Metrics:", "BANT Budget:", etc. Return ONLY items where something genuinely happened. Min 2, max 6.
-            - salesCoachReview.whatIDidRight: group MEDDICC items first, then BANT items.
-            - salesCoachReview.whatIMissedCompletely: items MUST follow this strict label sequence: Identify Champion, Metrics, Authority, Process, Pain.
+            - salesCoachReview.whatIMissedCompletely: each item MUST start with one of these
+              gap categories: Identify Champion: | Metrics: | Authority: | Process: | Pain: | Timeline: | Budget:
+              Include ONLY categories that were genuinely never addressed. Order them as listed.
+            - salesCoachReview.whatIDidRight: EVERY item MUST start with a framework label:
+              "MEDDICC Metrics:", "BANT Budget:", etc., and the text after the label must
+              describe what THE REP DID (a question they asked, a point they landed) — not
+              what the customer said. Include only components where something genuinely
+              happened. Group MEDDICC items first, then BANT items.
             - Reference specific moments, names, numbers from the transcript — never be generic
         `;
     }
 
     // ── Without live analysis: derive everything from the full transcript ─────────
-    return `You are an expert B2B sales analyst. A sales call just ended. Analyze the full transcript and generate a structured post-call summary. Return ONLY valid JSON (no markdown code blocks, no commentary).
+    return `You are an expert B2B sales analyst. A sales call just ended.
+
+${TRANSCRIPT_FORMAT_CONTRACT}
+
+        Analyze the full transcript and generate a structured post-call summary. Return ONLY valid JSON (no markdown code blocks, no commentary).
 
         {
             "overview": "2-3 sentence summary of what the call covered and the current deal status",
@@ -293,43 +241,46 @@ const buildSummaryPrompt = (liveAnalysis?: LiveAnalysisData | null, companyIntel
                     "Should have pushed harder on [specific topic from call] — ask: [exact question]",
                     "Missed opportunity to [specific action] when prospect said [trigger phrase from transcript]"
                 ],
-                "whatIMissedCompletely": [
-                    "Identify Champion: [specific gap]",
-                    "Metrics: [specific metric never asked about]",
-                    "Authority: [specific authority gap]",
-                    "Process: [specific process skipped]",
-                    "Pain: [specific pain never addressed]"
-                ]
+                "whatIMissedCompletely": ["<Category>: <what was never addressed> — include ONLY categories genuinely never covered; empty array if the call covered everything"]
             },
 
             "nextCallPlaybook": {
                 "openingRecap": "2-3 sentences to open the next call recapping where things stand",
-                "questionsToAsk": ["5 high-value questions to fill the biggest gaps from this call — focus on Missing MEDDICC/BANT components"],
+                "questionsToAsk": ["up to 5 high-value questions targeting the biggest gaps from this call — fewer is fine, omit any the customer already answered"],
                 "valueAndROI": {
-                    "quantitative": ["2-3 measurable ROI points to reinforce"],
-                    "qualitative": ["2-3 strategic or emotional value points to reinforce"]
+                    "quantitative": ["0-3 measurable ROI points, each using only figures actually stated in the call — empty array if no numbers were discussed"],
+                    "qualitative": ["0-3 strategic or emotional value points to reinforce"]
                 }
             },
 
-            "keyPoints": ["4-6 bullets — top things to know about this deal right now"],
-            "actionItems": ["specific next steps with owners if mentioned, or implied follow-ups"]
+            "keyPoints": ["4-6 bullets — top things to know about this deal right now, drawn from across the WHOLE call including its final minutes"],
+            "actionItems": ["specific next steps, each with an owner when one was named in the call"]
         }
 
         RULES:
-        - Do NOT invent information not in the transcript
+        - Do NOT invent information not in the transcript. This overrides every
+          length or count guidance below.
+        - EVERY array may be shorter than the suggested range, or empty, when the
+          transcript does not support more items. An empty array is a correct answer.
+          Never pad, never invent a plausible-sounding item to reach a count.
+        - Every number, currency amount, percentage and date you output MUST appear in
+          the transcript. If you cannot find it there, omit the claim entirely.
         - Use "Missing" for any BANT/MEDDICC field with no evidence at all
         - Use "Partial" if mentioned but incomplete or vague
         - Use "Clear" only if explicitly confirmed with specifics
         - Sales coach review must reference actual call moments — not generic advice
-        - Next call questions must target the weakest BANT/MEDDICC areas from this call
+        - Next call questions must target the weakest BANT/MEDDICC areas from this call,
+          and must NOT ask anything the customer already answered on this call
         - Return ONLY valid JSON — no markdown, no code blocks, no explanation
         - leadName and company: extract from transcript introductions or conversation. Return null if not found.
-        - salesCoachReview.whatIMissedCompletely: EVERY item MUST start with a gap category: Identify Champion: | Metrics: | Authority: | Process: | Pain: | Timeline: | Budget:
+        - salesCoachReview.whatIMissedCompletely: each item MUST start with one of these gap
+          categories: Identify Champion: | Metrics: | Authority: | Process: | Pain: | Timeline: | Budget:
+          Include ONLY categories genuinely never addressed. Order them as listed.
+        - salesCoachReview.whatIDidRight: EVERY item MUST start with a framework label followed
+          by the component name, e.g. "MEDDICC Metrics:", "BANT Budget:", and the text after the
+          label must describe what THE REP DID — not what the customer said. Include only
+          components where something genuinely happened. Group MEDDICC items first, then BANT.
         - Reference specific moments, names, numbers from the transcript — never be generic
-        - salesCoachReview.whatIDidRight: EVERY item MUST start with a framework label followed by the component name: e.g. "MEDDICC Metrics:", "MEDDICC Champion:", "BANT Budget:", "BANT Timeline:"
-        - salesCoachReview.whatIDidRight: return ONLY items where something genuinely happened in the call — do NOT pad with generic or empty items. Minimum 2, maximum 6.
-        - salesCoachReview.whatIDidRight: group MEDDICC items first, then BANT items.
-        - salesCoachReview.whatIMissedCompletely: items MUST follow this strict label sequence: Identify Champion, Metrics, Authority, Process, Pain. Never randomize the order.
     `;
 };
 
@@ -372,20 +323,26 @@ export class MeetingPersistence {
 
         const appState = AppState.getInstance();
         const liveAnalysisData = appState?.getCurrentLiveAnalysis?.() || null;
-        console.log('[MeetingPersistence] Retrieved liveAnalysisData:', !!liveAnalysisData);
+        // Snapshot company intel BEFORE clearCurrentLiveAnalysis(), which also
+        // nulls _companyIntel. Reading it after the clear always yielded null,
+        // which is why the company block in buildSummaryPrompt was dead code.
+        const companyIntelSnapshot = appState?.getCompanyIntel?.() ?? null;
+        console.log('[MeetingPersistence] Retrieved liveAnalysisData:', !!liveAnalysisData, 'companyIntel:', !!companyIntelSnapshot);
         if (liveAnalysisData) {
             console.log('[MeetingPersistence] Live analysis keys:', Object.keys(liveAnalysisData));
             appState?.clearCurrentLiveAnalysis?.();
         }
 
         const snapshot = {
-            transcript: [...this.session.getFullTranscript()],
+            // The COMPLETE transcript, including anything compaction archived —
+            // getFullTranscript() alone silently omits the head of long calls.
+            transcript: [...this.session.getFullTranscriptForPersistence()],
             usage: [...this.session.getFullUsage()],
             startTime: startTimeMs,
             endTime: endTimeMs,
             totalPausedMs: totalPausedMs,
             durationMs: durationMs,
-            context: this.session.getFullSessionContext(),
+            epochSummaries: this.session.getEpochSummaries(),
         };
 
         // BUG-04 fix: snapshot metadata BEFORE reset() clears it so the
@@ -403,7 +360,7 @@ export class MeetingPersistence {
             metadataSnapshot,
             liveAnalysisData,
             speakerNamesSnapshot,
-            undefined,      // companyIntel — not captured at stop time for live calls
+            companyIntelSnapshot,  // captured above, before clearCurrentLiveAnalysis() nulled it
             meetingTypes,    // ← rep's live selection, was previously dropped (always undefined)
             tenantId || null
         ).catch(err => {
@@ -447,7 +404,11 @@ export class MeetingPersistence {
      * Heavy lifting: LLM Title, Summary, and DB Write
      */
     private async processAndSaveMeeting(
-        data: { transcript: TranscriptSegment[], usage: any[], startTime: number, endTime?: number, totalPausedMs?: number, durationMs: number, context: string },
+        // `context` was removed: it was populated by all four callers with four
+        // DIFFERENT label schemes and then never read inside this method.
+        // `epochSummaries` replaces it — those are the only representation of
+        // call content that compaction evicted from the live buffer.
+        data: { transcript: TranscriptSegment[], usage: any[], startTime: number, endTime?: number, totalPausedMs?: number, durationMs: number, epochSummaries?: string[] },
         meetingId: string,
         metadata?: { title?: string; calendarEventId?: string; source?: 'manual' | 'calendar' } | null,
         liveAnalysisData?: LiveAnalysisData | null,
@@ -458,6 +419,9 @@ export class MeetingPersistence {
     ): Promise<void> {
         let title = "Untitled Session";
         let summaryData: { actionItems: string[], keyPoints: string[], liveAnalysis?: LiveAnalysisData, speakerNames?: { user: string, client: string } } = { actionItems: [], keyPoints: [] };
+        // Tracks whether we ended up with a usable summary. Drives isProcessed
+        // below so a meeting that produced nothing stays eligible for recovery.
+        let summaryParseFailed = false;
 
         // Use passed-in metadata snapshot (NOT this.session.getMeetingMetadata() which is already cleared)
         let calendarEventId: string | undefined;
@@ -469,53 +433,42 @@ export class MeetingPersistence {
             if (metadata.source) source = metadata.source;
         }
 
-        // Build full transcript text directly from the transcript array so the
-        // LLM sees the complete call. The pre-built data.context is capped at
-        // 10,000 chars which silently cuts off the second half of longer calls.
-        // Average ~60 chars per turn × 1500 turns = 90,000 chars — well within
-        // Gemini/Claude/GPT context windows. Groq has a 100k token guard already.
-        //
-        // When diarization identified 2+ far-end speakers, label prospect turns
-        // "PROSPECT (Speaker n)" so the summary LLM can attribute statements.
-        const clientIndices = new Set(
-            data.transcript
-                .filter(t => t.speaker !== 'user' && (t as any).speakerIndex !== undefined)
-                .map(t => (t as any).speakerIndex as number)
-        );
-        const multiClientSpeakers = clientIndices.size >= 2;
-        const fullTranscriptText = data.transcript
-            .filter(t => !['system', 'ai', 'assistant', 'model'].includes(t.speaker?.toLowerCase()))
-            .map(t => {
-                let role = t.speaker === 'user'
-                    ? (speakerNames?.user || 'REP')
-                    : (speakerNames?.client || 'PROSPECT');
-                const idx = (t as any).speakerIndex;
-                if (t.speaker !== 'user' && multiClientSpeakers && idx !== undefined) {
-                    role = `${role} (Speaker ${idx + 1})`;
-                }
-                return `${role}: ${t.text}`;
-            })
-            .join('\n');
+        // ONE canonical transcript for every prompt in this method — see
+        // electron/summary/transcript.ts for why the four divergent inline
+        // builders had to go. Sorted by timestamp (STT finals arrive out of
+        // order), role-tokened so the model knows which side is the seller,
+        // and carrying epoch summaries when compaction ate the head of the call.
+        const canonical = buildCanonicalTranscript(data.transcript, {
+            speakerNames,
+            epochSummaries: data.epochSummaries ?? [],
+        });
+        const fullTranscriptText = canonical.text;
 
-        console.log("data.transcript: -> ", data.transcript);
+        // Title needs only the opening; 5000 chars is plenty and saves tokens.
+        const titleContext = buildCanonicalTranscript(data.transcript, {
+            speakerNames,
+            includeTimestamps: false,
+            maxChars: 5000,
+        }).text;
 
+        // Title and summary get SEPARATE try blocks. They used to share one, so a
+        // 429 on the title call — the first provider call after a meeting ends,
+        // and therefore the most rate-limit-exposed — skipped summary generation
+        // entirely and saved an empty detailedSummary as isProcessed.
         try {
             // Generate Title (only if not set by calendar)
             if (!metadata || !metadata.title) {
                 const titlePrompt = `Generate a concise 3-6 word title for this meeting context. Output ONLY the title text. Do not use quotes or conversational filler.`;
                 const groqTitlePrompt = GROQ_TITLE_PROMPT;
 
-                // Use first 5000 chars of full transcript for title (enough context, saves tokens)
-                const titleContext = data.transcript
-                    .filter(t => !['system', 'ai', 'assistant', 'model'].includes(t.speaker?.toLowerCase()))
-                    .map(t => `${t.speaker === 'user' ? (speakerNames?.user || 'REP') : (speakerNames?.client || 'PROSPECT')}: ${t.text}`)
-                    .join('\n')
-                    .substring(0, 5000);
-
                 const generatedTitle = await this.llmHelper.generateMeetingSummary(titlePrompt, titleContext, groqTitlePrompt, 'title');
                 if (generatedTitle) title = generatedTitle.replace(/[\"*]/g, '').trim();
             }
+        } catch (e) {
+            console.error("[MeetingPersistence] Title generation failed — continuing to summary", e);
+        }
 
+        try {
             // Generate Structured Summary
             if (data.transcript.length > 2) {
 
@@ -534,26 +487,32 @@ export class MeetingPersistence {
                 const generatedSummary = await this.llmHelper.generateMeetingSummary(buildSummaryPrompt(liveAnalysisData, companyIntel), fullTranscriptText, groqSummaryPrompt, 'summary');
 
                 if (generatedSummary) {
-                    const jsonMatch = generatedSummary.match(/```json\n([\s\S]*?)\n```/) || [null, generatedSummary];
-                    const jsonStr = (jsonMatch[1] || generatedSummary).trim();
-                    try {
-                        // Parse the LLM's structured summary FIRST — this carries
-                        // overview/keyPoints/actionItems/dealStatus/salesCoachReview/
-                        // nextCallPlaybook. Losing this step means the summary tab
-                        // renders empty even though bant/meddicc still get filled in
-                        // below from live analysis.
-                        const parsedSummary = JSON.parse(jsonStr);
+                    // Tolerant extraction — the old `/```json\n(...)\n```/` regex
+                    // required a literal newline after the fence, so ```json{...}```
+                    // or any prose preamble fell through to JSON.parse on the raw
+                    // string, threw, and was swallowed into an empty summary.
+                    const parsed = extractJsonObject<Record<string, any>>(generatedSummary);
+                    if (parsed.value && typeof parsed.value === 'object') {
+                        if (parsed.notes.length) {
+                            console.warn(`[MeetingPersistence] Summary JSON recovered via '${parsed.strategy}': ${parsed.notes.join('; ')}`);
+                        }
                         // Guarantee BANT/MEDDIC in the summary matches live
                         // analysis exactly — see reconcileBantMeddicWithLiveAnalysis
                         // for why the prompt instruction alone isn't enough.
-                        summaryData = reconcileBantMeddicWithLiveAnalysis({ ...summaryData, ...parsedSummary }, liveAnalysisData);
-                    } catch (e) { console.error("Failed to parse summary JSON", e); }
+                        summaryData = reconcileBantMeddicWithLiveAnalysis({ ...summaryData, ...parsed.value }, liveAnalysisData);
+                    } else {
+                        summaryParseFailed = true;
+                        console.error(`[MeetingPersistence] Failed to parse summary JSON: ${parsed.error}`);
+                    }
+                } else {
+                    summaryParseFailed = true;
                 }
             } else {
                 console.log("Transcript too short for summary generation.");
             }
         } catch (e) {
-            console.error("Error generating meeting metadata", e);
+            summaryParseFailed = true;
+            console.error("Error generating meeting summary", e);
         }
 
         // Generate call analysis for uploaded transcripts (no live analysis available)
@@ -601,20 +560,23 @@ export class MeetingPersistence {
                 - signal_type is always an ARRAY of strings even if only one value
                 - Return raw JSON only, no markdown fences`;
 
-                const transcriptText = data.transcript
-                    .filter(t => !['system', 'ai', 'assistant', 'model'].includes(t.speaker?.toLowerCase()))
-                    .map(t => `${t.speaker === 'user' ? (speakerNames?.user || 'REP') : (speakerNames?.client || 'PROSPECT')}: ${t.text}`)
-                    .join('\n')
-                    .substring(0, 12000);
-
-                const analysisRaw = await this.llmHelper.generateMeetingSummary(analysisPrompt, transcriptText, analysisPrompt);
+                // Use the SAME canonical transcript as the summary. The previous
+                // `.substring(0, 12000)` cut this off at roughly the first 15
+                // minutes, so BANT/MEDDIC for uploaded and recovered meetings was
+                // derived from the opening of the call only.
+                const analysisRaw = await this.llmHelper.generateMeetingSummary(analysisPrompt, fullTranscriptText, analysisPrompt);
                 if (analysisRaw) {
-                    const jsonMatch = analysisRaw.match(/```json\n([\s\S]*?)\n```/) || [null, analysisRaw];
-                    const jsonStr = (jsonMatch[1] || analysisRaw).trim();
-                    try {
-                        liveAnalysisData = JSON.parse(jsonStr);
-                    } catch (e) {
-                        console.warn('[MeetingPersistence] Failed to parse call analysis JSON:', e);
+                    const parsedAnalysis = extractJsonObject<LiveAnalysisData>(analysisRaw);
+                    if (parsedAnalysis.value && typeof parsedAnalysis.value === 'object') {
+                        liveAnalysisData = parsedAnalysis.value;
+                        // Re-reconcile: the reconcile above ran while
+                        // liveAnalysisData was still null, so summaryData.bant /
+                        // .meddicc currently hold the summary LLM's own reading.
+                        // Without this the Summary tab and the Call Analysis tab
+                        // are guaranteed to disagree on every uploaded meeting.
+                        summaryData = reconcileBantMeddicWithLiveAnalysis(summaryData, liveAnalysisData);
+                    } else {
+                        console.warn(`[MeetingPersistence] Failed to parse call analysis JSON: ${parsedAnalysis.error}`);
                     }
                 }
             } catch (e) {
@@ -659,6 +621,18 @@ export class MeetingPersistence {
                 };
             }
 
+            // "Nothing useful" = the summary step failed AND the transcript was
+            // long enough that it should have produced something. Short calls
+            // legitimately have no summary and must not be retried forever.
+            const summaryProducedNothing =
+                summaryParseFailed &&
+                data.transcript.length > 2 &&
+                !summaryData.keyPoints?.length &&
+                !summaryData.actionItems?.length;
+            if (summaryProducedNothing) {
+                console.warn(`[MeetingPersistence] Meeting ${meetingId} produced no summary — leaving it unprocessed for recovery.`);
+            }
+
             const meetingData: Meeting = {
                 id: meetingId,
                 title: title,
@@ -671,7 +645,11 @@ export class MeetingPersistence {
                 usage: data.usage,
                 calendarEventId: calendarEventId,
                 source: source,
-                isProcessed: true,
+                // Only claim the meeting is processed if we actually produced a
+                // usable summary. Marking a parse failure as processed made the
+                // meeting permanently invisible to recoverUnprocessedMeetings(),
+                // so an empty Summary tab could never self-heal.
+                isProcessed: !summaryProducedNothing,
                 tenantId: tenantId || null
             };
 
@@ -843,18 +821,25 @@ export class MeetingPersistence {
                 return false;
             }
 
-            // Build the same context string as original processing
-            const fullRegenerateContext = meeting.transcript
-                .filter(t => !['system', 'ai', 'assistant', 'model'].includes(t.speaker?.toLowerCase()))
-                .map(t => `${t.speaker === 'user' ? 'SALES PERSON (Me)' : 'PROSPECT (Client)'}: ${t.text}`)
-                .join('\n');
+            // EXACTLY the same canonical transcript the initial save path builds.
+            // This used to emit its own `SALES PERSON (Me):` / `PROSPECT (Client):`
+            // labels, so regenerating produced a systematically different summary
+            // from the very same transcript.
+            const storedSpeakerNames = (meeting.detailedSummary as any)?.speakerNames as { user: string; client: string } | undefined;
+            const fullRegenerateContext = buildCanonicalTranscript(
+                meeting.transcript as any,
+                { speakerNames: storedSpeakerNames ?? null },
+            ).text;
 
             // Re-use live analysis from detailedSummary if present so the regen is also grounded
             const existingLiveAnalysis = (meeting.detailedSummary as any)?.liveAnalysis as LiveAnalysisData | undefined;
             const groqSummaryPrompt = GROQ_SUMMARY_JSON_PROMPT;
+            // Company intel was never passed here, so the regenerated summary lost
+            // the company context the initial run had.
+            const companyIntel = AppState.getInstance()?.getCompanyIntel?.() ?? null;
 
             const generatedSummary = await this.llmHelper.generateMeetingSummary(
-                buildSummaryPrompt(existingLiveAnalysis),
+                buildSummaryPrompt(existingLiveAnalysis, companyIntel),
                 fullRegenerateContext,
                 groqSummaryPrompt,
                 'summary'
@@ -862,14 +847,28 @@ export class MeetingPersistence {
 
             if (!generatedSummary) return false;
 
-            const jsonMatch = generatedSummary.match(/```json\n([\s\S]*?)\n```/) || [null, generatedSummary];
-            const jsonStr = (jsonMatch[1] || generatedSummary).trim();
-            let summaryData = JSON.parse(jsonStr);
+            const parsed = extractJsonObject<Record<string, any>>(generatedSummary);
+            if (!parsed.value || typeof parsed.value !== 'object') {
+                // Rethrow so the IPC handler surfaces a real reason instead of a
+                // bare `false` that the UI renders as an unexplained failure.
+                throw new Error(`Regenerated summary was not valid JSON: ${parsed.error}`);
+            }
             // Same guarantee as the initial save path — regenerating must not
             // let BANT/MEDDIC drift from the meeting's stored live analysis.
-            summaryData = reconcileBantMeddicWithLiveAnalysis(summaryData, existingLiveAnalysis);
+            let summaryData = reconcileBantMeddicWithLiveAnalysis(parsed.value, existingLiveAnalysis);
 
-            DatabaseManager.getInstance().updateMeetingSummary(meetingId, summaryData);
+            // updateMeeting (wholesale replace of detailedSummary), NOT
+            // updateMeetingSummary — the latter shallow-merges only
+            // overview/actionItems/keyPoints/*Title, so stale keys from the
+            // previous generation survived a regenerate forever.
+            DatabaseManager.getInstance().updateMeeting(meetingId, {
+                detailedSummary: {
+                    ...(meeting.detailedSummary as any),
+                    ...summaryData,
+                    // liveAnalysis and scorecard are not regenerated here — keep them.
+                    liveAnalysis: existingLiveAnalysis,
+                },
+            });
             console.log(`[MeetingPersistence] Regenerated summary for meeting ${meetingId}`);
 
             // Re-score using the latest criteria so any criteria changes made before
@@ -965,7 +964,6 @@ export class MeetingPersistence {
                 ? lastTs - firstTs
                 : Math.max(transcript.length * 15_000, 60_000);
             const startTimeMs = now - durationMs;
-            const context = transcript.map(t => `${t.speaker === 'user' ? 'Me' : 'Them'}: ${t.text}`).join('\n');
 
             // Save placeholder immediately so it appears in the list
             const placeholder: Meeting = {
@@ -991,7 +989,7 @@ export class MeetingPersistence {
             // Pass the user's title as metadata so processAndSaveMeeting uses it
             // instead of generating a new one from the transcript
             this.processAndSaveMeeting(
-                { transcript, usage: [], startTime: startTimeMs, durationMs, context },
+                { transcript, usage: [], startTime: startTimeMs, durationMs },
                 meetingId,
                 { title: title || undefined, source: 'manual' },
                 null,           // liveAnalysisData — not available for uploads
@@ -1029,12 +1027,6 @@ export class MeetingPersistence {
 
                 console.log(`[MeetingPersistence] Recovering meeting ${m.id}...`);
 
-                const context = details.transcript?.map(t => {
-                    const label = t.speaker === 'client' ? 'CLIENT' :
-                        t.speaker === 'user' ? 'ME' : 'ASSISTANT';
-                    return `[${label}]: ${t.text}`;
-                }).join('\n') || "";
-
                 const parts = (details.duration || '0:00').split(':');
                 // Use the raw durationMs if available (always present when loaded from DB).
                 // Fallback: re-parse the formatted string only for very old DB rows that might
@@ -1056,7 +1048,6 @@ export class MeetingPersistence {
                     usage: details.usage,
                     startTime: startTime,
                     durationMs: durationMs,
-                    context: context
                 };
 
                 await this.processAndSaveMeeting(snapshot, m.id);

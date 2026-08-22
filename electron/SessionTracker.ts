@@ -80,6 +80,23 @@ export class SessionTracker {
     private static readonly MAX_EPOCH_SUMMARIES = 5;
     private transcriptEpochSummaries: string[] = [];
     private isCompacting: boolean = false;
+    /**
+     * Segments evicted by compactTranscriptIfNeeded(). They used to be dropped
+     * outright, which meant that on any call past ~1800 segments the earliest
+     * 500+ turns reached neither the summary prompt NOR the `transcripts` table
+     * — the transcript on disk was silently missing the head of the call.
+     * At ~120 bytes/segment, 20k segments is ~2.4 MB, so keeping them is cheap.
+     */
+    private archivedTranscript: TranscriptSegment[] = [];
+    /** Hard ceiling on the archive so a marathon session can't grow unbounded. */
+    private static readonly MAX_ARCHIVED_SEGMENTS = 20000;
+    /**
+     * Incremented on every reset(). An in-flight compaction awaiting the recap
+     * LLM captures this and discards its result if the session moved on —
+     * otherwise it pushed the previous meeting's content into the next
+     * meeting's transcriptEpochSummaries.
+     */
+    private sessionEpoch: number = 0;
 
     // Track interim client segment
     private lastInterimClient: TranscriptSegment | null = null;
@@ -631,6 +648,23 @@ export class SessionTracker {
         return this.fullTranscript;
     }
 
+    /**
+     * The COMPLETE transcript for persistence and post-call summarization:
+     * compaction-archived segments followed by the live buffer.
+     *
+     * Live-advisor paths must keep using getFullTranscript() — they want the
+     * recent window, and growing their prompt is the reason compaction exists.
+     */
+    getFullTranscriptForPersistence(): TranscriptSegment[] {
+        if (this.archivedTranscript.length === 0) return [...this.fullTranscript];
+        return [...this.archivedTranscript, ...this.fullTranscript];
+    }
+
+    /** Epoch summaries produced by compaction, oldest first. */
+    getEpochSummaries(): string[] {
+        return [...this.transcriptEpochSummaries];
+    }
+
     getFullUsage(): any[] {
         return this.fullUsage;
     }
@@ -742,6 +776,12 @@ export class SessionTracker {
         this.fullTranscript = [];
         this.fullUsage = [];
         this.transcriptEpochSummaries = [];
+        this.archivedTranscript = [];
+        // Invalidate any compaction still awaiting the recap LLM, and clear the
+        // in-flight flag — it was never reset, so a compaction that threw between
+        // sessions could wedge compaction off for the rest of the process.
+        this.sessionEpoch++;
+        this.isCompacting = false;
         this.sessionStartTime = Date.now();
         this.totalPausedMs = 0;
         this.pauseStartedAt = null;
@@ -785,6 +825,7 @@ export class SessionTracker {
         if (this.fullTranscript.length <= 1800 || this.isCompacting) return;
 
         this.isCompacting = true;
+        const epochAtStart = this.sessionEpoch;
         try {
             // Take the oldest 500 entries to summarize
             const summarizeCount = 500;
@@ -824,9 +865,27 @@ export class SessionTracker {
                 console.warn('[SessionTracker] recapLLM not available — storing plain epoch marker');
             }
 
+            // The session was reset while we awaited the LLM — this summary
+            // belongs to a meeting that has already ended. Pushing it would seed
+            // the NEXT meeting's context with the previous call's content.
+            if (epochAtStart !== this.sessionEpoch) {
+                console.warn('[SessionTracker] Discarding epoch summary from a previous session');
+                return;
+            }
+
             // Cap epoch summaries to prevent LLM context window overflow
             if (this.transcriptEpochSummaries.length > SessionTracker.MAX_EPOCH_SUMMARIES) {
                 this.transcriptEpochSummaries = this.transcriptEpochSummaries.slice(-SessionTracker.MAX_EPOCH_SUMMARIES);
+            }
+
+            // ARCHIVE, then evict. The summary prompt and the transcripts table
+            // both read getFullTranscriptForPersistence(), so nothing is lost —
+            // only the live advisor's rolling window shrinks, which is the point.
+            this.archivedTranscript.push(...oldEntries);
+            if (this.archivedTranscript.length > SessionTracker.MAX_ARCHIVED_SEGMENTS) {
+                const overflow = this.archivedTranscript.length - SessionTracker.MAX_ARCHIVED_SEGMENTS;
+                this.archivedTranscript = this.archivedTranscript.slice(overflow);
+                console.warn(`[SessionTracker] Transcript archive hit ${SessionTracker.MAX_ARCHIVED_SEGMENTS} segments — dropped ${overflow} oldest`);
             }
 
             // Evict ONLY the exact 500 oldest entries that we just summarized

@@ -5,6 +5,7 @@ import { AppState } from "./main"
 import { GEMINI_FLASH_MODEL } from "./IntelligenceManager"
 import { DatabaseManager } from "./db/DatabaseManager"; // Import Database Manager
 import { SupabaseReadService } from "./db/SupabaseReadService";
+import { normalizeLiveAnalysisData } from "./summary/reconcile";
 import * as path from "path";
 import * as fs from "fs";
 import { AudioDevices } from "./audio/AudioDevices";
@@ -577,7 +578,10 @@ export function initializeIpcHandlers(appState: AppState): void {
 
   safeHandle("update-live-analysis", async (event, data: LiveAnalysisData) => {
     console.log('[IPC] Received live analysis:', Object.keys(data));
-    appState.setCurrentLiveAnalysis(data);
+    // Normalize at the boundary — this payload is whatever the remote backend
+    // returned, and every downstream consumer (summary prompt, reconcile, the
+    // Call Analysis tab) previously trusted it structurally.
+    appState.setCurrentLiveAnalysis(normalizeLiveAnalysisData(data));
     return { success: true };
   });
 

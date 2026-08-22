@@ -54,6 +54,16 @@ export const MODE_TOKEN_LIMITS = {
 
     // Structured JSON generation
     structured: 4096,
+
+    // Post-call summary JSON.
+    // A fully-populated detailedSummary object (overview + dealStatus + bant +
+    // meddicc + salesCoachReview + nextCallPlaybook + keyPoints + actionItems,
+    // plus followUpEmail on the Groq contract) measures ~2,200-3,100 tokens,
+    // and the scorecard's 17 scored categories ~2,700-3,700. The 2048 `summary`
+    // cap is below the floor for both: the model either truncates mid-JSON or,
+    // on a thinking model, spends the whole budget on thought parts and returns
+    // no text at all. 8192 leaves headroom for the largest valid payload.
+    summaryJson: 8192,
 } as const;
 
 /**
