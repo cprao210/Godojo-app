@@ -1538,6 +1538,13 @@ export interface FloatingDockProps {
   // Company intelligence from pre-call sales brief
   companyIntel?: Record<string, any> | null;
 
+  // Explicit, single-shot native overlay-window resize (height, optional
+  // width) for FloatingDock's own discrete size transitions — see the
+  // "Window resize pipeline" note in useGodojoInterface.ts. Optional so
+  // FloatingDock keeps working (via the ResizeObserver fallback) in any
+  // context that doesn't wire this up (e.g. Storybook/tests).
+  onRequestOverlayResize?: (height: number, width?: number) => void;
+
 }
 
 // --- src/features/floating-dock/panels/FloatingChatPanel.tsx ---
@@ -1574,6 +1581,8 @@ export interface FloatingChatPanelProps {
    * Collected by the parent (useFloatingDock) across the whole call and sent
    * to chatApi.linkMeetingInteractions once the call ends. */
   onInteractionId?: (interactionId: number) => void;
+  /** See usePerformanceMode.ts — drops backdrop-filter blur when true. */
+  isPerformanceMode?: boolean;
 }
 
 // --- src/features/floating-dock/panels/FloatingIntelligencePanel.tsx ---
@@ -1598,6 +1607,8 @@ export interface FloatingIntelligencePanelProps {
   noAnalysisCaptured?: boolean; // true when the countdown ended without enough transcript to analyse
   meetingTypes: MeetingType[];
   onMeetingTypesChange: (types: MeetingType[]) => void;
+  /** See usePerformanceMode.ts — drops backdrop-filter blur when true. */
+  isPerformanceMode?: boolean;
 }
 
 // --- src/features/floating-dock/panels/FloatingSettingsPanel.tsx ---
@@ -1624,6 +1635,11 @@ export interface FloatingSettingsPanelProps {
   onSelectModel: (m: string) => void;
   dockOpacity: number;
   onDockOpacityChange: (val: number) => void;
+  /** See usePerformanceMode.ts — drops backdrop-filter blur when true. */
+  isPerformanceMode?: boolean;
+  /** Current user preference ('auto' | 'on' | 'off') for the toggle row below. */
+  performanceModePreference?: 'auto' | 'on' | 'off';
+  onPerformanceModePreferenceChange?: (pref: 'auto' | 'on' | 'off') => void;
 }
 
 // --- src/features/live-analysis/components/LiveAnalysisContent.tsx ---

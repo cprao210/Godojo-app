@@ -17,9 +17,10 @@ import { FloatingPanelWrapper, DockDivider, DockDragHandle, PausedIndicatorDot }
 // Imported relatively (not via the barrel above) — the barrel re-exports
 // FloatingDock, so pulling DockBrandBar from it would be a circular import.
 import { DockBrandBar } from './DockBrandBar';
-import { useFloatingDock } from '@/hooks';
+import { useFloatingDock, usePerformanceMode } from '@/hooks';
 import { posthogAnalytics } from '@/lib/analytics/posthog.service';
 import { FloatingDockProps } from '@/types';
+import { getDockSurfaceStyle } from './dockSurfaceStyle';
 
 export const FloatingDock: React.FC<FloatingDockProps> = ({
     isMeetingPaused,
@@ -40,9 +41,11 @@ export const FloatingDock: React.FC<FloatingDockProps> = ({
     shortcuts,
     overlayPanelClass,
     companyIntel,
+    onRequestOverlayResize,
 }) => {
 
     const floatingDockStates = useFloatingDock({ transcriptRef, isMeetingPaused, companyIntel });
+    const { isPerformanceMode, preference: performanceModePreference, setPreference: setPerformanceModePreference } = usePerformanceMode();
 
     useEffect(() => {
         posthogAnalytics.trackPageView('floating_dock');
@@ -63,18 +66,88 @@ export const FloatingDock: React.FC<FloatingDockProps> = ({
     const effectiveActivePanel = isDockExpanded ? activePanel : null;
     const isPanelActive = effectiveActivePanel === "chat" || effectiveActivePanel === "intelligence" || effectiveActivePanel === "settings";
 
+    // The dock only ever has a small, known set of heights — computed here
+    // (rather than left implicit inside the `animate` prop below) so the
+    // resize-orchestration effect further down can react to it directly.
+    const targetHeight = !isDockExpanded
+        ? 52 // collapsed: only the slim DockBrandBar is showing
+        : isPanelActive
+            ? (effectiveActivePanel === "settings" ? 653 : 680)
+            : 123;
+
+    // ── Native overlay-window resize orchestration ──────────────────────
+    // See the "Window resize pipeline" note in useGodojoInterface.ts for the
+    // full rationale. Summary: resizing the real OS window on every
+    // animation frame (the naive ResizeObserver approach) causes visible
+    // stutter/hangs on mid-range/integrated-GPU machines, because a native
+    // window resize is comparatively expensive — nothing like a GPU-composited
+    // CSS transform.
+    //
+    // IMPORTANT: WindowHelper.setOverlayDimensions anchors the window's
+    // BOTTOM-RIGHT corner, so a resize also repositions it (moves it up as
+    // it grows). That means the single-shot "resize immediately, before the
+    // spring starts" approach below doesn't just avoid clipping — it makes
+    // the real OS window instantly teleport to its final size/position, and
+    // the framer-motion spring then plays out *inside* an already-full-size
+    // window. There's nothing left to visibly "grow" or "pop" — hence no
+    // bounce. That per-frame tracking is exactly what gave the dock its
+    // smooth grow/collapse feel, so on capable (non-performance-mode)
+    // hardware we keep doing it; only weak-GPU machines fall back to the
+    // cheaper single-shot jump.
+    const outerRef = React.useRef<HTMLDivElement>(null);
+    useEffect(() => {
+        if (isPerformanceMode) return; // weak GPU: handled by the single-shot path below
+        const el = outerRef.current;
+        if (!el) return;
+        const observer = new ResizeObserver((entries) => {
+            const h = entries[0]?.contentRect.height;
+            if (h) onRequestOverlayResize?.(Math.ceil(h));
+        });
+        observer.observe(el);
+        return () => observer.disconnect();
+    }, [isPerformanceMode, onRequestOverlayResize]);
+
+    // Single-shot resize for weak-GPU machines only (Performance Mode on):
+    //   - Growing: resize to the target height IMMEDIATELY, before/alongside
+    //     the spring starting, so the window is already large enough and the
+    //     growing content is never clipped by window bounds that haven't
+    //     caught up yet.
+    //   - Shrinking: do NOT resize immediately — the window needs to stay at
+    //     its current (larger) size for the full duration of the shrink
+    //     animation, or the collapsing content would be clipped mid-animation.
+    //     The resize is deferred to `onAnimationComplete` below instead.
+    // On capable hardware this is a no-op — the live ResizeObserver above
+    // already keeps the window in sync every frame, so firing this too would
+    // just fight it.
+    const prevTargetHeightRef = React.useRef(targetHeight);
+    useEffect(() => {
+        if (!isPerformanceMode) {
+            prevTargetHeightRef.current = targetHeight;
+            return;
+        }
+        if (targetHeight > prevTargetHeightRef.current) {
+            onRequestOverlayResize?.(targetHeight);
+        }
+        prevTargetHeightRef.current = targetHeight;
+    }, [targetHeight, onRequestOverlayResize, isPerformanceMode]);
+
+    // Fires when the outer height spring settles. On weak-GPU machines this
+    // is the one point a shrink actually resizes the window (grow already
+    // happened above). On capable hardware the live tracker has already
+    // brought the window to the right size every frame, so this is a
+    // harmless dedupe no-op.
+    const handleHeightAnimationComplete = () => {
+        if (isPerformanceMode) onRequestOverlayResize?.(targetHeight);
+    };
+
     return (
         <>
             <motion.div
+                ref={outerRef}
                 className={`relative w-[430px] mx-auto h-fit bg-transparent max-w-full rounded-2xl items-center flex flex-col min-h-0 ${overlayPanelClass}`}
-                animate={{
-                    height: !isDockExpanded
-                        ? 52 // collapsed: only the slim DockBrandBar is showing
-                        : isPanelActive
-                            ? (effectiveActivePanel === "settings" ? 532 : 680)
-                            : 123,
-                }}
+                animate={{ height: targetHeight }}
                 transition={dockSpring}
+                onAnimationComplete={handleHeightAnimationComplete}
             >
                 {/* Overlay Panels — all three stay mounted so internal state (countdown
                     timers, chat history, scroll position) is never lost on panel switch.
@@ -112,6 +185,7 @@ export const FloatingDock: React.FC<FloatingDockProps> = ({
                         noAnalysisCaptured={noAnalysisCaptured}
                         meetingTypes={meetingTypes}
                         onMeetingTypesChange={setMeetingTypes}
+                        isPerformanceMode={isPerformanceMode}
                     />
                 </FloatingPanelWrapper>
 
@@ -143,6 +217,7 @@ export const FloatingDock: React.FC<FloatingDockProps> = ({
                             speakerNames={speakerNames}
                             messages={chatMessages}
                             onMessagesChange={setChatMessages}
+                            isPerformanceMode={isPerformanceMode}
                         />
                     </FloatingPanelWrapper>
                 )}
@@ -166,6 +241,9 @@ export const FloatingDock: React.FC<FloatingDockProps> = ({
                                 onSelectModel={onSelectModel}
                                 dockOpacity={dockOpacity}
                                 onDockOpacityChange={handleDockOpacityChange}
+                                isPerformanceMode={isPerformanceMode}
+                                performanceModePreference={performanceModePreference}
+                                onPerformanceModePreferenceChange={setPerformanceModePreference}
                             />
                         </FloatingPanelWrapper>
                     )}
@@ -206,9 +284,7 @@ export const FloatingDock: React.FC<FloatingDockProps> = ({
                                 <div
                                     className="flex items-center gap-2.5 px-3 py-3 rounded-2xl relative select-none draggable-area"
                                     style={{
-                                        background: `rgba(18, 22, 34, ${dockOpacity})`,
-                                        backdropFilter: 'blur(24px) saturate(180%)',
-                                        WebkitBackdropFilter: 'blur(24px) saturate(180%)',
+                                        ...getDockSurfaceStyle({ opacity: dockOpacity, rgb: '18, 22, 34', blurPx: 24, isPerformanceMode }),
                                         border: '1px solid rgba(255,255,255,0.09)',
                                         boxShadow: 'inset 0 1px 0 rgba(255,255,255,0.06)',
                                         width: 420,

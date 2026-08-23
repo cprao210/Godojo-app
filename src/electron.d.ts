@@ -26,6 +26,7 @@ export interface ElectronAPI {
   // Window Management
   // ===========================================================================
   updateContentDimensions: (dimensions: { width: number; height: number }) => Promise<void>
+  getGpuPerformanceStatus: () => Promise<{ isLowPowerGpu: boolean; raw: Record<string, string> | null }>
   onToggleExpand: (callback: () => void) => () => void
   onResetView: (callback: () => void) => () => void
   moveWindowLeft: () => Promise<void>

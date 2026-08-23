@@ -41,6 +41,40 @@ export function initializeIpcHandlers(appState: AppState): void {
     ipcMain.handle(channel, listener);
   };
 
+  // Reports whether the GPU is actually accelerating rendering/compositing
+  // on this machine. `app.getGPUFeatureStatus()` reflects Chromium's real
+  // decision — including its GPU blocklist, which covers a lot of
+  // older/weaker integrated GPUs — not just "does a GPU exist". When
+  // rasterization or gpu_compositing have fallen back to software, expensive
+  // effects like backdrop-filter blur get far more costly (CPU-bound instead
+  // of GPU-composited), which is the main driver of lag/hangs reported on
+  // mid-range machines. The renderer uses this once at startup to decide
+  // whether to default Performance Mode on. See usePerformanceMode.ts.
+  safeHandle('get-gpu-performance-status', async () => {
+    try {
+      // Electron types GPUFeatureStatus as a fixed set of known keys, not an
+      // index signature — cast through `unknown` first since we only need
+      // generic string lookups here (some keys/values vary by Chromium
+      // version, which the fixed type doesn't fully capture anyway).
+      const status = app.getGPUFeatureStatus() as unknown as Record<string, string>;
+      const isSoftwareFallback = (feature?: string) =>
+        !!feature && /software|disabled|unavailable/i.test(feature);
+      const isLowPowerGpu =
+        isSoftwareFallback(status.gpu_compositing) ||
+        isSoftwareFallback(status.rasterization) ||
+        isSoftwareFallback(status['2d_canvas']);
+
+      console.log("[ipcHandler] isLowPowerGpu", isLowPowerGpu);
+      return { isLowPowerGpu, raw: status };
+    } catch (err) {
+      // If we can't determine GPU status, don't assume the worst — default
+      // to the current (full-fidelity) behavior rather than silently
+      // degrading visuals for everyone on a query failure.
+      console.warn('[ipcHandlers] get-gpu-performance-status failed:', err);
+      return { isLowPowerGpu: false, raw: null };
+    }
+  });
+
   // Relays renderer-side errors (currently: ErrorBoundary.componentDidCatch,
   // see src/features/common/ErrorBoundary.tsx) into main-process error
   // tracking. The renderer already reports these to PostHog directly via
@@ -3764,13 +3798,13 @@ export function initializeIpcHandlers(appState: AppState): void {
     if (process.platform !== 'darwin') return true;
 
     if (type === 'microphone') {
-        return await systemPreferences.askForMediaAccess('microphone');
+      return await systemPreferences.askForMediaAccess('microphone');
     } else if (type === 'screen') {
-        // There is no askForMediaAccess('screen'). macOS only raises the sheet
-        // when a protected API is called, and once denied it cannot be
-        // re-prompted at all — the user has to toggle it in System Settings.
-        shell.openExternal(MAC_SETTINGS_PANES.screen);
-        return false; // Requires a restart after granting.
+      // There is no askForMediaAccess('screen'). macOS only raises the sheet
+      // when a protected API is called, and once denied it cannot be
+      // re-prompted at all — the user has to toggle it in System Settings.
+      shell.openExternal(MAC_SETTINGS_PANES.screen);
+      return false; // Requires a restart after granting.
     }
     return false;
   });
@@ -3781,10 +3815,10 @@ export function initializeIpcHandlers(appState: AppState): void {
   safeHandle("open-permission-settings", async (_, pane: MacSettingsPane = 'microphone') => {
     const target: MacSettingsPane = pane === 'screen' ? 'screen' : 'microphone';
     if (process.platform === 'darwin') {
-        shell.openExternal(MAC_SETTINGS_PANES[target]);
+      shell.openExternal(MAC_SETTINGS_PANES[target]);
     } else {
-        // Windows has no screen-capture pane; microphone is the only mapping.
-        shell.openExternal('ms-settings:privacy-microphone');
+      // Windows has no screen-capture pane; microphone is the only mapping.
+      shell.openExternal('ms-settings:privacy-microphone');
     }
   });
 
@@ -3846,9 +3880,9 @@ export function initializeIpcHandlers(appState: AppState): void {
       message: anyOk
         ? 'Permissions reset. Quit GoDojo AI completely (Cmd+Q) and reopen — macOS will ask for Microphone and Screen Recording again. Approve both to restore audio capture.'
         : `Permission reset failed for ${bundleId}. ${results
-            .filter((r) => !r.ok)
-            .map((r) => `${r.service}: ${r.output}`)
-            .join('; ')}`,
+          .filter((r) => !r.ok)
+          .map((r) => `${r.service}: ${r.output}`)
+          .join('; ')}`,
     };
   });
 

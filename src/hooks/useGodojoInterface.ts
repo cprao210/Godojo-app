@@ -141,9 +141,6 @@ export function useGodojoInterface({ overlayOpacity = OVERLAY_OPACITY_DEFAULT }:
         return stored ? stored === 'true' : true;
     });
 
-    const lastSentDimsRef = useRef<{ width: number; height: number } | null>(null);
-    const WIDTH_JITTER_TOLERANCE_PX = 2;
-
     // Model Selection State
     const [currentModel, setCurrentModel] = useState<string>('gemini-3-flash-preview');
 
@@ -229,44 +226,117 @@ export function useGodojoInterface({ overlayOpacity = OVERLAY_OPACITY_DEFAULT }:
         return () => unsub?.();
     }, []);
 
-    // Auto-resize Window
+    // ── Window resize pipeline ────────────────────────────────────────────
+    //
+    // PERFORMANCE-CRITICAL: `updateContentDimensions` ultimately calls
+    // BrowserWindow.setContentSize()/setPosition() in the main process — a
+    // real, synchronous native OS window resize. It is NOT a cheap
+    // GPU-composited operation like a CSS transform.
+    //
+    // The dock's height is animated with a framer-motion spring across
+    // expand/collapse and panel switches (~20-30 frames over ~300-500ms).
+    // Naively wiring a ResizeObserver straight to this IPC call means every
+    // one of those frames fires a native window resize — fine on a
+    // discrete GPU, but a major source of stutter/hangs on integrated-GPU or
+    // otherwise mid-range machines, where resizing a real top-level window
+    // repeatedly in under half a second is comparatively expensive.
+    //
+    // Fix: known, discrete size transitions (the dock's expand/collapse
+    // states) are resized EXPLICITLY and ONCE per transition via
+    // `requestOverlayResize`, called by FloatingDock — immediately when
+    // growing (so the window is already big enough before content animates
+    // into it, avoiding clipping) and once the animation completes when
+    // shrinking (so the window doesn't clip the content mid-shrink). See
+    // FloatingDock.tsx.
+    //
+    // The ResizeObserver below still exists as a generic SAFETY NET for
+    // anything not covered by that explicit path (e.g. an unexpected reflow
+    // from a font finishing loading), but it's debounced to the trailing
+    // edge only — it deliberately does not try to track every intermediate
+    // animation frame, so it can never become the same per-frame-resize
+    // problem it's guarding against.
+    const appliedDimsRef = useRef<{ width: number; height: number } | null>(null);
+    const WIDTH_JITTER_TOLERANCE_PX = 2;
+    const RESIZE_FALLBACK_DEBOUNCE_MS = 220;
+
+    // Sends dimensions to Electron exactly once per meaningfully-different
+    // size. `width` is guarded against sub-pixel jitter: getBoundingClientRect
+    // returns floats, and on displays with fractional OS scaling (common on
+    // laptop panels, rare on external monitors run at 100%) those floats
+    // jitter by a fraction of a px between renders — enough for Math.ceil to
+    // flip between e.g. 429 and 430. WindowHelper.setOverlayDimensions uses
+    // width to re-anchor the window's right edge, so unfiltered jitter here
+    // previously showed up as the dock nudging sideways on every resize.
+    const applyContentDimensions = (rawWidth: number, height: number) => {
+        const applied = appliedDimsRef.current;
+        const width =
+            applied && Math.abs(rawWidth - applied.width) <= WIDTH_JITTER_TOLERANCE_PX
+                ? applied.width
+                : rawWidth;
+
+        if (applied && applied.width === width && applied.height === height) return;
+
+        appliedDimsRef.current = { width, height };
+        window.electronAPI?.updateContentDimensions({ width, height });
+    };
+
+    // Explicit, single-shot resize for known/discrete size changes (the
+    // dock's own expand/collapse + panel-switch states). Bypasses the
+    // fallback observer's debounce entirely — callers control timing.
+    const requestOverlayResize = (height: number, width?: number) => {
+        const resolvedWidth =
+            width ?? appliedDimsRef.current?.width ?? Math.ceil(contentRef.current?.getBoundingClientRect().width ?? 430);
+        applyContentDimensions(resolvedWidth, Math.ceil(height));
+    };
+
+    const fallbackResizeTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
     useLayoutEffect(() => {
         if (!contentRef.current) return;
 
-        const observer = new ResizeObserver((entries) => {
-            for (const entry of entries) {
-                // Use getBoundingClientRect to get the exact rendered size including padding
-                const rect = entry.target.getBoundingClientRect();
+        let isFirstObservation = true;
 
-                // Send exact dimensions to Electron
-                // Removed buffer to ensure tight fit
-                const height = Math.ceil(rect.height);
-                const rawWidth = Math.ceil(rect.width);
-                const last = lastSentDimsRef.current;
-                const width = last && Math.abs(rawWidth - last.width) <= WIDTH_JITTER_TOLERANCE_PX
-                    ? last.width
-                    : rawWidth;
-                if (last && last.width === width && last.height === height) continue;
-                lastSentDimsRef.current = { width, height };
-                window.electronAPI?.updateContentDimensions({ width, height });
+        const observer = new ResizeObserver((entries) => {
+            const entry = entries[0];
+            if (!entry) return;
+
+            // Initial mount: size the window right away so there's no
+            // flash-of-wrong-size before the first debounce window elapses.
+            if (isFirstObservation) {
+                isFirstObservation = false;
+                const rect = entry.target.getBoundingClientRect();
+                applyContentDimensions(Math.ceil(rect.width), Math.ceil(rect.height));
+                return;
             }
+
+            // Trailing-edge debounce only — deliberately ignores every
+            // intermediate frame during an animation and only measures once
+            // things settle, so this fallback path can never itself become a
+            // per-frame native-resize source.
+            if (fallbackResizeTimeoutRef.current) clearTimeout(fallbackResizeTimeoutRef.current);
+            fallbackResizeTimeoutRef.current = setTimeout(() => {
+                fallbackResizeTimeoutRef.current = null;
+                if (!contentRef.current) return;
+                const rect = contentRef.current.getBoundingClientRect();
+                applyContentDimensions(Math.ceil(rect.width), Math.ceil(rect.height));
+            }, RESIZE_FALLBACK_DEBOUNCE_MS);
         });
 
         observer.observe(contentRef.current);
-        return () => observer.disconnect();
+        return () => {
+            observer.disconnect();
+            if (fallbackResizeTimeoutRef.current) clearTimeout(fallbackResizeTimeoutRef.current);
+        };
     }, []);
 
-    // Force resize when attachedContext changes (screenshots added/removed)
+    // Force resize when attachedContext changes (screenshots added/removed).
+    // A discrete, non-animated size change — safe to apply immediately.
     useEffect(() => {
         if (!contentRef.current) return;
-        // Let the DOM settle, then measure and push new dimensions
         requestAnimationFrame(() => {
             if (!contentRef.current) return;
             const rect = contentRef.current.getBoundingClientRect();
-            window.electronAPI?.updateContentDimensions({
-                width: Math.ceil(rect.width),
-                height: Math.ceil(rect.height)
-            });
+            applyContentDimensions(Math.ceil(rect.width), Math.ceil(rect.height));
         });
     }, [attachedContext]);
 
@@ -275,10 +345,7 @@ export function useGodojoInterface({ overlayOpacity = OVERLAY_OPACITY_DEFAULT }:
         const timer = setTimeout(() => {
             if (contentRef.current) {
                 const rect = contentRef.current.getBoundingClientRect();
-                window.electronAPI?.updateContentDimensions({
-                    width: Math.ceil(rect.width),
-                    height: Math.ceil(rect.height)
-                });
+                applyContentDimensions(Math.ceil(rect.width), Math.ceil(rect.height));
             }
         }, 600);
         return () => clearTimeout(timer);
@@ -1927,6 +1994,11 @@ Provide only the answer, nothing else.`;
         // refs
         contentRef,
         liveTranscriptRef,
+        // explicit, single-shot overlay window resize (see "Window resize
+        // pipeline" above) — pass down to FloatingDock so it can size the
+        // native window once per state transition instead of every
+        // animation frame
+        requestOverlayResize,
         // meeting / session state
         isMeetingPaused,
         handlePauseMeeting,
