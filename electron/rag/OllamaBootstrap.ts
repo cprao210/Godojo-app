@@ -1,4 +1,3 @@
-import { spawn } from 'child_process';
 import { DatabaseManager } from '../db/DatabaseManager';
 
 export class OllamaBootstrap {
@@ -23,29 +22,14 @@ export class OllamaBootstrap {
   }
 
   /**
-   * Attempt to start the Ollama daemon via shell
+   * Attempt to start the Ollama daemon. Delegates to OllamaManager so there's
+   * a single tracked spawn for the whole app — this used to spawn its own
+   * untracked, detached 'ollama serve' independent of OllamaManager, which
+   * meant a process this class started was never killed on app quit.
    */
   async ensureOllamaRunning(): Promise<boolean> {
-    if (await this.isOllamaRunning()) return true;
-    
-    // Try to start it
-    try {
-      const child = spawn('ollama', ['serve'], { detached: true, stdio: 'ignore' });
-      child.on('error', (err) => {
-        console.error('[OllamaBootstrap] Failed to spawn ollama (not installed?):', err);
-      });
-      child.unref();
-    } catch (e) {
-      console.error('[OllamaBootstrap] Synchronous error spawning ollama:', e);
-      return false;
-    }
-    
-    // Wait up to 5 seconds for it to come up
-    for (let i = 0; i < 10; i++) {
-      await new Promise(r => setTimeout(r, 500));
-      if (await this.isOllamaRunning()) return true;
-    }
-    return false;
+    const { OllamaManager } = require('../services/OllamaManager');
+    return OllamaManager.getInstance().ensureRunning(5000);
   }
 
   /**
