@@ -59,7 +59,6 @@ const PortalDropdown: React.FC<PortalDropdownProps> = ({ anchorRef, onClose, chi
                 WebkitBackdropFilter: 'blur(32px) saturate(200%)',
                 border: '1px solid rgba(255,255,255,0.1)',
                 borderRadius: 16,
-                boxShadow: '0 24px 80px rgba(0,0,0,0.7), 0 4px 24px rgba(0,0,0,0.5)',
                 overflow: 'hidden',
                 animation: 'modelSelectorFadeIn 0.15s ease',
             }}

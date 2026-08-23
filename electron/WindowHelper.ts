@@ -33,6 +33,15 @@ export class WindowHelper {
   // Track current window mode (persists even when overlay is hidden via Cmd+B)
   private currentWindowMode: 'launcher' | 'overlay' = 'launcher'
 
+  // When true, the next time the overlay is shown it snaps to the bottom-right
+  // of the reference display (Google-Meet-PiP style) instead of preserving its
+  // previous position. Armed at creation and re-armed on every return to the
+  // launcher (i.e. meeting end), so each "Start GoDojo" opens bottom-right,
+  // while manual drags mid-meeting (and hide/show toggles) are respected.
+  private overlayNeedsReposition: boolean = true
+  // Gap (px) between the overlay and the screen work-area edges when snapped.
+  private readonly overlayEdgeMargin: number = 24
+
   private appState: AppState
   private contentProtection: boolean = false
   private opacityTimeout: NodeJS.Timeout | null = null
@@ -101,17 +110,28 @@ export class WindowHelper {
     if (!this.overlayWindow || this.overlayWindow.isDestroyed()) return
     console.log('[WindowHelper] setOverlayDimensions:', width, height);
 
-    const [currentX, currentY] = this.overlayWindow.getPosition()
-    const currentDisplay = screen.getDisplayNearestPoint({ x: currentX, y: currentY });
+    const currentBounds = this.overlayWindow.getBounds()
+    const currentDisplay = screen.getDisplayNearestPoint({ x: currentBounds.x, y: currentBounds.y });
     const workArea = currentDisplay.workArea
     const maxAllowedWidth = Math.floor(workArea.width * 0.9)
     const maxAllowedHeight = Math.floor(workArea.height * 0.9)
     const newWidth = Math.min(Math.max(width, 300), maxAllowedWidth) // min 300, max 90%
     const newHeight = Math.min(Math.max(height, 1), maxAllowedHeight) // min 1, max 90%
+
+    // Anchor the BOTTOM-RIGHT corner: keep the window's right and bottom edges
+    // fixed as its content grows/shrinks. This makes panels expand UPWARD from
+    // the corner and lets the compact dock settle back into the corner when a
+    // panel closes. (The previous top-left origin let the dock drift upward
+    // across open/close cycles once it was near the bottom of the screen.)
+    const WIDTH_JITTER_TOLERANCE_PX = 2
+    const widthChanged = Math.abs(newWidth - currentBounds.width) > WIDTH_JITTER_TOLERANCE_PX
+    const bottom = currentBounds.y + currentBounds.height
     const maxX = workArea.x + workArea.width - newWidth
     const maxY = workArea.y + workArea.height - newHeight
-    const newX = Math.min(Math.max(currentX, workArea.x), maxX)
-    const newY = Math.min(Math.max(currentY, workArea.y), maxY)
+    const newX = widthChanged
+      ? Math.min(Math.max(currentBounds.x + currentBounds.width - newWidth, workArea.x), maxX)
+      : Math.min(Math.max(currentBounds.x, workArea.x), maxX)
+    const newY = Math.min(Math.max(bottom - newHeight, workArea.y), maxY)
 
     this.overlayWindow.setContentSize(newWidth, newHeight)
     this.overlayWindow.setPosition(newX, newY)
@@ -598,12 +618,20 @@ export class WindowHelper {
       const currentDisplay = screen.getDisplayMatching(currentBounds);
       const onSameDisplay = currentDisplay.id === referenceDisplay.id;
 
-      const x = onSameDisplay
-        ? currentBounds.x
-        : Math.floor(workArea.x + (workArea.width - 600) / 2);
-      const y = onSameDisplay
-        ? currentBounds.y
-        : Math.floor(workArea.y + (workArea.height - 600) / 2);
+      // Snap to the bottom-right of the reference display on a fresh meeting
+      // start (overlayNeedsReposition) or whenever the overlay isn't already on
+      // the launcher's display. Otherwise keep the user's manual position from
+      // earlier in this meeting. Width stays at the 600 placeholder; the
+      // renderer's ResizeObserver settles it to the real content width via
+      // setOverlayDimensions, which preserves this same bottom-right corner.
+      const shouldSnap = this.overlayNeedsReposition || !onSameDisplay;
+      const x = shouldSnap
+        ? workArea.x + workArea.width - 600 - this.overlayEdgeMargin
+        : currentBounds.x;
+      const y = shouldSnap
+        ? workArea.y + workArea.height - targetHeight - this.overlayEdgeMargin
+        : currentBounds.y;
+      this.overlayNeedsReposition = false;
 
       this.overlayWindow.setBounds({ x, y, width: 600, height: targetHeight });
 
@@ -643,6 +671,9 @@ export class WindowHelper {
   public switchToLauncher(inactive?: boolean): void {
     console.log(`[WindowHelper] Switching to LAUNCHER (inactive: ${!!inactive})`);
     this.currentWindowMode = 'launcher';
+    // Returning to the launcher ends the current overlay "session" — re-arm the
+    // bottom-right snap so the next Start GoDojo opens the dock in the corner.
+    this.overlayNeedsReposition = true;
     KeybindManager.getInstance().setMode('launcher'); // Adapted from public PR #123 — verify premium interaction
 
     // Show Launcher FIRST

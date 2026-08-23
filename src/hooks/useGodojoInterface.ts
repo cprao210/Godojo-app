@@ -141,6 +141,9 @@ export function useGodojoInterface({ overlayOpacity = OVERLAY_OPACITY_DEFAULT }:
         return stored ? stored === 'true' : true;
     });
 
+    const lastSentDimsRef = useRef<{ width: number; height: number } | null>(null);
+    const WIDTH_JITTER_TOLERANCE_PX = 2;
+
     // Model Selection State
     const [currentModel, setCurrentModel] = useState<string>('gemini-3-flash-preview');
 
@@ -237,11 +240,15 @@ export function useGodojoInterface({ overlayOpacity = OVERLAY_OPACITY_DEFAULT }:
 
                 // Send exact dimensions to Electron
                 // Removed buffer to ensure tight fit
-                console.log('[useGodojoInterface] ResizeObserver:', Math.ceil(rect.width), Math.ceil(rect.height));
-                window.electronAPI?.updateContentDimensions({
-                    width: Math.ceil(rect.width),
-                    height: Math.ceil(rect.height)
-                });
+                const height = Math.ceil(rect.height);
+                const rawWidth = Math.ceil(rect.width);
+                const last = lastSentDimsRef.current;
+                const width = last && Math.abs(rawWidth - last.width) <= WIDTH_JITTER_TOLERANCE_PX
+                    ? last.width
+                    : rawWidth;
+                if (last && last.width === width && last.height === height) continue;
+                lastSentDimsRef.current = { width, height };
+                window.electronAPI?.updateContentDimensions({ width, height });
             }
         });
 

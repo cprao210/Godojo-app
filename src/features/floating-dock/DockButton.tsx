@@ -51,7 +51,8 @@ export const DockButton: React.FC<DockButtonProps> = ({ icon, tooltip, isActive,
                         animate={{ opacity: 1, y: 0 }}
                         exit={{ opacity: 0, y: 2 }}
                         transition={{ duration: 0.14, ease: 'easeOut' }}
-                        className="absolute bottom-[calc(100%+10px)] -translate-x-1/2 pointer-events-none z-50 whitespace-nowrap"
+                        // className="absolute bottom-[calc(100%+10px)] -translate-x-1/2 pointer-events-none z-50 whitespace-nowrap"
+                        className="absolute top-5 left-[calc(100%-10px)] -translate-x-1/2 pointer-events-none z-50 whitespace-nowrap"
                     >
                         <div
                             className="px-2.5 py-1.5 rounded-lg text-[11px] font-semibold tracking-wide text-white"
