@@ -170,8 +170,22 @@ export async function signInWithGoogle(): Promise<{ user: User; isNewUser: boole
     provider.addScope('profile');
     provider.addScope('email');
 
+    // signInWithPopup()'s own "user closed the popup" detection polls the
+    // child window's `.closed` property, which is unreliable for popups
+    // Electron creates via setWindowOpenHandler — in practice this can hang
+    // forever instead of throwing 'auth/popup-closed-by-user' if the user
+    // closes the window before finishing. WindowHelper.ts forwards the
+    // popup's real 'closed' event over IPC as a backstop; race it against
+    // the SDK call so the caller's `finally` always runs promptly either way.
+    let unsubscribePopupClosed: (() => void) | undefined;
+    const popupClosedSignal = new Promise<never>((_, reject) => {
+        unsubscribePopupClosed = window.electronAPI?.onGoogleSignInPopupClosed?.(() => {
+            reject(Object.assign(new Error('Sign-in cancelled — the window was closed.'), { code: 'auth/popup-closed-by-user' }));
+        });
+    });
+
     try {
-        const result = await signInWithPopup(auth, provider);
+        const result = await Promise.race([signInWithPopup(auth, provider), popupClosedSignal]);
         // getAdditionalUserInfo tells us whether this popup created a brand
         // new Firebase account or signed into an existing one — used to
         // split 'user_registered' vs 'user_signed_in' analytics for Google,
@@ -189,6 +203,8 @@ export async function signInWithGoogle(): Promise<{ user: User; isNewUser: boole
             throw new Error('Sign-in popup was blocked. Please try again.');
         }
         throw err;
+    } finally {
+        unsubscribePopupClosed?.();
     }
 }
 
@@ -396,9 +412,9 @@ export async function verifySessionIsActive(): Promise<boolean> {
         // than hard-blocking the meeting start just because of bad hotel Wi-Fi.
         if (code === 'auth/network-request-failed') {
             console.warn('[firebase] verifySessionIsActive: Network is down, skipping hard session invalidation.');
-            return true; 
+            return true;
         }
-        
+
         console.warn('[firebase] verifySessionIsActive failed (fatal):', e?.code ?? e);
         return false;
     }

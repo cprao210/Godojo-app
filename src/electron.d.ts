@@ -522,6 +522,7 @@ export interface ElectronAPI {
   onAuthStateChanged: (
     callback: (state: { signedIn: boolean; uid?: string; email?: string | null; displayName?: string | null; photoURL?: string | null }) => void
   ) => () => void
+  onGoogleSignInPopupClosed: (callback: () => void) => () => void
 
   // ===========================================================================
   // Tenant ID (cross-window)

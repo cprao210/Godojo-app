@@ -204,8 +204,8 @@ export const SignIn: React.FC<SignInProps> = ({ bannerMessage, onBannerDismiss }
                                 </motion.button>
                             </form>
 
-                            {error && <p className="mt-3 text-sm text-red-400">{error}</p>}
-                            {info && <p className="mt-3 text-sm text-emerald-400">{info}</p>}
+                            {/* {error && <p className="mt-3 text-sm text-red-400">{error}</p>} */}
+                            {/* {info && <p className="mt-3 text-sm text-emerald-400">{info}</p>} */}
 
                             <motion.p
                                 initial={{ opacity: 0 }}

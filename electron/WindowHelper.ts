@@ -340,6 +340,28 @@ export class WindowHelper {
       return { action: 'deny' };
     });
 
+    // Forward the Google-auth popup's real close event to the renderer.
+    // Why this is needed: signInWithPopup()'s own "user closed the popup"
+    // detection polls the child window's `.closed` property, which is
+    // unreliable for popups created via setWindowOpenHandler's
+    // overrideBrowserWindowOptions (Electron's native BrowserWindow, not a
+    // true DOM window.open() child) — in practice the SDK's promise can hang
+    // forever if the user closes the window before finishing consent,
+    // instead of throwing 'auth/popup-closed-by-user'. did-create-window
+    // gives us a direct handle to that BrowserWindow so we can listen to its
+    // real 'closed' event ourselves and tell the renderer explicitly.
+    this.launcherWindow.webContents.on('did-create-window', (childWindow, details) => {
+      let isGoogleAuthPopup = false;
+      try {
+        isGoogleAuthPopup = new URL(details.url).hostname.endsWith('google.com') || new URL(details.url).hostname.endsWith('.firebaseapp.com');
+      } catch { /* unparseable — leave false */ }
+      if (!isGoogleAuthPopup) return;
+
+      childWindow.once('closed', () => {
+        this.launcherWindow?.webContents.send('google-signin-popup-closed');
+      });
+    });
+
     // if (isDev) {
     //   this.launcherWindow.webContents.openDevTools({ mode: 'detach' }); // DEBUG: Open DevTools
     // }

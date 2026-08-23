@@ -1472,6 +1472,14 @@ contextBridge.exposeInMainWorld("electronAPI", {
     }
   },
 
+  onGoogleSignInPopupClosed: (callback: () => void) => {
+    const subscription = () => callback()
+    ipcRenderer.on('google-signin-popup-closed', subscription)
+    return () => {
+      ipcRenderer.removeListener('google-signin-popup-closed', subscription)
+    }
+  },
+
   // ===== Tenant ID (cross-window) =====
   setCurrentTenantId: (tenantId: string | null) => ipcRenderer.invoke('tenant:set-current', tenantId),
   getCurrentTenantId: () => ipcRenderer.invoke('tenant:get-current'),

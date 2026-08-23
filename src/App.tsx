@@ -35,6 +35,7 @@ import { IncompatibleProviderBanner, AdCampaignToasters, SystemAudioPermissionBa
 // pages
 // ---------------------------------------------------------------------------
 import { EmailVerification, SignIn } from "@/pages";
+import { AuthToastHost } from "@/features/auth/AuthToastHost";
 
 // ---------------------------------------------------------------------------
 // premium
@@ -174,6 +175,7 @@ const App: React.FC = () => {
   return (
     <ErrorBoundary context="Launcher">
       <div className="h-full min-h-0 w-full relative bg-[#000000]">
+        <AuthToastHost />
         {/* Auth gate: while we don't know yet, render nothing (avoids SignIn flash).
             Once known, if no user is signed in show the SignIn page instead of the
             launcher. The SignIn component triggers onIdTokenChanged on success, which
