@@ -2705,6 +2705,24 @@ export class AppState {
     return this._currentLiveAnalysis;
   }
 
+  /**
+   * Native cross-screen toast fired once a meeting's summary has finished
+   * generating and been saved (title, structured summary, scorecard, etc. —
+   * see MeetingPersistence.processAndSaveMeeting). Uses the same
+   * showNotificationOnActiveDisplay() helper as the pause/resume toasts, so
+   * it's visible no matter which app screen the user is currently on (or
+   * even if they've switched to another app entirely) — summary generation
+   * runs in the background well after the call itself has ended, so the
+   * user is very often not looking at the meeting/launcher screen when it
+   * finishes.
+   */
+  public notifyMeetingSummaryReady(meetingTitle?: string): void {
+    this.showNotificationOnActiveDisplay(
+      'Summary Ready',
+      meetingTitle ? `"${meetingTitle}" has been summarized.` : 'Your meeting summary is ready to view.',
+    );
+  }
+
   // Renderer calls this at the start/end of every runAnalysis() call.
   public setLiveAnalysisInFlight(inFlight: boolean): void {
     this._liveAnalysisInFlight = inFlight;

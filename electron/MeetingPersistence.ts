@@ -679,6 +679,14 @@ export class MeetingPersistence {
 
             // Metadata was already snapshotted before session.reset() — nothing to clear here.
 
+            // Toast the user that their summary is ready — same native,
+            // display-aware toast used for pause/resume, so it's visible
+            // regardless of which screen (or app) the user is currently on.
+            // Fires here specifically because this is the point the summary,
+            // scorecard, and title have all actually finished generating AND
+            // been persisted — not just "processing kicked off".
+            AppState.getInstance()?.notifyMeetingSummaryReady?.(title);
+
             // Notify Frontend to refresh list
             const wins = require('electron').BrowserWindow.getAllWindows();
             wins.forEach((w: any) => w.webContents.send('meetings-updated'));
