@@ -105,7 +105,7 @@ export class SupabaseReadService {
                 .maybeSingle(),
             client
                 .from('transcripts')
-                .select('id, meeting_id, speaker, content, timestamp_ms')
+                .select('id, meeting_id, speaker, content, timestamp_ms, speaker_index, display_name')
                 .eq('meeting_id', id)
                 .order('timestamp_ms', { ascending: true }),
             client
@@ -149,7 +149,9 @@ export class SupabaseReadService {
         const transcript = (transcriptRes.data ?? []).map((row: any) => ({
             speaker: row.speaker,
             text: row.content,
-            timestamp: row.timestamp_ms
+            timestamp: row.timestamp_ms,
+            speakerIndex: row.speaker_index ?? undefined,
+            displayName: row.display_name ?? undefined
         }));
 
         const usage = (usageRes.data ?? []).map((row: any) => {

@@ -256,6 +256,7 @@ export class DatabaseManager {
                     speaker TEXT,
                     content TEXT,
                     timestamp_ms INTEGER,
+                    display_name TEXT,
                     FOREIGN KEY(meeting_id) REFERENCES meetings(id) ON DELETE CASCADE
                 );
 
@@ -802,6 +803,13 @@ export class DatabaseManager {
                 ALTER TABLE meetings ADD COLUMN owner_uid TEXT;
             `);
             this.db.pragma('user_version = 20');
+        }
+
+        // v20 → v21: transcripts.display_name
+        if (version < 21) {
+            try { this.db.exec(`ALTER TABLE transcripts ADD COLUMN display_name TEXT`); }
+            catch (e) { /* Column already exists */ }
+            this.db.pragma('user_version = 21');
         }
     }
 
@@ -1493,8 +1501,8 @@ export class DatabaseManager {
         `);
 
         const insertTranscript = this.db.prepare(`
-            INSERT INTO transcripts (meeting_id, speaker, content, timestamp_ms, speaker_index)
-            VALUES (?, ?, ?, ?, ?)
+            INSERT INTO transcripts (meeting_id, speaker, content, timestamp_ms, speaker_index, display_name)
+            VALUES (?, ?, ?, ?, ?, ?)
         `);
 
         const insertInteraction = this.db.prepare(`
@@ -1546,12 +1554,17 @@ export class DatabaseManager {
                 // meeting first so re-saves replace rather than duplicate.
                 this.db.prepare('DELETE FROM transcripts WHERE meeting_id = ?').run(meeting.id);
                 for (const segment of meeting.transcript) {
+                    const displayName = segment.displayName
+                        || (segment.speaker === 'user' ? 'You'
+                            : (segment.speaker === 'client' || segment.speaker === 'interviewer') ? 'Other Party'
+                                : null);
                     const info = insertTranscript.run(
                         meeting.id,
                         segment.speaker,
                         segment.text,
                         segment.timestamp,
-                        segment.speakerIndex ?? null
+                        segment.speakerIndex ?? null,
+                        displayName
                     );
                     // NOTE: speaker_index is deliberately EXCLUDED from the mirror
                     // payload until the Supabase transcripts table gains the column —
@@ -1838,7 +1851,8 @@ export class DatabaseManager {
             speaker: row.speaker,
             text: row.content,
             timestamp: row.timestamp_ms,
-            speakerIndex: row.speaker_index ?? undefined
+            speakerIndex: row.speaker_index ?? undefined,
+            displayName: row.display_name ?? undefined
         }));
 
         const usage = usageRows.map(row => {
