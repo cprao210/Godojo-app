@@ -75,6 +75,10 @@ export interface StoredCredentials {
     diarizeClientEnabled?: boolean;
     // Word-timestamp echo filter in the main process (free, inert without word data)
     echoWordFilterEnabled?: boolean;
+    // Render non-English STT finals into English before display/storage.
+    // Default ON: inert for Latin-script speech, so it only costs anything when
+    // the speaker actually uses another language.
+    translateTranscriptsToEnglish?: boolean;
     // Converged AEC alignment offsets per output route (keyed by route name).
     // Seeds the native echo canceller on the next meeting with the same route.
     echoAlignSeeds?: { [routeKey: string]: { seedMs: number; backend: string } };
@@ -272,7 +276,7 @@ export class CredentialsManager {
     }
 
     public getSttLanguage(): string {
-        return this.credentials.sttLanguage || 'english-us';
+        return this.credentials.sttLanguage || 'multilingual';
     }
 
     public getAiResponseLanguage(): string {
@@ -451,6 +455,21 @@ export class CredentialsManager {
         this.credentials.echoWordFilterEnabled = enabled;
         this.saveCredentials();
         console.log(`[CredentialsManager] Echo word filter persisted: ${enabled}`);
+    }
+
+    /**
+     * Translate non-English transcript finals into English. Default ON — the
+     * translator skips Latin-script text without a network call, so this is a
+     * no-op for English-only meetings.
+     */
+    public getTranslateTranscriptsToEnglish(): boolean {
+        return this.credentials.translateTranscriptsToEnglish ?? true;
+    }
+
+    public setTranslateTranscriptsToEnglish(enabled: boolean): void {
+        this.credentials.translateTranscriptsToEnglish = enabled;
+        this.saveCredentials();
+        console.log(`[CredentialsManager] Transcript translation persisted: ${enabled}`);
     }
 
     /** Persisted AEC alignment seed (SIGNED ms) for an output route, if any. */

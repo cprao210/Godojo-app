@@ -2,7 +2,8 @@ import React, { useState } from 'react';
 import { Shield, BarChart2, AlertTriangle, Zap, CheckSquare, ChevronDown, ChevronUp, TrendingUp, Sparkles } from 'lucide-react';
 import { AnimatePresence, motion } from 'framer-motion';
 import { useResolvedTheme } from '@/hooks';
-import { FieldRowProps, LiveAnalysisContentProps, SectionToggleProps, DealTrigger } from '@/types';
+import { FieldRowProps, LiveAnalysisContentProps, SectionToggleProps, DealTrigger, Objection } from '@/types';
+import { partitionObjections } from '@/lib/objections';
 
 // ─── Status helpers — overlay (dark glass) variants ────────────────────────
 const statusDot = (status: string) => {
@@ -281,6 +282,108 @@ export const LiveAnalysisContent: React.FC<LiveAnalysisContentProps> = ({
             if (next.has(id)) next.delete(id); else next.add(id);
             return next;
         });
+    };
+
+    // The objection list is now owned by the fast objection-handler tick, so cards
+    // arrive and move between groups every few seconds. Split it once here: still-open
+    // objections lead, ones the endpoint reported as `resolved` drop into a collapsed
+    // group below (they stay in the array so they still reach the post-call summary).
+    const { active: activeObjections, resolved: resolvedObjectionList } =
+        partitionObjections(analysisData.objections);
+    const [resolvedOpen, setResolvedOpen] = useState(false);
+
+    // One card renderer for both call sites — the overlay tab and the analysis-tab
+    // accordion previously carried near-identical copies of this markup, and the
+    // resolved group would have made that three copies. The theme ternaries collapse
+    // to the overlay's dark values when `calledFromAnalysisTab` is false.
+    const renderObjectionCard = (obj: Objection) => {
+        const key = obj.id ?? obj.quote;
+        const isChecked = checkedObjections.has(key);
+        const isResolved = Boolean(obj.resolved);
+        // A resolved objection reads the same as a manually ticked one.
+        const isMuted = isChecked || isResolved;
+
+        const cardClass = calledFromAnalysisTab
+            ? isMuted
+                ? isLight ? 'border-slate-100 bg-slate-50 opacity-50' : 'border-white/[0.04] bg-white/[0.01] opacity-50'
+                : obj.type === 'ae_deferral'
+                    ? isLight ? 'border-amber-200 bg-amber-50 hover:bg-amber-100' : 'border-amber-500/20 bg-amber-500/5 hover:bg-amber-500/8'
+                    : isLight ? 'border-slate-200 bg-white hover:bg-slate-50' : 'border-white/[0.07] bg-white/[0.02] hover:bg-white/[0.04]'
+            : isMuted
+                ? 'border-white/[0.04] bg-white/[0.01] opacity-50'
+                : obj.type === 'ae_deferral'
+                    ? 'border-amber-500/20 bg-amber-500/5 hover:bg-amber-500/8'
+                    : 'border-white/[0.07] bg-white/[0.02] hover:bg-white/[0.04]';
+
+        const checkboxClass = isMuted
+            ? 'bg-emerald-500/80 border-emerald-500'
+            : calledFromAnalysisTab
+                ? isLight ? 'border-slate-300 bg-transparent' : 'border-white/20 bg-transparent'
+                : 'border-white/20 bg-transparent';
+
+        const quoteClass = isMuted
+            ? calledFromAnalysisTab
+                ? isLight ? 'line-through text-slate-300' : 'line-through text-white/25'
+                : 'line-through text-white/25'
+            : calledFromAnalysisTab
+                ? isLight ? 'text-slate-700' : 'text-white/65'
+                : 'text-white/65';
+
+        const tagClass = obj.type === 'ae_deferral'
+            ? 'text-amber-600 bg-amber-50 border-amber-200'
+            : calledFromAnalysisTab
+                ? isLight ? 'text-slate-500 bg-slate-50 border-slate-200' : 'text-white/30 bg-white/5 border-white/10'
+                : 'text-white/30 bg-white/5 border-white/10';
+
+        const ownerClass = calledFromAnalysisTab
+            ? isLight ? 'text-slate-400' : 'text-white/20'
+            : 'text-white/20';
+
+        return (
+            <motion.button
+                key={key}
+                layout
+                initial={{ opacity: 0, x: -4 }}
+                animate={{ opacity: 1, x: 0 }}
+                exit={{ opacity: 0, x: -4 }}
+                transition={{ duration: 0.15 }}
+                onClick={() => toggleObjection(key)}
+                className={`w-full flex items-start gap-2.5 px-3 py-2 rounded-xl border text-left transition-all duration-200 ${cardClass}`}
+            >
+                <div className={`mt-0.5 w-4 h-4 rounded shrink-0 flex items-center justify-center border transition-all ${checkboxClass}`}>
+                    {isMuted && (
+                        <svg width="9" height="7" viewBox="0 0 9 7" fill="none">
+                            <path d="M1 3.5L3.5 6L8 1" stroke="white" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" />
+                        </svg>
+                    )}
+                </div>
+                <div className="flex-1 min-w-0">
+                    <p className={`text-[12px] leading-relaxed transition-all ${quoteClass}`}>
+                        {obj.quote}
+                    </p>
+                    {/* Suggested answer — only for customer questions */}
+                    {!isMuted && obj.type === 'customer_question' && obj.suggested_answer && (
+                        <div className="flex items-start gap-1.5 rounded-md py-1.5">
+                            <p className={`text-[11px] leading-snug ${calledFromAnalysisTab ? (isLight ? 'text-blue-700' : 'text-blue-300/80') : 'text-blue-300/80'}`}>
+                                {obj.suggested_answer}
+                            </p>
+                        </div>
+                    )}
+                    <div className="flex items-center justify-between gap-1.5 mt-1">
+                        <div className="flex items-center gap-1.5 min-w-0">
+                            <span className={`text-[9px] font-bold uppercase tracking-wider px-1.5 py-0.5 rounded border ${tagClass}`}>
+                                {obj.type === 'ae_deferral' ? 'Follow up' : 'Open question'}
+                            </span>
+                            {/* Semantic category from the backend objection classifier */}
+                            {obj.category_label && (
+                                <span className={`text-[9px] truncate ${ownerClass}`}>{obj.category_label}</span>
+                            )}
+                        </div>
+                        <span className={`text-[9px] capitalize shrink-0 ${ownerClass}`}>{obj.owner}</span>
+                    </div>
+                </div>
+            </motion.button>
+        );
     };
 
     const [dismissedSignals, setDismissedSignals] = useState<Set<string>>(new Set());
@@ -643,60 +746,33 @@ export const LiveAnalysisContent: React.FC<LiveAnalysisContentProps> = ({
                     if (analysisData.objections.length === 0) {
                         return (
                             <div className="flex flex-col items-center justify-center h-full py-16 gap-2">
-                                <p className="text-[12px] text-white/30">No objections logged yet</p>
+                                <p className="text-[12px] text-white/30">Listening for objections…</p>
                             </div>
                         );
                     }
                     return (
                         <div className="px-3 pt-2 pb-4 space-y-1.5">
-                            {analysisData.objections.map((obj) => {
-                                const isChecked = checkedObjections.has(obj.id ?? obj.quote);
-                                const cardClass = isChecked
-                                    ? 'border-white/[0.04] bg-white/[0.01] opacity-50'
-                                    : obj.type === 'ae_deferral'
-                                        ? 'border-amber-500/20 bg-amber-500/5 hover:bg-amber-500/8'
-                                        : 'border-white/[0.07] bg-white/[0.02] hover:bg-white/[0.04]';
-                                const checkboxClass = isChecked
-                                    ? 'bg-emerald-500/80 border-emerald-500'
-                                    : 'border-white/20 bg-transparent';
-                                const quoteClass = isChecked ? 'line-through text-white/25' : 'text-white/65';
-                                const tagClass = obj.type === 'ae_deferral'
-                                    ? 'text-amber-600 bg-amber-50 border-amber-200'
-                                    : 'text-white/30 bg-white/5 border-white/10';
-                                return (
-                                    <motion.button
-                                        key={obj.id ?? obj.quote}
-                                        initial={{ opacity: 0, x: -4 }}
-                                        animate={{ opacity: 1, x: 0 }}
-                                        transition={{ delay: 0 }}
-                                        onClick={() => toggleObjection(obj.id ?? obj.quote)}
-                                        className={`w-full flex items-start gap-2.5 px-3 py-2 rounded-xl border text-left transition-all duration-200 ${cardClass}`}
+                            <AnimatePresence initial={false}>
+                                {activeObjections.map(renderObjectionCard)}
+                            </AnimatePresence>
+                            {resolvedObjectionList.length > 0 && (
+                                <div className="pt-1">
+                                    <button
+                                        onClick={() => setResolvedOpen(o => !o)}
+                                        className="w-full flex items-center justify-between px-1 py-1.5 text-[10px] font-bold uppercase tracking-wider text-white/25 hover:text-white/40 transition-colors"
                                     >
-                                        <div className={`mt-0.5 w-4 h-4 rounded shrink-0 flex items-center justify-center border transition-all ${checkboxClass}`}>
-                                            {isChecked && (
-                                                <svg width="9" height="7" viewBox="0 0 9 7" fill="none">
-                                                    <path d="M1 3.5L3.5 6L8 1" stroke="white" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" />
-                                                </svg>
-                                            )}
+                                        <span>Resolved · {resolvedObjectionList.length}</span>
+                                        {resolvedOpen ? <ChevronUp size={11} /> : <ChevronDown size={11} />}
+                                    </button>
+                                    {resolvedOpen && (
+                                        <div className="space-y-1.5 pt-1">
+                                            <AnimatePresence initial={false}>
+                                                {resolvedObjectionList.map(renderObjectionCard)}
+                                            </AnimatePresence>
                                         </div>
-                                        <div className="flex-1 min-w-0">
-                                            <p className={`text-[12px] leading-relaxed transition-all ${quoteClass}`}>{obj.quote}</p>
-                                            {!isChecked && obj.type === 'customer_question' && obj.suggested_answer && (
-                                                <div className="flex items-start gap-1.5 rounded-md py-1.5">
-                                                    {/* <TrendingUp size={9} className="shrink-0 mt-0.5 text-blue-400/70" /> */}
-                                                    <p className="text-[11px] mb-1 leading-snug text-blue-300/80">{obj.suggested_answer}</p>
-                                                </div>
-                                            )}
-                                            <div className="flex items-center gap-1.5 mt-0.5 justify-between">
-                                                <span className={`text-[9px] font-bold uppercase tracking-wider px-1.5 py-0.5 rounded border ${tagClass}`}>
-                                                    {obj.type === 'ae_deferral' ? 'Follow up' : 'Open question'}
-                                                </span>
-                                                <span className="text-[9px] capitalize text-white/20">{obj.owner}</span>
-                                            </div>
-                                        </div>
-                                    </motion.button>
-                                );
-                            })}
+                                    )}
+                                </div>
+                            )}
                         </div>
                     );
                 case 'deal_optimizer':
@@ -853,92 +929,35 @@ export const LiveAnalysisContent: React.FC<LiveAnalysisContentProps> = ({
                     <SectionToggle
                         icon={<CheckSquare size={13} />}
                         title="Objections"
-                        badge={`${analysisData.objections.length}`}
+                        badge={`${activeObjections.length}`}
                         badgeColor={objectionsBadge}
                         themed={calledFromAnalysisTab}
                         isLight={isLight}
                     >
                         <div className="space-y-2 mt-1">
-                            {analysisData.objections.map((obj) => {
-                                const isChecked = checkedObjections.has(obj.id ?? obj.quote);
-
-                                const cardClass = calledFromAnalysisTab
-                                    ? isChecked
-                                        ? isLight ? 'border-slate-100 bg-slate-50 opacity-50' : 'border-white/[0.04] bg-white/[0.01] opacity-50'
-                                        : obj.type === 'ae_deferral'
-                                            ? isLight ? 'border-amber-200 bg-amber-50 hover:bg-amber-100' : 'border-amber-500/20 bg-amber-500/5 hover:bg-amber-500/8'
-                                            : isLight ? 'border-slate-200 bg-white hover:bg-slate-50' : 'border-white/[0.07] bg-white/[0.02] hover:bg-white/[0.04]'
-                                    : isChecked
-                                        ? 'border-white/[0.04] bg-white/[0.01] opacity-50'
-                                        : obj.type === 'ae_deferral'
-                                            ? 'border-amber-500/20 bg-amber-500/5 hover:bg-amber-500/8'
-                                            : 'border-white/[0.07] bg-white/[0.02] hover:bg-white/[0.04]';
-
-                                const checkboxClass = isChecked
-                                    ? 'bg-emerald-500/80 border-emerald-500'
-                                    : calledFromAnalysisTab
-                                        ? isLight ? 'border-slate-300 bg-transparent' : 'border-white/20 bg-transparent'
-                                        : 'border-white/20 bg-transparent';
-
-                                const quoteClass = isChecked
-                                    ? calledFromAnalysisTab
-                                        ? isLight ? 'line-through text-slate-300' : 'line-through text-white/25'
-                                        : 'line-through text-white/25'
-                                    : calledFromAnalysisTab
-                                        ? isLight ? 'text-slate-700' : 'text-white/65'
-                                        : 'text-white/65';
-
-                                const tagClass = obj.type === 'ae_deferral'
-                                    ? 'text-amber-600 bg-amber-50 border-amber-200'
-                                    : calledFromAnalysisTab
-                                        ? isLight ? 'text-slate-500 bg-slate-50 border-slate-200' : 'text-white/30 bg-white/5 border-white/10'
-                                        : 'text-white/30 bg-white/5 border-white/10';
-
-                                const ownerClass = calledFromAnalysisTab
-                                    ? isLight ? 'text-slate-400' : 'text-white/20'
-                                    : 'text-white/20';
-
-                                return (
-                                    <motion.button
-                                        key={obj.id ?? obj.quote}
-                                        initial={{ opacity: 0, x: -4 }}
-                                        animate={{ opacity: 1, x: 0 }}
-                                        transition={{ delay: 0 }}
-                                        onClick={() => toggleObjection(obj.id ?? obj.quote)}
-                                        className={`w-full flex items-start gap-2.5 px-3 py-2 rounded-xl border text-left transition-all duration-200 ${cardClass}`}
+                            <AnimatePresence initial={false}>
+                                {activeObjections.map(renderObjectionCard)}
+                            </AnimatePresence>
+                            {resolvedObjectionList.length > 0 && (
+                                <div className="pt-1">
+                                    <button
+                                        onClick={() => setResolvedOpen(o => !o)}
+                                        className={`w-full flex items-center justify-between px-1 py-1.5 text-[10px] font-bold uppercase tracking-wider transition-colors ${calledFromAnalysisTab
+                                            ? (isLight ? 'text-slate-400 hover:text-slate-600' : 'text-white/25 hover:text-white/40')
+                                            : 'text-white/25 hover:text-white/40'}`}
                                     >
-                                        <div className={`mt-0.5 w-4 h-4 rounded shrink-0 flex items-center justify-center border transition-all ${checkboxClass}`}>
-                                            {isChecked && (
-                                                <svg width="9" height="7" viewBox="0 0 9 7" fill="none">
-                                                    <path d="M1 3.5L3.5 6L8 1" stroke="white" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" />
-                                                </svg>
-                                            )}
+                                        <span>Resolved · {resolvedObjectionList.length}</span>
+                                        {resolvedOpen ? <ChevronUp size={11} /> : <ChevronDown size={11} />}
+                                    </button>
+                                    {resolvedOpen && (
+                                        <div className="space-y-2 pt-1">
+                                            <AnimatePresence initial={false}>
+                                                {resolvedObjectionList.map(renderObjectionCard)}
+                                            </AnimatePresence>
                                         </div>
-                                        <div className="flex-1 min-w-0">
-                                            <p className={`text-[12px] leading-relaxed transition-all ${quoteClass}`}>
-                                                {obj.quote}
-                                            </p>
-                                            {/* Suggested answer — only for customer questions */}
-                                            {!isChecked && obj.type === 'customer_question' && obj.suggested_answer && (
-                                                <div className={`flex items-start gap-1.5 rounded-md py-1.5`}>
-                                                    {/* <TrendingUp size={9} className={`shrink-0 mt-0.5 ${calledFromAnalysisTab ? (isLight ? 'text-blue-500' : 'text-blue-400/70') : 'text-blue-400/70'
-                                                        }`} /> */}
-                                                    <p className={`text-[11px] leading-snug ${calledFromAnalysisTab ? (isLight ? 'text-blue-700' : 'text-blue-300/80') : 'text-blue-300/80'
-                                                        }`}>
-                                                        {obj.suggested_answer}
-                                                    </p>
-                                                </div>
-                                            )}
-                                            <div className="flex items-center justify-between gap-1.5 mt-1">
-                                                <span className={`text-[9px] font-bold uppercase tracking-wider px-1.5 py-0.5 rounded border ${tagClass}`}>
-                                                    {obj.type === 'ae_deferral' ? 'Follow up' : 'Open question'}
-                                                </span>
-                                                <span className={`text-[9px] capitalize ${ownerClass}`}>{obj.owner}</span>
-                                            </div>
-                                        </div>
-                                    </motion.button>
-                                );
-                            })}
+                                    )}
+                                </div>
+                            )}
                         </div>
                     </SectionToggle>
                     <Divider />

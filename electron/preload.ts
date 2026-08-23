@@ -738,6 +738,8 @@ contextBridge.exposeInMainWorld("electronAPI", {
   testSttConnection: (provider: 'groq' | 'openai' | 'deepgram' | 'elevenlabs' | 'azure' | 'ibmwatson' | 'soniox', apiKey: string, region?: string) => ipcRenderer.invoke("test-stt-connection", provider, apiKey, region),
   setDiarizeClientEnabled: (enabled: boolean) => ipcRenderer.invoke("set-diarize-client-enabled", enabled),
   getDiarizeClientEnabled: () => ipcRenderer.invoke("get-diarize-client-enabled"),
+  setTranslateTranscripts: (enabled: boolean) => ipcRenderer.invoke("set-translate-transcripts", enabled),
+  getTranslateTranscripts: () => ipcRenderer.invoke("get-translate-transcripts"),
   getAudioPipelineStats: () => ipcRenderer.invoke("get-audio-pipeline-stats"),
   getOutputRoute: () => ipcRenderer.invoke("get-output-route"),
 

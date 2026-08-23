@@ -159,6 +159,9 @@ http.interceptors.response.use(
  *
  * Keeps the fetch-era `(path, init)` signature: `init.body` is a pre-stringified
  * JSON string and is forwarded verbatim (axios sends strings as-is, no re-encoding).
+ * `init.signal` is forwarded too, so latency-bounded callers (the objection-handler
+ * tick) can impose a deadline well under the instance's 60s ceiling and cancel on
+ * unmount; it is undefined for every other caller, leaving them unchanged.
  */
 export async function apiFetch<T>(path: string, init: RequestInit = {}): Promise<T> {
   const res: AxiosResponse<T> = await http.request<T>({
@@ -166,6 +169,7 @@ export async function apiFetch<T>(path: string, init: RequestInit = {}): Promise
     method: (init.method ?? "GET") as string,
     data: init.body,
     headers: init.headers as Record<string, string> | undefined,
+    signal: init.signal ?? undefined,
   });
 
   if (res.status === 204) return undefined as T;
