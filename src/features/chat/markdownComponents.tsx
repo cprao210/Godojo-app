@@ -24,8 +24,16 @@ export const chatMarkdownComponents = {
     strong: ({ node, ...props }: any) => <strong className="font-semibold" {...props} />,
 
     table: ({ node, ...props }: any) => (
-        <div className="my-3 overflow-x-auto rounded-lg border border-border-subtle">
-            <table className="w-full border-collapse text-[13px]" {...props} />
+        // `overflow-x-auto` on this wrapper only actually scrolls if the table
+        // inside it is allowed to grow past the wrapper's width. The table
+        // element itself must NOT be `w-full` (width: 100%) — that forces the
+        // browser to compress every column to fit, which is exactly why wide
+        // tables were cramped instead of scrolling. `min-w-full` keeps narrow
+        // tables stretching to fill the space (unchanged visual behavior for
+        // small tables) while letting wide ones grow naturally beyond the
+        // container, which is what actually triggers this wrapper's scrollbar.
+        <div className="my-3 max-w-full overflow-x-auto rounded-lg border border-border-subtle">
+            <table className="min-w-full border-collapse text-[13px]" {...props} />
         </div>
     ),
     thead: ({ node, ...props }: any) => (
@@ -39,13 +47,13 @@ export const chatMarkdownComponents = {
     ),
     th: ({ node, ...props }: any) => (
         <th
-            className="border border-border-subtle px-3 py-2 text-left font-semibold text-text-primary whitespace-nowrap"
+            className="border border-border-subtle px-3 py-2 text-left font-semibold text-text-primary whitespace-nowrap align-top"
             {...props}
         />
     ),
     td: ({ node, ...props }: any) => (
         <td
-            className="border border-border-subtle px-3 py-2 align-top text-text-secondary"
+            className="border border-border-subtle px-3 py-2 align-top text-text-secondary whitespace-nowrap"
             {...props}
         />
     ),
