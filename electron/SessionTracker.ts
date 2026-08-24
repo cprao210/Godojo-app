@@ -15,6 +15,15 @@ export interface TranscriptSegment {
     /** 'chat' segments come from the assistant chat panel — exclude from saved transcript */
     source?: 'stt' | 'chat' | 'manual';
     /**
+     * Resolved display label for this segment's speaker (e.g. "Raksham" —
+     * the company-domain-derived label from speakerNameMap, not just the
+     * raw 'client'/'user' role). Stamped in at save time by
+     * MeetingPersistence, NOT set when the segment is first created live —
+     * DatabaseManager.saveMeeting() reads this field when persisting each
+     * transcript row, falling back to a hardcoded generic label if absent.
+     */
+    displayName?: string;
+    /**
      * Diarization speaker index within the client stream (Deepgram, finals
      * only). Distinguishes multiple far-end participants; undefined when
      * diarization is off or unavailable.

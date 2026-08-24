@@ -425,6 +425,17 @@ export class MeetingPersistence {
         });
 
         // 4. Initial Save (Placeholder)
+        // Same displayName stamping as the final save in processAndSaveMeeting
+        // — without it, this placeholder briefly persists with generic
+        // "Other Party" labels until the background save above replaces it.
+        const placeholderTranscript = snapshot.transcript.map(segment => ({
+            ...segment,
+            displayName: segment.displayName
+                ?? (segment.speaker === 'user' ? speakerNamesSnapshot.user
+                    : (segment.speaker === 'client' || segment.speaker === 'interviewer') ? speakerNamesSnapshot.client
+                        : undefined),
+        }))
+
         const placeholder: Meeting = {
             id: meetingId,
             title: "Processing...",
@@ -439,7 +450,7 @@ export class MeetingPersistence {
             // now clears-and-reinserts transcript rows on every call, so the
             // later final save in processAndSaveMeeting() safely replaces this
             // rather than duplicating it.
-            transcript: snapshot.transcript,
+            transcript: placeholderTranscript,
             usage: [],
             tenantId: tenantId || null,
             isProcessed: false
@@ -726,6 +737,23 @@ export class MeetingPersistence {
                 };
             }
 
+            // Stamp the resolved (company-domain-aware) speaker labels onto
+            // each transcript segment before saving. Without this, every
+            // segment only carries the raw role ('user'/'client'), and
+            // DatabaseManager.saveMeeting() falls back to a hardcoded
+            // generic label for any 'client'/'interviewer' segment — which
+            // is why the persisted transcript view showed "Other Party"
+            // even when Speaking Balance (which reads resolvedSpeakerNames
+            // directly, not per-segment displayName) correctly showed the
+            // real company name.
+            const transcriptWithDisplayNames = data.transcript.map(segment => ({
+                ...segment,
+                displayName: segment.displayName
+                    ?? (segment.speaker === 'user' ? resolvedSpeakerNames.user
+                        : (segment.speaker === 'client' || segment.speaker === 'interviewer') ? resolvedSpeakerNames.client
+                            : undefined),
+            }));
+
             const meetingData: Meeting = {
                 id: meetingId,
                 title: title,
@@ -734,7 +762,7 @@ export class MeetingPersistence {
                 durationMs: data.durationMs,
                 summary: "See detailed summary",
                 detailedSummary: detailedSummary,
-                transcript: data.transcript,
+                transcript: transcriptWithDisplayNames,
                 usage: data.usage,
                 calendarEventId: calendarEventId,
                 source: source,
