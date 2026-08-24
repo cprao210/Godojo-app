@@ -1,6 +1,6 @@
 import React from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
-import { X, ExternalLink, RefreshCw, Copy, Check, Building2, Users, TrendingUp } from 'lucide-react';
+import { X, ExternalLink, RefreshCw, Copy, Check, Building2, Users, TrendingUp, ChevronDown } from 'lucide-react';
 import { DollarSign, Layers, Rocket, Newspaper, UserCheck, Linkedin, Target, Map } from 'lucide-react';
 import { Star, ChevronRight, AlertCircle, WifiOff, Trophy, Zap, GitBranch, Briefcase } from 'lucide-react';
 import { useResolvedTheme, useCompanyIntel, hasValue, pickValue, isIntelEmpty, openExternalUrl, LOADING_STAGES } from '@/hooks';
@@ -191,6 +191,8 @@ const SalesBriefPanel: React.FC<SalesBriefPanelProps> = ({ eventData, onClose })
     const companyIntelStates = useCompanyIntel(eventData);
     const { intel, loading, error, loadingStage, isCopied } = companyIntelStates;
     const { fromCache, companyName, fetchIntel, copyToClipboard } = companyIntelStates;
+    const { candidates, selectedIndex, selectCandidate } = companyIntelStates;
+    const [pickerOpen, setPickerOpen] = React.useState(false);
 
     const openUrl = openExternalUrl;
     // `isSet` for boolean guards (`isSet(x) && <JSX/>`); `pick` when the
@@ -239,6 +241,7 @@ const SalesBriefPanel: React.FC<SalesBriefPanelProps> = ({ eventData, onClose })
                             </p>
                         </div>
                     </div>
+
                     <div className="flex items-center gap-1.5">
                         {intel && (
                             <>
@@ -263,6 +266,65 @@ const SalesBriefPanel: React.FC<SalesBriefPanelProps> = ({ eventData, onClose })
                                 </button>
                             </>
                         )}
+                        {/* ── Company picker — only when attendees span more than one
+                        company (e.g. a group demo with 3 different domains) ── */}
+                        {candidates.length > 1 && (
+                            <div className={['relative px-5 py-2.5 shrink-0',
+                                isLight ? 'border-slate-200/60' : 'border-white/[0.06]'].join(' ')}>
+                                <button
+                                    onClick={() => setPickerOpen((o) => !o)}
+                                    className={[
+                                        'flex items-center gap-2 w-full px-3 py-1.5 rounded-lg text-[12px] font-medium transition-colors',
+                                        isLight ? 'bg-white border border-slate-200 text-slate-700 hover:bg-slate-50' : 'bg-white/[0.05] border border-white/[0.08] text-slate-200 hover:bg-white/[0.08]',
+                                    ].join(' ')}
+                                >
+                                    <Building2 size={12} className={isLight ? 'text-slate-400' : 'text-slate-500'} />
+                                    <span className="flex-1 text-left truncate">
+                                        {candidates[selectedIndex]?.companyName ?? 'Select company'}
+                                    </span>
+                                    <span className={['text-[10px]', isLight ? 'text-slate-400' : 'text-slate-500'].join(' ')}>
+                                        {selectedIndex + 1} of {candidates.length}
+                                    </span>
+                                    <ChevronDown size={12} className={[
+                                        'transition-transform', pickerOpen ? 'rotate-180' : '',
+                                        isLight ? 'text-slate-400' : 'text-slate-500',
+                                    ].join(' ')} />
+                                </button>
+
+                                <AnimatePresence>
+                                    {pickerOpen && (
+                                        <motion.div
+                                            initial={{ opacity: 0, y: -4 }}
+                                            animate={{ opacity: 1, y: 0 }}
+                                            exit={{ opacity: 0, y: -4 }}
+                                            transition={{ duration: 0.15 }}
+                                            className={[
+                                                'absolute left-5 right-5 mt-1 rounded-lg overflow-hidden z-10',
+                                                isLight ? 'bg-white border border-slate-200 shadow-lg' : 'bg-[#171a23] border border-white/[0.08] shadow-xl',
+                                            ].join(' ')}
+                                        >
+                                            {candidates.map((c, i) => (
+                                                <button
+                                                    key={c.domain}
+                                                    onClick={() => { selectCandidate(i); setPickerOpen(false); }}
+                                                    className={[
+                                                        'flex items-center justify-between w-full px-3 py-2 text-[12px] transition-colors',
+                                                        i === selectedIndex
+                                                            ? (isLight ? 'bg-blue-50 text-blue-700 font-medium' : 'bg-blue-500/15 text-blue-300 font-medium')
+                                                            : (isLight ? 'text-slate-600 hover:bg-slate-50' : 'text-slate-300 hover:bg-white/[0.06]'),
+                                                    ].join(' ')}
+                                                >
+                                                    <span>{c.companyName}</span>
+                                                    <span className={['text-[10px]', isLight ? 'text-slate-400' : 'text-slate-500'].join(' ')}>
+                                                        {c.domain}
+                                                    </span>
+                                                </button>
+                                            ))}
+                                        </motion.div>
+                                    )}
+                                </AnimatePresence>
+                            </div>
+                        )}
                         <button
                             onClick={onClose}
                             className={['p-1.5 rounded-lg transition-colors',
@@ -272,6 +334,8 @@ const SalesBriefPanel: React.FC<SalesBriefPanelProps> = ({ eventData, onClose })
                         </button>
                     </div>
                 </div>
+
+
 
                 {/* ── Scrollable body ── */}
                 <div className="flex-1 overflow-y-auto custom-scrollbar">
