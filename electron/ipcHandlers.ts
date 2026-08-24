@@ -2330,13 +2330,36 @@ export function initializeIpcHandlers(appState: AppState): void {
   // Calendar Integration Handlers
   // ==========================================
 
+  // Maps raw OAuth/loopback error messages (from CalendarManager /
+  // ZoomCalendarManager .startAuthFlow()) to a short, user-friendly toast
+  // body. Falls back to a generic message for anything unrecognized rather
+  // than surfacing a raw error string.
+  const calendarAuthErrorMessage = (error: any): string => {
+    const raw = String(error?.message ?? error ?? '');
+    if (raw === 'AUTH_TIMEOUT') {
+      return "We didn't detect a completed sign-in in time. Please try connecting again.";
+    }
+    if (/access_denied/i.test(raw)) {
+      return 'The connection was cancelled before access was granted.';
+    }
+    if (/EADDRINUSE/i.test(raw)) {
+      return 'A connection attempt is already in progress. Please wait a moment and try again.';
+    }
+    if (/network|ENOTFOUND|ETIMEDOUT|ECONNREFUSED/i.test(raw)) {
+      return 'A network error occurred while connecting. Please check your connection and try again.';
+    }
+    return "We couldn't complete the connection. Please try again.";
+  };
+
   safeHandle("calendar-connect", async () => {
     try {
       const { CalendarManager } = require('./services/CalendarManager');
       await CalendarManager.getInstance().startAuthFlow();
+      appState.notifyCalendarConnectionResult?.('Google Calendar', true);
       return { success: true };
     } catch (error: any) {
       console.error("Calendar auth error:", error);
+      appState.notifyCalendarConnectionResult?.('Google Calendar', false, calendarAuthErrorMessage(error));
       return { success: false, error: error.message };
     }
   });
@@ -2381,9 +2404,11 @@ export function initializeIpcHandlers(appState: AppState): void {
     try {
       const { ZoomCalendarManager } = require('./services/ZoomCalendarManager');
       await ZoomCalendarManager.getInstance().startAuthFlow();
+      appState.notifyCalendarConnectionResult?.('Zoom Calendar', true);
       return { success: true };
     } catch (error) {
       console.error("Zoom Calendar auth error:", error);
+      appState.notifyCalendarConnectionResult?.('Zoom Calendar', false, calendarAuthErrorMessage(error));
       return { success: false, error: String(error) };
     }
   });

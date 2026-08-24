@@ -2723,6 +2723,29 @@ export class AppState {
     );
   }
 
+  /**
+   * Native toast for a calendar (Google/Zoom) connection attempt finishing —
+   * success or failure. Same showNotificationOnActiveDisplay() pipeline as
+   * pause/resume/summary-ready, so it's visible regardless of which app
+   * screen the user is on. This matters especially on failure: the OAuth
+   * flow happens in the system browser, outside the app window, so the user
+   * may well have switched away from — or back to a different part of — the
+   * app by the time the loopback callback (or timeout) actually resolves.
+   */
+  public notifyCalendarConnectionResult(providerLabel: string, success: boolean, errorMessage?: string): void {
+    if (success) {
+      this.showNotificationOnActiveDisplay(
+        'Calendar Connected',
+        `${providerLabel} was connected successfully.`,
+      );
+    } else {
+      this.showNotificationOnActiveDisplay(
+        'Calendar Connection Failed',
+        errorMessage || `We couldn't connect ${providerLabel}. Please try again.`,
+      );
+    }
+  }
+
   // Renderer calls this at the start/end of every runAnalysis() call.
   public setLiveAnalysisInFlight(inFlight: boolean): void {
     this._liveAnalysisInFlight = inFlight;
