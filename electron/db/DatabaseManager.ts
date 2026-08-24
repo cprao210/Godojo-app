@@ -1570,12 +1570,19 @@ export class DatabaseManager {
                     // payload until the Supabase transcripts table gains the column —
                     // an unknown column fails the whole cloud upsert. TODO(supabase):
                     // migrate cloud schema, then add speaker_index here.
+                    // display_name IS already a real column on the Supabase transcripts
+                    // table (see SupabaseMirrorService's CREATE TABLE) and is NOT in
+                    // either LOCAL_ONLY_COLUMNS list (SupabaseBackfill.ts /
+                    // SupabaseSyncAudit.ts) — it was just missing from this payload,
+                    // which is why the transcript tab (reads local SQLite) showed names
+                    // fine while the cloud row stayed empty.
                     transcriptMirror.push({
                         id: Number(info.lastInsertRowid),
                         meeting_id: meeting.id,
                         speaker: segment.speaker,
                         content: segment.text,
-                        timestamp_ms: segment.timestamp
+                        timestamp_ms: segment.timestamp,
+                        display_name: displayName
                     });
                 }
             }
