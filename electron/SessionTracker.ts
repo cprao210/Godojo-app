@@ -176,7 +176,8 @@ export class SessionTracker {
         };
 
         // Extract a display name from an attendee: prefer displayName, fall back to name,
-        // then derive from email local-part. Used only when domain is personal (no company label).
+        // then derive from email local-part. Used both for personal-domain attendees
+        // (name only) and combined with company for professional-domain attendees.
         const resolveName = (attendee: any): string | null => {
             if (attendee.displayName && attendee.displayName.trim()) {
                 return attendee.displayName.trim();
@@ -186,7 +187,14 @@ export class SessionTracker {
             }
             if (attendee.email) {
                 const prefix = attendee.email.split('@')[0];
-                const parts = prefix.split(/[._\-+]/).filter(Boolean);
+                const parts = prefix
+                    .split(/[._\-+]/)
+                    // Strip trailing digits from each part — email local-parts often
+                    // carry a numeric suffix (rahulgandhi123, vijay007) that isn't part
+                    // of the actual name. "rahulgandhi123" -> "rahulgandhi" -> "Rahulgandhi".
+                    .map((p: string) => p.replace(/\d+$/, ''))
+                    .filter(Boolean);
+                if (parts.length === 0) return null;
                 return parts.map((p: string) =>
                     p.charAt(0).toUpperCase() + p.slice(1).toLowerCase()
                 ).join(' ');
@@ -217,7 +225,17 @@ export class SessionTracker {
                 if (!attendee.email) continue;
                 const company = companyFromEmail(attendee.email);
                 if (company) {
-                    if (!companyLabels.includes(company)) companyLabels.push(company);
+                    // Combine person + company (e.g. "Rahul (Raksham)") instead of
+                    // just the company name alone. Without the person's name here,
+                    // an LLM query like "what are Rahul's pain points?" has no way
+                    // to resolve "Rahul" against a transcript that only ever shows
+                    // "Raksham" as the speaker label — it has to guess/hallucinate.
+                    // Embedding the name directly in displayName means every
+                    // downstream consumer (transcript tab, DB, LLM prompt context)
+                    // gets it for free with no separate lookup.
+                    const personName = resolveName(attendee);
+                    const label = personName ? `${personName} (${company})` : company;
+                    if (!companyLabels.includes(label)) companyLabels.push(label);
                 } else {
                     hasPersonalDomain = true;
                 }

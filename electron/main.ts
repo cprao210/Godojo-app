@@ -371,7 +371,7 @@ export class AppState {
 
   // View management
   private view: "queue" | "solutions" = "queue"
-  private isUndetectable: boolean = false
+  private isUndetectable: boolean = true
 
   private problemInfo: {
     problem_statement: string
@@ -414,7 +414,12 @@ export class AppState {
   constructor() {
     // 1. Load boot-critical settings first (used by WindowHelpers)
     const settingsManager = SettingsManager.getInstance();
-    this.isUndetectable = settingsManager.get('isUndetectable') ?? false;
+    // Ghost mode (undetectable / hidden from screen-share capture) is ON by
+    // default for the overlay + launcher windows for any user who hasn't
+    // explicitly set a preference yet — hence `?? true`, not `?? false`.
+    // Once the user has ever toggled it, SettingsManager persists their
+    // explicit choice and that value wins regardless of this default.
+    this.isUndetectable = settingsManager.get('isUndetectable') ?? true;
     this.disguiseMode = settingsManager.get('disguiseMode') ?? 'none';
     this._verboseLogging = settingsManager.get('verboseLogging') ?? false;
     setVerboseLoggingFlag(this._verboseLogging);
@@ -3840,7 +3845,10 @@ async function initializeApp() {
   // constructed yet, so we cannot call appState.getUndetectable().
   if (process.platform === 'darwin') {
     // SettingsManager is already statically imported — no require() needed.
-    const isUndetectableOnStartup = SettingsManager.getInstance().get('isUndetectable') ?? false;
+    // Same default as the AppState constructor above — ghost mode ON by
+    // default (pre-emptive dock hide on macOS must match, or the dock icon
+    // would flash visible for a first-run user before AppState corrects it).
+    const isUndetectableOnStartup = SettingsManager.getInstance().get('isUndetectable') ?? true;
     if (isUndetectableOnStartup) {
       app.dock.hide();
     }
