@@ -14,6 +14,13 @@ console.log(`[WindowHelper] isEnvDev: ${isEnvDev}, isPackaged: ${isPackaged}, in
 // Force production mode if running as packaged app or inside app bundle
 const isDev = isEnvDev && !isPackaged;
 
+// Must match DEFAULT_DOCK_HEIGHT in src/hooks/useFloatingDock.ts — the
+// brand-bar-only (collapsed) dock height. Every meeting starts collapsed
+// (see useFloatingDock's onSessionReset handler), so switchToOverlay uses
+// this directly on a fresh meeting start instead of a taller placeholder —
+// see the freshMeetingStart param below for why.
+const COLLAPSED_OVERLAY_HEIGHT = 64;
+
 let startUrl = isDev ? "http://localhost:5180" : ""
 
 /** Must be awaited before the first createWindow() call in production. */
@@ -611,7 +618,7 @@ export class WindowHelper {
 
   // --- Swapping Logic ---
 
-  public switchToOverlay(inactive?: boolean): void {
+  public switchToOverlay(inactive?: boolean, freshMeetingStart?: boolean): void {
     console.log(`[WindowHelper] Switching to OVERLAY (inactive: ${!!inactive})`);
     this.currentWindowMode = 'overlay';
     KeybindManager.getInstance().setMode('overlay'); // Adapted from public PR #123 — verify premium interaction
@@ -622,7 +629,19 @@ export class WindowHelper {
     // Show Overlay FIRST
     if (this.overlayWindow && !this.overlayWindow.isDestroyed()) {
       // AFTER
-      const targetHeight = Math.max(this.overlayWindow.getBounds().height, 216);
+      // On a fresh meeting start, the dock always renders collapsed (brand
+      // bar only) — see useFloatingDock's onSessionReset handler, which
+      // fires in the same tick. Sizing the window to the OLD height (or the
+      // 216 floor below, which is itself taller than the collapsed dock)
+      // before that collapse/resize round-trip completes is exactly what
+      // caused the visible flicker: window shown briefly at the wrong,
+      // taller size with the previous session's expanded content still
+      // painted, then snapping down once the renderer catches up. Skip the
+      // stale-bounds/216 floor entirely in that case and go straight to the
+      // known-correct collapsed height.
+      const targetHeight = freshMeetingStart
+        ? COLLAPSED_OVERLAY_HEIGHT
+        : Math.max(this.overlayWindow.getBounds().height, 216);
 
       // Always follow the launcher's current display — it may have been moved to an
       // external monitor. Using the cursor or the overlay's stale bounds both fail
@@ -735,11 +754,11 @@ export class WindowHelper {
   }
 
   // Simplified setWindowMode that just calls switchers
-  public setWindowMode(mode: 'launcher' | 'overlay', inactive?: boolean): void {
+  public setWindowMode(mode: 'launcher' | 'overlay', inactive?: boolean, freshMeetingStart?: boolean): void {
     if (mode === 'launcher') {
       this.switchToLauncher(inactive);
     } else {
-      this.switchToOverlay(inactive);
+      this.switchToOverlay(inactive, freshMeetingStart);
     }
   }
 

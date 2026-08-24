@@ -95,7 +95,10 @@ export function useMeetingSession(
 
             const result = await window.electronAPI.startMeeting(meetingMetadata);
             if (result.success) {
-                await window.electronAPI.setWindowMode("overlay");
+                // freshMeetingStart=true: skip WindowHelper's stale-bounds/216px
+                // floor and size the window directly to the collapsed dock
+                // height, avoiding the expand→collapse flicker on every start.
+                await window.electronAPI.setWindowMode("overlay", undefined, true);
             } else {
                 console.error("Failed to start meeting:", result.error);
                 posthogAnalytics.trackMeetingStartFailed(result.error || "unknown");
@@ -178,11 +181,11 @@ export function useMeetingSession(
         setPendingEvent(null);
     };
 
-    return { 
-        handleStartMeeting, 
-        handleEndMeeting, 
-        showPermissionTray, 
-        setShowPermissionTray, 
-        proceedWithMeeting 
+    return {
+        handleStartMeeting,
+        handleEndMeeting,
+        showPermissionTray,
+        setShowPermissionTray,
+        proceedWithMeeting
     };
 }

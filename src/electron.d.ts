@@ -46,7 +46,7 @@ export interface ElectronAPI {
   hideWindow: () => Promise<void>
   showOverlay: () => Promise<void>
   hideOverlay: () => Promise<void>
-  setWindowMode: (mode: 'launcher' | 'overlay', inactive?: boolean) => Promise<void>
+  setWindowMode: (mode: 'launcher' | 'overlay', inactive?: boolean, freshMeetingStart?: boolean) => Promise<void>
   openExternal: (url: string) => Promise<void>
   openKnownFolder: (key: 'downloads' | 'applications') => Promise<void>
   getArch: () => Promise<string>

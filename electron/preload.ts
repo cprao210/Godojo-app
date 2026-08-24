@@ -908,7 +908,8 @@ contextBridge.exposeInMainWorld("electronAPI", {
   setLiveAnalysisInFlight: (inFlight: boolean) => ipcRenderer.invoke("set-live-analysis-in-flight", inFlight),
 
   // Window Mode
-  setWindowMode: (mode: 'launcher' | 'overlay', inactive?: boolean) => ipcRenderer.invoke("set-window-mode", mode, inactive),
+  setWindowMode: (mode: 'launcher' | 'overlay', inactive?: boolean, freshMeetingStart?: boolean) =>
+    ipcRenderer.invoke("set-window-mode", mode, inactive, freshMeetingStart),
 
   // Intelligence Mode Events
   onIntelligenceAssistUpdate: (callback: (data: { insight: string }) => void) => {

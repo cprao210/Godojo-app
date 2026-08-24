@@ -241,8 +241,8 @@ export function initializeIpcHandlers(appState: AppState): void {
     }
   )
 
-  safeHandle("set-window-mode", async (event, mode: 'launcher' | 'overlay', inactive?: boolean) => {
-    appState.getWindowHelper().setWindowMode(mode, inactive);
+  safeHandle("set-window-mode", async (event, mode: 'launcher' | 'overlay', inactive?: boolean, freshMeetingStart?: boolean) => {
+    appState.getWindowHelper().setWindowMode(mode, inactive, freshMeetingStart);
     return { success: true };
   })
 
