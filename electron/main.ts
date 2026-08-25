@@ -149,11 +149,13 @@ app.on('open-url', (event, url) => {
 
 process.on('uncaughtException', (err) => {
   logToFile('[CRITICAL] Uncaught Exception: ' + (err.stack || err.message || err));
+  flushLogsSync();
   posthogMain.captureException(err, 'uncaughtException');
 });
 
 process.on('unhandledRejection', (reason, promise) => {
   logToFile('[CRITICAL] Unhandled Rejection at: ' + promise + ' reason: ' + (reason instanceof Error ? reason.stack : reason));
+  flushLogsSync();
   posthogMain.captureException(reason, 'unhandledRejection', { promise: String(promise) });
 });
 
@@ -179,30 +181,86 @@ const originalError = console.error;
 /** Maximum log file size before rotation (10 MB). */
 const LOG_MAX_BYTES = 10 * 1024 * 1024;
 
+// Logging is off the main-thread hot path: logToFile() only enqueues, and a
+// short interval drains the queue to disk. It used to fs.statSync +
+// fs.appendFileSync synchronously on every single console.* call (1000+
+// call sites), which blocked the Electron main thread on the same event
+// loop used for IPC and native audio-pipeline callbacks — worse on Windows,
+// where Defender's real-time scanning adds real latency to small sync
+// writes. flushLogsSync() is reserved for crash/exit paths that can't wait
+// for the next interval tick.
+let _pendingLines: string[] = [];
+let _flushInFlight = false;
+const FLUSH_INTERVAL_MS = 300;
+const MAX_BUFFERED_LINES = 5000;
+
 function logToFile(msg: string) {
   try {
-    const logFile = getLogFile();
-    // If the app isn't ready yet (path not available), skip silently.
-    if (!logFile) return;
-
-    // P2-1: rotate the log file when it exceeds LOG_MAX_BYTES so that long-running
-    // sessions (or meetings with dense transcripts) don't fill the user's disk.
-    // The previous log is kept as .log.1 for one-generation rollover.
-    try {
-      const stat = fs.statSync(logFile);
-      if (stat.size >= LOG_MAX_BYTES) {
-        const rotated = logFile + '.1';
-        if (fs.existsSync(rotated)) fs.unlinkSync(rotated);
-        fs.renameSync(logFile, rotated);
-      }
-    } catch {
-      // statSync throws if the file doesn't exist yet — that's fine
+    _pendingLines.push(new Date().toISOString() + ' ' + msg + '\n');
+    if (_pendingLines.length > MAX_BUFFERED_LINES) {
+      // Disk writes are stuck/failing — bound memory instead of growing forever.
+      const dropped = _pendingLines.length - MAX_BUFFERED_LINES;
+      _pendingLines = _pendingLines.slice(dropped);
+      _pendingLines.unshift(`[LOG BUFFER OVERFLOW — ${dropped} lines dropped]\n`);
     }
-    fs.appendFileSync(logFile, new Date().toISOString() + ' ' + msg + '\n');
-  } catch (e) {
+  } catch {
     // Ignore logging errors
   }
 }
+
+// P2-1: rotate the log file when it exceeds LOG_MAX_BYTES so that long-running
+// sessions (or meetings with dense transcripts) don't fill the user's disk.
+// The previous log is kept as .log.1 for one-generation rollover.
+function rotateLogIfNeeded(logFile: string) {
+  try {
+    const stat = fs.statSync(logFile);
+    if (stat.size >= LOG_MAX_BYTES) {
+      const rotated = logFile + '.1';
+      if (fs.existsSync(rotated)) fs.unlinkSync(rotated);
+      fs.renameSync(logFile, rotated);
+    }
+  } catch {
+    // statSync throws if the file doesn't exist yet — that's fine
+  }
+}
+
+/** Synchronous, blocking flush — only for crash/exit paths where we can't wait for the next interval tick. */
+function flushLogsSync() {
+  if (_pendingLines.length === 0) return;
+  try {
+    const logFile = getLogFile();
+    if (!logFile) return;
+    const batch = _pendingLines.join('');
+    _pendingLines = [];
+    rotateLogIfNeeded(logFile);
+    fs.appendFileSync(logFile, batch);
+  } catch {
+    // Ignore logging errors
+  }
+}
+
+async function flushLogsAsync(): Promise<void> {
+  if (_flushInFlight || _pendingLines.length === 0) return;
+  _flushInFlight = true;
+  const batch = _pendingLines.join('');
+  _pendingLines = [];
+  try {
+    const logFile = getLogFile();
+    if (!logFile) {
+      _pendingLines.unshift(batch); // app not ready yet — retry next tick
+      return;
+    }
+    rotateLogIfNeeded(logFile);
+    await fs.promises.appendFile(logFile, batch);
+  } catch {
+    // Write failed (e.g. disk full) — re-queue so it's retried, bounded by MAX_BUFFERED_LINES.
+    _pendingLines.unshift(batch);
+  } finally {
+    _flushInFlight = false;
+  }
+}
+setInterval(() => { flushLogsAsync().catch(() => {}); }, FLUSH_INTERVAL_MS);
+process.on('exit', flushLogsSync);
 
 // ─── Screen Recording (system audio) permission state ──────────────────────
 //
@@ -906,8 +964,28 @@ export class AppState {
   private async bootstrapOllamaEmbeddings() {
     this._ollamaBootstrapPromise = (async () => {
       try {
+        const { CredentialsManager } = require('./services/CredentialsManager');
+        const cm = CredentialsManager.getInstance();
+        const hasCloudKey = !!(cm.getOpenaiApiKey() || process.env.OPENAI_API_KEY
+          || cm.getGeminiApiKey() || process.env.GOOGLE_API_KEY);
+        if (hasCloudKey) {
+          // Cloud always wins in EmbeddingProviderResolver's priority order, so
+          // Ollama would never actually get selected — don't spawn/poll/pull it.
+          return;
+        }
+
         const { OllamaBootstrap } = require('./rag/OllamaBootstrap');
         const bootstrap = new OllamaBootstrap();
+
+        const priorStatus = DatabaseManager.getInstance().getAppState('ollama_pull_status');
+        const alreadyRunning = await bootstrap.isOllamaRunning(); // cheap HTTP probe, no spawn
+        if (priorStatus !== 'complete' && priorStatus !== 'in_progress' && !alreadyRunning) {
+          // No cloud key, never successfully used Ollama embeddings before, and
+          // Ollama isn't already running — RAGManager already works via the
+          // bundled LocalEmbeddingProvider fallback, so don't eagerly spawn
+          // `ollama serve` on every launch for this (likely most-common) group.
+          return;
+        }
 
         // Fire and forget — don't await this before showing the window
         const result = await bootstrap.bootstrap('nomic-embed-text', (status: string, percent: number) => {
@@ -4004,8 +4082,13 @@ async function initializeApp() {
   // Apply the full disguise payload (names, dock icon, AUMID) early
   appState.applyInitialDisguise();
 
-  // Start the Ollama lifecycle manager
-  OllamaManager.getInstance().init().catch(console.error);
+  // Start the Ollama lifecycle manager — only if the user's persisted default
+  // chat model is actually an Ollama model. Most users never select one, so
+  // this avoids spawning + polling for `ollama serve` on every launch for
+  // people who don't have it installed.
+  if (appState.processingHelper.getLLMHelper().isUsingOllama()) {
+    OllamaManager.getInstance().init().catch(console.error);
+  }
 
   // NOTE: CredentialsManager.init() and loadStoredCredentials() are already called
   // above before this block — do NOT call them again here to avoid double key-load.
@@ -4277,6 +4360,10 @@ async function initializeApp() {
     } catch (e) {
       console.error('[Main] Failed to scrub credentials on quit:', e);
     }
+
+    // Ensure anything logged during quit cleanup actually lands on disk —
+    // the async interval flush may not get another tick before exit.
+    flushLogsSync();
   })
 
 
