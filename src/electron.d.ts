@@ -64,7 +64,7 @@ export interface ElectronAPI {
     stack?: string
     componentStack?: string | null
   }) => Promise<{ success: boolean; error?: string }>
-  confirmDeleteAccount: () => Promise<{ confirmed: boolean }>,
+  confirmDeleteAccount: (scope?: 'supabase-delete' | 'firebase-delete' | 'local' | 'full-delete') => Promise<{ confirmed: boolean }>,
   wipeLocalAccountData: () => Promise<{ success: boolean; error?: string }>
   onScreenshotTaken: (callback: (data: { path: string; preview: string }) => void) => () => void
   onScreenshotAttached: (callback: (data: { path: string; preview: string }) => void) => () => void

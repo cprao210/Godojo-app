@@ -470,8 +470,8 @@ contextBridge.exposeInMainWorld("electronAPI", {
   // Settings > General > Danger Zone. Shows a native confirm dialog in
   // main, then wipes userData and relaunches. Resolves { success: false,
   // cancelled: true } if the user clicks Cancel on the native dialog.
-  confirmDeleteAccount: (): Promise<{ confirmed: boolean }> =>
-    ipcRenderer.invoke("confirm-delete-account"),
+  confirmDeleteAccount: (scope?: 'supabase-delete' | 'firebase-delete' | 'local' | 'full-delete'): Promise<{ confirmed: boolean }> =>
+    ipcRenderer.invoke("confirm-delete-account", scope),
 
   // DEV-ONLY: local half of "Delete My Account". No confirm dialog (the
   // caller has already confirmed and completed the server-side deletion) —

@@ -4152,17 +4152,48 @@ export function initializeIpcHandlers(appState: AppState): void {
     return wipeLocalUserDataAndRelaunch('dev:wipe-local-account-data');
   });
 
-  safeHandle('confirm-delete-account', async (event) => {
-    const win = BrowserWindow.fromWebContents(event.sender) ?? undefined;
-    const messageBoxOptions: Electron.MessageBoxOptions = {
-      type: 'warning',
-      buttons: ['Cancel', 'Delete My Account'],
-      defaultId: 0,
-      cancelId: 0,
+  // `scope` mirrors the backend's DangerousDeleteKey values, plus 'local'
+  // for the local-only wipe (which never touches the backend at all).
+  // Wording is scope-specific so "delete only my Supabase rows" doesn't
+  // show a dialog claiming this device's local data is also being cleared.
+  const DELETE_SCOPE_COPY: Record<'supabase-delete' | 'firebase-delete' | 'local' | 'full-delete', { title: string; message: string; detail: string }> = {
+    'supabase-delete': {
+      title: 'Delete Supabase Record',
+      message: 'Permanently delete your Supabase data?',
+      detail:
+        'This permanently deletes your rows from every Supabase table (and linked tables) on the server. Your Firebase account and this device\'s local data are NOT affected. This cannot be undone.',
+    },
+    'firebase-delete': {
+      title: 'Delete Firebase Record',
+      message: 'Permanently delete your Firebase account?',
+      detail:
+        'This permanently deletes your Firebase Authentication account. Your Supabase rows and this device\'s local data are NOT affected. This cannot be undone.',
+    },
+    'local': {
+      title: 'Delete Local Record',
+      message: 'Clear all local app data on this device?',
+      detail:
+        'This clears everything stored on this device (credentials, cached session, local database) and signs you out. Your Supabase and Firebase records are NOT affected. This cannot be undone.\n\nThe app will restart automatically.',
+    },
+    'full-delete': {
       title: 'Delete My Account',
       message: 'Permanently delete your account?',
       detail:
         'This permanently deletes your account and all associated data from our servers, then clears everything stored on this device. This cannot be undone.\n\nThe app will restart automatically.',
+    },
+  };
+
+  safeHandle('confirm-delete-account', async (event, scope: 'supabase-delete' | 'firebase-delete' | 'local' | 'full-delete' = 'full-delete') => {
+    const win = BrowserWindow.fromWebContents(event.sender) ?? undefined;
+    const copy = DELETE_SCOPE_COPY[scope] ?? DELETE_SCOPE_COPY['full-delete'];
+    const messageBoxOptions: Electron.MessageBoxOptions = {
+      type: 'warning',
+      buttons: ['Cancel', copy.title],
+      defaultId: 0,
+      cancelId: 0,
+      title: copy.title,
+      message: copy.message,
+      detail: copy.detail
     };
     const { response } = win
       ? await dialog.showMessageBox(win, messageBoxOptions)

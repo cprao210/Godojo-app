@@ -1,5 +1,5 @@
 import React, { useState } from 'react';
-import { Ghost, PointerOff, Power, Terminal, MessageSquare, Palette, Monitor, Sun, Moon, Globe, ChevronDown, Eye, Layout, Settings, Activity, Skull } from 'lucide-react';
+import { Ghost, PointerOff, Power, Terminal, MessageSquare, Palette, Monitor, Sun, Moon, Globe, ChevronDown, Eye, Layout, Settings, Activity, Skull, Database, Flame, HardDrive, Trash2 } from 'lucide-react';
 import { OVERLAY_OPACITY_MIN } from '@/lib/overlayAppearance';
 import { useSettingsOverlay } from '@/hooks';
 import { getFirebaseAuth } from '@/lib/firebase';
@@ -36,56 +36,96 @@ const GeneralTab: React.FC<{ overlay: SettingsOverlayHook }> = ({ overlay }) => 
     const cardCls = isLight ? 'bg-white border-slate-200/80' : 'bg-bg-item-surface border-border-subtle';
 
     // DEV-ONLY: "Delete My Account" — self-service full wipe of the signed-in
-    // user's data (Supabase rows across every user-scoped table, then the
-    // Firebase Auth user, then local app data). See ipcHandlers.ts
+    // user's data, OR any one of its three parts individually — Supabase
+    // rows, the Firebase Auth account, or this device's local data — via a
+    // dropdown. Backend scope selection matches
+    // app/api/v1/auth.py's DangerousDeleteKey ('supabase-delete' /
+    // 'firebase-delete' / 'full-delete'); 'local' never calls the backend
+    // at all. See ipcHandlers.ts
     // 'dev:delete-current-user-account' for why this can only ever target
     // the currently signed-in user, never an arbitrary account.
     const [isDeletingAccount, setIsDeletingAccount] = useState(false);
     const [deleteAccountError, setDeleteAccountError] = useState<string | null>(null);
+    const [isDeleteDropdownOpen, setIsDeleteDropdownOpen] = useState(false);
+    const deleteDropdownRef = React.useRef<HTMLDivElement>(null);
 
-    const handleDeleteCurrentUserAccount = async () => {
+    React.useEffect(() => {
+        if (!isDeleteDropdownOpen) return;
+        const onClickOutside = (e: MouseEvent) => {
+            if (deleteDropdownRef.current && !deleteDropdownRef.current.contains(e.target as Node)) {
+                setIsDeleteDropdownOpen(false);
+            }
+        };
+        document.addEventListener('mousedown', onClickOutside);
+        return () => document.removeEventListener('mousedown', onClickOutside);
+    }, [isDeleteDropdownOpen]);
+
+    type DeleteScope = 'supabase-delete' | 'firebase-delete' | 'local' | 'full-delete';
+
+    const DELETE_SCOPE_OPTIONS: { scope: DeleteScope; label: string; icon: React.ReactNode }[] = [
+        { scope: 'supabase-delete', label: 'Supabase Record', icon: <Database size={13} /> },
+        { scope: 'firebase-delete', label: 'Firebase Record', icon: <Flame size={13} /> },
+        { scope: 'local', label: 'Local Record', icon: <HardDrive size={13} /> },
+        { scope: 'full-delete', label: 'Delete All', icon: <Trash2 size={13} /> },
+    ];
+
+    // Calls the dangerous-delete backend route for a given scope. Not used
+    // for 'local', which never touches the backend.
+    const callDangerousDelete = async (uid: string, key: 'supabase-delete' | 'firebase-delete' | 'full-delete') => {
+        const encrypted_key = await encryptDangerousKey();
+        const res = await fetch(`${API_BASE}/auth/dangerous/delete-user`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ uid, encrypted_key, key }),
+        });
+        const body = await res.json().catch(() => ({}));
+        if (!res.ok) {
+            // Backend's error envelope is {"error":{"code","message"}} —
+            // for a bad/missing key this is literally "Key required to
+            // do this operation" (see dangerous_key.py's _GENERIC_DENIAL).
+            throw new Error(body?.error?.message || `Delete failed (${res.status}).`);
+        }
+        if (body?.failed_tables?.length) {
+            console.warn('[settings] account deletion: some Supabase tables failed to clear:', body.failed_tables);
+        }
+    };
+
+    const handleDeleteScope = async (scope: DeleteScope) => {
+        setIsDeleteDropdownOpen(false);
         setDeleteAccountError(null);
-        const { confirmed } = await window.electronAPI.confirmDeleteAccount();
+        const { confirmed } = await window.electronAPI.confirmDeleteAccount(scope);
         if (!confirmed) return;
         setIsDeletingAccount(true);
         try {
-            const uid = getFirebaseAuth().currentUser?.uid;
-            if (!uid) {
-                setDeleteAccountError('No signed-in user found locally — cannot determine which account to delete.');
-                return;
+            // 'local' never needs a uid — it doesn't call the backend at all.
+            if (scope !== 'local') {
+                const uid = getFirebaseAuth().currentUser?.uid;
+                if (!uid) {
+                    setDeleteAccountError('No signed-in user found locally — cannot determine which account to delete.');
+                    return;
+                }
+
+                // Token-free by design: this hits the backend directly with a
+                // DANGEROUS_KEY proof instead of a Firebase ID token. See
+                // src/lib/dangerousKey.ts and the backend's
+                // app/core/dangerous_key.py for the shared-secret scheme.
+                await callDangerousDelete(uid, scope === 'full-delete' ? 'full-delete' : scope);
             }
 
-            // Token-free by design: this hits the backend directly with a
-            // DANGEROUS_KEY proof instead of a Firebase ID token. See
-            // src/lib/dangerousKey.ts and the backend's
-            // app/core/dangerous_key.py for the shared-secret scheme.
-            const encrypted_key = await encryptDangerousKey();
-            const res = await fetch(`${API_BASE}/auth/dangerous/delete-user`, {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ uid, encrypted_key }),
-            });
-            const body = await res.json().catch(() => ({}));
-            if (!res.ok) {
-                // Backend's error envelope is {"error":{"code","message"}} —
-                // for a bad/missing key this is literally "Key required to
-                // do this operation" (see dangerous_key.py's _GENERIC_DENIAL).
-                setDeleteAccountError(body?.error?.message || `Delete failed (${res.status}).`);
-                return;
-            }
-            if (body?.failed_tables?.length) {
-                console.warn('[settings] account deletion: some Supabase tables failed to clear:', body.failed_tables);
-            }
-
-            // Server-side rows + the Firebase Auth user are gone at this
-            // point — now clear this device: natively.db, cached session,
-            // credentials.enc. This relaunches the app on success, so
-            // there's no further state to set here.
-            const wipeResult = await window.electronAPI.wipeLocalAccountData();
-            if (!wipeResult.success) {
-                setDeleteAccountError(
-                    wipeResult.error || 'Account deleted, but clearing local data failed. Please contact support to finish clearing local data.'
-                );
+            // Local wipe only for 'local' and 'full-delete' — and it must run
+            // LAST, never first: wipeLocalUserDataAndRelaunch (main process)
+            // calls app.exit() once it finishes, so anything after it would
+            // never run, and running it before the backend calls above would
+            // destroy the local session/credentials those calls still need.
+            if (scope === 'local' || scope === 'full-delete') {
+                const wipeResult = await window.electronAPI.wipeLocalAccountData();
+                if (!wipeResult.success) {
+                    setDeleteAccountError(
+                        wipeResult.error || (scope === 'full-delete'
+                            ? 'Account deleted on the server, but clearing local data failed.'
+                            : 'Clearing local data failed. Please try again.')
+                    );
+                }
             }
 
         } catch (e: any) {
@@ -398,14 +438,35 @@ const GeneralTab: React.FC<{ overlay: SettingsOverlayHook }> = ({ overlay }) => 
                                 <p className="text-xs text-red-500 mt-1">{deleteAccountError}</p>
                             )}
                         </div>
-                        <button
-                            onClick={handleDeleteCurrentUserAccount}
-                            disabled={isDeletingAccount}
-                            className="shrink-0 flex items-center gap-2 px-3.5 py-2 rounded-lg text-xs font-medium border border-red-500/40 text-red-500 hover:bg-red-500/10 disabled:opacity-50 disabled:cursor-not-allowed transition-all"
-                        >
-                            <Skull size={13} className={isDeletingAccount ? 'animate-pulse' : ''} />
-                            {isDeletingAccount ? 'Deleting…' : 'Delete My Account'}
-                        </button>
+                        <div className="relative shrink-0" ref={deleteDropdownRef}>
+                            <button
+                                onClick={() => setIsDeleteDropdownOpen((o) => !o)}
+                                disabled={isDeletingAccount}
+                                className="flex items-center gap-2 px-3.5 py-2 rounded-lg text-xs font-medium border border-red-500/40 text-red-500 hover:bg-red-500/10 disabled:opacity-50 disabled:cursor-not-allowed transition-all"
+                            >
+                                <Skull size={13} className={isDeletingAccount ? 'animate-pulse' : ''} />
+                                {isDeletingAccount ? 'Deleting…' : 'Delete My Account'}
+                                <ChevronDown size={12} className={`transition-transform ${isDeleteDropdownOpen ? 'rotate-180' : ''}`} />
+                            </button>
+
+                            {isDeleteDropdownOpen && (
+                                <div className={`absolute right-0 top-full mt-1.5 w-48 rounded-lg border shadow-lg overflow-hidden z-10 ${isLight ? 'bg-white border-slate-200' : 'bg-bg-elevated border-border-subtle'}`}>
+                                    {DELETE_SCOPE_OPTIONS.map((opt) => (
+                                        <button
+                                            key={opt.scope}
+                                            onClick={() => handleDeleteScope(opt.scope)}
+                                            className={`w-full flex items-center gap-2 px-3 py-2 text-xs font-medium text-left transition-colors ${opt.scope === 'full-delete'
+                                                ? 'text-red-500 hover:bg-red-500/10'
+                                                : (isLight ? 'text-slate-600 hover:bg-slate-50' : 'text-text-secondary hover:bg-bg-item-surface')
+                                                }`}
+                                        >
+                                            {opt.icon}
+                                            {opt.label}
+                                        </button>
+                                    ))}
+                                </div>
+                            )}
+                        </div>
                     </div>
                 </div>
             )}
