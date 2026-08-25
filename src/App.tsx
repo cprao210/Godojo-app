@@ -57,11 +57,20 @@ const App: React.FC = () => {
   // PostHog needs its own init() call per window.
   useEffect(() => {
     posthogAnalytics.initAnalytics();
+  }, []);
+
+  // `meeting-completed` is broadcast by the main process to EVERY open window
+  // (see electron/MeetingPersistence.ts) but is meant to count each saved
+  // meeting exactly once. Since every window runs its own posthog-js instance,
+  // tracking it in all of them multiplies the count by the number of live
+  // windows. Gate it to the single launcher window so it fires exactly once.
+  useEffect(() => {
+    if (!isLauncherWindow) return;
     const unsubscribeMeetingCompleted = window.electronAPI?.onMeetingCompleted?.(() => {
       posthogAnalytics.trackMeetingCompleted();
     });
     return () => unsubscribeMeetingCompleted?.();
-  }, []);
+  }, [isLauncherWindow]);
 
   const FirebaseAuthStates = useFirebaseAuth(isLauncherWindow, isDefault, isOverlayWindow);
   const { authUser, authChecked, pendingVerificationUser, sessionExpiredMessage } = FirebaseAuthStates;
