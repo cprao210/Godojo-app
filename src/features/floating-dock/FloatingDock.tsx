@@ -58,6 +58,14 @@ export const FloatingDock: React.FC<FloatingDockProps> = ({
 
     const panelSpring = { type: 'spring', damping: 28, stiffness: 380, mass: 0.8 } as const;
     const dockSpring = { type: 'spring', damping: 26, stiffness: 300 } as const;
+    // The outer container's height drives the native OS-window resize every
+    // animation frame (see the ResizeObserver below). panelSpring/dockSpring are
+    // slightly underdamped so the panels/nav feel lively, but the SAME overshoot
+    // on the window height makes the real OS window spring PAST its final size
+    // and snap back — the "spring/jump" the dock showed on expand/collapse.
+    // dockHeightSpring is a no-overshoot spring (bounce:0) so the window grows
+    // and shrinks smoothly and settles exactly once, at the same pace.
+    const dockHeightSpring = { type: 'spring', duration: 0.34, bounce: 0 } as const;
 
     // The nav dock + panels are only ever visible while the dock is expanded —
     // collapsing hides both, regardless of which panel was previously active.
@@ -83,17 +91,17 @@ export const FloatingDock: React.FC<FloatingDockProps> = ({
     // window resize is comparatively expensive — nothing like a GPU-composited
     // CSS transform.
     //
-    // IMPORTANT: WindowHelper.setOverlayDimensions anchors the window's
-    // BOTTOM-RIGHT corner, so a resize also repositions it (moves it up as
-    // it grows). That means the single-shot "resize immediately, before the
-    // spring starts" approach below doesn't just avoid clipping — it makes
-    // the real OS window instantly teleport to its final size/position, and
-    // the framer-motion spring then plays out *inside* an already-full-size
-    // window. There's nothing left to visibly "grow" or "pop" — hence no
-    // bounce. That per-frame tracking is exactly what gave the dock its
-    // smooth grow/collapse feel, so on capable (non-performance-mode)
-    // hardware we keep doing it; only weak-GPU machines fall back to the
-    // cheaper single-shot jump.
+    // IMPORTANT: WindowHelper.setOverlayDimensions anchors the window's TOP
+    // edge, so the window grows DOWNWARD and its top-pinned brand bar stays
+    // put on screen (matching this component's top-down layout — brand bar on
+    // top, panels rendered below it). On capable hardware the ResizeObserver
+    // tracks the animated height every frame, so the real OS window grows and
+    // shrinks in lockstep with the spring — which is what gives the dock its
+    // smooth feel. The height spring is deliberately non-overshooting
+    // (dockHeightSpring, bounce:0): because the window tracks the height
+    // per-frame, any overshoot would make the real window spring past its
+    // final size and snap back. Weak-GPU machines skip the per-frame tracking
+    // and fall back to the cheaper single-shot jump below.
     const outerRef = React.useRef<HTMLDivElement>(null);
     useEffect(() => {
         if (isPerformanceMode) return; // weak GPU: handled by the single-shot path below
@@ -146,7 +154,7 @@ export const FloatingDock: React.FC<FloatingDockProps> = ({
                 ref={outerRef}
                 className={`relative w-[430px] mx-auto h-fit bg-transparent max-w-full rounded-2xl items-center flex flex-col min-h-0 ${overlayPanelClass}`}
                 animate={{ height: targetHeight }}
-                transition={dockSpring}
+                transition={dockHeightSpring}
                 onAnimationComplete={handleHeightAnimationComplete}
             >
                 {/* Overlay Panels — all three stay mounted so internal state (countdown

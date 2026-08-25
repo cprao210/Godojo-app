@@ -125,20 +125,33 @@ export class WindowHelper {
     const newWidth = Math.min(Math.max(width, 300), maxAllowedWidth) // min 300, max 90%
     const newHeight = Math.min(Math.max(height, 1), maxAllowedHeight) // min 1, max 90%
 
-    // Anchor the BOTTOM-RIGHT corner: keep the window's right and bottom edges
-    // fixed as its content grows/shrinks. This makes panels expand UPWARD from
-    // the corner and lets the compact dock settle back into the corner when a
-    // panel closes. (The previous top-left origin let the dock drift upward
-    // across open/close cycles once it was near the bottom of the screen.)
+    // Anchor the TOP edge: keep the window's top edge fixed as its content
+    // grows/shrinks, so the dock's brand bar — which is pinned to the window
+    // top (position: fixed; top: 6 in FloatingDock) — stays put on screen and
+    // the nav dock + panels grow DOWNWARD beneath it. This matches the dock's
+    // actual top-down DOM layout (brand bar on top, panels rendered below it at
+    // panelTopOffset).
+    //
+    // Previously this anchored the BOTTOM-RIGHT corner, which grew the window
+    // UPWARD. Because the brand bar is pinned to the (rising) top edge, every
+    // expand dragged it upward on screen — a visible jump — and near the top of
+    // the screen the upward growth hit the work-area ceiling and clamped
+    // mid-animation, producing the abrupt spring the dock showed when expanded
+    // after being moved to the top.
+    //
+    // newY is derived from the CURRENT top (not recomputed from a fixed bottom),
+    // so it's preserved exactly across expand AND collapse whenever the window
+    // fits on screen — no cross-cycle drift. It's only nudged upward (smoothly,
+    // since the resize is tracked per animation frame) when a tall panel opened
+    // near the bottom edge would otherwise run off-screen.
     const WIDTH_JITTER_TOLERANCE_PX = 2
     const widthChanged = Math.abs(newWidth - currentBounds.width) > WIDTH_JITTER_TOLERANCE_PX
-    const bottom = currentBounds.y + currentBounds.height
     const maxX = workArea.x + workArea.width - newWidth
     const maxY = workArea.y + workArea.height - newHeight
     const newX = widthChanged
       ? Math.min(Math.max(currentBounds.x + currentBounds.width - newWidth, workArea.x), maxX)
       : Math.min(Math.max(currentBounds.x, workArea.x), maxX)
-    const newY = Math.min(Math.max(bottom - newHeight, workArea.y), maxY)
+    const newY = Math.min(Math.max(currentBounds.y, workArea.y), maxY)
 
     this.overlayWindow.setContentSize(newWidth, newHeight)
     this.overlayWindow.setPosition(newX, newY)
@@ -659,18 +672,22 @@ export class WindowHelper {
       const currentDisplay = screen.getDisplayMatching(currentBounds);
       const onSameDisplay = currentDisplay.id === referenceDisplay.id;
 
-      // Snap to the bottom-right of the reference display on a fresh meeting
+      // Snap to the TOP-right of the reference display on a fresh meeting
       // start (overlayNeedsReposition) or whenever the overlay isn't already on
       // the launcher's display. Otherwise keep the user's manual position from
-      // earlier in this meeting. Width stays at the 600 placeholder; the
-      // renderer's ResizeObserver settles it to the real content width via
-      // setOverlayDimensions, which preserves this same bottom-right corner.
+      // earlier in this meeting. Top-right (not bottom-right) so the dock's
+      // top-pinned brand bar has the full screen height BELOW it to expand
+      // into: setOverlayDimensions anchors the TOP edge and grows the window
+      // downward, so starting at the top means panels open straight down in
+      // place — no upward slide or ceiling clamp. Width stays at the 600
+      // placeholder; the renderer's ResizeObserver settles it to the real
+      // content width via setOverlayDimensions, which preserves this corner.
       const shouldSnap = this.overlayNeedsReposition || !onSameDisplay;
       const x = shouldSnap
         ? workArea.x + workArea.width - 600 - this.overlayEdgeMargin
         : currentBounds.x;
       const y = shouldSnap
-        ? workArea.y + workArea.height - targetHeight - this.overlayEdgeMargin
+        ? workArea.y + this.overlayEdgeMargin
         : currentBounds.y;
       this.overlayNeedsReposition = false;
 
