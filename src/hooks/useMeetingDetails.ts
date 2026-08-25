@@ -350,6 +350,12 @@ export function useMeetingDetails(initialMeeting: Meeting) {
 
     const getSpeakerDisplayName = (speaker: string, displayName?: string, speakerIndex?: number): string => {
         // 1. Live transcription supplies displayName directly — always prefer it.
+        //    Exception: older meetings recorded before speaker labels were
+        //    unified may have "Me"/"Them" baked into this field — normalize
+        //    those legacy values so old meetings render the same "You" /
+        //    "Other Party" labels as new ones instead of the stale wording.
+        if (displayName === 'Me') displayName = undefined;
+        if (displayName === 'Them') displayName = undefined;
         if (displayName) return displayName;
         // 2. Use resolved calendar names saved in detailedSummary.speakerNames.
         //    These are set by SessionTracker (e.g. "Nikhilbarot", "Salesforce").

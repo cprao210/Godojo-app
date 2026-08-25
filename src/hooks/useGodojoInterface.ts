@@ -51,10 +51,17 @@ export function useGodojoInterface({ overlayOpacity = OVERLAY_OPACITY_DEFAULT }:
     // Add near the other useState declarations at the top of the hook
     const [companyIntel, setCompanyIntel] = useState<Record<string, any> | null>(null);
 
-    const speakerNamesRef = useRef<{ user: string; client: string }>({ user: 'Me', client: 'Them' });
+    // Default speaker labels, used until the main process resolves real names
+    // from the calendar invite (e.g. "Nikhil", "Salesforce"). Kept as "You" /
+    // "Other Party" so they match the labels used everywhere else the speaker
+    // is displayed post-call (Transcript tab, Speaking Balance) — these get
+    // persisted as `displayName` on each transcript segment, so a mismatch
+    // here previously showed up as "Me"/"Them" in the saved transcript even
+    // though the rest of the app said "You"/"Other Party".
+    const speakerNamesRef = useRef<{ user: string; client: string }>({ user: 'You', client: 'Other Party' });
     const [speakerNames, setSpeakerNames] = useState<{ user: string; client: string }>({
-        user: 'Me',
-        client: 'Them'
+        user: 'You',
+        client: 'Other Party'
     });
 
     // Add alongside the other IPC useEffect listeners
@@ -110,9 +117,9 @@ export function useGodojoInterface({ overlayOpacity = OVERLAY_OPACITY_DEFAULT }:
         return () => window.removeEventListener('storage', handleStorage);
     }, []);
 
-    // Per-speaker rolling transcript state — keeps "Me" and "Them" text strictly isolated
-    const [rollingTranscriptUser, setRollingTranscriptUser] = useState('');   // "Me" track
-    const [rollingTranscriptClient, setRollingTranscriptClient] = useState(''); // "Them" track
+    // Per-speaker rolling transcript state — keeps "You" and "Other Party" text strictly isolated
+    const [rollingTranscriptUser, setRollingTranscriptUser] = useState('');   // "You" track
+    const [rollingTranscriptClient, setRollingTranscriptClient] = useState(''); // "Other Party" track
     const [isClientSpeaking, setIsClientSpeaking] = useState(false);  // Track if actively speaking
     const [isUserSpeaking, setIsUserSpeaking] = useState(false);      // Track if user is speaking
     // True while the tail of a rolling track is an un-finalized partial.
@@ -439,12 +446,12 @@ export function useGodojoInterface({ overlayOpacity = OVERLAY_OPACITY_DEFAULT }:
                     speakerNamesRef.current = names;
                     setSpeakerNames(names);
                 } else {
-                    speakerNamesRef.current = { user: 'Me', client: 'Them' };
-                    setSpeakerNames({ user: 'Me', client: 'Them' });
+                    speakerNamesRef.current = { user: 'You', client: 'Other Party' };
+                    setSpeakerNames({ user: 'You', client: 'Other Party' });
                 }
             }).catch(() => {
-                speakerNamesRef.current = { user: 'Me', client: 'Them' };
-                setSpeakerNames({ user: 'Me', client: 'Them' });
+                speakerNamesRef.current = { user: 'You', client: 'Other Party' };
+                setSpeakerNames({ user: 'You', client: 'Other Party' });
             });
         });
         return () => unsubscribe();
