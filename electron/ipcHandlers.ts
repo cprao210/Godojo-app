@@ -4067,6 +4067,20 @@ export function initializeIpcHandlers(appState: AppState): void {
   // calling this — it does not prompt itself.
   async function wipeLocalUserDataAndRelaunch(logPrefix: string): Promise<{ success: boolean; error?: string }> {
     try {
+      // Release the RAG vector-search worker's read-only connection to
+      // natively.db FIRST. That worker (electron/rag/vectorSearchWorker.ts)
+      // opens its OWN sqlite handle, separate from DatabaseManager's — and on
+      // Windows an open handle keeps natively.db (+ its -wal/-shm) locked. If
+      // it isn't released, the rmSync below deletes files up to natively.db,
+      // then throws EPERM and leaves the godojo-ai/godojo-ai-dev folder
+      // half-wiped (exactly the "files in use" you can only remove after
+      // quitting the app).
+      try {
+        await appState.getRAGManager()?.destroy();
+      } catch (e) {
+        console.warn(`[ipc] ${logPrefix}: RAGManager.destroy() failed (continuing):`, e);
+      }
+
       // Release the sqlite file handle before touching userData — on
       // Windows the delete below fails (or leaves natively.db behind)
       // if it's still open.
@@ -4119,7 +4133,7 @@ export function initializeIpcHandlers(appState: AppState): void {
       let deleted = false;
       for (let attempt = 1; attempt <= 5; attempt++) {
         try {
-          fs.rmSync(userDataPath, { recursive: true, force: true });
+          fs.rmSync(userDataPath, { recursive: true, force: true, maxRetries: 5, retryDelay: 150 });
           deleted = true;
           break;
         } catch (e) {

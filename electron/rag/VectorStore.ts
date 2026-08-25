@@ -120,6 +120,20 @@ export class VectorStore {
      */
     async destroy(): Promise<void> {
         if (this.worker) {
+            // Ask the worker to close its cached read-only DB connections
+            // BEFORE terminating. worker.terminate() abruptly kills the thread
+            // and does not reliably run better-sqlite3's native destructor, so
+            // on Windows the worker's open handle to natively.db would survive
+            // and keep the file locked — breaking any userData wipe/delete.
+            // Bounded by a short race so a wedged worker can't stall shutdown.
+            try {
+                await Promise.race([
+                    this.postToWorker({ type: 'close' }),
+                    new Promise((resolve) => setTimeout(resolve, 2000)),
+                ]);
+            } catch {
+                /* best-effort — terminate regardless */
+            }
             await this.worker.terminate();
             this.worker = null;
         }
