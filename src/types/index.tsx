@@ -81,6 +81,54 @@ export interface FirebaseAuthState {
 export interface MeetingSessionControls {
   handleStartMeeting: (calendarEvent?: any) => Promise<void>;
   handleEndMeeting: (meetingTypes?: ("discovery" | "demo" | "negotiation")[]) => Promise<void>;
+  showPermissionTray: boolean;
+  setShowPermissionTray: React.Dispatch<React.SetStateAction<boolean>>;
+  proceedWithMeeting: () => void;
+}
+
+// --- src/hooks/useSystemAudioPermission.ts ---
+
+/** Whether each capture permission is usable right now. */
+export interface AudioPermissionState {
+  microphone: boolean;
+  systemAudio: boolean;
+  screenCapture: boolean;
+}
+
+/**
+ * An audio problem worth showing the user.
+ *
+ * `kind` decides the copy and which System Settings pane the action button
+ * targets: a screen-recording denial points at the OS Privacy pane, while a
+ * generic capture failure is cross-platform. Conflating them is how a Windows
+ * user ends up reading macOS instructions with a button that hands the Windows
+ * shell a URI scheme it cannot resolve.
+ */
+export interface SystemAudioWarning {
+  kind: 'screen-recording-permission' | 'audio-capture-failure';
+  message: string;
+  channel?: 'system' | 'mic';
+}
+
+// --- src/features/common/AudioStatusTray.tsx ---
+export interface AudioStatusTrayProps {
+  /** Force the panel open — set when a meeting start was blocked. */
+  isVisible?: boolean;
+  onClose?: () => void;
+  onAllGranted?: () => void;
+}
+
+export interface PermissionRowProps {
+  icon: React.ReactNode;
+  title: string;
+  isGranted: boolean;
+  onRequest: () => void;
+  onOpenSettings: () => void;
+}
+
+// --- src/features/common/SystemAudioPermissionBanner.tsx ---
+export interface SystemAudioPermissionBannerProps {
+  className?: string;
 }
 
 // --- src/hooks/useResolvedTheme.ts ---
@@ -1345,6 +1393,9 @@ export interface LauncherProps {
   ollamaPullMessage?: string;
   authUser?: { displayName?: string | null; email?: string | null; photoURL?: string | null } | null;
   onSignOut?: () => void;
+  showPermissionTray?: boolean;
+  setShowPermissionTray?: React.Dispatch<React.SetStateAction<boolean>>;
+  proceedWithMeeting?: () => void;
 }
 
 // --- src/features/common/GodojoInterface.tsx ---
@@ -1498,6 +1549,13 @@ export interface FloatingDockProps {
   // Company intelligence from pre-call sales brief
   companyIntel?: Record<string, any> | null;
 
+  // Explicit, single-shot native overlay-window resize (height, optional
+  // width) for FloatingDock's own discrete size transitions — see the
+  // "Window resize pipeline" note in useGodojoInterface.ts. Optional so
+  // FloatingDock keeps working (via the ResizeObserver fallback) in any
+  // context that doesn't wire this up (e.g. Storybook/tests).
+  onRequestOverlayResize?: (height: number, width?: number) => void;
+
 }
 
 // --- src/features/floating-dock/panels/FloatingChatPanel.tsx ---
@@ -1534,6 +1592,8 @@ export interface FloatingChatPanelProps {
    * Collected by the parent (useFloatingDock) across the whole call and sent
    * to chatApi.linkMeetingInteractions once the call ends. */
   onInteractionId?: (interactionId: number) => void;
+  /** See usePerformanceMode.ts — drops backdrop-filter blur when true. */
+  isPerformanceMode?: boolean;
 }
 
 // --- src/features/floating-dock/panels/FloatingIntelligencePanel.tsx ---
@@ -1558,6 +1618,8 @@ export interface FloatingIntelligencePanelProps {
   noAnalysisCaptured?: boolean; // true when the countdown ended without enough transcript to analyse
   meetingTypes: MeetingType[];
   onMeetingTypesChange: (types: MeetingType[]) => void;
+  /** See usePerformanceMode.ts — drops backdrop-filter blur when true. */
+  isPerformanceMode?: boolean;
 }
 
 // --- src/features/floating-dock/panels/FloatingSettingsPanel.tsx ---
@@ -1584,6 +1646,11 @@ export interface FloatingSettingsPanelProps {
   onSelectModel: (m: string) => void;
   dockOpacity: number;
   onDockOpacityChange: (val: number) => void;
+  /** See usePerformanceMode.ts — drops backdrop-filter blur when true. */
+  isPerformanceMode?: boolean;
+  /** Current user preference ('auto' | 'on' | 'off') for the toggle row below. */
+  performanceModePreference?: 'auto' | 'on' | 'off';
+  onPerformanceModePreferenceChange?: (pref: 'auto' | 'on' | 'off') => void;
 }
 
 // --- src/features/live-analysis/components/LiveAnalysisContent.tsx ---

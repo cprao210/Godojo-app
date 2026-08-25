@@ -28,13 +28,14 @@ import { StartupSequence } from "@/features/onboarding";
 // ---------------------------------------------------------------------------
 import { ToastProvider, ToastViewport } from "@/features/ui/toast";
 import { ModelSelectorWindow, GodojoInterface, Launcher, ErrorBoundary } from "@/features/common";
-import { IncompatibleProviderBanner, AdCampaignToasters } from "@/features/common";
+import { IncompatibleProviderBanner, AdCampaignToasters, SystemAudioPermissionBanner } from "@/features/common";
 // import { SupportToaster } from "@/features/common";
 
 // ---------------------------------------------------------------------------
 // pages
 // ---------------------------------------------------------------------------
 import { EmailVerification, SignIn } from "@/pages";
+import { AuthToastHost } from "@/features/auth/AuthToastHost";
 
 // ---------------------------------------------------------------------------
 // premium
@@ -72,7 +73,7 @@ const App: React.FC = () => {
   const { hasProfile, isPremiumActive, setIsPremiumActive, isProcessingMeeting, setIsProcessingMeeting } = AppLifecycleStates;
   const { lastMeetingEndTime, appStartTime, ollamaPull, incompatibleWarning, dismissIncompatibleWarning, reindexIncompatibleMeetings } = AppLifecycleStates;
 
-  const { handleStartMeeting, handleEndMeeting } = useMeetingSession(tenantId, setIsProcessingMeeting);
+  const { handleStartMeeting, handleEndMeeting, showPermissionTray, setShowPermissionTray, proceedWithMeeting } = useMeetingSession(tenantId, setIsProcessingMeeting);
 
   // --- Local UI state ----------------------------------------------------
   const [showStartup, setShowStartup] = useState(true);
@@ -145,7 +146,7 @@ const App: React.FC = () => {
   if (isOverlayWindow) {
     return (
       <ErrorBoundary context="Overlay">
-        <div className="w-[550px] relative bg-transparent">
+        <div className="w-[430px] relative bg-transparent">
           <QueryClientProvider client={queryClient}>
             <ToastProvider>
               <div
@@ -154,6 +155,11 @@ const App: React.FC = () => {
                   transition: "background-color 75ms ease, border-color 75ms ease, box-shadow 75ms ease",
                 } as React.CSSProperties}
               >
+                {/* Permission warnings render above the meeting UI. The overlay
+                    window is created hidden and only appears once a meeting starts,
+                    so this is the first point at which an in-meeting denial can
+                    actually be seen. */}
+                <SystemAudioPermissionBanner />
                 <GodojoInterface onEndMeeting={handleEndMeeting} overlayOpacity={overlayOpacity} />
               </div>
               <ToastViewport />
@@ -169,6 +175,7 @@ const App: React.FC = () => {
   return (
     <ErrorBoundary context="Launcher">
       <div className="h-full min-h-0 w-full relative bg-[#000000]">
+        <AuthToastHost />
         {/* Auth gate: while we don't know yet, render nothing (avoids SignIn flash).
             Once known, if no user is signed in show the SignIn page instead of the
             launcher. The SignIn component triggers onIdTokenChanged on success, which
@@ -248,6 +255,9 @@ const App: React.FC = () => {
                           ollamaPullMessage={ollamaPull.message}
                           authUser={authUser}
                           onSignOut={signOut}
+                          showPermissionTray={showPermissionTray}
+                          setShowPermissionTray={setShowPermissionTray}
+                          proceedWithMeeting={proceedWithMeeting}
                         />
                       </div>
                       <SettingsOverlay

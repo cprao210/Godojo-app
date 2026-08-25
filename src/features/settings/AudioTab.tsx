@@ -1,5 +1,5 @@
 import React from 'react';
-import { Mic, Speaker, Globe, MapPin, Info, Upload, ExternalLink, Trash2, Check, RefreshCw, FlaskConical } from 'lucide-react';
+import { Mic, Speaker, Globe, MapPin, Info, Upload, ExternalLink, Trash2, Check, RefreshCw, FlaskConical, AlertCircle } from 'lucide-react';
 import { useSettingsOverlay } from '@/hooks';
 import { SttKeyProvider } from '@/hooks/useSttProviderSettings';
 import CustomSelect from './CustomSelect';
@@ -270,6 +270,39 @@ const AudioTab: React.FC<{ overlay: SettingsOverlayHook }> = ({ overlay }) => {
                         <div className="h-1.5 bg-bg-input rounded-full overflow-hidden">
                             <div className="h-full bg-green-500 transition-all duration-100 ease-out" style={{ width: `${audio.micLevel}%` }} />
                         </div>
+                        {audio.micError && (
+                            <div className="flex items-start gap-2 p-3 mt-2 bg-red-500/10 border border-red-500/20 rounded-lg text-red-400 text-xs">
+                                <AlertCircle size={14} className="shrink-0 mt-0.5" />
+                                <span>{audio.micError}</span>
+                            </div>
+                        )}
+                    </div>
+
+                    {/*
+                      System-audio meter. This is the interviewer's side of the call,
+                      captured on macOS via Screen Recording rather than the microphone
+                      permission — so it can be completely dead while the Input Level
+                      meter above bounces along happily. Showing them side by side is
+                      what makes a Screen Recording denial diagnosable before a meeting
+                      instead of after one produced a half-empty transcript.
+                    */}
+                    <div>
+                        <div className="flex justify-between text-xs text-text-secondary mb-2 px-1">
+                            <span>System Audio Level</span>
+                            <span className="text-text-tertiary">Interviewer / meeting audio</span>
+                        </div>
+                        <div className="h-1.5 bg-bg-input rounded-full overflow-hidden">
+                            <div
+                                className={`h-full transition-all duration-100 ease-out ${audio.systemAudioError ? 'bg-red-500/40' : 'bg-green-500'}`}
+                                style={{ width: `${audio.systemAudioError ? 100 : audio.systemAudioLevel}%` }}
+                            />
+                        </div>
+                        {audio.systemAudioError && (
+                            <div className="flex items-start gap-2 p-3 mt-2 bg-red-500/10 border border-red-500/20 rounded-lg text-red-400 text-xs">
+                                <AlertCircle size={14} className="shrink-0 mt-0.5" />
+                                <span>{audio.systemAudioError}</span>
+                            </div>
+                        )}
                     </div>
 
                     <div className="h-px bg-border-subtle my-2" />

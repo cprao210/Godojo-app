@@ -7,6 +7,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import type { User } from "firebase/auth";
 import { sendVerificationEmail, reloadAndCheckVerified, signOut } from "@/lib/firebase";
+import { authToast } from "@/lib/authToastBus";
 
 const POLL_INTERVAL_MS = 4000;
 const RESEND_COOLDOWN_S = 60;
@@ -68,9 +69,12 @@ export function useEmailVerification({ user, onVerified }: UseEmailVerificationA
         try {
             await sendVerificationEmail(user);
             setResendInfo("Verification email sent! Check your inbox.");
+            authToast.success("Verification email sent! Check your inbox.");
             setResendCooldown(RESEND_COOLDOWN_S);
         } catch (e: any) {
-            setResendError(e?.message ?? "Failed to send email. Please try again.");
+            const message = e?.message ?? "Failed to send email. Please try again.";
+            setResendError(message);
+            authToast.error(message);
         } finally {
             setResendBusy(false);
         }

@@ -42,7 +42,7 @@ export const FloatingPanelWrapper: React.FC<FloatingPanelWrapperProps> = ({
         animate={animate}
         exit={exit}
         transition={transition}
-        className="fixed left-[65px]"
+        className="fixed left-[5px]"
         style={{
             position: 'fixed',
             top: panelTopOffset,

@@ -124,6 +124,16 @@ http.interceptors.response.use(
     }
 
     if (axiosError.response) {
+      // Terminal 401: the token refresh retry failed (or they're fully signed out).
+      // Let the global invalid session handler catch it so we force-logout.
+      if (axiosError.response.status === 401 && config && config._retry) {
+        if (invalidSessionHandler) {
+          // Delay calling the handler slightly to ensure the promise rejection
+          // propagates cleanly without unmounting React components mid-flight.
+          setTimeout(() => invalidSessionHandler!("auth/session-expired"), 50);
+        }
+      }
+
       const body = axiosError.response.data as
         | { error?: { code?: string; message?: string; details?: unknown } }
         | undefined;

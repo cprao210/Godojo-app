@@ -20,6 +20,7 @@ import { useFloatingDock } from "./useFloatingDock";
 import { useLauncher } from "./useLauncher";
 import { useWindowControls } from "./useWindowControls";
 import { useGodojoInterface } from "./useGodojoInterface";
+import { usePerformanceMode } from "./usePerformanceMode";
 import { useTopSearchPill } from './useTopSearchPill';
 import { useModelSelectorWindow } from './useModelSelectorWindow';
 import { useEditableTextBlock } from "./useEditableTextBlock";
@@ -57,6 +58,7 @@ import { useSettingsOverlay } from "./useSettingsOverlay";
 import { useSttProviderSettings, STT_PROVIDER_KEY_URLS } from "./useSttProviderSettings";
 import { useCompanyContext, ALLOWED_EXTENSIONS, MAX_FILE_SIZE_BYTES, ASSET_CONFIG, STATUS_BADGE, normalizeContext } from "./useCompanyContext";
 import { useUpdateStatus } from "./useUpdateStatus";
+import { useSystemAudioPermission } from "./useSystemAudioPermission";
 export type { UseUpdateStatusResult } from "./useUpdateStatus";
 
 export {
@@ -140,5 +142,7 @@ export {
     useCalendarIntegrationSettings,
     useTranscriptVisibility,
     useSettingsOverlay,
-    useUpdateStatus
+    useUpdateStatus,
+    useSystemAudioPermission,
+    usePerformanceMode
 };

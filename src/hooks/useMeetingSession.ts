@@ -1,4 +1,4 @@
-import { useEffect, useRef } from "react";
+import { useEffect, useRef, useState } from "react";
 import { verifySessionIsActive, signOut as fbSignOut } from "../lib/firebase";
 import { TranscriptSegmentInput, MeetingSessionControls } from "@/types";
 import { posthogAnalytics } from "@/lib/analytics/posthog.service";
@@ -29,6 +29,9 @@ export function useMeetingSession(
     // the renderer-side half of the same fix.
     const isStartingRef = useRef(false);
 
+    const [showPermissionTray, setShowPermissionTray] = useState(false);
+    const [pendingEvent, setPendingEvent] = useState<any>(null);
+
     // Buffer transcript turns while a backend meeting session is active.
     useEffect(() => {
         const cleanup = window.electronAPI?.onNativeAudioTranscript?.((t) => {
@@ -44,7 +47,7 @@ export function useMeetingSession(
         return () => cleanup?.();
     }, []);
 
-    const handleStartMeeting = async (calendarEvent?: any) => {
+    const handleStartMeetingRaw = async (calendarEvent?: any) => {
 
         if (isStartingRef.current) {
             console.warn("[useMeetingSession] startMeeting already in flight — ignoring duplicate call.");
@@ -92,7 +95,10 @@ export function useMeetingSession(
 
             const result = await window.electronAPI.startMeeting(meetingMetadata);
             if (result.success) {
-                await window.electronAPI.setWindowMode("overlay");
+                // freshMeetingStart=true: skip WindowHelper's stale-bounds/216px
+                // floor and size the window directly to the collapsed dock
+                // height, avoiding the expand→collapse flicker on every start.
+                await window.electronAPI.setWindowMode("overlay", undefined, true);
             } else {
                 console.error("Failed to start meeting:", result.error);
                 posthogAnalytics.trackMeetingStartFailed(result.error || "unknown");
@@ -143,5 +149,43 @@ export function useMeetingSession(
         }
     };
 
-    return { handleStartMeeting, handleEndMeeting };
+    const handleStartMeeting = async (calendarEvent?: any) => {
+        if (isStartingRef.current) return;
+
+        // Optional-chained and wrapped: an unguarded reject here escaped the
+        // click handler as an unhandled rejection, leaving the button dead with
+        // no feedback. A permission check failing must never be worse than
+        // proceeding, so on error we fall through and let the main-process gates
+        // (which re-check anyway) make the call.
+        try {
+            const perms = await window.electronAPI?.checkPermissions?.();
+            // screenCapture is included because the tray's "all granted" state
+            // requires it — checking only microphone/systemAudio meant the tray
+            // could never be satisfied and the user got stuck behind it.
+            if (perms && (!perms.microphone || !perms.systemAudio || !perms.screenCapture)) {
+                setPendingEvent(calendarEvent);
+                setShowPermissionTray(true);
+                return;
+            }
+        } catch (err) {
+            console.warn('[useMeetingSession] Permission pre-check failed; continuing to start:', err);
+        }
+
+        await handleStartMeetingRaw(calendarEvent);
+    };
+
+    const proceedWithMeeting = () => {
+        if (!showPermissionTray) return; // Prevent proceeding if not explicitly triggered
+        setShowPermissionTray(false);
+        handleStartMeetingRaw(pendingEvent);
+        setPendingEvent(null);
+    };
+
+    return {
+        handleStartMeeting,
+        handleEndMeeting,
+        showPermissionTray,
+        setShowPermissionTray,
+        proceedWithMeeting
+    };
 }

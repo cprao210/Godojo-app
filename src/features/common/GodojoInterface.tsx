@@ -14,7 +14,7 @@ import { GodojoInterfaceProps } from '@/types';
 const GodojoInterface: React.FC<GodojoInterfaceProps> = ({ onEndMeeting, overlayOpacity }) => {
 
     const godojoInterfaceState = useGodojoInterface({ onEndMeeting, overlayOpacity });
-    const { contentRef, liveTranscriptRef, isMeetingPaused, handlePauseMeeting } = godojoInterfaceState;
+    const { contentRef, liveTranscriptRef, isMeetingPaused, handlePauseMeeting, requestOverlayResize } = godojoInterfaceState;
     const { isUndetectable, setIsUndetectable, rollingTranscriptUser, rollingTranscriptClient } = godojoInterfaceState;
     const { isClientSpeaking, isUserSpeaking, showTranscript, setShowTranscript } = godojoInterfaceState;
     const { currentModel, setCurrentModel, speakerNames, shortcuts, overlayPanelClass, companyIntel } = godojoInterfaceState;
@@ -54,6 +54,7 @@ const GodojoInterface: React.FC<GodojoInterfaceProps> = ({ onEndMeeting, overlay
                 shortcuts={shortcuts}
                 overlayPanelClass={overlayPanelClass}
                 companyIntel={companyIntel}
+                onRequestOverlayResize={requestOverlayResize}
             />
         </motion.div>
     );

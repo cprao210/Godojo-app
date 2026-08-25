@@ -14,6 +14,13 @@ console.log(`[WindowHelper] isEnvDev: ${isEnvDev}, isPackaged: ${isPackaged}, in
 // Force production mode if running as packaged app or inside app bundle
 const isDev = isEnvDev && !isPackaged;
 
+// Must match DEFAULT_DOCK_HEIGHT in src/hooks/useFloatingDock.ts — the
+// brand-bar-only (collapsed) dock height. Every meeting starts collapsed
+// (see useFloatingDock's onSessionReset handler), so switchToOverlay uses
+// this directly on a fresh meeting start instead of a taller placeholder —
+// see the freshMeetingStart param below for why.
+const COLLAPSED_OVERLAY_HEIGHT = 64;
+
 let startUrl = isDev ? "http://localhost:5180" : ""
 
 /** Must be awaited before the first createWindow() call in production. */
@@ -32,6 +39,15 @@ export class WindowHelper {
   private launcherSize: { width: number; height: number } | null = null
   // Track current window mode (persists even when overlay is hidden via Cmd+B)
   private currentWindowMode: 'launcher' | 'overlay' = 'launcher'
+
+  // When true, the next time the overlay is shown it snaps to the bottom-right
+  // of the reference display (Google-Meet-PiP style) instead of preserving its
+  // previous position. Armed at creation and re-armed on every return to the
+  // launcher (i.e. meeting end), so each "Start GoDojo" opens bottom-right,
+  // while manual drags mid-meeting (and hide/show toggles) are respected.
+  private overlayNeedsReposition: boolean = true
+  // Gap (px) between the overlay and the screen work-area edges when snapped.
+  private readonly overlayEdgeMargin: number = 24
 
   private appState: AppState
   private contentProtection: boolean = false
@@ -101,17 +117,28 @@ export class WindowHelper {
     if (!this.overlayWindow || this.overlayWindow.isDestroyed()) return
     console.log('[WindowHelper] setOverlayDimensions:', width, height);
 
-    const [currentX, currentY] = this.overlayWindow.getPosition()
-    const currentDisplay = screen.getDisplayNearestPoint({ x: currentX, y: currentY });
+    const currentBounds = this.overlayWindow.getBounds()
+    const currentDisplay = screen.getDisplayNearestPoint({ x: currentBounds.x, y: currentBounds.y });
     const workArea = currentDisplay.workArea
     const maxAllowedWidth = Math.floor(workArea.width * 0.9)
     const maxAllowedHeight = Math.floor(workArea.height * 0.9)
     const newWidth = Math.min(Math.max(width, 300), maxAllowedWidth) // min 300, max 90%
     const newHeight = Math.min(Math.max(height, 1), maxAllowedHeight) // min 1, max 90%
+
+    // Anchor the BOTTOM-RIGHT corner: keep the window's right and bottom edges
+    // fixed as its content grows/shrinks. This makes panels expand UPWARD from
+    // the corner and lets the compact dock settle back into the corner when a
+    // panel closes. (The previous top-left origin let the dock drift upward
+    // across open/close cycles once it was near the bottom of the screen.)
+    const WIDTH_JITTER_TOLERANCE_PX = 2
+    const widthChanged = Math.abs(newWidth - currentBounds.width) > WIDTH_JITTER_TOLERANCE_PX
+    const bottom = currentBounds.y + currentBounds.height
     const maxX = workArea.x + workArea.width - newWidth
     const maxY = workArea.y + workArea.height - newHeight
-    const newX = Math.min(Math.max(currentX, workArea.x), maxX)
-    const newY = Math.min(Math.max(currentY, workArea.y), maxY)
+    const newX = widthChanged
+      ? Math.min(Math.max(currentBounds.x + currentBounds.width - newWidth, workArea.x), maxX)
+      : Math.min(Math.max(currentBounds.x, workArea.x), maxX)
+    const newY = Math.min(Math.max(bottom - newHeight, workArea.y), maxY)
 
     this.overlayWindow.setContentSize(newWidth, newHeight)
     this.overlayWindow.setPosition(newX, newY)
@@ -318,6 +345,28 @@ export class WindowHelper {
         console.warn('[WindowHelper] Blocked non-http(s) external URL:', url);
       }
       return { action: 'deny' };
+    });
+
+    // Forward the Google-auth popup's real close event to the renderer.
+    // Why this is needed: signInWithPopup()'s own "user closed the popup"
+    // detection polls the child window's `.closed` property, which is
+    // unreliable for popups created via setWindowOpenHandler's
+    // overrideBrowserWindowOptions (Electron's native BrowserWindow, not a
+    // true DOM window.open() child) — in practice the SDK's promise can hang
+    // forever if the user closes the window before finishing consent,
+    // instead of throwing 'auth/popup-closed-by-user'. did-create-window
+    // gives us a direct handle to that BrowserWindow so we can listen to its
+    // real 'closed' event ourselves and tell the renderer explicitly.
+    this.launcherWindow.webContents.on('did-create-window', (childWindow, details) => {
+      let isGoogleAuthPopup = false;
+      try {
+        isGoogleAuthPopup = new URL(details.url).hostname.endsWith('google.com') || new URL(details.url).hostname.endsWith('.firebaseapp.com');
+      } catch { /* unparseable — leave false */ }
+      if (!isGoogleAuthPopup) return;
+
+      childWindow.once('closed', () => {
+        this.launcherWindow?.webContents.send('google-signin-popup-closed');
+      });
     });
 
     // if (isDev) {
@@ -569,7 +618,7 @@ export class WindowHelper {
 
   // --- Swapping Logic ---
 
-  public switchToOverlay(inactive?: boolean): void {
+  public switchToOverlay(inactive?: boolean, freshMeetingStart?: boolean): void {
     console.log(`[WindowHelper] Switching to OVERLAY (inactive: ${!!inactive})`);
     this.currentWindowMode = 'overlay';
     KeybindManager.getInstance().setMode('overlay'); // Adapted from public PR #123 — verify premium interaction
@@ -580,7 +629,19 @@ export class WindowHelper {
     // Show Overlay FIRST
     if (this.overlayWindow && !this.overlayWindow.isDestroyed()) {
       // AFTER
-      const targetHeight = Math.max(this.overlayWindow.getBounds().height, 216);
+      // On a fresh meeting start, the dock always renders collapsed (brand
+      // bar only) — see useFloatingDock's onSessionReset handler, which
+      // fires in the same tick. Sizing the window to the OLD height (or the
+      // 216 floor below, which is itself taller than the collapsed dock)
+      // before that collapse/resize round-trip completes is exactly what
+      // caused the visible flicker: window shown briefly at the wrong,
+      // taller size with the previous session's expanded content still
+      // painted, then snapping down once the renderer catches up. Skip the
+      // stale-bounds/216 floor entirely in that case and go straight to the
+      // known-correct collapsed height.
+      const targetHeight = freshMeetingStart
+        ? COLLAPSED_OVERLAY_HEIGHT
+        : Math.max(this.overlayWindow.getBounds().height, 216);
 
       // Always follow the launcher's current display — it may have been moved to an
       // external monitor. Using the cursor or the overlay's stale bounds both fail
@@ -598,12 +659,20 @@ export class WindowHelper {
       const currentDisplay = screen.getDisplayMatching(currentBounds);
       const onSameDisplay = currentDisplay.id === referenceDisplay.id;
 
-      const x = onSameDisplay
-        ? currentBounds.x
-        : Math.floor(workArea.x + (workArea.width - 600) / 2);
-      const y = onSameDisplay
-        ? currentBounds.y
-        : Math.floor(workArea.y + (workArea.height - 600) / 2);
+      // Snap to the bottom-right of the reference display on a fresh meeting
+      // start (overlayNeedsReposition) or whenever the overlay isn't already on
+      // the launcher's display. Otherwise keep the user's manual position from
+      // earlier in this meeting. Width stays at the 600 placeholder; the
+      // renderer's ResizeObserver settles it to the real content width via
+      // setOverlayDimensions, which preserves this same bottom-right corner.
+      const shouldSnap = this.overlayNeedsReposition || !onSameDisplay;
+      const x = shouldSnap
+        ? workArea.x + workArea.width - 600 - this.overlayEdgeMargin
+        : currentBounds.x;
+      const y = shouldSnap
+        ? workArea.y + workArea.height - targetHeight - this.overlayEdgeMargin
+        : currentBounds.y;
+      this.overlayNeedsReposition = false;
 
       this.overlayWindow.setBounds({ x, y, width: 600, height: targetHeight });
 
@@ -643,29 +712,39 @@ export class WindowHelper {
   public switchToLauncher(inactive?: boolean): void {
     console.log(`[WindowHelper] Switching to LAUNCHER (inactive: ${!!inactive})`);
     this.currentWindowMode = 'launcher';
+    // Returning to the launcher ends the current overlay "session" — re-arm the
+    // bottom-right snap so the next Start GoDojo opens the dock in the corner.
+    this.overlayNeedsReposition = true;
     KeybindManager.getInstance().setMode('launcher'); // Adapted from public PR #123 — verify premium interaction
 
     // Show Launcher FIRST
     if (this.launcherWindow && !this.launcherWindow.isDestroyed()) {
-      if (process.platform === 'win32' && this.contentProtection) {
-        // Opacity Shield: Show at 0 opacity first
-        this.launcherWindow.setOpacity(0);
-        if (inactive) this.launcherWindow.showInactive(); else this.launcherWindow.show();
-        this.launcherWindow.setContentProtection(true);
+      try {
 
-        if (this.opacityTimeout) clearTimeout(this.opacityTimeout);
-        this.opacityTimeout = setTimeout(() => {
-          if (this.launcherWindow && !this.launcherWindow.isDestroyed()) {
-            this.launcherWindow.setOpacity(1);
-            if (!inactive) this.launcherWindow.focus();
-          }
-        }, 60);
-      } else {
-        this.launcherWindow.setContentProtection(this.contentProtection);
-        if (inactive) this.launcherWindow.showInactive(); else this.launcherWindow.show();
-        if (!inactive) this.launcherWindow.focus();
+        if (process.platform === 'win32' && this.contentProtection) {
+          // Opacity Shield: Show at 0 opacity first
+          this.launcherWindow.setOpacity(0);
+          if (inactive) this.launcherWindow.showInactive(); else this.launcherWindow.show();
+          this.launcherWindow.setContentProtection(true);
+
+          if (this.opacityTimeout) clearTimeout(this.opacityTimeout);
+          this.opacityTimeout = setTimeout(() => {
+            if (this.launcherWindow && !this.launcherWindow.isDestroyed()) {
+              this.launcherWindow.setOpacity(1);
+              if (!inactive) this.launcherWindow.focus();
+            }
+          }, 60);
+        } else {
+          this.launcherWindow.setContentProtection(this.contentProtection);
+          if (inactive) this.launcherWindow.showInactive(); else this.launcherWindow.show();
+          if (!inactive) this.launcherWindow.focus();
+        }
+
+        this.isWindowVisible = true;
+
+      } catch (e) {
+        console.warn("[WindowHelper] Ignored crash while switching to launcher (window destroying):", e);
       }
-      this.isWindowVisible = true;
     }
 
     // Hide Overlay SECOND
@@ -675,11 +754,11 @@ export class WindowHelper {
   }
 
   // Simplified setWindowMode that just calls switchers
-  public setWindowMode(mode: 'launcher' | 'overlay', inactive?: boolean): void {
+  public setWindowMode(mode: 'launcher' | 'overlay', inactive?: boolean, freshMeetingStart?: boolean): void {
     if (mode === 'launcher') {
       this.switchToLauncher(inactive);
     } else {
-      this.switchToOverlay(inactive);
+      this.switchToOverlay(inactive, freshMeetingStart);
     }
   }
 

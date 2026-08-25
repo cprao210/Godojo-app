@@ -15,6 +15,11 @@ export { DiscoveryLLM } from "./DiscoveryLLM"; // DISCOVERY MODE
 export { ObjectionHandlerLLM } from "./ObjectionHandlerLLM"; // OBJECTION HANDLER MODE
 export { clampResponse, validateResponse } from "./postProcessor";
 export {
+    verifySummaryAgainstTranscript,
+    buildCorrectionAddendum
+} from "./SummaryVerifier";
+export type { SummaryVerificationIssue, SummaryVerificationResult } from "./SummaryVerifier";
+export {
     cleanTranscript,
     sparsifyTranscript,
     formatTranscriptForLLM,
@@ -49,5 +54,6 @@ export {
     GROQ_FOLLOWUP_EMAIL_PROMPT,
     CODE_HINT_PROMPT,
     buildCodeHintMessage,
-    BRAINSTORM_MODE_PROMPT
+    BRAINSTORM_MODE_PROMPT,
+    SUMMARY_VERIFICATION_PROMPT
 } from "./prompts";

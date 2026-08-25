@@ -36,7 +36,7 @@ const FilmRollTranscript: React.FC<FilmRollTranscriptProps> = ({ text, speakerLa
 
             {/* Speaker label — fixed, never scrolls */}
             <span className={`text-[11px] font-medium shrink-0 ${speakerColor}`}>
-                {speakerLabel === 'Them' ? "Client" : speakerLabel}:
+                {speakerLabel === "Them" ? "Other Party" : speakerLabel}:
             </span>
 
             {/* Scrolling film strip */}

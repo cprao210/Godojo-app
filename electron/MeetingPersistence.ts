@@ -5,7 +5,7 @@
 import { SessionTracker, TranscriptSegment } from './SessionTracker';
 import { LLMHelper } from './LLMHelper';
 import { DatabaseManager, Meeting, formatDuration } from './db/DatabaseManager';
-import { GROQ_TITLE_PROMPT, GROQ_SUMMARY_JSON_PROMPT } from './llm';
+import { GROQ_TITLE_PROMPT, GROQ_SUMMARY_JSON_PROMPT, verifySummaryAgainstTranscript, buildCorrectionAddendum } from './llm';
 import { LiveAnalysisData, MeetingScorecardResult } from '../src/types';
 import { AppState } from './main';
 import { buildCompanyContextBlock } from '../electron/utils/salesBriefUtils';
@@ -13,6 +13,20 @@ import { buildScorecardPrompt } from './llm/ScoreCardLLM';
 import { BANT_ORDER, MEDDICC_ORDER } from '../src/lib/bantMeddic';
 
 const crypto = require('crypto');
+
+// ── Summary grounding verification ──────────────────────────────────────────
+// After generating the structured summary JSON, we cross-check it against the
+// transcript with a second LLM call and get back a 0-100 grounding confidence
+// score plus specific unsupported/fabricated fields. If confidence is below
+// SUMMARY_CONFIDENCE_THRESHOLD, we regenerate with those specific issues fed
+// back into the prompt, up to SUMMARY_MAX_ATTEMPTS total tries. This is
+// bounded rather than "retry until perfect" — an unbounded loop risks
+// runaway latency/cost if the transcript is genuinely ambiguous and no
+// attempt will ever clear the bar. We keep the highest-confidence attempt
+// seen across all tries as the final result, so a capped-out run still
+// returns the best available summary instead of discarding everything.
+const SUMMARY_CONFIDENCE_THRESHOLD = 75;
+const SUMMARY_MAX_ATTEMPTS = 3;
 
 // ── BANT/MEDDIC reconciliation ──────────────────────────────────────────────
 // buildSummaryPrompt() TELLS the LLM live analysis is authoritative and to
@@ -411,6 +425,17 @@ export class MeetingPersistence {
         });
 
         // 4. Initial Save (Placeholder)
+        // Same displayName stamping as the final save in processAndSaveMeeting
+        // — without it, this placeholder briefly persists with generic
+        // "Other Party" labels until the background save above replaces it.
+        const placeholderTranscript = snapshot.transcript.map(segment => ({
+            ...segment,
+            displayName: segment.displayName
+                ?? (segment.speaker === 'user' ? speakerNamesSnapshot.user
+                    : (segment.speaker === 'client' || segment.speaker === 'interviewer') ? speakerNamesSnapshot.client
+                        : undefined),
+        }))
+
         const placeholder: Meeting = {
             id: meetingId,
             title: "Processing...",
@@ -425,7 +450,7 @@ export class MeetingPersistence {
             // now clears-and-reinserts transcript rows on every call, so the
             // later final save in processAndSaveMeeting() safely replaces this
             // rather than duplicating it.
-            transcript: snapshot.transcript,
+            transcript: placeholderTranscript,
             usage: [],
             tenantId: tenantId || null,
             isProcessed: false
@@ -531,23 +556,76 @@ export class MeetingPersistence {
                     ? GROQ_SUMMARY_JSON_PROMPT + '\n\n' + liveAnalysisGroqBlock
                     : GROQ_SUMMARY_JSON_PROMPT;
 
-                const generatedSummary = await this.llmHelper.generateMeetingSummary(buildSummaryPrompt(liveAnalysisData, companyIntel), fullTranscriptText, groqSummaryPrompt, 'summary');
+                const baseSummaryPrompt = buildSummaryPrompt(liveAnalysisData, companyIntel);
 
-                if (generatedSummary) {
+                // Generate -> verify -> (if low confidence) regenerate with the
+                // specific flagged issues fed back in, up to SUMMARY_MAX_ATTEMPTS.
+                let correctionAddendum = '';
+                let bestParsedSummary: any = null;
+                let bestConfidence = -1;
+
+                for (let attempt = 1; attempt <= SUMMARY_MAX_ATTEMPTS; attempt++) {
+                    const generatedSummary = await this.llmHelper.generateMeetingSummary(
+                        baseSummaryPrompt + correctionAddendum,
+                        fullTranscriptText,
+                        groqSummaryPrompt + correctionAddendum,
+                        'summary'
+                    );
+                    if (!generatedSummary) break;
+
                     const jsonMatch = generatedSummary.match(/```json\n([\s\S]*?)\n```/) || [null, generatedSummary];
                     const jsonStr = (jsonMatch[1] || generatedSummary).trim();
+
+                    let parsedSummary: any;
                     try {
                         // Parse the LLM's structured summary FIRST — this carries
                         // overview/keyPoints/actionItems/dealStatus/salesCoachReview/
                         // nextCallPlaybook. Losing this step means the summary tab
                         // renders empty even though bant/meddicc still get filled in
                         // below from live analysis.
-                        const parsedSummary = JSON.parse(jsonStr);
-                        // Guarantee BANT/MEDDIC in the summary matches live
-                        // analysis exactly — see reconcileBantMeddicWithLiveAnalysis
-                        // for why the prompt instruction alone isn't enough.
-                        summaryData = reconcileBantMeddicWithLiveAnalysis({ ...summaryData, ...parsedSummary }, liveAnalysisData);
-                    } catch (e) { console.error("Failed to parse summary JSON", e); }
+                        parsedSummary = JSON.parse(jsonStr);
+                    } catch (e) {
+                        console.error(`[MeetingPersistence] Failed to parse summary JSON (attempt ${attempt}/${SUMMARY_MAX_ATTEMPTS})`, e);
+                        continue; // unparseable output — try again rather than verifying garbage
+                    }
+
+                    let confidence = 0;
+                    try {
+                        const verification = await verifySummaryAgainstTranscript(this.llmHelper, fullTranscriptText, jsonStr);
+                        confidence = verification.confidence;
+                        console.log(`[MeetingPersistence] Summary attempt ${attempt}/${SUMMARY_MAX_ATTEMPTS} grounding confidence: ${confidence} (${verification.issues.length} issue(s))`);
+
+                        if (confidence > bestConfidence) {
+                            bestConfidence = confidence;
+                            bestParsedSummary = parsedSummary;
+                        }
+
+                        if (confidence >= SUMMARY_CONFIDENCE_THRESHOLD) {
+                            break; // grounded well enough — stop here
+                        }
+
+                        correctionAddendum = buildCorrectionAddendum(verification.issues);
+                    } catch (e) {
+                        // Verifier itself threw unexpectedly (shouldn't normally happen —
+                        // verifySummaryAgainstTranscript fails open internally). Accept
+                        // this attempt as-is rather than losing the summary entirely.
+                        console.warn('[MeetingPersistence] Summary verification threw, accepting ungraded:', e);
+                        if (bestParsedSummary === null) {
+                            bestParsedSummary = parsedSummary;
+                            bestConfidence = 0;
+                        }
+                        break;
+                    }
+                }
+
+                if (bestParsedSummary) {
+                    if (bestConfidence >= 0 && bestConfidence < SUMMARY_CONFIDENCE_THRESHOLD) {
+                        console.warn(`[MeetingPersistence] Accepting summary below confidence threshold after ${SUMMARY_MAX_ATTEMPTS} attempts (best score: ${bestConfidence})`);
+                    }
+                    // Guarantee BANT/MEDDIC in the summary matches live
+                    // analysis exactly — see reconcileBantMeddicWithLiveAnalysis
+                    // for why the prompt instruction alone isn't enough.
+                    summaryData = reconcileBantMeddicWithLiveAnalysis({ ...summaryData, ...bestParsedSummary }, liveAnalysisData);
                 }
             } else {
                 console.log("Transcript too short for summary generation.");
@@ -659,6 +737,23 @@ export class MeetingPersistence {
                 };
             }
 
+            // Stamp the resolved (company-domain-aware) speaker labels onto
+            // each transcript segment before saving. Without this, every
+            // segment only carries the raw role ('user'/'client'), and
+            // DatabaseManager.saveMeeting() falls back to a hardcoded
+            // generic label for any 'client'/'interviewer' segment — which
+            // is why the persisted transcript view showed "Other Party"
+            // even when Speaking Balance (which reads resolvedSpeakerNames
+            // directly, not per-segment displayName) correctly showed the
+            // real company name.
+            const transcriptWithDisplayNames = data.transcript.map(segment => ({
+                ...segment,
+                displayName: segment.displayName
+                    ?? (segment.speaker === 'user' ? resolvedSpeakerNames.user
+                        : (segment.speaker === 'client' || segment.speaker === 'interviewer') ? resolvedSpeakerNames.client
+                            : undefined),
+            }));
+
             const meetingData: Meeting = {
                 id: meetingId,
                 title: title,
@@ -667,7 +762,7 @@ export class MeetingPersistence {
                 durationMs: data.durationMs,
                 summary: "See detailed summary",
                 detailedSummary: detailedSummary,
-                transcript: data.transcript,
+                transcript: transcriptWithDisplayNames,
                 usage: data.usage,
                 calendarEventId: calendarEventId,
                 source: source,
@@ -678,6 +773,14 @@ export class MeetingPersistence {
             DatabaseManager.getInstance().saveMeeting(meetingData, data.startTime, data.endTime ?? (data.startTime + data.durationMs), data.totalPausedMs ?? 0);
 
             // Metadata was already snapshotted before session.reset() — nothing to clear here.
+
+            // Toast the user that their summary is ready — same native,
+            // display-aware toast used for pause/resume, so it's visible
+            // regardless of which screen (or app) the user is currently on.
+            // Fires here specifically because this is the point the summary,
+            // scorecard, and title have all actually finished generating AND
+            // been persisted — not just "processing kicked off".
+            AppState.getInstance()?.notifyMeetingSummaryReady?.(title);
 
             // Notify Frontend to refresh list
             const wins = require('electron').BrowserWindow.getAllWindows();

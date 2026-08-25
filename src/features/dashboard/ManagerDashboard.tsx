@@ -21,7 +21,7 @@
 import React from 'react';
 import { useEffect } from 'react';
 import { AnimatePresence, motion } from 'framer-motion';
-import { Users, Phone, Target, Calendar, ChevronDown, Trophy, AlertTriangle, X, FileIcon, FileText } from 'lucide-react';
+import { Users, Phone, Target, Calendar, ChevronDown, Trophy, AlertTriangle, X, FileIcon, FileText, RefreshCw } from 'lucide-react';
 import { useResolvedTheme, useManagerDashboard, PERIOD_OPTIONS } from '@/hooks';
 import { posthogAnalytics } from '@/lib/analytics/posthog.service';
 import AeDetailView from './AEDetailView';
@@ -43,7 +43,7 @@ export const ManagerDashboard: React.FC<ManagerDashboardProps> = ({ isOpen }) =>
     const managerDashboardStates = useManagerDashboard({ isOpen });
 
     const { tenant, isLoadingTenant, tenantError, isAdmin, hasTenant, period, setPeriod, periodLabel } = managerDashboardStates;
-    const { isPeriodMenuOpen, setIsPeriodMenuOpen, isLoadingDashboard, dashboardError, activeReps, totalCalls } = managerDashboardStates;
+    const { isPeriodMenuOpen, setIsPeriodMenuOpen, isLoadingDashboard, isRefreshingDashboard, refreshDashboard, dashboardError, activeReps, totalCalls } = managerDashboardStates;
     const { teamAvgScore, teamScoreTrend, objections, topPerformers, needsCoaching, allAeRows, selectedAe, setSelectedAe } = managerDashboardStates;
     const { openAeFromRep, openAeFromRow, selectedObjection, setSelectedObjection } = managerDashboardStates;
 
@@ -99,6 +99,15 @@ export const ManagerDashboard: React.FC<ManagerDashboardProps> = ({ isOpen }) =>
                                             ))}
                                         </div>
                                     )}
+                                    <button
+                                        onClick={refreshDashboard}
+                                        disabled={isRefreshingDashboard || isLoadingDashboard}
+                                        title="Refresh dashboard data"
+                                        aria-label="Refresh dashboard data"
+                                        className={`inline-flex items-center justify-center p-2 rounded-lg text-sm font-medium border transition-colors disabled:opacity-50 disabled:cursor-not-allowed ${pillBtnCls}`}
+                                    >
+                                        <RefreshCw size={14} className={isRefreshingDashboard ? 'animate-spin' : ''} />
+                                    </button>
                                 </div>
                             </div>
 

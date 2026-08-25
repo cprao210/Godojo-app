@@ -1,4 +1,4 @@
-import { app, safeStorage, shell } from 'electron';
+import { app, safeStorage, shell, BrowserWindow, screen } from 'electron';
 import axios from 'axios';
 import http from 'http';
 import url from 'url';
@@ -47,6 +47,30 @@ export class ZoomCalendarManager extends EventEmitter {
 
     public async startAuthFlow(): Promise<void> {
         return new Promise((resolve, reject) => {
+            // Kept as a backstop for cases the window-close listener below
+            // can't catch (consent page hangs, network stalls) — but the
+            // primary "user bailed" signal is now the auth window's 'closed'
+            // event, which fires immediately instead of waiting up to 3
+            // minutes. Mirrors CalendarManager.startAuthFlow().
+            const AUTH_TIMEOUT_MS = 3 * 60 * 1000; // 3 minutes
+            let settled = false;
+            let authWindow: BrowserWindow | null = null;
+
+            const finish = (fn: () => void) => {
+                if (settled) return;
+                settled = true;
+                clearTimeout(timeoutTimer);
+                try { server.close(); } catch { /* already closed */ }
+                if (authWindow && !authWindow.isDestroyed()) {
+                    try { authWindow.close(); } catch { /* already closing */ }
+                }
+                fn();
+            };
+
+            const timeoutTimer = setTimeout(() => {
+                finish(() => reject(new Error('AUTH_TIMEOUT')));
+            }, AUTH_TIMEOUT_MS);
+
             const server = http.createServer(async (req, res) => {
                 try {
                     if (req.url?.startsWith('/auth/callback')) {
@@ -56,30 +80,66 @@ export class ZoomCalendarManager extends EventEmitter {
 
                         if (error) {
                             res.end('Authentication failed. You can close this window.');
-                            server.close();
-                            reject(new Error(error));
+                            finish(() => reject(new Error(error)));
                             return;
                         }
 
                         if (code) {
                             res.end('Zoom connected! You can close this window.');
-                            server.close();
-                            await this.exchangeCodeForToken(code);
-                            resolve();
+                            try { server.close(); } catch { /* already closing */ }
+                            try {
+                                await this.exchangeCodeForToken(code);
+                                finish(() => resolve());
+                            } catch (exchangeErr) {
+                                finish(() => reject(exchangeErr));
+                            }
                         }
                     }
                 } catch (err) {
                     res.end('Authentication error.');
-                    server.close();
-                    reject(err);
+                    finish(() => reject(err));
                 }
             });
 
             server.listen(11113, () => {
-                shell.openExternal(this.getAuthUrl());
+                // Electron-controlled window instead of the system browser —
+                // lets us detect a manual close and reject immediately
+                // rather than waiting on AUTH_TIMEOUT_MS.
+                const popupWidth = 520;
+                const popupHeight = 680;
+                let popupX: number | undefined;
+                let popupY: number | undefined;
+
+                try {
+                    const activeWindow = BrowserWindow.getFocusedWindow()
+                        ?? BrowserWindow.getAllWindows().find(w => !w.isDestroyed() && w.isVisible());
+                    if (activeWindow) {
+                        const bounds = activeWindow.getBounds();
+                        const centerX = bounds.x + Math.floor(bounds.width / 2);
+                        const centerY = bounds.y + Math.floor(bounds.height / 2);
+                        const { workArea } = screen.getDisplayNearestPoint({ x: centerX, y: centerY });
+                        popupX = workArea.x + Math.floor((workArea.width - popupWidth) / 2);
+                        popupY = workArea.y + Math.floor((workArea.height - popupHeight) / 2);
+                    }
+                } catch (e) {
+                    console.warn('[ZoomCalendarManager] Could not determine current display for auth popup:', e);
+                }
+
+                authWindow = new BrowserWindow({
+                    width: popupWidth,
+                    height: popupHeight,
+                    ...(popupX !== undefined && popupY !== undefined ? { x: popupX, y: popupY } : {}),
+                    title: 'Connect Zoom Calendar',
+                    webPreferences: { nodeIntegration: false, contextIsolation: true },
+                });
+                authWindow.loadURL(this.getAuthUrl());
+                authWindow.on('closed', () => {
+                    authWindow = null;
+                    finish(() => reject(new Error('AUTH_CANCELLED')));
+                });
             });
 
-            server.on('error', reject);
+            server.on('error', (err) => finish(() => reject(err)));
         });
     }
 

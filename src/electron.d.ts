@@ -1,10 +1,32 @@
 import { LiveAnalysisData } from "@/types";
 
+/** macOS TCC state for a single privacy service. */
+export type PermissionStatus = 'granted' | 'denied' | 'not-determined' | 'restricted'
+
+/**
+ * An audio capture problem the user should know about.
+ *
+ * `stuck` means the capture is producing nothing useful (no chunks, or nothing
+ * but silence) — the signature of a revoked Screen Recording grant, which macOS
+ * reports by zero-filling rather than by erroring. `terminal` means recovery was
+ * attempted and abandoned. Transient failures set neither and should not be
+ * surfaced, since recovery usually succeeds within a second or two.
+ */
+export interface AudioCaptureFailure {
+  channel: 'system' | 'mic'
+  message: string
+  attempt: number
+  maxAttempts: number
+  terminal?: boolean
+  stuck?: boolean
+}
+
 export interface ElectronAPI {
   // ===========================================================================
   // Window Management
   // ===========================================================================
   updateContentDimensions: (dimensions: { width: number; height: number }) => Promise<void>
+  getGpuPerformanceStatus: () => Promise<{ isLowPowerGpu: boolean; raw: Record<string, string> | null }>
   onToggleExpand: (callback: () => void) => () => void
   onResetView: (callback: () => void) => () => void
   moveWindowLeft: () => Promise<void>
@@ -24,7 +46,7 @@ export interface ElectronAPI {
   hideWindow: () => Promise<void>
   showOverlay: () => Promise<void>
   hideOverlay: () => Promise<void>
-  setWindowMode: (mode: 'launcher' | 'overlay', inactive?: boolean) => Promise<void>
+  setWindowMode: (mode: 'launcher' | 'overlay', inactive?: boolean, freshMeetingStart?: boolean) => Promise<void>
   openExternal: (url: string) => Promise<void>
   openKnownFolder: (key: 'downloads' | 'applications') => Promise<void>
   getArch: () => Promise<string>
@@ -43,7 +65,6 @@ export interface ElectronAPI {
     componentStack?: string | null
   }) => Promise<{ success: boolean; error?: string }>
   confirmDeleteAccount: () => Promise<{ confirmed: boolean }>,
-  resetAppData: () => Promise<{ success: boolean; cancelled?: boolean; error?: string }>
   wipeLocalAccountData: () => Promise<{ success: boolean; error?: string }>
   onScreenshotTaken: (callback: (data: { path: string; preview: string }) => void) => () => void
   onScreenshotAttached: (callback: (data: { path: string; preview: string }) => void) => () => void
@@ -193,6 +214,32 @@ export interface ElectronAPI {
   onSpeakerNamesResolved: (callback: (names: { user: string; client: string }) => void) => () => void
   getInputDevices: () => Promise<Array<{ id: string; name: string }>>
   getOutputDevices: () => Promise<Array<{ id: string; name: string }>>
+  getPlatform: () => string
+  checkPermissions: () => Promise<{
+    microphone: boolean
+    systemAudio: boolean
+    screenCapture: boolean
+    /** Full TCC tri-state, so the UI can tell "never asked" from "denied". */
+    microphoneStatus: PermissionStatus
+    screenStatus: PermissionStatus
+    platform: string
+  }>
+  requestPermission: (type: 'microphone' | 'screen') => Promise<boolean>
+  /** `pane` picks which macOS Privacy pane to open. Defaults to microphone. */
+  openPermissionSettings: (pane?: 'microphone' | 'screen') => Promise<void>
+  /**
+   * Replays the last screen-capture warning latched by the main process. Needed
+   * because the startup denial check can fire before a renderer has subscribed.
+   */
+  getSystemAudioPermissionWarning: () => Promise<string | null>
+  /** Runs `tccutil reset` for Microphone + ScreenCapture. macOS only. */
+  repairTccPermissions: () => Promise<{
+    ok: boolean
+    bundleId?: string
+    results?: Array<{ service: string; ok: boolean; output: string }>
+    promptRelaunch?: boolean
+    message: string
+  }>
 
   // ===========================================================================
   // Native Audio Service Events
@@ -202,10 +249,18 @@ export interface ElectronAPI {
   onNativeAudioConnected: (callback: () => void) => () => void
   onNativeAudioDisconnected: (callback: () => void) => () => void
   onMeetingAudioWarning: (callback: (message: string) => void) => () => void
+  onMeetingAudioError: (callback: (message: string) => void) => () => void
+  onSystemAudioPermissionDenied: (callback: (message: string) => void) => () => void
+  /** Fires when a previously reported system-audio problem has resolved. */
+  onSystemAudioRecovered: (callback: () => void) => () => void
+  onAudioCaptureFailed: (callback: (payload: AudioCaptureFailure) => void) => () => void
   getNativeAudioStatus: () => Promise<{ connected: boolean }>
   startAudioTest: (deviceId?: string) => Promise<{ success: boolean }>
   stopAudioTest: () => Promise<{ success: boolean }>
   onAudioTestLevel: (callback: (level: number) => void) => () => void
+  /** System-audio probe, emitted during the same startAudioTest lifecycle. */
+  onAudioTestSystemLevel: (callback: (level: number) => void) => () => void
+  onAudioTestSystemError: (callback: (errorMessage: string) => void) => () => void
 
   // ===========================================================================
   // Intelligence Mode (Assist / What-To-Say / Clarify / Hints / Recap / etc.)
@@ -466,6 +521,7 @@ export interface ElectronAPI {
   onAuthStateChanged: (
     callback: (state: { signedIn: boolean; uid?: string; email?: string | null; displayName?: string | null; photoURL?: string | null }) => void
   ) => () => void
+  onGoogleSignInPopupClosed: (callback: () => void) => () => void
 
   // ===========================================================================
   // Tenant ID (cross-window)

@@ -722,16 +722,22 @@ CREATE INDEX IF NOT EXISTS idx_meetings_tenant ON meetings(tenant_id);
 -- CREATE INDEX IF NOT EXISTS idx_meetings_tenant ON meetings(tenant_id);
 
 CREATE TABLE IF NOT EXISTS transcripts (
-    user_id      TEXT NOT NULL REFERENCES users(firebase_uid) ON DELETE CASCADE,
-    id           BIGINT NOT NULL,
-    meeting_id   TEXT NOT NULL,
-    speaker      TEXT,
-    content      TEXT,
-    timestamp_ms BIGINT,
+    user_id       TEXT NOT NULL REFERENCES users(firebase_uid) ON DELETE CASCADE,
+    id            BIGINT NOT NULL,
+    meeting_id    TEXT NOT NULL,
+    speaker       TEXT,
+    content       TEXT,
+    timestamp_ms  BIGINT,
+    speaker_index INTEGER,
+    display_name  TEXT,
     PRIMARY KEY (user_id, id),
     FOREIGN KEY (user_id, meeting_id) REFERENCES meetings(user_id, id) ON DELETE CASCADE
 );
 CREATE INDEX IF NOT EXISTS idx_transcripts_user_meeting ON transcripts(user_id, meeting_id);
+
+-- If this table already exists in your Supabase project, run instead:
+-- ALTER TABLE transcripts ADD COLUMN IF NOT EXISTS speaker_index INTEGER;
+-- ALTER TABLE transcripts ADD COLUMN IF NOT EXISTS display_name TEXT;
 
 CREATE TABLE IF NOT EXISTS ai_interactions (
     user_id       TEXT NOT NULL REFERENCES users(firebase_uid) ON DELETE CASCADE,

@@ -1,10 +1,122 @@
-import React, { useState } from 'react';
+import React, { useState, useRef, useEffect } from 'react';
+import ReactDOM from 'react-dom';
 import { motion } from 'framer-motion';
-import { Settings, AlignLeft, Eye, Cpu, MousePointerClick, Layers } from 'lucide-react';
+import { Settings, AlignLeft, Eye, Cpu, MousePointerClick, Layers, Gauge, ChevronDown, Check } from 'lucide-react';
 import { ModelSelector } from '@/features/ui';
 import { OVERLAY_OPACITY_MIN } from '@/lib/overlayAppearance';
 import { isMac } from '@/../utils/platformUtils';
 import { AnimatedToggleProps, FloatingSettingsPanelProps, SettingRowProps, ShortcutConfig } from '@/types';
+import { getDockSurfaceStyle } from '../dockSurfaceStyle';
+
+// ── Small trigger + portal dropdown for the Performance Mode row ───────────
+// The settings panel itself is `overflow-hidden` (rounded-corner clipping),
+// so — same reason ModelSelector uses a portal — the menu is rendered into
+// document.body and positioned against the trigger button, rather than as a
+// normal in-flow child, so it never gets clipped by the panel's edge.
+const PERFORMANCE_MODE_OPTIONS = [
+    { value: 'auto' as const, label: 'Auto' },
+    { value: 'on' as const, label: 'On' },
+    { value: 'off' as const, label: 'Off' },
+];
+
+interface PerformanceModeDropdownProps {
+    value: 'auto' | 'on' | 'off';
+    onChange: (v: 'auto' | 'on' | 'off') => void;
+}
+
+const PerformanceModeDropdown: React.FC<PerformanceModeDropdownProps> = ({ value, onChange }) => {
+    const [isOpen, setIsOpen] = useState(false);
+    const triggerRef = useRef<HTMLButtonElement>(null);
+    const menuRef = useRef<HTMLDivElement>(null);
+    const [menuPos, setMenuPos] = useState<{ top: number; left: number; width: number } | null>(null);
+
+    useEffect(() => {
+        if (!isOpen || !triggerRef.current) return;
+        const rect = triggerRef.current.getBoundingClientRect();
+        setMenuPos({ top: rect.bottom + 6, left: rect.right - 132, width: 132 });
+    }, [isOpen]);
+
+    useEffect(() => {
+        if (!isOpen) return;
+        const handler = (e: MouseEvent) => {
+            if (
+                menuRef.current && !menuRef.current.contains(e.target as Node) &&
+                triggerRef.current && !triggerRef.current.contains(e.target as Node)
+            ) {
+                setIsOpen(false);
+            }
+        };
+        document.addEventListener('mousedown', handler);
+        return () => document.removeEventListener('mousedown', handler);
+    }, [isOpen]);
+
+    const selectedLabel = PERFORMANCE_MODE_OPTIONS.find((o) => o.value === value)?.label ?? 'Auto';
+
+    return (
+        <>
+            <button
+                ref={triggerRef}
+                onClick={() => setIsOpen((v) => !v)}
+                className="flex items-center gap-1.5 pl-3 pr-2.5 py-1.5 rounded-lg text-[12px] font-semibold transition-colors duration-150"
+                style={{
+                    color: 'rgba(255,255,255,0.85)',
+                    background: 'rgba(255,255,255,0.05)',
+                    border: '1px solid rgba(255,255,255,0.08)',
+                }}
+            >
+                {selectedLabel}
+                <ChevronDown
+                    size={13}
+                    strokeWidth={2.2}
+                    style={{
+                        color: 'rgba(255,255,255,0.4)',
+                        transform: isOpen ? 'rotate(180deg)' : 'rotate(0deg)',
+                        transition: 'transform 0.15s ease',
+                    }}
+                />
+            </button>
+
+            {isOpen && menuPos && ReactDOM.createPortal(
+                <div
+                    ref={menuRef}
+                    style={{
+                        position: 'fixed',
+                        top: menuPos.top,
+                        left: menuPos.left,
+                        width: menuPos.width,
+                        zIndex: 99999,
+                        background: 'rgba(12, 16, 28, 0.98)',
+                        backdropFilter: 'blur(32px) saturate(200%)',
+                        WebkitBackdropFilter: 'blur(32px) saturate(200%)',
+                        border: '1px solid rgba(255,255,255,0.1)',
+                        borderRadius: 12,
+                        overflow: 'hidden',
+                        boxShadow: '0 12px 32px rgba(0,0,0,0.4)',
+                    }}
+                >
+                    {PERFORMANCE_MODE_OPTIONS.map((option) => {
+                        const isSelected = option.value === value;
+                        return (
+                            <button
+                                key={option.value}
+                                onClick={() => { onChange(option.value); setIsOpen(false); }}
+                                className="w-full flex items-center justify-between gap-2 px-3 py-2 text-[12px] font-semibold transition-colors duration-100"
+                                style={{
+                                    color: isSelected ? '#fff' : 'rgba(255,255,255,0.6)',
+                                    background: isSelected ? 'rgba(59,130,246,0.18)' : 'transparent',
+                                }}
+                            >
+                                {option.label}
+                                {isSelected && <Check size={13} strokeWidth={2.4} style={{ color: '#3b82f6' }} />}
+                            </button>
+                        );
+                    })}
+                </div>,
+                document.body
+            )}
+        </>
+    );
+};
 
 // ── Platform-aware fallback keys for when the IPC keybinds haven't loaded yet ──
 const mod = isMac ? '⌘' : 'Ctrl';
@@ -108,6 +220,9 @@ export const FloatingSettingsPanel: React.FC<FloatingSettingsPanelProps> = ({
     onSelectModel,
     dockOpacity,
     onDockOpacityChange,
+    isPerformanceMode = false,
+    performanceModePreference = 'auto',
+    onPerformanceModePreferenceChange,
 }) => {
     const [localOpacity, setLocalOpacity] = useState(dockOpacity);
     const [isDragging, setIsDragging] = useState(false);
@@ -135,9 +250,7 @@ export const FloatingSettingsPanel: React.FC<FloatingSettingsPanelProps> = ({
             className="rounded-2xl overflow-hidden"
             style={{
                 width: 420,
-                background: 'rgba(14, 18, 30, 0.93)',
-                backdropFilter: 'blur(28px) saturate(180%)',
-                WebkitBackdropFilter: 'blur(28px) saturate(180%)',
+                ...getDockSurfaceStyle({ opacity: 0.93, rgb: '14, 18, 30', blurPx: 28, isPerformanceMode }),
                 border: '1px solid rgba(255,255,255,0.08)',
             }}
         >
@@ -231,6 +344,47 @@ export const FloatingSettingsPanel: React.FC<FloatingSettingsPanelProps> = ({
                         style={{ background: trackBg }}
                     />
 
+                </div>
+
+                {/* ── Performance Mode ────────────────────────────────────── */}
+                {/* Drops the dock's blurred "frosted glass" panels down to a
+                    flat solid background. backdrop-filter blur is one of the
+                    most GPU-expensive CSS effects, and stacking several of
+                    them (the pill + up to 3 panels) is the main cause of lag
+                    reported on mid-range/integrated-GPU machines. 'Auto'
+                    detects this once at startup via the main process
+                    (app.getGPUFeatureStatus()) and turns itself on only when
+                    needed — most users on capable hardware never see it. */}
+                <div className="px-5 py-4" style={{ borderBottom: '1px solid rgba(255,255,255,0.05)' }}>
+                    <div className="flex items-center justify-between">
+                        <div className="flex items-center gap-3.5">
+                            <Gauge
+                                size={18}
+                                strokeWidth={1.8}
+                                style={{ color: isPerformanceMode ? '#3b82f6' : 'rgba(255,255,255,0.35)', transition: 'color 0.2s ease' }}
+                            />
+                            <span
+                                className="text-[13px] tracking-widest uppercase font-semibold"
+                                style={{ color: 'rgba(255,255,255,0.45)' }}
+                            >
+                                Performance Mode
+                            </span>
+                        </div>
+                        <PerformanceModeDropdown
+                            value={performanceModePreference}
+                            onChange={(v) => onPerformanceModePreferenceChange?.(v)}
+                        />
+                    </div>
+
+                    <p className="text-[11px] mt-2" style={{ color: 'rgba(255,255,255,0.3)' }}>
+                        {performanceModePreference === 'auto'
+                            ? (isPerformanceMode
+                                ? 'Enabled automatically for this device.'
+                                : 'Enabled automatically if needed for this device.')
+                            : performanceModePreference === 'on'
+                                ? 'Reduced visual effects for maximum smoothness.'
+                                : 'Full visual effects.'}
+                    </p>
                 </div>
 
                 {/* <SettingRow icon={<Camera size={18} strokeWidth={1.8} />} label="Screenshot" divider>

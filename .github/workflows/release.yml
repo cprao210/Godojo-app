@@ -117,6 +117,7 @@ jobs:
           VITE_API_BASE_URL=${{ secrets.VITE_API_BASE_URL }}
           SUPABASE_URL=${{ secrets.SUPABASE_URL }}
           SUPABASE_KEY=${{ secrets.SUPABASE_KEY }}
+          API_ENCRYPTION_KEY=${{ secrets.API_ENCRYPTION_KEY }}
           DEEPGRAM_API_KEY=${{ secrets.DEEPGRAM_API_KEY }}
           STT_PROVIDER=${{ secrets.STT_PROVIDER }}
           GEMINI_API_KEY=${{ secrets.GEMINI_API_KEY }}
@@ -294,6 +295,7 @@ jobs:
           VITE_API_BASE_URL=${{ secrets.VITE_API_BASE_URL }}
           SUPABASE_URL=${{ secrets.SUPABASE_URL }}
           SUPABASE_KEY=${{ secrets.SUPABASE_KEY }}
+          API_ENCRYPTION_KEY=${{ secrets.API_ENCRYPTION_KEY }}
           DEEPGRAM_API_KEY=${{ secrets.DEEPGRAM_API_KEY }}
           STT_PROVIDER=${{ secrets.STT_PROVIDER }}
           GEMINI_API_KEY=${{ secrets.GEMINI_API_KEY }}
@@ -442,6 +444,7 @@ jobs:
           VITE_API_BASE_URL=${{ secrets.VITE_API_BASE_URL }}
           SUPABASE_URL=${{ secrets.SUPABASE_URL }}
           SUPABASE_KEY=${{ secrets.SUPABASE_KEY }}
+          API_ENCRYPTION_KEY=${{ secrets.API_ENCRYPTION_KEY }}
           DEEPGRAM_API_KEY=${{ secrets.DEEPGRAM_API_KEY }}
           STT_PROVIDER=${{ secrets.STT_PROVIDER }}
           GEMINI_API_KEY=${{ secrets.GEMINI_API_KEY }}

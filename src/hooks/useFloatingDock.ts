@@ -45,6 +45,9 @@ interface UseFloatingDockArgs {
 export function useFloatingDock({ transcriptRef, isMeetingPaused, companyIntel }: UseFloatingDockArgs) {
     // ── Panel switching + freeze mode ────────────────────────────────────────
     const [activePanel, setActivePanel] = useState<ActivePanel>(null);
+    // Remembers the last panel that was open so the brand bar's ▽ chevron can
+    // re-open it when nothing is currently shown. Defaults to Intelligence.
+    const lastPanelRef = useRef<Exclude<ActivePanel, null>>('intelligence');
     const [isFrozen, setIsFrozen] = useState(false);
 
     const togglePanel = (panel: ActivePanel) => {
@@ -57,8 +60,29 @@ export function useFloatingDock({ transcriptRef, isMeetingPaused, companyIntel }
             if (next === 'intelligence') posthogAnalytics.trackLiveAnalysisOpened();
             else if (next === 'chat') posthogAnalytics.trackLiveChatOpened();
             else if (next === 'settings') posthogAnalytics.trackLiveSettingsOpened();
+            if (next) lastPanelRef.current = next; // remember for the brand-bar re-open (▽)
             return next;
         });
+    };
+
+    // ── Dock expand/collapse (nav dock + panel visibility) ──────────────────
+    // Separate from `activePanel` on purpose: collapsing hides the nav dock
+    // AND whichever panel was open, but must NOT forget which panel that was
+    // — so expanding again restores it instead of falling back to
+    // Intelligence every time. Starts collapsed: on meeting start only the
+    // brand bar is visible.
+    const [isDockExpanded, setIsDockExpanded] = useState(false);
+
+    // Used by the always-visible brand bar above the dock (DockBrandBar): the
+    // chevron collapses the dock (hiding nav + panel), or expands it again —
+    // restoring the last-active panel, or Intelligence on first-ever expand.
+    const collapseDock = () => setIsDockExpanded(false);
+    const expandDock = () => {
+        setIsDockExpanded(true);
+        // Only fall back to the last/default panel if nothing is selected
+        // yet (first expand of the session) — otherwise keep whatever the
+        // user was last looking at before collapsing.
+        setActivePanel((prev) => prev ?? lastPanelRef.current);
     };
 
     const handleFreezeMode = () => setIsFrozen((prev) => !prev);
@@ -107,7 +131,7 @@ export function useFloatingDock({ transcriptRef, isMeetingPaused, companyIntel }
         return () => observer.disconnect();
     }, []);
 
-    const panelTopOffset = dockHeight + PANEL_DOCK_GAP;
+    const panelTopOffset = dockHeight + PANEL_DOCK_GAP - 52;
 
     // ── Fast objection watcher — ticks in seconds, not minutes ──────────────
     // Owns the objection list outright (delta-in/delta-out contract with
@@ -349,6 +373,7 @@ export function useFloatingDock({ transcriptRef, isMeetingPaused, companyIntel }
             analysisInitiatedRef.current = false; // allows first-open to trigger fresh analysis
             setChatMessages([]);                 // clears chat history
             setActivePanel(null);                // close any open panel
+            setIsDockExpanded(false);            // collapse to brand-bar-only for the new meeting
             setMeetingTypes(['discovery']);      // reset to default — Discovery pre-checked
             setSessionKey((k) => k + 1);         // forces the countdown timer effect to restart fresh
         });
@@ -359,6 +384,9 @@ export function useFloatingDock({ transcriptRef, isMeetingPaused, companyIntel }
         // panel switching / freeze
         activePanel,
         togglePanel,
+        isDockExpanded,
+        collapseDock,
+        expandDock,
         isFrozen,
         handleFreezeMode,
         // dock opacity

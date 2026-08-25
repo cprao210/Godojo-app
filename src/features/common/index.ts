@@ -9,10 +9,12 @@ import GodojoInterface from "@/features/common/GodojoInterface";
 import { SupportToaster } from "@/features/common/SupportToaster";
 import TopSearchPill from "@/features/common/TopSearchPill";
 import WindowControls from "@/features/common/WindowControls";
+import { AudioStatusTray } from "@/features/common/AudioStatusTray";
+import { SystemAudioPermissionBanner } from "@/features/common/SystemAudioPermissionBanner";
 
 import { MaximizeRestoreIcon } from '@/features/common/MaximizeRestoreIcon';
 import { WindowControlButton } from '@/features/common/WindowControlButton';
 
 export { MaximizeRestoreIcon, WindowControlButton };
 
-export { AdCampaignToasters, Cropper, EditableTextBlock, ErrorBoundary, IncompatibleProviderBanner, Launcher, ModelSelectorWindow, GodojoInterface, SupportToaster, TopSearchPill, WindowControls };
+export { AdCampaignToasters, Cropper, EditableTextBlock, ErrorBoundary, IncompatibleProviderBanner, Launcher, ModelSelectorWindow, GodojoInterface, SupportToaster, TopSearchPill, WindowControls, AudioStatusTray, SystemAudioPermissionBanner };

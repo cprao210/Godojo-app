@@ -141,12 +141,23 @@ impl SpeakerInput {
             ready_clone.store(true, Ordering::SeqCst);
         });
 
-        // Wait for shareable content (max 5 seconds)
-        for _ in 0..500 {
-            if content_ready.load(Ordering::SeqCst) {
+        // Wait for shareable content.
+        //
+        // The completion handler above does not fire until the user has answered
+        // the TCC sheet that `current_with_ch` raises. A 5s budget is shorter
+        // than it takes a person to read the dialog and click Allow, so a user
+        // who *grants* permission still fell through to a timeout error on the
+        // first attempt. 30s leaves room for a human response; the callback
+        // breaks the loop immediately on an early answer, so a granted or
+        // already-decided permission costs nothing extra.
+        const CONTENT_WAIT_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
+        const CONTENT_POLL_INTERVAL: std::time::Duration = std::time::Duration::from_millis(10);
+        let wait_started = std::time::Instant::now();
+        while !content_ready.load(Ordering::SeqCst) {
+            if wait_started.elapsed() >= CONTENT_WAIT_TIMEOUT {
                 break;
             }
-            std::thread::sleep(std::time::Duration::from_millis(10));
+            std::thread::sleep(CONTENT_POLL_INTERVAL);
         }
 
         if content_error.load(Ordering::SeqCst) {

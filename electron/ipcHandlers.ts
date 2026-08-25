@@ -1,7 +1,13 @@
 // ipcHandlers.ts
 
 import { app, ipcMain, shell, dialog, desktopCapturer, systemPreferences, BrowserWindow, screen, session } from "electron"
-import { AppState } from "./main"
+import { AppState, getLatestSystemAudioPermissionWarning } from "./main"
+import {
+  getMacMicrophoneStatus,
+  getMacScreenCaptureStatus,
+  MAC_SETTINGS_PANES,
+  type MacSettingsPane,
+} from './utils/macPermissions';
 import { GEMINI_FLASH_MODEL } from "./IntelligenceManager"
 import { DatabaseManager } from "./db/DatabaseManager"; // Import Database Manager
 import { SupabaseReadService } from "./db/SupabaseReadService";
@@ -34,6 +40,40 @@ export function initializeIpcHandlers(appState: AppState): void {
     ipcMain.removeHandler(channel);
     ipcMain.handle(channel, listener);
   };
+
+  // Reports whether the GPU is actually accelerating rendering/compositing
+  // on this machine. `app.getGPUFeatureStatus()` reflects Chromium's real
+  // decision — including its GPU blocklist, which covers a lot of
+  // older/weaker integrated GPUs — not just "does a GPU exist". When
+  // rasterization or gpu_compositing have fallen back to software, expensive
+  // effects like backdrop-filter blur get far more costly (CPU-bound instead
+  // of GPU-composited), which is the main driver of lag/hangs reported on
+  // mid-range machines. The renderer uses this once at startup to decide
+  // whether to default Performance Mode on. See usePerformanceMode.ts.
+  safeHandle('get-gpu-performance-status', async () => {
+    try {
+      // Electron types GPUFeatureStatus as a fixed set of known keys, not an
+      // index signature — cast through `unknown` first since we only need
+      // generic string lookups here (some keys/values vary by Chromium
+      // version, which the fixed type doesn't fully capture anyway).
+      const status = app.getGPUFeatureStatus() as unknown as Record<string, string>;
+      const isSoftwareFallback = (feature?: string) =>
+        !!feature && /software|disabled|unavailable/i.test(feature);
+      const isLowPowerGpu =
+        isSoftwareFallback(status.gpu_compositing) ||
+        isSoftwareFallback(status.rasterization) ||
+        isSoftwareFallback(status['2d_canvas']);
+
+      console.log("[ipcHandler] isLowPowerGpu", isLowPowerGpu);
+      return { isLowPowerGpu, raw: status };
+    } catch (err) {
+      // If we can't determine GPU status, don't assume the worst — default
+      // to the current (full-fidelity) behavior rather than silently
+      // degrading visuals for everyone on a query failure.
+      console.warn('[ipcHandlers] get-gpu-performance-status failed:', err);
+      return { isLowPowerGpu: false, raw: null };
+    }
+  });
 
   // Relays renderer-side errors (currently: ErrorBoundary.componentDidCatch,
   // see src/features/common/ErrorBoundary.tsx) into main-process error
@@ -201,8 +241,8 @@ export function initializeIpcHandlers(appState: AppState): void {
     }
   )
 
-  safeHandle("set-window-mode", async (event, mode: 'launcher' | 'overlay', inactive?: boolean) => {
-    appState.getWindowHelper().setWindowMode(mode, inactive);
+  safeHandle("set-window-mode", async (event, mode: 'launcher' | 'overlay', inactive?: boolean, freshMeetingStart?: boolean) => {
+    appState.getWindowHelper().setWindowMode(mode, inactive, freshMeetingStart);
     return { success: true };
   })
 
@@ -2290,13 +2330,36 @@ export function initializeIpcHandlers(appState: AppState): void {
   // Calendar Integration Handlers
   // ==========================================
 
+  // Maps raw OAuth/loopback error messages (from CalendarManager /
+  // ZoomCalendarManager .startAuthFlow()) to a short, user-friendly toast
+  // body. Falls back to a generic message for anything unrecognized rather
+  // than surfacing a raw error string.
+  const calendarAuthErrorMessage = (error: any): string => {
+    const raw = String(error?.message ?? error ?? '');
+    if (raw === 'AUTH_TIMEOUT') {
+      return "We didn't detect a completed sign-in in time. Please try connecting again.";
+    }
+    if (/access_denied/i.test(raw)) {
+      return 'The connection was cancelled before access was granted.';
+    }
+    if (/EADDRINUSE/i.test(raw)) {
+      return 'A connection attempt is already in progress. Please wait a moment and try again.';
+    }
+    if (/network|ENOTFOUND|ETIMEDOUT|ECONNREFUSED/i.test(raw)) {
+      return 'A network error occurred while connecting. Please check your connection and try again.';
+    }
+    return "We couldn't complete the connection. Please try again.";
+  };
+
   safeHandle("calendar-connect", async () => {
     try {
       const { CalendarManager } = require('./services/CalendarManager');
       await CalendarManager.getInstance().startAuthFlow();
+      appState.notifyCalendarConnectionResult?.('Google Calendar', true);
       return { success: true };
     } catch (error: any) {
       console.error("Calendar auth error:", error);
+      appState.notifyCalendarConnectionResult?.('Google Calendar', false, calendarAuthErrorMessage(error));
       return { success: false, error: error.message };
     }
   });
@@ -2341,9 +2404,11 @@ export function initializeIpcHandlers(appState: AppState): void {
     try {
       const { ZoomCalendarManager } = require('./services/ZoomCalendarManager');
       await ZoomCalendarManager.getInstance().startAuthFlow();
+      appState.notifyCalendarConnectionResult?.('Zoom Calendar', true);
       return { success: true };
     } catch (error) {
       console.error("Zoom Calendar auth error:", error);
+      appState.notifyCalendarConnectionResult?.('Zoom Calendar', false, calendarAuthErrorMessage(error));
       return { success: false, error: String(error) };
     }
   });
@@ -3738,6 +3803,137 @@ export function initializeIpcHandlers(appState: AppState): void {
     }
   });
 
+  // ==========================================
+  // Permissions (Mac/Windows)
+  // ==========================================
+  safeHandle("check-permissions", async () => {
+    const isMac = process.platform === 'darwin';
+
+    // Windows/Linux have no screen-capture gate (WASAPI loopback is ungated) and
+    // handle the microphone at first use, so report both as available there.
+    if (!isMac) {
+      return {
+        microphone: true,
+        systemAudio: true,
+        screenCapture: true,
+        microphoneStatus: 'granted',
+        screenStatus: 'granted',
+        platform: process.platform,
+      };
+    }
+
+    // Routed through the shared helper rather than systemPreferences directly so
+    // the dev bypass applies consistently — otherwise the tray would report
+    // "denied" while the audio pipeline believed it was granted.
+    const screenStatus = getMacScreenCaptureStatus();
+    const microphoneStatus = getMacMicrophoneStatus();
+    const screenPerm = screenStatus === 'granted';
+
+    return {
+      // Booleans kept for the existing callers (AudioStatusTray, meeting gate).
+      microphone: microphoneStatus === 'granted',
+      systemAudio: screenPerm,
+      screenCapture: screenPerm,
+      // Full tri-state, so the UI can tell "never asked" from "actively denied"
+      // and word its prompt accordingly.
+      microphoneStatus,
+      screenStatus,
+      platform: process.platform,
+    };
+  });
+
+  safeHandle("request-permission", async (_, type: 'microphone' | 'screen') => {
+    if (process.platform !== 'darwin') return true;
+
+    if (type === 'microphone') {
+      return await systemPreferences.askForMediaAccess('microphone');
+    } else if (type === 'screen') {
+      // There is no askForMediaAccess('screen'). macOS only raises the sheet
+      // when a protected API is called, and once denied it cannot be
+      // re-prompted at all — the user has to toggle it in System Settings.
+      shell.openExternal(MAC_SETTINGS_PANES.screen);
+      return false; // Requires a restart after granting.
+    }
+    return false;
+  });
+
+  // `pane` selects which Privacy pane to open. It previously always opened
+  // Microphone, so the System Audio row's "Settings" link sent users to the
+  // wrong place entirely.
+  safeHandle("open-permission-settings", async (_, pane: MacSettingsPane = 'microphone') => {
+    const target: MacSettingsPane = pane === 'screen' ? 'screen' : 'microphone';
+    if (process.platform === 'darwin') {
+      shell.openExternal(MAC_SETTINGS_PANES[target]);
+    } else {
+      // Windows has no screen-capture pane; microphone is the only mapping.
+      shell.openExternal('ms-settings:privacy-microphone');
+    }
+  });
+
+  // Replays the most recent screen-capture warning. The startup denial check
+  // runs ~800ms after window creation, which can be before a renderer has
+  // subscribed — without a replay the user would never see that warning.
+  safeHandle("get-system-audio-permission-warning", async () => {
+    return getLatestSystemAudioPermissionWarning();
+  });
+
+  // In-app TCC repair.
+  //
+  // macOS binds a TCC grant to the binary's cdhash. This build is ad-hoc signed
+  // (mac.identity is null + scripts/ad-hoc-sign.js), so the cdhash changes on
+  // every rebuild and the grant is orphaned — System Settings still shows the
+  // app as allowed while capture is silently zero-filled. Resetting the entries
+  // lets macOS prompt cleanly again, which is the only user-accessible fix short
+  // of Developer ID signing.
+  safeHandle("repair-tcc-permissions", async () => {
+    if (process.platform !== 'darwin') {
+      return { ok: false, message: 'Permission repair is only available on macOS.' };
+    }
+
+    // In dev, TCC entries land against the Electron binary's own bundle id, not
+    // ours — resetting our appId there would be a no-op.
+    const bundleId = app.isPackaged ? 'com.electron.meeting-notes' : 'com.github.Electron';
+
+    const { execFile } = require('node:child_process');
+    const { promisify } = require('node:util');
+    const execFileAsync = promisify(execFile);
+
+    // Capitalisation matters: tccutil rejects lowercase service names with
+    // "Invalid Service Name".
+    const services = ['Microphone', 'ScreenCapture'];
+    const results: Array<{ service: string; ok: boolean; output: string }> = [];
+
+    for (const service of services) {
+      try {
+        // Absolute path, not the bare name: tccutil is a SIP-protected stock
+        // binary, and resolving via inherited PATH could be redirected.
+        const { stdout, stderr } = await execFileAsync(
+          '/usr/bin/tccutil', ['reset', service, bundleId], { timeout: 5000 },
+        );
+        results.push({ service, ok: true, output: (stdout || stderr || '').toString().trim() });
+        console.log(`[IPC] tccutil reset ${service} ${bundleId}: OK`);
+      } catch (err: any) {
+        const msg = (err?.stderr?.toString?.() || err?.message || String(err)).trim();
+        results.push({ service, ok: false, output: msg });
+        console.warn(`[IPC] tccutil reset ${service} ${bundleId} failed: ${msg}`);
+      }
+    }
+
+    const anyOk = results.some((r) => r.ok);
+    return {
+      ok: anyOk,
+      bundleId,
+      results,
+      promptRelaunch: anyOk,
+      message: anyOk
+        ? 'Permissions reset. Quit GoDojo AI completely (Cmd+Q) and reopen — macOS will ask for Microphone and Screen Recording again. Approve both to restore audio capture.'
+        : `Permission reset failed for ${bundleId}. ${results
+          .filter((r) => !r.ok)
+          .map((r) => `${r.service}: ${r.output}`)
+          .join('; ')}`,
+    };
+  });
+
   safeHandle('auth:get-state', async () => {
     try {
       const { AuthManager } = require('./services/AuthManager');
@@ -3859,8 +4055,8 @@ export function initializeIpcHandlers(appState: AppState): void {
     }
   });
 
-  // Shared by 'reset-app-data' and 'dev:wipe-local-account-data': deletes
-  // this install's entire userData directory itself — credentials.enc,
+  // Used by 'dev:wipe-local-account-data': deletes this install's entire
+  // userData directory itself — credentials.enc,
   // settings.json, natively.db (+ its -wal/-shm files and Supabase mirror
   // queue), cached auth session, the persist:google-auth partition, and
   // the godojo-ai/godojo-ai-dev folder that contains them (depending on
@@ -3944,39 +4140,14 @@ export function initializeIpcHandlers(appState: AppState): void {
     }
   }
 
-  // "Reset app data" (Settings > General > Danger Zone). Native confirm
-  // dialog lives here (not the renderer) so this can't be triggered by a
-  // spoofed IPC call alone — it always requires an OS-level dialog click.
-  safeHandle('reset-app-data', async (event) => {
-    const win = BrowserWindow.fromWebContents(event.sender) ?? undefined;
-    const messageBoxOptions: Electron.MessageBoxOptions = {
-      type: 'warning',
-      buttons: ['Cancel', 'Reset App Data'],
-      defaultId: 0,
-      cancelId: 0,
-      title: 'Reset App Data',
-      message: 'Reset all local app data?',
-      detail:
-        'This permanently deletes your local credentials, settings, and offline data on this device, and signs you out. This cannot be undone.\n\nThe app will restart automatically.',
-    };
-    const { response }: Electron.MessageBoxReturnValue = win
-      ? await dialog.showMessageBox(win, messageBoxOptions)
-      : await dialog.showMessageBox(messageBoxOptions);
-    if (response !== 1) {
-      return { success: false, cancelled: true };
-    }
-    return wipeLocalUserDataAndRelaunch('reset-app-data');
-  });
-
   // DEV-ONLY: local-data half of "Delete My Account" (Settings > General >
   // Danger Zone). The renderer calls this *after* the Supabase rows +
   // Firebase Auth user have already been deleted server-side, so unlike
-  // 'reset-app-data' this does NOT show its own confirm dialog — the
+  // a full reset this does NOT show its own confirm dialog — the
   // account deletion the user just confirmed is already irreversible by
   // the time this runs, and a second native prompt here would just leave
   // local data behind (stale natively.db, cached session) if they misread
-  // it as a fresh, cancellable action. Reuses the exact same wipe path as
-  // 'reset-app-data' so local state ends up identically clean.
+  // it as a fresh, cancellable action.
   safeHandle('dev:wipe-local-account-data', async () => {
     return wipeLocalUserDataAndRelaunch('dev:wipe-local-account-data');
   });
