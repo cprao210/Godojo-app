@@ -46,7 +46,7 @@ export class SupabaseReadService {
 
         const { data, error } = await client
             .from('meetings')
-            .select('id, title, created_at, duration_ms, summary_json, calendar_event_id, source, is_processed')
+            .select('id, title, created_at, duration_ms, summary_json, calendar_event_id, calendar_event_metadata, source, is_processed')
             .order('created_at', { ascending: false })
             .limit(limit);
 
@@ -64,6 +64,7 @@ export class SupabaseReadService {
                 summary: summaryData.legacySummary || '',
                 detailedSummary: summaryData.detailedSummary,
                 calendarEventId: row.calendar_event_id,
+                calendarEventMetadata: row.calendar_event_metadata ?? undefined,
                 source: row.source as any,
                 isProcessed: row.is_processed === true || row.is_processed === 1,
                 // List view stays light — no transcript/usage.
@@ -100,7 +101,7 @@ export class SupabaseReadService {
         const [meetingRes, transcriptRes, usageRes, scorecardRes] = await Promise.all([
             client
                 .from('meetings')
-                .select('id, title, created_at, duration_ms, summary_json, calendar_event_id, source')
+                .select('id, title, created_at, duration_ms, summary_json, calendar_event_id, calendar_event_metadata, source')
                 .eq('id', id)
                 .maybeSingle(),
             client
@@ -191,6 +192,7 @@ export class SupabaseReadService {
             summary: summaryData.legacySummary || '',
             detailedSummary: summaryData.detailedSummary,
             calendarEventId: meetingRow.calendar_event_id,
+            calendarEventMetadata: meetingRow.calendar_event_metadata ?? undefined,
             source: meetingRow.source,
             transcript: transcript,
             usage: usage

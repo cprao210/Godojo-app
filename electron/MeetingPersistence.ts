@@ -474,7 +474,7 @@ export class MeetingPersistence {
     private async processAndSaveMeeting(
         data: { transcript: TranscriptSegment[], usage: any[], startTime: number, endTime?: number, totalPausedMs?: number, durationMs: number, context: string },
         meetingId: string,
-        metadata?: { title?: string; calendarEventId?: string; source?: 'manual' | 'calendar' } | null,
+        metadata?: { title?: string; calendarEventId?: string; source?: 'manual' | 'calendar'; calendarEvent?: any } | null,
         liveAnalysisData?: LiveAnalysisData | null,
         speakerNames?: { user: string; client: string },
         companyIntel?: Record<string, any> | null,
@@ -487,11 +487,18 @@ export class MeetingPersistence {
         // Use passed-in metadata snapshot (NOT this.session.getMeetingMetadata() which is already cleared)
         let calendarEventId: string | undefined;
         let source: 'manual' | 'calendar' = 'manual';
+        // Raw calendar event, wrapped in an array to match the provider's event-feed
+        // shape (see CalendarManager.CalendarEvent) — persisted verbatim, untouched.
+        let calendarEventMetadata: any[] | undefined;
 
         if (metadata) {
             if (metadata.title) title = metadata.title;
             if (metadata.calendarEventId) calendarEventId = metadata.calendarEventId;
             if (metadata.source) source = metadata.source;
+            // Guard on the full event object (not calendarEventId) — otherwise a
+            // metadata payload that carries the id but not the raw event would
+            // wrap [undefined] and persist "[null]" into calendar_event_metadata.
+            if (metadata.calendarEvent) calendarEventMetadata = [metadata.calendarEvent];
         }
 
         // Build full transcript text directly from the transcript array so the
@@ -765,6 +772,7 @@ export class MeetingPersistence {
                 transcript: transcriptWithDisplayNames,
                 usage: data.usage,
                 calendarEventId: calendarEventId,
+                calendarEventMetadata: calendarEventMetadata,
                 source: source,
                 isProcessed: true,
                 tenantId: tenantId || null

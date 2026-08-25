@@ -4165,6 +4165,9 @@ async function initializeApp() {
         source: 'calendar',
         attendees: event.attendees || [],
         organizer: event.organizer || '',
+        // Full raw calendar event (id, title, startTime, endTime, link, attendees,
+        // organizer, ...) — persisted verbatim to meetings.calendar_event_metadata.
+        calendarEvent: event,
       });
     });
 

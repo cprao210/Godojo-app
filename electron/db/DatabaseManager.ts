@@ -131,6 +131,12 @@ export interface Meeting {
         items?: string[];
     }>;
     calendarEventId?: string;
+    /**
+     * Raw calendar event payload (attendees, start/end time, meeting link, etc.)
+     * as received from the calendar provider (Google/Microsoft/Zoom). Stored
+     * verbatim as JSON — kept as an array to match the provider's event feed shape.
+     */
+    calendarEventMetadata?: any[];
     source?: 'manual' | 'calendar';
     meetingTypes?: ('discovery' | 'demo' | 'negotiation')[];
     tenantId?: string | null;
@@ -810,6 +816,16 @@ export class DatabaseManager {
             try { this.db.exec(`ALTER TABLE transcripts ADD COLUMN display_name TEXT`); }
             catch (e) { /* Column already exists */ }
             this.db.pragma('user_version = 21');
+        }
+
+        // v21 → v22: meetings.calendar_event_metadata
+        // Raw calendar event payload (attendees, start/end time, link, organizer, etc.)
+        // captured at meeting-start time, stored as JSON text — same pattern as summary_json.
+        if (version < 22) {
+            console.log('[DatabaseManager] Applying migration v21 → v22: Add calendar_event_metadata to meetings');
+            try { this.db.exec(`ALTER TABLE meetings ADD COLUMN calendar_event_metadata TEXT`); }
+            catch (e) { /* Column already exists */ }
+            this.db.pragma('user_version = 22');
         }
     }
 
@@ -1496,9 +1512,15 @@ export class DatabaseManager {
         const ownerUid = existingOwner?.owner_uid ?? SupabaseClientManager.getCurrentUserId();
 
         const insertMeeting = this.db.prepare(`
-            INSERT OR REPLACE INTO meetings (id, title, start_time, end_time, total_paused_ms, duration_ms, summary_json, created_at, calendar_event_id, tenant_id, source, is_processed, owner_uid)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            INSERT OR REPLACE INTO meetings (id, title, start_time, end_time, total_paused_ms, duration_ms, summary_json, created_at, calendar_event_id, tenant_id, source, is_processed, owner_uid, calendar_event_metadata)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         `);
+
+        // Same object/string split as summaryObj/summaryJson below: keep the object
+        // form for the Supabase jsonb column, stringify separately for local SQLite.
+        const calendarEventMetadataJson = meeting.calendarEventMetadata
+            ? JSON.stringify(meeting.calendarEventMetadata)
+            : null;
 
         const insertTranscript = this.db.prepare(`
             INSERT INTO transcripts (meeting_id, speaker, content, timestamp_ms, speaker_index, display_name)
@@ -1541,7 +1563,8 @@ export class DatabaseManager {
                 meeting.tenantId || null,
                 meeting.source || 'manual',
                 meeting.isProcessed ? 1 : 0,
-                ownerUid
+                ownerUid,
+                calendarEventMetadataJson
             );
 
             // 2. Insert Transcript
@@ -1646,7 +1669,8 @@ export class DatabaseManager {
                     calendar_event_id: meeting.calendarEventId || null,
                     tenant_id: meeting.tenantId || null,
                     source: meeting.source || 'manual',
-                    is_processed: meeting.isProcessed ? 1 : 0
+                    is_processed: meeting.isProcessed ? 1 : 0,
+                    calendar_event_metadata: meeting.calendarEventMetadata || null
                 }, ownerUid);
                 if (transcriptMirror.length > 0) mirror.upsertRows('transcripts', transcriptMirror, ownerUid);
                 if (interactionMirror.length > 0) mirror.upsertRows('ai_interactions', interactionMirror, ownerUid);
@@ -1811,6 +1835,7 @@ export class DatabaseManager {
                 summary: summaryData.legacySummary || '',
                 detailedSummary: summaryData.detailedSummary,
                 calendarEventId: row.calendar_event_id,
+                calendarEventMetadata: row.calendar_event_metadata ? JSON.parse(row.calendar_event_metadata) : undefined,
                 source: row.source as any,
                 isProcessed: row.is_processed === 1 || row.is_processed === true,
                 // We don't load full transcript/usage for list view to keep it light
@@ -1895,6 +1920,7 @@ export class DatabaseManager {
             summary: summaryData.legacySummary || '',
             detailedSummary: summaryData.detailedSummary,
             calendarEventId: meetingRow.calendar_event_id,
+            calendarEventMetadata: meetingRow.calendar_event_metadata ? JSON.parse(meetingRow.calendar_event_metadata) : undefined,
             source: meetingRow.source,
             transcript: transcript,
             usage: usage
@@ -1948,6 +1974,7 @@ export class DatabaseManager {
                 summary: summaryData.legacySummary || '',
                 detailedSummary: summaryData.detailedSummary,
                 calendarEventId: row.calendar_event_id,
+                calendarEventMetadata: row.calendar_event_metadata ? JSON.parse(row.calendar_event_metadata) : undefined,
                 source: row.source,
                 isProcessed: false,
                 transcript: [] as any[], // Fetched separately via getMeetingDetails or manually if needed

@@ -47,6 +47,7 @@ export function mapMeetingRow(row: any): Meeting {
       ? { actionItems: [], keyPoints: [], ...s.detailedSummary }
       : undefined,
     calendarEventId: row.calendar_event_id ?? undefined,
+    calendarEventMetadata: row.calendar_event_metadata ?? undefined,
     source: row.source ?? undefined,
     isProcessed: row.is_processed === true || row.is_processed === 1,
     transcript: [],

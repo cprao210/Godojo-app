@@ -90,6 +90,12 @@ export function useMeetingSession(
                     source: "calendar",
                     attendees: calendarEvent.attendees || [],
                     organizer: calendarEvent.organizer || "",
+                    // Full raw calendar event, carried through verbatim so the backend
+                    // can persist it to meetings.calendar_event_metadata (mirrors the
+                    // main-process calendar-notification path in main.ts). Without this,
+                    // calendarEventId was saved but calendar_event_metadata stayed empty
+                    // because the full event never reached the backend.
+                    calendarEvent,
                 }),
             };
 

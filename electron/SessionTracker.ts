@@ -71,6 +71,8 @@ export class SessionTracker {
         source?: 'manual' | 'calendar';
         attendees?: Array<{ email: string; name?: string; organizer?: boolean; self?: boolean }>;
         organizer?: string;
+        /** Full raw calendar event payload, carried through verbatim to persistence. */
+        calendarEvent?: any;
     } | null = null;
 
     private speakerNameMap: { user: string; client: string } = {

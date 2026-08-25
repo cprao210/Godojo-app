@@ -710,6 +710,7 @@ export interface FollowUpEmailMeeting {
     timestamp: number;
   }>;
   calendarEventId?: string;
+  calendarEventMetadata?: any[];
 }
 
 // --- src/features/meetings/components/MeetingChatOverlay.tsx ---
@@ -862,6 +863,7 @@ export interface Meeting {
   summary: string;
   isProcessed?: boolean;
   calendarEventId?: string;
+  calendarEventMetadata?: any[];
   source?: string;
   detailedSummary?: MeetingDetailedSummary;
   participants?: { email: string | null; name: string | null; oraganizer: boolean; self: boolean }[];

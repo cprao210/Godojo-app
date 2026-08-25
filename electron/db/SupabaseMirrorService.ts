@@ -712,6 +712,7 @@ CREATE TABLE IF NOT EXISTS meetings (
     is_processed         INTEGER DEFAULT 1,
     embedding_provider   TEXT,
     embedding_dimensions INTEGER,
+    calendar_event_metadata JSONB,
     PRIMARY KEY (user_id, id)
 );
 CREATE INDEX IF NOT EXISTS idx_meetings_user ON meetings(user_id, created_at DESC);
@@ -719,6 +720,7 @@ CREATE INDEX IF NOT EXISTS idx_meetings_tenant ON meetings(tenant_id);
 
 -- If this table already exists in your Supabase project, run instead:
 -- ALTER TABLE meetings ADD COLUMN IF NOT EXISTS tenant_id TEXT;
+-- ALTER TABLE meetings ADD COLUMN IF NOT EXISTS calendar_event_metadata JSONB;
 -- CREATE INDEX IF NOT EXISTS idx_meetings_tenant ON meetings(tenant_id);
 
 CREATE TABLE IF NOT EXISTS transcripts (
