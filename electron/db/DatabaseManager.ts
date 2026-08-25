@@ -1672,6 +1672,19 @@ export class DatabaseManager {
                     is_processed: meeting.isProcessed ? 1 : 0,
                     calendar_event_metadata: meeting.calendarEventMetadata || null
                 }, ownerUid);
+                // The local transaction above did DELETE-then-reinsert for this
+                // meeting's transcripts, and each reinsert gets a FRESH autoincrement
+                // rowid. saveMeeting() runs more than once per meeting (the synchronous
+                // "Processing..." placeholder save, then the final save in
+                // processAndSaveMeeting — plus recovery re-processing). The cloud only
+                // ever received upserts of the new rowids and never deleted the prior
+                // save's rows, so every re-save appended another full copy of the
+                // transcript to Supabase. (The UI reads local SQLite, which the DELETE
+                // keeps clean — that's why duplicates showed only in the cloud.)
+                // Mirror the DELETE first so the cloud replaces this meeting's
+                // transcripts instead of accumulating duplicates. expectEmpty: the
+                // first save clears nothing (no rows exist yet) — that's normal, not RLS.
+                mirror.deleteRow('transcripts', 'meeting_id', meeting.id, { expectEmpty: true, ownerUid });
                 if (transcriptMirror.length > 0) mirror.upsertRows('transcripts', transcriptMirror, ownerUid);
                 if (interactionMirror.length > 0) mirror.upsertRows('ai_interactions', interactionMirror, ownerUid);
             } catch (mirrorErr) {

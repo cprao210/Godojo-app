@@ -282,10 +282,25 @@ export class SupabaseMirrorService {
         }
     }
 
-    /** Mirror a row deletion (by primary key value). */
-    deleteRow(table: string, pkColumn: string, pkValue: any): void {
+    /**
+     * Mirror a row deletion by column match (`pkColumn = pkValue`). Not limited
+     * to the primary key — e.g. deleteRow('transcripts', 'meeting_id', id)
+     * clears every transcript row for a meeting, mirroring the local
+     * DELETE-then-reinsert in saveMeeting().
+     *
+     * opts.expectEmpty: pass true when matching zero rows is a NORMAL outcome
+     *   (e.g. clearing a meeting's transcripts on its very first save, before any
+     *   exist) so the "0 rows — likely an RLS problem" diagnostic stays silent.
+     * opts.ownerUid: scope the delete to a specific owner (use the same uid the
+     *   paired upsert was enqueued with) instead of resolving the current user
+     *   at send time.
+     */
+    deleteRow(table: string, pkColumn: string, pkValue: any, opts?: { expectEmpty?: boolean; ownerUid?: string | null }): void {
         if (!this.enabled) return;
-        this._enqueue({ op: 'delete', table, payload: { pkColumn, pkValue }, retries: 0 });
+        this._enqueue(
+            { op: 'delete', table, payload: { pkColumn, pkValue, expectEmpty: opts?.expectEmpty === true }, retries: 0 },
+            opts?.ownerUid,
+        );
     }
 
     /** Upsert a vector row into a per-dimension table. dim = 768|1536|3072. */
@@ -516,7 +531,7 @@ export class SupabaseMirrorService {
                 if (error) throw error;
 
             } else if (item.op === 'delete') {
-                const { pkColumn, pkValue } = item.payload;
+                const { pkColumn, pkValue, expectEmpty } = item.payload;
                 // Scope the delete to the current user so a stale local id
                 // can never reach another tenant's row (RLS would block it
                 // anyway, but belt-and-braces).
@@ -531,7 +546,7 @@ export class SupabaseMirrorService {
                 // it just looks like the row is stuck forever on the client.
                 const { data, error } = await q.eq(pkColumn, pkValue).select('*');
                 if (error) throw error;
-                if (!data || data.length === 0) {
+                if ((!data || data.length === 0) && !expectEmpty) {
                     console.warn(
                         `[SupabaseMirrorService] delete on ${item.table} (${pkColumn}=${pkValue}, user_id=${userId}) ` +
                         `matched 0 rows. If the row is visible in the Supabase dashboard, this is almost ` +
