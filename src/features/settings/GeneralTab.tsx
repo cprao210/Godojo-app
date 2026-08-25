@@ -1,5 +1,5 @@
 import React, { useState } from 'react';
-import { Ghost, PointerOff, Power, Terminal, MessageSquare, Palette, Monitor, Sun, Moon, Globe, ChevronDown, Eye, Layout, Settings, Activity, RotateCcw, Skull } from 'lucide-react';
+import { Ghost, PointerOff, Power, Terminal, MessageSquare, Palette, Monitor, Sun, Moon, Globe, ChevronDown, Eye, Layout, Settings, Activity, Skull } from 'lucide-react';
 import { OVERLAY_OPACITY_MIN } from '@/lib/overlayAppearance';
 import { useSettingsOverlay } from '@/hooks';
 import { getFirebaseAuth } from '@/lib/firebase';
@@ -34,31 +34,6 @@ const GeneralTab: React.FC<{ overlay: SettingsOverlayHook }> = ({ overlay }) => 
         isAiLangDropdownOpen, setIsAiLangDropdownOpen, aiLangDropdownRef } = overlay;
 
     const cardCls = isLight ? 'bg-white border-slate-200/80' : 'bg-bg-item-surface border-border-subtle';
-
-    // "Reset app data" — confirmation itself happens via a native dialog in
-    // the main process (see electron/ipcHandlers.ts: 'reset-app-data'), so
-    // this is just a loading/error state while that's in flight. On success
-    // the app relaunches itself, so there's no "done" state to render here.
-    const [isResetting, setIsResetting] = useState(false);
-    const [resetError, setResetError] = useState<string | null>(null);
-
-    const handleResetAppData = async () => {
-        posthogAnalytics.trackResetAppDataClicked();
-        setResetError(null);
-        setIsResetting(true);
-        try {
-            const result = await window.electronAPI.resetAppData();
-            if (!result.success && !result.cancelled) {
-                setResetError(result.error || 'Reset failed. Please try again.');
-            }
-            // On success the main process calls app.relaunch()/app.exit()
-            // itself — nothing further to do here.
-        } catch (e: any) {
-            setResetError(e?.message || 'Reset failed. Please try again.');
-        } finally {
-            setIsResetting(false);
-        }
-    };
 
     // DEV-ONLY: "Delete My Account" — self-service full wipe of the signed-in
     // user's data (Supabase rows across every user-scoped table, then the
@@ -109,7 +84,7 @@ const GeneralTab: React.FC<{ overlay: SettingsOverlayHook }> = ({ overlay }) => 
             const wipeResult = await window.electronAPI.wipeLocalAccountData();
             if (!wipeResult.success) {
                 setDeleteAccountError(
-                    wipeResult.error || 'Account deleted, but clearing local data failed. Please use "Reset App Data" below.'
+                    wipeResult.error || 'Account deleted, but clearing local data failed. Please contact support to finish clearing local data.'
                 );
             }
 
@@ -404,37 +379,13 @@ const GeneralTab: React.FC<{ overlay: SettingsOverlayHook }> = ({ overlay }) => 
                 </div>
             </div>
 
-            {/* Danger Zone */}
-            <div className={`rounded-xl p-5 border border-red-500/30 ${isLight ? 'bg-red-50/60' : 'bg-red-950/20'}`}>
-                <div className="flex items-center justify-between gap-4">
-                    <div className="flex flex-col gap-1">
-                        <h3 className="text-sm font-bold text-red-500">Reset App Data</h3>
-                        <p className="text-xs text-text-secondary max-w-md">
-                            Permanently deletes your local credentials, settings, and offline data on this
-                            device, and signs you out. This can't be undone. The app restarts automatically.
-                        </p>
-                        {resetError && (
-                            <p className="text-xs text-red-500 mt-1">{resetError}</p>
-                        )}
-                    </div>
-                    <button
-                        onClick={handleResetAppData}
-                        disabled={isResetting}
-                        className="shrink-0 flex items-center gap-2 px-3.5 py-2 rounded-lg text-xs font-medium border border-red-500/40 text-red-500 hover:bg-red-500/10 disabled:opacity-50 disabled:cursor-not-allowed transition-all"
-                    >
-                        <RotateCcw size={13} className={isResetting ? 'animate-spin' : ''} />
-                        {isResetting ? 'Resetting…' : 'Reset App Data'}
-                    </button>
-                </div>
-            </div>
-
             {/* DEV-ONLY Danger Zone: full account deletion (Supabase + Firebase Auth) */}
             {import.meta.env.DEV && (
                 <div className={`rounded-xl p-5 border border-red-500/30 ${isLight ? 'bg-red-50/60' : 'bg-red-950/20'}`}>
                     <div className="flex items-center justify-between gap-4">
                         <div className="flex flex-col gap-1">
                             <div className="flex items-center gap-2">
-                                <h3 className="text-sm font-bold text-red-500">Delete My Account (Dev Only)</h3>
+                                <h3 className="text-sm font-bold text-red-500">Delete My Account</h3>
                                 <span className="text-[10px] font-bold uppercase tracking-wide px-1.5 py-0.5 rounded bg-red-500/20 text-red-500">Dev</span>
                             </div>
                             <p className="text-xs text-text-secondary max-w-md">

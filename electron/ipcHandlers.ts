@@ -4055,8 +4055,8 @@ export function initializeIpcHandlers(appState: AppState): void {
     }
   });
 
-  // Shared by 'reset-app-data' and 'dev:wipe-local-account-data': deletes
-  // this install's entire userData directory itself — credentials.enc,
+  // Used by 'dev:wipe-local-account-data': deletes this install's entire
+  // userData directory itself — credentials.enc,
   // settings.json, natively.db (+ its -wal/-shm files and Supabase mirror
   // queue), cached auth session, the persist:google-auth partition, and
   // the godojo-ai/godojo-ai-dev folder that contains them (depending on
@@ -4140,39 +4140,14 @@ export function initializeIpcHandlers(appState: AppState): void {
     }
   }
 
-  // "Reset app data" (Settings > General > Danger Zone). Native confirm
-  // dialog lives here (not the renderer) so this can't be triggered by a
-  // spoofed IPC call alone — it always requires an OS-level dialog click.
-  safeHandle('reset-app-data', async (event) => {
-    const win = BrowserWindow.fromWebContents(event.sender) ?? undefined;
-    const messageBoxOptions: Electron.MessageBoxOptions = {
-      type: 'warning',
-      buttons: ['Cancel', 'Reset App Data'],
-      defaultId: 0,
-      cancelId: 0,
-      title: 'Reset App Data',
-      message: 'Reset all local app data?',
-      detail:
-        'This permanently deletes your local credentials, settings, and offline data on this device, and signs you out. This cannot be undone.\n\nThe app will restart automatically.',
-    };
-    const { response }: Electron.MessageBoxReturnValue = win
-      ? await dialog.showMessageBox(win, messageBoxOptions)
-      : await dialog.showMessageBox(messageBoxOptions);
-    if (response !== 1) {
-      return { success: false, cancelled: true };
-    }
-    return wipeLocalUserDataAndRelaunch('reset-app-data');
-  });
-
   // DEV-ONLY: local-data half of "Delete My Account" (Settings > General >
   // Danger Zone). The renderer calls this *after* the Supabase rows +
   // Firebase Auth user have already been deleted server-side, so unlike
-  // 'reset-app-data' this does NOT show its own confirm dialog — the
+  // a full reset this does NOT show its own confirm dialog — the
   // account deletion the user just confirmed is already irreversible by
   // the time this runs, and a second native prompt here would just leave
   // local data behind (stale natively.db, cached session) if they misread
-  // it as a fresh, cancellable action. Reuses the exact same wipe path as
-  // 'reset-app-data' so local state ends up identically clean.
+  // it as a fresh, cancellable action.
   safeHandle('dev:wipe-local-account-data', async () => {
     return wipeLocalUserDataAndRelaunch('dev:wipe-local-account-data');
   });

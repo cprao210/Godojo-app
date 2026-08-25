@@ -470,9 +470,6 @@ contextBridge.exposeInMainWorld("electronAPI", {
   // Settings > General > Danger Zone. Shows a native confirm dialog in
   // main, then wipes userData and relaunches. Resolves { success: false,
   // cancelled: true } if the user clicks Cancel on the native dialog.
-  resetAppData: (): Promise<{ success: boolean; cancelled?: boolean; error?: string }> =>
-    ipcRenderer.invoke("reset-app-data"),
-
   confirmDeleteAccount: (): Promise<{ confirmed: boolean }> =>
     ipcRenderer.invoke("confirm-delete-account"),
 
