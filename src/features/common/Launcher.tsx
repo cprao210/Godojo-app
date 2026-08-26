@@ -253,8 +253,9 @@ const Launcher: React.FC<LauncherProps> = ({ onStartMeeting, onOpenSettings, onC
             <RefreshToast show={showNotification} isLight={isLight} />
 
             {/* Floating Global Chat launcher — bottom-right, real "chat bot" style entry point.
-                Hidden once a meeting is open so it doesn't collide with per-meeting chat. */}
-            {!selectedMeeting && (
+                Hidden once a meeting is open (collides with per-meeting chat) or while
+                Settings is open (covers the settings action buttons in that corner). */}
+            {!selectedMeeting && !isSettingsOpen && (
                 <FloatingChatButton
                     isOpen={isGlobalChatOpen}
                     onClick={() => {
@@ -271,7 +272,7 @@ const Launcher: React.FC<LauncherProps> = ({ onStartMeeting, onOpenSettings, onC
 
             {/* Global Chat Overlay */}
             <GlobalChatOverlay
-                isOpen={isGlobalChatOpen}
+                isOpen={isGlobalChatOpen && !isSettingsOpen}
                 onClose={() => {
                     setIsGlobalChatOpen(false);
                     setSubmittedGlobalQuery('');
