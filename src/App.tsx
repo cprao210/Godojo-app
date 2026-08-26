@@ -258,6 +258,7 @@ const App: React.FC = () => {
                               }
                               : undefined
                           }
+                          onCloseManagerDashboard={() => setIsManagerDashboardOpen(false)}
                           onPageChange={setIsLauncherMainView}
                           ollamaPullStatus={ollamaPull.status}
                           ollamaPullPercent={ollamaPull.percent}

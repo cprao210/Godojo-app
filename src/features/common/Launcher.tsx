@@ -21,11 +21,11 @@ import { GlobalChatOverlay, FloatingChatButton } from '@/features/chat';
 import { useLauncher } from '@/hooks';
 import { LauncherHeader, GhostModeToggle, RefreshButton, StartMeetingButton, OllamaPullBadge } from './LauncherWidgets';
 import { CalendarConnectCard, RecentMeetingsHeader, MeetingsList, RefreshToast, TranscriptUploadModal } from './LauncherWidgets';
-import { LauncherProps } from '@/types';
+import { LauncherProps, Meeting } from '@/types';
 import { posthogAnalytics } from '@/lib/analytics/posthog.service';
 import { AudioStatusTray } from './AudioStatusTray';
 
-const Launcher: React.FC<LauncherProps> = ({ onStartMeeting, onOpenSettings, onCloseSettings, onOpenManagerDashboard, isManagerDashboardOpen = false, isSettingsOpen = false, onPageChange, ollamaPullStatus = 'idle', ollamaPullPercent = 0, ollamaPullMessage = '', authUser, onSignOut, setShowPermissionTray, showPermissionTray, proceedWithMeeting }) => {
+const Launcher: React.FC<LauncherProps> = ({ onStartMeeting, onOpenSettings, onCloseSettings, onOpenManagerDashboard, onCloseManagerDashboard, isManagerDashboardOpen = false, isSettingsOpen = false, onPageChange, ollamaPullStatus = 'idle', ollamaPullPercent = 0, ollamaPullMessage = '', authUser, onSignOut, setShowPermissionTray, showPermissionTray, proceedWithMeeting }) => {
 
     const launcherStates = useLauncher({ onStartMeeting, onPageChange, ollamaPullStatus, authUser });
     const { isLight, meetings, deleteMutation, upcomingEvents, isCalendarConnected, setIsCalendarConnected } = launcherStates;
@@ -36,6 +36,17 @@ const Launcher: React.FC<LauncherProps> = ({ onStartMeeting, onOpenSettings, onC
     const { isUploadOpen, setIsUploadOpen, uploadText, setUploadText, uploadTitle, setUploadTitle } = launcherStates;
     const { isUploading, uploadMeetingTypes, setUploadMeetingTypes, uploadError, handleUploadTranscript } = launcherStates;
     const { salesBriefEvent, setSalesBriefEvent, isGlobalChatOpen, setIsGlobalChatOpen, submittedGlobalQuery, setSubmittedGlobalQuery } = launcherStates;
+
+    // Search (TopSearchPill, in LauncherHeader) is reachable from every screen —
+    // its header sits at z-[200], above SettingsOverlay/ManagerDashboard (z-50).
+    // handleOpenMeeting alone only updates Launcher's own content, which stays
+    // hidden behind whichever overlay is open, so the result never becomes
+    // visible. Close those overlays first so the picked meeting is shown.
+    const handleOpenMeetingFromSearch = (meeting: Meeting) => {
+        if (isSettingsOpen) onCloseSettings?.();
+        if (isManagerDashboardOpen) onCloseManagerDashboard?.();
+        handleOpenMeeting(meeting);
+    };
 
     useEffect(() => {
         posthogAnalytics.trackPageView('launcher');
@@ -62,7 +73,7 @@ const Launcher: React.FC<LauncherProps> = ({ onStartMeeting, onOpenSettings, onC
                 onBack={handleBack}
                 onForward={handleForward}
                 meetings={meetings}
-                onOpenMeeting={handleOpenMeeting}
+                onOpenMeeting={handleOpenMeetingFromSearch}
                 onOpenManagerDashboard={onOpenManagerDashboard}
                 isManagerDashboardOpen={isManagerDashboardOpen}
                 isSettingsOpen={isSettingsOpen}

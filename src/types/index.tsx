@@ -1387,6 +1387,7 @@ export interface LauncherProps {
   onOpenSettings: (tab?: string) => void;
   onCloseSettings?: () => void;
   onOpenManagerDashboard?: () => void;
+  onCloseManagerDashboard?: () => void;
   isManagerDashboardOpen?: boolean;
   isSettingsOpen?: boolean;
   onPageChange?: (isMain: boolean) => void;
