@@ -57,8 +57,15 @@ export const FloatingDock: React.FC<FloatingDockProps> = ({
     const { runAnalysis, isRefreshRun, chatMessages, setChatMessages, autoRefreshInterval, setAutoRefreshInterval } = floatingDockStates;
     const { intelligencePanelFirstOpenedAt, noAnalysisCaptured, handleInteractionId } = floatingDockStates;
 
-    const panelSpring = { type: 'spring', damping: 28, stiffness: 380, mass: 0.8 } as const;
-    const dockSpring = { type: 'spring', damping: 26, stiffness: 300 } as const;
+    // In Performance Mode we swap these springs for short tweens: fewer animated
+    // frames (no spring settling/overshoot) = less layout/paint per panel switch
+    // and height change, which matters most on software-composited machines.
+    const panelSpring = isPerformanceMode
+        ? ({ type: 'tween', duration: 0.14, ease: 'easeOut' } as const)
+        : ({ type: 'spring', damping: 28, stiffness: 380, mass: 0.8 } as const);
+    const dockSpring = isPerformanceMode
+        ? ({ type: 'tween', duration: 0.14, ease: 'easeOut' } as const)
+        : ({ type: 'spring', damping: 26, stiffness: 300 } as const);
     // The outer container's height drives the native OS-window resize every
     // animation frame (see the ResizeObserver below). panelSpring/dockSpring are
     // slightly underdamped so the panels/nav feel lively, but the SAME overshoot
@@ -66,7 +73,9 @@ export const FloatingDock: React.FC<FloatingDockProps> = ({
     // and snap back — the "spring/jump" the dock showed on expand/collapse.
     // dockHeightSpring is a no-overshoot spring (bounce:0) so the window grows
     // and shrinks smoothly and settles exactly once, at the same pace.
-    const dockHeightSpring = { type: 'spring', duration: 0.34, bounce: 0 } as const;
+    const dockHeightSpring = isPerformanceMode
+        ? ({ type: 'tween', duration: 0.16, ease: 'easeOut' } as const)
+        : ({ type: 'spring', duration: 0.34, bounce: 0 } as const);
 
     // The nav dock + panels are only ever visible while the dock is expanded —
     // collapsing hides both, regardless of which panel was previously active.
@@ -320,6 +329,7 @@ export const FloatingDock: React.FC<FloatingDockProps> = ({
                                         activeColor="#3b82f6"
                                         showActiveDot
                                         frozen={isFrozen}
+                                        isPerformanceMode={isPerformanceMode}
                                         onClick={() => togglePanel('intelligence')}
                                     />
 
@@ -331,6 +341,7 @@ export const FloatingDock: React.FC<FloatingDockProps> = ({
                                         activeColor="#8b5cf6"
                                         showActiveDot
                                         frozen={isFrozen}
+                                        isPerformanceMode={isPerformanceMode}
                                         onClick={() => togglePanel('chat')}
                                     />
 
@@ -342,6 +353,7 @@ export const FloatingDock: React.FC<FloatingDockProps> = ({
                                         activeColor="#10b981"
                                         showActiveDot
                                         frozen={isFrozen}
+                                        isPerformanceMode={isPerformanceMode}
                                         onClick={onToggleGhost}
                                     />
 
@@ -353,6 +365,7 @@ export const FloatingDock: React.FC<FloatingDockProps> = ({
                                         tooltip={isMeetingPaused ? 'Resume Meeting' : 'Pause Meeting'}
                                         isActive={false}
                                         frozen={isFrozen}
+                                        isPerformanceMode={isPerformanceMode}
                                         onClick={onPauseResume}
                                     />
                                     {isMeetingPaused && <PausedIndicatorDot />}
@@ -364,6 +377,7 @@ export const FloatingDock: React.FC<FloatingDockProps> = ({
                                         isActive={false}
                                         dangerColor
                                         frozen={isFrozen}
+                                        isPerformanceMode={isPerformanceMode}
                                         onClick={async () => {
                                             await ensureFinalAnalysisBeforeEndCall();
                                             onEndCall(meetingTypes);
@@ -378,6 +392,7 @@ export const FloatingDock: React.FC<FloatingDockProps> = ({
                                         activeColor="#64748b"
                                         showActiveDot
                                         frozen={isFrozen}
+                                        isPerformanceMode={isPerformanceMode}
                                         onClick={() => togglePanel('settings')}
                                     />
 

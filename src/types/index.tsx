@@ -1518,6 +1518,8 @@ export interface DockButtonProps {
   frozen?: boolean;
   onClick: () => void;
   zIndex?: number;
+  /** See usePerformanceMode.ts — drops the tooltip's backdrop-filter blur when true. */
+  isPerformanceMode?: boolean;
 }
 
 // --- src/features/floating-dock/FloatingDock.tsx ---

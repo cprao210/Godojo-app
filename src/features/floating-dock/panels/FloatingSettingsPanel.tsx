@@ -22,9 +22,11 @@ const PERFORMANCE_MODE_OPTIONS = [
 interface PerformanceModeDropdownProps {
     value: 'auto' | 'on' | 'off';
     onChange: (v: 'auto' | 'on' | 'off') => void;
+    /** See usePerformanceMode.ts — drops the menu's backdrop-filter blur when true. */
+    isPerformanceMode?: boolean;
 }
 
-const PerformanceModeDropdown: React.FC<PerformanceModeDropdownProps> = ({ value, onChange }) => {
+const PerformanceModeDropdown: React.FC<PerformanceModeDropdownProps> = ({ value, onChange, isPerformanceMode = false }) => {
     const [isOpen, setIsOpen] = useState(false);
     const triggerRef = useRef<HTMLButtonElement>(null);
     const menuRef = useRef<HTMLDivElement>(null);
@@ -86,8 +88,8 @@ const PerformanceModeDropdown: React.FC<PerformanceModeDropdownProps> = ({ value
                         width: menuPos.width,
                         zIndex: 99999,
                         background: 'rgba(12, 16, 28, 0.98)',
-                        backdropFilter: 'blur(32px) saturate(200%)',
-                        WebkitBackdropFilter: 'blur(32px) saturate(200%)',
+                        backdropFilter: isPerformanceMode ? 'none' : 'blur(32px) saturate(200%)',
+                        WebkitBackdropFilter: isPerformanceMode ? 'none' : 'blur(32px) saturate(200%)',
                         border: '1px solid rgba(255,255,255,0.1)',
                         borderRadius: 12,
                         overflow: 'hidden',
@@ -373,6 +375,7 @@ export const FloatingSettingsPanel: React.FC<FloatingSettingsPanelProps> = ({
                         <PerformanceModeDropdown
                             value={performanceModePreference}
                             onChange={(v) => onPerformanceModePreferenceChange?.(v)}
+                            isPerformanceMode={isPerformanceMode}
                         />
                     </div>
 

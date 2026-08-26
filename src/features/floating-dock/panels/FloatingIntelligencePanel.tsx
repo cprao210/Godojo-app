@@ -3,6 +3,7 @@ import { motion, AnimatePresence } from 'framer-motion';
 import { Radio, RefreshCw, Clock, ChevronDown } from 'lucide-react';
 import { LiveAnalysisContent } from '@/features/live-analysis';
 import { LiveAnalysisData, MeetingType, FloatingIntelligencePanelProps } from '@/types';
+import { getDockSurfaceStyle } from '../dockSurfaceStyle';
 
 const AUTO_REFRESH_OPTIONS = [
     { label: '2-min', value: 2 },
@@ -433,6 +434,7 @@ export const FloatingIntelligencePanel: React.FC<FloatingIntelligencePanelProps>
     isOpen,
     meetingTypes,
     onMeetingTypesChange,
+    isPerformanceMode = false,
 }) => {
     const [showRefreshPicker, setShowRefreshPicker] = useState(false);
     const refreshPickerRef = useRef<HTMLDivElement>(null);
@@ -494,9 +496,7 @@ export const FloatingIntelligencePanel: React.FC<FloatingIntelligencePanelProps>
             style={{
                 width: 420,
                 height: 550,
-                background: 'rgba(14, 18, 30, 0.93)',
-                backdropFilter: 'blur(28px) saturate(180%)',
-                WebkitBackdropFilter: 'blur(28px) saturate(180%)',
+                ...getDockSurfaceStyle({ opacity: 0.93, rgb: '14, 18, 30', blurPx: 28, isPerformanceMode }),
                 border: '1px solid rgba(255,255,255,0.08)',
             }}
         >

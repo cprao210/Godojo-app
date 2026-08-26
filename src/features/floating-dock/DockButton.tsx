@@ -2,7 +2,7 @@ import React, { useEffect, useState } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
 import { DockButtonProps } from '@/types';
 
-export const DockButton: React.FC<DockButtonProps> = ({ icon, tooltip, isActive, activeColor = '#3b82f6', dangerColor = false, showActiveDot = false, frozen = false, onClick, zIndex }) => {
+export const DockButton: React.FC<DockButtonProps> = ({ icon, tooltip, isActive, activeColor = '#3b82f6', dangerColor = false, showActiveDot = false, frozen = false, onClick, zIndex, isPerformanceMode = false }) => {
 
     const [showTooltip, setShowTooltip] = useState(false);
     const tooltipTimerRef = React.useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -60,7 +60,7 @@ export const DockButton: React.FC<DockButtonProps> = ({ icon, tooltip, isActive,
                                 background: 'rgba(10,14,26,0.95)',
                                 border: '1px solid rgba(255,255,255,0.1)',
                                 boxShadow: '0 4px 16px rgba(0,0,0,0.5)',
-                                backdropFilter: 'blur(12px)',
+                                backdropFilter: isPerformanceMode ? 'none' : 'blur(12px)',
                             }}
                         >
                             {tooltip}

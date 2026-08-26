@@ -8,6 +8,7 @@ import { useStreamBuffer } from '@/hooks';
 import { chatApi, statusLabel } from '@/api';
 import { chatMarkdownComponents } from '@/features/chat';
 import { ChatHistoryTurn, FloatingChatPanelProps, LiveTranscriptSegment, Message, StreamHandle } from '@/types';
+import { getDockSurfaceStyle } from '../dockSurfaceStyle';
 import { posthogAnalytics } from '@/lib/analytics/posthog.service';
 
 interface FilmRollTranscriptProps {
@@ -202,7 +203,7 @@ const MessageBubble: React.FC<{ msg: Message }> = ({ msg }) => {
     );
 };
 
-export const FloatingChatPanel: React.FC<FloatingChatPanelProps> = ({ transcriptRef, rollingTranscriptUser, rollingTranscriptClient, isClientSpeaking, isUserSpeaking, isMeetingPaused, showTranscript, speakerNames, messages, onMessagesChange, onInteractionId, calendarEventMetadata }) => {
+export const FloatingChatPanel: React.FC<FloatingChatPanelProps> = ({ transcriptRef, rollingTranscriptUser, rollingTranscriptClient, isClientSpeaking, isUserSpeaking, isMeetingPaused, showTranscript, speakerNames, messages, onMessagesChange, onInteractionId, calendarEventMetadata, isPerformanceMode = false }) => {
 
     const setMessages = onMessagesChange;
     const [inputValue, setInputValue] = useState('');
@@ -496,9 +497,7 @@ export const FloatingChatPanel: React.FC<FloatingChatPanelProps> = ({ transcript
             style={{
                 width: 420,
                 height: 550,
-                background: 'rgba(14, 18, 30, 0.93)',
-                backdropFilter: 'blur(28px) saturate(180%)',
-                WebkitBackdropFilter: 'blur(28px) saturate(180%)',
+                ...getDockSurfaceStyle({ opacity: 0.93, rgb: '14, 18, 30', blurPx: 28, isPerformanceMode }),
                 border: '1px solid rgba(255,255,255,0.08)',
             }}
         >
