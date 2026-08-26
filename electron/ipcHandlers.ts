@@ -335,6 +335,14 @@ export function initializeIpcHandlers(appState: AppState): void {
     return appState.getIsMeetingActive();
   })
 
+  // Lets the overlay renderer (a separate window/context from wherever
+  // startMeeting() was called) fetch the calendar event metadata the current
+  // meeting was started with — e.g. to forward it to /chat/live alongside
+  // the live transcript. Returns null outside an active meeting.
+  safeHandle("get-meeting-metadata", async () => {
+    return appState.getIntelligenceManager().getMeetingMetadata() ?? null;
+  })
+
   safeHandle("reset-queues", async () => {
     try {
       appState.clearQueues()

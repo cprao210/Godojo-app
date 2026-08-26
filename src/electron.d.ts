@@ -1,4 +1,4 @@
-import { LiveAnalysisData } from "@/types";
+import { LiveAnalysisData, CalendarEvent } from "@/types";
 
 /** macOS TCC state for a single privacy service. */
 export type PermissionStatus = 'granted' | 'denied' | 'not-determined' | 'restricted'
@@ -336,6 +336,9 @@ export interface ElectronAPI {
   // Meeting Lifecycle
   // ===========================================================================
   getMeetingActive: () => Promise<boolean>
+  /** Metadata (title, calendarEvent, attendees, etc.) the current meeting was
+   * started with — null outside an active meeting or for a manual start. */
+  getMeetingMetadata: () => Promise<{ calendarEvent?: CalendarEvent } & Record<string, any> | null>
   onMeetingStateChanged: (callback: (data: { isActive: boolean }) => void) => () => void
   onLiveCallEnded: (callback: (data: { meetingId: string }) => void) => () => void
   onMeetingCompleted: (callback: () => void) => () => void

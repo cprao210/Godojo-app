@@ -18,7 +18,7 @@ const GodojoInterface: React.FC<GodojoInterfaceProps> = ({ onEndMeeting, overlay
     const { isUndetectable, setIsUndetectable, rollingTranscriptUser, rollingTranscriptClient } = godojoInterfaceState;
     const { isClientSpeaking, isUserSpeaking, showTranscript, setShowTranscript } = godojoInterfaceState;
     const { currentModel, setCurrentModel, speakerNames, shortcuts, overlayPanelClass, companyIntel } = godojoInterfaceState;
-
+    const { calendarEventMetadata } = godojoInterfaceState;
     return (
         <motion.div
             ref={contentRef}
@@ -54,6 +54,7 @@ const GodojoInterface: React.FC<GodojoInterfaceProps> = ({ onEndMeeting, overlay
                 shortcuts={shortcuts}
                 overlayPanelClass={overlayPanelClass}
                 companyIntel={companyIntel}
+                calendarEventMetadata={calendarEventMetadata}
                 onRequestOverlayResize={requestOverlayResize}
             />
         </motion.div>

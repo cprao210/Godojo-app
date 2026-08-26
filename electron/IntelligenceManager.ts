@@ -109,6 +109,13 @@ export class IntelligenceManager extends EventEmitter {
         this.emit('speaker-names-resolved', this.session.getSpeakerNameMap());
     }
 
+    /** Passthrough so the renderer can fetch the metadata (title, calendar
+     * event details, attendees, etc.) the current meeting was started with —
+     * e.g. to forward it to /chat/live alongside the transcript. */
+    getMeetingMetadata(): any {
+        return this.session.getMeetingMetadata();
+    }
+
     addTranscript(segment: import('./SessionTracker').TranscriptSegment, skipRefinementCheck: boolean = false): void {
         if (skipRefinementCheck) {
             // Direct add without refinement detection

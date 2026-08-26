@@ -41,6 +41,7 @@ export const FloatingDock: React.FC<FloatingDockProps> = ({
     shortcuts,
     overlayPanelClass,
     companyIntel,
+    calendarEventMetadata,
     onRequestOverlayResize,
 }) => {
 
@@ -226,6 +227,7 @@ export const FloatingDock: React.FC<FloatingDockProps> = ({
                             messages={chatMessages}
                             onMessagesChange={setChatMessages}
                             isPerformanceMode={isPerformanceMode}
+                            calendarEventMetadata={calendarEventMetadata}
                         />
                     </FloatingPanelWrapper>
                 )}

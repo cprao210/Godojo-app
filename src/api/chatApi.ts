@@ -6,7 +6,7 @@
 // getAuthHeaders().
 
 import { getAuthHeaders, API_BASE, ApiError, apiFetch } from "@/lib/apiClient";
-import { ChatHistoryTurn, ChatSession, ChatStreamHandlers, LiveTranscriptSegment, RagAnswer, StreamHandle } from "@/types";
+import { ChatHistoryTurn, ChatSession, ChatStreamHandlers, CalendarEvent, LiveTranscriptSegment, RagAnswer, StreamHandle } from "@/types";
 
 // Transient failures worth retrying automatically: network drops (fetch
 // throws a TypeError, e.g. "Failed to fetch") and server-side/rate-limit
@@ -234,14 +234,25 @@ export const chatApi = {
     ): StreamHandle =>
         streamSSE(`/chat/rag/query/meeting/${meetingId}`, { query, session_id: sessionId, history }, handlers),
 
-    /** In-call chat — FloatingChatPanel. Needs the live transcript + prior turns. */
+    /** In-call chat — FloatingChatPanel. Needs the live transcript + prior turns,
+     * plus the calendar event(s) the meeting was matched to (attendees, organizer,
+     * link, start/end time) so the assistant has the same event context that
+     * later gets persisted to meetings.calendar_event_metadata. */
     queryLive: (
         query: string,
         history: ChatHistoryTurn[],
         transcript: LiveTranscriptSegment[],
+        calendarEventMetadata: CalendarEvent[] | undefined,
         handlers: ChatStreamHandlers,
     ): StreamHandle =>
-        streamSSE("/chat/live", { query, history, transcript }, handlers),
+        streamSSE("/chat/live", {
+            query,
+            history,
+            transcript,
+            // Always present in the body (even when empty) so the backend
+            // schema doesn't need to special-case a missing key.
+            calendar_metadata: calendarEventMetadata ?? [],
+        }, handlers),
 
     /**
      * Called once, after the call ends, with every interaction_id collected

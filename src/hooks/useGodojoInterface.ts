@@ -19,7 +19,7 @@
 import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import { useShortcuts } from "@/hooks";
 import { OVERLAY_OPACITY_DEFAULT } from "@/lib/overlayAppearance";
-import { GodojoInterfaceMessage, GodojoInterfaceProps } from "@/types";
+import { CalendarEvent, GodojoInterfaceMessage, GodojoInterfaceProps } from "@/types";
 
 export function useGodojoInterface({ overlayOpacity = OVERLAY_OPACITY_DEFAULT }: GodojoInterfaceProps) {
     // `overlayOpacity` is accepted for interface compatibility (App.tsx still
@@ -63,6 +63,45 @@ export function useGodojoInterface({ overlayOpacity = OVERLAY_OPACITY_DEFAULT }:
         user: 'You',
         client: 'Other Party'
     });
+
+    // Calendar event metadata the current meeting was started with — needed
+    // to forward to /chat/live (FloatingChatPanel) so the live in-call
+    // assistant has the same event context (attendees, organizer, link, etc.)
+    // that gets persisted to meetings.calendar_event_metadata once the call
+    // ends. Overlay is a separate window/renderer from wherever startMeeting()
+    // was originally called, so this can't just be prop-drilled — it has to
+    // come back over IPC.
+    //
+    // IMPORTANT: the overlay window is created once and reused (show/hide)
+    // across every meeting — see WindowHelper — so GodojoInterface itself
+    // only ever mounts once per app session, not once per meeting. A
+    // mount-only fetch (`useEffect(..., [])`) therefore only ever captures
+    // whichever meeting happened to be active (or none) the very first time
+    // this component mounted, and silently goes stale for every meeting
+    // after that — which is exactly why calendar_metadata showed up as `[]`
+    // in the network tab despite the DB row having real data by the end of
+    // the call. Refetching on 'speaker-names-resolved' fixes this: that
+    // event already fires reliably exactly once per meeting start, right
+    // after IntelligenceManager.setMeetingMetadata() has run.
+    const [calendarEventMetadata, setCalendarEventMetadata] = useState<CalendarEvent[] | undefined>(undefined);
+
+    const refreshCalendarEventMetadata = () => {
+        if (!window.electronAPI?.getMeetingMetadata) return;
+        window.electronAPI.getMeetingMetadata()
+            .then((metadata) => {
+                setCalendarEventMetadata(metadata?.calendarEvent ? [metadata.calendarEvent] : undefined);
+            })
+            .catch(() => { /* non-fatal — live chat just proceeds without calendar context */ });
+    };
+
+    useEffect(() => {
+        refreshCalendarEventMetadata(); // covers first load / page refresh mid-meeting
+
+        const unsubscribe = window.electronAPI?.onSpeakerNamesResolved?.(() => {
+            refreshCalendarEventMetadata();
+        });
+        return () => unsubscribe?.();
+    }, []);
 
     // Add alongside the other IPC useEffect listeners
     useEffect(() => {
@@ -2024,6 +2063,7 @@ Provide only the answer, nothing else.`;
         setCurrentModel,
         // speaker display names
         speakerNames,
+        calendarEventMetadata,
         // keyboard shortcuts (for the dock's shortcut hints)
         shortcuts,
         // theming

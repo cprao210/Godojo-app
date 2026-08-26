@@ -1551,6 +1551,11 @@ export interface FloatingDockProps {
   // Company intelligence from pre-call sales brief
   companyIntel?: Record<string, any> | null;
 
+  // Calendar event(s) the current meeting was matched to, forwarded to
+  // FloatingChatPanel so /chat/live has the same event context (attendees,
+  // organizer, link, etc.) that gets persisted to meetings.calendar_event_metadata.
+  calendarEventMetadata?: CalendarEvent[];
+
   // Explicit, single-shot native overlay-window resize (height, optional
   // width) for FloatingDock's own discrete size transitions — see the
   // "Window resize pipeline" note in useGodojoInterface.ts. Optional so
@@ -1596,6 +1601,11 @@ export interface FloatingChatPanelProps {
   onInteractionId?: (interactionId: number) => void;
   /** See usePerformanceMode.ts — drops backdrop-filter blur when true. */
   isPerformanceMode?: boolean;
+  // Calendar event(s) matched to this meeting — forwarded to /chat/live
+  // (chatApi.queryLive) alongside the transcript/history so the live
+  // assistant has the same event context (attendees, organizer, link) that
+  // gets persisted to meetings.calendar_event_metadata once the call ends.
+  calendarEventMetadata?: CalendarEvent[];
 }
 
 // --- src/features/floating-dock/panels/FloatingIntelligencePanel.tsx ---

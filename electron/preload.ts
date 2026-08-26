@@ -618,6 +618,7 @@ contextBridge.exposeInMainWorld("electronAPI", {
   showOverlay: () => ipcRenderer.invoke("show-overlay"),
   hideOverlay: () => ipcRenderer.invoke("hide-overlay"),
   getMeetingActive: () => ipcRenderer.invoke("get-meeting-active"),
+  getMeetingMetadata: () => ipcRenderer.invoke("get-meeting-metadata"),
   onSpeakerNamesResolved: (callback) => {
     const subscription = (_: any, names: any) => callback(names);
     ipcRenderer.on('speaker-names-resolved', subscription);

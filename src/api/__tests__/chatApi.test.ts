@@ -276,18 +276,30 @@ describe('chatApi.queryLive', () => {
         vi.stubGlobal('fetch', fetchMock);
     });
 
-    it('POSTs the query, history, and transcript to /chat/live', async () => {
+    it('POSTs the query, history, transcript, and calendar metadata to /chat/live', async () => {
         fetchMock.mockResolvedValueOnce(sseResponse(['event: done\ndata: {}']));
         const { handlers, settled } = collectHandlers();
         const history = [{ role: 'user', content: 'earlier question' }] as any;
         const transcript = [{ speaker: 'user', text: 'live line' }] as any;
+        const calendarMetadata = [{ id: 'evt1', title: 'Demo call', startTime: '2026-01-01T10:00:00Z', endTime: '2026-01-01T10:30:00Z' }] as any;
 
-        chatApi.queryLive('follow up', history, transcript, handlers);
+        chatApi.queryLive('follow up', history, transcript, calendarMetadata, handlers);
         await settled;
 
         const [url, init] = fetchMock.mock.calls[0];
         expect(url).toBe('http://test-api/api/v1/chat/live');
-        expect(JSON.parse(init.body)).toEqual({ query: 'follow up', history, transcript });
+        expect(JSON.parse(init.body)).toEqual({ query: 'follow up', history, transcript, calendar_metadata: calendarMetadata });
+    });
+
+    it('sends an empty calendar_metadata array when no calendar event is available', async () => {
+        fetchMock.mockResolvedValueOnce(sseResponse(['event: done\ndata: {}']));
+        const { handlers, settled } = collectHandlers();
+
+        chatApi.queryLive('follow up', [], [], undefined, handlers);
+        await settled;
+
+        const [, init] = fetchMock.mock.calls[0];
+        expect(JSON.parse(init.body).calendar_metadata).toEqual([]);
     });
 
     it('fires onInteractionId for an interaction_id frame', async () => {
@@ -298,7 +310,7 @@ describe('chatApi.queryLive', () => {
         const { handlers, settled } = collectHandlers();
         const onInteractionId = vi.fn();
 
-        chatApi.queryLive('follow up', [], [], { ...handlers, onInteractionId });
+        chatApi.queryLive('follow up', [], [], undefined, { ...handlers, onInteractionId });
         await settled;
 
         expect(onInteractionId).toHaveBeenCalledWith(441);

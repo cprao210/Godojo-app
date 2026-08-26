@@ -202,7 +202,7 @@ const MessageBubble: React.FC<{ msg: Message }> = ({ msg }) => {
     );
 };
 
-export const FloatingChatPanel: React.FC<FloatingChatPanelProps> = ({ transcriptRef, rollingTranscriptUser, rollingTranscriptClient, isClientSpeaking, isUserSpeaking, isMeetingPaused, showTranscript, speakerNames, messages, onMessagesChange, onInteractionId }) => {
+export const FloatingChatPanel: React.FC<FloatingChatPanelProps> = ({ transcriptRef, rollingTranscriptUser, rollingTranscriptClient, isClientSpeaking, isUserSpeaking, isMeetingPaused, showTranscript, speakerNames, messages, onMessagesChange, onInteractionId, calendarEventMetadata }) => {
 
     const setMessages = onMessagesChange;
     const [inputValue, setInputValue] = useState('');
@@ -413,6 +413,7 @@ export const FloatingChatPanel: React.FC<FloatingChatPanelProps> = ({ transcript
             question,
             historyBeforeThisTurn,
             buildTranscript(),
+            calendarEventMetadata,
             {
                 onStatus: (status) => {
                     const label = statusLabel(status);
