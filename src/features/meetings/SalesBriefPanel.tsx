@@ -308,14 +308,14 @@ const SalesBriefPanel: React.FC<SalesBriefPanelProps> = ({ eventData, onClose })
                                                     key={c.domain}
                                                     onClick={() => { selectCandidate(i); setPickerOpen(false); }}
                                                     className={[
-                                                        'flex items-center justify-between w-full px-3 py-2 text-[12px] transition-colors',
+                                                        'flex items-center justify-between gap-3 w-full px-3 py-2 text-[12px] transition-colors',
                                                         i === selectedIndex
                                                             ? (isLight ? 'bg-blue-50 text-blue-700 font-medium' : 'bg-blue-500/15 text-blue-300 font-medium')
                                                             : (isLight ? 'text-slate-600 hover:bg-slate-50' : 'text-slate-300 hover:bg-white/[0.06]'),
                                                     ].join(' ')}
                                                 >
-                                                    <span>{c.companyName}</span>
-                                                    <span className={['text-[10px]', isLight ? 'text-slate-400' : 'text-slate-500'].join(' ')}>
+                                                    <span className="truncate min-w-0 text-left">{c.companyName}</span>
+                                                    <span className={['text-[10px] shrink-0 whitespace-nowrap', isLight ? 'text-slate-400' : 'text-slate-500'].join(' ')}>
                                                         {c.domain}
                                                     </span>
                                                 </button>
