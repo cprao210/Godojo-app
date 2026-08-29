@@ -6,7 +6,21 @@
 // getAuthHeaders().
 
 import { getAuthHeaders, API_BASE, ApiError, apiFetch } from "@/lib/apiClient";
-import { ChatHistoryTurn, ChatSession, ChatStreamHandlers, CalendarEvent, LiveTranscriptSegment, RagAnswer, StreamHandle } from "@/types";
+import { ChatHistoryTurn, ChatSession, ChatSources, ChatStreamHandlers, CalendarEvent, LiveTranscriptSegment, RagAnswer, StreamHandle } from "@/types";
+
+/** Groups the backend's flat `{id, title, type}[]` source list into the
+ * `{meetings, assets}` shape ChatSources/SourcesDisplay expect. Shared by the
+ * live `source_ids` stream frame and by session-history rehydration
+ * (getSessionMessages), since the backend returns the same flat shape in
+ * both places. Handles missing/empty input — always returns valid empty
+ * arrays rather than undefined. */
+export function groupSources(raw: { id: string; title: string; type: string }[] | undefined): ChatSources {
+    const all = raw ?? [];
+    return {
+        meetings: all.filter((s) => s.type === "meeting").map(({ id, title }) => ({ id, title })),
+        assets: all.filter((s) => s.type !== "meeting").map(({ id, title }) => ({ id, title })),
+    };
+}
 
 // Transient failures worth retrying automatically: network drops (fetch
 // throws a TypeError, e.g. "Failed to fetch") and server-side/rate-limit
@@ -145,15 +159,7 @@ function dispatchFrame(frame: string, handlers: ChatStreamHandlers): void {
             const parsed = JSON.parse(data) as {
                 sources?: { id: string; title: string; type: string }[];
             };
-            const all = parsed.sources ?? [];
-            handlers.onSources?.({
-                meetings: all
-                    .filter((s) => s.type === "meeting")
-                    .map(({ id, title }) => ({ id, title })),
-                assets: all
-                    .filter((s) => s.type !== "meeting")
-                    .map(({ id, title }) => ({ id, title })),
-            });
+            handlers.onSources?.(groupSources(parsed.sources));
             break;
         }
         case "rag_answer": {

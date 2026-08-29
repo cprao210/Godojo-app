@@ -21,7 +21,7 @@ const GlobalChatOverlay: React.FC<GlobalChatOverlayProps> = ({ isOpen, onClose, 
 
     const globalChatStates = useGlobalChat({ isOpen, onClose, initialQuery });
     const isLight = useResolvedTheme() === "light";
-    const { messages, chatState, errorMessage, statusText, query, isBusy, setQuery } = globalChatStates;
+    const { messages, chatState, errorMessage, statusText, query, setQuery } = globalChatStates;
     const { messagesEndRef, chatWindowRef, inputRef, submitQuestion, handleInputKeyDown } = globalChatStates;
     const { handleSendClick, resetOnExit, sessionId, sessions, isLoadingSessions } = globalChatStates;
     const { startNewChat, loadSession, deleteSession } = globalChatStates;

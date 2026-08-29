@@ -306,6 +306,12 @@ export type ChatRole = "user" | "assistant";
 export interface ChatHistoryTurn {
   role: ChatRole;
   content: string;
+  // Raw shape from GET /chat/sessions/:id/messages — a flat list, unlike the
+  // grouped { meetings, assets } shape ChatSources/SourcesDisplay expect (that
+  // grouping only happens for the live `source_ids` stream frame, in
+  // chatApi.ts). Only present on assistant turns that answered from RAG
+  // context, and can be missing/empty even then — never assume it's there.
+  sources?: { id: string; title: string; type: string }[];
 }
 
 export interface ChatSession {

@@ -5,7 +5,7 @@
 // component only owns rendering — same split as useCalendarConnections.
 
 import { useCallback, useEffect, useRef, useState } from "react";
-import { chatApi, statusLabel } from "@/api/chatApi";
+import { chatApi, statusLabel, groupSources } from "@/api/chatApi";
 import { useStreamBuffer } from "@/hooks/useStreamBuffer";
 import { posthogAnalytics } from "@/lib/analytics/posthog.service";
 import { ChatHistoryTurn, ChatSession, ChatSources, GlobalChatMessage, GlobalChatState, StreamHandle } from "@/types";
@@ -221,6 +221,12 @@ export function useGlobalChat({ isOpen, onClose, initialQuery = "" }: UseGlobalC
                     id: `${id}-${i}`,
                     role: turn.role,
                     content: turn.content,
+                    // Only attach sources when the turn actually has them — a plain
+                    // empty {meetings:[],assets:[]} would fail `sources &&` checks
+                    // being truthy while still being empty, and SourcesDisplay
+                    // already renders null for zero sources anyway, so keeping
+                    // this undefined-when-absent is just cleaner upstream.
+                    sources: turn.sources?.length ? groupSources(turn.sources) : undefined,
                 })),
             );
             setSessionId(id);
