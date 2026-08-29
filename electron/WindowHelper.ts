@@ -1,4 +1,3 @@
-
 import { BrowserWindow, screen, app, Menu } from "electron"
 import { AppState } from "./main"
 import { KeybindManager } from "./services/KeybindManager"
@@ -51,6 +50,12 @@ export class WindowHelper {
 
   private appState: AppState
   private contentProtection: boolean = false
+  // Set right before any hide() call WE intentionally trigger on the overlay
+  // (hideMainWindow / hideOverlay / switchToLauncher). Lets the 'hide'
+  // listener in setupWindowListeners() tell the difference between "we hid
+  // it on purpose" and "the OS hid it out from under us" (see there for why
+  // that distinction matters).
+  private overlayHideIsExpected: boolean = false
   private opacityTimeout: NodeJS.Timeout | null = null
 
   // Initialize with explicit number type and 0 value
@@ -489,9 +494,56 @@ export class WindowHelper {
       this.isWindowVisible = false
     })
 
-    // Listen for overlay close (e.g. Cmd+W). Never truly destroy it — either
-    // hide it (during a meeting) or switch back to launcher (between meetings).
+    // The OS can silently drop the "always on top" flag on the overlay window
+    // without us ever calling setAlwaysOnTop(false) ourselves — e.g. switching
+    // between the editor/browser tabs, another app briefly requesting topmost
+    // status, or (on Windows) DWM re-ordering z-order during Alt-Tab. When
+    // that happens the dock falls one layer back and looks like it "vanished"
+    // behind whatever the user just switched to. Electron fires
+    // 'always-on-top-changed' whenever the flag changes for ANY reason, so we
+    // use it as a watchdog: if the flag ever comes back false while the
+    // overlay should still be floating, restore it immediately. This only
+    // fires on an actual state change, so it won't spam setAlwaysOnTop() on
+    // every show/hide the way a naive "always reassert" fix would.
     if (this.overlayWindow) {
+      this.overlayWindow.on('always-on-top-changed', (_e, isAlwaysOnTop) => {
+        if (isAlwaysOnTop) return;
+        if (!this.overlayWindow || this.overlayWindow.isDestroyed()) return;
+        // Restore without stealing focus — mirrors the platform-specific level
+        // used at creation time (see overlaySettings / darwin block above).
+        this.overlayWindow.setAlwaysOnTop(
+          true,
+          process.platform === 'darwin' ? 'floating' : 'screen-saver'
+        );
+      });
+
+      // Windows' screen-capture UI (Win+Shift+S / Snipping Tool, and other
+      // capture tools) forces a DWM re-composition pass to build its
+      // dimmed-desktop selection overlay. On some GPU/driver combos, a
+      // window using setContentProtection(true) (WDA_EXCLUDEFROMCAPTURE) —
+      // like ours — gets silently hidden by Windows during that pass and
+      // never told to come back, since nothing in our own code called
+      // hide() for it. The result: the dock vanishes and the user is left
+      // looking at their desktop until they manually reopen the app.
+      // overlayHideIsExpected is only set true immediately before OUR OWN
+      // hide() calls (see hideOverlayWindowInternal), so any 'hide' event
+      // that arrives without it set came from the OS, not us — restore the
+      // overlay right away, without stealing focus.
+      this.overlayWindow.on('hide', () => {
+        const wasExpected = this.overlayHideIsExpected;
+        this.overlayHideIsExpected = false;
+        if (wasExpected) return;
+        if (!this.isWindowVisible || this.currentWindowMode !== 'overlay') return;
+        if (!this.overlayWindow || this.overlayWindow.isDestroyed()) return;
+
+        console.warn('[WindowHelper] Overlay was hidden unexpectedly (likely OS screen-capture UI) — restoring it');
+        this.overlayWindow.showInactive();
+        this.overlayWindow.setAlwaysOnTop(
+          true,
+          process.platform === 'darwin' ? 'floating' : 'screen-saver'
+        );
+      });
+
       this.overlayWindow.on('system-context-menu', (e, point) => {
         e.preventDefault();
         if (!this.appState.getUndetectable()) {
@@ -549,8 +601,22 @@ export class WindowHelper {
 
   public hideMainWindow(): void {
     this.launcherWindow?.hide()
-    this.overlayWindow?.hide()
+    this.hideOverlayWindowInternal()
     this.isWindowVisible = false
+  }
+
+  // Every intentional overlay hide funnels through here so the 'hide'
+  // listener (setupWindowListeners) knows not to treat it as an OS-triggered
+  // disappearance that needs recovering from.
+  private hideOverlayWindowInternal(): void {
+    if (!this.overlayWindow || this.overlayWindow.isDestroyed()) return;
+    this.overlayHideIsExpected = true;
+    this.overlayWindow.hide();
+    // If the window was already hidden, Electron won't emit 'hide' at all,
+    // so the flag would otherwise stay stuck true and mask a real
+    // OS-triggered hide later. Clear it on the next tick as a safety net —
+    // the 'hide' listener already clears it synchronously on the normal path.
+    setImmediate(() => { this.overlayHideIsExpected = false; });
   }
 
   // Apply or remove click-through (mouse passthrough) on the overlay window.
@@ -588,9 +654,7 @@ export class WindowHelper {
   // Hide overlay directly without switching to launcher.
   // Used by IPC handlers to hide the overlay independently.
   public hideOverlay(): void {
-    if (this.overlayWindow && !this.overlayWindow.isDestroyed()) {
-      this.overlayWindow.hide();
-    }
+    this.hideOverlayWindowInternal();
   }
 
   public showMainWindow(inactive?: boolean): void {
@@ -631,7 +695,7 @@ export class WindowHelper {
 
   // --- Swapping Logic ---
 
-  public switchToOverlay(inactive?: boolean, freshMeetingStart?: boolean): void {
+  public switchToOverlay(inactive?: boolean, freshMeetingStart?: boolean, skipReposition?: boolean): void {
     console.log(`[WindowHelper] Switching to OVERLAY (inactive: ${!!inactive})`);
     this.currentWindowMode = 'overlay';
     KeybindManager.getInstance().setMode('overlay'); // Adapted from public PR #123 — verify premium interaction
@@ -659,37 +723,47 @@ export class WindowHelper {
       // Always follow the launcher's current display — it may have been moved to an
       // external monitor. Using the cursor or the overlay's stale bounds both fail
       // because getDisplayMatching() never returns falsy (it always picks the nearest).
-      const launcherBounds = this.launcherWindow?.getBounds();
-      const referenceDisplay = launcherBounds
-        ? screen.getDisplayMatching(launcherBounds)
-        : screen.getDisplayNearestPoint(screen.getCursorScreenPoint());
-
-      const workArea = referenceDisplay.workArea;
-
-      // If the overlay is already on the same display as the launcher, keep its
-      // current x/y so the user's manual repositioning is respected.
+      //
+      // skipReposition bypasses ALL of this and keeps the overlay exactly where it
+      // was. It's set when we're restoring the overlay right after our OWN
+      // hide()/show() cycle (e.g. hiding it briefly to take a screenshot) — the
+      // overlay's bounds never actually changed, only its visibility did. Without
+      // this, every screenshot would silently snap the overlay back to whatever
+      // display the (permanently hidden, never-moved) launcher window happens to
+      // sit on — normally the primary display — even when the user had deliberately
+      // positioned the dock on a different monitor.
       const currentBounds = this.overlayWindow.getBounds();
-      const currentDisplay = screen.getDisplayMatching(currentBounds);
-      const onSameDisplay = currentDisplay.id === referenceDisplay.id;
+      let x = currentBounds.x;
+      let y = currentBounds.y;
 
-      // Snap to the TOP-right of the reference display on a fresh meeting
-      // start (overlayNeedsReposition) or whenever the overlay isn't already on
-      // the launcher's display. Otherwise keep the user's manual position from
-      // earlier in this meeting. Top-right (not bottom-right) so the dock's
-      // top-pinned brand bar has the full screen height BELOW it to expand
-      // into: setOverlayDimensions anchors the TOP edge and grows the window
-      // downward, so starting at the top means panels open straight down in
-      // place — no upward slide or ceiling clamp. Width stays at the 600
-      // placeholder; the renderer's ResizeObserver settles it to the real
-      // content width via setOverlayDimensions, which preserves this corner.
-      const shouldSnap = this.overlayNeedsReposition || !onSameDisplay;
-      const x = shouldSnap
-        ? workArea.x + workArea.width - 600 - this.overlayEdgeMargin
-        : currentBounds.x;
-      const y = shouldSnap
-        ? workArea.y + this.overlayEdgeMargin
-        : currentBounds.y;
-      this.overlayNeedsReposition = false;
+      if (!skipReposition) {
+        const launcherBounds = this.launcherWindow?.getBounds();
+        const referenceDisplay = launcherBounds
+          ? screen.getDisplayMatching(launcherBounds)
+          : screen.getDisplayNearestPoint(screen.getCursorScreenPoint());
+
+        const workArea = referenceDisplay.workArea;
+
+        // If the overlay is already on the same display as the launcher, keep its
+        // current x/y so the user's manual repositioning is respected.
+        const currentDisplay = screen.getDisplayMatching(currentBounds);
+        const onSameDisplay = currentDisplay.id === referenceDisplay.id;
+
+        // Snap to the TOP-right of the reference display on a fresh meeting
+        // start (overlayNeedsReposition) or whenever the overlay isn't already on
+        // the launcher's display. Otherwise keep the user's manual position from
+        // earlier in this meeting. Top-right (not bottom-right) so the dock's
+        // top-pinned brand bar has the full screen height BELOW it to expand
+        // into: setOverlayDimensions anchors the TOP edge and grows the window
+        // downward, so starting at the top means panels open straight down in
+        // place — no upward slide or ceiling clamp. Width stays at the 600
+        // placeholder; the renderer's ResizeObserver settles it to the real
+        // content width via setOverlayDimensions, which preserves this corner.
+        const shouldSnap = this.overlayNeedsReposition || !onSameDisplay;
+        x = shouldSnap ? workArea.x + workArea.width - 600 - this.overlayEdgeMargin : currentBounds.x;
+        y = shouldSnap ? workArea.y + this.overlayEdgeMargin : currentBounds.y;
+        this.overlayNeedsReposition = false;
+      }
 
       this.overlayWindow.setBounds({ x, y, width: 600, height: targetHeight });
 
@@ -765,9 +839,7 @@ export class WindowHelper {
     }
 
     // Hide Overlay SECOND
-    if (this.overlayWindow && !this.overlayWindow.isDestroyed()) {
-      this.overlayWindow.hide();
-    }
+    this.hideOverlayWindowInternal();
   }
 
   // Simplified setWindowMode that just calls switchers
