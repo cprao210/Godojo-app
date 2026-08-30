@@ -28,7 +28,7 @@ import { StartupSequence } from "@/features/onboarding";
 // ---------------------------------------------------------------------------
 import { ToastProvider, ToastViewport } from "@/features/ui/toast";
 import { ModelSelectorWindow, GodojoInterface, Launcher, ErrorBoundary } from "@/features/common";
-import { IncompatibleProviderBanner, AdCampaignToasters, SystemAudioPermissionBanner } from "@/features/common";
+import { IncompatibleProviderBanner, AdCampaignToasters, SystemAudioPermissionBanner, GhostGlowOverlay } from "@/features/common";
 // import { SupportToaster } from "@/features/common";
 
 // ---------------------------------------------------------------------------
@@ -278,6 +278,9 @@ const App: React.FC = () => {
                         onDeepLinkTokenConsumed={clearDeepLinkInviteToken}
                       />
                       <ManagerDashboard isOpen={isManagerDashboardOpen} onClose={() => setIsManagerDashboardOpen(false)} />
+                      {/* Ghost Mode indicator — soft edge glow above every screen (Launcher /
+                          Settings / Dashboard) whenever the window is hidden from capture. */}
+                      <GhostGlowOverlay />
                       <ToastViewport />
                     </ToastProvider>
                   </QueryClientProvider>

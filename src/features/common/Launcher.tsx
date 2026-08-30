@@ -84,9 +84,9 @@ const Launcher: React.FC<LauncherProps> = ({ onStartMeeting, onOpenSettings, onC
             />
 
             <div className="relative flex-1 flex flex-col overflow-hidden">
-                {!isDetectable && (
-                    <div className={`absolute inset-1 border-2 border-dashed rounded-2xl pointer-events-none z-[100] ${isLight ? 'border-border-muted' : 'border-white/20'}`} />
-                )}
+                {/* Ghost Mode (undetectable) is signalled app-wide by <GhostGlowOverlay />,
+                    mounted at the app root — a soft edge glow that sits above every screen
+                    instead of a dashed frame that used to cut across Settings/Dashboard. */}
                 <AnimatePresence mode="wait">
                     {selectedMeeting ? (
                         <motion.div

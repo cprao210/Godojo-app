@@ -2,6 +2,7 @@ import AdCampaignToasters from "@/features/common/AdCampaignToasters";
 import Cropper from "@/features/common/Cropper";
 import EditableTextBlock from "@/features/common/EditableTextBlock";
 import ErrorBoundary from "@/features/common/ErrorBoundary";
+import { GhostGlowOverlay } from "@/features/common/GhostGlowOverlay";
 import IncompatibleProviderBanner from "@/features/common/IncompatibleProviderBanner";
 import Launcher from "@/features/common/Launcher";
 import ModelSelectorWindow from "@/features/common/ModelSelectorWindow";
@@ -17,4 +18,4 @@ import { WindowControlButton } from '@/features/common/WindowControlButton';
 
 export { MaximizeRestoreIcon, WindowControlButton };
 
-export { AdCampaignToasters, Cropper, EditableTextBlock, ErrorBoundary, IncompatibleProviderBanner, Launcher, ModelSelectorWindow, GodojoInterface, SupportToaster, TopSearchPill, WindowControls, AudioStatusTray, SystemAudioPermissionBanner };
+export { AdCampaignToasters, Cropper, EditableTextBlock, ErrorBoundary, GhostGlowOverlay, IncompatibleProviderBanner, Launcher, ModelSelectorWindow, GodojoInterface, SupportToaster, TopSearchPill, WindowControls, AudioStatusTray, SystemAudioPermissionBanner };
