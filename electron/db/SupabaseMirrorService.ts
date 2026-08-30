@@ -156,6 +156,19 @@ export class SupabaseMirrorService {
         const snap = AuthManager.getInstance().snapshot();
         if (!snap.uid) return;
 
+        // Guard against creating a brand-new users row with a NULL email —
+        // this happens if AuthManager's session was populated before the
+        // Firebase profile data was fully available (e.g. trySilentRestore
+        // racing the SDK's local cache hydration). It's safe to skip: the
+        // renderer's onIdTokenChanged bridge will fire again once the real
+        // profile is available and re-trigger this via the 'auth-changed'
+        // event, so we lose nothing by waiting rather than writing a
+        // half-populated row.
+        if (!snap.email) {
+            console.warn('[SupabaseMirrorService] Skipping users upsert — no email on session yet for uid=', snap.uid);
+            return;
+        }
+
         const payload: Record<string, any> = {
             firebase_uid: snap.uid,
             last_seen_at: new Date().toISOString(),

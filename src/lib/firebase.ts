@@ -125,6 +125,35 @@ export function getAuthErrorMessage(err: unknown): string {
 }
 
 /**
+ * Decode the (unverified) payload of a Firebase ID token to read the
+ * `email` / `name` / `picture` claims directly.
+ *
+ * We don't need signature verification here — the token was just minted by
+ * Google's own `securetoken.googleapis.com` endpoint a moment ago, and the
+ * only consumer is our own upsert of *display* metadata. This avoids relying
+ * on the Firebase Web SDK's local `auth.currentUser` cache, which may not be
+ * hydrated yet at the exact moment `trySilentRestore` runs — that race is
+ * what causes email/displayName to come through as null on a fresh profile
+ * restore (e.g. the first time this uid is mirrored into a database that
+ * doesn't have it yet).
+ */
+function decodeIdTokenClaims(idToken: string): { email: string | null; name: string | null; picture: string | null } {
+    try {
+        const payload = idToken.split('.')[1];
+        const json = atob(payload.replace(/-/g, '+').replace(/_/g, '/'));
+        const claims = JSON.parse(json);
+        return {
+            email: claims.email ?? null,
+            name: claims.name ?? null,
+            picture: claims.picture ?? null,
+        };
+    } catch (e) {
+        console.warn('[firebase] Failed to decode ID token claims:', e);
+        return { email: null, name: null, picture: null };
+    }
+}
+
+/**
  * Subscribe to ID-token refreshes and forward each new token to main.
  * Idempotent — only one listener is ever attached.
  */
@@ -233,7 +262,7 @@ export async function signUpWithEmail(email: string, password: string): Promise<
 export async function signUpWithEmailExtended(args: {
     email: string;
     password: string;
-    displayName: string;
+    displayName?: string;
     phoneNumber?: string;
 }): Promise<User> {
     const auth = getFirebaseAuth();
@@ -243,17 +272,13 @@ export async function signUpWithEmailExtended(args: {
     const displayName = (args.displayName ?? '').trim();
     const phoneNumber = (args.phoneNumber ?? '').trim();
 
-    if (!displayName) {
-        // Should be unreachable given UI + handleSubmit validation, but this
-        // guarantees the mirrored Supabase `users.display_name` is never NULL.
-        throw new Error('Full name is required.');
-    }
-
     try {
-        await updateProfile(user, { displayName });
-        // Force a token refresh so AuthManager picks up the new display name
-        // on its next forwarding cycle.
-        await user.getIdToken(/* forceRefresh */ true);
+        if (displayName) {
+            await updateProfile(user, { displayName });
+            // Force a token refresh so AuthManager picks up the new display name
+            // on its next forwarding cycle.
+            await user.getIdToken(/* forceRefresh */ true);
+        }
     } catch (e) {
         console.warn('[firebase] updateProfile failed (non-fatal):', e);
     }
@@ -333,16 +358,21 @@ export async function trySilentRestore(): Promise<boolean> {
 
         const auth = getFirebaseAuth();
 
-        // Wait briefly for Firebase SDK to pick up the restored session
+        // The Firebase SDK's local persistence (auth.currentUser) may not be
+        // hydrated yet at this point — that's an async load and this can run
+        // before it resolves. Decode the freshly-minted ID token's own claims
+        // as the primary source of truth, and only fall back to
+        // auth.currentUser to fill in anything the token claims don't carry.
+        const claims = decodeIdTokenClaims(data.id_token);
         const currentUser = auth.currentUser;
 
         await window.electronAPI?.authSetIdToken?.({
             idToken: data.id_token,
             refreshToken: data.refresh_token,
             uid: data.user_id,
-            email: currentUser?.email ?? null,
-            displayName: currentUser?.displayName ?? null,
-            photoURL: currentUser?.photoURL ?? null,
+            email: claims.email ?? currentUser?.email ?? null,
+            displayName: claims.name ?? currentUser?.displayName ?? null,
+            photoURL: claims.picture ?? currentUser?.photoURL ?? null,
             expiresAt: Date.now() + parseInt(data.expires_in, 10) * 1000,
         });
         return true;
