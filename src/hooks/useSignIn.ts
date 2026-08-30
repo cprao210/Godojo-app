@@ -26,8 +26,8 @@ const EMPTY_USER_DATA = { email: "", password: "", displayName: "", phoneNumber:
 function fieldsForMode(mode: AuthMode): FieldValuesType[] {
     if (mode === "sign-up") {
         return [
-            { icon: User, type: "text", name: "displayName", placeholder: "Full name" },
-            { icon: Mail, type: "email", name: "email", placeholder: "you@example.com" },
+            { icon: User, type: "text", name: "displayName", placeholder: "Full name", required: true },
+            { icon: Mail, type: "email", name: "email", placeholder: "you@example.com", required: true },
             { icon: Phone, type: "tel", name: "phoneNumber", placeholder: "Phone number (optional)" },
         ];
     }
@@ -101,6 +101,9 @@ export function useSignIn() {
             const { email, password, displayName, phoneNumber } = userData;
 
             if (mode === "sign-up") {
+                if (!displayName.trim()) {
+                    throw new Error("Please enter your full name.");
+                }
                 await signUpWithEmailExtended({ email, password, displayName, phoneNumber });
                 posthogAnalytics.trackUserRegistered('email');
                 authToast.success('Account created — check your inbox to verify your email.');

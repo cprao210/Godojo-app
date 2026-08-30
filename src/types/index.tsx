@@ -1285,6 +1285,7 @@ export type FieldValuesType = {
   type: "text" | "tel" | "email" | "password";
   name: "email" | "password" | "displayName" | "phoneNumber";
   placeholder: string;
+  required?: boolean;
 }
 
 // --- src/types/index.tsx ---

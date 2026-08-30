@@ -233,7 +233,7 @@ export async function signUpWithEmail(email: string, password: string): Promise<
 export async function signUpWithEmailExtended(args: {
     email: string;
     password: string;
-    displayName?: string;
+    displayName: string;
     phoneNumber?: string;
 }): Promise<User> {
     const auth = getFirebaseAuth();
@@ -243,13 +243,17 @@ export async function signUpWithEmailExtended(args: {
     const displayName = (args.displayName ?? '').trim();
     const phoneNumber = (args.phoneNumber ?? '').trim();
 
+    if (!displayName) {
+        // Should be unreachable given UI + handleSubmit validation, but this
+        // guarantees the mirrored Supabase `users.display_name` is never NULL.
+        throw new Error('Full name is required.');
+    }
+
     try {
-        if (displayName) {
-            await updateProfile(user, { displayName });
-            // Force a token refresh so AuthManager picks up the new display name
-            // on its next forwarding cycle.
-            await user.getIdToken(/* forceRefresh */ true);
-        }
+        await updateProfile(user, { displayName });
+        // Force a token refresh so AuthManager picks up the new display name
+        // on its next forwarding cycle.
+        await user.getIdToken(/* forceRefresh */ true);
     } catch (e) {
         console.warn('[firebase] updateProfile failed (non-fatal):', e);
     }

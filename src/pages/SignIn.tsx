@@ -152,6 +152,7 @@ export const SignIn: React.FC<SignInProps> = ({ bannerMessage, onBannerDismiss }
                                         name={f.name}
                                         value={userData[f.name]}
                                         placeholder={f.placeholder}
+                                        required={f.required}
                                         isLight={isLight}
                                         animationIndex={i + 2}
                                         hasAnimated={hasAnimated}
