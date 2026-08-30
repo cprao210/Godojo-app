@@ -1,4 +1,4 @@
-import React from 'react';
+import React, { useState } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
 import { X, ExternalLink, RefreshCw, Copy, Check, Building2, Users, TrendingUp, ChevronDown } from 'lucide-react';
 import { DollarSign, Layers, Rocket, Newspaper, UserCheck, Linkedin, Target, Map } from 'lucide-react';
@@ -43,6 +43,48 @@ interface NoDataPlaceholderProps {
 const Skeleton: React.FC<SkeletonProps> = ({ w = 'w-full', h = 'h-3', className = '', isLight = false }) => (
     <div className={`${w} ${h} rounded-md animate-pulse ${isLight ? 'bg-slate-200' : 'bg-white/[0.07]'} ${className}`} />
 );
+
+// ─── Company logo (favicon-derived) with graceful fallback to initials ───────
+interface CompanyLogoProps {
+    website: string | null | undefined;
+    fallbackLetter: string;
+    isLight: boolean;
+}
+
+const CompanyLogo: React.FC<CompanyLogoProps> = ({ website, fallbackLetter, isLight }) => {
+    const [imgFailed, setImgFailed] = useState(false);
+
+    const domain = website
+        ? website.replace(/^https?:\/\//, '').split('/')[0].replace(/^www\./, '')
+        : null;
+
+    // Google's favicon service is used as it requires no API key and works
+    // for the vast majority of public company domains. Falls back to the
+    // initials avatar below if the image errors out (404, blocked, etc.)
+    // or if we have no website to derive a domain from.
+    const logoUrl = domain ? `https://www.google.com/s2/favicons?sz=128&domain=${domain}` : null;
+
+    if (logoUrl && !imgFailed) {
+        return (
+            <div className={['flex h-12 w-12 shrink-0 items-center justify-center rounded-xl border overflow-hidden',
+                isLight ? 'bg-white border-slate-200 shadow-sm' : 'bg-white/[0.07] border-white/[0.1]'].join(' ')}>
+                <img
+                    src={logoUrl}
+                    alt=""
+                    className="h-7 w-7 object-contain"
+                    onError={() => setImgFailed(true)}
+                />
+            </div>
+        );
+    }
+
+    return (
+        <div className={['flex h-12 w-12 shrink-0 items-center justify-center rounded-xl text-xl font-bold border',
+            isLight ? 'bg-white border-slate-200 text-slate-700 shadow-sm' : 'bg-white/[0.07] border-white/[0.1] text-white'].join(' ')}>
+            {fallbackLetter}
+        </div>
+    );
+};
 
 // ─── Single field row ─────────────────────────────────────────────────────────
 const Field: React.FC<FieldProps> = ({ icon, label, value, isLight, loading, accent }) => (
@@ -427,11 +469,12 @@ const SalesBriefPanel: React.FC<SalesBriefPanelProps> = ({ eventData, onClose })
                                 {/* ── Company header card ── */}
                                 <div className={['flex items-center gap-4 px-5 py-4 mx-0 mt-4 mb-2 rounded-xl border',
                                     isLight ? 'bg-slate-50 border-slate-200/70' : 'bg-white/[0.03] border-white/[0.06]'].join(' ')}>
-                                    {/* Logo placeholder */}
-                                    <div className={['flex h-12 w-12 shrink-0 items-center justify-center rounded-xl text-xl font-bold border',
-                                        isLight ? 'bg-white border-slate-200 text-slate-700 shadow-sm' : 'bg-white/[0.07] border-white/[0.1] text-white'].join(' ')}>
-                                        {(pick(intel.companyName) || companyName || '?').charAt(0).toUpperCase()}
-                                    </div>
+                                    {/* Logo (falls back to initials if unavailable) */}
+                                    <CompanyLogo
+                                        website={intel.website}
+                                        fallbackLetter={(pick(intel.companyName) || companyName || '?').charAt(0).toUpperCase()}
+                                        isLight={isLight}
+                                    />
                                     {/* Name + website */}
                                     <div className="flex-1 min-w-0">
                                         <p className="text-[16px] font-bold text-text-primary leading-tight truncate">
@@ -450,20 +493,6 @@ const SalesBriefPanel: React.FC<SalesBriefPanelProps> = ({ eventData, onClose })
                                     </div>
                                     {/* Stat pills */}
                                     <div className="flex items-center gap-5 shrink-0">
-                                        {isSet(intel.companyAge) && (
-                                            <div className="text-center">
-                                                <p className="text-[15px] font-bold text-text-primary">{intel.companyAge}</p>
-                                                <p className={['text-[9px] uppercase tracking-wider font-semibold',
-                                                    isLight ? 'text-slate-400' : 'text-slate-500'].join(' ')}>Years Old</p>
-                                            </div>
-                                        )}
-                                        {isSet(intel.employeeCount) && (
-                                            <div className="text-center">
-                                                <p className="text-[15px] font-bold text-text-primary">{intel.employeeCount}</p>
-                                                <p className={['text-[9px] uppercase tracking-wider font-semibold',
-                                                    isLight ? 'text-slate-400' : 'text-slate-500'].join(' ')}>Employees</p>
-                                            </div>
-                                        )}
                                         {isSet(intel.headquarters) && (
                                             <div className="text-center max-w-[100px]">
                                                 <p className={['text-[11px] font-semibold leading-tight text-center',
@@ -485,6 +514,10 @@ const SalesBriefPanel: React.FC<SalesBriefPanelProps> = ({ eventData, onClose })
                                         <SectionHeader title="Company Profile" isLight={isLight} />
                                         <Field icon={<Layers size={12} />} label="Industry / Category" isLight={isLight}
                                             value={pick(intel.industry) || <span className="opacity-40">—</span>} />
+                                        {isSet(intel.employeeCount) && (
+                                            <Field icon={<Users size={12} />} label="Employees" isLight={isLight}
+                                                value={intel.employeeCount} />
+                                        )}
                                         <Field icon={<DollarSign size={12} />} label="Revenue / Turnover" isLight={isLight}
                                             value={pick(intel.revenue) || <span className="opacity-40">Not available</span>} />
                                         <Field icon={<TrendingUp size={12} />} label="Valuation" isLight={isLight}
