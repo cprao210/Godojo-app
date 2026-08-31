@@ -276,6 +276,8 @@ const App: React.FC = () => {
                         initialTab={settingsInitialTab}
                         deepLinkInviteToken={deepLinkInviteToken}
                         onDeepLinkTokenConsumed={clearDeepLinkInviteToken}
+                        tenantId={tenantId}
+                        isAdmin={isAdmin}
                       />
                       <ManagerDashboard isOpen={isManagerDashboardOpen} onClose={() => setIsManagerDashboardOpen(false)} />
                       {/* Ghost Mode indicator — soft edge glow above every screen (Launcher /

@@ -149,3 +149,25 @@ describe('intelligenceApi.reindexCompanyAssets', () => {
     await expect(intelligenceApi.reindexCompanyAssets()).resolves.toBeUndefined();
   });
 });
+
+describe('intelligenceApi.listCompanyAssets', () => {
+  beforeEach(() => mockedApiFetch.mockClear());
+
+  it('GETs the tenant-scoped company-assets list', async () => {
+    mockedApiFetch.mockResolvedValueOnce([
+      { id: 'a1', user_id: 'admin', tenant_id: 't1', type: 'pdf', label: 'Pricing', status: 'processing', last_updated: 'now' },
+    ]);
+    const assets = await intelligenceApi.listCompanyAssets();
+    expect(mockedApiFetch).toHaveBeenCalledWith('/intelligence/company-assets');
+    expect(assets[0].id).toBe('a1');
+  });
+});
+
+describe('intelligenceApi.deleteCompanyAsset', () => {
+  beforeEach(() => mockedApiFetch.mockClear());
+
+  it('DELETEs the encoded asset id', async () => {
+    await intelligenceApi.deleteCompanyAsset('a/1');
+    expect(mockedApiFetch).toHaveBeenCalledWith('/intelligence/company-assets/a%2F1', { method: 'DELETE' });
+  });
+});

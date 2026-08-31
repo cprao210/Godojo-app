@@ -473,7 +473,15 @@ export const KnowledgeBaseSection: React.FC<{
     onDeleteAll: (type: KnowledgeAsset['type']) => void;
     onSync: (id: string) => void;
     isLight: boolean;
-}> = ({ assets, assetUploading, onUpload, onDelete, onDeleteAll, onSync, isLight }) => {
+    /**
+     * When true, no Upload/Delete-all/Delete/Reprocess button is rendered at
+     * all — not just disabled. Used for read-only team members: they can see
+     * what the admin has uploaded, but there's nothing clickable anywhere in
+     * this section. Defaults to false so every existing (admin/solo) caller
+     * is unaffected.
+     */
+    readOnly?: boolean;
+}> = ({ assets, assetUploading, onUpload, onDelete, onDeleteAll, onSync, isLight, readOnly = false }) => {
     const assetTypes: KnowledgeAsset['type'][] = ['sales_deck', 'product_specs', 'case_studies'];
 
     return (
@@ -513,39 +521,45 @@ export const KnowledgeBaseSection: React.FC<{
                                                 ? 'Processing…'
                                                 : hasAssets
                                                     ? `${assetsForType.length} file${assetsForType.length > 1 ? 's' : ''} uploaded`
-                                                    : 'Upload to enable AI-powered context injection'}
+                                                    : readOnly
+                                                        ? 'No files uploaded yet'
+                                                        : 'Upload to enable AI-powered context injection'}
                                         </p>
                                     </div>
                                 </div>
 
-                                <div className="flex items-center gap-1.5 shrink-0">
-                                    {hasAssets && (
+                                {/* No button of any kind renders here for a read-only member —
+                                    not even a disabled one. */}
+                                {!readOnly && (
+                                    <div className="flex items-center gap-1.5 shrink-0">
+                                        {hasAssets && (
+                                            <button
+                                                onClick={() => onDeleteAll(type)}
+                                                disabled={!!assetUploading}
+                                                title={`Remove all ${cfg.label} files`}
+                                                className="w-7 h-7 rounded-lg flex items-center justify-center text-text-tertiary hover:text-red-400 hover:bg-red-500/10 transition-all border border-border-subtle disabled:opacity-50"
+                                            >
+                                                <Trash2 size={13} />
+                                            </button>
+                                        )}
                                         <button
-                                            onClick={() => onDeleteAll(type)}
+                                            onClick={() => onUpload(type)}
                                             disabled={!!assetUploading}
-                                            title={`Remove all ${cfg.label} files`}
-                                            className="w-7 h-7 rounded-lg flex items-center justify-center text-text-tertiary hover:text-red-400 hover:bg-red-500/10 transition-all border border-border-subtle disabled:opacity-50"
+                                            className={`px-3 py-1.5 rounded-full text-xs font-medium transition-all disabled:opacity-50 disabled:cursor-wait disabled:hover:brightness-100 whitespace-nowrap ${hasAssets
+                                                ? 'hover:brightness-110'
+                                                : 'bg-blue-600 text-white hover:bg-blue-500'
+                                                }`}
+                                            style={hasAssets
+                                                ? { background: cfg.accentBg, color: cfg.accent, border: `1px solid ${cfg.accentBorder}` }
+                                                : undefined
+                                            }
                                         >
-                                            <Trash2 size={13} />
+                                            <span className="flex items-center gap-1">
+                                                <Plus size={11} /> Upload
+                                            </span>
                                         </button>
-                                    )}
-                                    <button
-                                        onClick={() => onUpload(type)}
-                                        disabled={!!assetUploading}
-                                        className={`px-3 py-1.5 rounded-full text-xs font-medium transition-all disabled:opacity-50 disabled:cursor-wait disabled:hover:brightness-100 whitespace-nowrap ${hasAssets
-                                            ? 'hover:brightness-110'
-                                            : 'bg-blue-600 text-white hover:bg-blue-500'
-                                            }`}
-                                        style={hasAssets
-                                            ? { background: cfg.accentBg, color: cfg.accent, border: `1px solid ${cfg.accentBorder}` }
-                                            : undefined
-                                        }
-                                    >
-                                        <span className="flex items-center gap-1">
-                                            <Plus size={11} /> Upload
-                                        </span>
-                                    </button>
-                                </div>
+                                    </div>
+                                )}
                             </div>
 
                             {hasAssets && (
@@ -573,23 +587,26 @@ export const KnowledgeBaseSection: React.FC<{
                                                         </span>
                                                     )}
                                                 </div>
-                                                <div className="flex items-center gap-1 shrink-0">
-                                                    <button
-                                                        onClick={() => onSync(asset.id)}
-                                                        disabled={!!assetUploading}
-                                                        title="Re-process file"
-                                                        className="w-6 h-6 rounded-md flex items-center justify-center text-text-tertiary hover:text-text-primary hover:bg-bg-input transition-all disabled:opacity-50"
-                                                    >
-                                                        <RefreshCw size={11} />
-                                                    </button>
-                                                    <button
-                                                        onClick={() => onDelete(asset.id)}
-                                                        title="Remove file"
-                                                        className="w-6 h-6 rounded-md flex items-center justify-center text-text-tertiary hover:text-red-400 hover:bg-red-500/10 transition-all"
-                                                    >
-                                                        <Trash2 size={11} />
-                                                    </button>
-                                                </div>
+                                                {/* Same rule as above: nothing clickable at all when readOnly. */}
+                                                {!readOnly && (
+                                                    <div className="flex items-center gap-1 shrink-0">
+                                                        <button
+                                                            onClick={() => onSync(asset.id)}
+                                                            disabled={!!assetUploading || isUploading}
+                                                            title="Re-process file"
+                                                            className="w-6 h-6 rounded-md flex items-center justify-center text-text-tertiary hover:text-text-primary hover:bg-bg-input transition-all disabled:opacity-50"
+                                                        >
+                                                            <RefreshCw size={11} />
+                                                        </button>
+                                                        <button
+                                                            onClick={() => onDelete(asset.id)}
+                                                            title="Remove file"
+                                                            className="w-6 h-6 rounded-md flex items-center justify-center text-text-tertiary hover:text-red-400 hover:bg-red-500/10 transition-all"
+                                                        >
+                                                            <Trash2 size={11} />
+                                                        </button>
+                                                    </div>
+                                                )}
                                             </div>
                                         );
                                     })}
@@ -835,4 +852,4 @@ export const SaveBar: React.FC<{
             </div>
         </div>
     );
-};
+};  

@@ -53,9 +53,18 @@ const SettingsOverlay: React.FC<SettingsOverlayProps> = ({
     initialTab = 'general',
     deepLinkInviteToken = null,
     onDeepLinkTokenConsumed,
+    tenantId = null,
+    isAdmin = false,
 }) => {
     const overlay = useSettingsOverlay({ isOpen, onClose, initialTab });
     const { isLight, activeTab, setActiveTab, navigateToCompanyContext, opacity, tavily } = overlay;
+
+    // Team company context is admin-owned: a solo user (no tenantId) always
+    // edits their own context. Once on a team, only the admin may write —
+    // members see the same (admin's) data read-only. This mirrors the
+    // backend's own 403-on-write-for-members rule; it's UI-side enforcement
+    // for a clean experience, not the source of truth for permissions.
+    const isCompanyContextReadOnly = !!tenantId && !isAdmin;
 
     // Single owned instance for the whole overlay's lifetime — both the nav
     // badge below and the Updates tab content read from this same object, so
@@ -180,6 +189,7 @@ const SettingsOverlay: React.FC<SettingsOverlayProps> = ({
                                             isPremium={overlay.profile.isPremium}
                                             setIsPremiumModalOpen={overlay.profile.setIsPremiumModalOpen}
                                             isLight={isLight}
+                                            readOnly={isCompanyContextReadOnly}
                                         />
                                     )}
 

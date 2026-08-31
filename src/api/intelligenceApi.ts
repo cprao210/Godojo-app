@@ -4,8 +4,8 @@
 // (cleaning + speaker resolution), so it sends a pre-formatted, speaker-labeled
 // transcript STRING; the backend has no preprocess step.
 
-import { apiFetch } from "@/lib/apiClient";
-import { LiveAnalysisTurn, LiveAnalysisData, MeetingType } from "@/types";
+import { apiFetch, getAuthHeaders, API_BASE, ApiError } from "@/lib/apiClient";
+import { LiveAnalysisTurn, LiveAnalysisData, MeetingType, BackendCompanyAsset } from "@/types";
 import { ObjectionDelta, OBJECTION_WINDOW_TURNS, MAX_OPEN_OBJECTIONS } from "@/lib/objections";
 
 // Backend has no window cap (preprocess removed), so cap here. Keeps the extract prompt
@@ -113,6 +113,50 @@ export const intelligenceApi = {
    */
   reindexCompanyAssets: (): Promise<void> =>
     apiFetch<void>("/intelligence/company-assets/reindex", { method: "POST" }),
+
+  /**
+   * Lists company knowledge-base assets, tenant-scoped the same way as
+   * /company-context: with X-Tenant-Id (auto-attached by apiClient once the
+   * user is on a team), this returns the ADMIN's shared assets for every
+   * member, not just whatever's uploaded from the caller's own device — the
+   * local Electron/SQLite asset list is per-device and can't see another
+   * user's uploads, which is why a member couldn't see admin-uploaded docs
+   * before this existed.
+   */
+  listCompanyAssets: (): Promise<BackendCompanyAsset[]> =>
+    apiFetch<BackendCompanyAsset[]>("/intelligence/company-assets"),
+
+  /**
+ * Uploads a company asset to the tenant-scoped backend (multipart). This is
+ * what makes an uploaded doc visible + RAG-queryable for the whole team,
+ * not just the uploading device. 415 => legacy binary Office file (re-save
+ * as .docx/.pptx/.xlsx or PDF); 403 => member (only admin can upload).
+ */
+  uploadCompanyAsset: async (params: {
+    filePath: string;
+    assetId: string;
+    label: string;
+    assetType: string;
+  }): Promise<{ status: string; chunks?: number }> => {
+    const tenantId =
+      (await window.electronAPI?.getCurrentTenantId?.().catch(() => null)) ?? null;
+
+    const res = await window.electronAPI.companyUploadAssetToBackend({
+      filePath: params.filePath,
+      assetId: params.assetId,
+      label: params.label,
+      assetType: params.assetType,
+      tenantId,
+    });
+
+    // Main returns a structured error instead of throwing; normalize to ApiError
+    // so the hook's existing 415/403 handling works unchanged.
+    if (res.status === "error") {
+      throw new ApiError(res.statusCode ?? 500, "upload_failed", res.error ?? "Upload failed");
+    }
+    return res;
+  },
+
 
   /**
    * Deletes a company asset's vectors + metadata on the backend. Note: the

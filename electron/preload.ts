@@ -1403,6 +1403,9 @@ contextBridge.exposeInMainWorld("electronAPI", {
   companyGetContext: () => ipcRenderer.invoke('company:getContext'),
   companySaveContext: (data: any) => ipcRenderer.invoke('company:saveContext', data),
   companyUploadAsset: (type: string, filePath: string) => ipcRenderer.invoke('company:uploadAsset', type, filePath),
+  companyUploadAssetToBackend: (payload: {
+    filePath: string; assetId: string; label: string; assetType: string; tenantId: string | null;
+  }) => ipcRenderer.invoke('company:uploadAssetToBackend', payload),
   companyDeleteAsset: (assetId: string) => ipcRenderer.invoke('company:deleteAsset', assetId),
   companySyncAsset: (assetId: string) => ipcRenderer.invoke('company:syncAsset', assetId),
   companySetPersonaEngine: (enabled: boolean) => ipcRenderer.invoke('company:setPersonaEngine', enabled),

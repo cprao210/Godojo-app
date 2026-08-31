@@ -2822,9 +2822,19 @@ export function initializeIpcHandlers(appState: AppState): void {
               form.append('label', asset.label);
               form.append('asset_type', asset.type);
 
+              // Without X-Tenant-Id, the backend's OptionalTenant resolves this
+              // to the admin's PERSONAL scope (tenant_id IS NULL) even when
+              // they're on a team — meaning teammates would never see a doc the
+              // admin just uploaded, since GET /intelligence/company-assets
+              // (correctly sent with X-Tenant-Id from the renderer) queries the
+              // shared tenant row, not the admin's personal one.
+              const currentTenantId = tenantContext.get();
               const resp = await fetch(`${BACKEND_URL}/api/v1/intelligence/company-assets/upload`, {
                 method: 'POST',
-                headers: { Authorization: `Bearer ${token}` },
+                headers: {
+                  Authorization: `Bearer ${token}`,
+                  ...(currentTenantId ? { 'X-Tenant-Id': currentTenantId } : {}),
+                },
                 body: form,
               });
 
@@ -2984,6 +2994,81 @@ export function initializeIpcHandlers(appState: AppState): void {
     }
   });
 
+  safeHandle("company:uploadAssetToBackend", async (_event, payload: {
+    filePath: string;
+    assetId: string;
+    label: string;
+    assetType: string;
+    tenantId: string | null;
+  }) => {
+    const { filePath, assetId, label, assetType } = payload;
+
+    // Read the real file bytes from disk in main — the renderer can't do this
+    // reliably (no fs), which is why the earlier renderer-side approach sent an
+    // empty/`"undefined"` body that Document AI rejected as a corrupt PDF.
+    const fileBuffer = await fs.promises.readFile(filePath);
+    const fileName = path.basename(filePath);
+
+    // Map extension -> MIME so the backend routes to the right extractor and
+    // Document AI never receives application/octet-stream.
+    const ext = path.extname(fileName).toLowerCase();
+    const extToMime: Record<string, string> = {
+      ".pdf": "application/pdf",
+      ".docx": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+      ".pptx": "application/vnd.openxmlformats-officedocument.presentationml.presentation",
+      ".xlsx": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+      ".csv": "text/csv",
+      ".txt": "text/plain",
+      ".md": "text/markdown",
+      ".json": "application/json",
+      ".xml": "application/xml",
+      ".png": "image/png",
+      ".jpg": "image/jpeg",
+      ".jpeg": "image/jpeg",
+    };
+    const mimeType = extToMime[ext] ?? "application/octet-stream";
+
+    // Prefer the tenant the renderer resolved; fall back to main's TenantContext.
+    const tenantId = payload.tenantId ?? tenantContext.get?.() ?? null;
+
+    const idToken = getAuthToken();
+    if (!idToken) {
+      return { status: "error", error: "Not signed in", statusCode: 401 };
+    }
+
+    // Use form-data (already a dependency — see the STT test handler above) with
+    // axios, matching the existing multipart pattern in this file.
+    const axios = require("axios");
+    const FormData = require("form-data");
+    const form = new FormData();
+    form.append("file", fileBuffer, { filename: fileName, contentType: mimeType });
+    form.append("asset_id", assetId);
+    form.append("label", label);
+    form.append("asset_type", assetType);
+
+    const headers: Record<string, string> = {
+      Authorization: `Bearer ${idToken}`,
+      ...form.getHeaders(),
+    };
+    if (tenantId) headers["X-Tenant-Id"] = tenantId;
+
+    try {
+      const res = await axios.post(
+        `${BACKEND_URL}/api/v1/intelligence/company-assets/upload`,
+        form,
+        { headers, timeout: 60000, maxBodyLength: Infinity, maxContentLength: Infinity },
+      );
+      return res.data; // { status: "indexed", chunks: N } | { status: "empty", chunks: 0 }
+    } catch (error: any) {
+      const statusCode = error?.response?.status ?? 500;
+      const body = error?.response?.data;
+      const message =
+        body?.error?.message || body?.detail || error.message || "Upload failed";
+      // Return a structured error (don't throw) so the renderer gets code + message.
+      return { status: "error", error: message, statusCode };
+    }
+  });
+
   safeHandle('company:deleteAsset', async (_, assetId: string) => {
     try {
       // Purge backend (Supabase vectors + cached chat answers) first — if this
@@ -2992,9 +3077,19 @@ export function initializeIpcHandlers(appState: AppState): void {
       const token = getAuthToken();
       if (token) {
         try {
+          // Same X-Tenant-Id requirement as the upload call above — otherwise
+          // this would try to delete from the admin's personal scope and 404
+          // against the shared tenant-scoped row the asset actually lives in.
+          const currentTenantId = tenantContext.get();
           const resp = await fetch(
             `${BACKEND_URL}/api/v1/intelligence/company-assets/${encodeURIComponent(assetId)}`,
-            { method: 'DELETE', headers: { Authorization: `Bearer ${token}` } }
+            {
+              method: 'DELETE',
+              headers: {
+                Authorization: `Bearer ${token}`,
+                ...(currentTenantId ? { 'X-Tenant-Id': currentTenantId } : {}),
+              },
+            }
           );
           if (!resp.ok && resp.status !== 404) {
             // 404 is fine — asset was never uploaded to backend (e.g. local-only

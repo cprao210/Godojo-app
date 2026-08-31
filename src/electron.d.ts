@@ -414,7 +414,14 @@ export interface ElectronAPI {
       mimeType: string
     }
     error?: string
-  }>
+  }>,
+  companyUploadAssetToBackend: (payload: {
+    filePath: string;
+    assetId: string;
+    label: string;
+    assetType: string;
+    tenantId: string | null;
+  }) => Promise<{ status: string; chunks?: number; error?: string; statusCode?: number }>;
   companyDeleteAsset: (assetId: string) => Promise<{ success: boolean; error?: string }>
   companySyncAsset: (assetId: string) => Promise<{ success: boolean; status?: string; error?: string }>
   companySetPersonaEngine: (enabled: boolean) => Promise<{ success: boolean; error?: string }>

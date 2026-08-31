@@ -1008,6 +1008,24 @@ export interface KnowledgeAsset {
   filePath?: string;
 }
 
+// --- src/api/intelligenceApi.ts ---
+// Shape returned by GET /intelligence/company-assets. Same underlying data as
+// KnowledgeAsset, but tenant-scoped (via X-Tenant-Id, same OptionalTenant
+// resolution as /company-context) and snake_case, straight from the backend —
+// this is what lets a team member see the admin's uploaded docs, since the
+// local Electron/SQLite asset list is per-device and never sees another
+// user's uploads.
+export interface BackendCompanyAsset {
+  id: string;
+  user_id: string;
+  tenant_id: string | null;
+  type: string;
+  label: string;
+  status: string;
+  last_updated: string;
+}
+
+
 export interface TargetPersona {
   id: string;
   role: string;
@@ -1034,6 +1052,52 @@ export interface CompanyContextData {
     hasAssets: boolean;
   };
 }
+
+// --- src/api/companyContextApi.ts ---
+// Shapes returned/accepted by the FastAPI /company-context routes. Kept
+// separate from CompanyContextData (the flattened camelCase shape the UI
+// works with) since the backend is snake_case and singleton-vs-list shaped
+// differently — mapping happens at the hook boundary (useCompanyContext).
+export interface BackendCompanyContext {
+  id: number;
+  user_id: string;
+  tenant_id: string | null;
+  name: string | null;
+  website: string | null;
+  industry: string | null;
+  persona_engine_enabled: number;
+  core_value_proposition: string | null;
+  updated_at: string;
+  data_completeness: number;
+}
+
+export type BackendCompanyContextUpdate = Partial<
+  Pick<BackendCompanyContext, "name" | "website" | "industry" | "persona_engine_enabled" | "core_value_proposition">
+>;
+
+export interface BackendPersona {
+  id: string;
+  user_id: string;
+  tenant_id: string | null;
+  role: string;
+  description: string;
+  sort_order: number;
+}
+
+export type BackendPersonaUpdate = Partial<Pick<BackendPersona, "role" | "description" | "sort_order">>;
+
+export interface BackendCompetitor {
+  id: string;
+  user_id: string;
+  tenant_id: string | null;
+  name: string;
+  moat: string;
+  win_rate: number;
+  sort_order: number;
+}
+
+export type BackendCompetitorUpdate = Partial<Pick<BackendCompetitor, "name" | "moat" | "win_rate" | "sort_order">>;
+
 
 // --- src/features/settings/components/ProviderCard.tsx ---
 export interface FetchedModel {
@@ -1285,7 +1349,6 @@ export type FieldValuesType = {
   type: "text" | "tel" | "email" | "password";
   name: "email" | "password" | "displayName" | "phoneNumber";
   placeholder: string;
-  required?: boolean;
 }
 
 // --- src/types/index.tsx ---
@@ -1806,6 +1869,14 @@ export interface CompanyContextTabProps {
   isPremium?: boolean;
   setIsPremiumModalOpen?: (v: boolean) => void;
   isLight: boolean;
+  /**
+   * True when the current user is on a team but is NOT that team's admin.
+   * Team company context is admin-owned: members see the same data
+   * (fetched automatically via the X-Tenant-Id header) but can't edit it.
+   * Solo users (no team) are always false here — their own context is
+   * always theirs to edit.
+   */
+  readOnly?: boolean;
 }
 
 export interface MeatballMenuProps {
@@ -1905,6 +1976,10 @@ export interface SettingsOverlayProps {
   initialTab?: string;
   deepLinkInviteToken?: string | null;
   onDeepLinkTokenConsumed?: () => void;
+  /** Current tenant, if the user is on a team — null/undefined for a solo user. */
+  tenantId?: string | null;
+  /** True only for the tenant's owner/admin. Irrelevant when tenantId is unset. */
+  isAdmin?: boolean;
 }
 
 // --- src/features/settings/components/SettingsPopup.tsx ---
