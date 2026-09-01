@@ -206,3 +206,32 @@ describe('meetingsApi.uploadTranscript', () => {
         expect(bodyOfCall()).toEqual({ title: 'My title', transcript: 'full transcript text' });
     });
 });
+describe('meetingsApi.regenerateSummary', () => {
+    beforeEach(() => mockedApiFetch.mockClear());
+
+    it('POSTs to the regenerate-summary sub-route', async () => {
+        mockedApiFetch.mockResolvedValueOnce({ id: 'm1', title: 'Regenerated', created_at: '2024-01-01' });
+        await meetingsApi.regenerateSummary('m1');
+        expect(mockedApiFetch.mock.calls[0][0]).toBe('/meetings/m1/regenerate-summary');
+        expect((mockedApiFetch.mock.calls[0][1] as RequestInit).method).toBe('POST');
+    });
+
+    it('maps the returned row through mapMeetingDetail', async () => {
+        mockedApiFetch.mockResolvedValueOnce({
+            id: 'm1',
+            title: 'Regenerated',
+            created_at: '2024-01-01',
+            duration_ms: 5_000,
+            transcript: [{ speaker: 'user', text: 'hi', timestamp: 0 }],
+        });
+        const result = await meetingsApi.regenerateSummary('m1');
+        expect(result.id).toBe('m1');
+        expect(result.title).toBe('Regenerated');
+        expect(result.transcript).toEqual([{ speaker: 'user', text: 'hi', timestamp: 0 }]);
+    });
+
+    it('propagates a rejection so the caller can classify the provider error', async () => {
+        mockedApiFetch.mockRejectedValueOnce(new Error('429 RESOURCE_EXHAUSTED'));
+        await expect(meetingsApi.regenerateSummary('m1')).rejects.toThrow('429 RESOURCE_EXHAUSTED');
+    });
+});

@@ -689,25 +689,18 @@ ${formatNextCallPlaybook() || '  None'}
         try {
             const sessionActive = await guardSession();
             if (!sessionActive) return;
-            const result = await window.electronAPI.regenerateMeetingSummary(meeting.id);
-
-            if (result?.success && result.meeting) {
-                // Regenerate stays on IPC (LLM = Phase 2); push the fresh data into the cache.
-                queryClient.setQueryData<Meeting>(meetingKey, result.meeting);
-                void queryClient.invalidateQueries(["meetings"]);
-                // Regeneration also re-scores against the latest criteria — refetch the
-                // locally-served scorecard so the panel shows the fresh result.
-                void queryClient.invalidateQueries(scorecardKey);
-            } else {
-                // `result.error` now carries the real provider error (e.g. Gemini
-                // "429 RESOURCE_EXHAUSTED" / Groq rate-limit text) instead of being
-                // swallowed to a bare `false` — classify it into something the user
-                // can actually act on, and report both the classified reason and
-                // the raw text to PostHog so it's filterable/debuggable there.
-                const { reason, message } = classifyLLMError(result?.error);
-                setRegenError(message);
-                posthogAnalytics.trackSummaryRegenerateFailed(reason, result?.error, meeting.id);
-            }
+            // Summary generation runs server-side now. Unlike the old IPC call —
+            // which resolved to {success:false, error} — apiFetch REJECTS on failure,
+            // so the provider error (Gemini "429 RESOURCE_EXHAUSTED", Groq rate-limit
+            // text) reaches the catch below and is classified there. There is no
+            // success/failure branch to take here.
+            const updated = await meetingsApi.regenerateSummary(meeting.id);
+            queryClient.setQueryData<Meeting>(meetingKey, updated);
+            void queryClient.invalidateQueries(["meetings"]);
+            // The scorecard is NOT re-scored by regenerate (server-side regenerate
+            // rewrites the summary only), but the panel reads from the meeting, so
+            // refetch to stay consistent with the row we just replaced.
+            void queryClient.invalidateQueries(scorecardKey);
         } catch (err: any) {
             console.log(err);
             const { reason, message } = classifyLLMError(err?.message ?? String(err));

@@ -65,6 +65,16 @@ export const meetingsApi = {
       body: JSON.stringify({ updates }),
     }),
 
+  // Re-runs summary generation server-side over the stored transcript and returns
+  // the updated meeting. Synchronous — the user is watching a spinner. Replaces the
+  // `regenerate-meeting-summary` IPC handler (LLM waterfall now lives in the backend).
+  regenerateSummary: async (id: string): Promise<Meeting> => {
+    const row = await apiFetch<any>(`/meetings/${id}/regenerate-summary`, {
+      method: "POST",
+    });
+    return mapMeetingDetail(row);
+  },
+
   remove: (id: string): Promise<void> =>
     apiFetch(`/meetings/${id}`, { method: "DELETE" }),
 
