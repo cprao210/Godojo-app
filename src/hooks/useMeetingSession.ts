@@ -1,14 +1,19 @@
 import { useEffect, useRef } from "react";
 import { verifySessionIsActive, signOut as fbSignOut } from "../lib/firebase";
-import { TranscriptSegmentInput, MeetingSessionControls } from "@/types";
+import { MeetingSessionControls } from "@/types";
 import { posthogAnalytics } from "@/lib/analytics/posthog.service";
+import { backendMeetingSession } from "@/lib/backendMeetingSession";
 
 /**
  * Owns the Electron IPC meeting lifecycle (start/end + window-mode switching)
- * and buffers native-audio transcript turns while a backend meeting session
- * is active (backendMeetingIdRef tracks the id returned by meetingsApi.start;
- * segmentsRef buffers turns so we can submit them all at once at end-of-meeting,
- * per the backend contract).
+ * and, when the backend pipeline flag is on, mirrors that lifecycle onto the
+ * FastAPI live-session routes via `backendMeetingSession`.
+ *
+ * Which pipeline generates the summary is decided at END of the call, not the
+ * start: the backend session has to have survived the whole meeting (and
+ * delivered its full transcript) to be trusted with it. If it didn't,
+ * `backendMeetingSession.end()` returns null and we hand the meeting to
+ * Electron's own processAndSaveMeeting exactly as before.
  *
  * `tenantId` is threaded through only so handleEndMeeting can pass it along to
  * the IPC call — it's owned by `useTenant`, not this hook. `setIsProcessingMeeting`
@@ -20,26 +25,19 @@ export function useMeetingSession(
     tenantId: string | null,
     setIsProcessingMeeting: (processing: boolean) => void
 ): MeetingSessionControls {
-    const backendMeetingIdRef = useRef<string | null>(null);
-    const transcriptSegmentsRef = useRef<TranscriptSegmentInput[]>([]);
-
     // Guards against a double-click (or a calendar auto-join racing a manual
     // click) firing two concurrent start-meeting IPC calls. The backend now
     // also no-ops a duplicate startMeeting() while one is active — this is
     // the renderer-side half of the same fix.
     const isStartingRef = useRef(false);
 
-    // Buffer transcript turns while a backend meeting session is active.
+    // Mirror transcript turns into the backend session. This is the same stream
+    // main.ts feeds to SessionTracker (and already echo-filtered — see
+    // main.ts#handleTranscriptSegment), so the two pipelines summarize identical
+    // text. No-ops entirely when the backend session isn't active.
     useEffect(() => {
         const cleanup = window.electronAPI?.onNativeAudioTranscript?.((t) => {
-            if (!backendMeetingIdRef.current) return;
-            transcriptSegmentsRef.current.push({
-                speaker: (t.speaker as TranscriptSegmentInput["speaker"]) ?? "client",
-                text: t.text,
-                timestamp: t.timestamp ?? Date.now(),
-                final: t.final,
-                confidence: t.confidence,
-            });
+            backendMeetingSession.captureSegment(t);
         });
         return () => cleanup?.();
     }, []);
@@ -92,6 +90,15 @@ export function useMeetingSession(
 
             const result = await window.electronAPI.startMeeting(meetingMetadata);
             if (result.success) {
+                // Open the parallel backend session. No-ops when the flag is off,
+                // and never throws — a failure here just leaves the meeting on the
+                // Electron pipeline.
+                await backendMeetingSession.start({
+                    title: calendarEvent?.title,
+                    attendees: calendarEvent?.attendees || [],
+                    calendar_event_id: calendarEvent?.id,
+                    audio: { input_device_id: inputDeviceId, output_device_id: outputDeviceId },
+                });
                 await window.electronAPI.setWindowMode("overlay");
             } else {
                 console.error("Failed to start meeting:", result.error);
@@ -122,18 +129,8 @@ export function useMeetingSession(
             localStorage.removeItem("natively_last_meeting_start");
         }
 
-        // Fire endMeeting without awaiting — the backend saves the placeholder and
-        // broadcasts meetings-updated independently. Switching to launcher immediately
-        // means the placeholder card is visible as soon as Launcher mounts and
-        // receives the onMeetingsUpdated event, instead of only after the full IPC
-        // round-trip completes.
-        console.log("[useMeetingSession] handleEndMeeting: tenantId at IPC call =", tenantId ?? "(null)");
-        window.electronAPI.endMeeting(meetingTypes, tenantId).catch((err) => {
-            console.error("Failed to end meeting:", err);
-            posthogAnalytics.trackMeetingEndFailed(err?.message || String(err));
-            posthogAnalytics.trackException(err instanceof Error ? err : new Error(String(err)), "useMeetingSession.handleEndMeeting");
-        });
-
+        // Switch to launcher first so the UI never waits on the end-of-meeting
+        // network round-trip below.
         try {
             await window.electronAPI.setWindowMode("launcher");
         } catch (err: any) {
@@ -141,6 +138,28 @@ export function useMeetingSession(
             posthogAnalytics.trackMeetingEndFailed(err?.message || "window_mode_switch_failed");
             posthogAnalytics.trackException(err instanceof Error ? err : new Error(String(err)), "useMeetingSession.handleEndMeeting.setWindowMode");
         }
+
+        // Finalize server-side and find out whether it actually succeeded. This
+        // is awaited before the IPC call because `skipProcessing` depends on the
+        // answer: handing the meeting to the backend and *also* letting Electron
+        // summarize it would bill two LLM runs and race two writers onto the same
+        // row. Cost of awaiting is that audio capture keeps running until the IPC
+        // lands — a sub-second tail, after the user has already stopped the call.
+        // Returns null (and no-ops) whenever the backend pipeline isn't in play.
+        const backendMeetingId = await backendMeetingSession.end(meetingTypes ?? []);
+
+        console.log("[useMeetingSession] handleEndMeeting: tenantId at IPC call =", tenantId ?? "(null)");
+        window.electronAPI.endMeeting(meetingTypes, tenantId, {
+            // The backend owns this meeting — Electron should tear down audio and
+            // reset session state, but skip the LLM work and the local placeholder
+            // (POST /meetings/start already wrote one under the backend's id).
+            skipProcessing: backendMeetingId !== null,
+            backendMeetingId,
+        }).catch((err) => {
+            console.error("Failed to end meeting:", err);
+            posthogAnalytics.trackMeetingEndFailed(err?.message || String(err));
+            posthogAnalytics.trackException(err instanceof Error ? err : new Error(String(err)), "useMeetingSession.handleEndMeeting");
+        });
     };
 
     return { handleStartMeeting, handleEndMeeting };

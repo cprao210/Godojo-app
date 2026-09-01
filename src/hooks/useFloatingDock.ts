@@ -10,6 +10,7 @@ import { useEffect, useRef, useState } from 'react';
 // import — this hook is itself re-exported from that barrel.
 import { useLiveAnalysis } from './useLiveAnalysis';
 import { ActivePanel, ChatMessage, MeetingType } from '@/types';
+import { backendMeetingSession } from '@/lib/backendMeetingSession';
 import { posthogAnalytics } from '@/lib/analytics/posthog.service';
 
 const OPACITY_STORAGE_KEY = 'gd_dock_opacity';
@@ -162,6 +163,11 @@ export function useFloatingDock({ transcriptRef, isMeetingPaused, companyIntel }
     const interactionIdsRef = useRef<number[]>([]);
     const handleInteractionId = (interactionId: number) => {
         interactionIdsRef.current.push(interactionId);
+        // On the backend pipeline these are linked at end-of-call instead of
+        // lazily, because the background summariser reads ai_interactions the
+        // moment /meetings/end returns. No-ops on the Electron pipeline, which
+        // keeps using the deferred path below.
+        backendMeetingSession.recordInteractionId(interactionId);
     };
 
     // 'live-call-ended' fires exactly once, from main.ts#endMeeting, with the

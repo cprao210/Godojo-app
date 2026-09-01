@@ -19,6 +19,7 @@
 import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import { useShortcuts } from "@/hooks";
 import { OVERLAY_OPACITY_DEFAULT } from "@/lib/overlayAppearance";
+import { backendMeetingSession } from "@/lib/backendMeetingSession";
 import { GodojoInterfaceMessage, GodojoInterfaceProps } from "@/types";
 
 export function useGodojoInterface({ overlayOpacity = OVERLAY_OPACITY_DEFAULT }: GodojoInterfaceProps) {
@@ -1651,8 +1652,13 @@ Provide only the answer, nothing else.`;
         try {
             if (isMeetingPaused) {
                 await window.electronAPI?.resumeMeeting?.();
+                // Mirror onto the backend session so its paused-time accounting
+                // (and therefore the meeting's duration) matches Electron's.
+                // No-ops when the backend pipeline isn't active.
+                await backendMeetingSession.resume();
             } else {
                 await window.electronAPI?.pauseMeeting?.();
+                await backendMeetingSession.pause();
             }
             // State is updated via onMeetingPauseStateChanged listener — no local setState needed here.
             // This avoids double-state-setting and race conditions.

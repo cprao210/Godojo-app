@@ -1795,9 +1795,12 @@ export function initializeIpcHandlers(appState: AppState): void {
     }
   });
 
-  safeHandle("end-meeting", async (_, payload?: { meetingTypes?: ('discovery' | 'demo' | 'negotiation')[], tenantId?: string | null }) => {
+  safeHandle("end-meeting", async (_, payload?: { meetingTypes?: ('discovery' | 'demo' | 'negotiation')[], tenantId?: string | null, skipProcessing?: boolean, backendMeetingId?: string | null }) => {
     try {
-      const meetingId = await appState.endMeeting(payload?.meetingTypes, payload?.tenantId);
+      const meetingId = await appState.endMeeting(payload?.meetingTypes, payload?.tenantId, {
+        skipProcessing: payload?.skipProcessing,
+        backendMeetingId: payload?.backendMeetingId,
+      });
       return { success: true, meetingId };
     } catch (error: any) {
       console.error("Error ending meeting:", error);

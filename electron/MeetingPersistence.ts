@@ -351,7 +351,15 @@ export class MeetingPersistence {
      *   Forwarded as the scorecard's `hintMeetingTypes` so auto-detection respects the
      *   rep's explicit selection instead of guessing from the transcript alone.
      */
-    public async stopMeeting(meetingTypes?: ('discovery' | 'demo' | 'negotiation')[], tenantId?: string | null): Promise<string | null> {
+    /**
+     * @param options.skipProcessing Set when the FastAPI backend has already
+     *   finalized this meeting (see src/lib/backendMeetingSession.ts). Audio
+     *   teardown and session reset still happen; the LLM pipeline and the local
+     *   placeholder row do not — the backend wrote its own placeholder under
+     *   `options.backendMeetingId` at POST /meetings/start, and writing a second
+     *   one here would surface a duplicate card under a different id.
+     */
+    public async stopMeeting(meetingTypes?: ('discovery' | 'demo' | 'negotiation')[], tenantId?: string | null, options?: { skipProcessing?: boolean; backendMeetingId?: string | null }): Promise<string | null> {
         console.log('[MeetingPersistence] Stopping meeting and queueing save...');
 
         // 0. Force-save any pending interim transcript
@@ -395,6 +403,23 @@ export class MeetingPersistence {
 
         // 2. Reset state immediately so new meeting can start or UI is clean
         this.session.reset();
+
+        // The backend already owns this meeting: it holds the transcript, it has
+        // been told to finalize, and it wrote the placeholder row itself. All
+        // that's left here is to tell the UI to refetch — running the LLM
+        // pipeline or saving a second placeholder would duplicate both the spend
+        // and the meeting card.
+        if (options?.skipProcessing) {
+            console.log('[MeetingPersistence] Backend pipeline owns this meeting — skipping local processing.',
+                options.backendMeetingId ?? '(no backend id)');
+            try {
+                const wins = require('electron').BrowserWindow.getAllWindows();
+                wins.forEach((w: any) => w.webContents.send('meetings-updated'));
+            } catch (e) {
+                console.error("Failed to broadcast meetings-updated", e);
+            }
+            return options.backendMeetingId ?? null;
+        }
 
         const meetingId = crypto.randomUUID();
         this.processAndSaveMeeting(
