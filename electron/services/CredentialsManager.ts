@@ -8,8 +8,19 @@ import fs from 'fs';
 import path from 'path';
 import crypto from 'crypto';
 
-const CREDENTIALS_PATH = path.join(app.getPath('userData'), 'credentials.enc');
 const BACKEND_URL = process.env.VITE_API_BASE_URL ?? "http://127.0.0.1:8000";
+
+// Machine-level identity file (shared across users on this machine). Holds ONLY
+// the Firebase refresh token + last-known profile, so the app can restore a
+// session on launch BEFORE any uid is known. Never holds API keys.
+const IDENTITY_PATH = path.join(app.getPath('userData'), 'identity.enc');
+
+// Per-user credentials file. Everything except the Firebase identity lives here,
+// keyed by uid, so User A and User B on the same machine never share API keys.
+function credentialsPathForUid(uid: string | null): string {
+    const safe = (uid ?? 'anon').replace(/[^A-Za-z0-9_-]/g, '') || 'anon';
+    return path.join(app.getPath('userData'), `credentials-${safe}.enc`);
+}
 
 export interface CustomProvider {
     id: string;
@@ -87,6 +98,25 @@ export interface StoredCredentials {
 export class CredentialsManager {
     private static instance: CredentialsManager;
     private credentials: StoredCredentials = {};
+    private currentUid: string | null = null;
+    private credentialsPath: string = credentialsPathForUid(null);
+
+    // Firebase identity is stored separately (machine-level) so it survives across
+    // user switches and is readable before a uid is known at launch.
+    private identityStore: {
+        lastUid?: string;
+        accounts: {
+            [uid: string]: {
+                firebaseRefreshToken: string;
+                firebaseUid: string;
+                firebaseEmail?: string;
+                firebaseDisplayName?: string;
+                firebasePhotoURL?: string;
+                updatedAt: number;
+            };
+        };
+    } = { accounts: {} };
+
 
     private fallbackKeys: Record<string, string> = {};
 
@@ -106,9 +136,36 @@ export class CredentialsManager {
      * Must be called after app.whenReady()
      */
     public init(): void {
+        this.loadIdentity();
+        this.currentUid = this.identityStore.lastUid ?? null;
+        this.credentialsPath = credentialsPathForUid(this.currentUid);
         this.loadCredentials();
-        console.log('[CredentialsManager] Initialized');
     }
+
+
+    /**
+     * Re-point at the given user's credentials file. Called on sign-in / restore /
+     * account switch — mirrors DatabaseManager.switchUser so keys never leak
+     * between accounts. The Firebase identity file is untouched (machine-level).
+     */
+    public switchUser(uid: string | null): void {
+        const nextPath = credentialsPathForUid(uid);
+        if (nextPath === this.credentialsPath) return; // already on this user's file
+        console.log(`[CredentialsManager] Switching credentials: ${this.currentUid ?? 'anon'} -> ${uid ?? 'anon'}`);
+        // Persist current user's creds before swapping (setters already auto-save,
+        // but flush defensively), then scrub and load the target user's file.
+        try { this.saveCredentials(); } catch { /* best-effort */ }
+        this.credentials = {};
+        this.clearFallbackKeys(); // backend fallback keys are per-user (fetched with their token)
+        this.currentUid = uid;
+        this.credentialsPath = nextPath;
+        this.loadCredentials();
+    }
+
+    public getCurrentUid(): string | null {
+        return this.currentUid;
+    }
+
 
     /**
      * Fetch encrypted fallback API keys from the backend and decrypt them in memory
@@ -146,25 +203,25 @@ export class CredentialsManager {
 
                 for (const keyObj of data.keys) {
                     try {
-                        const parsedStr = typeof keyObj.encrypted_key === 'string' 
-                            ? JSON.parse(keyObj.encrypted_key) 
+                        const parsedStr = typeof keyObj.encrypted_key === 'string'
+                            ? JSON.parse(keyObj.encrypted_key)
                             : keyObj.encrypted_key;
 
                         // Format from backend: {"iv": "base64", "data": "base64"}
                         const iv = Buffer.from(parsedStr.iv, 'base64');
                         const ciphertextWithTag = Buffer.from(parsedStr.data, 'base64');
-                        
+
                         // subtle crypto appends the 16-byte auth tag at the end of the ciphertext
                         const tagLength = 16;
                         const ciphertext = ciphertextWithTag.subarray(0, ciphertextWithTag.length - tagLength);
                         const authTag = ciphertextWithTag.subarray(ciphertextWithTag.length - tagLength);
-                        
+
                         const decipher = crypto.createDecipheriv('aes-256-gcm', keyHash, iv);
                         decipher.setAuthTag(authTag);
-                        
+
                         let decrypted = decipher.update(ciphertext, undefined, 'utf8');
                         decrypted += decipher.final('utf8');
-                        
+
                         this.fallbackKeys[keyObj.provider.toLowerCase()] = decrypted;
 
                         const { posthogMain } = require('./PostHogMainService');
@@ -174,7 +231,7 @@ export class CredentialsManager {
                         });
                     } catch (decErr) {
                         console.warn(`[CredentialsManager] Failed to decrypt fallback key for ${keyObj.provider}`);
-                        
+
                         const { posthogMain } = require('./PostHogMainService');
                         posthogMain.capture('api_keys_fallback_used', {
                             provider: keyObj.provider?.toLowerCase(),
@@ -556,46 +613,74 @@ export class CredentialsManager {
     // =========================================================================
 
     public setFirebaseIdentity(identity: {
-        refreshToken: string;
-        uid: string;
-        email?: string;
-        displayName?: string;
-        photoURL?: string;
+        refreshToken: string; uid: string; email?: string; displayName?: string; photoURL?: string;
     }): void {
-        this.credentials.firebaseRefreshToken = identity.refreshToken;
-        this.credentials.firebaseUid = identity.uid;
-        this.credentials.firebaseEmail = identity.email;
-        this.credentials.firebaseDisplayName = identity.displayName;
-        this.credentials.firebasePhotoURL = identity.photoURL;
-        this.saveCredentials();
+        this.identityStore.accounts[identity.uid] = {
+            firebaseRefreshToken: identity.refreshToken,
+            firebaseUid: identity.uid,
+            firebaseEmail: identity.email,
+            firebaseDisplayName: identity.displayName,
+            firebasePhotoURL: identity.photoURL,
+            updatedAt: Date.now(),
+        };
+        this.identityStore.lastUid = identity.uid;   // this account is now active
+        this.saveIdentity();
     }
 
-    public getFirebaseIdentity(): {
-        refreshToken: string;
-        uid: string;
-        email?: string;
-        displayName?: string;
-        photoURL?: string;
-    } | null {
-        const rt = this.credentials.firebaseRefreshToken;
-        const uid = this.credentials.firebaseUid;
-        if (!rt || !uid) return null;
+    // Backwards-compatible: returns the LAST-active account (used by launch restore)
+    public getFirebaseIdentity(): { refreshToken: string; uid: string; email?: string; displayName?: string; photoURL?: string; } | null {
+
+        const uid = this.identityStore.lastUid;
+        const acct = uid ? this.identityStore.accounts[uid] : undefined;
+        if (!acct?.firebaseRefreshToken) return null;
         return {
-            refreshToken: rt,
-            uid,
-            email: this.credentials.firebaseEmail,
-            displayName: this.credentials.firebaseDisplayName,
-            photoURL: this.credentials.firebasePhotoURL,
+            refreshToken: acct.firebaseRefreshToken,
+            uid: acct.firebaseUid,
+            email: acct.firebaseEmail,
+            displayName: acct.firebaseDisplayName,
+            photoURL: acct.firebasePhotoURL,
         };
     }
 
+    // NEW — list all known accounts for the switcher UI (no tokens leak to renderer)
+    public listFirebaseAccounts(): Array<{
+        uid: string; email?: string; displayName?: string; photoURL?: string; isActive: boolean;
+    }> {
+        return Object.values(this.identityStore.accounts)
+            .sort((a, b) => b.updatedAt - a.updatedAt)
+            .map(a => ({
+                uid: a.firebaseUid,
+                email: a.firebaseEmail,
+                displayName: a.firebaseDisplayName,
+                photoURL: a.firebasePhotoURL,
+                isActive: a.firebaseUid === this.identityStore.lastUid,
+            }));
+    }
+
+    // NEW — fetch one account's refresh token for a switch (main-process only)
+    public getRefreshTokenForUid(uid: string): string | null {
+        return this.identityStore.accounts[uid]?.firebaseRefreshToken ?? null;
+    }
+
+    // NEW — set which account is active without changing tokens
+    public setActiveUid(uid: string): void {
+        if (this.identityStore.accounts[uid]) {
+            this.identityStore.lastUid = uid;
+            this.saveIdentity();
+        }
+    }
+
+    // Remove ONE account (used by sign-out / "remove from this device")
+    public removeFirebaseAccount(uid: string): void {
+        delete this.identityStore.accounts[uid];
+        if (this.identityStore.lastUid === uid) this.identityStore.lastUid = undefined;
+        this.saveIdentity();
+    }
+
     public clearFirebaseIdentity(): void {
-        this.credentials.firebaseRefreshToken = undefined;
-        this.credentials.firebaseUid = undefined;
-        this.credentials.firebaseEmail = undefined;
-        this.credentials.firebaseDisplayName = undefined;
-        this.credentials.firebasePhotoURL = undefined;
-        this.saveCredentials();
+        // Full wipe (e.g. delete-account). Keep removeFirebaseAccount for single sign-out.
+        this.identityStore = { accounts: {} };
+        this.saveIdentity();
     }
 
     // =========================================================================
@@ -617,10 +702,10 @@ export class CredentialsManager {
 
     public clearAll(): void {
         this.scrubMemory();
-        if (fs.existsSync(CREDENTIALS_PATH)) {
-            fs.unlinkSync(CREDENTIALS_PATH);
+        if (fs.existsSync(this.credentialsPath)) {
+            fs.unlinkSync(this.credentialsPath);
         }
-        const plaintextPath = CREDENTIALS_PATH + '.json';
+        const plaintextPath = this.credentialsPath + '.json';
         if (fs.existsSync(plaintextPath)) {
             fs.unlinkSync(plaintextPath);
         }
@@ -647,12 +732,68 @@ export class CredentialsManager {
     // Storage (Encrypted)
     // =========================================================================
 
+    private saveIdentity(): void {
+        try {
+            const data = JSON.stringify(this.identityStore);
+            if (!safeStorage.isEncryptionAvailable()) {
+                const plain = IDENTITY_PATH + '.json';
+                const tmp = plain + '.tmp';
+                fs.writeFileSync(tmp, data);
+                fs.renameSync(tmp, plain);
+                return;
+            }
+            const encrypted = safeStorage.encryptString(data);
+            const tmp = IDENTITY_PATH + '.tmp';
+            fs.writeFileSync(tmp, encrypted);
+            fs.renameSync(tmp, IDENTITY_PATH);
+        } catch (e) {
+            console.error('[CredentialsManager] Failed to save identity:', e);
+        }
+    }
+
+    private loadIdentity(): void {
+        try {
+            if (fs.existsSync(IDENTITY_PATH) && safeStorage.isEncryptionAvailable()) {
+                const decrypted = safeStorage.decryptString(fs.readFileSync(IDENTITY_PATH));
+                const parsed = JSON.parse(decrypted);
+                if (parsed && parsed.accounts) {
+                    this.identityStore = parsed;
+                } else if (parsed && parsed.firebaseUid) {
+                    // migrate old single-identity format → accounts map
+                    this.identityStore = {
+                        lastUid: parsed.firebaseUid,
+                        accounts: { [parsed.firebaseUid]: { ...parsed, updatedAt: Date.now() } },
+                    };
+                    this.saveIdentity();
+                }
+                return;
+            }
+            const plain = IDENTITY_PATH + '.json';
+            if (fs.existsSync(plain)) {
+                const parsed = JSON.parse(fs.readFileSync(plain, 'utf-8'));
+                if (parsed && parsed.accounts) {
+                    this.identityStore = parsed;
+                } else if (parsed && parsed.firebaseUid) {
+                    // migrate old single-identity format → accounts map
+                    this.identityStore = {
+                        lastUid: parsed.firebaseUid,
+                        accounts: { [parsed.firebaseUid]: { ...parsed, updatedAt: Date.now() } },
+                    };
+                    this.saveIdentity();
+                }
+            }
+        } catch (e) {
+            console.error('[CredentialsManager] Failed to load identity:', e);
+            this.identityStore = { accounts: {} };
+        }
+    }
+
     private saveCredentials(): void {
         try {
             if (!safeStorage.isEncryptionAvailable()) {
                 console.warn('[CredentialsManager] Encryption not available, falling back to plaintext');
                 // Fallback: save as plaintext (less secure, but functional)
-                const plainPath = CREDENTIALS_PATH + '.json';
+                const plainPath = this.credentialsPath + '.json';
                 const tmpPlain = plainPath + '.tmp';
                 fs.writeFileSync(tmpPlain, JSON.stringify(this.credentials));
                 fs.renameSync(tmpPlain, plainPath);
@@ -661,9 +802,9 @@ export class CredentialsManager {
 
             const data = JSON.stringify(this.credentials);
             const encrypted = safeStorage.encryptString(data);
-            const tmpEnc = CREDENTIALS_PATH + '.tmp';
+            const tmpEnc = this.credentialsPath + '.tmp';
             fs.writeFileSync(tmpEnc, encrypted);
-            fs.renameSync(tmpEnc, CREDENTIALS_PATH);
+            fs.renameSync(tmpEnc, this.credentialsPath);
         } catch (error) {
             console.error('[CredentialsManager] Failed to save credentials:', error);
         }
@@ -672,13 +813,13 @@ export class CredentialsManager {
     private loadCredentials(): void {
         try {
             // Try encrypted file first
-            if (fs.existsSync(CREDENTIALS_PATH)) {
+            if (fs.existsSync(this.credentialsPath)) {
                 if (!safeStorage.isEncryptionAvailable()) {
                     console.warn('[CredentialsManager] Encryption not available for load');
                     return;
                 }
 
-                const encrypted = fs.readFileSync(CREDENTIALS_PATH);
+                const encrypted = fs.readFileSync(this.credentialsPath);
                 const decrypted = safeStorage.decryptString(encrypted);
                 try {
                     const parsed = JSON.parse(decrypted);
@@ -694,7 +835,7 @@ export class CredentialsManager {
                 }
 
                 // Clean up any leftover plaintext fallback file to eliminate the data leak
-                const plaintextPath = CREDENTIALS_PATH + '.json';
+                const plaintextPath = this.credentialsPath + '.json';
                 if (fs.existsSync(plaintextPath)) {
                     try {
                         fs.unlinkSync(plaintextPath);
@@ -707,7 +848,7 @@ export class CredentialsManager {
                 if (!this.credentials.defaultModel) {
                     this.credentials.defaultModel = 'gemini-3.1-flash-lite-preview';
                 }
-                
+
                 // Set default STT Provider if not set
                 if (!this.credentials.sttProvider) {
                     this.credentials.sttProvider = 'deepgram';
@@ -717,7 +858,7 @@ export class CredentialsManager {
             }
 
             // Fallback: try plaintext file
-            const plaintextPath = CREDENTIALS_PATH + '.json';
+            const plaintextPath = this.credentialsPath + '.json';
             if (fs.existsSync(plaintextPath)) {
                 const data = fs.readFileSync(plaintextPath, 'utf-8');
                 try {
@@ -750,4 +891,27 @@ export class CredentialsManager {
             this.credentials = {};
         }
     }
+
+    /**
+     * Delete ONLY the current user's credentials file (credentials-<uid>.enc
+     * and any .json fallback). Does NOT touch other users' credential files
+     * or the machine-level identity.enc.
+     */
+    public deleteCurrentUserCredentialsFile(): void {
+        this.scrubMemory();
+        for (const p of [this.credentialsPath, this.credentialsPath + '.json']) {
+            try {
+                if (fs.existsSync(p)) fs.unlinkSync(p);
+            } catch (e) {
+                console.warn('[CredentialsManager] Failed to delete credentials file:', p, e);
+            }
+        }
+        console.log('[CredentialsManager] Current user credentials file deleted');
+    }
+
+    /** The current user's credentials file path (for external cleanup helpers). */
+    public getCredentialsPath(): string {
+        return this.credentialsPath;
+    }
+
 }

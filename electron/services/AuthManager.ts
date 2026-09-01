@@ -20,6 +20,7 @@
 
 import { EventEmitter } from 'events';
 import { CredentialsManager } from './CredentialsManager';
+import { DatabaseManager } from '../db/DatabaseManager';
 
 export interface FirebaseSession {
     uid: string;
@@ -59,7 +60,19 @@ export class AuthManager extends EventEmitter {
      */
     setSession(session: FirebaseSession): void {
         const isFirstSignIn = !this.session || this.session.uid !== session.uid;
+        const uidChanged = this.session?.uid !== session.uid;
         this.session = session;
+
+        // Point the local DB at THIS user's file before anyone reacts to the
+        // auth change. On a hourly token refresh (same uid) switchUser() no-ops.
+        if (uidChanged) {
+            try {
+                CredentialsManager.getInstance().switchUser(session.uid);
+                DatabaseManager.getInstance().switchUser(session.uid);
+            } catch (e) {
+                console.error('[AuthManager] Failed to switch DB to user file:', e);
+            }
+        }
 
         // Persist refresh token + identity for next-launch restore.
         // ID tokens are NOT persisted — they expire in 1h and are re-minted
@@ -81,12 +94,22 @@ export class AuthManager extends EventEmitter {
         if (isFirstSignIn) this.emit('signed-in', this.snapshot());
     }
 
+    listAccounts() {
+        return CredentialsManager.getInstance().listFirebaseAccounts();
+    }
+
+    getRefreshTokenForUid(uid: string): string | null {
+        return CredentialsManager.getInstance().getRefreshTokenForUid(uid);
+    }
+
+
     /** Called when the renderer signs the user out. */
     clearSession(): void {
         if (!this.session) return;
         this.session = null;
         try {
-            CredentialsManager.getInstance().clearFirebaseIdentity();
+            CredentialsManager.getInstance().switchUser(null);
+            DatabaseManager.getInstance().switchUser(null);
         } catch (e) {
             console.warn('[AuthManager] Failed to clear Firebase identity:', e);
         }

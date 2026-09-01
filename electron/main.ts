@@ -259,7 +259,7 @@ async function flushLogsAsync(): Promise<void> {
     _flushInFlight = false;
   }
 }
-setInterval(() => { flushLogsAsync().catch(() => {}); }, FLUSH_INTERVAL_MS);
+setInterval(() => { flushLogsAsync().catch(() => { }); }, FLUSH_INTERVAL_MS);
 process.on('exit', flushLogsSync);
 
 // ─── Screen Recording (system audio) permission state ──────────────────────
@@ -4336,6 +4336,8 @@ async function initializeApp() {
 
   // Scrub API keys from memory on quit to minimize exposure window
   app.on("before-quit", (event) => {
+
+    try { DatabaseManager.getInstance().close(); } catch { /* best-effort */ }
     console.log("App is quitting, cleaning up resources...");
     appState.setQuitting(true);
 

@@ -476,8 +476,7 @@ contextBridge.exposeInMainWorld("electronAPI", {
   // DEV-ONLY: local half of "Delete My Account". No confirm dialog (the
   // caller has already confirmed and completed the server-side deletion) —
   // wipes natively.db + cached session/credentials and relaunches.
-  wipeLocalAccountData: (): Promise<{ success: boolean; error?: string }> =>
-    ipcRenderer.invoke("dev:wipe-local-account-data"),
+  wipeLocalAccountData: (scope?: 'local' | 'full-delete') => ipcRenderer.invoke('dev:wipe-local-account-data', scope),
 
   // Event listeners
   onScreenshotTaken: (
@@ -1463,6 +1462,9 @@ contextBridge.exposeInMainWorld("electronAPI", {
   authClear: () => ipcRenderer.invoke('auth:clear'),
   authGetState: () => ipcRenderer.invoke('auth:get-state'),
   authGetPersistedRefreshToken: () => ipcRenderer.invoke('auth:get-persisted-refresh-token'),
+  authListAccounts: () => ipcRenderer.invoke('auth:list-accounts'),
+  authGetRefreshTokenForUid: (uid: string) => ipcRenderer.invoke('auth:get-refresh-token-for-uid', uid),
+  authRemoveAccount: (uid: string) => ipcRenderer.invoke('auth:remove-account', uid),
   onAuthStateChanged: (callback: (state: any) => void) => {
     const subscription = (_: Electron.IpcRendererEvent, state: any) => callback(state)
     ipcRenderer.on('auth:state-changed', subscription)

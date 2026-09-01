@@ -1146,37 +1146,32 @@ export class MeetingPersistence {
                     return `[${label}]: ${t.text}`;
                 }).join('\n') || "";
 
-                const parts = (details.duration || '0:00').split(':');
-                // Use the raw durationMs if available (always present when loaded from DB).
-                // Fallback: re-parse the formatted string only for very old DB rows that might
-                // lack duration_ms. Handles both mm:ss and hh:mm:ss safely.
-                let durationMs: number;
-                if (details.durationMs != null && details.durationMs > 0) {
-                    durationMs = details.durationMs;
-                } else if (parts.length === 3) {
-                    // hh:mm:ss
-                    durationMs = ((parseInt(parts[0]) || 0) * 3600 + (parseInt(parts[1]) || 0) * 60 + (parseInt(parts[2]) || 0)) * 1000;
-                } else {
-                    // mm:ss
-                    durationMs = ((parseInt(parts[0]) || 0) * 60 + (parseInt(parts[1]) || 0)) * 1000;
-                }
-                const startTime = new Date(details.date).getTime();
+                // Reuse the raw timing facts stored at save time. NEVER re-derive
+                // from created_at — created_at is the processing timestamp, not the
+                // real meeting start, so recomputing duration_ms from it makes the
+                // duration drift on every recovery (the bug seen after account switch).
+                const startTime = m.startTime ?? new Date(details.date).getTime();
+                const durationMs = m.durationMs ?? details.durationMs ?? 0;
+                const endTime = m.endTime ?? (startTime + durationMs);
+                const totalPausedMs = m.totalPausedMs ?? 0;
 
                 const snapshot = {
                     transcript: details.transcript as TranscriptSegment[],
                     usage: details.usage,
-                    startTime: startTime,
-                    durationMs: durationMs,
-                    context: context
+                    startTime,
+                    endTime,          // NEW
+                    totalPausedMs,    // NEW
+                    durationMs,
+                    context,
                 };
 
                 await this.processAndSaveMeeting(snapshot, m.id);
                 console.log(`[MeetingPersistence] Recovered meeting ${m.id}`);
-
             } catch (e) {
                 console.error(`[MeetingPersistence] Failed to recover meeting ${m.id}`, e);
             }
         }
+
     }
 
 

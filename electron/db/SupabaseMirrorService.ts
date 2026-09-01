@@ -26,7 +26,7 @@ const RETRY_BASE_MS = 1_500;
 
 interface OutboxItem {
     id: number;
-    op: 'upsert' | 'delete' | 'deleteVector' | 'upsertVector' | 'upsertBatch';
+    op: 'upsert' | 'delete' | 'deleteVector' | 'upsertVector' | 'upsertBatch' | 'update';
     table: string;
     payload: any;
     retries: number;
@@ -362,6 +362,14 @@ export class SupabaseMirrorService {
         this._enqueue({ op: 'upsertBatch', table, payload: rows, retries: 0 }, ownerUid);
     }
 
+    /** Mirror a partial column update WITHOUT insert semantics — never creates a
+      * row, so it can't materialize one with NULL/default columns it didn't send. */
+    updateRow(table: string, pkMatch: Record<string, any>, changes: Record<string, any>, ownerUid?: string | null): void {
+        if (!this.enabled) return;
+        this._enqueue({ op: 'update', table, payload: { pkMatch, changes }, retries: 0 }, ownerUid);
+    }
+
+
     // ============================================
     // Private queue / drain machinery
     // ============================================
@@ -592,7 +600,15 @@ export class SupabaseMirrorService {
                     .eq('user_id', userId)
                     .eq(pkCol, id);
                 if (error) throw error;
+            } else if (item.op === 'update') {
+                const { pkMatch, changes } = item.payload;
+                let q: any = client.from(item.table).update(changes);
+                if (needsUserId) q = q.eq('user_id', userId);
+                for (const [col, val] of Object.entries(pkMatch)) q = q.eq(col, val);
+                const { error } = await q;
+                if (error) throw error;
             }
+
             return true;
         } catch (err: any) {
             const msg = err?.message || String(err);

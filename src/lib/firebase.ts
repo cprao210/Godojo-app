@@ -24,8 +24,10 @@ import {
     deleteUser,
     Auth,
     User,
-    getAdditionalUserInfo
+    getAdditionalUserInfo,
+    signInWithCustomToken
 } from 'firebase/auth';
+import { apiFetch } from './apiClient';
 
 // =====================================================================
 // CONFIG
@@ -532,5 +534,28 @@ export async function guardSession(): Promise<{ valid: boolean; message?: string
         console.warn('[firebase] guardSession: token refresh failed, signing out.', code ?? e);
         await fbSignOut(auth).catch(() => { });
         return { valid: false, message: getAuthErrorMessage(e) || 'Session expired. Please sign in again.' };
+    }
+}
+
+export async function switchToAccount(uid: string): Promise<boolean> {
+    try {
+        // Backend authorizes with the CURRENT signed-in session and returns a
+        // Firebase custom token for the target uid (Admin SDK createCustomToken).
+        const { custom_token } = await apiFetch<{ custom_token: string }>('/auth/switch-token', {
+            method: 'POST',
+            body: JSON.stringify({ uid }),
+        });
+        if (!custom_token) return false;
+
+        const auth = getFirebaseAuth();
+        // Flips auth.currentUser to account B and fires onAuthStateChanged →
+        // App.tsx gate updates seamlessly. installIdTokenBridge then forwards
+        // the fresh token to main automatically (which runs switchUser on
+        // CredentialsManager + DatabaseManager). No password. No reload.
+        await signInWithCustomToken(auth, custom_token);
+        return true;
+    } catch (e) {
+        console.warn('[firebase] switchToAccount failed:', e);
+        return false;
     }
 }

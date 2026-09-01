@@ -118,7 +118,7 @@ const GeneralTab: React.FC<{ overlay: SettingsOverlayHook }> = ({ overlay }) => 
             // never run, and running it before the backend calls above would
             // destroy the local session/credentials those calls still need.
             if (scope === 'local' || scope === 'full-delete') {
-                const wipeResult = await window.electronAPI.wipeLocalAccountData();
+                const wipeResult = await window.electronAPI.wipeLocalAccountData(scope);
                 if (!wipeResult.success) {
                     setDeleteAccountError(
                         wipeResult.error || (scope === 'full-delete'

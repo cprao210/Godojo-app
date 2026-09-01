@@ -3811,6 +3811,26 @@ export function initializeIpcHandlers(appState: AppState): void {
     }
   });
 
+  safeHandle('auth:list-accounts', async () => {
+    const { AuthManager } = require('./services/AuthManager');
+    return AuthManager.getInstance().listAccounts();
+  });
+
+  // Return the refresh token for the requested account so the renderer can
+  // exchange it for a fresh ID token (same path as trySilentRestore).
+  safeHandle('auth:get-refresh-token-for-uid', async (_, uid: string) => {
+    const { AuthManager } = require('./services/AuthManager');
+    const rt = AuthManager.getInstance().getRefreshTokenForUid(uid);
+    return { refreshToken: rt, uid };
+  });
+
+  safeHandle('auth:remove-account', async (_, uid: string) => {
+    const { CredentialsManager } = require('./services/CredentialsManager');
+    CredentialsManager.getInstance().removeFirebaseAccount(uid);
+    return { success: true };
+  });
+
+
   // ==========================================
   // Permissions (Mac/Windows)
   // ==========================================
@@ -4162,6 +4182,63 @@ export function initializeIpcHandlers(appState: AppState): void {
     }
   }
 
+  // User-scoped local wipe: removes ONLY the signed-in user's local footprint,
+  // leaving every other account on this machine intact. Used by both
+  // "Local Record" and the local half of "Delete All".
+  async function wipeCurrentUserLocalDataAndRelaunch(logPrefix: string): Promise<{ success: boolean; error?: string }> {
+    try {
+      const { AuthManager } = require('./services/AuthManager');
+      const { CredentialsManager } = require('./services/CredentialsManager');
+
+      // The uid that owns the data we're about to delete. Capture BEFORE we
+      // tear anything down. If it's null we must refuse — a null/anon wipe
+      // has no owner to scope to and could target shared/anon state.
+      const uid = AuthManager.getInstance().getUid();
+      if (!uid) {
+        return { success: false, error: 'No signed-in user — refusing an unscoped local wipe.' };
+      }
+
+      // 1. Release the RAG worker's own read-only sqlite handle (Windows lock).
+      try { await appState.getRAGManager()?.destroy(); } catch (e) {
+        console.warn(`[ipc] ${logPrefix}: RAGManager.destroy() failed (continuing):`, e);
+      }
+
+      // 2. Delete ONLY this user's DB files (natively-<uid>.db + -wal/-shm).
+      try { DatabaseManager.getInstance().deleteCurrentUserDatabaseFiles(); } catch (e) {
+        console.warn(`[ipc] ${logPrefix}: DB file delete failed (continuing):`, e);
+      }
+
+      // 3. Delete ONLY this user's credentials file (credentials-<uid>.enc).
+      try { CredentialsManager.getInstance().deleteCurrentUserCredentialsFile(); } catch (e) {
+        console.warn(`[ipc] ${logPrefix}: credentials delete failed (continuing):`, e);
+      }
+
+      // 4. Remove ONLY this account from the machine-level identity store,
+      //    keeping every other account's refresh token intact.
+      try { CredentialsManager.getInstance().removeFirebaseAccount(uid); } catch (e) {
+        console.warn(`[ipc] ${logPrefix}: removeFirebaseAccount failed (continuing):`, e);
+      }
+
+      // 5. Clear THIS user's in-memory session so the relaunch starts clean.
+      try { AuthManager.getInstance().clearSession(); } catch (e) {
+        console.warn(`[ipc] ${logPrefix}: clearSession failed (continuing):`, e);
+      }
+
+      // NOTE: We deliberately do NOT clearStorageData()/clearCache() on the
+      // default or google-auth sessions here — those Chromium partitions are
+      // shared across all accounts on this device, so clearing them would sign
+      // out / disrupt the OTHER accounts. Per-account Firebase state lives in
+      // the refresh token we just removed from identity.enc.
+
+      app.relaunch();
+      app.exit(0);
+      return { success: true };
+    } catch (error: any) {
+      console.error(`[ipc] ${logPrefix} failed:`, error);
+      return { success: false, error: error?.message ?? String(error) };
+    }
+  }
+
   // DEV-ONLY: local-data half of "Delete My Account" (Settings > General >
   // Danger Zone). The renderer calls this *after* the Supabase rows +
   // Firebase Auth user have already been deleted server-side, so unlike
@@ -4170,9 +4247,13 @@ export function initializeIpcHandlers(appState: AppState): void {
   // the time this runs, and a second native prompt here would just leave
   // local data behind (stale natively.db, cached session) if they misread
   // it as a fresh, cancellable action.
-  safeHandle('dev:wipe-local-account-data', async () => {
-    return wipeLocalUserDataAndRelaunch('dev:wipe-local-account-data');
+  safeHandle('dev:wipe-local-account-data', async (_event, scope?: 'local' | 'full-delete') => {
+    // Both "Local Record" and the local half of "Delete All" must affect ONLY
+    // the current user now. The old full-userData wipe is retained solely for
+    // "Reset app data" (a different, intentionally global action).
+    return wipeCurrentUserLocalDataAndRelaunch(`dev:wipe-local-account-data(${scope ?? 'local'})`);
   });
+
 
   // `scope` mirrors the backend's DangerousDeleteKey values, plus 'local'
   // for the local-only wipe (which never touches the backend at all).

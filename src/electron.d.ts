@@ -65,7 +65,7 @@ export interface ElectronAPI {
     componentStack?: string | null
   }) => Promise<{ success: boolean; error?: string }>
   confirmDeleteAccount: (scope?: 'supabase-delete' | 'firebase-delete' | 'local' | 'full-delete') => Promise<{ confirmed: boolean }>,
-  wipeLocalAccountData: () => Promise<{ success: boolean; error?: string }>
+  wipeLocalAccountData: (scope?: 'local' | 'full-delete') => Promise<{ success: boolean; error?: string }>
   onScreenshotTaken: (callback: (data: { path: string; preview: string }) => void) => () => void
   onScreenshotAttached: (callback: (data: { path: string; preview: string }) => void) => () => void
   onCaptureAndProcess: (callback: (data: { path: string; preview: string }) => void) => () => void
@@ -521,6 +521,18 @@ export interface ElectronAPI {
     photoURL?: string | null
   }>
   authGetPersistedRefreshToken: () => Promise<{ refreshToken: string | null; uid: string | null }>
+  authGetPersistedRefreshToken: () => Promise<{ refreshToken: string | null; uid: string | null }>
+
+  // Multi-account (Switch Account) support
+  authListAccounts: () => Promise<Array<{
+    uid: string
+    email?: string
+    displayName?: string
+    photoURL?: string
+    isActive: boolean
+  }>>
+  authGetRefreshTokenForUid: (uid: string) => Promise<{ refreshToken: string | null; uid: string }>
+  authRemoveAccount: (uid: string) => Promise<{ success: boolean }>
   onAuthStateChanged: (
     callback: (state: { signedIn: boolean; uid?: string; email?: string | null; displayName?: string | null; photoURL?: string | null }) => void
   ) => () => void

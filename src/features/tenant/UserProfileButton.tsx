@@ -1,8 +1,9 @@
 import React, { useState, useRef, useEffect } from 'react';
-import { LogOut, ChevronDown } from 'lucide-react';
+import { LogOut, ChevronDown, Users, UserPlus } from 'lucide-react';
 import { useResolvedTheme } from '@/hooks';
 import { isMac } from '@/../utils/platformUtils';
 import { loadUserProfile } from '@/features/settings';
+import { switchToAccount } from '@/lib/firebase';
 import { MenuItem, UserProfileButtonProps } from '@/types';
 
 const UserProfileButton: React.FC<UserProfileButtonProps> = ({
@@ -13,7 +14,9 @@ const UserProfileButton: React.FC<UserProfileButtonProps> = ({
 }) => {
     const [isOpen, setIsOpen] = useState(false);
     const containerRef = useRef<HTMLDivElement>(null);
+    const [accounts, setAccounts] = useState<Array<{ uid: string; email?: string; displayName?: string; photoURL?: string; isActive: boolean }>>([]);
     const isLight = useResolvedTheme() === 'light';
+    const [switchingUid, setSwitchingUid] = useState<string | null>(null);
 
     // Close on outside click
     useEffect(() => {
@@ -24,6 +27,7 @@ const UserProfileButton: React.FC<UserProfileButtonProps> = ({
             }
         };
         document.addEventListener('mousedown', handleClick);
+        window.electronAPI?.authListAccounts?.().then(setAccounts).catch(() => { });
         return () => document.removeEventListener('mousedown', handleClick);
     }, [isOpen]);
 
@@ -36,6 +40,18 @@ const UserProfileButton: React.FC<UserProfileButtonProps> = ({
         document.addEventListener('keydown', handleKey);
         return () => document.removeEventListener('keydown', handleKey);
     }, [isOpen]);
+
+    const handleSwitch = async (uid: string) => {
+        if (switchingUid) return;
+        setSwitchingUid(uid);
+        const ok = await switchToAccount(uid);
+        setIsOpen(false);
+        if (!ok) setSwitchingUid(null);
+        window.electronAPI?.hardRefresh?.();
+        // On success: onAuthStateChanged updates the gate. Do NOT hardRefresh.
+    };
+
+    const otherAccounts = accounts.filter((a) => !a.isActive);
 
     const [localProfile, setLocalProfile] = useState(() => loadUserProfile());
 
@@ -147,11 +163,58 @@ const UserProfileButton: React.FC<UserProfileButtonProps> = ({
                                     <span className="text-[10px] text-text-secondary truncate">{email}</span>
                                 )}
                             </div>
+
                         </div>
                     </div>
 
+                    {otherAccounts.length > 0 && (
+                        <div className="p-1 border-b border-border-subtle" role="none">
+                            <div className="px-2.5 py-1 flex items-center gap-1.5 text-[10px] uppercase tracking-wide text-text-tertiary">
+                                <Users size={11} /> Switch account
+                            </div>
+                            {/* Cap the list at ~2 rows; scroll vertically when there are more. */}
+                            <div className={otherAccounts.length > 2 ? 'max-h-[88px] overflow-y-auto custom-scrollbar' : ''}>
+                                {otherAccounts.map((acct) => {
+
+                                    const name = acct.displayName || acct.email?.split('@')[0] || 'Account';
+                                    const acctInitials = name.split(' ').map((w) => w[0]).join('').slice(0, 2).toUpperCase() || 'U';
+                                    return (
+                                        <button
+                                            key={acct.uid}
+                                            type="button"
+                                            role="menuitem"
+                                            disabled={!!switchingUid}
+                                            onClick={() => handleSwitch(acct.uid)}
+                                            className="w-full flex items-center gap-2.5 px-2.5 py-2 rounded-lg text-left text-[12px] font-medium text-text-secondary hover:bg-bg-item-surface hover:text-text-primary transition-colors duration-150 disabled:opacity-50"
+                                        >
+                                            <div className="w-6 h-6 rounded-full overflow-hidden flex items-center justify-center shrink-0 ring-1 ring-white/10 bg-gradient-to-br from-blue-500 to-blue-700 text-white text-[10px] font-bold">
+                                                {acct.photoURL
+                                                    ? <img src={acct.photoURL} alt={name} className="w-full h-full object-cover" referrerPolicy="no-referrer" />
+                                                    : acctInitials}
+                                            </div>
+                                            <div className="flex flex-col min-w-0">
+                                                <span className="truncate">{name}</span>
+                                                {acct.email && <span className="text-[10px] text-text-tertiary truncate">{acct.email}</span>}
+                                            </div>
+                                            {switchingUid === acct.uid && <span className="ml-auto text-[10px] text-text-tertiary">…</span>}
+                                        </button>
+                                    );
+                                })}
+                            </div>
+                        </div>
+                    )}
+
+
                     {/* Menu items */}
                     <div className="p-1" role="none">
+                        <button
+                            type="button"
+                            role="menuitem"
+                            onClick={() => { setIsOpen(false); onSignOut(); /* or a dedicated onAddAccount that opens SignIn */ }}
+                            className="w-full flex items-center gap-2.5 px-2.5 py-2 rounded-lg text-left text-[12px] font-medium text-text-secondary hover:bg-bg-item-surface hover:text-text-primary"
+                        >
+                            <UserPlus size={13} /> Add another account
+                        </button>
                         {menuItems.map((item) => (
                             <button
                                 key={item.id}
