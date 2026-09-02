@@ -6,266 +6,438 @@ import { loadNativeModule } from './nativeModuleLoader';
 const NativeModule: any = loadNativeModule();
 const { SystemAudioCapture: RustAudioCapture } = NativeModule || {};
 
+/**
+ * Liveness snapshot for a capture channel.
+ *
+ * The main process polls this to tell "the device is fine, the room is quiet"
+ * apart from "we are bound to an endpoint that no longer carries the meeting
+ * audio". Amplitude alone cannot make that distinction — the native layer emits
+ * bit-exact zeros both for keepalives and for a render endpoint that went idle
+ * because playback moved to a different device.
+ */
+export interface CaptureHealth {
+    recording: boolean;
+    shouldBeRecording: boolean;
+    chunkCount: number;
+    msSinceLastChunk: number | null;
+    msSinceLastNonSilent: number | null;
+    restartAttempts: number;
+    degraded: boolean;
+}
+
+// ── Supervisor tuning ────────────────────────────────────────────────────────
+// The previous design was a one-way door: an error in the native data callback,
+// or 5 stall-triggered restarts, left `_shouldBeRecording = false` with no timer
+// armed. From then on only resumeMeeting() could revive capture — which is
+// exactly why the field workaround was "pause and resume the meeting". This
+// supervisor never stops trying while the caller wants audio: fast retries
+// first, then an indefinite slow retry so a genuinely dead device stops
+// thrashing (and stops re-raising macOS TCC prompts) without going silent
+// for the rest of the meeting.
+const SUPERVISOR_TICK_MS = 1000;
+const FAST_BACKOFF_MS = [250, 500, 1000, 2000, 4000];
+const SLOW_BACKOFF_MS = 30000;
+// Retrying cannot fix a platform that has no system-audio backend at all.
+const PERMANENT_ERROR_RE = /not supported on this platform/i;
+// A chunk counts as non-silent once any sampled value exceeds this.
+const NON_SILENT_THRESHOLD = 8;
+
 export class SystemAudioCapture extends EventEmitter {
-    private isRecording: boolean = false;
-    private _shouldBeRecording: boolean = false;
+    private isRecording = false;
+    private _shouldBeRecording = false;
     private deviceId: string | null = null;
-    private detectedSampleRate: number = 48000;
+    private detectedSampleRate = 48000;
     private monitor: any = null;
-    private _chunkCount: number = 0;
-    private _stallOuterTimer: NodeJS.Timeout | null = null;
-    private _stallInnerTimer: NodeJS.Timeout | null = null; // tracked so stop() can cancel it
-    // Consecutive stall-triggered restarts. Capped so a permanently broken
-    // capture (revoked permission, missing device) stops silently thrashing and
-    // instead reports itself once. Reset whenever chunks flow again.
-    private _stallRestartAttempts: number = 0;
-    private static readonly MAX_STALL_RESTARTS = 5;
-    private _sampleRateEmitted: boolean = false;
     private _echoMode: string | undefined;
+
+    // ── Supervisor state ────────────────────────────────────────────────────
+    private _supervisorTimer: NodeJS.Timeout | null = null;
+    private _reopenTimer: NodeJS.Timeout | null = null;
+    private _ratePollTimers: NodeJS.Timeout[] = [];
+    private _chunkCount = 0;
+    private _chunksAtOpen = 0;
+    private _lastChunkAt = 0;
+    private _lastNonSilentAt = 0;
+    private _openedAt = 0;
+    private _restartAttempts = 0;
+    private _degraded = false;
+    private _permanentlyFailed = false;
+    private _lastEmittedOutputRate = 0;
+    private readonly _featureLevel: number;
+    private readonly _stallWindowMs: number;
+    private readonly _startGraceMs: number;
 
     constructor(deviceId?: string | null, options?: { echoMode?: string }) {
         super();
         this.deviceId = deviceId || null;
         this._echoMode = options?.echoMode;
+        this._featureLevel = typeof NativeModule?.getNativeFeatureLevel === 'function'
+            ? (NativeModule.getNativeFeatureLevel() ?? 0)
+            : 0;
+        // A healthy channel emits ~10 chunks/s (100ms silence keepalives), so
+        // "no chunks at all" is always a real fault. Binaries that keep the ring
+        // fed during render-idle (level >= 2) get a long last-resort window;
+        // older ones keep the aggressive default because they genuinely stall
+        // when the far end goes quiet.
+        this._stallWindowMs = this._featureLevel >= 2 ? 10000 : 3000;
+        // macOS CoreAudio-tap / ScreenCaptureKit init takes 5-7s. Judging a
+        // stall before that just restarts a capture that was still coming up.
+        // Linux resolves its monitor source through a PulseAudio connection
+        // handshake plus two introspection round-trips, so a sound server that
+        // is slow to settle can push first audio past the 5s default.
+        this._startGraceMs = process.platform === 'darwin'
+            ? 12000
+            : process.platform === 'linux'
+                ? 8000
+                : 5000;
         if (!RustAudioCapture) {
             console.error('[SystemAudioCapture] Rust class implementation not found.');
         } else {
-            // LAZY INIT: Don't create native monitor here - it causes 1-second audio mute + quality drop
-            // The monitor will be created in start() when the meeting actually begins
-            console.log(`[SystemAudioCapture] Initialized (lazy). Device ID: ${this.deviceId || 'default'}`);
+            // LAZY INIT: constructing the native monitor here caused a ~1s audio
+            // mute at app launch, so it is created on first start() instead.
+            console.log(`[SystemAudioCapture] Initialized (lazy). Device: ${this.deviceId || 'default'}, featureLevel=${this._featureLevel}`);
         }
     }
 
     public getSampleRate(): number {
-        if (this.monitor && typeof this.monitor.getSampleRate === 'function') {
-            const nativeRate = this.monitor.getSampleRate();
-            if (nativeRate !== this.detectedSampleRate) {
-                this.detectedSampleRate = nativeRate;
-            }
-            return nativeRate;
-        }
         return this.detectedSampleRate;
     }
 
-    // Returns the actual PCM output rate after DSP decimation.
-    // The Rust SilenceSuppressor decimates by 3x (48000 → 16000).
-    // Deepgram must be configured with THIS rate, not the native hardware rate.
+    /** Rate the DSP actually emits (always 16kHz today), or 0 before init. */
     public getOutputSampleRate(): number {
-        // Touch getSampleRate() so detectedSampleRate stays current for logging.
-        this.getSampleRate();
-        // Return 0 if monitor hasn't started yet so callers (poll in startMeeting)
-        // know the rate is not settled.
         if (!this.monitor) return 0;
-        // The napi-rs binding exposes Rust's get_output_sample_rate() as camelCase
-        // getOutputSampleRate() (see native-module/index.d.ts). The old snake_case
-        // check never matched, so this always fell through to the buggy fallback
-        // below — which leaked WASAPI's 44100 mix rate on Windows and declared the
-        // wrong sample_rate to Deepgram (macOS's 48000 masked it via the ternary).
-        if (typeof this.monitor.getOutputSampleRate === 'function') {
-            return this.monitor.getOutputSampleRate();
+        try {
+            return typeof this.monitor.getOutputSampleRate === 'function'
+                ? this.monitor.getOutputSampleRate()
+                : 16000;
+        } catch {
+            return 16000;
         }
-        // Fallback for older native builds without the method: the Rust DSP always
-        // resamples output to 16kHz regardless of native rate, so 16000 is correct.
-        return 16000;
+    }
+
+    public getHealth(): CaptureHealth {
+        const now = Date.now();
+        return {
+            recording: this.isRecording,
+            shouldBeRecording: this._shouldBeRecording,
+            chunkCount: this._chunkCount,
+            msSinceLastChunk: this._lastChunkAt ? now - this._lastChunkAt : null,
+            msSinceLastNonSilent: this._lastNonSilentAt ? now - this._lastNonSilentAt : null,
+            restartAttempts: this._restartAttempts,
+            degraded: this._degraded,
+        };
     }
 
     /**
-     * Start capturing audio
+     * Point capture at a different output device. The native monitor binds its
+     * endpoint at construction, so the existing one is released; the next
+     * (re)open builds a fresh monitor against the new id.
      */
-    public start(): void {
-        if (this.isRecording) return;
-        this._shouldBeRecording = true;
-        this._chunkCount = 0;
+    public setDeviceId(deviceId?: string | null): void {
+        const next = deviceId || null;
+        if (next === this.deviceId) return;
+        console.log(`[SystemAudioCapture] Device ${this.deviceId ?? 'default'} → ${next ?? 'default'}`);
+        this.deviceId = next;
+        this._releaseMonitor();
+    }
 
-        if (!RustAudioCapture) {
-            console.error('[SystemAudioCapture] Cannot start: Rust module missing');
+    /**
+     * Force the NEXT open to build a fresh native monitor instead of reusing the
+     * cached one. Used when the endpoint may have moved while capture was stopped
+     * (a long pause): reusing the monitor would re-bind the endpoint that was
+     * default when it was constructed.
+     */
+    public invalidateDeviceBinding(): void {
+        this._releaseMonitor();
+    }
+
+    public start(): void {
+        if (this._shouldBeRecording && this.isRecording) {
+            console.log('[SystemAudioCapture] Already recording.');
             return;
         }
+        this._shouldBeRecording = true;
+        this._permanentlyFailed = false;
+        this._restartAttempts = 0;
+        this._openNative();
+        this._armSupervisor();
+    }
 
-        // LAZY INIT: Create monitor here when meeting starts (not in constructor)
-        // This prevents the 1-second audio mute + quality drop at app launch
+    /**
+     * Re-open native capture without touching the meeting or the STT socket.
+     * This is the device hot-swap entry point: the native DSP always emits
+     * 16kHz mono whatever the endpoint is, so Deepgram stays connected and the
+     * rolling transcript is continuous across the swap.
+     *
+     * `rebindDevice` drops the native monitor first, which is what actually
+     * re-resolves the endpoint: the loopback client (WASAPI) and the CoreAudio
+     * aggregate device are both bound at construction, so a default-output
+     * change is only picked up by building a new one.
+     */
+    public restart(reason: string, rebindDevice = false): void {
+        if (!this._shouldBeRecording) return;
+        console.warn(`[SystemAudioCapture] Restart requested: ${reason}${rebindDevice ? ' (rebinding endpoint)' : ''}`);
+        this._restartAttempts = 0;
+        this._permanentlyFailed = false;
+        if (rebindDevice) this._releaseMonitor();
+        this._reopen(true);
+    }
+
+    private _openNative(): void {
+        if (!RustAudioCapture) {
+            // Missing .node binary is not a transient fault — do not spin on it.
+            this._onNativeError(new Error('System audio capture is not supported on this platform (native module unavailable)'));
+            return;
+        }
         if (!this.monitor) {
-            console.log('[SystemAudioCapture] Creating native monitor (lazy init)...');
             try {
-                // System audio is clean speaker output — the Rust side always runs
-                // the permissive for_system_audio() suppressor; echoMode selects the
-                // mic-gate pipeline (CaptureOptions is shared by both constructors).
-                this.monitor = new RustAudioCapture(this.deviceId, { vadDisabled: true, echoMode: this._echoMode });
+                // System audio is clean speaker output, so the Rust side runs its
+                // permissive for_system_audio() suppressor; echoMode selects the
+                // mic-gate pipeline (CaptureOptions is shared by both ctors).
+                this.monitor = new RustAudioCapture(this.deviceId, {
+                    vadDisabled: true,
+                    echoMode: this._echoMode,
+                });
             } catch (e) {
-                console.error('[SystemAudioCapture] Failed to create native monitor:', e);
-                this.emit('error', e);
+                this._onNativeError(e as Error);
                 return;
             }
         }
-
+        this._openedAt = Date.now();
+        this._lastChunkAt = 0;
+        this._chunksAtOpen = this._chunkCount;
         try {
             console.log('[SystemAudioCapture] Starting native capture...');
-
-            this.isRecording = true; // Set BEFORE start() to prevent re-entrant calls
-
-            this.monitor.start((err: Error | null, chunk: Buffer) => {
-                // napi v3 ThreadsafeFunction passes (err, arg) format
-                if (err) {
-                    console.error('[SystemAudioCapture] Callback error:', err);
-                    this.isRecording = false; // Allow recovery via restart
-                    this.emit('error', err);
-                    return;
-                }
-                if (chunk && chunk.length > 0) {
+            // Set before start() so a synchronous native callback cannot race a
+            // re-entrant open.
+            this.isRecording = true;
+            this.monitor.start(
+                (err: Error | null, chunk: Buffer) => {
+                    if (err) { this._onNativeError(err); return; }
+                    if (!chunk || chunk.length === 0) return;
                     const buffer = Buffer.from(chunk);
                     this._chunkCount++;
-                    if (Math.random() < 0.02) {
-                        console.log(`[SystemAudioCapture] Emitting chunk: ${buffer.length} bytes to JS`);
-                    }
+                    this._lastChunkAt = Date.now();
+                    if (this._isNonSilent(buffer)) this._lastNonSilentAt = this._lastChunkAt;
                     this.emit('data', buffer);
-                }
-            }, (err: Error | null, _ended: boolean) => {
-                // Speech-ended callback from Rust SilenceSuppressor.
-                // _ended is always `true` when fired (Rust only invokes on speech→silence transition).
-                if (err) {
-                    console.error('[SystemAudioCapture] Speech ended callback error:', err);
-                    return;
-                }
-                this.emit('speech_ended');
-            });
-
-            // Capture-stall watchdog: if the native layer stops emitting chunks,
-            // restart capture. The recovery target is a dead native capture thread —
-            // on Windows the WASAPI event-driven loopback thread can exit during
-            // far-end silence on older native builds. It is ALWAYS armed (a healthy
-            // pipeline emits SendSilence keepalives continuously, so this only fires on
-            // genuine capture death). The window is chosen by native feature level:
-            // binaries that synthesize silence during render-idle (level >= 2) keep
-            // chunks flowing, so a long last-resort window suffices; older binaries
-            // keep the aggressive default so recovery stays fast.
-            const featureLevel = (typeof NativeModule?.getNativeFeatureLevel === 'function')
-                ? (NativeModule.getNativeFeatureLevel() ?? 0)
-                : 0;
-            const stallWindowMs = featureLevel >= 2 ? 10000 : 2000;
-            console.log(`[SystemAudioCapture] Capture-stall watchdog armed (featureLevel=${featureLevel} window=${stallWindowMs}ms)`);
-            const scheduleStallCheck = () => {
-                this._stallOuterTimer = setTimeout(() => {
-                    this._stallOuterTimer = null;
-                    if (!this.isRecording) return;
-                    const countSnapshot = this._chunkCount;
-                    this._stallInnerTimer = setTimeout(() => {
-                        this._stallInnerTimer = null;
-                        if (!this.isRecording) return; // guard stale callback after stop()
-                        if (this._chunkCount === countSnapshot) {
-                            // No new chunks in the window — native capture has stalled/died.
-                            if (this._stallRestartAttempts >= SystemAudioCapture.MAX_STALL_RESTARTS) {
-                                // Restarting is not helping. Something structural is wrong
-                                // (permission revoked, device gone), so stop thrashing and
-                                // say so once — an unbounded retry loop just hides the cause.
-                                console.error(`[SystemAudioCapture] Capture stalled after ${this._stallRestartAttempts} restart attempts — giving up.`);
-                                try { this.monitor?.stop(); } catch { }
-                                this.isRecording = false;
-                                this._shouldBeRecording = false;
-                                this.emit('capture-failed', {
-                                    attempts: this._stallRestartAttempts,
-                                    maxAttempts: SystemAudioCapture.MAX_STALL_RESTARTS,
-                                });
-                                return;
-                            }
-                            this._stallRestartAttempts++;
-                            console.warn(`[SystemAudioCapture] Capture stall detected (no chunks in ${stallWindowMs}ms, featureLevel=${featureLevel}) — restarting capture (attempt ${this._stallRestartAttempts}/${SystemAudioCapture.MAX_STALL_RESTARTS})`);
-                            try { this.monitor?.stop(); } catch { }
-                            this.isRecording = false;
-                            this._chunkCount = 0;
-                            setTimeout(() => {
-                                if (this._shouldBeRecording) {
-                                    this.start();
-                                }
-                            }, 150);
-                        } else {
-                            // Chunks flowing again — the capture recovered, so forget the
-                            // earlier attempts and keep watching (always re-arm).
-                            this._stallRestartAttempts = 0;
-                            scheduleStallCheck();
-                        }
-                    }, stallWindowMs);
-                }, 3000); // First check 3s after DSP init
-            };
-            scheduleStallCheck();
-
-            // getSampleRate MUST be called AFTER start() — background init updates
-            // the atomic once SCK/CoreAudio initialises (~5-7s). Reading before start()
-            // always returns the constructor default (48000), not the real hardware rate.
-            if (typeof this.monitor.getSampleRate === 'function') {
-                const pollRate = (label: string) => {
-                    const rate = this.monitor?.getSampleRate?.();
-                    if (rate && rate !== this.detectedSampleRate) {
-                        this.detectedSampleRate = rate;
-                        // Use getOutputSampleRate() to get the TRUE post-DSP rate, not raw hardware.
-                        // Rust decimates 48000→16000 (3x). For other native rates, use the method which
-                        // may call get_output_sample_rate() from Rust if available.
-                        const outputRate = this.getOutputSampleRate();
-                        console.log(`[SystemAudioCapture] Native: ${rate}Hz → Output: ${outputRate}Hz (${label})`);
-                        // Only emit sample-rate-detected if this is the first time we've
-                        // seen a non-default rate. On VAD watchdog restart, detectedSampleRate
-                        // is already correct — emitting again triggers an unnecessary Deepgram
-                        // reconnect via setSampleRate → _reconnectWithNewConfig.
-                        if (!this._sampleRateEmitted) {
-                            this._sampleRateEmitted = true;
-                            this.emit('sample-rate-detected', outputRate);
-                        }
+                },
+                (err: Error | null) => {
+                    if (err) {
+                        console.error('[SystemAudioCapture] speech-ended callback error:', err);
+                        return;
                     }
-                };
-                setTimeout(() => pollRate('1s'), 1000);
-                setTimeout(() => pollRate('8s'), 8000);
-            }
-
+                    this.emit('speech_ended');
+                }
+            );
+            this._armRatePoll();
             this.emit('start');
         } catch (error) {
-            console.error('[SystemAudioCapture] Failed to start:', error);
-            this.isRecording = false;
-            this.emit('error', error);
+            this._onNativeError(error as Error);
         }
     }
 
     /**
-     * Stop capturing.
-     *
-     * FIX-8: Keep the native monitor alive so that resume() doesn't incur the
-     * WASAPI/CoreAudio re-initialization latency (300–800ms on Windows).
-     * The monitor is only released in destroy() for full teardown.
-     * This mirrors the pattern already used by MicrophoneCapture.
+     * Single funnel for every native failure: the data-callback `err` argument
+     * (how the Rust background thread reports init failure), a constructor
+     * throw, or a start() throw. Previously the data-callback path only set
+     * isRecording = false and emitted 'error' — nothing restarted, and the
+     * watchdog chain died with it, so the channel stayed dead for the rest of
+     * the meeting.
      */
-    public stop(): void {
-        if (!this.isRecording) return;
-        this._shouldBeRecording = false;
-        if (this._stallOuterTimer) { clearTimeout(this._stallOuterTimer); this._stallOuterTimer = null; }
-        if (this._stallInnerTimer) { clearTimeout(this._stallInnerTimer); this._stallInnerTimer = null; }
+    private _onNativeError(err: Error): void {
+        const msg = err?.message ?? String(err);
+        console.error('[SystemAudioCapture] Native error:', msg);
+        this.isRecording = false;
+        this.emit('error', err instanceof Error ? err : new Error(msg));
+        if (PERMANENT_ERROR_RE.test(msg)) {
+            // No backend exists on this platform — retrying would just loop.
+            this._permanentlyFailed = true;
+            this._shouldBeRecording = false;
+            this._clearTimers();
+            this.emit('capture-failed', {
+                attempts: this._restartAttempts,
+                maxAttempts: FAST_BACKOFF_MS.length,
+                permanent: true,
+                message: msg,
+            });
+            return;
+        }
+        this._reopen(false);
+    }
 
-        console.log('[SystemAudioCapture] Stopping capture...');
-        try {
-            this.monitor?.stop();
-        } catch (e) {
-            console.error('[SystemAudioCapture] Error stopping:', e);
+    private _reopen(force: boolean): void {
+        if (!this._shouldBeRecording || this._permanentlyFailed) return;
+        if (this._reopenTimer) { clearTimeout(this._reopenTimer); this._reopenTimer = null; }
+        const producedNothing = this._chunkCount === this._chunksAtOpen;
+        this._releaseNativeStream();
+
+        const attempt = this._restartAttempts;
+        const delay = force
+            ? 150
+            : (attempt < FAST_BACKOFF_MS.length ? FAST_BACKOFF_MS[attempt] : SLOW_BACKOFF_MS);
+        if (!force) this._restartAttempts = attempt + 1;
+
+        // Ladder: the first retry re-opens the existing monitor, which is enough
+        // when only the stream died. If that open produced no chunks at all the
+        // endpoint itself is gone (unplugged, default moved), and re-starting the
+        // same native object just re-binds the same dead endpoint — so drop it and
+        // let the next open resolve the device again. Deferred to the second
+        // attempt because rebuilding costs a CoreAudio/SCK re-init on macOS.
+        if (!force && producedNothing && attempt >= 1) {
+            console.warn('[SystemAudioCapture] Previous open produced no audio — rebinding the endpoint.');
+            this.monitor = null;
         }
 
-        // FIX-8: Do NOT null out this.monitor here.
-        // Keeping the monitor alive avoids the re-init latency on Windows WASAPI
-        // (300–800ms) during pause/resume cycles.
-        // this.monitor = null;  <-- removed
+        // Crossing out of the fast tier is worth telling the UI about — once.
+        // Unlike the old code we keep retrying afterwards, so this is a warning,
+        // not a terminal state.
+        if (!force && this._restartAttempts > FAST_BACKOFF_MS.length && !this._degraded) {
+            this._degraded = true;
+            this.emit('capture-failed', {
+                attempts: this._restartAttempts,
+                maxAttempts: FAST_BACKOFF_MS.length,
+                permanent: false,
+            });
+        }
+        console.warn(`[SystemAudioCapture] Reopening in ${delay}ms (attempt ${this._restartAttempts})`);
+        this._reopenTimer = setTimeout(() => {
+            this._reopenTimer = null;
+            if (this._shouldBeRecording) this._openNative();
+        }, delay);
+        this._reopenTimer.unref?.();
+        this._armSupervisor();
+    }
 
+    private _armSupervisor(): void {
+        if (this._supervisorTimer) return;
+        this._supervisorTimer = setInterval(() => this._supervisorTick(), SUPERVISOR_TICK_MS);
+        this._supervisorTimer.unref?.();
+    }
+
+    /**
+     * The single place that decides whether capture is alive, re-armed
+     * unconditionally by setInterval. The old chained-setTimeout watchdog began
+     * every tick with `if (!this.isRecording) return;` and never re-armed, so
+     * the self-healing loop stopped at exactly the moment it was needed.
+     */
+    private _supervisorTick(): void {
+        if (!this._shouldBeRecording) { this._clearSupervisor(); return; }
+        const now = Date.now();
+
+        if (!this.isRecording) {
+            // Not recording and no reopen pending = we lost the chain somewhere.
+            if (!this._reopenTimer) this._reopen(false);
+            return;
+        }
+
+        // Still inside the native init window — not a stall yet.
+        if (now - this._openedAt < this._startGraceMs) return;
+
+        const since = now - (this._lastChunkAt || this._openedAt);
+        if (since > this._stallWindowMs) {
+            console.warn(`[SystemAudioCapture] Stalled: no chunks for ${since}ms — reopening`);
+            this._reopen(false);
+            return;
+        }
+
+        // Chunks are flowing again.
+        if (this._restartAttempts > 0 || this._degraded) {
+            console.log('[SystemAudioCapture] Healthy again — clearing restart state');
+            this._restartAttempts = 0;
+            if (this._degraded) {
+                this._degraded = false;
+                this.emit('capture-recovered');
+            }
+        }
+    }
+
+    /** Cheap peak probe; the native layer emits bit-exact zeros for keepalives. */
+    private _isNonSilent(buf: Buffer): boolean {
+        for (let i = 0; i + 1 < buf.length; i += 64) {
+            if (Math.abs(buf.readInt16LE(i)) > NON_SILENT_THRESHOLD) return true;
+        }
+        return false;
+    }
+
+    private _armRatePoll(): void {
+        this._clearRatePoll();
+        const pollRate = (label: string) => {
+            if (!this.isRecording || !this.monitor) return;
+            let rate = 0;
+            try { rate = this.monitor.getSampleRate?.() ?? 0; } catch { return; }
+            if (rate) this.detectedSampleRate = rate;
+            const outputRate = this.getOutputSampleRate();
+            if (!outputRate) return;
+            // Emit only when the DECLARED output rate actually changes. The old
+            // `_sampleRateEmitted` latch fired at most once per instance, so a
+            // rate change after a hot-swap never reached the STT; emitting on
+            // every poll instead would force needless Deepgram reconnects.
+            if (outputRate === this._lastEmittedOutputRate) return;
+            this._lastEmittedOutputRate = outputRate;
+            console.log(`[SystemAudioCapture] Native ${rate}Hz → output ${outputRate}Hz (${label})`);
+            this.emit('sample-rate-detected', outputRate);
+        };
+        const t1 = setTimeout(() => pollRate('1s'), 1000);
+        const t2 = setTimeout(() => pollRate('8s'), 8000);
+        t1.unref?.(); t2.unref?.();
+        this._ratePollTimers.push(t1, t2);
+    }
+
+    private _clearRatePoll(): void {
+        for (const t of this._ratePollTimers) clearTimeout(t);
+        this._ratePollTimers = [];
+    }
+
+    private _clearSupervisor(): void {
+        if (this._supervisorTimer) { clearInterval(this._supervisorTimer); this._supervisorTimer = null; }
+    }
+
+    private _clearTimers(): void {
+        this._clearSupervisor();
+        this._clearRatePoll();
+        if (this._reopenTimer) { clearTimeout(this._reopenTimer); this._reopenTimer = null; }
+    }
+
+    /** Stop the native stream but keep the monitor object (see FIX-8 in stop()). */
+    private _releaseNativeStream(): void {
+        this._clearRatePoll();
+        if (this.monitor && this.isRecording) {
+            try { this.monitor.stop(); } catch (e) { console.error('[SystemAudioCapture] stop() failed:', e); }
+        }
         this.isRecording = false;
+    }
+
+    private _releaseMonitor(): void {
+        this._releaseNativeStream();
+        this.monitor = null;
+    }
+
+    public stop(): void {
+        // Clear intent FIRST so a callback landing during teardown cannot
+        // schedule a reopen behind our back.
+        this._shouldBeRecording = false;
+        this._clearTimers();
+        const wasRecording = this.isRecording;
+        if (wasRecording) {
+            console.log('[SystemAudioCapture] Stopping capture...');
+            try { this.monitor?.stop(); } catch (e) { console.error('[SystemAudioCapture] Error stopping:', e); }
+        }
+        this.isRecording = false;
+        this._restartAttempts = 0;
+        this._degraded = false;
+        // FIX-8: deliberately keep `this.monitor` so a later start() reuses the
+        // native object instead of paying construction cost again. start()
+        // re-resolves the device inside the native thread, so a stale endpoint
+        // binding is not carried across a restart.
         this.emit('stop');
     }
 
-    /**
-     * Permanently dispose this instance.
-     * Stops capture, removes all event listeners, and releases the native monitor.
-     * After destroy(), do not reuse this instance.
-     */
+    /** Full teardown — after this the instance must not be reused. */
     public destroy(): void {
         this._shouldBeRecording = false;
-        this._sampleRateEmitted = false;
-        if (this._stallOuterTimer) { clearTimeout(this._stallOuterTimer); this._stallOuterTimer = null; }
-        if (this._stallInnerTimer) { clearTimeout(this._stallInnerTimer); this._stallInnerTimer = null; }
-        this.stop();
-        // Clear listeners BEFORE nulling monitor. In-flight Rust callbacks (e.g., data
-        // or speech_ended delivered via napi scheduler) must not fire after disposal.
+        this._permanentlyFailed = true;
+        this._clearTimers();
+        try { this.stop(); } catch { /* already logged */ }
         this.removeAllListeners();
         this.monitor = null;
     }

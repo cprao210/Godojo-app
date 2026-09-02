@@ -35,6 +35,7 @@ interface LauncherHeaderProps {
     meetings: Meeting[];
     onOpenMeeting: (meeting: Meeting) => void;
     onOpenManagerDashboard?: () => void;
+    onCloseManagerDashboard?: () => void;
     isManagerDashboardOpen?: boolean;
     isSettingsOpen?: boolean;
     onOpenSettings: (tab?: string) => void;
@@ -45,7 +46,7 @@ interface LauncherHeaderProps {
 
 export const LauncherHeader: React.FC<LauncherHeaderProps> = ({
     isLight, selectedMeeting, forwardMeeting, onBack, onForward,
-    meetings, onOpenMeeting, onOpenManagerDashboard, isManagerDashboardOpen = false, onOpenSettings, onCloseSettings, isSettingsOpen = false,
+    meetings, onOpenMeeting, onOpenManagerDashboard, onCloseManagerDashboard, isManagerDashboardOpen = false, onOpenSettings, onCloseSettings, isSettingsOpen = false,
     authUser, onSignOut,
 }) => {
     // Single source of truth for which nav item is "active" — driven by
@@ -107,9 +108,10 @@ export const LauncherHeader: React.FC<LauncherHeaderProps> = ({
             <nav className="flex items-center gap-1 no-drag ml-2">
                 <button
                     onClick={() => {
-                        // Only meaningful when Dashboard is currently open — closing it
-                        // is what actually returns the user to the launcher/home view.
-                        if (isManagerDashboardOpen) onOpenManagerDashboard?.();
+                        // Explicit close — onOpenManagerDashboard now only ever opens
+                        // the Dashboard (clicking it again must keep it open), so Home
+                        // needs its own path back instead of re-toggling that handler.
+                        if (isManagerDashboardOpen) onCloseManagerDashboard?.();
                         if (isSettingsOpen) onCloseSettings?.();
                         onBack();
                     }}

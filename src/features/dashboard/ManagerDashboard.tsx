@@ -61,7 +61,10 @@ export const ManagerDashboard: React.FC<ManagerDashboardProps> = ({ isOpen }) =>
                         animate={{ opacity: 1 }}
                         exit={{ opacity: 0 }}
                         transition={{ duration: 0.2 }}
-                        className={`fixed inset-0 z-50 my-4 overflow-y-auto ${isLight ? 'bg-[#F8FAFC]' : 'bg-bg-main'}`}
+                        // mt-4 keeps the existing top margin; mb-12 (= the audio status
+                        // footer's h-12) keeps scrolled content clear of that footer,
+                        // which now renders at the App root at z-[200] — above this z-50 panel.
+                        className={`fixed inset-0 z-50 mt-4 mb-12 overflow-y-auto ${isLight ? 'bg-[#F8FAFC]' : 'bg-bg-main'}`}
                     >
                         <div className="max-w-6xl mx-auto px-10 py-10">
                             {/* Header */}

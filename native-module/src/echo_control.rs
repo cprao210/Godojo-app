@@ -178,7 +178,7 @@ static RENDER_WAIT_WARNED: AtomicBool = AtomicBool::new(false);
 
 /// Render backend actually capturing (set by the system DSP thread after
 /// SpeakerInput::new succeeds): 0 none, 1 core_audio_tap, 2 sck,
-/// 3 wasapi_loopback.
+/// 3 wasapi_loopback, 4 pulse_monitor.
 static RENDER_BACKEND: AtomicU8 = AtomicU8::new(0);
 const RENDER_BACKEND_SCK: u8 = 2;
 
@@ -934,6 +934,7 @@ pub fn set_render_backend(name: &str) {
         "core_audio_tap" => 1,
         "sck" => RENDER_BACKEND_SCK,
         "wasapi_loopback" => 3,
+        "pulse_monitor" => 4,
         _ => 0,
     };
     RENDER_BACKEND.store(v, Ordering::Release);
@@ -945,6 +946,7 @@ fn render_backend_str() -> &'static str {
         1 => "core_audio_tap",
         2 => "sck",
         3 => "wasapi_loopback",
+        4 => "pulse_monitor",
         _ => "none",
     }
 }

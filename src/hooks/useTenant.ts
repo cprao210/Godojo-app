@@ -101,6 +101,12 @@ export function useAutoOpenDashboardForAdmins(
         }
         if (!tenant || hasAutoOpenedRef.current) return;
         setIsManagerDashboardOpen(isAdmin);
-        hasAutoOpenedRef.current = true;
+        // Only latch once we've actually confirmed admin. If the first `tenant`
+        // object to arrive is a transitional/stale one (isAdmin reads false),
+        // locking here would permanently skip the auto-open even once the
+        // correct tenant — and the real isAdmin=true — arrives a tick later,
+        // leaving the dashboard closed (or its nav button out of sync) despite
+        // the user genuinely being an admin.
+        if (isAdmin) hasAutoOpenedRef.current = true;
     }, [authUser, tenant, isAdmin]);
 }

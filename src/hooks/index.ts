@@ -21,6 +21,8 @@ import { useLauncher } from "./useLauncher";
 import { useWindowControls } from "./useWindowControls";
 import { useGodojoInterface } from "./useGodojoInterface";
 import { usePerformanceMode } from "./usePerformanceMode";
+import { useLiveAudioLevels } from "./useLiveAudioLevels";
+import { useAudioStatusTray } from "./useAudioStatusTray";
 import { useTopSearchPill } from './useTopSearchPill';
 import { useModelSelectorWindow } from './useModelSelectorWindow';
 import { useEditableTextBlock } from "./useEditableTextBlock";
@@ -146,5 +148,7 @@ export {
     useUpdateStatus,
     useSystemAudioPermission,
     useUndetectable,
-    usePerformanceMode
+    usePerformanceMode,
+    useLiveAudioLevels,
+    useAudioStatusTray
 };

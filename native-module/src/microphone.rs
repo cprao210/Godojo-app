@@ -99,6 +99,8 @@ pub struct MicrophoneStream {
     is_running: Arc<AtomicBool>,
     /// Condvar for DSP thread to wait on audio data
     data_ready: Arc<(Mutex<bool>, Condvar)>,
+    /// First error CPAL reported on this stream, waiting to be picked up.
+    stream_error: Arc<Mutex<Option<String>>>,
 }
 
 impl MicrophoneStream {
@@ -132,6 +134,8 @@ impl MicrophoneStream {
         let data_ready = Arc::new((Mutex::new(false), Condvar::new()));
         let data_ready_clone = data_ready.clone();
 
+        let stream_error: Arc<Mutex<Option<String>>> = Arc::new(Mutex::new(None));
+
         // Build the stream with minimal callback
         let stream = build_input_stream(
             &device,
@@ -140,6 +144,7 @@ impl MicrophoneStream {
             channels,
             is_running_clone,
             data_ready_clone,
+            stream_error.clone(),
         )?;
 
         Ok(Self {
@@ -148,6 +153,7 @@ impl MicrophoneStream {
             sample_rate,
             is_running,
             data_ready,
+            stream_error,
         })
     }
 
@@ -194,6 +200,19 @@ impl MicrophoneStream {
     pub fn data_ready_signal(&self) -> Arc<(Mutex<bool>, Condvar)> {
         self.data_ready.clone()
     }
+
+    /// Clone the error slot so the DSP thread can poll it.
+    ///
+    /// CPAL reports device loss ONLY through the stream error callback — the
+    /// `Stream` object stays alive and just stops delivering data. The DSP thread
+    /// polls this so the failure can be forwarded to JS, which restarts capture
+    /// against whatever device is now current. Without it, unplugging a headset
+    /// mid-meeting left the DSP thread waiting on a ring nobody would fill again.
+    /// The slot is cloned rather than read through `&self` because `Stream` is
+    /// `!Send`: the stream stays on the JS thread while the DSP thread polls.
+    pub fn error_slot(&self) -> Arc<Mutex<Option<String>>> {
+        self.stream_error.clone()
+    }
 }
 
 /// Build input stream with lock-free callback
@@ -207,8 +226,27 @@ fn build_input_stream(
     channels: usize,
     is_running: Arc<AtomicBool>,
     data_ready: Arc<(Mutex<bool>, Condvar)>,
+    stream_error: Arc<Mutex<Option<String>>>,
 ) -> Result<Stream> {
-    let err_fn = |err| eprintln!("[Microphone] Stream error: {}", err);
+    // Runs on CPAL's notification path, NOT the real-time data callback, so taking
+    // a lock here is fine. Keep the FIRST error: it is the one that describes why
+    // the device went away, and later ones are usually consequences.
+    let err_fn = move |err: cpal::StreamError| {
+        let device_lost = matches!(err, cpal::StreamError::DeviceNotAvailable);
+        eprintln!(
+            "[Microphone] Stream error: {} (device_lost={})",
+            err, device_lost
+        );
+        if let Ok(mut slot) = stream_error.lock() {
+            if slot.is_none() {
+                *slot = Some(if device_lost {
+                    format!("Microphone device is no longer available: {}", err)
+                } else {
+                    format!("Microphone stream error: {}", err)
+                });
+            }
+        }
+    };
 
     let stream = match config.sample_format() {
         SampleFormat::F32 => {

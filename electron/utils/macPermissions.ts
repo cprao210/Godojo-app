@@ -254,6 +254,7 @@ export type PermissionReason =
   | 'mac-screen-recording-revoked-rebuild'
   | 'mic-denied'
   | 'mic-zero-fill'
+  | 'mic-capture-stuck'
   | 'mac-same-device-input-output'
   | 'system-audio-stuck';
 
@@ -291,6 +292,15 @@ export function formatPermissionMessage(reason: PermissionReason, extra?: { devi
       return isMac
         ? 'Your microphone is producing silent audio. Check that the device is unmuted and that macOS Microphone permission is granted to GoDojo AI in System Settings → Privacy & Security → Microphone.'
         : 'Your microphone is producing silent audio. Check that the device is unmuted and that GoDojo AI has microphone access in Settings → Privacy → Microphone.';
+
+    case 'mic-capture-stuck':
+      // Raised when the mic capture keeps failing to reopen. Deliberately does
+      // NOT blame permissions: the same symptom comes from a device that was
+      // unplugged or grabbed exclusively by another app, and the capture is
+      // still retrying in the background while this is on screen.
+      return isMac
+        ? 'Your microphone stopped producing audio and could not be reopened. Check that the device is still connected and not in use by another app, or pick a different microphone in Audio Settings.'
+        : 'Your microphone stopped producing audio and could not be reopened. Check that the device is still connected and not held exclusively by another app, or pick a different microphone in Audio Settings.';
 
     case 'mac-same-device-input-output':
       if (!isMac) return formatPermissionMessage('system-audio-stuck');

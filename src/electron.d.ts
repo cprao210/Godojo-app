@@ -252,8 +252,10 @@ export interface ElectronAPI {
   onMeetingAudioError: (callback: (message: string) => void) => () => void
   onSystemAudioPermissionDenied: (callback: (message: string) => void) => () => void
   /** Fires when a previously reported system-audio problem has resolved. */
-  onSystemAudioRecovered: (callback: () => void) => () => void
+  onSystemAudioRecovered: (callback: (channel: 'system' | 'mic') => void) => () => void
   onAudioCaptureFailed: (callback: (payload: AudioCaptureFailure) => void) => () => void
+  /** Live per-chunk RMS level (0–1) from the meeting's real mic/system-audio captures — drives the dock wave indicator. */
+  onAudioLevel: (callback: (payload: { channel: 'mic' | 'system'; level: number }) => void) => () => void
   getNativeAudioStatus: () => Promise<{ connected: boolean }>
   startAudioTest: (deviceId?: string) => Promise<{ success: boolean }>
   stopAudioTest: () => Promise<{ success: boolean }>

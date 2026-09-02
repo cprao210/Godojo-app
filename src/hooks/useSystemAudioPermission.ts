@@ -119,9 +119,9 @@ export function useSystemAudioPermission() {
     // that is transcribing fine, and the focus re-check above cannot help during
     // a live call the user is not clicking away from.
     useEffect(() => {
-        const unsub = window.electronAPI?.onSystemAudioRecovered?.(() => {
+        const unsub = window.electronAPI?.onSystemAudioRecovered?.((channel = 'system') => {
             setWarning((current) =>
-                current?.kind === 'audio-capture-failure' && current.channel === 'system' ? null : current,
+                current?.kind === 'audio-capture-failure' && current.channel === channel ? null : current,
             );
         });
         return () => unsub?.();

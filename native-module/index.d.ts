@@ -72,11 +72,15 @@ export declare function getInputDevices(): Array<AudioDeviceInfo>
  * treats the level as 0. Bump when the native audio contract changes in a way
  * JS needs to detect at runtime.
  *   0 (implicit, older binaries) — no continuity guarantee.
- *   2 — the capture layer keeps the sample ring continuously fed during silence:
- *       the macOS tap streams silence natively, and the Windows WASAPI loopback
- *       synthesizes silence during render-idle instead of stalling. Lets the JS
- *       capture-stall watchdog relax to a long last-resort window rather than
- *       aggressively restarting capture (which interrupts the STT stream).
+ *   2 — the capture layer keeps the sample ring continuously fed during silence,
+ *       on every platform that has a system-audio backend:
+ *         * macOS — the process tap streams silence natively.
+ *         * Windows — the WASAPI loopback synthesizes silence during render-idle
+ *           instead of stalling.
+ *         * Linux — a sink's monitor source emits silence while the sink is idle,
+ *           and speaker/linux.rs tops the ring up itself if the sink suspends.
+ *       Lets the JS capture-stall watchdog relax to a long last-resort window
+ *       rather than aggressively restarting capture (which interrupts STT).
  */
 export declare function getNativeFeatureLevel(): number
 

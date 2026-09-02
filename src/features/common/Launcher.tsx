@@ -23,9 +23,8 @@ import { LauncherHeader, GhostModeToggle, RefreshButton, StartMeetingButton, Oll
 import { CalendarConnectCard, RecentMeetingsHeader, MeetingsList, RefreshToast, TranscriptUploadModal } from './LauncherWidgets';
 import { LauncherProps, Meeting } from '@/types';
 import { posthogAnalytics } from '@/lib/analytics/posthog.service';
-import { AudioStatusTray } from './AudioStatusTray';
 
-const Launcher: React.FC<LauncherProps> = ({ onStartMeeting, onOpenSettings, onCloseSettings, onOpenManagerDashboard, onCloseManagerDashboard, isManagerDashboardOpen = false, isSettingsOpen = false, onPageChange, ollamaPullStatus = 'idle', ollamaPullPercent = 0, ollamaPullMessage = '', authUser, onSignOut, setShowPermissionTray, showPermissionTray, proceedWithMeeting }) => {
+const Launcher: React.FC<LauncherProps> = ({ onStartMeeting, onOpenSettings, onCloseSettings, onOpenManagerDashboard, onCloseManagerDashboard, isManagerDashboardOpen = false, isSettingsOpen = false, onPageChange, ollamaPullStatus = 'idle', ollamaPullPercent = 0, ollamaPullMessage = '', authUser, onSignOut }) => {
 
     const launcherStates = useLauncher({ onStartMeeting, onPageChange, ollamaPullStatus, authUser });
     const { isLight, meetings, deleteMutation, upcomingEvents, isCalendarConnected, setIsCalendarConnected } = launcherStates;
@@ -75,6 +74,7 @@ const Launcher: React.FC<LauncherProps> = ({ onStartMeeting, onOpenSettings, onC
                 meetings={meetings}
                 onOpenMeeting={handleOpenMeetingFromSearch}
                 onOpenManagerDashboard={onOpenManagerDashboard}
+                onCloseManagerDashboard={onCloseManagerDashboard}
                 isManagerDashboardOpen={isManagerDashboardOpen}
                 isSettingsOpen={isSettingsOpen}
                 onOpenSettings={onOpenSettings}
@@ -322,12 +322,6 @@ const Launcher: React.FC<LauncherProps> = ({ onStartMeeting, onOpenSettings, onC
                 onSubmit={handleUploadTranscript}
             />
 
-
-            <AudioStatusTray
-                isVisible={showPermissionTray}
-                onClose={() => setShowPermissionTray?.(false)}
-                onAllGranted={proceedWithMeeting}
-            />
         </div>
     );
 };

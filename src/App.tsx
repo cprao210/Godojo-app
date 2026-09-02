@@ -29,6 +29,7 @@ import { StartupSequence } from "@/features/onboarding";
 import { ToastProvider, ToastViewport } from "@/features/ui/toast";
 import { ModelSelectorWindow, GodojoInterface, Launcher, ErrorBoundary } from "@/features/common";
 import { IncompatibleProviderBanner, AdCampaignToasters, SystemAudioPermissionBanner, GhostGlowOverlay } from "@/features/common";
+import { AudioStatusTray } from "@/features/common";
 // import { SupportToaster } from "@/features/common";
 
 // ---------------------------------------------------------------------------
@@ -254,7 +255,7 @@ const App: React.FC = () => {
                             isAdmin
                               ? () => {
                                 setIsSettingsOpen(false); // switching to Dashboard closes Settings
-                                setIsManagerDashboardOpen((open) => !open); // toggle: click again to close
+                                setIsManagerDashboardOpen(true); // clicking Dashboard again keeps it open
                               }
                               : undefined
                           }
@@ -265,9 +266,6 @@ const App: React.FC = () => {
                           ollamaPullMessage={ollamaPull.message}
                           authUser={authUser}
                           onSignOut={signOut}
-                          showPermissionTray={showPermissionTray}
-                          setShowPermissionTray={setShowPermissionTray}
-                          proceedWithMeeting={proceedWithMeeting}
                         />
                       </div>
                       <SettingsOverlay
@@ -281,6 +279,14 @@ const App: React.FC = () => {
                       {/* Ghost Mode indicator — soft edge glow above every screen (Launcher /
                           Settings / Dashboard) whenever the window is hidden from capture. */}
                       <GhostGlowOverlay />
+                      {/* Audio status footer — rendered once at the App root (like the
+                          header) so it stays visible above every screen (Launcher /
+                          Settings / Dashboard), not just while the Launcher is mounted. */}
+                      <AudioStatusTray
+                        isVisible={showPermissionTray}
+                        onClose={() => setShowPermissionTray?.(false)}
+                        onAllGranted={proceedWithMeeting}
+                      />
                       <ToastViewport />
                     </ToastProvider>
                   </QueryClientProvider>

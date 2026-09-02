@@ -17,7 +17,7 @@ import { FloatingPanelWrapper, DockDivider, DockDragHandle, PausedIndicatorDot }
 // Imported relatively (not via the barrel above) — the barrel re-exports
 // FloatingDock, so pulling DockBrandBar from it would be a circular import.
 import { DockBrandBar } from './DockBrandBar';
-import { useFloatingDock, usePerformanceMode } from '@/hooks';
+import { useFloatingDock, usePerformanceMode, useLiveAudioLevels } from '@/hooks';
 import { posthogAnalytics } from '@/lib/analytics/posthog.service';
 import { FloatingDockProps } from '@/types';
 import { getDockSurfaceStyle } from './dockSurfaceStyle';
@@ -47,6 +47,11 @@ export const FloatingDock: React.FC<FloatingDockProps> = ({
 
     const floatingDockStates = useFloatingDock({ transcriptRef, isMeetingPaused, companyIntel });
     const { isPerformanceMode, preference: performanceModePreference, setPreference: setPerformanceModePreference } = usePerformanceMode();
+    // Live wave-indicator levels for the brand bar — FloatingDock only mounts
+    // during a live meeting, so this is always "on"; when the meeting is
+    // paused, capture stops emitting and the hook's own idle-decay drops both
+    // bars to 0 within ~400ms without any extra wiring here.
+    const { micLevel, systemLevel } = useLiveAudioLevels(true);
 
     useEffect(() => {
         posthogAnalytics.trackPageView('floating_dock');
@@ -286,6 +291,9 @@ export const FloatingDock: React.FC<FloatingDockProps> = ({
                         isExpanded={isDockExpanded}
                         opacity={dockOpacity}
                         onToggle={isDockExpanded ? collapseDock : expandDock}
+                        micLevel={micLevel}
+                        systemLevel={systemLevel}
+                        isPerformanceMode={isPerformanceMode}
                     />
 
                     {/* The Dock — nav buttons only mount while expanded, so collapsing

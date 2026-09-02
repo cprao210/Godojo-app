@@ -126,6 +126,47 @@ export interface PermissionRowProps {
   onOpenSettings: () => void;
 }
 
+/**
+ * One channel (microphone / system audio) in the tray panel: permission state,
+ * the device it resolves to, and a live level meter.
+ */
+export interface AudioChannelCardProps extends PermissionRowProps {
+  /**
+   * macOS tri-state, so "never asked" can be worded differently from "denied".
+   * Windows and Linux report 'granted' for both channels — they have no
+   * screen-capture gate and handle the mic at first use.
+   */
+  status?: 'granted' | 'denied' | 'not-determined' | 'restricted';
+  /** Already-shaped 0–1 meter position. */
+  level: number;
+  /** Samples are arriving on this channel right now. */
+  isLive: boolean;
+  /** A user-initiated probe is running (no meeting). */
+  isTesting: boolean;
+  /** Resolved device label; null when the device list is unavailable. */
+  deviceName?: string | null;
+  /** The saved device preference has disappeared since it was set. */
+  deviceMissing?: boolean;
+  /** Per-channel failure text, e.g. the system-audio probe's error. */
+  errorText?: string | null;
+  /** Colour family for the meter, matching the dock's two-channel palette. */
+  tone: 'mic' | 'system';
+  /** Theme is passed down rather than re-resolved per row. */
+  isLight: boolean;
+}
+
+/** Compact level meter shared by the collapsed tray bar and the panel cards. */
+export interface AudioLevelMeterProps {
+  /** Already-shaped 0–1 level. */
+  level: number;
+  isLive: boolean;
+  tone: 'mic' | 'system';
+  isLight: boolean;
+  /** Renders the 4-bar variant for the 48px tray bar instead of a wide bar. */
+  compact?: boolean;
+  className?: string;
+}
+
 // --- src/features/common/SystemAudioPermissionBanner.tsx ---
 export interface SystemAudioPermissionBannerProps {
   className?: string;
@@ -1403,9 +1444,6 @@ export interface LauncherProps {
   ollamaPullMessage?: string;
   authUser?: { displayName?: string | null; email?: string | null; photoURL?: string | null } | null;
   onSignOut?: () => void;
-  showPermissionTray?: boolean;
-  setShowPermissionTray?: React.Dispatch<React.SetStateAction<boolean>>;
-  proceedWithMeeting?: () => void;
 }
 
 // --- src/features/common/GodojoInterface.tsx ---

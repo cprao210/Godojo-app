@@ -23,6 +23,9 @@
 import React from 'react';
 import { ChevronUp, ChevronDown } from 'lucide-react';
 import { IMAGES } from '@/lib/assets';
+// Imported relatively for the same reason as this file's own note on
+// DockBrandBar — avoids a circular import through the barrel.
+import { AudioWaveIndicator } from './AudioWaveIndicator';
 
 interface DockBrandBarProps {
     /** Whether the nav dock + panel are currently expanded — drives the chevron direction + action. */
@@ -31,9 +34,15 @@ interface DockBrandBarProps {
     onToggle: () => void;
     /** Shared dock opacity (from the appearance slider) so the bar matches the pill. */
     opacity: number;
+    /** 0–1 live microphone level ("You"). Omit/0 renders a dim, idle indicator. */
+    micLevel?: number;
+    /** 0–1 live system-audio level ("Client" — covers built-in speakers or any connected external playback device). */
+    systemLevel?: number;
+    /** Reduced-fidelity mode — forwarded to the wave indicator's animation budget. */
+    isPerformanceMode?: boolean;
 }
 
-export const DockBrandBar: React.FC<DockBrandBarProps> = ({ isExpanded, onToggle, opacity }) => (
+export const DockBrandBar: React.FC<DockBrandBarProps> = ({ isExpanded, onToggle, opacity, micLevel = 0, systemLevel = 0, isPerformanceMode = false }) => (
     <div
         className="flex items-center justify-between gap-3 px-3 py-1.5 rounded-xl cursor-grab active:cursor-grabbing draggable-area"
         style={{
@@ -48,6 +57,13 @@ export const DockBrandBar: React.FC<DockBrandBarProps> = ({ isExpanded, onToggle
                 <img src={IMAGES.godojoLogoIcon} alt="GoDojo AI" className="w-4 h-4 object-contain" />
             </div>
             <span className="text-[12px] font-semibold tracking-wide text-white/85">GoDojo AI</span>
+        </div>
+
+        {/* Live capture indicator — one wave for both sides of the call.
+            Color shifts blue ("You") ↔ orange ("Client") to show which
+            channel is currently dominant, instead of two separate meters. */}
+        <div className="flex items-center no-drag">
+            <AudioWaveIndicator micLevel={micLevel} systemLevel={systemLevel} isPerformanceMode={isPerformanceMode} />
         </div>
 
         {/* Expand / collapse the active panel */}

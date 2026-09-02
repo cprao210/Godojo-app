@@ -106,6 +106,29 @@ pub struct SystemAudioCapture {
     device_id: Option<String>,
 }
 
+/// Platform-specific tail appended to a total system-audio init failure. This
+/// string reaches the user through the JS error path, so it names the one thing
+/// they can actually do about it.
+///
+/// It must NOT contain "not supported on this platform" — SystemAudioCapture.ts
+/// treats that phrase as permanent and stops retrying the lane.
+fn system_audio_failure_hint() -> &'static str {
+    #[cfg(target_os = "macos")]
+    {
+        " Grant Screen Recording permission in System Settings > Privacy & Security."
+    }
+    #[cfg(target_os = "linux")]
+    {
+        " Make sure a PulseAudio-compatible sound server is running \
+         (`systemctl --user status pipewire-pulse` or `pulseaudio --check`); \
+         install pipewire-pulse or pulseaudio if neither is present."
+    }
+    #[cfg(not(any(target_os = "macos", target_os = "linux")))]
+    {
+        " Check that an output device is present and enabled."
+    }
+}
+
 #[napi]
 impl SystemAudioCapture {
     #[napi(constructor)]
@@ -171,8 +194,9 @@ impl SystemAudioCapture {
                             // Propagate the error to JS so the UI can show a permission prompt.
                             tsfn.call(
                                 Err(napi::Error::from_reason(format!(
-                                    "System audio capture failed: {}. On macOS, grant Screen Recording permission in System Settings > Privacy & Security.",
-                                    e2
+                                    "System audio capture failed: {}.{}",
+                                    e2,
+                                    system_audio_failure_hint()
                                 ))),
                                 ThreadsafeFunctionCallMode::NonBlocking,
                             );
@@ -530,6 +554,12 @@ impl MicrophoneCapture {
             .take_consumer()
             .ok_or_else(|| napi::Error::from_reason("Failed to get consumer"))?;
 
+        // CPAL reports device loss ONLY through the stream error callback, and that
+        // callback cannot reach JS by itself. The DSP thread polls this slot so an
+        // unplugged mic becomes an immediate restart instead of a channel that goes
+        // quiet and has to wait out the JS stall watchdog.
+        let error_slot = input_ref.error_slot();
+
         // Create resampler for mic (same as SystemAudio path — always output 16kHz)
         let mut resampler = if native_rate != 16000 {
             match Resampler::new(native_rate as f64) {
@@ -637,6 +667,18 @@ impl MicrophoneCapture {
 
             loop {
                 if stop_signal.load(Ordering::Relaxed) {
+                    break;
+                }
+
+                // Device died (unplugged headset, driver reset, format change).
+                // Hand it to JS as a capture error: the supervisor there re-opens
+                // against whatever input device is current now.
+                if let Some(err) = error_slot.lock().ok().and_then(|mut slot| slot.take()) {
+                    eprintln!("[MicrophoneCapture] {} — exiting DSP thread", err);
+                    tsfn.call(
+                        Err(napi::Error::from_reason(err)),
+                        ThreadsafeFunctionCallMode::NonBlocking,
+                    );
                     break;
                 }
 
@@ -851,11 +893,15 @@ pub fn get_audio_pipeline_stats() -> String {
 /// treats the level as 0. Bump when the native audio contract changes in a way
 /// JS needs to detect at runtime.
 ///   0 (implicit, older binaries) — no continuity guarantee.
-///   2 — the capture layer keeps the sample ring continuously fed during silence:
-///       the macOS tap streams silence natively, and the Windows WASAPI loopback
-///       synthesizes silence during render-idle instead of stalling. Lets the JS
-///       capture-stall watchdog relax to a long last-resort window rather than
-///       aggressively restarting capture (which interrupts the STT stream).
+///   2 — the capture layer keeps the sample ring continuously fed during silence,
+///       on every platform that has a system-audio backend:
+///         * macOS — the process tap streams silence natively.
+///         * Windows — the WASAPI loopback synthesizes silence during render-idle
+///           instead of stalling.
+///         * Linux — a sink's monitor source emits silence while the sink is idle,
+///           and speaker/linux.rs tops the ring up itself if the sink suspends.
+///       Lets the JS capture-stall watchdog relax to a long last-resort window
+///       rather than aggressively restarting capture (which interrupts STT).
 #[napi]
 pub fn get_native_feature_level() -> u32 {
     2

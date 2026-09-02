@@ -89,7 +89,10 @@ const SettingsOverlay: React.FC<SettingsOverlayProps> = ({
                     exit={{ opacity: 0 }}
                     transition={{ duration: 0.2 }}
                     id="settings-backdrop"
-                    className={`fixed top-6 inset-0 z-50 transition-colors duration-150 ${opacity.isPreviewingOpacity ? 'bg-transparent backdrop-blur-none' : isLight ? 'bg-[#F8FAFC]' : 'bg-bg-main'}`}
+                    // top-6 leaves the header visible above; bottom-12 (= the audio
+                    // status footer's h-12) does the same for the footer, which now
+                    // renders at the App root at z-[200] — above this z-50 overlay.
+                    className={`fixed top-6 bottom-12 inset-x-0 z-50 transition-colors duration-150 ${opacity.isPreviewingOpacity ? 'bg-transparent backdrop-blur-none' : isLight ? 'bg-[#F8FAFC]' : 'bg-bg-main'}`}
                 >
                     <motion.div
                         id="settings-panel-wrapper"

@@ -86,7 +86,7 @@ interface ElectronAPI {
   onMeetingAudioWarning: (callback: (message: string) => void) => () => void
   onMeetingAudioError: (callback: (message: string) => void) => () => void
   onSystemAudioPermissionDenied: (callback: (message: string) => void) => () => void
-  onSystemAudioRecovered: (callback: () => void) => () => void
+  onSystemAudioRecovered: (callback: (channel: 'system' | 'mic') => void) => () => void
   onAudioCaptureFailed: (
     callback: (payload: {
       channel: 'system' | 'mic'
@@ -97,6 +97,13 @@ interface ElectronAPI {
       stuck?: boolean
     }) => void,
   ) => () => void
+  /**
+   * Live per-chunk RMS level (0–1) from the meeting's real mic/system-audio
+   * captures — purely for UI feedback (e.g. the dock wave indicator), so
+   * consumers should treat it as fire-and-forget and decay to 0 themselves if
+   * nothing arrives for a while (capture stopped/errored).
+   */
+  onAudioLevel: (callback: (payload: { channel: 'mic' | 'system'; level: number }) => void) => () => void
   onSuggestionGenerated: (callback: (data: { question: string; suggestion: string; confidence: number }) => void) => () => void
   onSuggestionProcessingStart: (callback: () => void) => () => void
   onSuggestionError: (callback: (error: { error: string }) => void) => () => void
@@ -792,8 +799,8 @@ contextBridge.exposeInMainWorld("electronAPI", {
       ipcRenderer.removeListener("system-audio-permission-denied", subscription)
     }
   },
-  onSystemAudioRecovered: (callback: () => void) => {
-    const subscription = () => callback()
+  onSystemAudioRecovered: (callback: (channel: 'system' | 'mic') => void) => {
+    const subscription = (_e: Electron.IpcRendererEvent, channel?: 'system' | 'mic') => callback(channel ?? 'system')
     ipcRenderer.on("system-audio-recovered", subscription)
     return () => {
       ipcRenderer.removeListener("system-audio-recovered", subscription)
@@ -813,6 +820,13 @@ contextBridge.exposeInMainWorld("electronAPI", {
     ipcRenderer.on("audio-capture-failed", subscription)
     return () => {
       ipcRenderer.removeListener("audio-capture-failed", subscription)
+    }
+  },
+  onAudioLevel: (callback: (payload: { channel: 'mic' | 'system'; level: number }) => void) => {
+    const subscription = (_: any, payload: any) => callback(payload)
+    ipcRenderer.on("audio-level", subscription)
+    return () => {
+      ipcRenderer.removeListener("audio-level", subscription)
     }
   },
   onSuggestionGenerated: (callback: (data: { question: string; suggestion: string; confidence: number }) => void) => {
