@@ -645,6 +645,20 @@ export function initializeIpcHandlers(appState: AppState): void {
     return { success: true };
   });
 
+  // Same, but for EVERY window — the account-switch reload. hard-refresh only
+  // reloads the sender, which leaves the overlay/settings/model-selector
+  // renderers running with the previous account's React state and their own
+  // Firebase auth listeners; those can still push a stale token back into
+  // AuthManager after the switch has completed. Kept as a separate channel so
+  // the Launcher's manual refresh button (which uses hard-refresh) can't
+  // accidentally reload a live meeting overlay.
+  safeHandle("reload-all-windows", () => {
+    BrowserWindow.getAllWindows().forEach(win => {
+      if (!win.isDestroyed()) win.webContents.reloadIgnoringCache();
+    });
+    return { success: true };
+  });
+
   safeHandle("quit-and-install-update", async () => {
     try {
       console.log('[IPC] Quit and install update requested')
@@ -2767,11 +2781,13 @@ export function initializeIpcHandlers(appState: AppState): void {
           console.warn('[IPC] company:getContext: Supabase read failed, falling back to local cache:', supabaseErr);
         }
       }
-      // Fall back to local DB (source of truth for pre-migration/offline data)
-      const dbCtx = DatabaseManager.getInstance().getCompanyContext();
-      if (dbCtx) return dbCtx;
-      const { SettingsManager } = require('./services/SettingsManager');
-      return SettingsManager.getInstance().get('companyContext') ?? null;
+      // Fall back to local DB (source of truth for pre-migration/offline data).
+      // Deliberately NOT falling back to SettingsManager's 'companyContext':
+      // settings.json lives in userData root, so it is machine-global rather
+      // than per-uid. That fallback served whichever account saved last to
+      // every other account on the machine — a brand-new account would open
+      // Company Context and find the previous user's company already there.
+      return DatabaseManager.getInstance().getCompanyContext() ?? null;
     } catch (error: any) {
       return null;
     }
@@ -2862,9 +2878,11 @@ export function initializeIpcHandlers(appState: AppState): void {
       }
       (data.competitors ?? []).forEach((c: any, i: number) => db.upsertCompanyCompetitor(c, i));
 
-      // 5. Mirror to SettingsManager (unchanged)
-      const { SettingsManager } = require('./services/SettingsManager');
-      SettingsManager.getInstance().set('companyContext', data);
+      // 5. Mirror to SettingsManager — REMOVED. settings.json is machine-global
+      //    (userData root, not per-uid), so this wrote one account's company
+      //    profile where every other account on the machine could read it.
+      //    Both former readers (company:getContext fallback,
+      //    company:getCompleteness) now go through the per-uid SQLite tables.
 
       // 6. Synchronize the updated context into the KnowledgeOrchestrator.
       //    We re-read from DB so the orchestrator always sees the canonical persisted state
@@ -3030,9 +3048,12 @@ export function initializeIpcHandlers(appState: AppState): void {
 
   safeHandle('company:getCompleteness', async () => {
     try {
-      const { SettingsManager } = require('./services/SettingsManager');
-      const sm = SettingsManager.getInstance();
-      const ctx = sm.get('companyContext');
+      // Per-uid SQLite, not SettingsManager: settings.json is machine-global,
+      // so reading 'companyContext' here reported whichever account saved last
+      // to every account on the machine — a fresh account would open the
+      // Company Context tab and see someone else's completeness score.
+      // DatabaseManager.getCompanyContext() is scoped by user_id (migration v17).
+      const ctx: any = DatabaseManager.getInstance().getCompanyContext();
       if (!ctx) return 0;
       const checks = [
         !!(ctx.identity?.name && ctx.identity?.industry),
@@ -3778,6 +3799,47 @@ export function initializeIpcHandlers(appState: AppState): void {
   });
 
   safeHandle('tenant:get-current', async () => tenantContext.get());
+
+  // ==========================================
+  // Per-user main-process state reset on account switch
+  // ==========================================
+  // Fires from AuthManager.setSession/clearSession the instant the uid changes,
+  // BEFORE 'auth-changed'. Anything in the main process that is scoped to one
+  // user and outlives a renderer reload must be reset here — otherwise the
+  // reloaded UI is served the previous account's values.
+  try {
+    const { AuthManager } = require('./services/AuthManager');
+    AuthManager.getInstance().on('user-switched', (e: { previousUid: string | null; uid: string | null }) => {
+      console.log(`[ipc] user-switched: ${e.previousUid ?? 'anon'} -> ${e.uid ?? 'anon'} — resetting per-user main state`);
+
+      // 1. Tenant. useTenant seeds itself from tenant:get-current on mount, so
+      //    leaving the old value here makes the reloaded renderer start on the
+      //    PREVIOUS account's tenant until tenantsApi.listMine() resolves — and
+      //    tenantContext stamps every main-process PostHog event meanwhile.
+      currentTenantId = null;
+      tenantContext.set(null);
+      BrowserWindow.getAllWindows().forEach(win => {
+        if (!win.isDestroyed()) win.webContents.send('tenant:state-changed', null);
+      });
+
+      // 2. Supabase mirror. Its handle was just closed by switchUser(), so every
+      //    outbox persist/delete is now silently failing, and the in-memory queue
+      //    still holds the previous user's rows — which would be pushed under the
+      //    new user's token and rejected by RLS until MAX_RETRY drops them.
+      try {
+        const { SupabaseMirrorService } = require('./db/SupabaseMirrorService');
+        SupabaseMirrorService.getInstance().rebind(DatabaseManager.getInstance().getDb());
+      } catch (err) {
+        console.warn('[ipc] user-switched: mirror rebind failed:', err);
+      }
+
+      // 3. RAG + Knowledge hold the old handle too, and the vector worker holds
+      //    its own read-only connection to the old file path.
+      void appState.rebindUserScopedServices();
+    });
+  } catch (e) {
+    console.warn('[ipc] user-switched wiring failed:', e);
+  }
 
   safeHandle('auth:set-id-token', async (_, session: {
     idToken: string;

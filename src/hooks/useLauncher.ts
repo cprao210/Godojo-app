@@ -210,11 +210,21 @@ export function useLauncher({ onStartMeeting, ollamaPullStatus = 'idle', onPageC
     const [localProfile, setLocalProfile] = useState(() => loadUserProfile());
     useEffect(() => {
         const handler = (e: StorageEvent) => {
-            if (e.key === 'gd_user_profile') setLocalProfile(loadUserProfile());
+            if (e.key?.startsWith('gd_user_profile')) setLocalProfile(loadUserProfile());
         };
         window.addEventListener('storage', handler);
         return () => window.removeEventListener('storage', handler);
     }, []);
+
+    // Re-read when the signed-in account changes. The cache key is per-uid, but
+    // useState's initializer only runs on mount — and "Add another account"
+    // (sign out → SignIn → new user) never remounts the Launcher, so without
+    // this it keeps greeting the PREVIOUS account by name. Keyed on email
+    // because LauncherProps['authUser'] is a narrowed shape without uid;
+    // loadUserProfile() resolves the actual per-uid key itself.
+    useEffect(() => {
+        setLocalProfile(loadUserProfile());
+    }, [authUser?.email]);
 
     // Meeting ids already sent to the backend chunking endpoint (or seen as
     // already-processed on first load — see the effect below). Prevents

@@ -104,6 +104,32 @@ export class SupabaseMirrorService {
     }
 
     /**
+     * Re-point the outbox at a different user's SQLite file, after
+     * DatabaseManager.switchUser() has closed the old handle.
+     *
+     * The in-memory queue is dropped rather than migrated: _enqueue persists
+     * every item to the PREVIOUS user's supabase_mirror_outbox row synchronously,
+     * so nothing is lost — those rows replay from _loadOutboxFromDb the next time
+     * that account is active. Carrying them over instead would push account A's
+     * rows under account B's token, where RLS rejects them.
+     */
+    rebind(db: Database.Database | null): void {
+        this.db = db;
+        // A drain may be mid-flight on its network await; it re-checks
+        // outbox.length on the next loop turn and exits, and its trailing
+        // _deleteOutboxItem is owner-scoped (below) so it cannot touch a row in
+        // the newly-opened user's table.
+        this.outbox = [];
+        this.enabled = !!db;
+        this.lastError = null;
+        // this.counter is deliberately NOT reset: it must stay above the max id
+        // in every file seen this session, or a freshly enqueued id could
+        // collide with a row already in the new outbox table and be silently
+        // dropped by INSERT OR IGNORE.
+        if (db) this._loadOutboxFromDb();
+    }
+
+    /**
      * Confirms the current Firebase session is actually valid — not just
      * "we received a token object" — before writing a users row to Supabase.
      *
@@ -453,7 +479,7 @@ export class SupabaseMirrorService {
                 if (success) {
                     const idx = this.outbox.indexOf(item);
                     if (idx !== -1) this.outbox.splice(idx, 1);
-                    this._deleteOutboxItem(item.id);
+                    this._deleteOutboxItem(item.id, item.ownerUid);
                     this.lastSyncAt = Date.now();
                     this.lastError = null;
                 } else {
@@ -479,7 +505,7 @@ export class SupabaseMirrorService {
                         this.lastError = `Dropped ${item.op} on ${item.table} after ${MAX_RETRY} retries`;
                         const idx = this.outbox.indexOf(item);
                         if (idx !== -1) this.outbox.splice(idx, 1);
-                        this._deleteOutboxItem(item.id);
+                        this._deleteOutboxItem(item.id, item.ownerUid);
                     } else {
                         const delay = RETRY_BASE_MS * Math.pow(2, item.retries - 1);
                         await new Promise(r => setTimeout(r, delay));
@@ -656,10 +682,13 @@ export class SupabaseMirrorService {
         } catch (_) { }
     }
 
-    private _deleteOutboxItem(id: number): void {
+    private _deleteOutboxItem(id: number, ownerUid: string | null = null): void {
         if (!this.db) return;
         try {
-            this.db.prepare('DELETE FROM supabase_mirror_outbox WHERE id = ?').run(id);
+            // Scoped by owner_uid so a delete already in flight when the account
+            // switched can't remove a same-id row from the newly-active user's
+            // outbox — ids are per-file, so they overlap across accounts.
+            this.db.prepare('DELETE FROM supabase_mirror_outbox WHERE id = ? AND owner_uid IS ?').run(id, ownerUid);
         } catch (_) { }
     }
 

@@ -1279,6 +1279,37 @@ export class AppState {
     }
   }
 
+  /**
+   * Re-bind everything that captured a raw SQLite handle (or db path) at
+   * construction time to whatever DatabaseManager points at NOW.
+   *
+   * Called on every uid change (AuthManager 'user-switched'), for two reasons:
+   *  - account switch: RAGManager/VectorStore/KnowledgeDatabaseManager keep the
+   *    closed handle for the previous user's file, and the vector worker keeps
+   *    its OWN read-only connection to that path.
+   *  - cold start: AppState is constructed before any renderer exists, so
+   *    AuthManager.getUid() is still null and DatabaseManager has resolved to
+   *    natively-anon.db. Until this runs, RAG and knowledge index into the anon
+   *    file for the entire session even for a normally signed-in user.
+   *
+   * Re-running initializeRAGManager() also re-hydrates the orchestrator from
+   * the new user's company context, which is otherwise only ever hydrated by
+   * company:saveContext (boot hydration always sees uid=null).
+   */
+  public async rebindUserScopedServices(): Promise<void> {
+    try {
+      // Terminate the vector-search worker first: it holds an open read-only
+      // handle to the OLD db file, which on Windows keeps that file locked.
+      await this.ragManager?.destroy();
+    } catch (e) {
+      console.warn('[AppState] rebindUserScopedServices: RAGManager.destroy() failed (continuing):', e);
+    }
+    this.ragManager = null;
+    this.knowledgeOrchestrator = null;
+    this.initializeRAGManager();
+    console.log('[AppState] User-scoped services re-bound to', DatabaseManager.getInstance().getDbPath());
+  }
+
   // Pure computation — does NOT set _builtinOnlyMode.
   // Use this in contexts that should not affect the meeting-mode flag (e.g. audio test).
   private _isBuiltinOnly(inputDeviceId?: string, outputDeviceId?: string): boolean {

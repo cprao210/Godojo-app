@@ -41,6 +41,8 @@ export interface ElectronAPI {
   onEnsureExpanded: (callback: () => void) => () => void
   quitApp: () => Promise<void>
   hardRefresh: () => Promise<{ success: boolean }>
+  /** Force-reloads EVERY window (account switch), not just the caller's. */
+  reloadAllWindows: () => Promise<{ success: boolean }>
   toggleWindow: () => Promise<void>
   showWindow: (inactive?: boolean) => Promise<void>
   hideWindow: () => Promise<void>

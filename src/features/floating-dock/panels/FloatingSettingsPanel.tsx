@@ -218,8 +218,8 @@ export const FloatingSettingsPanel: React.FC<FloatingSettingsPanelProps> = ({
     showTranscript,
     onToggleTranscript,
     shortcuts,
-    currentModel,
-    onSelectModel,
+    // currentModel,
+    // onSelectModel,
     dockOpacity,
     onDockOpacityChange,
     isPerformanceMode = false,
@@ -284,7 +284,7 @@ export const FloatingSettingsPanel: React.FC<FloatingSettingsPanelProps> = ({
                 </SettingRow>
 
                 {/* Model Selector Row */}
-                <div className="px-5 py-4 flex justify-between items-center" style={{ borderBottom: '1px solid rgba(255,255,255,0.05)' }}>
+                {/* <div className="px-5 py-4 flex justify-between items-center" style={{ borderBottom: '1px solid rgba(255,255,255,0.05)' }}>
                     <div className="flex items-center gap-3.5 mb-3">
                         <span style={{ color: 'rgba(255,255,255,0.35)' }}>
                             <Cpu size={18} strokeWidth={1.8} />
@@ -296,7 +296,7 @@ export const FloatingSettingsPanel: React.FC<FloatingSettingsPanelProps> = ({
                     <div className="pl-[30px]">
                         <ModelSelector currentModel={currentModel} onSelectModel={onSelectModel} />
                     </div>
-                </div>
+                </div> */}
 
                 {/* ── Dock Opacity Slider ─────────────────────────────────── */}
                 <div className="px-5 py-4" style={{ borderBottom: '1px solid rgba(255,255,255,0.05)' }}>

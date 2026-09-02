@@ -17,6 +17,9 @@ import { posthogAnalytics } from "@/lib/analytics/posthog.service";
 export function useTenant(authUser: User | null, isLauncherWindow: boolean, isDefault: boolean): TenantState {
     const [tenantId, setTenantId] = useState<string | null>(null);
     const [tenant, setTenant] = useState<Tenant | null>(null);
+    // Last uid this hook actually resolved a tenant for — lets the effect below
+    // tell a real sign-out apart from "auth hasn't resolved yet" on first render.
+    const lastUidRef = useRef<string | null>(null);
 
     // Resolve the tenant (launcher/default window only).
     useEffect(() => {
@@ -28,7 +31,28 @@ export function useTenant(authUser: User | null, isLauncherWindow: boolean, isDe
         // null for the whole session, which is why meetings saved with an
         // empty tenant_id.
         if (!(isLauncherWindow || isDefault)) return;
-        if (!authUser) return;
+        if (!authUser) {
+            // Sign-OUT (not "auth hasn't resolved yet"): drop the previous
+            // account's tenant instead of leaving it resolved. "Add another
+            // account" is onSignOut() → SignIn → a new user in the SAME
+            // renderer with no reload, so a retained tenant would make isAdmin
+            // be evaluated as previousTenant.owner_id === newUser.uid until
+            // listMine() lands, and a meeting started in that window would be
+            // stamped with the previous account's tenant.
+            //
+            // Gated on having actually seen a uid: authUser is null on first
+            // render of every launch too, and clearing main's cached tenantId
+            // there would blank it out for the overlay on any plain renderer
+            // reload (the manual refresh button) until listMine() re-resolves.
+            if (lastUidRef.current) {
+                lastUidRef.current = null;
+                setTenant(null);
+                setTenantId(null);
+                window.electronAPI.setCurrentTenantId(null).catch(() => { });
+            }
+            return;
+        }
+        lastUidRef.current = authUser.uid;
 
         const getTenantId = async () => {
             const tenants = await tenantsApi.listMine();

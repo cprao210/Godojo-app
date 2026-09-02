@@ -5,6 +5,7 @@ import { isMac } from '@/../utils/platformUtils';
 import { loadUserProfile } from '@/features/settings';
 import { switchToAccount } from '@/lib/firebase';
 import { MenuItem, UserProfileButtonProps } from '@/types';
+import { createPortal } from 'react-dom';
 
 const UserProfileButton: React.FC<UserProfileButtonProps> = ({
     displayName,
@@ -17,6 +18,7 @@ const UserProfileButton: React.FC<UserProfileButtonProps> = ({
     const [accounts, setAccounts] = useState<Array<{ uid: string; email?: string; displayName?: string; photoURL?: string; isActive: boolean }>>([]);
     const isLight = useResolvedTheme() === 'light';
     const [switchingUid, setSwitchingUid] = useState<string | null>(null);
+    const [switchError, setSwitchError] = useState<string | null>(null);
 
     // Close on outside click
     useEffect(() => {
@@ -43,28 +45,78 @@ const UserProfileButton: React.FC<UserProfileButtonProps> = ({
 
     const handleSwitch = async (uid: string) => {
         if (switchingUid) return;
+
+        // Never swap the DB out from under a live meeting — DatabaseManager
+        // .switchUser() closes the handle mid-write.
+        try {
+            if (await window.electronAPI?.getMeetingActive?.()) {
+                setSwitchError('Finish the current meeting before switching accounts.');
+                return;
+            }
+        } catch { /* can't tell — fall through rather than block the switch */ }
+
+        setSwitchError(null);
         setSwitchingUid(uid);
-        const ok = await switchToAccount(uid);
         setIsOpen(false);
-        if (!ok) setSwitchingUid(null);
-        window.electronAPI?.hardRefresh?.();
-        // On success: onAuthStateChanged updates the gate. Do NOT hardRefresh.
+
+        // The cover below is painted BEFORE this await on purpose.
+        // signInWithCustomToken inside switchToAccount flips Firebase's
+        // currentUser, which fires onAuthStateChanged and re-renders this whole
+        // tree with the NEW identity while tenant / meetings / react-query /
+        // the cached local profile are all still the OLD account's. That
+        // half-switched frame is the flicker; the cover makes it invisible.
+        const ok = await switchToAccount(uid);
+
+        if (!ok) {
+            // Previously this fell through to hardRefresh() as well, so a failed
+            // switch was indistinguishable from a successful one.
+            setSwitchingUid(null);
+            setSwitchError('Could not switch account. Please try again.');
+            return;
+        }
+
+        // Only now: switchToAccount has awaited the main-process handshake, so
+        // credentials, the SQLite file and identityStore.lastUid are already
+        // committed to the new uid and the reload restores it deterministically.
+        // Every window, not just this one: the overlay/settings/model-selector
+        // renderers each run their own Firebase auth listener and React tree,
+        // and a surviving one can push a stale token back into AuthManager
+        // after the switch. Safe to reload them all because we refused above
+        // if a meeting was active. Falls back to the single-window reload on an
+        // older preload that doesn't expose the new channel yet.
+        if (window.electronAPI?.reloadAllWindows) {
+            window.electronAPI.reloadAllWindows();
+        } else {
+            window.electronAPI?.hardRefresh?.();
+        }
     };
 
     const otherAccounts = accounts.filter((a) => !a.isActive);
 
     const [localProfile, setLocalProfile] = useState(() => loadUserProfile());
 
-    // Re-read when another tab saves the profile
+    // Re-read when another tab saves the profile. Prefix match, not equality:
+    // the cache key is now per-uid (gd_user_profile_<uid>), so an === check
+    // against the bare key never fires and the avatar/name silently stop
+    // updating when the user saves Settings > Profile.
     useEffect(() => {
         const handler = (e: StorageEvent) => {
-            if (e.key === 'gd_user_profile') {
+            if (e.key?.startsWith('gd_user_profile')) {
                 setLocalProfile(loadUserProfile());
             }
         };
         window.addEventListener('storage', handler);
         return () => window.removeEventListener('storage', handler);
     }, []);
+
+    // Re-read when the signed-in account changes. loadUserProfile() resolves a
+    // per-uid key, but useState's initializer runs once per mount — and the
+    // "Add another account" flow (onSignOut → SignIn → new user) never
+    // remounts this component, so without this the header keeps rendering the
+    // PREVIOUS account's name, photo, role and organization.
+    useEffect(() => {
+        setLocalProfile(loadUserProfile());
+    }, [email]);
 
     // Merge: local profile name/photo takes priority over Firebase auth data
     const effectiveName = localProfile.displayName || displayName || email?.split('@')[0] || 'Account';
@@ -92,6 +144,35 @@ const UserProfileButton: React.FC<UserProfileButtonProps> = ({
 
     return (
         <div ref={containerRef} className="relative flex items-center">
+
+            {(switchingUid || switchError) && createPortal(
+                <div
+                    style={{ position: 'fixed', inset: 0, zIndex: 100000 }}
+                    className={`flex flex-col items-center justify-center gap-3 ${isLight ? 'bg-white' : 'bg-[#000000]'}`}
+                    role="status"
+                    aria-live="polite"
+                    aria-busy={!!switchingUid}
+                >
+                    {switchingUid ? (
+                        <>
+                            <div className={`h-5 w-5 animate-spin rounded-full border-2 border-t-transparent ${isLight ? 'border-gray-400' : 'border-gray-600'}`} />
+                            <span className="text-xs text-text-secondary">Switching account…</span>
+                        </>
+                    ) : (
+                        <>
+                            <span className="text-xs text-text-primary">{switchError}</span>
+                            <button
+                                type="button"
+                                onClick={() => setSwitchError(null)}
+                                className="rounded-md border border-border-muted px-3 py-1 text-xs text-text-secondary hover:text-text-primary"
+                            >
+                                Close
+                            </button>
+                        </>
+                    )}
+                </div>,
+                document.body
+            )}
 
             <button
                 onClick={() => setIsOpen((v) => !v)}

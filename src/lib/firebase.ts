@@ -539,20 +539,40 @@ export async function guardSession(): Promise<{ valid: boolean; message?: string
 
 export async function switchToAccount(uid: string): Promise<boolean> {
     try {
-        // Backend authorizes with the CURRENT signed-in session and returns a
-        // Firebase custom token for the target uid (Admin SDK createCustomToken).
         const { custom_token } = await apiFetch<{ custom_token: string }>('/auth/switch-token', {
             method: 'POST',
             body: JSON.stringify({ uid }),
         });
         if (!custom_token) return false;
-
         const auth = getFirebaseAuth();
-        // Flips auth.currentUser to account B and fires onAuthStateChanged →
-        // App.tsx gate updates seamlessly. installIdTokenBridge then forwards
-        // the fresh token to main automatically (which runs switchUser on
-        // CredentialsManager + DatabaseManager). No password. No reload.
-        await signInWithCustomToken(auth, custom_token);
+        const cred = await signInWithCustomToken(auth, custom_token);
+
+        // Do NOT rely on installIdTokenBridge's onIdTokenChanged to forward this.
+        // That callback is fire-and-forget, so signInWithCustomToken resolving
+        // says nothing about whether main has switched credentials + DB yet. If
+        // the caller reloads before it lands, setFirebaseIdentity() never runs,
+        // identityStore.lastUid stays on the PREVIOUS account, and the reloaded
+        // window silently restores that account instead of this one.
+        // Push it ourselves and await the reply: AuthManager.setSession() —
+        // including CredentialsManager.switchUser + DatabaseManager.switchUser
+        // (better-sqlite3, synchronous) — completes before the IPC returns, so
+        // this is a real handshake, not a hope. Idempotent: when the bridge's
+        // own callback fires it carries the same uid, so setSession takes the
+        // no-op "refreshed" path.
+        const result = await cred.user.getIdTokenResult(false);
+        const res = await window.electronAPI?.authSetIdToken?.({
+            idToken: result.token,
+            refreshToken: cred.user.refreshToken,
+            uid: cred.user.uid,
+            email: cred.user.email,
+            displayName: cred.user.displayName,
+            photoURL: cred.user.photoURL,
+            expiresAt: new Date(result.expirationTime).getTime(),
+        });
+        if (res && res.success === false) {
+            console.error('[firebase] switchToAccount: main rejected the session:', res.error);
+            return false;
+        }
         return true;
     } catch (e) {
         console.warn('[firebase] switchToAccount failed:', e);

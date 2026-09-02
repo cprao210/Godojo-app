@@ -61,6 +61,7 @@ export class AuthManager extends EventEmitter {
     setSession(session: FirebaseSession): void {
         const isFirstSignIn = !this.session || this.session.uid !== session.uid;
         const uidChanged = this.session?.uid !== session.uid;
+        const previousUid = this.session?.uid ?? null;
         this.session = session;
 
         // Point the local DB at THIS user's file before anyone reacts to the
@@ -72,6 +73,17 @@ export class AuthManager extends EventEmitter {
             } catch (e) {
                 console.error('[AuthManager] Failed to switch DB to user file:', e);
             }
+
+            // switchUser() closed the old SQLite handle and opened a new one,
+            // but every long-lived holder of the OLD handle (mirror outbox, RAG
+            // VectorStore + its worker's own connection, knowledge DB) and every
+            // per-user main-process cache (tenant id) still points at the
+            // previous account. A renderer reload does NOT reset any of that —
+            // these are main-process singletons. Listeners re-bind here,
+            // synchronously, before 'auth-changed' below lets anything act on
+            // the new identity. Also fires on first sign-in (previousUid null),
+            // which is where the anon-DB bindings taken at boot get corrected.
+            this.emit('user-switched', { previousUid, uid: session.uid });
         }
 
         // Persist refresh token + identity for next-launch restore.
@@ -106,6 +118,7 @@ export class AuthManager extends EventEmitter {
     /** Called when the renderer signs the user out. */
     clearSession(): void {
         if (!this.session) return;
+        const previousUid = this.session.uid;
         this.session = null;
         try {
             CredentialsManager.getInstance().switchUser(null);
@@ -113,6 +126,7 @@ export class AuthManager extends EventEmitter {
         } catch (e) {
             console.warn('[AuthManager] Failed to clear Firebase identity:', e);
         }
+        this.emit('user-switched', { previousUid, uid: null });
         console.log('[AuthManager] Session cleared');
         this.emit('auth-changed', this.snapshot());
         this.emit('signed-out');
