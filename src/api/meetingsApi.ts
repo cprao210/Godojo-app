@@ -6,14 +6,20 @@ import { AiInteractionsResponse, ChunkMeetingResponse, EndMeetingResponse, Meeti
 import { MeetingType, PauseMeetingResponse, ResumeMeetingResponse, StartMeetingRequest, StartMeetingResponse } from "@/types";
 import { SubmitTranscriptResponse, TranscriptSegmentInput } from "@/types";
 import { apiFetch } from "@/lib/apiClient";
-import { mapMeetingDetail, mapMeetingRow } from "@/api/meetingMapping";
+import {
+  byNewestFirst,
+  mapMeetingDetail,
+  mapMeetingRow,
+  mergeMeetingCopies,
+  shouldMergeLocalMeeting,
+} from "@/api/meetingMapping";
 
 export const meetingsApi = {
   list: async (): Promise<Meeting[]> => {
     const rows = await apiFetch<any[]>("/meetings");
     // Dedupe by id (defensive — preserves the renderer's previous IPC-side dedup).
     const seen = new Set<string>();
-    const backendMeetings = (rows ?? []).map(mapMeetingRow).filter((m) => {
+    let backendMeetings = (rows ?? []).map(mapMeetingRow).filter((m) => {
       if (seen.has(m.id)) return false;
       seen.add(m.id);
       return true;
@@ -22,17 +28,40 @@ export const meetingsApi = {
     // Local-first safety net: the Supabase mirror can lag behind — or, for a
     // meeting that's still processing, simply not have synced yet — the local
     // SQLite row MeetingPersistence writes synchronously the instant a call
-    // ends. Merge in any locally-known "Processing..." meeting the backend
-    // hasn't surfaced yet, on EVERY fetch (not just a one-shot event), so the
-    // card shows up immediately regardless of mirror lag or whether this
-    // window even existed at the moment the call actually ended.
+    // ends. Merge in any locally-known meeting the backend hasn't surfaced yet,
+    // on EVERY fetch (not just a one-shot event), so the card shows up
+    // immediately regardless of mirror lag or whether this window even existed
+    // at the moment the call actually ended.
     try {
-      const localRows = await window.electronAPI?.getRecentMeetings?.();
-      const localProcessing = (localRows ?? []).filter(
-        (m) => (m.isProcessed === false || m.title === 'Processing...') && !seen.has(m.id)
-      );
-      if (localProcessing.length > 0) {
-        return [...(localProcessing as Meeting[]), ...backendMeetings];
+      // getRecentMeetingsLocal, NOT getRecentMeetings: the latter prefers the
+      // Supabase mirror whenever a cloud session exists, so it would lag exactly
+      // like the HTTP list above and merge nothing new.
+      const localRows = (await window.electronAPI?.getRecentMeetingsLocal?.()) as
+        | Meeting[]
+        | undefined;
+      const localById = new Map((localRows ?? []).map((m) => [m.id, m]));
+
+      // Stale-read repair, not just gap-filling: the mirror can still be serving
+      // the placeholder for a meeting SQLite has already finished processing.
+      // Taking the backend row verbatim there is what made a card show its real
+      // title, revert to "Processing", then show the title again.
+      if (localById.size > 0) {
+        backendMeetings = backendMeetings.map((m) => {
+          const local = localById.get(m.id);
+          return local ? mergeMeetingCopies(m, local) : m;
+        });
+      }
+
+      const localOnly = (localRows ?? []).filter((m) => {
+        if (seen.has(m.id)) return false;
+        // Still processing, or recently finished and not mirrored yet — see
+        // shouldMergeLocalMeeting for why this is bounded rather than blanket.
+        return shouldMergeLocalMeeting(m);
+      });
+      if (localOnly.length > 0) {
+        // Sort the union rather than always prepending: a merged row is usually
+        // the newest, but not once the window covers more than one meeting.
+        return [...localOnly, ...backendMeetings].sort(byNewestFirst);
       }
     } catch {
       // electron API unavailable (e.g. a web build) — backend list is fine as-is.

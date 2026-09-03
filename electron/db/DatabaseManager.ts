@@ -1578,12 +1578,13 @@ export class DatabaseManager {
         // re-mirrors the row. Pinning timing to the first-written values makes
         // duration_ms write-once, mirroring how owner_uid is already preserved.
         const existing = this.db.prepare(
-            'SELECT owner_uid, start_time, end_time, total_paused_ms FROM meetings WHERE id = ?'
+            'SELECT owner_uid, start_time, end_time, total_paused_ms, created_at FROM meetings WHERE id = ?'
         ).get(meeting.id) as {
             owner_uid: string | null;
             start_time: number | null;
             end_time: number | null;
             total_paused_ms: number | null;
+            created_at: string | null;
         } | undefined;
 
         const ownerUid = existing?.owner_uid ?? SupabaseClientManager.getCurrentUserId();
@@ -1594,6 +1595,12 @@ export class DatabaseManager {
         const endTimeFinal = existing?.end_time ?? endTimeMs;
         const totalPausedFinal = existing?.total_paused_ms ?? totalPausedMs;
         const durationMs = Math.max(0, (endTimeFinal - startTimeFinal) - totalPausedFinal);
+        // created_at is write-once for the same reason: the list sorts and labels
+        // rows by it, and every re-save passes `new Date().toISOString()`. Without
+        // this, a meeting's timestamp jumped from "when the call ended" to "when
+        // background processing finished" — visibly re-labelling the row (and
+        // re-sorting the list under the user) the instant it stopped processing.
+        const createdAtFinal = existing?.created_at ?? meeting.date;
 
         const insertMeeting = this.db.prepare(`
             INSERT OR REPLACE INTO meetings (id, title, start_time, end_time, total_paused_ms, duration_ms, summary_json, created_at, calendar_event_id, tenant_id, source, is_processed, owner_uid, calendar_event_metadata)
@@ -1642,7 +1649,7 @@ export class DatabaseManager {
                 totalPausedFinal,    // ← was totalPausedMs
                 durationMs,
                 summaryJson,
-                meeting.date, // Using the ISO string as created_at for sorting simply
+                createdAtFinal, // ISO string, write-once (see above) — used as the list's sort key
                 meeting.calendarEventId || null,
                 meeting.tenantId || null,
                 meeting.source || 'manual',
@@ -1749,7 +1756,7 @@ export class DatabaseManager {
                     total_paused_ms: totalPausedFinal, // ← was totalPausedMs
                     duration_ms: durationMs,
                     summary_json: summaryObj,
-                    created_at: meeting.date,
+                    created_at: createdAtFinal, // keep cloud in step with the pinned local value
                     calendar_event_id: meeting.calendarEventId || null,
                     tenant_id: meeting.tenantId || null,
                     source: meeting.source || 'manual',

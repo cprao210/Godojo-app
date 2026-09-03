@@ -17,6 +17,7 @@
 import { useEffect, useMemo, useState } from 'react';
 import { useQuery, useMutation, useQueryClient } from 'react-query';
 import { meetingsApi, chatApi } from '@/api';
+import { isMeetingProcessing } from '@/api/meetingMapping';
 import { guardSession } from '@/lib/firebase';
 import type { Meeting, MeetingTranscriptLine, MeetingScorecardResult, LiveAnalysisData } from '@/types';
 import { normalizeBant, normalizeMeddicc, confirmedOnly, BANT_ORDER, MEDDICC_ORDER } from '@/lib/bantMeddic';
@@ -123,7 +124,7 @@ export function useMeetingDetails(initialMeeting: Meeting) {
 
     // Same problem as `isLiveMeetingPlaceholder` above, for the other kind of
     // client-only id: useLauncher.ts prepends a `Meeting` with id
-    // `optimistic-${Date.now()}` (post-call processing skeleton) or
+    // `optimistic-live-call` (post-call processing skeleton) or
     // `optimistic-upload-${Date.now()}` (transcript upload) the instant the
     // placeholder is created, well before the backend has a row for it.
     const isOptimisticMeetingId = (id?: string) => !!id && id.startsWith('optimistic-');
@@ -132,7 +133,7 @@ export function useMeetingDetails(initialMeeting: Meeting) {
     // over HTTP (the row may not be in the backend yet); the onMeetingsUpdated effect
     // below pulls it once main signals it's ready.
     const [isProcessing, setIsProcessing] = useState<boolean>(
-        initialMeeting.title === 'Processing...' || initialMeeting.isProcessed === false
+        isMeetingProcessing(initialMeeting)
     );
 
     // Full detail (transcript + usage) loads over HTTP; the list row seeds initialData so
@@ -389,7 +390,7 @@ export function useMeetingDetails(initialMeeting: Meeting) {
         const unblockFromLocal = async () => {
             try {
                 const details = await window.electronAPI?.getMeetingDetails?.(initialMeeting.id);
-                if (details && details.isProcessed !== false && details.title !== 'Processing...') {
+                if (details && !isMeetingProcessing(details)) {
                     queryClient.setQueryData<Meeting>(meetingKey, (prev) => ({ ...(prev ?? initialMeeting), ...details }));
                     setIsProcessing(false);
                     void queryClient.invalidateQueries(scorecardKey);

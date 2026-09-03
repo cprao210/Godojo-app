@@ -411,23 +411,20 @@ export class MeetingPersistence {
         this.session.reset();
 
         const meetingId = crypto.randomUUID();
-        this.processAndSaveMeeting(
-            snapshot,
-            meetingId,
-            metadataSnapshot,
-            liveAnalysisData,
-            speakerNamesSnapshot,
-            undefined,      // companyIntel — not captured at stop time for live calls
-            meetingTypes,    // ← rep's live selection, was previously dropped (always undefined)
-            tenantId || null
-        ).catch(err => {
-            console.error('[MeetingPersistence] Background processing failed:', err);
-        });
 
-        // 4. Initial Save (Placeholder)
+        // 3. Initial Save (Placeholder) — MUST come before processAndSaveMeeting.
+        // That call isn't awaited, but an async function still runs synchronously
+        // up to its first `await` (transcript labelling, prompt building, ...),
+        // which blocks main's event loop. Invoking it first therefore delayed the
+        // placeholder INSERT, the meetings-updated broadcast, and every IPC queued
+        // behind them (live-call-ended, set-window-mode) by however long that
+        // prefix took — proportional to transcript length, which is exactly why
+        // the Recent Meetings card "sometimes" appeared late. Same order the
+        // upload path (uploadTranscript) already uses.
+        //
         // Same displayName stamping as the final save in processAndSaveMeeting
         // — without it, this placeholder briefly persists with generic
-        // "Other Party" labels until the background save above replaces it.
+        // "Other Party" labels until the background save replaces it.
         const placeholderTranscript = snapshot.transcript.map(segment => ({
             ...segment,
             displayName: segment.displayName
@@ -438,11 +435,15 @@ export class MeetingPersistence {
 
         const placeholder: Meeting = {
             id: meetingId,
-            title: "Processing...",
+            // A calendar-sourced call already knows its real title — use it so the
+            // card reads as "<event title> · preparing summary" instead of the
+            // generic placeholder. The renderer keys "is processing" off
+            // isProcessed, not off this string (see isMeetingProcessing).
+            title: metadataSnapshot?.title || "Processing...",
             date: new Date().toISOString(),
             duration: formatDuration(durationMs),
             durationMs: durationMs,
-            summary: "Generating summary...",
+            summary: "",
             detailedSummary: { actionItems: [], keyPoints: [] },
             // Real transcript, not empty — it's already captured in `snapshot`
             // above and there's no reason to make the Transcript tab wait on
@@ -464,6 +465,20 @@ export class MeetingPersistence {
         } catch (e) {
             console.error("Failed to save placeholder", e);
         }
+
+        // 4. Background processing (title/summary/scorecard + final save).
+        this.processAndSaveMeeting(
+            snapshot,
+            meetingId,
+            metadataSnapshot,
+            liveAnalysisData,
+            speakerNamesSnapshot,
+            undefined,      // companyIntel — not captured at stop time for live calls
+            meetingTypes,    // ← rep's live selection, was previously dropped (always undefined)
+            tenantId || null
+        ).catch(err => {
+            console.error('[MeetingPersistence] Background processing failed:', err);
+        });
 
         return meetingId;
     }
@@ -529,7 +544,34 @@ export class MeetingPersistence {
             })
             .join('\n');
 
-        console.log("data.transcript: -> ", data.transcript);
+        // NOTE: do NOT log the transcript here. This whole prologue runs
+        // synchronously on main's event loop (the caller doesn't await), so
+        // serialising every segment to the console blocked IPC — including the
+        // launcher's meetings refresh and the window switch — for as long as it
+        // took, scaling with call length. It also wrote raw meeting content into
+        // the app logs. Log a size instead if you need a breadcrumb.
+        console.log(`[MeetingPersistence] Processing ${data.transcript.length} transcript segments for ${meetingId}`);
+
+        // Scorecard generation needs the transcript and the rep's meeting-type
+        // hints — never the title or the summary. Running it *after* them meant
+        // the final save, the "Summary Ready" toast, and the card leaving its
+        // processing state all waited on a second full LLM round-trip that could
+        // have been in flight the whole time. Start it here and collect it below;
+        // that's the bulk of the gap the user saw between the summary actually
+        // being ready and being told about it.
+        //
+        // generateAndPersistScorecard never rejects (every failure path returns
+        // an outcome object) — the .catch is belt-and-braces so a future throw
+        // before its first await can't surface as an unhandled rejection while
+        // we're off awaiting the summary.
+        const scorecardOutcome: Promise<{ scorecardResult: MeetingScorecardResult | null; persisted: boolean }> =
+            data.transcript.length > 2
+                ? this.generateAndPersistScorecard(meetingId, fullTranscriptText, hintMeetingTypes ?? null)
+                    .catch((err): { scorecardResult: MeetingScorecardResult | null; persisted: boolean } => {
+                        console.warn('[MeetingPersistence] Scorecard generation threw (non-fatal):', err);
+                        return { scorecardResult: null, persisted: false };
+                    })
+                : Promise.resolve({ scorecardResult: null, persisted: false });
 
         try {
             // Generate Title (only if not set by calendar)
@@ -714,21 +756,16 @@ export class MeetingPersistence {
                 detailedSummary = { ...summaryData, liveAnalysis: liveAnalysisData };
             }
 
-            // ── Generate Meeting Scorecard ─────────────────────────────────────────────────
-            let scorecardResult: MeetingScorecardResult | null = null;
+            // ── Collect Meeting Scorecard ──────────────────────────────────────────────────
+            // Started back before the title/summary LLM calls (see scorecardOutcome
+            // above) so its latency overlaps theirs instead of stacking on top. By
+            // the time we get here it has almost always already resolved; when the
+            // transcript was too short to score, it resolves to the null outcome.
+            const { scorecardResult, persisted: scorecardPersisted } = await scorecardOutcome;
 
-            if (data.transcript.length > 2) {
-
-                const outcome = await this.generateAndPersistScorecard(
-                    meetingId,
-                    fullTranscriptText,
-                    hintMeetingTypes ?? null
-                );
-                scorecardResult = outcome.scorecardResult;
-                if (scorecardResult && !outcome.persisted) {
-                    // DB write failed — fall back to embedding it in summary_json so the UI still gets data
-                    detailedSummary = { ...detailedSummary, scorecard: scorecardResult } as any;
-                }
+            if (scorecardResult && !scorecardPersisted) {
+                // DB write failed — fall back to embedding it in summary_json so the UI still gets data
+                detailedSummary = { ...detailedSummary, scorecard: scorecardResult } as any;
             }
 
             // Use the speaker names snapshot captured BEFORE session.reset() was called.
@@ -764,6 +801,9 @@ export class MeetingPersistence {
             const meetingData: Meeting = {
                 id: meetingId,
                 title: title,
+                // Only used when no row exists yet (recovery re-processing): for the
+                // normal flow saveMeeting() keeps the placeholder's created_at, so
+                // the card doesn't re-timestamp itself to "processing finished".
                 date: new Date().toISOString(),
                 duration: formatDuration(data.durationMs),
                 durationMs: data.durationMs,
@@ -782,15 +822,12 @@ export class MeetingPersistence {
 
             // Metadata was already snapshotted before session.reset() — nothing to clear here.
 
-            // Toast the user that their summary is ready — same native,
-            // display-aware toast used for pause/resume, so it's visible
-            // regardless of which screen (or app) the user is currently on.
-            // Fires here specifically because this is the point the summary,
-            // scorecard, and title have all actually finished generating AND
-            // been persisted — not just "processing kicked off".
-            AppState.getInstance()?.notifyMeetingSummaryReady?.(title);
-
-            // Notify Frontend to refresh list
+            // Notify Frontend to refresh list FIRST, then toast. The toast builds a
+            // real BrowserWindow with inline HTML on the active display, and that
+            // construction runs on main's event loop — doing it before these sends
+            // delayed the card leaving its processing state by exactly as long as
+            // the window took to come up. The user sees both either way; this way
+            // the list is already correct when the toast lands on top of it.
             const wins = require('electron').BrowserWindow.getAllWindows();
             wins.forEach((w: any) => w.webContents.send('meetings-updated'));
             // Separate, analytics-specific signal from 'meetings-updated' above —
@@ -799,6 +836,14 @@ export class MeetingPersistence {
             // proxy for counting completed meetings. This one fires exactly once
             // per successfully saved meeting.
             wins.forEach((w: any) => w.webContents.send('meeting-completed'));
+
+            // Toast the user that their summary is ready — same native,
+            // display-aware toast used for pause/resume, so it's visible
+            // regardless of which screen (or app) the user is currently on.
+            // Fires here specifically because this is the point the summary,
+            // scorecard, and title have all actually finished generating AND
+            // been persisted — not just "processing kicked off".
+            AppState.getInstance()?.notifyMeetingSummaryReady?.(title);
 
         } catch (error) {
             console.error('[MeetingPersistence] Failed to save meeting:', error);
@@ -1081,11 +1126,13 @@ export class MeetingPersistence {
             // Save placeholder immediately so it appears in the list
             const placeholder: Meeting = {
                 id: meetingId,
-                title: 'Processing...',
+                // The user usually typed a title on the upload form — keep it; the
+                // row renders as processing off isProcessed, not off this string.
+                title: title || 'Processing...',
                 date: new Date().toISOString(),
                 duration: formatDuration(durationMs),
                 durationMs: durationMs,
-                summary: 'Generating summary...',
+                summary: '',
                 detailedSummary: { actionItems: [], keyPoints: [] },
                 // Same reasoning as the live-meeting placeholder — the full
                 // transcript is already parsed and sitting in memory at this

@@ -164,6 +164,8 @@ interface ElectronAPI {
   endMeeting: (meetingTypes?: ('discovery' | 'demo' | 'negotiation')[], tenantId?: string | null) => Promise<{ success: boolean; error?: string }>
   finalizeMicSTT: () => Promise<void>
   getRecentMeetings: () => Promise<Array<{ id: string; title: string; date: string; duration: string; summary: string; isProcessed?: boolean }>>
+  /** Local SQLite only (no Supabase preference) — see get-recent-meetings-local. */
+  getRecentMeetingsLocal: () => Promise<Array<{ id: string; title: string; date: string; duration: string; summary: string; isProcessed?: boolean }>>
   getMeetingDetails: (id: string) => Promise<any>
   updateMeetingTitle: (id: string, title: string) => Promise<boolean>
   updateLiveAnalysis: (data: LiveAnalysisData) => Promise<{ success: boolean }>;
@@ -901,6 +903,7 @@ contextBridge.exposeInMainWorld("electronAPI", {
   endMeeting: (meetingTypes?: ('discovery' | 'demo' | 'negotiation')[], tenantId?: string | null) => ipcRenderer.invoke("end-meeting", { meetingTypes, tenantId }),
   finalizeMicSTT: () => ipcRenderer.invoke("finalize-mic-stt"),
   getRecentMeetings: () => ipcRenderer.invoke("get-recent-meetings"),
+  getRecentMeetingsLocal: () => ipcRenderer.invoke("get-recent-meetings-local"),
   getMeetingDetails: (id: string) => ipcRenderer.invoke("get-meeting-details", id),
   updateMeetingTitle: (id: string, title: string) => ipcRenderer.invoke("update-meeting-title", { id, title }),
   updateMeetingSummary: (id: string, updates: any) => ipcRenderer.invoke("update-meeting-summary", { id, updates }),

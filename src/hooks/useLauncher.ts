@@ -11,6 +11,9 @@ import { useMutation, useQuery, useQueryClient } from 'react-query';
 import { useShortcuts, useResolvedTheme } from '@/hooks';
 import { loadUserProfile } from '@/features/settings';
 import { chatApi, meetingsApi } from '@/api';
+import { PROCESSING_TITLE, isMeetingProcessing, shouldMergeLocalMeeting } from '@/api/meetingMapping';
+import { OPTIMISTIC_LIVE_ID, byNewestFirst, isOptimisticId } from '@/api/meetingMapping';
+import { mergeMeetingCopies, reconcileFetchedMeetings } from '@/api/meetingMapping';
 import { ApiError } from '@/lib/apiClient';
 import { LauncherProps, Meeting, UpcomingMeeting } from '@/types';
 import { posthogAnalytics } from '@/lib/analytics/posthog.service';
@@ -84,18 +87,76 @@ const PROCESSING_POLL_INTERVAL_MS = 3000;
 // about to finish, so keeping the 3s poller alive forever isn't useful.
 const PROCESSING_POLL_TIMEOUT_MS = 5 * 60 * 1000;
 
+// Id of the renderer-only card shown between "user hit End" and "main has a row
+// for this call" now lives in meetingMapping.ts alongside the reconciliation
+// rules that consume it (OPTIMISTIC_LIVE_ID / isOptimisticId).
+
+/**
+ * Folds locally-known meetings into whatever the list currently shows.
+ *
+ * SQLite has the finished-call row within milliseconds of the user hitting End
+ * (MeetingPersistence.stopMeeting writes it synchronously), so reading it over
+ * IPC surfaces the processing card immediately instead of waiting on the
+ * GET /meetings round-trip. Additive by design: it never drops a row the
+ * backend supplied, and never downgrades a processed row back to a placeholder.
+ *
+ * Returns `current` by reference when nothing changed, so React Query can skip
+ * the re-render.
+ */
+export function mergeLocalMeetings(current: Meeting[], local: Meeting[]): Meeting[] {
+    if (local.length === 0) return current;
+
+    const byId = new Map(current.map(m => [m.id, m]));
+    let changed = false;
+
+    for (const row of local) {
+        const existing = byId.get(row.id);
+        if (!existing) {
+            if (!shouldMergeLocalMeeting(row)) continue;
+            byId.set(row.id, row);
+            changed = true;
+        } else {
+            // Processing → processed: take the local copy's title/duration/summary
+            // but keep any backend-only fields already on the row. Same one-way
+            // rule the HTTP list and every refetch use.
+            const merged = mergeMeetingCopies(existing, row);
+            if (merged !== existing) {
+                byId.set(row.id, merged);
+                changed = true;
+            }
+        }
+    }
+
+    // Retire the optimistic card once a real row for the same call is listed,
+    // otherwise the just-ended meeting shows up twice.
+    const hasRealProcessingRow = [...byId.values()].some(
+        m => !isOptimisticId(m.id) && isMeetingProcessing(m),
+    );
+    if (hasRealProcessingRow && byId.delete(OPTIMISTIC_LIVE_ID)) changed = true;
+
+    if (!changed) return current;
+
+    return [...byId.values()].sort(byNewestFirst);
+}
+
 export function useLauncher({ onStartMeeting, ollamaPullStatus = 'idle', onPageChange, authUser }: Pick<LauncherProps, 'onStartMeeting' | 'onPageChange' | 'authUser'> & { ollamaPullStatus?: LauncherProps['ollamaPullStatus'] }) {
 
     const queryClient = useQueryClient();
 
     // ─── Meetings list + delete mutation ────────────────────────────────────
-    const { data: meetings = [] } = useQuery<Meeting[]>(['meetings'], meetingsApi.list, {
+    // The fetch is reconciled against what's already on screen rather than
+    // replacing it outright: a refetch must not revert a processed row to
+    // "Processing" because the Supabase mirror is a few seconds behind local
+    // SQLite, and must not wipe the optimistic card for a call main hasn't
+    // committed yet. See reconcileFetchedMeetings for both rules.
+    const { data: meetings = [], isLoading, isFetching } = useQuery<Meeting[]>(['meetings'], async () => {
+        const fresh = await meetingsApi.list();
+        return reconcileFetchedMeetings(queryClient.getQueryData<Meeting[]>(['meetings']) ?? [], fresh);
+    }, {
         // Poll only while a meeting is still processing (replaces the manual setInterval).
         staleTime: 10_000,
         refetchInterval: (data) => {
-            const stillProcessing = (data ?? []).filter(
-                (m) => m.isProcessed === false || m.title === 'Processing...',
-            );
+            const stillProcessing = (data ?? []).filter(isMeetingProcessing);
             if (stillProcessing.length === 0) return false;
 
             const worthPolling = stillProcessing.some((m) => {
@@ -105,6 +166,57 @@ export function useLauncher({ onStartMeeting, ollamaPullStatus = 'idle', onPageC
             return worthPolling ? PROCESSING_POLL_INTERVAL_MS : false;
         },
     });
+
+    // Detect whether any meeting in the list is still being processed
+    const hasProcessingMeeting = meetings.some(isMeetingProcessing);
+
+    // Skeleton vs. inline refresh indicator. `isLoading` is React Query's
+    // "nothing cached yet" state, so the skeleton only ever replaces a blank
+    // list — coming back to Home with a warm cache renders the real rows
+    // immediately and shows the subtle header spinner instead of flashing
+    // placeholder bars over content that's already correct.
+    const isMeetingsLoading = isLoading && meetings.length === 0;
+    // Suppressed while something is processing: that's when the 3s poll above is
+    // running, and a chip blinking on every tick reads as jitter. The processing
+    // row is already telling the user work is in flight.
+    const isMeetingsRefreshing = isFetching && meetings.length > 0 && !hasProcessingMeeting;
+
+    // Local-first seed: pull the SQLite rows straight over IPC and fold them in.
+    // This is what makes the processing card appear the instant a call ends —
+    // main has already committed the placeholder row by the time this IPC is
+    // serviced, so the card no longer waits on GET /meetings (or on the Supabase
+    // mirror having caught up).
+    const seedMeetingsFromLocal = React.useCallback(async () => {
+        try {
+            // Local SQLite only — getRecentMeetings would prefer the Supabase
+            // mirror, which is precisely the copy that hasn't caught up yet.
+            const localRows = await window.electronAPI?.getRecentMeetingsLocal?.();
+            if (!localRows || localRows.length === 0) return;
+            queryClient.setQueryData<Meeting[]>(['meetings'], (prev = []) =>
+                mergeLocalMeetings(prev, localRows as Meeting[]),
+            );
+        } catch {
+            // No electron API (web build) or the read failed — the HTTP list still applies.
+        }
+    }, [queryClient]);
+
+    // Requirement: coming back to Home must show current meetings, not whatever
+    // was cached when the user left. WindowHelper only hides/shows the launcher
+    // window (it's never destroyed, so there's no mount to refetch on) and the
+    // query client runs with refetchOnWindowFocus disabled — so nothing was
+    // triggering a refresh here. Chromium flips document visibility when a
+    // BrowserWindow is hidden/shown, which is exactly the "returned to Home"
+    // signal. `{ stale: true }` keeps it honest: no request unless the data is
+    // actually older than staleTime, so toggling windows can't spam the backend.
+    useEffect(() => {
+        const onVisibilityChange = () => {
+            if (document.visibilityState !== 'visible') return;
+            void seedMeetingsFromLocal();
+            void queryClient.refetchQueries(['meetings'], { stale: true });
+        };
+        document.addEventListener('visibilitychange', onVisibilityChange);
+        return () => document.removeEventListener('visibilitychange', onVisibilityChange);
+    }, [queryClient, seedMeetingsFromLocal]);
 
     // ─── Global retry: link orphaned live-chat interactions ────────────────
     // useMeetingDetails.ts links a meeting's pending "Ask Dojo" interaction
@@ -272,11 +384,6 @@ export function useLauncher({ onStartMeeting, ollamaPullStatus = 'idle', onPageC
     // (The incoming branch's dedup-by-id now lives in meetingsApi.list.)
     const fetchMeetings = () => { void queryClient.invalidateQueries(['meetings']); };
 
-    // Detect whether any meeting in the list is still being processed
-    const hasProcessingMeeting = meetings.some(
-        m => m.isProcessed === false || m.title === 'Processing...'
-    );
-
     const fetchEvents = () => {
         if (window.electronAPI && window.electronAPI.getUpcomingEvents) {
             window.electronAPI.getUpcomingEvents()
@@ -379,31 +486,36 @@ export function useLauncher({ onStartMeeting, ollamaPullStatus = 'idle', onPageC
             removeMeetingStateListener = window.electronAPI.onMeetingStateChanged(({ isActive }) => {
                 setIsMeetingActive(isActive);
 
-                // When a meeting ends, optimistically prepend a Processing placeholder
-                // to the meetings list immediately — before fetchMeetings() round-trips
-                // to the backend. This makes the card appear with zero perceived delay.
-                // The real entry (with actual id/title) arrives via onMeetingsUpdated
-                // and replaces this placeholder naturally since setMeetings overwrites
-                // the whole list.
+                // When a meeting ends, optimistically prepend a Processing card
+                // immediately — this event is broadcast before main even starts
+                // finalizing, so it's the earliest possible moment the list can
+                // react. mergeLocalMeetings retires this card as soon as the real
+                // SQLite row shows up (see seedMeetingsFromLocal below), and
+                // onLiveCallEnded patches its id in the meantime.
                 if (!isActive) {
                     queryClient.setQueryData<Meeting[]>(['meetings'], (prev = []) => {
-                        // Don't double-insert if one is already there from a previous
-                        // rapid end cycle
-                        const alreadyHasPlaceholder = prev.some(
-                            m => m.title === 'Processing...' && m.isProcessed === false
-                        );
-                        if (alreadyHasPlaceholder) return prev;
+                        // Idempotent on the fixed id: a rapid end→end cycle can't
+                        // stack two cards, but — unlike the old title-based guard —
+                        // an unrelated meeting that's stuck processing no longer
+                        // suppresses the card for the call that just ended.
+                        if (prev.some(m => m.id === OPTIMISTIC_LIVE_ID)) return prev;
 
                         const optimisticPlaceholder: Meeting = {
-                            id: `optimistic-${Date.now()}`,
-                            title: 'Processing...',
+                            id: OPTIMISTIC_LIVE_ID,
+                            title: PROCESSING_TITLE,
                             date: new Date().toISOString(),
                             duration: '—',
-                            summary: 'Generating summary...',
+                            summary: '',
                             isProcessed: false,
                         };
                         return [optimisticPlaceholder, ...prev];
                     });
+                    // Also read the local DB right away: if main already committed
+                    // the row for this call (or for an earlier one the backend
+                    // hasn't mirrored yet), the card shows the real title/duration
+                    // instead of the generic placeholder. The `meetings-updated`
+                    // broadcast that follows finalization seeds again.
+                    void seedMeetingsFromLocal();
                 }
             });
         }
@@ -417,8 +529,17 @@ export function useLauncher({ onStartMeeting, ollamaPullStatus = 'idle', onPageC
                 if (!meetingId) return;
                 let placeholderId: string | null = null;
                 queryClient.setQueryData<Meeting[]>(['meetings'], (prev = []) => {
-                    const idx = prev.findIndex(m => m.title === 'Processing...' && m.isProcessed === false);
+                    // Prefer the fixed optimistic id; fall back to any optimistic
+                    // processing row (e.g. one inserted by an older code path).
+                    let idx = prev.findIndex(m => m.id === OPTIMISTIC_LIVE_ID);
+                    if (idx === -1) idx = prev.findIndex(m => isOptimisticId(m.id) && isMeetingProcessing(m));
                     if (idx === -1) return prev;
+                    // The real row may already be listed (the local seed can win
+                    // this race) — then just drop the optimistic duplicate.
+                    if (prev.some(m => m.id === meetingId)) {
+                        placeholderId = prev[idx].id;
+                        return prev.filter((_, i) => i !== idx);
+                    }
                     placeholderId = prev[idx].id;
                     const next = [...prev];
                     next[idx] = { ...next[idx], id: meetingId };
@@ -429,12 +550,17 @@ export function useLauncher({ onStartMeeting, ollamaPullStatus = 'idle', onPageC
                 if (placeholderId) {
                     setSelectedMeeting(prev => (prev && prev.id === placeholderId ? { ...prev, id: meetingId } : prev));
                 }
+                void seedMeetingsFromLocal();
             });
         }
 
         // Listen for background updates (e.g. after meeting processing finishes)
         const removeMeetingsListener = window.electronAPI.onMeetingsUpdated(() => {
             console.log('Received meetings-updated event');
+            // Local first (synchronous SQLite truth, no network), then the
+            // authoritative backend refetch — so the row updates immediately
+            // instead of one HTTP round-trip later.
+            void seedMeetingsFromLocal();
             fetchMeetings();
         });
 
@@ -549,16 +675,14 @@ export function useLauncher({ onStartMeeting, ollamaPullStatus = 'idle', onPageC
         // the card appear right away without needing to hit refresh.
         const optimisticId = `optimistic-upload-${Date.now()}`;
         queryClient.setQueryData<Meeting[]>(['meetings'], (prev = []) => {
-            const alreadyHasPlaceholder = prev.some(
-                m => m.title === 'Processing...' && m.isProcessed === false
-            );
-            if (alreadyHasPlaceholder) return prev;
             const placeholder: Meeting = {
                 id: optimisticId,
-                title: uploadTitle.trim() || 'Processing...',
+                // Keep the user's own title when they gave one — the row renders as
+                // processing off `isProcessed`, not off the title string.
+                title: uploadTitle.trim() || PROCESSING_TITLE,
                 date: new Date().toISOString(),
                 duration: '—',
-                summary: 'Analyzing transcript...',
+                summary: '',
                 isProcessed: false,
             };
             return [placeholder, ...prev];
@@ -582,7 +706,7 @@ export function useLauncher({ onStartMeeting, ollamaPullStatus = 'idle', onPageC
             //     setUploadError(result?.error || 'Upload failed');
             // }
             const result = await meetingsApi.uploadTranscript(
-                uploadTitle.trim() || 'Processing...',
+                uploadTitle.trim() || PROCESSING_TITLE,
                 uploadText.trim()
             );
             setIsUploadOpen(false);
@@ -696,6 +820,10 @@ export function useLauncher({ onStartMeeting, ollamaPullStatus = 'idle', onPageC
         deleteMutation,
         hasProcessingMeeting,
         fetchMeetings,
+        // true only before the first list ever resolves → skeleton;
+        // true on background refetches over existing rows → header indicator.
+        isMeetingsLoading,
+        isMeetingsRefreshing,
 
         // calendar / events
         upcomingEvents,

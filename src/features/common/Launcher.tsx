@@ -28,6 +28,7 @@ const Launcher: React.FC<LauncherProps> = ({ onStartMeeting, onOpenSettings, onC
 
     const launcherStates = useLauncher({ onStartMeeting, onPageChange, ollamaPullStatus, authUser });
     const { isLight, meetings, deleteMutation, upcomingEvents, isCalendarConnected, setIsCalendarConnected } = launcherStates;
+    const { isMeetingsLoading, isMeetingsRefreshing } = launcherStates;
     const { focusedMeeting, focusedMeetingId, setFocusedMeetingId, getMeetingStartText } = launcherStates;
     const { isDetectable, toggleDetectable, isRefreshing, handleRefresh, isMeetingActive, onStartMeetingClick } = launcherStates;
     const { showNotification, effectiveName, selectedMeeting, forwardMeeting, handleOpenMeeting, handleBack, handleForward } = launcherStates;
@@ -239,12 +240,14 @@ const Launcher: React.FC<LauncherProps> = ({ onStartMeeting, onOpenSettings, onC
                                             isMeetingsExpanded={isMeetingsExpanded}
                                             onToggleExpand={() => setIsMeetingsExpanded(prev => !prev)}
                                             onOpenUpload={() => setIsUploadOpen(true)}
+                                            isRefreshing={isMeetingsRefreshing}
                                         />
 
                                         {/* Rows — no outer card, dividers only between rows */}
                                         <MeetingsList
                                             meetings={meetings}
                                             isLight={isLight}
+                                            isLoading={isMeetingsLoading}
                                             activeMenuId={activeMenuId}
                                             onOpen={handleOpenMeeting}
                                             onToggleMenu={setActiveMenuId}

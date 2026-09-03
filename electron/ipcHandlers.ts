@@ -1966,6 +1966,17 @@ export function initializeIpcHandlers(appState: AppState): void {
     return DatabaseManager.getInstance().getRecentMeetings(50);
   });
 
+  // Deliberately local-only — no SupabaseReadService preference. The renderer
+  // uses this right after a call ends: MeetingPersistence.stopMeeting writes the
+  // placeholder row to SQLite synchronously, whereas the cloud copy only exists
+  // once the mirror queue drains. Reading Supabase there (as get-recent-meetings
+  // does whenever a cloud session exists) reintroduces exactly the lag the
+  // local-first read is meant to hide, which is why this is a separate channel
+  // instead of a flag on the one above.
+  safeHandle("get-recent-meetings-local", async () => {
+    return DatabaseManager.getInstance().getRecentMeetings(50);
+  });
+
   // Add this handler
   safeHandle("get-display-name", async (_, role: 'user' | 'client' | 'assistant') => {
     const intelligenceManager = appState.getIntelligenceManager();

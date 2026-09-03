@@ -19,6 +19,7 @@ import { isMac } from '@/../utils/platformUtils';
 import { posthogAnalytics } from '@/lib/analytics/posthog.service';
 import { Meeting } from '@/types';
 import { IMAGES } from '@/lib/assets';
+import { isMeetingProcessing } from '@/api/meetingMapping';
 import { getGroupLabel, formatTime, formatDurationPill, UPLOAD_MEETING_TYPE_OPTIONS } from '@/hooks/useLauncher';
 
 // ─────────────────────────────────────────────────────────────────────────
@@ -508,9 +509,11 @@ interface RecentMeetingsHeaderProps {
     isMeetingsExpanded: boolean;
     onToggleExpand: () => void;
     onOpenUpload: () => void;
+    /** Background refetch over rows that are already on screen. */
+    isRefreshing?: boolean;
 }
 
-export const RecentMeetingsHeader: React.FC<RecentMeetingsHeaderProps> = ({ isLight, isMeetingsExpanded, onToggleExpand }) => (
+export const RecentMeetingsHeader: React.FC<RecentMeetingsHeaderProps> = ({ isLight, isMeetingsExpanded, onToggleExpand, isRefreshing = false }) => (
     <div className="flex items-center justify-between mb-3">
         <div className="flex items-center gap-2.5">
             <div className={[
@@ -522,6 +525,24 @@ export const RecentMeetingsHeader: React.FC<RecentMeetingsHeaderProps> = ({ isLi
             <span className="text-[15px] font-semibold text-text-primary tracking-tight">
                 Recent Meetings
             </span>
+            {/* Refetch happening over already-rendered rows: a quiet inline hint,
+                never a skeleton — the visible rows are still valid. */}
+            <AnimatePresence>
+                {isRefreshing && (
+                    <motion.span
+                        initial={{ opacity: 0, x: -4 }}
+                        animate={{ opacity: 1, x: 0 }}
+                        exit={{ opacity: 0, x: -4 }}
+                        transition={{ duration: 0.15 }}
+                        className={['flex items-center gap-1 text-[11px] font-medium', isLight ? 'text-text-tertiary' : 'text-text-tertiary'].join(' ')}
+                        role="status"
+                        aria-label="Updating meetings"
+                    >
+                        <RefreshCw size={10} className="animate-spin" />
+                        Updating
+                    </motion.span>
+                )}
+            </AnimatePresence>
         </div>
 
         {/* Right-side header actions */}
@@ -593,10 +614,18 @@ interface MeetingRowProps {
 export const MeetingRow: React.FC<MeetingRowProps> = ({
     meeting: m, isLast, isLight, isMenuOpen,
     onOpen, onToggleMenu, onMenuMouseEnter, onMenuMouseLeave, onDelete,
-}) => (
+}) => {
+    // Authoritative: `isProcessed === false` (see isMeetingProcessing). A calendar
+    // meeting carries its real title from the very first save, so the old
+    // title === 'Processing...' check rendered it as finished while its summary
+    // was still being generated.
+    const isProcessing = isMeetingProcessing(m);
+
+    return (
     <motion.div
         layoutId={`meeting-${m.id}`}
         onClick={() => onOpen(m)}
+        aria-busy={isProcessing || undefined}
         className={[
             'group relative flex items-center gap-4 px-5 py-4 cursor-pointer transition-colors',
             !isLast ? 'border-b border-border-subtle' : '',
@@ -608,7 +637,7 @@ export const MeetingRow: React.FC<MeetingRowProps> = ({
             'flex h-9 w-9 shrink-0 items-center justify-center rounded-lg bg-blue-500/10',
             isLight ? 'text-accent-primary' : 'text-blue-400',
         ].join(' ')}>
-            {m.title === 'Processing...'
+            {isProcessing
                 ? <RefreshCw size={15} className="animate-spin text-blue-500" />
                 : <Calendar size={15} strokeWidth={2} />
             }
@@ -618,14 +647,29 @@ export const MeetingRow: React.FC<MeetingRowProps> = ({
         <div className="flex-1 min-w-0">
             <div className={[
                 'text-[13px] font-semibold truncate leading-tight',
-                m.title === 'Processing...'
-                    ? 'text-blue-400 italic animate-pulse'
+                isProcessing
+                    ? 'text-text-secondary animate-pulse'
                     : 'text-text-primary',
             ].join(' ')}>
-                {m.title}
+                {/* The real title appears only once processing has actually
+                    finished. A calendar event's title (and an upload's typed
+                    title) are known up front, but showing them early made a row
+                    look done — and any source disagreement about is_processed
+                    then read as the title appearing, vanishing, reappearing. */}
+                {isProcessing ? 'Processing meeting' : m.title}
             </div>
             <div className="flex items-center gap-1.5 mt-0.5 text-[11px] text-text-tertiary">
-                {(() => {
+                {isProcessing ? (
+                    // Explains what's still missing, so a row without a summary
+                    // reads as in-progress rather than as a broken meeting.
+                    <span className={['flex items-center gap-1.5 font-medium', isLight ? 'text-accent-primary' : 'text-blue-400'].join(' ')}>
+                        <span className="relative flex h-1.5 w-1.5">
+                            <span className="absolute inline-flex h-full w-full animate-ping rounded-full bg-blue-500 opacity-75" />
+                            <span className="relative inline-flex h-1.5 w-1.5 rounded-full bg-blue-500" />
+                        </span>
+                        Preparing transcript &amp; summary
+                    </span>
+                ) : (() => {
                     const org = (m as any).organizer || (m as any).attendees?.[0]?.displayName || null;
                     const count = (m as any).attendees?.length;
                     return (
@@ -642,22 +686,35 @@ export const MeetingRow: React.FC<MeetingRowProps> = ({
 
         {/* Right: Date + duration + chevron */}
         <div className="flex items-center gap-4 shrink-0">
-            {m.title === 'Processing...' ? (
-                <span className="text-[11px] text-blue-400 font-medium">Finalizing...</span>
+            <span className="text-[12px] font-medium min-w-[120px] text-right text-text-secondary">
+                {getGroupLabel(m.date) === 'Today'
+                    ? `Today, ${formatTime(m.date)}`
+                    : getGroupLabel(m.date) === 'Yesterday'
+                        ? `Yesterday, ${formatTime(m.date)}`
+                        : `${getGroupLabel(m.date)}, ${formatTime(m.date)}`
+                }
+            </span>
+            {/* Same chip geometry as the duration pill, so the row doesn't shift
+                horizontally the moment processing finishes. */}
+            {isProcessing ? (
+                <span className={[
+                    'flex items-center justify-center px-2.5 py-0.5 rounded-md border min-w-[46px]',
+                    isLight ? 'border-accent-primary/30 bg-accent-muted' : 'border-blue-500/30 bg-blue-500/10',
+                ].join(' ')}>
+                    <span className="flex gap-0.5">
+                        {[0, 150, 300].map((delay) => (
+                            <span
+                                key={delay}
+                                className="h-1 w-1 rounded-full bg-blue-500 animate-pulse"
+                                style={{ animationDelay: `${delay}ms` }}
+                            />
+                        ))}
+                    </span>
+                </span>
             ) : (
-                <>
-                    <span className="text-[12px] font-medium min-w-[120px] text-right text-text-secondary">
-                        {getGroupLabel(m.date) === 'Today'
-                            ? `Today, ${formatTime(m.date)}`
-                            : getGroupLabel(m.date) === 'Yesterday'
-                                ? `Yesterday, ${formatTime(m.date)}`
-                                : `${getGroupLabel(m.date)}, ${formatTime(m.date)}`
-                        }
-                    </span>
-                    <span className="font-mono text-[12px] font-semibold px-2.5 py-0.5 rounded-md border border-border-muted bg-bg-item-surface text-text-secondary min-w-[46px] text-center tabular-nums">
-                        {formatDurationPill(m.duration)}
-                    </span>
-                </>
+                <span className="font-mono text-[12px] font-semibold px-2.5 py-0.5 rounded-md border border-border-muted bg-bg-item-surface text-text-secondary min-w-[46px] text-center tabular-nums">
+                    {formatDurationPill(m.duration)}
+                </span>
             )}
             <ChevronRight size={15} className="transition-all duration-200 shrink-0 text-text-tertiary group-hover:text-text-secondary group-hover:translate-x-0.5" />
         </div>
@@ -712,7 +769,84 @@ export const MeetingRow: React.FC<MeetingRowProps> = ({
             )}
         </AnimatePresence>
     </motion.div>
-);
+    );
+};
+
+// ─────────────────────────────────────────────────────────────────────────
+// Skeleton rows for the meetings list — shown only before the very first
+// list resolves, so the section never renders as "No recent meetings yet"
+// (or as a blank gap) while the fetch is still in flight.
+//
+// Geometry is copied from MeetingRow above (px-5 py-4, h-9 w-9 tile,
+// min-w-[120px] date, min-w-[46px] pill, 15px chevron) so swapping real rows
+// in doesn't move anything. Same house style as the dashboard/members
+// skeletons: animate-pulse bars, staggered delays, role="status".
+// ─────────────────────────────────────────────────────────────────────────
+
+interface MeetingsListSkeletonProps {
+    isLight: boolean;
+    /** Rows to render — matches the collapsed section's visible row count. */
+    rows?: number;
+}
+
+export const MeetingsListSkeleton: React.FC<MeetingsListSkeletonProps> = ({ isLight, rows = 3 }) => {
+    const bar = isLight ? 'bg-slate-200' : 'bg-white/10';
+    // Varied title widths read as content rather than as a repeating pattern.
+    const titleWidths = ['62%', '48%', '55%', '40%'];
+
+    return (
+        <div
+            className="rounded-xl border border-border-muted overflow-hidden"
+            role="status"
+            aria-label="Loading recent meetings"
+        >
+            {Array.from({ length: rows }).map((_, i) => {
+                const delay = i * 120;
+                return (
+                    <div
+                        key={i}
+                        className={[
+                            'flex items-center gap-4 px-5 py-4 bg-bg-sidebar',
+                            i !== rows - 1 ? 'border-b border-border-subtle' : '',
+                        ].join(' ')}
+                    >
+                        <div
+                            className={`h-9 w-9 shrink-0 rounded-lg animate-pulse ${bar}`}
+                            style={{ animationDelay: `${delay}ms` }}
+                        />
+                        <div className="flex-1 min-w-0">
+                            <div
+                                className={`h-3 rounded animate-pulse ${bar}`}
+                                style={{ width: titleWidths[i % titleWidths.length], animationDelay: `${delay}ms` }}
+                            />
+                            <div
+                                className={`mt-2 h-2 w-24 rounded animate-pulse ${bar}`}
+                                style={{ animationDelay: `${delay + 60}ms` }}
+                            />
+                        </div>
+                        <div className="flex items-center gap-4 shrink-0">
+                            {/* min-w-[120px] mirrors the real row's date column so
+                                the pill and chevron sit at the same x offset. */}
+                            <div className="min-w-[120px] flex justify-end">
+                                <div
+                                    className={`h-3 w-[104px] rounded animate-pulse ${bar}`}
+                                    style={{ animationDelay: `${delay}ms` }}
+                                />
+                            </div>
+                            <div
+                                className={`h-[22px] w-[46px] rounded-md animate-pulse ${bar}`}
+                                style={{ animationDelay: `${delay + 60}ms` }}
+                            />
+                            {/* Chevron spacer — keeps the row's right edge identical. */}
+                            <div className="h-[15px] w-[15px] shrink-0" />
+                        </div>
+                    </div>
+                );
+            })}
+            <span className="sr-only">Loading recent meetings…</span>
+        </div>
+    );
+};
 
 // ─────────────────────────────────────────────────────────────────────────
 // The full meetings list — empty state, or bordered rows with dividers.
@@ -727,12 +861,22 @@ interface MeetingsListProps {
     onMenuMouseEnter: () => void;
     onMenuMouseLeave: () => void;
     onDelete: (id: string) => void;
+    /** First load, nothing cached yet — render skeleton rows, not the empty state. */
+    isLoading?: boolean;
 }
 
 export const MeetingsList: React.FC<MeetingsListProps> = ({
     meetings, isLight, activeMenuId,
     onOpen, onToggleMenu, onMenuMouseEnter, onMenuMouseLeave, onDelete,
+    isLoading = false,
 }) => {
+    // Order matters: without this, an in-flight first fetch renders the
+    // "No recent meetings yet" card and then swaps to rows — the empty flash
+    // and layout jump this skeleton exists to remove.
+    if (isLoading && meetings.length === 0) {
+        return <MeetingsListSkeleton isLight={isLight} />;
+    }
+
     if (meetings.length === 0) {
         return (
             <motion.div

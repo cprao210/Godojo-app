@@ -358,6 +358,14 @@ export interface ElectronAPI {
   endMeeting: (meetingTypes?: ('discovery' | 'demo' | 'negotiation')[], tenantId?: string | null) => Promise<{ success: boolean; meetingId?: string | null; error?: string }>
   finalizeMicSTT: () => Promise<void>
   getRecentMeetings: () => Promise<Array<{ id: string; title: string; date: string; duration: string; summary: string; isProcessed?: boolean }>>
+  /**
+   * Local SQLite only — never the Supabase mirror (which `getRecentMeetings`
+   * prefers when a cloud session exists). The row for a just-ended call is
+   * written to SQLite synchronously, so this is the only read that can surface
+   * the processing card without waiting on the mirror. Use it for
+   * immediately-after-a-call reads; use getRecentMeetings for full history.
+   */
+  getRecentMeetingsLocal: () => Promise<Array<{ id: string; title: string; date: string; duration: string; summary: string; isProcessed?: boolean }>>
   getMeetingDetails: (id: string) => Promise<any>
   updateMeetingTitle: (id: string, title: string) => Promise<boolean>
   updateMeetingSummary: (id: string, updates: { overview?: string, actionItems?: string[], keyPoints?: string[], actionItemsTitle?: string, keyPointsTitle?: string }) => Promise<boolean>

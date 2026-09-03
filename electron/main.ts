@@ -3020,12 +3020,11 @@ export class AppState {
     const meetingId = await this.intelligenceManager.stopMeeting(meetingTypes, tenantId);
     // Tell the overlay window EXACTLY which meeting this call became — don't
     // make it infer this from getRecentMeetings()[0]. That list is sorted by
-    // `date`, and MeetingPersistence rewrites `date` to "now" a SECOND time
-    // when a meeting's background processing finishes (which can complete
-    // well after a later call has already ended) — so an older meeting can
-    // briefly outrank the current one in "most recent" order. This broadcast
-    // is the one authoritative, race-free source for "which meeting did the
-    // call I just ended turn into".
+    // `created_at`, and while that's now pinned write-once (DatabaseManager
+    // .saveMeeting) so a finishing meeting can no longer jump the order,
+    // "most recent row" is still a guess. This broadcast is the one
+    // authoritative, race-free source for "which meeting did the call I just
+    // ended turn into".
     if (meetingId) {
       this.broadcast('live-call-ended', { meetingId });
     }
