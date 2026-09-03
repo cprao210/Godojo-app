@@ -21,6 +21,22 @@ export interface AudioCaptureFailure {
   stuck?: boolean
 }
 
+/**
+ * Every credential the app resolves through CredentialsManager. Mirrors
+ * `ApiKeyProvider` in electron/services/CredentialsManager.ts — keep in sync.
+ */
+export type ApiKeyProviderName =
+  | 'gemini' | 'groq' | 'openai' | 'claude'
+  | 'deepgram' | 'tavily'
+  | 'groq_stt' | 'openai_stt' | 'elevenlabs'
+  | 'azure' | 'ibmwatson' | 'soniox'
+
+/**
+ * Which tier the key in use came from: the user's own saved key, the shared
+ * default fetched from the backend, a key bundled in the build's .env, or none.
+ */
+export type ApiKeySourceName = 'user' | 'backend_fallback' | 'env_bundled' | 'none'
+
 export interface ElectronAPI {
   // ===========================================================================
   // Window Management
@@ -171,6 +187,15 @@ export interface ElectronAPI {
     groqSttModel?: string
     hasSonioxKey?: boolean
     hasTavilyKey?: boolean
+    /**
+     * Which tier each key resolved from. `hasXKey` only says a key is usable;
+     * this says whose it is, so Settings can show "using the shared default"
+     * instead of pretending the field is the user's own. Absent when the main
+     * process failed to read the store at all.
+     */
+    keySources?: Record<ApiKeyProviderName, ApiKeySourceName>
+    /** 'failed' means the stored credentials file could not be decrypted. */
+    credentialStoreState?: 'ok' | 'failed'
     geminiPreferredModel?: string
     groqPreferredModel?: string
     openaiPreferredModel?: string

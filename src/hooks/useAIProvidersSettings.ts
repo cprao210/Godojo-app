@@ -9,6 +9,7 @@ import { STANDARD_CLOUD_MODELS, prettifyModelId } from "@/../utils/modelUtils";
 import { validateCurl } from "@/lib/curl-validator";
 import { AIProviderCustomProvider } from "@/types";
 import { settingsToast } from "@/lib/settingsToastBus";
+import type { ApiKeySourceName } from "@/electron";
 
 export type StandardProviderId = "gemini" | "groq" | "openai" | "claude";
 export type OllamaStatus = "checking" | "detected" | "not-found" | "fixing";
@@ -66,6 +67,10 @@ function useStandardProviders() {
     const [testStatus, setTestStatus] = useState<Record<string, ConnectionTestStatus>>({});
     const [testError, setTestError] = useState<Record<string, string>>({});
     const [preferredModels, setPreferredModels] = useState<Record<string, string>>({});
+    // Which tier each key came from. hasStoredKey only says "a key is usable";
+    // this distinguishes the user's own key from the shared default, so the card
+    // can offer to override instead of implying the field is already theirs.
+    const [keySources, setKeySources] = useState<Record<string, ApiKeySourceName>>({});
 
     const setApiKeyValue = useCallback((provider: StandardProviderId, value: string) => {
         setApiKeys((prev) => ({ ...prev, [provider]: value }));
@@ -81,12 +86,17 @@ function useStandardProviders() {
         const creds = await window.electronAPI?.getStoredCredentials?.();
         if (!creds) return;
 
+        const sources = creds.keySources ?? {};
+        // Stays "a key is usable from some tier" — this gates the default-model
+        // dropdown and Test Connection, and a user on the shared default must
+        // keep both. `keySources` carries the user-vs-default distinction.
         setHasStoredKey({
             gemini: creds.hasGeminiKey,
             groq: creds.hasGroqKey,
             openai: creds.hasOpenaiKey,
             claude: creds.hasClaudeKey,
         });
+        setKeySources(sources as Record<string, ApiKeySourceName>);
 
         const pm: Record<string, string> = {};
         if (creds.geminiPreferredModel) pm.gemini = creds.geminiPreferredModel;
@@ -97,8 +107,10 @@ function useStandardProviders() {
     }, []);
 
     const handleSaveKey = useCallback(async (provider: StandardProviderId) => {
-        const key = apiKeys[provider];
-        if (!key.trim()) return;
+        // Trim here as well as in the main process: a key pasted with a trailing
+        // newline used to be stored verbatim and rejected by the provider.
+        const key = apiKeys[provider].trim();
+        if (!key) return;
 
         setSavingStatus((prev) => ({ ...prev, [provider]: true }));
         try {
@@ -106,6 +118,7 @@ function useStandardProviders() {
             if (result && result.success) {
                 setSavedStatus((prev) => ({ ...prev, [provider]: true }));
                 setHasStoredKey((prev) => ({ ...prev, [provider]: true }));
+                setKeySources((prev) => ({ ...prev, [provider]: "user" }));
                 setApiKeyValue(provider, "");
                 setTimeout(() => setSavedStatus((prev) => ({ ...prev, [provider]: false })), 2000);
 
@@ -128,11 +141,14 @@ function useStandardProviders() {
             if (result && result.success) {
                 setHasStoredKey((prev) => ({ ...prev, [provider]: false }));
                 setApiKeyValue(provider, "");
+                // Re-read rather than assuming 'none': removing a user key usually
+                // falls back to the shared default, and the card should say so.
+                await loadStandardProviders();
             }
         } catch (e) {
             console.error(`Failed to remove ${provider} key:`, e);
         }
-    }, [setApiKeyValue]);
+    }, [setApiKeyValue, loadStandardProviders]);
 
     const handleTestConnection = useCallback(async (provider: StandardProviderId) => {
         const key = apiKeys[provider];
@@ -170,6 +186,7 @@ function useStandardProviders() {
         savedStatus,
         savingStatus,
         hasStoredKey,
+        keySources,
         testStatus,
         testError,
         preferredModels,

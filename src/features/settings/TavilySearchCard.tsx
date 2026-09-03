@@ -3,7 +3,10 @@ import { Globe, Trash2, Info } from 'lucide-react';
 
 interface TavilySearchCardProps {
     apiKey: string;
+    /** True when a key is usable from any tier (the user's own or a shared default). */
     hasStoredKey: boolean;
+    /** Which tier that key came from; 'user' means the user entered it themselves. */
+    keySource?: 'user' | 'backend_fallback' | 'env_bundled' | 'none';
     saving: boolean;
     error: string;
     isLight: boolean;
@@ -18,6 +21,7 @@ interface TavilySearchCardProps {
 const TavilySearchCard: React.FC<TavilySearchCardProps> = ({
     apiKey,
     hasStoredKey,
+    keySource,
     saving,
     error,
     isLight,
@@ -25,6 +29,10 @@ const TavilySearchCard: React.FC<TavilySearchCardProps> = ({
     onRemove,
     onSave,
 }) => {
+    // Only the user's own key can be removed or shown as masked — a shared
+    // default lives in the app, not in their credential store.
+    const isUserKey = keySource ? keySource === 'user' : hasStoredKey;
+    const isSharedDefault = keySource === 'backend_fallback' || keySource === 'env_bundled';
     return (
         <div className="mt-5">
             <div className="bg-bg-item-surface rounded-xl border border-border-subtle">
@@ -39,6 +47,9 @@ const TavilySearchCard: React.FC<TavilySearchCardProps> = ({
                                 {hasStoredKey && (
                                     <span className="text-[9px] font-bold text-emerald-500 px-1.5 py-0.5 bg-emerald-500/10 rounded-full border border-emerald-500/20 uppercase tracking-wide">Connected</span>
                                 )}
+                                {isSharedDefault && (
+                                    <span className="text-[9px] font-semibold text-text-tertiary px-1.5 py-0.5 bg-bg-input rounded-full border border-border-subtle uppercase tracking-wide">Shared default</span>
+                                )}
                             </div>
                             <p className="text-[11px] text-text-secondary mt-0.5">
                                 Powers live web search for company research.
@@ -50,7 +61,7 @@ const TavilySearchCard: React.FC<TavilySearchCardProps> = ({
                         <div>
                             <div className="flex justify-between items-center mb-1.5">
                                 <label className="text-[10px] font-semibold text-text-secondary uppercase tracking-wide block">API Key</label>
-                                {hasStoredKey && (
+                                {isUserKey && (
                                     <button
                                         onClick={onRemove}
                                         className="text-[10px] flex items-center gap-1 text-red-400 hover:text-red-300 transition-colors bg-red-500/10 hover:bg-red-500/20 px-1.5 py-0.5 rounded"
@@ -64,7 +75,7 @@ const TavilySearchCard: React.FC<TavilySearchCardProps> = ({
                                 type="password"
                                 value={apiKey}
                                 onChange={onKeyChange}
-                                placeholder={hasStoredKey ? '••••••••••••' : 'Enter Tavily API key (tvly-...)'}
+                                placeholder={isUserKey ? '••••••••••••' : 'Enter Tavily API key (tvly-...)'}
                                 className={`w-full ${isLight ? "bg-bg-elevated" : "bg-gray-900"} border border-border-subtle rounded-lg px-3 py-2 text-xs text-text-primary placeholder-text-tertiary focus:outline-none focus:border-accent-primary/50 focus:ring-1 focus:ring-accent-primary/20 transition-all`}
                             />
                         </div>

@@ -5,17 +5,22 @@
 
 import { useState } from 'react';
 import { settingsToast } from '@/lib/settingsToastBus';
+import type { ApiKeySourceName } from '@/electron';
 
 export function useTavilySettings() {
     const [tavilyApiKey, setTavilyApiKeyInput] = useState('');
     const [hasStoredTavilyKey, setHasStoredTavilyKey] = useState(false);
+    const [tavilyKeySource, setTavilyKeySource] = useState<ApiKeySourceName | undefined>(undefined);
     const [tavilySaving, setTavilySaving] = useState(false);
     const [tavilyError, setTavilyError] = useState('');
 
-    /** Bootstraps `hasStoredTavilyKey` from the shared credentials payload — called
-     * from useSttProviderSettings's initial load, since both come from the same
+    /** Bootstraps `hasStoredTavilyKey` + its tier from the shared credentials payload —
+     * called from useSttProviderSettings's initial load, since both come from the same
      * `getStoredCredentials()` round-trip and we don't want to fetch it twice. */
-    const setHasStoredTavilyKeyFromCredentials = (hasKey: boolean) => setHasStoredTavilyKey(hasKey);
+    const setHasStoredTavilyKeyFromCredentials = (hasKey: boolean, source?: ApiKeySourceName) => {
+        setHasStoredTavilyKey(hasKey);
+        setTavilyKeySource(source);
+    };
 
     const handleTavilyKeyInput = (value: string) => {
         setTavilyApiKeyInput(value);
@@ -34,6 +39,7 @@ export function useTavilySettings() {
                 settingsToast.error(message);
             } else {
                 setHasStoredTavilyKey(true);
+                setTavilyKeySource('user');
                 setTavilyApiKeyInput('');
                 settingsToast.success('Saved Successfully');
             }
@@ -52,6 +58,13 @@ export function useTavilySettings() {
             await window.electronAPI?.setTavilyApiKey?.('');
             setTavilyApiKeyInput('');
             setHasStoredTavilyKey(false);
+            // A shared default may still cover Tavily once the user's key is gone.
+            const creds = await window.electronAPI?.getStoredCredentials?.();
+            const source = creds?.keySources?.tavily;
+            if (source) {
+                setTavilyKeySource(source);
+                setHasStoredTavilyKey(source !== 'none');
+            }
         } catch (e) {
             console.error('[useTavilySettings] Failed to remove Tavily API key:', e);
         }
@@ -60,6 +73,7 @@ export function useTavilySettings() {
     return {
         tavilyApiKey,
         hasStoredTavilyKey,
+        tavilyKeySource,
         tavilySaving,
         tavilyError,
         handleTavilyKeyInput,

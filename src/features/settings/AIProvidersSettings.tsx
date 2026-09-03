@@ -26,6 +26,7 @@ import { AIProvidersSettingsTypes } from '@/types';
 export const AIProvidersSettings: React.FC<AIProvidersSettingsTypes> = ({
     tavilyApiKey,
     hasStoredTavilyKey,
+    tavilyKeySource,
     handleRemoveTavilyKey,
     tavilySaving,
     tavilyError,
@@ -96,6 +97,7 @@ export const AIProvidersSettings: React.FC<AIProvidersSettingsTypes> = ({
                             apiKey={standard.apiKeys[providerId]}
                             preferredModel={standard.preferredModels[providerId]}
                             hasStoredKey={!!standard.hasStoredKey[providerId]}
+                            keySource={standard.keySources[providerId]}
                             onKeyChange={(val) => standard.setApiKeyValue(providerId, val)}
                             onSaveKey={() => standard.handleSaveKey(providerId)}
                             onRemoveKey={() => standard.handleRemoveKey(providerId)}
@@ -191,6 +193,7 @@ export const AIProvidersSettings: React.FC<AIProvidersSettingsTypes> = ({
             <TavilySearchCard
                 apiKey={tavilyApiKey}
                 hasStoredKey={hasStoredTavilyKey}
+                keySource={tavilyKeySource}
                 saving={tavilySaving}
                 error={tavilyError}
                 isLight={isLight}

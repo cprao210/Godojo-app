@@ -163,6 +163,7 @@ const SettingsOverlay: React.FC<SettingsOverlayProps> = ({
                                         <AIProvidersSettings
                                             tavilyApiKey={tavily.tavilyApiKey}
                                             hasStoredTavilyKey={tavily.hasStoredTavilyKey}
+                                            tavilyKeySource={tavily.tavilyKeySource}
                                             handleRemoveTavilyKey={tavily.removeTavilyKey}
                                             handleAddTavilyKey={(e) => tavily.handleTavilyKeyInput(e.target.value)}
                                             handleSaveTavilyKey={tavily.saveTavilyKey}

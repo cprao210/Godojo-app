@@ -552,6 +552,13 @@ export class WindowHelper {
       });
 
       this.overlayWindow.on('close', (e) => {
+        // The isQuitting() guard matters for credentials: `before-quit` scrubs the
+        // in-memory key store, so vetoing the close here leaves the app running
+        // with an emptied CredentialsManager. The launcher's close handler already
+        // checks this; the overlay's did not, which is one way a running session
+        // ended up with no keys (and, before the write guard, wrote that emptiness
+        // back to disk).
+        if (this.appState.isQuitting()) return;
         if (this.overlayWindow?.isVisible()) {
           e.preventDefault();
           if (this.appState.getIsMeetingActive()) {

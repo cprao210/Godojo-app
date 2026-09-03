@@ -938,20 +938,24 @@ export function initializeIpcHandlers(appState: AppState): void {
     }
   });
 
-  // Dedicated API key setters (for Settings UI Save buttons)
+  // Dedicated API key setters (for Settings UI Save buttons).
+  //
+  // These used to push the raw `apiKey` argument straight into LLMHelper, which
+  // meant removing a key ("" from the UI) built a client around an empty string
+  // instead of falling back to the shared default, and an untrimmed paste was
+  // used verbatim. They now save through CredentialsManager and re-sync from the
+  // *resolved* value, so "user key wins, default is the fallback" is decided in
+  // exactly one place.
   safeHandle("set-gemini-api-key", async (_, apiKey: string) => {
     try {
       const { CredentialsManager } = require('./services/CredentialsManager');
       CredentialsManager.getInstance().setGeminiApiKey(apiKey);
 
-      // Also update the LLMHelper immediately
-      const llmHelper = appState.processingHelper.getLLMHelper();
-      llmHelper.setApiKey(apiKey);
-
       // CQ-06 fix: cancel any in-flight LLM stream before swapping LLM clients.
       // Use resetEngine() (NOT reset()) so session transcript is preserved mid-meeting.
       // initializeLLMs() now also calls engine.reset() internally for double-safety.
       appState.getIntelligenceManager().resetEngine();
+      appState.processingHelper.syncLlmKeysFromCredentials('user_save_gemini');
       // Re-init IntelligenceManager
       appState.getIntelligenceManager().initializeLLMs();
 
@@ -967,14 +971,12 @@ export function initializeIpcHandlers(appState: AppState): void {
       const { CredentialsManager } = require('./services/CredentialsManager');
       CredentialsManager.getInstance().setGroqApiKey(apiKey);
 
-      // Also update the LLMHelper immediately
-      const llmHelper = appState.processingHelper.getLLMHelper();
-      llmHelper.setGroqApiKey(apiKey);
-
       // CQ-06 fix: cancel in-flight stream before re-init (engine only, not session)
       appState.getIntelligenceManager().resetEngine();
-      // Re-init IntelligenceManager
+      appState.processingHelper.syncLlmKeysFromCredentials('user_save_groq');
       appState.getIntelligenceManager().initializeLLMs();
+      // Groq also backs the Groq STT provider.
+      void appState.syncSttCredentials('user_save_groq');
 
       return { success: true };
     } catch (error: any) {
@@ -988,14 +990,12 @@ export function initializeIpcHandlers(appState: AppState): void {
       const { CredentialsManager } = require('./services/CredentialsManager');
       CredentialsManager.getInstance().setOpenaiApiKey(apiKey);
 
-      // Also update the LLMHelper immediately
-      const llmHelper = appState.processingHelper.getLLMHelper();
-      llmHelper.setOpenaiApiKey(apiKey);
-
       // CQ-06 fix: cancel in-flight stream before re-init (engine only, not session)
       appState.getIntelligenceManager().resetEngine();
-      // Re-init IntelligenceManager
+      appState.processingHelper.syncLlmKeysFromCredentials('user_save_openai');
       appState.getIntelligenceManager().initializeLLMs();
+      // OpenAI also backs the OpenAI STT provider.
+      void appState.syncSttCredentials('user_save_openai');
 
       return { success: true };
     } catch (error: any) {
@@ -1009,13 +1009,9 @@ export function initializeIpcHandlers(appState: AppState): void {
       const { CredentialsManager } = require('./services/CredentialsManager');
       CredentialsManager.getInstance().setClaudeApiKey(apiKey);
 
-      // Also update the LLMHelper immediately
-      const llmHelper = appState.processingHelper.getLLMHelper();
-      llmHelper.setClaudeApiKey(apiKey);
-
       // CQ-06 fix: cancel in-flight stream before re-init (engine only, not session)
       appState.getIntelligenceManager().resetEngine();
-      // Re-init IntelligenceManager
+      appState.processingHelper.syncLlmKeysFromCredentials('user_save_claude');
       appState.getIntelligenceManager().initializeLLMs();
 
       return { success: true };
@@ -1174,29 +1170,38 @@ export function initializeIpcHandlers(appState: AppState): void {
   safeHandle("get-stored-credentials", async () => {
     try {
       const { CredentialsManager } = require('./services/CredentialsManager');
-      const creds = CredentialsManager.getInstance().getAllCredentials();
-
-      // Return masked versions for security (just indicate if set)
-      const hasKey = (key?: string) => !!(key && key.trim().length > 0);
+      const cm = CredentialsManager.getInstance();
+      const creds = cm.getAllCredentials();
+      // `keySources` says which tier each key comes from: 'user' | 'backend_fallback'
+      // | 'env_bundled' | 'none'. The hasXKey booleans stay "usable from any tier"
+      // (that is what gates the model pickers), but they now include the backend
+      // fallback keys too — previously a user signed in with only backend defaults
+      // was told they had no Gemini/Groq key at all.
+      const sources = cm.getKeySources();
+      const usable = (provider: string) => sources[provider] !== 'none';
 
       return {
-        hasGeminiKey: hasKey(creds.geminiApiKey || process.env.GEMINI_API_KEY),
-        hasGroqKey: hasKey(creds.groqApiKey || process.env.GROQ_API_KEY),
-        hasOpenaiKey: hasKey(creds.openaiApiKey),
-        hasClaudeKey: hasKey(creds.claudeApiKey),
+        hasGeminiKey: usable('gemini'),
+        hasGroqKey: usable('groq'),
+        hasOpenaiKey: usable('openai'),
+        hasClaudeKey: usable('claude'),
         googleServiceAccountPath: creds.googleServiceAccountPath || null,
         sttProvider: creds.sttProvider || 'deepgram',
         groqSttModel: creds.groqSttModel || 'whisper-large-v3-turbo',
-        hasSttGroqKey: hasKey(creds.groqSttApiKey),
-        hasSttOpenaiKey: hasKey(creds.openAiSttApiKey),
-        hasDeepgramKey: hasKey(creds.deepgramApiKey || process.env.DEEPGRAM_API_KEY),
-        hasElevenLabsKey: hasKey(creds.elevenLabsApiKey),
-        hasAzureKey: hasKey(creds.azureApiKey),
+        hasSttGroqKey: usable('groq_stt'),
+        hasSttOpenaiKey: usable('openai_stt'),
+        hasDeepgramKey: usable('deepgram'),
+        hasElevenLabsKey: usable('elevenlabs'),
+        hasAzureKey: usable('azure'),
         azureRegion: creds.azureRegion || 'eastus',
-        hasIbmWatsonKey: hasKey(creds.ibmWatsonApiKey),
+        hasIbmWatsonKey: usable('ibmwatson'),
         ibmWatsonRegion: creds.ibmWatsonRegion || 'us-south',
-        hasSonioxKey: hasKey(creds.sonioxApiKey),
-        hasTavilyKey: hasKey(creds.tavilyApiKey || process.env.TAVILY_API_KEY),
+        hasSonioxKey: usable('soniox'),
+        hasTavilyKey: usable('tavily'),
+        keySources: sources,
+        // 'failed' means the stored file could not be decrypted, so the UI can ask
+        // for re-entry instead of silently showing empty fields.
+        credentialStoreState: cm.getStoreHealth().loadState,
         // Dynamic Model Discovery - preferred models
         geminiPreferredModel: creds.geminiPreferredModel || undefined,
         groqPreferredModel: creds.groqPreferredModel || undefined,
@@ -1204,7 +1209,19 @@ export function initializeIpcHandlers(appState: AppState): void {
         claudePreferredModel: creds.claudePreferredModel || undefined,
       };
     } catch (error: any) {
-      return { hasGeminiKey: process.env.GEMINI_API_KEY !== null, hasGroqKey: process.env.GROQ_API_KEY !== null, hasOpenaiKey: false, hasClaudeKey: false, googleServiceAccountPath: null, sttProvider: 'deepgram', groqSttModel: 'whisper-large-v3-turbo', hasSttGroqKey: false, hasSttOpenaiKey: false, hasDeepgramKey: process.env.DEEPGRAM_API_KEY !== null, hasElevenLabsKey: false, hasAzureKey: false, azureRegion: 'southeastasia', hasIbmWatsonKey: false, ibmWatsonRegion: 'us-south', hasSonioxKey: false, hasTavilyKey: process.env.TAVILY_API_KEY !== null };
+      // The old fallback used `process.env.X !== null`, which is true even when
+      // the variable is unset — the UI was told every key existed.
+      const envHas = (v?: string) => !!v && v.trim().length > 0;
+      return {
+        hasGeminiKey: envHas(process.env.GEMINI_API_KEY), hasGroqKey: envHas(process.env.GROQ_API_KEY),
+        hasOpenaiKey: false, hasClaudeKey: false, googleServiceAccountPath: null,
+        sttProvider: 'deepgram', groqSttModel: 'whisper-large-v3-turbo',
+        hasSttGroqKey: false, hasSttOpenaiKey: false,
+        hasDeepgramKey: envHas(process.env.DEEPGRAM_API_KEY), hasElevenLabsKey: false,
+        hasAzureKey: false, azureRegion: 'southeastasia', hasIbmWatsonKey: false,
+        ibmWatsonRegion: 'us-south', hasSonioxKey: false,
+        hasTavilyKey: envHas(process.env.TAVILY_API_KEY),
+      };
     }
   });
 
@@ -1367,10 +1384,17 @@ export function initializeIpcHandlers(appState: AppState): void {
     }
   });
 
+  // STT key setters. Each one now re-syncs the live STT providers: the providers
+  // are constructed once (`if (!this.googleSTT)`) and cache their key, so saving
+  // a key here used to have no effect until the app was restarted — the reason a
+  // freshly-entered Deepgram key looked like it was "not accepted".
+  // syncSttCredentials() no-ops when nothing actually changed, and defers the
+  // rebuild to the end of the meeting when one is in progress.
   safeHandle("set-groq-stt-api-key", async (_, apiKey: string) => {
     try {
       const { CredentialsManager } = require('./services/CredentialsManager');
       CredentialsManager.getInstance().setGroqSttApiKey(apiKey);
+      await appState.syncSttCredentials('user_save_groq_stt');
       return { success: true };
     } catch (error: any) {
       console.error("Error saving Groq STT API key:", error);
@@ -1382,6 +1406,7 @@ export function initializeIpcHandlers(appState: AppState): void {
     try {
       const { CredentialsManager } = require('./services/CredentialsManager');
       CredentialsManager.getInstance().setOpenAiSttApiKey(apiKey);
+      await appState.syncSttCredentials('user_save_openai_stt');
       return { success: true };
     } catch (error: any) {
       console.error("Error saving OpenAI STT API key:", error);
@@ -1393,6 +1418,7 @@ export function initializeIpcHandlers(appState: AppState): void {
     try {
       const { CredentialsManager } = require('./services/CredentialsManager');
       CredentialsManager.getInstance().setDeepgramApiKey(apiKey);
+      await appState.syncSttCredentials('user_save_deepgram');
       return { success: true };
     } catch (error: any) {
       console.error("Error saving Deepgram API key:", error);
@@ -1419,6 +1445,7 @@ export function initializeIpcHandlers(appState: AppState): void {
     try {
       const { CredentialsManager } = require('./services/CredentialsManager');
       CredentialsManager.getInstance().setElevenLabsApiKey(apiKey);
+      await appState.syncSttCredentials('user_save_elevenlabs');
       return { success: true };
     } catch (error: any) {
       console.error("Error saving ElevenLabs API key:", error);
@@ -1430,6 +1457,7 @@ export function initializeIpcHandlers(appState: AppState): void {
     try {
       const { CredentialsManager } = require('./services/CredentialsManager');
       CredentialsManager.getInstance().setAzureApiKey(apiKey);
+      await appState.syncSttCredentials('user_save_azure');
       return { success: true };
     } catch (error: any) {
       console.error("Error saving Azure API key:", error);
@@ -1456,6 +1484,7 @@ export function initializeIpcHandlers(appState: AppState): void {
     try {
       const { CredentialsManager } = require('./services/CredentialsManager');
       CredentialsManager.getInstance().setIbmWatsonApiKey(apiKey);
+      await appState.syncSttCredentials('user_save_ibmwatson');
       return { success: true };
     } catch (error: any) {
       console.error("Error saving IBM Watson API key:", error);
@@ -1467,6 +1496,7 @@ export function initializeIpcHandlers(appState: AppState): void {
     try {
       const { CredentialsManager } = require('./services/CredentialsManager');
       CredentialsManager.getInstance().setSonioxApiKey(apiKey);
+      await appState.syncSttCredentials('user_save_soniox');
       return { success: true };
     } catch (error: any) {
       console.error("Error saving Soniox API key:", error);
@@ -3949,6 +3979,20 @@ export function initializeIpcHandlers(appState: AppState): void {
       // 3. RAG + Knowledge hold the old handle too, and the vector worker holds
       //    its own read-only connection to the old file path.
       void appState.rebindUserScopedServices();
+
+      // 4. Credentials. CredentialsManager has already re-pointed at the new
+      //    user's file, but the live LLM/STT clients still hold the PREVIOUS
+      //    account's keys — they cache them at construction. Without this the new
+      //    user's requests are billed to the old user's key, and a key the new
+      //    user has saved appears to be ignored.
+      try {
+        appState.processingHelper.syncLlmKeysFromCredentials('user_switched');
+        void appState.syncSttCredentials('user_switched');
+        const { CredentialsManager } = require('./services/CredentialsManager');
+        CredentialsManager.getInstance().trackKeySourceSnapshot('user_switched');
+      } catch (err) {
+        console.warn('[ipc] user-switched: credential re-sync failed:', err);
+      }
     });
   } catch (e) {
     console.warn('[ipc] user-switched wiring failed:', e);

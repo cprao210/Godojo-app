@@ -17,6 +17,7 @@ export const ProviderCard: React.FC<ProviderCardProps> = ({
     apiKey,
     preferredModel,
     hasStoredKey,
+    keySource,
     onKeyChange,
     onSaveKey,
     onRemoveKey,
@@ -53,12 +54,21 @@ export const ProviderCard: React.FC<ProviderCardProps> = ({
         savingStatus,
     });
 
+    // A key is only the user's own when the main process says so. When keySource
+    // is absent (older main process / read failure) fall back to the old
+    // behaviour of treating any usable key as the user's.
+    const isUserKey = keySource ? keySource === 'user' : hasStoredKey;
+    const isSharedDefault = keySource === 'backend_fallback' || keySource === 'env_bundled';
+
     return (
         <div className="bg-bg-item-surface rounded-xl p-5 border border-border-subtle">
             <div className="mb-2 flex items-center justify-between">
                 <label className="flex items-center text-xs font-medium text-text-primary uppercase tracking-wide">
                     {providerName} API Key
-                    {hasStoredKey && <span className="ml-2 text-green-500 normal-case">✓ Saved</span>}
+                    {isUserKey && <span className="ml-2 text-green-500 normal-case">✓ Saved</span>}
+                    {isSharedDefault && (
+                        <span className="ml-2 text-text-tertiary normal-case font-normal">Using shared default</span>
+                    )}
                 </label>
                 <button
                     onClick={() => {
@@ -77,7 +87,7 @@ export const ProviderCard: React.FC<ProviderCardProps> = ({
                     type="password"
                     value={apiKey}
                     onChange={(e) => onKeyChange(e.target.value)}
-                    placeholder={hasStoredKey ? "••••••••••••" : keyPlaceholder}
+                    placeholder={isUserKey ? "••••••••••••" : keyPlaceholder}
                     className={`flex-1 ${isLight ? "bg-bg-input" : "bg-gray-900"} border border-border-subtle rounded-lg px-4 py-2.5 text-xs text-text-primary focus:outline-none focus:border-accent-primary transition-colors`}
                 />
                 <button
@@ -90,7 +100,7 @@ export const ProviderCard: React.FC<ProviderCardProps> = ({
                 >
                     {savingStatus ? 'Saving...' : savedStatus ? 'Saved!' : 'Save'}
                 </button>
-                {hasStoredKey && (
+                {isUserKey && (
                     <button
                         onClick={onRemoveKey}
                         className="px-2.5 py-2.5 rounded-lg text-xs font-medium text-text-tertiary hover:text-red-500 hover:bg-red-500/10 transition-all"
@@ -100,6 +110,12 @@ export const ProviderCard: React.FC<ProviderCardProps> = ({
                     </button>
                 )}
             </div>
+
+            {isSharedDefault && (
+                <p className="text-[10px] text-text-tertiary mb-3 -mt-1">
+                    Running on the built-in {providerName} key. Enter your own above to use it instead — it takes priority and is never overwritten.
+                </p>
+            )}
 
             {/* Action Row: Test Connection + Conditional Dropdown + Fetch Models */}
             <div className="flex items-center justify-between mb-3 w-full">

@@ -143,17 +143,22 @@ jobs:
           echo "(This catches secrets that are missing/blank in repo settings — separate"
           echo " from whether the file itself makes it into the packaged app.)"
           byok_missing=0
-          for key in VITE_API_BASE_URL SUPABASE_URL SUPABASE_KEY DEEPGRAM_API_KEY GEMINI_API_KEY GROQ_API_KEY TAVILY_API_KEY; do
+          encryption_key_missing=0
+          for key in VITE_API_BASE_URL SUPABASE_URL SUPABASE_KEY API_ENCRYPTION_KEY DEEPGRAM_API_KEY GEMINI_API_KEY GROQ_API_KEY TAVILY_API_KEY; do
             value=$(grep "^${key}=" .env | cut -d '=' -f2-)
             if [ -z "$value" ]; then
               echo "::warning::${key} is EMPTY in the generated .env — the '${key}' secret is missing or blank in repo Settings > Secrets."
               case "$key" in
                 DEEPGRAM_API_KEY|GEMINI_API_KEY|GROQ_API_KEY|TAVILY_API_KEY) byok_missing=1 ;;
+                API_ENCRYPTION_KEY) encryption_key_missing=1 ;;
               esac
             else
               echo "${key} = present (${#value} chars)"
             fi
           done
+          if [ "$encryption_key_missing" -eq 1 ]; then
+            echo "::warning::API_ENCRYPTION_KEY is EMPTY — CredentialsManager cannot decrypt the backend default keys, so this build silently skips the backend fallback tier and relies only on the bundled .env keys."
+          fi
           if [ "$byok_missing" -eq 1 ]; then
             echo "::warning::One or more BYOK fallback keys (DEEPGRAM/GEMINI/GROQ/TAVILY) are missing — users who haven't set their own key in Settings will have no fallback on this build."
           fi
@@ -321,17 +326,22 @@ jobs:
           echo "(This catches secrets that are missing/blank in repo settings — separate"
           echo " from whether the file itself makes it into the packaged app.)"
           byok_missing=0
-          for key in VITE_API_BASE_URL SUPABASE_URL SUPABASE_KEY DEEPGRAM_API_KEY GEMINI_API_KEY GROQ_API_KEY TAVILY_API_KEY; do
+          encryption_key_missing=0
+          for key in VITE_API_BASE_URL SUPABASE_URL SUPABASE_KEY API_ENCRYPTION_KEY DEEPGRAM_API_KEY GEMINI_API_KEY GROQ_API_KEY TAVILY_API_KEY; do
             value=$(grep "^${key}=" .env | cut -d '=' -f2-)
             if [ -z "$value" ]; then
               echo "::warning::${key} is EMPTY in the generated .env — the '${key}' secret is missing or blank in repo Settings > Secrets."
               case "$key" in
                 DEEPGRAM_API_KEY|GEMINI_API_KEY|GROQ_API_KEY|TAVILY_API_KEY) byok_missing=1 ;;
+                API_ENCRYPTION_KEY) encryption_key_missing=1 ;;
               esac
             else
               echo "${key} = present (${#value} chars)"
             fi
           done
+          if [ "$encryption_key_missing" -eq 1 ]; then
+            echo "::warning::API_ENCRYPTION_KEY is EMPTY — CredentialsManager cannot decrypt the backend default keys, so this build silently skips the backend fallback tier and relies only on the bundled .env keys."
+          fi
           if [ "$byok_missing" -eq 1 ]; then
             echo "::warning::One or more BYOK fallback keys (DEEPGRAM/GEMINI/GROQ/TAVILY) are missing — users who haven't set their own key in Settings will have no fallback on this build."
           fi
@@ -471,17 +481,22 @@ jobs:
           echo "(This catches secrets that are missing/blank in repo settings — separate"
           echo " from whether the file itself makes it into the packaged app.)"
           byok_missing=0
-          for key in VITE_API_BASE_URL SUPABASE_URL SUPABASE_KEY DEEPGRAM_API_KEY GEMINI_API_KEY GROQ_API_KEY TAVILY_API_KEY; do
+          encryption_key_missing=0
+          for key in VITE_API_BASE_URL SUPABASE_URL SUPABASE_KEY API_ENCRYPTION_KEY DEEPGRAM_API_KEY GEMINI_API_KEY GROQ_API_KEY TAVILY_API_KEY; do
             value=$(grep "^${key}=" .env | cut -d '=' -f2-)
             if [ -z "$value" ]; then
               echo "::warning::${key} is EMPTY in the generated .env — the '${key}' secret is missing or blank in repo Settings > Secrets."
               case "$key" in
                 DEEPGRAM_API_KEY|GEMINI_API_KEY|GROQ_API_KEY|TAVILY_API_KEY) byok_missing=1 ;;
+                API_ENCRYPTION_KEY) encryption_key_missing=1 ;;
               esac
             else
               echo "${key} = present (${#value} chars)"
             fi
           done
+          if [ "$encryption_key_missing" -eq 1 ]; then
+            echo "::warning::API_ENCRYPTION_KEY is EMPTY — CredentialsManager cannot decrypt the backend default keys, so this build silently skips the backend fallback tier and relies only on the bundled .env keys."
+          fi
           if [ "$byok_missing" -eq 1 ]; then
             echo "::warning::One or more BYOK fallback keys (DEEPGRAM/GEMINI/GROQ/TAVILY) are missing — users who haven't set their own key in Settings will have no fallback on this build."
           fi

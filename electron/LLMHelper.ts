@@ -145,6 +145,10 @@ export class LLMHelper {
   }
 
   public setGroqApiKey(apiKey: string) {
+    // NOTE: this.groqApiKey used to be assigned only in the constructor, so a key
+    // set at runtime never reached initModelVersionManager() — model discovery ran
+    // with a stale/null Groq key.
+    this.groqApiKey = apiKey;
     this.groqClient = new Groq({ apiKey });
     console.log("[LLMHelper] Groq API Key updated.");
   }
@@ -164,6 +168,38 @@ export class LLMHelper {
   public setNativelyKey(key: string | null): void {
     this.nativelyKey = key || null;
     console.log(`[LLMHelper] Natively key ${key ? 'set' : 'cleared'}`);
+  }
+
+  /**
+   * The keys currently baked into the live provider clients. Callers compare
+   * these against CredentialsManager to rebuild only the clients whose key
+   * actually changed — the clients cache their key at construction, so a key
+   * that arrives after boot (backend fallback, a Settings save, an account
+   * switch) is otherwise never picked up.
+   */
+  public getAppliedKeys(): { gemini: string | null; groq: string | null; openai: string | null; claude: string | null } {
+    return {
+      gemini: this.apiKey ?? null,
+      groq: this.groqApiKey ?? null,
+      openai: this.openaiApiKey ?? null,
+      claude: this.claudeApiKey ?? null,
+    };
+  }
+
+  /**
+   * Drop a provider's client when no key resolves for it any more — the user
+   * removed their own key and there is no shared default to fall back to.
+   * Callers used to push `""` here, which built a client that failed on every
+   * request instead of reporting the provider as unavailable.
+   */
+  public clearProviderKey(provider: 'gemini' | 'groq' | 'openai' | 'claude'): void {
+    switch (provider) {
+      case 'gemini': this.apiKey = null; this.client = null; break;
+      case 'groq': this.groqApiKey = null; this.groqClient = null; break;
+      case 'openai': this.openaiApiKey = null; this.openaiClient = null; break;
+      case 'claude': this.claudeApiKey = null; this.claudeClient = null; break;
+    }
+    console.log(`[LLMHelper] ${provider} client cleared — no key available from any source`);
   }
 
   private hasNatively(): boolean {

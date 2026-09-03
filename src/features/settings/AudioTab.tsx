@@ -22,6 +22,11 @@ const AudioTab: React.FC<{ overlay: SettingsOverlayHook }> = ({ overlay }) => {
     const isKeyProvider = (p: string): p is SttKeyProvider => (KEY_PROVIDERS as string[]).includes(p);
     const currentKeyProvider = isKeyProvider(stt.sttProvider) ? stt.sttProvider : null;
 
+    // 'Saved' is reserved for the user's own key; a provider covered only by the
+    // app's shared default gets 'Default' so the badge isn't misleading.
+    const keyBadge = (provider: SttKeyProvider): string | null =>
+        stt.isUserKey(provider) ? 'Saved' : stt.isSharedDefaultKey(provider) ? 'Default' : stt.hasStoredKey[provider] ? 'Saved' : null;
+
     return (
         <div className="space-y-6 animated fadeIn">
             {/* ── Speech Provider Section ── */}
@@ -38,13 +43,13 @@ const AudioTab: React.FC<{ overlay: SettingsOverlayHook }> = ({ overlay }) => {
                                 onChange={(val) => stt.selectSttProvider(val as any)}
                                 options={[
                                     { id: 'google', label: 'Google Cloud', badge: stt.googleServiceAccountPath ? 'Saved' : null, recommended: true, desc: 'gRPC streaming via Service Account', color: 'blue', icon: <Mic size={14} /> },
-                                    { id: 'groq', label: 'Groq Whisper', badge: stt.hasStoredKey.groq ? 'Saved' : null, recommended: true, desc: 'Ultra-fast REST transcription', color: 'orange', icon: <Mic size={14} /> },
-                                    { id: 'openai', label: 'OpenAI Whisper', badge: stt.hasStoredKey.openai ? 'Saved' : null, desc: 'OpenAI-compatible Whisper API', color: 'green', icon: <Mic size={14} /> },
-                                    { id: 'deepgram', label: 'Deepgram Nova-3', badge: stt.hasStoredKey.deepgram ? 'Saved' : null, recommended: true, desc: 'High-accuracy REST transcription', color: 'purple', icon: <Mic size={14} /> },
-                                    { id: 'elevenlabs', label: 'ElevenLabs Scribe', badge: stt.hasStoredKey.elevenlabs ? 'Saved' : null, desc: 'Scribe v2 Realtime API', color: 'teal', icon: <Mic size={14} /> },
-                                    { id: 'azure', label: 'Azure Speech', badge: stt.hasStoredKey.azure ? 'Saved' : null, desc: 'Microsoft Cognitive Services STT', color: 'cyan', icon: <Mic size={14} /> },
-                                    { id: 'ibmwatson', label: 'IBM Watson', badge: stt.hasStoredKey.ibmwatson ? 'Saved' : null, desc: 'IBM Watson cloud STT service', color: 'indigo', icon: <Mic size={14} /> },
-                                    { id: 'soniox', label: 'Soniox', badge: stt.hasStoredKey.soniox ? 'Saved' : null, recommended: true, desc: '60+ languages, multilingual, domain context', color: 'cyan', icon: <Mic size={14} /> },
+                                    { id: 'groq', label: 'Groq Whisper', badge: keyBadge('groq'), recommended: true, desc: 'Ultra-fast REST transcription', color: 'orange', icon: <Mic size={14} /> },
+                                    { id: 'openai', label: 'OpenAI Whisper', badge: keyBadge('openai'), desc: 'OpenAI-compatible Whisper API', color: 'green', icon: <Mic size={14} /> },
+                                    { id: 'deepgram', label: 'Deepgram Nova-3', badge: keyBadge('deepgram'), recommended: true, desc: 'High-accuracy REST transcription', color: 'purple', icon: <Mic size={14} /> },
+                                    { id: 'elevenlabs', label: 'ElevenLabs Scribe', badge: keyBadge('elevenlabs'), desc: 'Scribe v2 Realtime API', color: 'teal', icon: <Mic size={14} /> },
+                                    { id: 'azure', label: 'Azure Speech', badge: keyBadge('azure'), desc: 'Microsoft Cognitive Services STT', color: 'cyan', icon: <Mic size={14} /> },
+                                    { id: 'ibmwatson', label: 'IBM Watson', badge: keyBadge('ibmwatson'), desc: 'IBM Watson cloud STT service', color: 'indigo', icon: <Mic size={14} /> },
+                                    { id: 'soniox', label: 'Soniox', badge: keyBadge('soniox'), recommended: true, desc: '60+ languages, multilingual, domain context', color: 'cyan', icon: <Mic size={14} /> },
                                 ]}
                             />
                         </div>
@@ -134,7 +139,7 @@ const AudioTab: React.FC<{ overlay: SettingsOverlayHook }> = ({ overlay }) => {
                                     type="password"
                                     value={stt.keyInputs[currentKeyProvider]}
                                     onChange={(e) => stt.setKeyInput(currentKeyProvider, e.target.value)}
-                                    placeholder={stt.hasStoredKey[currentKeyProvider] ? '••••••••••••' : `Enter ${stt.providerLabel(currentKeyProvider)} API key`}
+                                    placeholder={stt.isUserKey(currentKeyProvider) ? '••••••••••••' : `Enter ${stt.providerLabel(currentKeyProvider)} API key`}
                                     className="flex-1 bg-bg-input border border-border-subtle rounded-lg px-3 py-2 text-sm text-text-primary placeholder-text-tertiary focus:outline-none focus:border-accent-primary transition-colors"
                                 />
                                 <button
@@ -144,7 +149,7 @@ const AudioTab: React.FC<{ overlay: SettingsOverlayHook }> = ({ overlay }) => {
                                 >
                                     {stt.sttSaving ? 'Saving...' : stt.sttSaved ? 'Saved!' : 'Save'}
                                 </button>
-                                {stt.hasStoredKey[currentKeyProvider] && (
+                                {stt.isUserKey(currentKeyProvider) && (
                                     <button
                                         onClick={() => stt.removeSttKey(currentKeyProvider)}
                                         className="px-2.5 py-2.5 rounded-lg text-xs font-medium text-text-tertiary hover:text-red-500 hover:bg-red-500/10 transition-all"
@@ -154,6 +159,12 @@ const AudioTab: React.FC<{ overlay: SettingsOverlayHook }> = ({ overlay }) => {
                                     </button>
                                 )}
                             </div>
+
+                            {stt.isSharedDefaultKey(currentKeyProvider) && (
+                                <p className="text-[10px] text-text-tertiary">
+                                    Running on the built-in {stt.providerLabel(currentKeyProvider)} key. Enter your own above to use it instead.
+                                </p>
+                            )}
 
                             {/* Azure Region Input */}
                             {stt.sttProvider === 'azure' && (

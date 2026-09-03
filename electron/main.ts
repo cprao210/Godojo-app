@@ -71,7 +71,8 @@ import {
     `DEEPGRAM_API_KEY=${mask(process.env.DEEPGRAM_API_KEY)} ` +
     `GEMINI_API_KEY=${mask(process.env.GEMINI_API_KEY)} ` +
     `GROQ_API_KEY=${mask(process.env.GROQ_API_KEY)} ` +
-    `TAVILY_API_KEY=${mask(process.env.TAVILY_API_KEY)}`
+    `TAVILY_API_KEY=${mask(process.env.TAVILY_API_KEY)} ` +
+    `API_ENCRYPTION_KEY=${mask(process.env.API_ENCRYPTION_KEY)}`
   );
   posthogMain.capture('env_fallback_keys_status', {
     platform: process.platform,
@@ -82,6 +83,10 @@ import {
     geminiEnvPresent: keyPresent(process.env.GEMINI_API_KEY),
     groqEnvPresent: keyPresent(process.env.GROQ_API_KEY),
     tavilyEnvPresent: keyPresent(process.env.TAVILY_API_KEY),
+    // Without this, every backend fallback key fails to decrypt and the app
+    // silently falls through to the bundled .env keys.
+    apiEncryptionKeyPresent: keyPresent(process.env.API_ENCRYPTION_KEY),
+    backendUrlPresent: keyPresent(process.env.VITE_API_BASE_URL),
   });
 }
 
@@ -1609,6 +1614,15 @@ export class AppState {
   private _audioTestEpoch = 0;
   private googleSTT: STTProvider | null = null; // Client
   private googleSTT_User: STTProvider | null = null; // User
+  // Fingerprint of the credentials the live STT providers were built with. STT
+  // instances cache their key/model/region at construction and are only created
+  // once (`if (!this.googleSTT)`), so a key saved from Settings — or resolved
+  // later from the backend fallback — never reached the pipeline. Compare against
+  // this to decide whether a rebuild is actually needed. Never holds a key value.
+  private _sttConfigFingerprint: string | null = null;
+  // A rebuild tears down both capture paths, so it is deferred when a meeting is
+  // running and flushed at endMeeting().
+  private _sttResyncPending: string | null = null;
   // Echo-pipeline telemetry poll (ERLE, gate state, mute ratio) — meeting-scoped.
   private _pipelineStatsTimer: NodeJS.Timeout | null = null;
 
@@ -1788,10 +1802,105 @@ export class AppState {
     console.log('[Main] Transcript translation enabled (non-Latin finals → English)');
   }
 
+  /**
+   * Everything the live STT providers were constructed from, as one comparable
+   * string. Keys are reduced to a short digest so a rotated key changes the
+   * fingerprint while the value itself is never stored or logged.
+   */
+  private computeSttFingerprint(): string {
+    const { CredentialsManager } = require('./services/CredentialsManager');
+    const crypto = require('crypto');
+    const cm = CredentialsManager.getInstance();
+    const provider = cm.getSttProvider();
+
+    let key: string | undefined;
+    switch (provider) {
+      case 'deepgram': key = cm.getDeepgramApiKey() || process.env.DEEPGRAM_API_KEY; break;
+      case 'soniox': key = cm.getSonioxApiKey(); break;
+      case 'elevenlabs': key = cm.getElevenLabsApiKey(); break;
+      case 'openai': key = cm.getOpenAiSttApiKey(); break;
+      case 'groq': key = cm.getGroqSttApiKey(); break;
+      case 'azure': key = cm.getAzureApiKey(); break;
+      case 'ibmwatson': key = cm.getIbmWatsonApiKey(); break;
+      default: key = undefined; break; // google STT uses a service account, not a key
+    }
+    const keyDigest = key ? crypto.createHash('sha256').update(key).digest('hex').slice(0, 12) : 'none';
+    const extras = [
+      provider === 'groq' ? cm.getGroqSttModel() : '',
+      provider === 'azure' ? cm.getAzureRegion() : '',
+      provider === 'ibmwatson' ? cm.getIbmWatsonRegion() : '',
+      cm.getDiarizeClientEnabled() ? 'diarize' : '',
+    ].filter(Boolean).join('|');
+
+    return `${provider}|${keyDigest}|${cm.getSttLanguage()}|${extras}`;
+  }
+
+  /** ApiKeyProvider that backs each STT provider, for source telemetry. */
+  private static readonly STT_KEY_PROVIDER: Record<string, string | undefined> = {
+    deepgram: 'deepgram', soniox: 'soniox', elevenlabs: 'elevenlabs',
+    openai: 'openai_stt', groq: 'groq_stt', azure: 'azure', ibmwatson: 'ibmwatson',
+  };
+
+  /**
+   * Rebuild the STT providers when the credentials behind them change. No-op when
+   * nothing changed, and deferred to endMeeting() while a meeting is running,
+   * since reconfigureSttProvider() tears down both capture paths.
+   */
+  public async syncSttCredentials(trigger: string): Promise<boolean> {
+    // Nothing built yet — whatever is current will be picked up on first use.
+    if (this._sttConfigFingerprint === null) return false;
+
+    const next = this.computeSttFingerprint();
+    if (next === this._sttConfigFingerprint) return false;
+
+    try {
+      const { posthogMain } = require('./services/PostHogMainService');
+      const { CredentialsManager } = require('./services/CredentialsManager');
+      const cm = CredentialsManager.getInstance();
+      const sttProvider = cm.getSttProvider();
+      const keyProvider = AppState.STT_KEY_PROVIDER[sttProvider];
+      posthogMain.capture('api_keys_runtime_sync', {
+        trigger,
+        target: 'stt',
+        sttProvider,
+        sttKeySource: keyProvider ? cm.getKeySource(keyProvider) : 'none',
+        deferred: this.isMeetingActive,
+      });
+    } catch { /* telemetry must never break the pipeline */ }
+
+    if (this.isMeetingActive) {
+      this._sttResyncPending = trigger;
+      console.log(`[Main] STT credentials changed (${trigger}) — rebuild deferred until the meeting ends`);
+      return false;
+    }
+
+    this._sttResyncPending = null;
+    console.log(`[Main] STT credentials changed (${trigger}) — rebuilding STT providers`);
+    await this.reconfigureSttProvider();
+    return true;
+  }
+
+  /** Apply an STT credential change that arrived mid-meeting. */
+  private async _flushPendingSttResync(): Promise<void> {
+    const trigger = this._sttResyncPending;
+    if (!trigger) return;
+    this._sttResyncPending = null;
+    if (this.computeSttFingerprint() === this._sttConfigFingerprint) return;
+    console.log(`[Main] Applying deferred STT credential change (${trigger})`);
+    try {
+      await this.reconfigureSttProvider();
+    } catch (e) {
+      console.warn('[Main] Deferred STT resync failed:', e);
+    }
+  }
+
   private createSTTProvider(speaker: 'client' | 'user'): STTProvider {
     const { CredentialsManager } = require('./services/CredentialsManager');
     const sttProvider = CredentialsManager.getInstance().getSttProvider();
     const sttLanguage = CredentialsManager.getInstance().getSttLanguage();
+    // Record what this instance is being built from, so a later credential
+    // change is detectable instead of silently ignored.
+    this._sttConfigFingerprint = this.computeSttFingerprint();
 
     let stt: STTProvider;
 
@@ -3082,6 +3191,10 @@ export class AppState {
     } catch (e) {
       console.error('[Main] Failed to revert model:', e);
     }
+
+    // An STT key/provider change saved mid-meeting was deferred so it could not
+    // interrupt the capture. The meeting is over — apply it now.
+    void this._flushPendingSttResync();
 
     // ─── Background post-processing ──────────────────────────────────────────
     // These are the previously blocking operations that caused the stop-button
@@ -4725,8 +4838,14 @@ async function initializeApp() {
         if (token) {
           const { CredentialsManager } = require('./services/CredentialsManager');
           await CredentialsManager.getInstance().fetchFallbackKeys(token);
-          // Re-initialize LLM models and Audio pipeline if they had failed without keys
-          appState?.getIntelligenceManager().reinitializeLLMs();
+          // Push the newly-resolved keys into the live clients. reinitializeLLMs()
+          // alone was not enough: it rebuilds the per-mode wrappers around the same
+          // LLMHelper, which still holds the clients constructed at boot — i.e.
+          // before sign-in, so before any fallback key existed. That is why the
+          // backend defaults appeared to be "unreliable": they were fetched and
+          // decrypted correctly but never reached a provider client.
+          appState?.processingHelper.syncLlmKeysFromCredentials('backend_fallback_fetched');
+          void appState?.syncSttCredentials('backend_fallback_fetched');
         }
       } catch (e) {
         console.warn('[Main] Failed to fetch fallback keys:', e);

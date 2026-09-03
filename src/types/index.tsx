@@ -1028,6 +1028,8 @@ export interface AIProviderModelOption {
 export interface AIProvidersSettingsTypes {
   tavilyApiKey: string;
   hasStoredTavilyKey: boolean;
+  /** Which tier the usable Tavily key came from; 'user' means the user entered it. */
+  tavilyKeySource?: 'user' | 'backend_fallback' | 'env_bundled' | 'none';
   handleRemoveTavilyKey: () => Promise<void>;
   tavilySaving: boolean;
   tavilyError: string;
@@ -1959,7 +1961,14 @@ export interface ProviderCardProps {
   providerName: string;
   apiKey: string;
   preferredModel?: string;
+  /** True when a key is usable from any tier (the user's own or a shared default). */
   hasStoredKey: boolean;
+  /**
+   * Which tier the usable key came from. 'backend_fallback'/'env_bundled' mean a
+   * shared default is in use, so the card offers to override rather than showing
+   * "Saved" and a Remove button for a key the user never entered.
+   */
+  keySource?: 'user' | 'backend_fallback' | 'env_bundled' | 'none';
   onKeyChange: (key: string) => void;
   onSaveKey: () => Promise<void>;
   onRemoveKey: () => void;
