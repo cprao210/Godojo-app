@@ -1,5 +1,6 @@
 import React, { useEffect, useState } from 'react';
 import { useResolvedTheme, useMeetingDetails, formatTime, cleanMarkdown, isSummaryEmpty } from '@/hooks';
+import { hasGeneratedSummary } from '@/lib/meetingLifecycle';
 import { Mail, ChevronDown, BarChart3, ArrowUp, Copy, Check, TrendingUp, TriangleAlert, MessageSquare } from 'lucide-react';
 import { MessagesSquareIcon, ChartColumnIncreasing, CircleCheck, NotepadText, RefreshCcw, RefreshCw, NotebookPen, ClipboardList } from 'lucide-react';
 import { motion, AnimatePresence } from 'framer-motion';
@@ -104,11 +105,15 @@ const MeetingDetails: React.FC<MeetingDetailsProps> = ({ meeting: initialMeeting
     const {
         meeting,
         isProcessing,
-        isLoadingMeetingDetail,
         isLoadingTranscript,
         scorecard,
+        processingStage,
+        isSummaryReady,
+        isAnalysisReady,
+        isLoadingAskDojo,
+        canRegenerate,
         activeTab, setActiveTab,
-        aiInteractionsData, isLoadingAiInteractions,
+        aiInteractionsData,
         query, setQuery,
         isCopied,
         isRegenerating,
@@ -257,12 +262,12 @@ const MeetingDetails: React.FC<MeetingDetailsProps> = ({ meeting: initialMeeting
                             {/* Regenerate */}
                             <button
                                 onClick={handleRegenerateSummaryTracked}
-                                disabled={isRegenerating || isProcessing}
-                                title={isProcessing ? 'Wait for analysis to complete first' : 'Regenerate summary'}
+                                disabled={!canRegenerate}
+                                title={canRegenerate ? 'Regenerate summary' : 'Wait for analysis to complete first'}
                                 className={`
                                     flex items-center gap-2 px-3.5 py-2 rounded-lg text-[13px] font-medium
                                     transition-all duration-200 active:scale-[0.97]
-                                    ${isRegenerating || isProcessing ? 'opacity-40 cursor-not-allowed' : ''}
+                                    ${!canRegenerate ? 'opacity-40 cursor-not-allowed' : ''}
                                     ${isLight
                                         ? 'bg-white border border-slate-200 text-slate-600 hover:border-slate-300 hover:bg-slate-50 shadow-sm'
                                         : 'bg-slate-700/30 border border-slate-700/10 text-white/70 hover:bg-slate-700/40 hover:border-slate-500/40'
@@ -309,14 +314,46 @@ const MeetingDetails: React.FC<MeetingDetailsProps> = ({ meeting: initialMeeting
                         {/* Using standard divs for content, framer motion for layout */}
                         {activeTab === 'summary' && (
                             <>
-                                {(isRegenerating || isProcessing || isLoadingMeetingDetail) ?
+                                {processingStage.stage === 'stalled' ? (
+                                    /* ── Processing never finished ──
+                                       Past PROCESSING_STALL_TIMEOUT_MS the run is
+                                       not coming back, so stop animating a wait
+                                       that has no end and offer the actual fix. */
+                                    <motion.div
+                                        initial={{ opacity: 0, y: 6 }}
+                                        animate={{ opacity: 1, y: 0 }}
+                                        className={`flex flex-col items-center justify-center py-20 gap-5 rounded-2xl border border-dashed ${isLight ? 'border-amber-200 bg-amber-50/40' : 'border-amber-500/20 bg-amber-500/[0.04]'}`}
+                                    >
+                                        <div className={`w-14 h-14 rounded-2xl flex items-center justify-center ${isLight ? 'bg-amber-100' : 'bg-amber-500/10'}`}>
+                                            <TriangleAlert size={24} strokeWidth={1.5} className={isLight ? 'text-amber-500' : 'text-amber-400/70'} />
+                                        </div>
+                                        <div className="text-center flex flex-col gap-1.5 max-w-[300px]">
+                                            <p className={`text-[14px] font-semibold ${isLight ? 'text-slate-700' : 'text-white/60'}`}>
+                                                {processingStage.label}
+                                            </p>
+                                            <p className={`text-[12px] leading-relaxed ${isLight ? 'text-slate-500' : 'text-white/30'}`}>
+                                                {processingStage.detail}
+                                            </p>
+                                        </div>
+                                        <button
+                                            onClick={handleRegenerateSummaryTracked}
+                                            disabled={!canRegenerate}
+                                            className={`mt-1 flex items-center gap-2 px-4 py-2 rounded-lg text-[12px] font-medium transition-all ${isLight ? 'bg-white border border-slate-200 text-slate-600 hover:bg-slate-50 shadow-sm' : 'bg-white/[0.05] border border-white/[0.1] text-white/60 hover:bg-white/[0.08]'} disabled:opacity-40 disabled:cursor-not-allowed`}
+                                        >
+                                            <RefreshCcw size={12} strokeWidth={1.8} className={isRegenerating ? 'animate-spin' : ''} />
+                                            {isRegenerating ? 'Regenerating…' : 'Regenerate summary'}
+                                        </button>
+                                    </motion.div>
+                                ) : !isSummaryReady ?
                                     <motion.div
                                         initial={{ opacity: 0 }}
                                         animate={{ opacity: 1 }}
                                         transition={{ duration: 0.3 }}
                                     >
-                                        {/* Regenerating / processing banner — skip it for the plain
-                                            "still fetching over HTTP" case, that one's near-instant. */}
+                                        {/* Stage banner — skip it for the plain "still fetching over
+                                            HTTP" case (stage 'finalizing'), that one's near-instant.
+                                            Every other label maps to work main has genuinely not
+                                            finished yet, so it's safe to name. */}
                                         {(isRegenerating || isProcessing) && (
                                             <div className="flex items-center gap-3 mb-6 p-3 rounded-xl bg-blue-500/10 border border-blue-500/20">
                                                 <motion.div
@@ -326,9 +363,9 @@ const MeetingDetails: React.FC<MeetingDetailsProps> = ({ meeting: initialMeeting
                                                     <RefreshCw size={13} className="text-blue-400 shrink-0" />
                                                 </motion.div>
                                                 <p className="text-xs text-blue-400 font-medium">
-                                                    {isProcessing
-                                                        ? 'Analysing transcript — this may take 15-30 seconds...'
-                                                        : 'Regenerating summary — this may take 15-30 seconds...'
+                                                    {isRegenerating
+                                                        ? 'Regenerating summary — this may take 15-30 seconds...'
+                                                        : `${processingStage.label} — ${processingStage.detail}`
                                                     }
                                                 </p>
                                             </div>
@@ -364,8 +401,13 @@ const MeetingDetails: React.FC<MeetingDetailsProps> = ({ meeting: initialMeeting
                                             </div>
                                         )}
 
-                                        {/* ── Summary object exists but all fields are empty ── */}
-                                        {meeting.detailedSummary && isSummaryEmpty(meeting.detailedSummary) && (
+                                        {/* ── Summary object exists but there is nothing to draw ──
+                                            `hasGeneratedSummary` rather than `isSummaryEmpty`: a
+                                            meeting whose only content is live analysis passes
+                                            isSummaryEmpty (its Analysis tab does have content) yet
+                                            every section below still renders nothing, which showed
+                                            as a silently blank Summary tab. */}
+                                        {meeting.detailedSummary && !hasGeneratedSummary(meeting.detailedSummary) && (
                                             <motion.div
                                                 initial={{ opacity: 0, y: 6 }}
                                                 animate={{ opacity: 1, y: 0 }}
@@ -1173,7 +1215,7 @@ const MeetingDetails: React.FC<MeetingDetailsProps> = ({ meeting: initialMeeting
 
                         {activeTab === 'usage' && (
                             <motion.section initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }} className="space-y-8 pb-10">
-                                {isLoadingMeetingDetail || isLoadingAiInteractions ? (
+                                {isLoadingAskDojo ? (
                                     Array.from({ length: 3 }).map((_, i) => (
                                         <div key={i} className="space-y-3">
                                             <Skeleton className="h-10 w-2/3" />
@@ -1225,7 +1267,7 @@ const MeetingDetails: React.FC<MeetingDetailsProps> = ({ meeting: initialMeeting
                                             )}
                                         </div>
                                     )))}
-                                {!isLoadingMeetingDetail && !isLoadingAiInteractions && !(aiInteractionsData?.items?.length) && (
+                                {!isLoadingAskDojo && !(aiInteractionsData?.items?.length) && (
                                     <div className={`flex flex-col items-center justify-center py-16 gap-4 rounded-2xl border border-dashed ${isLight ? 'border-slate-200 bg-slate-50/50' : 'border-white/[0.07] bg-white/[0.02]'}`}>
                                         <div className={`w-12 h-12 rounded-2xl flex items-center justify-center ${isLight ? 'bg-slate-100' : 'bg-white/[0.05]'}`}>
                                             <MessagesSquareIcon size={22} strokeWidth={1.5} className={isLight ? 'text-slate-400' : 'text-white/25'} />
@@ -1245,8 +1287,18 @@ const MeetingDetails: React.FC<MeetingDetailsProps> = ({ meeting: initialMeeting
 
                         {activeTab === 'analysis' && (
                             <motion.section initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }}>
-                                {isLoadingMeetingDetail ? (
+                                {/* Gated on the detail read having actually resolved, not on
+                                    `isLoadingMeetingDetail` — that flag is false on the first
+                                    render (initialData) and while the query is disabled during
+                                    processing, which is how this tab used to claim "No live
+                                    analysis captured" for a meeting that has some. */}
+                                {!isAnalysisReady ? (
                                     <div className="space-y-3">
+                                        {isProcessing && (
+                                            <p className={`text-xs font-medium mb-1 ${isLight ? 'text-slate-500' : 'text-white/40'}`}>
+                                                {processingStage.label} — {processingStage.detail}
+                                            </p>
+                                        )}
                                         <Skeleton className="h-32 w-full" />
                                         <div className="flex gap-3">
                                             <Skeleton className="h-40 w-full" />
@@ -1285,7 +1337,7 @@ const MeetingDetails: React.FC<MeetingDetailsProps> = ({ meeting: initialMeeting
             </main>
 
             {/* Floating Footer (Ask Bar) */}
-            <div className={`absolute bottom-0 left-0 right-0 p-6 flex flex-col items-center gap-2 pointer-events-none ${isChatOpen ? 'z-50' : 'z-20'}`}>
+            <div className={`absolute bottom-10 left-0 right-0 p-6 flex flex-col items-center gap-2 pointer-events-none ${isChatOpen ? 'z-50' : 'z-20'}`}>
                 {/* History affordance — only shown when there's a past conversation
                     and the overlay is currently closed, so it's clear there's
                     something to go back to without needing to type first. */}

@@ -9,9 +9,9 @@
  */
 
 import React from 'react';
-import { useEffect } from 'react';
+import { useEffect, useState } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
-import { Radio, Brain, Pause, Play, StopCircle, Settings, Ghost } from 'lucide-react';
+import { Radio, Brain, Pause, Play, StopCircle, Settings, Ghost, Loader2 } from 'lucide-react';
 import { FloatingSettingsPanel, FloatingChatPanel, FloatingIntelligencePanel, DockButton } from '@/features/floating-dock';
 import { FloatingPanelWrapper, DockDivider, DockDragHandle, PausedIndicatorDot } from '@/features/floating-dock';
 // Imported relatively (not via the barrel above) — the barrel re-exports
@@ -53,6 +53,10 @@ export const FloatingDock: React.FC<FloatingDockProps> = ({
     // bars to 0 within ~400ms without any extra wiring here.
     const { micLevel, systemLevel } = useLiveAudioLevels(true);
 
+    // True while the awaited end-of-call analysis is running. Local to the
+    // button: nothing else in the dock changes behaviour because of it.
+    const [isEndingCall, setIsEndingCall] = useState(false);
+
     useEffect(() => {
         posthogAnalytics.trackPageView('floating_dock');
     }, []);
@@ -60,7 +64,7 @@ export const FloatingDock: React.FC<FloatingDockProps> = ({
     const { activePanel, togglePanel, isDockExpanded, collapseDock, expandDock, isFrozen, dockOpacity, handleDockOpacityChange, dockRef, ensureFinalAnalysisBeforeEndCall } = floatingDockStates;
     const { panelTopOffset, meetingTypes, setMeetingTypes, analysisData, analysisLoading, analysisError } = floatingDockStates;
     const { runAnalysis, isRefreshRun, chatMessages, setChatMessages, autoRefreshInterval, setAutoRefreshInterval } = floatingDockStates;
-    const { intelligencePanelFirstOpenedAt, noAnalysisCaptured, handleInteractionId } = floatingDockStates;
+    const { intelligencePanelFirstOpenedAt, noAnalysisCaptured, isCountdownActive, handleInteractionId } = floatingDockStates;
 
     // In Performance Mode we swap these springs for short tweens: fewer animated
     // frames (no spring settling/overshoot) = less layout/paint per panel switch
@@ -206,6 +210,7 @@ export const FloatingDock: React.FC<FloatingDockProps> = ({
                         isRefreshRun={isRefreshRun}
                         panelFirstOpenedAt={intelligencePanelFirstOpenedAt}
                         noAnalysisCaptured={noAnalysisCaptured}
+                        isCountdownActive={isCountdownActive}
                         meetingTypes={meetingTypes}
                         onMeetingTypesChange={setMeetingTypes}
                         isPerformanceMode={isPerformanceMode}
@@ -380,14 +385,27 @@ export const FloatingDock: React.FC<FloatingDockProps> = ({
 
                                     {/* End Call */}
                                     <DockButton
-                                        icon={<StopCircle size={22} strokeWidth={1.6} />}
-                                        tooltip="End Call"
+                                        icon={isEndingCall
+                                            ? <Loader2 size={22} strokeWidth={1.6} className="animate-spin" />
+                                            : <StopCircle size={22} strokeWidth={1.6} />}
+                                        tooltip={isEndingCall ? 'Wrapping up the call…' : 'End Call'}
                                         isActive={false}
                                         dangerColor
                                         frozen={isFrozen}
                                         isPerformanceMode={isPerformanceMode}
                                         onClick={async () => {
-                                            await ensureFinalAnalysisBeforeEndCall();
+                                            // ensureFinalAnalysisBeforeEndCall is awaited so the final
+                                            // analysis is in main's slot before stopMeeting() snapshots
+                                            // it. That can take a few seconds, so show it rather than
+                                            // leaving the dock looking unresponsive — and ignore repeat
+                                            // clicks while it runs.
+                                            if (isEndingCall) return;
+                                            setIsEndingCall(true);
+                                            try {
+                                                await ensureFinalAnalysisBeforeEndCall();
+                                            } finally {
+                                                setIsEndingCall(false);
+                                            }
                                             onEndCall(meetingTypes);
                                         }}
                                     />

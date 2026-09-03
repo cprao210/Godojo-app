@@ -21,6 +21,7 @@ import { isMeetingProcessing } from '@/api/meetingMapping';
 import { guardSession } from '@/lib/firebase';
 import type { Meeting, MeetingTranscriptLine, MeetingScorecardResult, LiveAnalysisData } from '@/types';
 import { normalizeBant, normalizeMeddicc, confirmedOnly, BANT_ORDER, MEDDICC_ORDER } from '@/lib/bantMeddic';
+import { deriveProcessingStage, hasGeneratedSummary, PROCESSING_STALL_TIMEOUT_MS } from '@/lib/meetingLifecycle';
 import { classifyLLMError } from '@/lib/utils';
 import { posthogAnalytics } from '@/lib/analytics/posthog.service';
 
@@ -138,14 +139,26 @@ export function useMeetingDetails(initialMeeting: Meeting) {
 
     // Full detail (transcript + usage) loads over HTTP; the list row seeds initialData so
     // the view renders instantly, then reconciles with the backend.
+    const canFetchDetail = !isLiveMeetingPlaceholder && !isOptimisticMeetingId(initialMeeting.id);
     const { data: meetingData = initialMeeting, isLoading: isLoadingMeetingDetail, dataUpdatedAt } = useQuery<Meeting>(
         meetingKey,
         () => meetingsApi.get(initialMeeting.id),
         {
             initialData: initialMeeting,
-            enabled: !isProcessing && !isLiveMeetingPlaceholder && !isOptimisticMeetingId(initialMeeting.id),
+            enabled: !isProcessing && canFetchDetail,
         },
     );
+
+    // Has the detail read actually produced a result for this meeting?
+    //
+    // `isLoadingMeetingDetail` cannot answer that: `initialData` makes it false
+    // on the very first render, and a *disabled* query (during isProcessing) is
+    // `idle`, which is also not "loading". `dataUpdatedAt` is the only honest
+    // signal — react-query stamps it on a completed fetch AND on the
+    // `setQueryData` the unblock effect below performs, which are precisely the
+    // two ways real detail data arrives. Ids with no backend row can never
+    // resolve that way, so they count as resolved and render the list row.
+    const isDetailResolved = !canFetchDetail || dataUpdatedAt > 0;
 
     // /chat/live interaction_ids collected during the live call can't be
     // linked to a meeting until the backend actually has that meeting row —
@@ -156,13 +169,10 @@ export function useMeetingDetails(initialMeeting: Meeting) {
     // actual completed query, which IS the confirmation the backend has
     // synced this meeting.
     useEffect(() => {
-
-        console.log({ isProcessing, dataUpdatedAt, meetingDataId: meetingData.id, initialMeetingId: initialMeeting.id })
         if (isProcessing || dataUpdatedAt === 0 || meetingData.id !== initialMeeting.id) return;
 
         (async () => {
             const pendingIds = await window.electronAPI?.getPendingLiveChatInteractions?.(initialMeeting.id);
-            console.log({ pendingIds })
             if (!pendingIds || pendingIds.length === 0) return;
 
             try {
@@ -251,18 +261,39 @@ export function useMeetingDetails(initialMeeting: Meeting) {
     // meeting_scorecards table. meeting:getScorecard reads Supabase first (other devices'
     // scorecards) and falls back to local SQLite.
     const scorecardKey = ["meeting-scorecard", initialMeeting.id];
-    const { data: localScorecard = null } = useQuery<MeetingScorecardResult | null>(
+    const scorecardEnabled = !!initialMeeting.id && !isOptimisticMeetingId(initialMeeting.id);
+    const {
+        data: localScorecard = null,
+        dataUpdatedAt: scorecardUpdatedAt,
+        isFetching: isFetchingScorecard,
+    } = useQuery<MeetingScorecardResult | null>(
         scorecardKey,
         async () => {
             const res = await window.electronAPI?.meetingGetScorecard?.(initialMeeting.id);
             return res?.success ? (res.data ?? null) : null;
         },
-        { enabled: !isProcessing && !!initialMeeting.id && !isOptimisticMeetingId(initialMeeting.id) },
+        {
+            // Deliberately NOT gated on `!isProcessing` any more. processAndSaveMeeting
+            // persists the scorecard row as soon as scoring finishes, while the summary
+            // is still in its generate → verify loop — so this row appearing while
+            // `is_processed` is still 0 is the one real, observable signal of which half
+            // of the background work is left. Polling for it is what lets the UI say
+            // "Validating summary" honestly instead of animating a fake stage.
+            enabled: scorecardEnabled,
+            refetchInterval: isProcessing ? 2500 : false,
+        },
     );
     // Prefer the dedicated-table scorecard; the summary_json-embedded blob is only the
     // legacy / DB-write-failure fallback (same precedence as DatabaseManager.getMeetingDetails).
     const scorecard: MeetingScorecardResult | null =
         localScorecard ?? meeting.detailedSummary?.scorecard ?? null;
+
+    // Has the scorecard read settled? `!isFetchingScorecard` matters as much as
+    // `scorecardUpdatedAt > 0`: the unblock effect and regenerate both invalidate
+    // this key, and a stale `null` from a poll taken mid-processing would
+    // otherwise count as "resolved" and paint the summary before the real score
+    // arrived a moment later.
+    const isScorecardResolved = !scorecardEnabled || (scorecardUpdatedAt > 0 && !isFetchingScorecard);
 
     // Title / summary edits: HTTP is canonical; the existing IPC write is fired on success
     // as a write-through so local SQLite + RAG stay consistent (and the async mirror can't
@@ -309,19 +340,34 @@ export function useMeetingDetails(initialMeeting: Meeting) {
     // Persisted "Ask Dojo" Q&A history — fetched lazily the first time the
     // user opens this tab (enabled gate), not bundled into the initial
     // meeting payload since most sessions on a meeting never open it.
-    const { data: aiInteractionsData, isLoading: isLoadingAiInteractions } = useQuery(
+    const askDojoEnabled =
+        activeTab === 'usage' &&
+        !!meeting?.id &&
+        !isLiveMeetingPlaceholder &&
+        !isOptimisticMeetingId(meeting?.id) &&
+        !isProcessing;
+    const {
+        data: aiInteractionsData,
+        isLoading: isLoadingAiInteractions,
+        dataUpdatedAt: aiInteractionsUpdatedAt,
+        error: aiInteractionsError,
+    } = useQuery(
         ['ai-interactions', meeting?.id],
         () => meetingsApi.getAiInteractions(meeting!.id),
         {
-            enabled:
-                activeTab === 'usage' &&
-                !!meeting?.id &&
-                !isLiveMeetingPlaceholder &&
-                !isOptimisticMeetingId(meeting?.id) &&
-                !isProcessing,
+            enabled: askDojoEnabled,
             staleTime: 30_000,
         }
     );
+
+    // The tab's own loading flag. `isLoadingAiInteractions` alone is not enough:
+    // on the very first render after the tab is clicked the query hasn't been
+    // enabled yet, so its status is still `idle` — isLoading false, data
+    // undefined — which the tab rendered as "No questions asked yet" before any
+    // read had happened. An empty state must only ever follow a real answer.
+    const isLoadingAskDojo = askDojoEnabled
+        ? isLoadingAiInteractions || (aiInteractionsUpdatedAt === 0 && !aiInteractionsError)
+        : isProcessing;
     const [query, setQuery] = useState('');
     const [isCopied, setIsCopied] = useState(false);
     const [isRegenerating, setIsRegenerating] = useState(false);
@@ -331,6 +377,74 @@ export function useMeetingDetails(initialMeeting: Meeting) {
     const [pendingQuery, setPendingQuery] = useState<{ text: string; id: number } | null>(null);
     const [chatMessages, setChatMessages] = useState<import('@/types').MeetingChatMessage[]>([]);
     const [isTalktimeOpen, setIsTalktimeOpen] = useState(false);
+
+    // ─── What is this meeting actually doing, and what may be painted yet? ────
+    //
+    // Every flag below answers that from persisted state only. The rule the tabs
+    // enforce with them: a section renders when ALL of the data it shows has
+    // landed, never as each piece trickles in. That is what stopped the score
+    // appearing seconds before the summary it belongs to.
+
+    // Background processing that hasn't finished in PROCESSING_STALL_TIMEOUT_MS
+    // has failed (main crashed, the provider never answered, the app was killed
+    // mid-run). Measured from the row's own created_at, which MeetingPersistence
+    // stamps when the call ENDS — i.e. when processing began. So reopening a
+    // meeting abandoned hours ago reads as stalled immediately instead of
+    // promising a summary for another five minutes.
+    const [isProcessingStalled, setIsProcessingStalled] = useState(false);
+    useEffect(() => {
+        if (!isProcessing) {
+            setIsProcessingStalled(false);
+            return;
+        }
+        const startedAt = new Date(initialMeeting.date).getTime();
+        const elapsed = Number.isNaN(startedAt) ? 0 : Date.now() - startedAt;
+        if (elapsed >= PROCESSING_STALL_TIMEOUT_MS) {
+            setIsProcessingStalled(true);
+            return;
+        }
+        setIsProcessingStalled(false);
+        const timer = setTimeout(
+            () => setIsProcessingStalled(true),
+            PROCESSING_STALL_TIMEOUT_MS - elapsed,
+        );
+        return () => clearTimeout(timer);
+    }, [isProcessing, initialMeeting.id, initialMeeting.date]);
+
+    const processingStage = useMemo(
+        () =>
+            deriveProcessingStage({
+                isProcessing,
+                hasScorecard: !!scorecard,
+                isDetailResolved: isDetailResolved && isScorecardResolved,
+                isStalled: isProcessingStalled,
+            }),
+        [isProcessing, scorecard, isDetailResolved, isScorecardResolved, isProcessingStalled],
+    );
+
+    // The single gate for the Summary tab AND the score accordion inside it, so
+    // the two can no longer land at different times.
+    //
+    // The scorecard read is always waited on — it's a fast local-first read, and
+    // it is the thing that used to appear seconds ahead of the summary it
+    // belongs to. The *detail* read can be short-circuited when the list row
+    // already carries real summary prose: there is nothing left to wait for, and
+    // holding a skeleton over data we already have would be its own kind of lie.
+    const isSummaryReady =
+        !isProcessing &&
+        !isRegenerating &&
+        isScorecardResolved &&
+        (isDetailResolved || hasGeneratedSummary(meeting.detailedSummary));
+
+    // Call Analysis renders `detailedSummary.liveAnalysis`, which arrives with
+    // the detail read — so before that read settles the tab must show a skeleton,
+    // not "No live analysis captured".
+    const isAnalysisReady =
+        !!(meeting.detailedSummary as any)?.liveAnalysis || (!isProcessing && isDetailResolved);
+
+    // Regenerate is normally disabled while processing owns the row. A stalled
+    // run owns nothing — it's the one case where regenerating is the fix.
+    const canRegenerate = !isRegenerating && (!isProcessing || isProcessingStalled);
 
     const speakerNames = (meeting.detailedSummary as any)?.speakerNames as
         { user: string; client: string } | undefined;
@@ -738,6 +852,13 @@ ${formatNextCallPlaybook() || '  None'}
         isLoadingMeetingDetail,
         isLoadingTranscript,
         scorecard,
+        // Lifecycle-derived render gates (see the block above).
+        processingStage,
+        isProcessingStalled,
+        isSummaryReady,
+        isAnalysisReady,
+        isLoadingAskDojo,
+        canRegenerate,
         activeTab, setActiveTab,
         aiInteractionsData, isLoadingAiInteractions,
         query, setQuery,

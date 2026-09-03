@@ -302,7 +302,7 @@ export const AudioStatusTray: React.FC<AudioStatusTrayProps> = ({ isVisible, onC
         // the same z-[200] the header uses, so this stays visible as a footer
         // above every screen (Launcher / Settings / Dashboard) — not just while
         // whichever component happens to mount it is on screen.
-        <div className={`fixed bottom-0 left-0 right-0 w-full h-12 border-t border-border-subtle ${isLight ? "bg-bg-secondary" : "bg-gray-600/20"} flex items-center px-4 z-[200]`}>
+        <div className={`fixed bottom-0 left-0 right-0 w-full h-12 border-t border-border-subtle ${isLight ? "bg-bg-secondary" : "bg-gray-900"} flex items-center px-4 z-[200]`}>
             <div className="flex items-center gap-4 relative">
                 {/* Bottom-left System Tray style icons */}
                 <button

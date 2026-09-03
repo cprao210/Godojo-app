@@ -927,6 +927,8 @@ export type MeetingType = 'discovery' | 'demo' | 'negotiation';
 
 export interface ScoredCategory {
   categoryName: string;
+  key?: string;           // config key this row came from; kept so the score can be
+                          // reconciled against live analysis after label edits
   score: number;          // 0–maxScore
   maxScore: number;
   weight: number;         // 0–100 (percentage weight of this category)
@@ -1676,6 +1678,9 @@ export interface FloatingIntelligencePanelProps {
   speakerNames: { user: string; client: string };
   panelFirstOpenedAt: number | null; // timestamp when intelligence panel was first opened
   noAnalysisCaptured?: boolean; // true when the countdown ended without enough transcript to analyse
+  isCountdownActive?: boolean; // true only while the single startup countdown cycle is still armed
+                              // AND no analysis result has landed — the countdown must never be
+                              // re-entered after the loading skeleton (see useFloatingDock)
   meetingTypes: MeetingType[];
   onMeetingTypesChange: (types: MeetingType[]) => void;
   /** See usePerformanceMode.ts — drops backdrop-filter blur when true. */

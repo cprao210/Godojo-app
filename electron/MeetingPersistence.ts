@@ -10,9 +10,18 @@ import { LiveAnalysisData, MeetingScorecardResult } from '../src/types';
 import { AppState } from './main';
 import { buildCompanyContextBlock } from '../electron/utils/salesBriefUtils';
 import { buildScorecardPrompt } from './llm/ScoreCardLLM';
+import { reconcileScorecardWithLiveAnalysis } from './scorecardReconciliation';
 import { BANT_ORDER, MEDDICC_ORDER } from '../src/lib/bantMeddic';
 
 const crypto = require('crypto');
+
+/** The LLM half of scorecard generation, before grounding and persistence.
+ *  Carries the criteria snapshot along so finalizeScorecard() can store the
+ *  exact criteria the score was produced against. */
+type ScorecardDraft = {
+    scorecardResult: MeetingScorecardResult | null;
+    customScoringCriteria: import('../src/types').ScoringCriteriaSettings | null;
+};
 
 // ── Summary grounding verification ──────────────────────────────────────────
 // After generating the structured summary JSON, we cross-check it against the
@@ -378,19 +387,27 @@ export class MeetingPersistence {
         const endTimeMs = Date.now();
         const totalPausedMs = this.session.getTotalPausedMs();
         const durationMs = Math.max(0, (endTimeMs - startTimeMs) - totalPausedMs);
+        const appState = AppState.getInstance();
         if (durationMs < 1000) {
             console.log("Meeting too short, ignoring.");
+            // Still hand back the live-analysis slot. Nothing will be saved for
+            // this call, so anything left in it can only ever be read by the
+            // NEXT meeting's summary generation.
+            appState?.clearCurrentLiveAnalysis?.();
             this.session.reset();
             return null;
         }
 
-        const appState = AppState.getInstance();
+        // Take the analysis by value and clear the slot unconditionally — the
+        // call is over, so from here on the slot belongs to whatever comes
+        // next. Clearing only when a result happened to be present left a
+        // non-null companyIntel behind on the empty-analysis path.
         const liveAnalysisData = appState?.getCurrentLiveAnalysis?.() || null;
         console.log('[MeetingPersistence] Retrieved liveAnalysisData:', !!liveAnalysisData);
         if (liveAnalysisData) {
             console.log('[MeetingPersistence] Live analysis keys:', Object.keys(liveAnalysisData));
-            appState?.clearCurrentLiveAnalysis?.();
         }
+        appState?.clearCurrentLiveAnalysis?.();
 
         const snapshot = {
             transcript: [...this.session.getFullTranscript()],
@@ -560,18 +577,25 @@ export class MeetingPersistence {
         // that's the bulk of the gap the user saw between the summary actually
         // being ready and being told about it.
         //
-        // generateAndPersistScorecard never rejects (every failure path returns
-        // an outcome object) — the .catch is belt-and-braces so a future throw
-        // before its first await can't surface as an unhandled rejection while
-        // we're off awaiting the summary.
-        const scorecardOutcome: Promise<{ scorecardResult: MeetingScorecardResult | null; persisted: boolean }> =
+        // Only the LLM half runs here. Grounding it against live analysis and
+        // writing it out happen in finalizeScorecard() below, because on the
+        // upload/recovery path `liveAnalysisData` doesn't exist yet at this point
+        // — it's generated further down. Splitting the two keeps the round-trip
+        // overlapped while guaranteeing the scorecard is reconciled against the
+        // FINAL live analysis on every path.
+        //
+        // generateScorecardDraft never rejects (every failure path returns a
+        // draft object) — the .catch is belt-and-braces so a future throw before
+        // its first await can't surface as an unhandled rejection while we're
+        // off awaiting the summary.
+        const scorecardDraft: Promise<ScorecardDraft> =
             data.transcript.length > 2
-                ? this.generateAndPersistScorecard(meetingId, fullTranscriptText, hintMeetingTypes ?? null)
-                    .catch((err): { scorecardResult: MeetingScorecardResult | null; persisted: boolean } => {
+                ? this.generateScorecardDraft(fullTranscriptText, hintMeetingTypes ?? null, liveAnalysisData ?? null)
+                    .catch((err): ScorecardDraft => {
                         console.warn('[MeetingPersistence] Scorecard generation threw (non-fatal):', err);
-                        return { scorecardResult: null, persisted: false };
+                        return { scorecardResult: null, customScoringCriteria: null };
                     })
-                : Promise.resolve({ scorecardResult: null, persisted: false });
+                : Promise.resolve({ scorecardResult: null, customScoringCriteria: null });
 
         try {
             // Generate Title (only if not set by calendar)
@@ -757,11 +781,14 @@ export class MeetingPersistence {
             }
 
             // ── Collect Meeting Scorecard ──────────────────────────────────────────────────
-            // Started back before the title/summary LLM calls (see scorecardOutcome
-            // above) so its latency overlaps theirs instead of stacking on top. By
-            // the time we get here it has almost always already resolved; when the
-            // transcript was too short to score, it resolves to the null outcome.
-            const { scorecardResult, persisted: scorecardPersisted } = await scorecardOutcome;
+            // The LLM half was started back before the title/summary calls (see
+            // scorecardDraft above) so its latency overlaps theirs instead of
+            // stacking on top. Only the grounding + write happen here, now that
+            // `liveAnalysisData` is final on every path (the upload/recovery path
+            // generates it just above). When the transcript was too short to
+            // score, the draft is the null outcome and this is a no-op.
+            const { scorecardResult, persisted: scorecardPersisted } =
+                this.finalizeScorecard(meetingId, await scorecardDraft, liveAnalysisData);
 
             if (scorecardResult && !scorecardPersisted) {
                 // DB write failed — fall back to embedding it in summary_json so the UI still gets data
@@ -854,9 +881,13 @@ export class MeetingPersistence {
      * Generates a meeting scorecard via the LLM and persists it to `meeting_scorecards`
      * (mirroring to Supabase). Single source of truth for: loading scoring criteria,
      * building the prompt, stripping ```json fences, parsing, normalizing
-     * `categoryBreakdown`, saving, and mirroring — used by both the initial
-     * post-meeting scorecard generation and manual regeneration so the two paths
-     * can't drift.
+     * `categoryBreakdown`, grounding against live analysis, saving, and mirroring —
+     * used by both the initial post-meeting scorecard generation and manual
+     * regeneration so the two paths can't drift.
+     *
+     * Split into generateScorecardDraft() (the LLM round-trip, safe to start early
+     * and overlap with the title/summary calls) and finalizeScorecard() (grounding +
+     * write, which must wait until the final live analysis exists).
      *
      * Returns `scorecardResult: null` if generation/parsing failed (non-fatal —
      * callers should treat this as "no scorecard produced this run").
@@ -867,8 +898,27 @@ export class MeetingPersistence {
     private async generateAndPersistScorecard(
         meetingId: string,
         transcriptText: string,
-        hintTypes: ('discovery' | 'demo' | 'negotiation')[] | null
+        hintTypes: ('discovery' | 'demo' | 'negotiation')[] | null,
+        liveAnalysis: LiveAnalysisData | null
     ): Promise<{ scorecardResult: MeetingScorecardResult | null; persisted: boolean }> {
+        const draft = await this.generateScorecardDraft(transcriptText, hintTypes ?? null, liveAnalysis);
+        return this.finalizeScorecard(meetingId, draft, liveAnalysis);
+    }
+
+    /**
+     * The LLM half of scorecard generation: load criteria, build the prompt, call
+     * the model, parse. No DB access, no reconciliation — so it can be kicked off
+     * early and awaited later. Never rejects.
+     *
+     * `liveAnalysis` is optional here and only used to ground the prompt; the
+     * live path has it up front, the upload/recovery path doesn't. Either way
+     * finalizeScorecard() applies the deterministic grounding afterwards.
+     */
+    private async generateScorecardDraft(
+        transcriptText: string,
+        hintTypes: ('discovery' | 'demo' | 'negotiation')[] | null,
+        liveAnalysis: LiveAnalysisData | null = null
+    ): Promise<ScorecardDraft> {
         let customScoringCriteria: import('../src/types').ScoringCriteriaSettings | null = null;
         try {
             customScoringCriteria = DatabaseManager.getInstance().getScoringCriteria();
@@ -878,7 +928,7 @@ export class MeetingPersistence {
 
         let scorecardResult: MeetingScorecardResult | null = null;
         try {
-            const scorecardPrompt = buildScorecardPrompt(customScoringCriteria, hintTypes ?? null);
+            const scorecardPrompt = buildScorecardPrompt(customScoringCriteria, hintTypes ?? null, liveAnalysis);
             const scorecardRaw = await this.llmHelper.generateMeetingSummary(
                 scorecardPrompt,
                 transcriptText,
@@ -893,19 +943,50 @@ export class MeetingPersistence {
                     overallWeightedScore: parsed.overallWeightedScore ?? 0,
                     scorecards: Object.values(parsed.scorecards ?? {}).map((sc: any) => ({
                         ...sc,
+                        // Keep the config key when the model returned the breakdown as an
+                        // object (it always does) — reconcileScorecardWithLiveAnalysis
+                        // matches on key first, so a renamed custom label still grounds.
                         categoryBreakdown: Array.isArray(sc.categoryBreakdown)
                             ? sc.categoryBreakdown
-                            : Object.values(sc.categoryBreakdown ?? {}),
+                            : Object.entries(sc.categoryBreakdown ?? {}).map(([key, cat]: [string, any]) => ({ key, ...cat })),
                     })),
                 } as MeetingScorecardResult;
             }
         } catch (e) {
             console.warn('[MeetingPersistence] Scorecard generation failed (non-fatal):', e);
-            return { scorecardResult: null, persisted: false };
+            return { scorecardResult: null, customScoringCriteria };
         }
+
+        return { scorecardResult, customScoringCriteria };
+    }
+
+    /**
+     * Grounds a scorecard draft against live analysis, merges it with any
+     * previously-saved scorecard, and writes it to `meeting_scorecards` (+ the
+     * Supabase mirror). Synchronous: the SQLite write is sync and the mirror is
+     * fire-and-forget.
+     */
+    private finalizeScorecard(
+        meetingId: string,
+        draft: ScorecardDraft,
+        liveAnalysis: LiveAnalysisData | null
+    ): { scorecardResult: MeetingScorecardResult | null; persisted: boolean } {
+        const { customScoringCriteria } = draft;
+        let scorecardResult = draft.scorecardResult;
 
         if (!scorecardResult) {
             return { scorecardResult: null, persisted: false };
+        }
+
+        // Call Analysis is the single source of truth for MEDDIC / BANT /
+        // objections / signals. The prompt was already grounded with it, but a
+        // prompt instruction is not a guarantee (same reasoning as
+        // reconcileBantMeddicWithLiveAnalysis above), so re-derive those
+        // categories deterministically. Unrecognised categories are untouched.
+        try {
+            scorecardResult = reconcileScorecardWithLiveAnalysis(scorecardResult, liveAnalysis);
+        } catch (reconcileErr) {
+            console.warn('[MeetingPersistence] Scorecard reconciliation failed (non-fatal):', reconcileErr);
         }
 
         // Merge with any previously-saved scorecard so that a regenerate run
@@ -967,17 +1048,24 @@ export class MeetingPersistence {
      * Re-scores a meeting using the latest scoring criteria from the DB.
      * Saves the result to `meeting_scorecards` (and mirrors to Supabase) so the
      * next `getMeetingDetails` call returns fresh scorecard data.
+     *
+     * `liveAnalysis` must be the meeting's stored live analysis
+     * (`detailedSummary.liveAnalysis`) — passing null would re-score the
+     * frameworks from the transcript alone and reintroduce the drift between the
+     * Meeting Score and the Call Analysis tab.
      */
 
     private async regenerateScorecard(
         meetingId: string,
         transcriptContext: string,
-        detectedMeetingTypes: ('discovery' | 'demo' | 'negotiation')[] | null
+        detectedMeetingTypes: ('discovery' | 'demo' | 'negotiation')[] | null,
+        liveAnalysis: LiveAnalysisData | null
     ): Promise<void> {
         const { scorecardResult } = await this.generateAndPersistScorecard(
             meetingId,
             transcriptContext,
-            detectedMeetingTypes ?? null
+            detectedMeetingTypes ?? null,
+            liveAnalysis
         );
 
         if (scorecardResult) {
@@ -1030,9 +1118,12 @@ export class MeetingPersistence {
 
             // Re-score using the latest criteria so any criteria changes made before
             // clicking "regenerate" are reflected in the scorecard shown in the UI.
+            // Note if re-enabling: pass `existingLiveAnalysis` through so the
+            // re-score stays grounded in the same Call Analysis the summary above
+            // was just reconciled against.
             // const existingTypes = (meeting.detailedSummary as any)?.scorecard?.detectedTypes ?? null;
             // try {
-            //     await this.regenerateScorecard(meetingId, fullRegenerateContext, existingTypes);
+            //     await this.regenerateScorecard(meetingId, fullRegenerateContext, existingTypes, existingLiveAnalysis ?? null);
             // } catch (scorecardErr) {
             //     // Non-fatal: text summary was already saved; log and continue.
             //     console.warn('[MeetingPersistence] Scorecard regeneration failed (non-fatal):', scorecardErr);

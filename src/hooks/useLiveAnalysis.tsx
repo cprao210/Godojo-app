@@ -2,6 +2,7 @@ import { useState, useCallback, useRef, useEffect } from 'react';
 import { LiveAnalysisData, LiveAnalysisTurn, MeetingType, Objection } from '@/types';
 import { intelligenceApi } from '@/api/intelligenceApi';
 import { posthogAnalytics } from '@/lib/analytics/posthog.service';
+import { getMeetingGeneration } from '@/lib/meetingGeneration';
 import { stableId } from '@/lib/objections';
 
 // ─── Prompt builders ─────────────────────────────────────────────────────────
@@ -716,11 +717,14 @@ export const useLiveAnalysis = (
     isLoadingRef.current = true;
     setIsLoading(true);
     setError(null);
-    window.electronAPI?.setLiveAnalysisInFlight?.(true).catch(() => { });
-
-    // Snapshot cursor and prior state at call time to avoid stale closures
+    // Snapshot cursor, prior state, and the meeting this run belongs to at call
+    // time — this function is async and everything below can resolve after the
+    // call has ended and the next one started. runSessionId guards renderer
+    // state; runGeneration guards what we write back into main.
     const priorState = analysisDataRef.current;
     const runSessionId = sessionIdRef.current;
+    const runGeneration = getMeetingGeneration();
+    window.electronAPI?.setLiveAnalysisInFlight?.(true, runGeneration).catch(() => { });
 
     try {
       // ── Build transcript strings ─────────────────────────────────────
@@ -739,6 +743,14 @@ export const useLiveAnalysis = (
       const humanTurns = transcript.filter(
         t => !['system', 'ai', 'assistant', 'model'].includes(t.speaker?.toLowerCase())
       );
+
+      // Two cursors, two index spaces — keep them straight. lastAnalyzedIndexRef
+      // indexes humanTurns (it drives the delta slice), while
+      // lastTriggerScanIndexRef indexes prospect turns only (the urgent-trigger
+      // effect slices `prospectTurns`). Advancing the trigger cursor with a
+      // humanTurns index over-counted it, so trigger scanning silently skipped
+      // every prospect turn between the two totals.
+      const prospectTurnCount = humanTurns.filter(t => t.speaker !== 'user').length;
 
       const deltaStartIndex = priorState ? lastAnalyzedIndexRef.current : 0;
       const currentEndIndex = humanTurns.length;
@@ -867,10 +879,10 @@ export const useLiveAnalysis = (
         // Advance cursor so next delta run only processes new turns
         lastAnalyzedIndexRef.current = currentEndIndex;
         lastAnalysisTimeRef.current = Date.now();
-        lastTriggerScanIndexRef.current = currentEndIndex;
+        lastTriggerScanIndexRef.current = prospectTurnCount;
 
         setAnalysisDataAndRef(merged);
-        window.electronAPI?.updateLiveAnalysis?.(merged).catch((err: any) =>
+        window.electronAPI?.updateLiveAnalysis?.(merged, runGeneration).catch((err: any) =>
           console.error('[useLiveAnalysis] Failed to persist analysis:', err)
         );
       } else {
@@ -882,15 +894,15 @@ export const useLiveAnalysis = (
         const merged = mergeWithPrior(parsed, priorState);
         lastAnalyzedIndexRef.current = currentEndIndex;
         lastAnalysisTimeRef.current = Date.now();
-        lastTriggerScanIndexRef.current = currentEndIndex;
+        lastTriggerScanIndexRef.current = prospectTurnCount;
         setAnalysisDataAndRef(merged);
-        window.electronAPI?.updateLiveAnalysis?.(merged).catch((err: any) =>
+        window.electronAPI?.updateLiveAnalysis?.(merged, runGeneration).catch((err: any) =>
           console.error('[useLiveAnalysis] Failed to persist analysis:', err)
         );
       }
     } catch (e: any) {
-      setError(e?.message || 'Analysis failed');
-      // A stale request failing must not surface an error banner on the new session.
+      // A stale request failing must not surface an error banner on the new
+      // session — so this is guarded, not unconditional.
       if (sessionIdRef.current === runSessionId) {
         setError(e?.message || 'Analysis failed');
       }
@@ -899,7 +911,10 @@ export const useLiveAnalysis = (
       // all — must always clear regardless of which session it belonged to.
       isLoadingRef.current = false;
       setIsLoading(false);
-      window.electronAPI?.setLiveAnalysisInFlight?.(false).catch(() => { });
+      // Tagged, unlike the two flags above: main tracks in-flight state per
+      // meeting, and a run from the previous call clearing the flag would tell
+      // main "nothing in flight" for a meeting that is mid-analysis.
+      window.electronAPI?.setLiveAnalysisInFlight?.(false, runGeneration).catch(() => { });
     }
   }, [transcriptRef, isMeetingPaused, setAnalysisDataAndRef]);
 
@@ -942,5 +957,17 @@ export const useLiveAnalysis = (
     setError(null);
   }, []);
 
-  return { analysisData, isLoading, error, runAnalysis, resetAnalysis, isRefreshRun };
+  /**
+   * Ref-backed snapshot of "what has this session analyzed so far", read at the
+   * moment the call ends to decide whether one final run is needed. Reads refs
+   * rather than state on purpose: the End Call handler runs inside a click
+   * callback that closed over an older render.
+   */
+  const getAnalysisProgress = useCallback(() => ({
+    hasAnalysis: analysisDataRef.current !== null,
+    lastAnalyzedTurnIndex: lastAnalyzedIndexRef.current,
+    isLoading: isLoadingRef.current,
+  }), []);
+
+  return { analysisData, isLoading, error, runAnalysis, resetAnalysis, isRefreshRun, getAnalysisProgress };
 };

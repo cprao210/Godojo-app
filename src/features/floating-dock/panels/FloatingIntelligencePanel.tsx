@@ -3,6 +3,7 @@ import { motion, AnimatePresence } from 'framer-motion';
 import { Radio, RefreshCw, Clock, ChevronDown } from 'lucide-react';
 import { LiveAnalysisContent } from '@/features/live-analysis';
 import { LiveAnalysisData, MeetingType, FloatingIntelligencePanelProps } from '@/types';
+import { resolveIntelligenceView } from '@/lib/intelligenceView';
 import { getDockSurfaceStyle } from '../dockSurfaceStyle';
 
 const AUTO_REFRESH_OPTIONS = [
@@ -431,6 +432,7 @@ export const FloatingIntelligencePanel: React.FC<FloatingIntelligencePanelProps>
     speakerNames,
     panelFirstOpenedAt,
     noAnalysisCaptured,
+    isCountdownActive = false,
     isOpen,
     meetingTypes,
     onMeetingTypesChange,
@@ -469,6 +471,20 @@ export const FloatingIntelligencePanel: React.FC<FloatingIntelligencePanelProps>
         Object.values(data.meddic).some(f => f.status !== 'missing');
 
     const displayData = analysisData && hasContent(analysisData) ? analysisData : null;
+
+    // Which of the six mutually-exclusive views this render shows. The rule lives
+    // in src/lib/intelligenceView.ts so it can be unit-tested — in particular the
+    // guarantee that the countdown ring is never re-entered once its cycle fired.
+    const view = resolveIntelligenceView({
+        hasDisplayData: displayData !== null,
+        isLoading,
+        isRefreshRun: !!isRefreshRun,
+        hasError: !!analysisError,
+        noAnalysisCaptured: !!noAnalysisCaptured,
+        isCountdownActive,
+        panelFirstOpenedAt,
+        autoRefreshInterval,
+    });
 
     // Close dropdown when clicking outside
     useEffect(() => {
@@ -741,18 +757,9 @@ export const FloatingIntelligencePanel: React.FC<FloatingIntelligencePanelProps>
 
             {/* Content */}
             <div className="overflow-y-auto flex-1" style={{ scrollbarWidth: 'thin', scrollbarColor: 'rgba(255,255,255,0.1) transparent' }}>
-                {isLoading && !isRefreshRun && displayData === null ? (
-                    // displayData === null added: isRefreshRun is meant to keep existing
-                    // content visible during a forced re-run (e.g. checking "Negotiation"
-                    // calls runAnalysis(true) immediately so Deal Alert populates without
-                    // waiting for the next auto-refresh tick), but it's a second piece of
-                    // state that has to land in the same render as isLoading to work. If
-                    // there's already data to show, never drop back to the skeleton (or,
-                    // by falling through, the countdown placeholder) regardless of that
-                    // timing — the existing tabs/content should stay up the whole time a
-                    // background refresh is in flight.
+                {view === 'skeleton' ? (
                     <IntelligenceSkeleton />
-                ) : analysisError && displayData === null ? (
+                ) : view === 'error' ? (
                     <div className="flex flex-col items-center justify-center h-full px-6 py-10 gap-4">
                         <div
                             className="w-12 h-12 rounded-xl flex items-center justify-center"
@@ -772,17 +779,15 @@ export const FloatingIntelligencePanel: React.FC<FloatingIntelligencePanelProps>
                             <RefreshCw size={12} /> Retry
                         </button>
                     </div>
-                ) : displayData === null ? (
-                    noAnalysisCaptured ? (
-                        <NoAnalysisCapturedPlaceholder />
-                    ) : panelFirstOpenedAt && autoRefreshInterval ? (
-                        <CountdownPlaceholder openedAt={panelFirstOpenedAt} intervalMins={autoRefreshInterval} isPaused={isMeetingPaused} />
-                    ) : (
-                        <WaitingPlaceholder />
-                    )
+                ) : view === 'no-analysis-captured' ? (
+                    <NoAnalysisCapturedPlaceholder />
+                ) : view === 'countdown' ? (
+                    <CountdownPlaceholder openedAt={panelFirstOpenedAt!} intervalMins={autoRefreshInterval!} isPaused={isMeetingPaused} />
+                ) : view === 'waiting' ? (
+                    <WaitingPlaceholder />
                 ) : (
                     <LiveAnalysisContent
-                        analysisData={displayData}
+                        analysisData={displayData!}
                         hideBar="Missing Details"
                         activeTab={activeTab as 'meddicc' | 'bant' | 'signals' | 'objections' | 'deal_optimizer'}
                     />

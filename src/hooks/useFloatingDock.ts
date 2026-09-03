@@ -13,6 +13,8 @@ import { useObjectionWatch } from './useObjectionWatch';
 import { ActivePanel, ChatMessage, LiveAnalysisData, MeetingType } from '@/types';
 import { objectionsOnlyAnalysis } from '@/lib/objections';
 import { posthogAnalytics } from '@/lib/analytics/posthog.service';
+import { getMeetingGeneration, setMeetingGeneration } from '@/lib/meetingGeneration';
+import { decideFinalAnalysis, FINAL_ANALYSIS_MAX_WAIT_MS } from '@/lib/meetingLifecycle';
 
 const OPACITY_STORAGE_KEY = 'gd_dock_opacity';
 const MIN_OPACITY = 0.35;
@@ -31,6 +33,38 @@ const DEFAULT_DOCK_HEIGHT = 64; // sensible fallback before first ResizeObserver
 // refresh that looked like it was firing "randomly" on short transcripts.
 const MIN_PROSPECT_TURNS = 2;
 const PROSPECT_SPEAKER = 'client';
+// How often the countdown cycle checks whether there is finally enough
+// transcript to analyse. The countdown is a deadline, not a schedule — this is
+// what makes the first analysis land *during* the call.
+const EARLY_TRIGGER_POLL_MS = 5_000;
+const IDLE_POLL_MS = 150;
+
+/** Await `p`, but give up after `ms`. Never rejects. */
+const raceDeadline = async (p: Promise<unknown>, ms: number): Promise<void> => {
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    try {
+        await Promise.race([
+            p.catch(() => { }),
+            new Promise<void>((resolve) => { timer = setTimeout(resolve, ms); }),
+        ]);
+    } finally {
+        if (timer) clearTimeout(timer);
+    }
+};
+
+/**
+ * Poll until an analysis run that someone else started finishes. Used when the
+ * call ends mid-run: that run's result IS the final analysis, so the correct
+ * move is to wait for it rather than start a competing one (runAnalysis would
+ * reject the second call anyway, and the summary snapshot would be taken
+ * before either landed).
+ */
+const waitWhileBusy = async (isBusy: () => boolean, ms: number): Promise<void> => {
+    const deadline = Date.now() + ms;
+    while (isBusy() && Date.now() < deadline) {
+        await new Promise((resolve) => setTimeout(resolve, IDLE_POLL_MS));
+    }
+};
 
 const clampOpacity = (v: number) => Math.min(MAX_OPACITY, Math.max(MIN_OPACITY, v));
 
@@ -146,7 +180,7 @@ export function useFloatingDock({ transcriptRef, isMeetingPaused, companyIntel }
     } = useObjectionWatch(transcriptRef, isMeetingPaused);
 
     // ── Lifted analysis session — survives panel switches/remounts ──────────
-    const { analysisData, isLoading: analysisLoading, error: analysisError, runAnalysis, resetAnalysis, isRefreshRun } =
+    const { analysisData, isLoading: analysisLoading, error: analysisError, runAnalysis, resetAnalysis, isRefreshRun, getAnalysisProgress } =
         useLiveAnalysis(
             transcriptRef,
             isMeetingPaused,
@@ -187,11 +221,13 @@ export function useFloatingDock({ transcriptRef, isMeetingPaused, companyIntel }
     // the summary LLM's own BANT. displayAnalysisData is now deliberately non-null
     // before the first analysis lands (see above), so this check has to name
     // analysisData explicitly — the objections-only shell must never be persisted.
-    // Debounced so a burst of ticks is one IPC call.
+    // Debounced so a burst of ticks is one IPC call. Tagged with the meeting
+    // generation: this fires on a timer, so it can land after the call ended.
     useEffect(() => {
         if (!analysisData || !displayAnalysisData) return;
+        const generation = getMeetingGeneration();
         const id = setTimeout(() => {
-            window.electronAPI?.updateLiveAnalysis?.(displayAnalysisData).catch((err: any) =>
+            window.electronAPI?.updateLiveAnalysis?.(displayAnalysisData, generation).catch((err: any) =>
                 console.error('[useFloatingDock] Failed to persist objections:', err),
             );
         }, 1000);
@@ -215,26 +251,61 @@ export function useFloatingDock({ transcriptRef, isMeetingPaused, companyIntel }
         return turns.filter((t) => t.speaker?.toLowerCase() === PROSPECT_SPEAKER).length >= MIN_PROSPECT_TURNS;
     };
 
+    // Has the end-of-call analysis already been requested for this call? Ending
+    // is reachable more than once (a second End Call click while the first is
+    // still awaiting, a meeting-ended broadcast landing after the click), and a
+    // duplicate run costs a second LLM call and races the first one's write.
+    const finalAnalysisRequestedRef = useRef(false);
+
+    /**
+     * Last chance to analyse the complete transcript.
+     *
+     * Awaited by the End Call button so the result is in main's live-analysis
+     * slot BEFORE stopMeeting() snapshots it — that snapshot is what
+     * buildSummaryPrompt and reconcileBantMeddicWithLiveAnalysis read, and it is
+     * taken by value, so an analysis that lands afterwards can only be patched
+     * onto the saved row and never reaches the summary.
+     *
+     * Bounded by FINAL_ANALYSIS_MAX_WAIT_MS: a hung provider must not trap the
+     * user in a call they asked to end. On timeout the call ends anyway and
+     * main's pending-generation patch is the fallback.
+     */
     const ensureFinalAnalysisBeforeEndCall = async () => {
-        if (analysisLoading || !hasEnoughTranscript()) return;
-        try { await window.electronAPI?.setLiveAnalysisInFlight?.(true); } catch { }
-        runAnalysisRef.current(true);
+        const turns = transcriptRef.current ?? [];
+        // Same filter useLiveAnalysis applies before advancing its cursor, so
+        // the two counts are comparable.
+        const humanTurnCount = turns.filter(
+            (t) => !['system', 'ai', 'assistant', 'model'].includes(t.speaker?.toLowerCase()),
+        ).length;
+        const progress = getAnalysisProgress();
+
+        const decision = decideFinalAnalysis({
+            alreadyRequested: finalAnalysisRequestedRef.current,
+            isLoading: progress.isLoading,
+            hasAnalysis: progress.hasAnalysis,
+            lastAnalyzedTurnIndex: progress.lastAnalyzedTurnIndex,
+            humanTurnCount,
+            hasEnoughTranscript: hasEnoughTranscript(),
+        });
+        console.log(`[useFloatingDock] Final analysis → ${decision.action}: ${decision.reason}`);
+
+        if (decision.action === 'skip') return;
+        finalAnalysisRequestedRef.current = true;
+
+        if (decision.action === 'wait') {
+            await waitWhileBusy(() => getAnalysisProgress().isLoading, FINAL_ANALYSIS_MAX_WAIT_MS);
+            return;
+        }
+
+        // Tell main an analysis is in flight BEFORE starting it, so that if we
+        // do time out, endMeeting records this meeting as the one awaiting a
+        // late result.
+        try {
+            await window.electronAPI?.setLiveAnalysisInFlight?.(true, getMeetingGeneration());
+        } catch { /* non-fatal — the run below still tags its own write */ }
+
+        await raceDeadline(runAnalysisRef.current(true), FINAL_ANALYSIS_MAX_WAIT_MS);
     };
-
-    // Track whether the first analysis has been triggered so we don't re-run
-    // on every remount.
-    const analysisInitiatedRef = useRef(false);
-
-    // Trigger the first analysis immediately on meeting start (dock mount) —
-    // analysis no longer waits for the intelligence panel to be opened. Runs
-    // once on mount; analysisInitiatedRef guards against a second run if the
-    // component remounts within the same session.
-    useEffect(() => {
-        if (analysisInitiatedRef.current) return;
-        analysisInitiatedRef.current = true;
-        runAnalysisRef.current(true);
-        // eslint-disable-next-line react-hooks/exhaustive-deps
-    }, []);
 
     // ── Chat history — lifted so it survives panel switches ─────────────────
     const [chatMessages, setChatMessages] = useState<ChatMessage[]>([]);
@@ -295,6 +366,20 @@ export function useFloatingDock({ transcriptRef, isMeetingPaused, companyIntel }
     // interval change).
     const [noAnalysisCaptured, setNoAnalysisCaptured] = useState(false);
 
+    // True only while the single startup countdown cycle is still armed. Set
+    // when a cycle begins, cleared the instant it finishes — whether that was
+    // the early trigger or the deadline.
+    //
+    // The panel needs this because "no data to show" is NOT the same as "the
+    // countdown is still running". The first analysis of a call usually fires
+    // early (as soon as the prospect has spoken twice) and often comes back with
+    // nothing usable yet — all BANT/MEDDIC still `missing`, no signals. That
+    // left the panel with displayData === null after the loading skeleton, so
+    // the branch chain fell straight back to CountdownPlaceholder: the user saw
+    // countdown → loader → countdown again, the second one ticking down against
+    // a deadline that had already been cleared.
+    const [countdownCycleActive, setCountdownCycleActive] = useState(false);
+
     // Bumped on every session-reset so the timer effect below always re-runs
     // and re-anchors intelligencePanelFirstOpenedAt to "now" — even when
     // autoRefreshInterval/isMeetingPaused haven't changed across the reset.
@@ -338,6 +423,11 @@ export function useFloatingDock({ transcriptRef, isMeetingPaused, companyIntel }
         setIntelligencePanelFirstOpenedAt(Date.now());
         setNoAnalysisCaptured(false);
 
+        // Arm the display flag whenever auto-refresh is on — including while
+        // paused, where the ring is deliberately shown frozen and the cycle
+        // starts fresh on resume.
+        setCountdownCycleActive(autoRefreshInterval !== null);
+
         // Don't schedule the timer while paused or when auto-refresh is off —
         // but the origin above is still reset, so the countdown displays
         // correctly once unpaused instead of resuming from a leftover
@@ -348,6 +438,10 @@ export function useFloatingDock({ transcriptRef, isMeetingPaused, companyIntel }
 
         const finishCycle = (didFire: boolean) => {
             clearAll();
+            // The countdown is over the moment it fires, in both directions.
+            // Nothing re-arms it except a new cycle (interval/pause/session),
+            // so the ring can never reappear behind a later empty result.
+            setCountdownCycleActive(false);
             if (didFire) runAnalysisRef.current(false);
             else setNoAnalysisCaptured(true);
             // Intentionally single-shot: no rescheduling here. The countdown
@@ -360,6 +454,21 @@ export function useFloatingDock({ transcriptRef, isMeetingPaused, companyIntel }
             finishCycle(hasEnoughTranscript());
         }, durationMs);
 
+        // Early trigger — the piece that makes the FIRST analysis of a call land
+        // during the call instead of at the deadline. The dock mounts once for
+        // the whole app lifetime (the overlay window is only hidden between
+        // meetings, never destroyed), so a mount-time kick can't do this job:
+        // at mount the transcript is always empty, and the effect never re-runs.
+        //
+        // Restricted to the first analysis on purpose. Afterwards the deadline
+        // and useLiveAnalysis's urgent-signal trigger own the cadence; polling
+        // past that point would fire an extra run on every pause/resume.
+        if (!getAnalysisProgress().hasAnalysis) {
+            earlyTriggerPollRef.current = setInterval(() => {
+                if (hasEnoughTranscript()) finishCycle(true);
+            }, EARLY_TRIGGER_POLL_MS);
+        }
+
         return clearAll;
         // eslint-disable-next-line react-hooks/exhaustive-deps
     }, [autoRefreshInterval, isMeetingPaused, sessionKey]);
@@ -367,10 +476,16 @@ export function useFloatingDock({ transcriptRef, isMeetingPaused, companyIntel }
     // ── Reset all state when a new meeting starts (IPC session-reset event) ──
     useEffect(() => {
         if (!window.electronAPI?.onSessionReset) return;
-        const unsubscribe = window.electronAPI.onSessionReset(() => {
+        const unsubscribe = window.electronAPI.onSessionReset((payload) => {
+            // Adopt the new generation FIRST: everything below can cause an async
+            // write, and any write still in flight from the previous call must be
+            // stamped as stale from this instant on.
+            if (typeof payload?.meetingGeneration === 'number') {
+                setMeetingGeneration(payload.meetingGeneration);
+            }
             resetAnalysis();                     // clears analysisData + error in the hook
             resetObjections();                   // clears the owned objection list + cursor
-            analysisInitiatedRef.current = false; // allows first-open to trigger fresh analysis
+            finalAnalysisRequestedRef.current = false; // re-arm the end-of-call analysis
             setChatMessages([]);                 // clears chat history
             setActivePanel(null);                // close any open panel
             setIsDockExpanded(false);            // collapse to brand-bar-only for the new meeting
@@ -379,6 +494,16 @@ export function useFloatingDock({ transcriptRef, isMeetingPaused, companyIntel }
         });
         return () => unsubscribe();
     }, [resetAnalysis, resetObjections]);
+
+    // Whether the panel is allowed to render the countdown ring at all. Two
+    // independent guards, both required:
+    //   - the startup cycle must still be armed (see countdownCycleActive), and
+    //   - nothing may have come back from analysis yet.
+    // The second uses the RAW analysisData, not displayAnalysisData: an analysis
+    // that returned only `missing` fields is non-null here but renders as empty
+    // in the panel, and that combination is exactly what used to bring the ring
+    // back after the loading skeleton.
+    const isCountdownActive = countdownCycleActive && analysisData === null;
 
     return {
         // panel switching / freeze
@@ -414,5 +539,6 @@ export function useFloatingDock({ transcriptRef, isMeetingPaused, companyIntel }
         setAutoRefreshInterval,
         intelligencePanelFirstOpenedAt,
         noAnalysisCaptured,
+        isCountdownActive,
     };
 }

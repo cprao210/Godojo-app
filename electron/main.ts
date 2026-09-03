@@ -361,6 +361,7 @@ import { OpenAIStreamingSTT } from "./audio/OpenAIStreamingSTT"
 import { ThemeManager } from "./ThemeManager"
 import { RAGManager } from "./rag/RAGManager"
 import { DatabaseManager } from "./db/DatabaseManager"
+import { routeLiveAnalysisWrite } from "./liveAnalysisRouting"
 import { warmupIntentClassifier } from "./llm"
 import { AudioDevices } from "./audio/AudioDevices";
 
@@ -426,6 +427,14 @@ export class AppState {
   // after the late-arriving result is saved.
   private _pendingLiveAnalysisMeetingId: string | null = null;
   private _liveAnalysisInFlight: boolean = false;
+  // Monotonic id for "which call are we on", bumped once per startMeeting.
+  // Live analysis is computed asynchronously in the renderer and can resolve
+  // after its meeting ended — every renderer write carries the generation it
+  // was computed for so main can route it to the right meeting (or drop it)
+  // instead of letting it land in whichever call happens to be live. See
+  // electron/liveAnalysisRouting.ts.
+  private _meetingGeneration: number = 0;
+  private _pendingLiveAnalysisGeneration: number | null = null;
   private speakerNameMap: { user: string, client: string };
 
   // View management
@@ -2833,7 +2842,20 @@ export class AppState {
     await this.ensureSystemAudioCapability('meeting start');
 
     this.isMeetingActive = true;
-    this._pendingLiveAnalysisMeetingId = null;
+    // New call ⇒ new generation. Everything asynchronous from the previous
+    // meeting is now identifiable as stale (see routeLiveAnalysisWrite).
+    this._meetingGeneration += 1;
+    // Wipe the live-analysis slot unconditionally. stopMeeting() clears it too,
+    // but only on paths where it actually read one — a call shorter than a
+    // second returns early, and an analysis that resolved between stop and
+    // start writes into the slot afterwards. Without this line that leftover
+    // is exactly what the new meeting's summary generation reads.
+    this._currentLiveAnalysis = null;
+    this._companyIntel = null;
+    // NOTE: _pendingLiveAnalysisMeetingId is deliberately NOT cleared here.
+    // It belongs to the *previous* meeting, whose late analysis result can
+    // still legitimately arrive and must be written to that meeting's row.
+    // Generation tagging is what keeps it from reaching this one.
     this._liveAnalysisInFlight = false;
     this._clientSpeakerIndicesSeen.clear();
     this._echoFilter.reset();
@@ -2864,8 +2886,11 @@ export class AppState {
       this.broadcast('speaker-names-resolved', resolvedNames);
     }, 100);
 
-    // Emit session reset to clear UI state immediately
-    this.sendToMeetingSurfaces('session-reset');
+    // Emit session reset to clear UI state immediately. The generation rides
+    // along so the renderer can stamp every async result it produces from here
+    // on — that stamp is what lets main reject a result belonging to the call
+    // that just ended.
+    this.sendToMeetingSurfaces('session-reset', { meetingGeneration: this._meetingGeneration });
 
     // ★ ASYNC AUDIO INIT: Return INSTANTLY so the IPC response goes back
     // to the renderer immediately, allowing the UI to switch to overlay
@@ -3029,9 +3054,18 @@ export class AppState {
       this.broadcast('live-call-ended', { meetingId });
     }
     // If an analysis call is currently in-flight, record the meetingId so
-    // setCurrentLiveAnalysis() can patch the DB when the result arrives.
-    if (this._liveAnalysisInFlight) {
+    // setCurrentLiveAnalysis() can patch the DB when the result arrives. The
+    // generation is recorded with it: by the time that result shows up the user
+    // may already be in the next call, and matching on the generation is the
+    // only way to tell "A's late result" from "B's current result".
+    if (this._liveAnalysisInFlight && meetingId) {
       this._pendingLiveAnalysisMeetingId = meetingId;
+      this._pendingLiveAnalysisGeneration = this._meetingGeneration;
+    } else {
+      // Nothing in flight — make sure a previous call's pending slot can't be
+      // mistaken for this one's.
+      this._pendingLiveAnalysisMeetingId = null;
+      this._pendingLiveAnalysisGeneration = null;
     }
 
     // Revert to Default Model — synchronous, no blocking I/O
@@ -3439,32 +3473,65 @@ export class AppState {
     }
   }
 
+  /**
+   * Generation of the call that is live right now. The renderer reads this once
+   * on mount (it also arrives with every `session-reset`) and stamps it onto
+   * every live-analysis write so results can be attributed to the right call.
+   */
+  public getMeetingGeneration(): number {
+    return this._meetingGeneration;
+  }
+
   // Renderer calls this at the start/end of every runAnalysis() call.
-  public setLiveAnalysisInFlight(inFlight: boolean): void {
+  public setLiveAnalysisInFlight(inFlight: boolean, generation?: number | null): void {
+    // A run started in the previous meeting clears this flag in its `finally`
+    // block. If that lands after the next call started, an untagged write would
+    // tell main "nothing is in flight" for a meeting that is mid-analysis, and
+    // endMeeting would then skip recording the pending id.
+    if (generation != null && generation !== this._meetingGeneration) {
+      return;
+    }
     this._liveAnalysisInFlight = inFlight;
   }
 
-  public setCurrentLiveAnalysis(data: LiveAnalysisData | null): void {
-    this._currentLiveAnalysis = data;
+  public setCurrentLiveAnalysis(data: LiveAnalysisData | null, generation?: number | null): void {
+    const route = routeLiveAnalysisWrite({
+      writeGeneration: generation ?? null,
+      currentGeneration: this._meetingGeneration,
+      pendingGeneration: this._pendingLiveAnalysisGeneration,
+      pendingMeetingId: this._pendingLiveAnalysisMeetingId,
+      isMeetingActive: this.isMeetingActive,
+      isClear: data === null,
+    });
 
-    // If endMeeting() already ran and left a pending meetingId, this is a late-arriving
-    // analysis result. Patch it directly into the saved meeting record in the DB.
-    if (data && this._pendingLiveAnalysisMeetingId && !this.isMeetingActive) {
-      const meetingId = this._pendingLiveAnalysisMeetingId;
-      this._pendingLiveAnalysisMeetingId = null;
-      try {
-        const db = DatabaseManager.getInstance();
-        const meeting = db.getMeetingDetails(meetingId);
-        if (meeting) {
-          const existing = meeting.detailedSummary || { actionItems: [], keyPoints: [] };
-          db.updateMeeting(meetingId, {
-            detailedSummary: { ...existing, liveAnalysis: data }
-          });
-          console.log(`[AppState] Late-arriving live analysis patched into meeting ${meetingId}`);
-        }
-      } catch (err) {
-        console.error('[AppState] Failed to patch late live analysis:', err);
+    if (route.action === 'store') {
+      this._currentLiveAnalysis = data;
+      return;
+    }
+
+    if (route.action === 'drop') {
+      console.warn(`[AppState] Discarded live analysis write — ${route.reason}`);
+      return;
+    }
+
+    // Late-arriving result for a meeting that already ended: its transcript
+    // snapshot is gone, so the saved row is the only place left to put it.
+    // Deliberately does NOT touch _currentLiveAnalysis — that slot belongs to
+    // whatever call is live now.
+    this._pendingLiveAnalysisMeetingId = null;
+    this._pendingLiveAnalysisGeneration = null;
+    try {
+      const db = DatabaseManager.getInstance();
+      const meeting = db.getMeetingDetails(route.meetingId);
+      if (meeting) {
+        const existing = meeting.detailedSummary || { actionItems: [], keyPoints: [] };
+        db.updateMeeting(route.meetingId, {
+          detailedSummary: { ...existing, liveAnalysis: data ?? undefined }
+        });
+        console.log(`[AppState] Late-arriving live analysis patched into meeting ${route.meetingId}`);
       }
+    } catch (err) {
+      console.error('[AppState] Failed to patch late live analysis:', err);
     }
   }
 

@@ -71,7 +71,10 @@ export const AeDetailView: React.FC<AeDetailViewProps> = ({ ae, tenantId, onBack
                                 <ArrowLeft size={15} /> Back to AE overview
                             </button>
                             <div className="flex-1 overflow-hidden min-h-0">
-                                <MeetingDetails meeting={selectedMeeting} viewContext="ae_review" />
+                                {/* Keyed by id so switching between two AE meetings
+                                    remounts instead of reusing the previous meeting's
+                                    tab / chat / processing state. */}
+                                <MeetingDetails key={selectedMeeting.id} meeting={selectedMeeting} viewContext="ae_review" />
                             </div>
                         </div>
                     ) : (

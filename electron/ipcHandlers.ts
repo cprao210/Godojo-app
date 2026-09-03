@@ -623,15 +623,22 @@ export function initializeIpcHandlers(appState: AppState): void {
     }
   });
 
-  safeHandle("update-live-analysis", async (event, data: LiveAnalysisData) => {
-    console.log('[IPC] Received live analysis:', Object.keys(data));
-    appState.setCurrentLiveAnalysis(data);
+  // `generation` identifies the call this result was computed for. The renderer
+  // stamps it so a run that resolves after its meeting ended can be routed to
+  // that meeting's row rather than into the call that is live now.
+  safeHandle("update-live-analysis", async (event, data: LiveAnalysisData, generation?: number | null) => {
+    console.log('[IPC] Received live analysis:', Object.keys(data), `gen=${generation ?? 'untagged'}`);
+    appState.setCurrentLiveAnalysis(data, generation ?? null);
     return { success: true };
   });
 
-  safeHandle("set-live-analysis-in-flight", async (event, inFlight: boolean) => {
-    appState.setLiveAnalysisInFlight(inFlight);
+  safeHandle("set-live-analysis-in-flight", async (event, inFlight: boolean, generation?: number | null) => {
+    appState.setLiveAnalysisInFlight(inFlight, generation ?? null);
     return { success: true };
+  });
+
+  safeHandle("get-meeting-generation", async () => {
+    return { success: true, data: appState.getMeetingGeneration() };
   });
 
   safeHandle("quit-app", () => {

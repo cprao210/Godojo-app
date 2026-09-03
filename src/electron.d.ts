@@ -321,11 +321,17 @@ export interface ElectronAPI {
   onIntelligenceManualResult: (callback: (data: { answer: string; question: string }) => void) => () => void
   onIntelligenceModeChanged: (callback: (data: { mode: string }) => void) => () => void
   onIntelligenceError: (callback: (data: { error: string, mode: string }) => void) => () => void
-  onSessionReset: (callback: () => void) => () => void
+  onSessionReset: (callback: (payload?: { meetingGeneration?: number }) => void) => () => void
 
   // Live Analysis
-  updateLiveAnalysis: (data: LiveAnalysisData) => Promise<{ success: boolean }>
-  setLiveAnalysisInFlight: (inFlight: boolean) => Promise<{ success: boolean }>;
+  //
+  // `generation` is the meeting generation the result was computed for. Main
+  // uses it to route a run that resolved after its meeting ended onto that
+  // meeting's row instead of into the call that is live now — the guard behind
+  // "meeting A's analysis must never appear in meeting B".
+  updateLiveAnalysis: (data: LiveAnalysisData, generation?: number | null) => Promise<{ success: boolean }>
+  setLiveAnalysisInFlight: (inFlight: boolean, generation?: number | null) => Promise<{ success: boolean }>;
+  getMeetingGeneration: () => Promise<{ success: boolean; data?: number }>;
 
   // ===========================================================================
   // Chat (Gemini Streaming)

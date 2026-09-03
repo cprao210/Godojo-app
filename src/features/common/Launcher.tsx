@@ -98,7 +98,13 @@ const Launcher: React.FC<LauncherProps> = ({ onStartMeeting, onOpenSettings, onC
                             exit={{ opacity: 0 }}
                             transition={{ duration: 0.15 }}
                         >
-                            <MeetingDetails meeting={selectedMeeting} />
+                            {/* Keyed by meeting id: MeetingDetails (and useMeetingDetails)
+                                holds per-meeting local state — active tab, chat history,
+                                the processing flag, regenerate errors. Without the key,
+                                switching from one meeting straight to another reuses that
+                                state and the previous meeting's UI is visibly still there
+                                while the new one loads. */}
+                            <MeetingDetails key={selectedMeeting.id} meeting={selectedMeeting} />
                         </motion.div>
                     ) : (
                         <motion.div

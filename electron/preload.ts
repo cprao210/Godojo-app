@@ -168,8 +168,10 @@ interface ElectronAPI {
   getRecentMeetingsLocal: () => Promise<Array<{ id: string; title: string; date: string; duration: string; summary: string; isProcessed?: boolean }>>
   getMeetingDetails: (id: string) => Promise<any>
   updateMeetingTitle: (id: string, title: string) => Promise<boolean>
-  updateLiveAnalysis: (data: LiveAnalysisData) => Promise<{ success: boolean }>;
-  setLiveAnalysisInFlight: (inFlight: boolean) => Promise<{ success: boolean }>;
+  updateLiveAnalysis: (data: LiveAnalysisData, generation?: number | null) => Promise<{ success: boolean }>;
+  setLiveAnalysisInFlight: (inFlight: boolean, generation?: number | null) => Promise<{ success: boolean }>;
+  /** Generation of the call that is live right now — see liveAnalysisRouting.ts. */
+  getMeetingGeneration: () => Promise<{ success: boolean; data?: number }>;
   regenerateMeetingSummary: (id: string) => Promise<{ success: boolean; meeting?: any; error?: string }>
   uploadTranscript: (text: string, title?: string, meetingTypes?: ('discovery' | 'demo' | 'negotiation')[]) => Promise<{ success: boolean; meetingId?: string; error?: string }>
   updateMeetingSummary: (id: string, updates: { overview?: string, actionItems?: string[], keyPoints?: string[], actionItemsTitle?: string, keyPointsTitle?: string }) => Promise<boolean>
@@ -919,8 +921,11 @@ contextBridge.exposeInMainWorld("electronAPI", {
     }
   },
 
-  updateLiveAnalysis: (data: LiveAnalysisData) => ipcRenderer.invoke("update-live-analysis", data),
-  setLiveAnalysisInFlight: (inFlight: boolean) => ipcRenderer.invoke("set-live-analysis-in-flight", inFlight),
+  updateLiveAnalysis: (data: LiveAnalysisData, generation?: number | null) =>
+    ipcRenderer.invoke("update-live-analysis", data, generation ?? null),
+  setLiveAnalysisInFlight: (inFlight: boolean, generation?: number | null) =>
+    ipcRenderer.invoke("set-live-analysis-in-flight", inFlight, generation ?? null),
+  getMeetingGeneration: () => ipcRenderer.invoke("get-meeting-generation"),
 
   // Window Mode
   setWindowMode: (mode: 'launcher' | 'overlay', inactive?: boolean, freshMeetingStart?: boolean) =>
@@ -1032,8 +1037,10 @@ contextBridge.exposeInMainWorld("electronAPI", {
       ipcRenderer.removeListener("intelligence-error", subscription)
     }
   },
-  onSessionReset: (callback: () => void) => {
-    const subscription = () => callback()
+  // The payload carries the new meeting generation. Existing callers that take
+  // no argument keep working unchanged.
+  onSessionReset: (callback: (payload?: { meetingGeneration?: number }) => void) => {
+    const subscription = (_event: any, payload?: { meetingGeneration?: number }) => callback(payload)
     ipcRenderer.on("session-reset", subscription)
     return () => {
       ipcRenderer.removeListener("session-reset", subscription)
