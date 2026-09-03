@@ -114,6 +114,13 @@ export function useUserRolesPermissionsTab({ deepLinkInviteToken = null, onDeepL
         posthogAnalytics.trackCreateTeam();
         setTenant(created);
         setIsCreateTeamOpen(false);
+        await window.electronAPI?.setCurrentTenantId?.(created.id);
+
+        // Full reload rather than trying to reconcile every screen/hook that
+        // depends on tenant state (Company Context scope/read-only, dashboard
+        // visibility, analytics props, etc.) piecemeal. Team creation is rare
+        // enough that a reload is an acceptable cost for guaranteed consistency.
+        window.location.reload();
     };
 
     const handleInvitationAccepted = async (_result: InvitationAcceptResult) => {
@@ -126,6 +133,12 @@ export function useUserRolesPermissionsTab({ deepLinkInviteToken = null, onDeepL
             setTenant(resolvedTenant);
             await window.electronAPI?.setCurrentTenantId?.(resolvedTenant?.id ?? null);
             posthogAnalytics.trackAcceptInvite();
+
+            // Same reasoning as handleCreateTeam: reload so every tenant-aware
+            // screen (Company Context now scoped to the admin's shared context
+            // and read-only, dashboards, etc.) picks up the new membership
+            // cleanly instead of relying on each one's own reactive wiring.
+            window.location.reload();
         } catch (err) {
             setLoadError(err instanceof ApiError ? err.message : 'Failed to load your team.');
         }

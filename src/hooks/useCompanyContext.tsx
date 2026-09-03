@@ -6,6 +6,8 @@
 
 import { useState, useCallback, useRef, useEffect, useMemo } from 'react';
 import { intelligenceApi } from '@/api/intelligenceApi';
+import { companyContextApi } from '@/api/companyContextApi';
+import { ApiError } from '@/lib/apiClient';
 import { posthogAnalytics } from '@/lib/analytics/posthog.service';
 import { CompanyContextData, CompanyContextTabProps, CompanyIdentity } from '@/types';
 import { Competitor, KnowledgeAsset, TargetPersona } from '@/types';
@@ -98,6 +100,7 @@ export const useCompanyContext = ({
     setCompanyError,
     assetUploading,
     setAssetUploading,
+    readOnly = false,
 }: Pick<
     CompanyContextTabProps,
     | 'companyContext'
@@ -109,7 +112,20 @@ export const useCompanyContext = ({
     | 'setCompanyError'
     | 'assetUploading'
     | 'setAssetUploading'
+    | 'readOnly'
 >) => {
+    // Every mutating handler below short-circuits when readOnly (team member,
+    // not admin). The UI already disables the inputs/buttons via a <fieldset
+    // disabled>, and the backend independently 403s any write from a member —
+    // this is a third, defense-in-depth layer so a stray call (e.g. a
+    // keyboard shortcut bound to Save) can't slip a write through.
+    const blockIfReadOnly = () => {
+        if (readOnly) {
+            settingsToast.error("Only your team's admin can edit company context.");
+        }
+        return readOnly;
+    };
+
     // ── Local draft state ──────────────────────────────────────────────────────
     const [draft, setDraft] = useState<CompanyContextData>(() => normalizeContext(companyContext));
     const savedSnapshot = useRef<CompanyContextData>(draft);
@@ -118,6 +134,11 @@ export const useCompanyContext = ({
     // Asset ids removed in the draft but not yet purged server-side.
     // Actual deletion is deferred until the user clicks Save.
     const pendingDeletedAssetIds = useRef<Set<string>>(new Set());
+
+    // Assets added this session that still need to be pushed to the backend on Save.
+    // Keyed by asset id → the info needed to upload (local file path + metadata).
+    const pendingUploads = useRef<Map<string, { filePath: string; label: string; type: KnowledgeAsset['type'] }>>(new Map());
+
 
     // ── Modal states ──────────────────────────────────────────────────────────
     const [personaModalOpen, setPersonaModalOpen] = useState(false);
@@ -128,11 +149,13 @@ export const useCompanyContext = ({
 
     // ── Handlers that open modals ────────────────────────────────────────────
     const openAddPersona = () => {
+        if (blockIfReadOnly()) return;
         setEditingPersona(null);
         setPersonaModalOpen(true);
     };
 
     const openEditPersona = (p: TargetPersona) => {
+        if (blockIfReadOnly()) return;
         setEditingPersona(p);
         setPersonaModalOpen(true);
     };
@@ -143,11 +166,13 @@ export const useCompanyContext = ({
     };
 
     const openAddCompetitor = () => {
+        if (blockIfReadOnly()) return;
         setEditingCompetitor(null);
         setCompetitorModalOpen(true);
     };
 
     const openEditCompetitor = (c: Competitor) => {
+        if (blockIfReadOnly()) return;
         setEditingCompetitor(c);
         setCompetitorModalOpen(true);
     };
@@ -167,6 +192,37 @@ export const useCompanyContext = ({
         }
     }, [companyContext]);
 
+    // Hydrate the shared, tenant-scoped asset list from the backend. For a team
+    // member this is the ONLY way the admin's uploaded docs appear (local SQLite
+    // is per-device); for an admin it reconciles what the backend actually has
+    // indexed. Best-effort — falls back silently to local draft.assets.
+    useEffect(() => {
+        let cancelled = false;
+        (async () => {
+            try {
+                const backendAssets = await intelligenceApi.listCompanyAssets();
+                if (cancelled || !backendAssets?.length) return;
+                const mapped: KnowledgeAsset[] = backendAssets.map(a => ({
+                    id: a.id,
+                    type: (a.type as KnowledgeAsset['type']) ?? 'custom',
+                    label: a.label,
+                    status: a.status === 'processing' ? 'processing' : 'mapped',
+                    lastUpdated: a.last_updated,
+                }));
+                setDraft(prev => {
+                    const localOnly = prev.assets.filter(l => !mapped.some(m => m.id === l.id));
+                    const next = { ...prev, assets: [...mapped, ...localOnly] };
+                    savedSnapshot.current = { ...savedSnapshot.current, assets: next.assets };
+                    return next;
+                });
+            } catch (err) {
+                console.warn('[useCompanyContext] listCompanyAssets failed:', err);
+            }
+        })();
+        return () => { cancelled = true; };
+    }, []);
+
+
     // ── Derived completeness ──────────────────────────────────────────────────
     const completeness = useMemo(() => {
         const { identity, coreValueProposition, assets } = draft;
@@ -179,17 +235,26 @@ export const useCompanyContext = ({
 
     // ── Patch helpers ──────────────────────────────────────────────────────────
     const patch = useCallback((updates: Partial<CompanyContextData>) => {
+        if (blockIfReadOnly()) return;
         setDraft(prev => ({ ...prev, ...updates }));
         setIsDirty(true);
-    }, []);
+    }, [readOnly]);
 
     const patchIdentity = useCallback((updates: Partial<CompanyIdentity>) => {
+        if (blockIfReadOnly()) return;
         setDraft(prev => ({ ...prev, identity: { ...prev.identity, ...updates } }));
         setIsDirty(true);
-    }, []);
+    }, [readOnly]);
 
     // ── Save ──────────────────────────────────────────────────────────────────
+    // Identity / value prop / personas / competitors go to the FastAPI
+    // /company-context routes. There's no bulk endpoint for personas or
+    // competitors, so we diff the draft against the last-saved snapshot and
+    // issue individual create/update/delete calls for whatever changed.
+    // Assets remain on the legacy IPC path (electronAPI.company*) — they're
+    // not part of this API and have their own upload/index pipeline.
     const handleSave = useCallback(async () => {
+        if (blockIfReadOnly()) return;
         setCompanyError('');
         setCompanySaving(true);
         try {
@@ -206,41 +271,140 @@ export const useCompanyContext = ({
                 }
             }
             pendingDeletedAssetIds.current.clear();
-            const result = await (window as any).electronAPI?.companySaveContext?.(draft);
-            if (result?.success) {
-                posthogAnalytics.trackCompanyContextSave();
-                setCompanyContext(draft);
-                savedSnapshot.current = draft;
-                setIsDirty(false);
-                settingsToast.success('Saved Successfully');
-                // Trigger reindex (best-effort)
-                intelligenceApi.reindexCompanyAssets().catch(err =>
-                    console.error('[CompanyContext] Failed to reindex:', err)
-                );
-            } else {
-                const message = result?.error || 'Save failed';
+
+            // Commit staged asset uploads to the backend now (chunking + embeddings happen
+            // here, not on the upload button). Do this before reindex so vectors exist.
+            const uploads = Array.from(pendingUploads.current.entries());
+            for (const [assetId, info] of uploads) {
+                try {
+                    await intelligenceApi.uploadCompanyAsset({
+                        filePath: info.filePath,
+                        assetId,
+                        label: info.label,
+                        assetType: info.type,
+                    });
+                    pendingUploads.current.delete(assetId);
+                    // Flip the committed asset to 'mapped' in the draft.
+                    setDraft(prev => ({
+                        ...prev,
+                        assets: prev.assets.map(a => a.id === assetId ? { ...a, status: 'mapped' as const } : a),
+                    }));
+                } catch (err: any) {
+                    const message = err?.status === 415
+                        ? err.message
+                        : err?.status === 403
+                            ? "Only your team's admin can upload company assets."
+                            : `Backend upload failed for "${info.label}"`;
+                    setCompanyError(message);
+                    settingsToast.error(message);
+                    setCompanySaving(false);
+                    return; // leave remaining uploads staged + isDirty true so the user can retry Save
+                }
+            }
+
+            // 1. Upsert the singleton identity + value prop fields.
+            await companyContextApi.upsert({
+                name: draft.identity.name,
+                website: draft.identity.website,
+                industry: draft.identity.industry,
+                core_value_proposition: draft.coreValueProposition,
+            });
+
+            // 2. Diff + sync personas against what was last saved.
+            const savedPersonas = savedSnapshot.current.targetPersonas;
+            const savedPersonaIds = new Set(savedPersonas.map(p => p.id));
+            const draftPersonaIds = new Set(draft.targetPersonas.map(p => p.id));
+
+            for (const p of savedPersonas) {
+                if (!draftPersonaIds.has(p.id)) {
+                    await companyContextApi.deletePersona(p.id);
+                }
+            }
+            for (const [i, p] of draft.targetPersonas.entries()) {
+                if (savedPersonaIds.has(p.id)) {
+                    await companyContextApi.updatePersona(p.id, { role: p.role, description: p.description, sort_order: i });
+                } else {
+                    await companyContextApi.createPersona({ id: p.id, role: p.role, description: p.description, sort_order: i });
+                }
+            }
+
+            // 3. Diff + sync competitors the same way.
+            const savedCompetitors = savedSnapshot.current.competitors;
+            const savedCompetitorIds = new Set(savedCompetitors.map(c => c.id));
+            const draftCompetitorIds = new Set(draft.competitors.map(c => c.id));
+
+            for (const c of savedCompetitors) {
+                if (!draftCompetitorIds.has(c.id)) {
+                    await companyContextApi.deleteCompetitor(c.id);
+                }
+            }
+            for (const [i, c] of draft.competitors.entries()) {
+                if (savedCompetitorIds.has(c.id)) {
+                    await companyContextApi.updateCompetitor(c.id, { name: c.name, moat: c.moat, win_rate: c.winRate, sort_order: i });
+                } else {
+                    await companyContextApi.createCompetitor({ id: c.id, name: c.name, moat: c.moat, win_rate: c.winRate, sort_order: i });
+                }
+            }
+
+            // 4. Persist assets. This is NOT redundant with the REST calls above —
+            // company:saveContext is still the only path that actually commits an
+            // uploaded document: company:uploadAsset only stages the file in memory
+            // (base64 in draft.assets[].fileData) and does no DB write or backend
+            // call at all. The real work — db.upsertCompanyAsset, the
+            // POST /company-assets/upload that triggers chunking + embeddings, and
+            // the KnowledgeOrchestrator sync — all lives inside company:saveContext,
+            // gated on `asset.fileData` being present. Skipping this call means an
+            // uploaded document silently never reaches the DB or gets embedded, even
+            // though the rest of Save reports success.
+            //
+            // It also re-mirrors identity/personas/competitors into local SQLite,
+            // which is now redundant with the REST calls above — but harmless, since
+            // company:getContext already treats that local copy as a fallback if
+            // Supabase is unreachable, not a competing source of truth.
+            const assetSaveResult = await (window as any).electronAPI?.companySaveContext?.(draft);
+            if (!assetSaveResult?.success) {
+                const message = assetSaveResult?.error || 'Failed to save uploaded documents';
                 setCompanyError(message);
                 settingsToast.error(message);
+                setCompanySaving(false);
+                return; // isDirty stays true so the user can retry Save
             }
+
+            posthogAnalytics.trackCompanyContextSave();
+            setCompanyContext(draft);
+            savedSnapshot.current = draft;
+            setIsDirty(false);
+            settingsToast.success('Saved Successfully');
+            // Trigger reindex (best-effort)
+            intelligenceApi.reindexCompanyAssets().catch(err =>
+                console.error('[CompanyContext] Failed to reindex:', err)
+            );
         } catch (e: any) {
-            const message = e.message || 'Save failed';
+            // A tenant member trying to write shared context gets a clear
+            // permissions message instead of a generic "save failed".
+            const message = e instanceof ApiError && e.code === 'forbidden'
+                ? "You don't have permission to edit your team's company context."
+                : e.message || 'Save failed';
             setCompanyError(message);
             settingsToast.error(message);
         } finally {
             setCompanySaving(false);
         }
-    }, [draft, setCompanyContext, setCompanyError, setCompanySaving]);
+    }, [draft, setCompanyContext, setCompanyError, setCompanySaving, readOnly]);
 
     const handleDiscard = useCallback(() => {
+        if (blockIfReadOnly()) return;
         // Undo any queued-but-unsaved deletions along with the rest of the draft.
         pendingDeletedAssetIds.current.clear();
+        pendingUploads.current.clear();
         setDraft(JSON.parse(JSON.stringify(savedSnapshot.current)));
         setIsDirty(false);
         setCompanyError('');
-    }, [setCompanyError]);
+    }, [setCompanyError, readOnly]);
 
     // ── Asset upload ──────────────────────────────────────────────────────────
     const handleUploadAsset = useCallback(async (type: KnowledgeAsset['type']) => {
+        if (blockIfReadOnly()) return;
         try {
             const fileResult = await (window as any).electronAPI?.companySelectFile?.();
             if (fileResult?.cancelled || !fileResult?.files?.length) return;
@@ -275,15 +439,25 @@ export const useCompanyContext = ({
 
                 const result = await (window as any).electronAPI?.companyUploadAsset?.(type, file.filePath);
                 if (result?.success && result.asset) {
-                    const mappedAsset = { ...result.asset, label: file.fileName, status: 'mapped' as const };
+                    const backendAssetId = result.asset.id ?? tempId;
+                    const mappedAsset = { ...result.asset, id: backendAssetId, label: file.fileName, status: 'processing' as const };
                     setDraft(prev => ({
                         ...prev,
                         assets: prev.assets.map(a => a.id === tempId ? mappedAsset : a),
                     }));
+                    // Stage for backend upload on Save — nothing is chunked/embedded server-side
+                    // until the user commits with "Save Intelligence Base".
+                    pendingUploads.current.set(backendAssetId, {
+                        filePath: file.filePath,
+                        label: file.fileName,
+                        type,
+                    });
                     setIsDirty(true);
                     posthogAnalytics.trackDocumentUploadCompleted(type);
                     await window.electronAPI?.profileSetMode?.(true);
+
                 } else {
+
                     setDraft(prev => ({ ...prev, assets: prev.assets.filter(a => a.id !== tempId) }));
                     setCompanyError(result?.error || `Upload failed for "${file.fileName}"`);
                     settingsToast.error(`Upload failed for "${file.fileName}"`);
@@ -296,29 +470,39 @@ export const useCompanyContext = ({
         } finally {
             setAssetUploading(null);
         }
-    }, [setCompanyError, setAssetUploading]);
+    }, [setCompanyError, setAssetUploading, readOnly]);
 
     const handleDeleteAsset = useCallback(async (assetId: string) => {
+        if (blockIfReadOnly()) return;
         if (!confirm('Remove this knowledge asset?')) return;
-        // Only remove from the local draft. The actual server-side delete is
-        // deferred until the user clicks Save (handleSave), so unsaved
-        // deletions can still be discarded via handleDiscard.
-        pendingDeletedAssetIds.current.add(assetId);
+        // If it was only staged this session (never uploaded to the backend), just
+        // drop the staged upload — no server-side delete needed.
+        if (pendingUploads.current.has(assetId)) {
+            pendingUploads.current.delete(assetId);
+        } else {
+            pendingDeletedAssetIds.current.add(assetId);
+        }
         setDraft(prev => ({ ...prev, assets: prev.assets.filter(a => a.id !== assetId) }));
         setIsDirty(true);
-    }, []);
+    }, [readOnly]);
 
     const handleDeleteAllForType = useCallback((type: KnowledgeAsset['type']) => {
+        if (blockIfReadOnly()) return;
         const cfgLabel = ASSET_CONFIG[type].label;
         if (!confirm(`Remove all ${cfgLabel} files?`)) return;
         setDraft(prev => {
-            prev.assets.filter(a => a.type === type).forEach(a => pendingDeletedAssetIds.current.add(a.id));
+            prev.assets.filter(a => a.type === type).forEach(a => {
+                if (pendingUploads.current.has(a.id)) pendingUploads.current.delete(a.id);
+                else pendingDeletedAssetIds.current.add(a.id);
+            });
             return { ...prev, assets: prev.assets.filter(a => a.type !== type) };
         });
+
         setIsDirty(true);
-    }, []);
+    }, [readOnly]);
 
     const handleSyncAsset = useCallback((assetId: string) => {
+        if (blockIfReadOnly()) return;
         setDraft(prev => ({
             ...prev,
             assets: prev.assets.map(a =>
@@ -328,7 +512,7 @@ export const useCompanyContext = ({
             ),
         }));
         setIsDirty(true);
-    }, []);
+    }, [readOnly]);
 
     // ── Persona CRUD ──────────────────────────────────────────────────────────
     const handlePersonaSave = useCallback((p: TargetPersona) => {
