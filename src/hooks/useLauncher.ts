@@ -404,6 +404,25 @@ export function useLauncher({ onStartMeeting, ollamaPullStatus = 'idle', onPageC
         }
     };
 
+    // Wraps setIsCalendarConnected so the "next meeting" card updates in the
+    // same tick as the connected badge, instead of waiting on the 60s poll
+    // or the manual Refresh button. Previously CalendarConnectCard's
+    // onConnect/onDisconnect only flipped isCalendarConnected — upcomingEvents
+    // is separate state that nothing else refreshed, so "Connected" showed
+    // immediately but the next-meeting card kept showing stale/empty data
+    // until the user hit Refresh.
+    const handleCalendarConnected = () => {
+        setIsCalendarConnected(true);
+        fetchEvents();
+    };
+    const handleCalendarDisconnected = () => {
+        setIsCalendarConnected(false);
+        // Clear immediately rather than waiting on the next fetchEvents —
+        // the disconnected provider's events are no longer valid and a stale
+        // array would keep the "next meeting" card showing a ghost meeting.
+        setUpcomingEvents([]);
+    };
+
     const handleRefresh = async () => {
         posthogAnalytics.trackLauncherRefresh();
         setIsRefreshing(true);
@@ -829,6 +848,8 @@ export function useLauncher({ onStartMeeting, ollamaPullStatus = 'idle', onPageC
         upcomingEvents,
         isCalendarConnected,
         setIsCalendarConnected,
+        handleCalendarConnected,
+        handleCalendarDisconnected,
         nextMeeting,
         focusedMeeting,
         focusedMeetingId,

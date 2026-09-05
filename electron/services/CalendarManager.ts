@@ -12,7 +12,18 @@ const GOOGLE_CLIENT_ID = process.env.GOOGLE_CLIENT_ID || "YOUR_CLIENT_ID_HERE";
 const GOOGLE_CLIENT_SECRET = process.env.GOOGLE_CLIENT_SECRET || "YOUR_CLIENT_SECRET_HERE";
 const REDIRECT_URI = "http://localhost:11111/auth/callback";
 const SCOPES = ["https://www.googleapis.com/auth/calendar.readonly"];
-const TOKEN_PATH = path.join(app.getPath('userData'), 'calendar_tokens.enc');
+
+// Per-app-user token file, mirroring CredentialsManager.credentialsPathForUid /
+// DatabaseManager.switchUser. A single shared `calendar_tokens.enc` meant
+// whichever account last connected Google Calendar stayed connected for
+// every subsequent signed-in user on this machine — "switch account" showed
+// the previous user's meetings because the token file (and this class's
+// in-memory token/connection state) was never scoped to a uid in the first
+// place.
+function tokenPathForUid(uid: string | null): string {
+    const safe = (uid ?? 'anon').replace(/[^A-Za-z0-9_-]/g, '') || 'anon';
+    return path.join(app.getPath('userData'), `calendar_tokens-${safe}.enc`);
+}
 
 if (GOOGLE_CLIENT_ID === "YOUR_CLIENT_ID_HERE" || GOOGLE_CLIENT_SECRET === "YOUR_CLIENT_SECRET_HERE") {
     console.warn('[CalendarManager] Google OAuth credentials are using defaults. Calendar features will not work until valid credentials are provided via env vars.');
@@ -37,6 +48,8 @@ export class CalendarManager extends EventEmitter {
     private expiryDate: number | null = null;
     private isConnected: boolean = false;
     private updateInterval: NodeJS.Timeout | null = null;
+    private currentUid: string | null = null;
+    private tokenPath: string = tokenPathForUid(null);
 
     private constructor() {
         super();
@@ -52,6 +65,41 @@ export class CalendarManager extends EventEmitter {
 
     public init() {
         this.loadTokens();
+    }
+
+    /**
+     * Re-point at the given user's calendar token file. Called from the
+     * AuthManager 'user-switched' handler (see ipcHandlers.ts), the same
+     * place DatabaseManager/CredentialsManager re-bind. Without this, this
+     * singleton (and its single global token file) kept serving whichever
+     * Google account was connected by the FIRST signed-in user, forever.
+     */
+    public switchUser(uid: string | null): void {
+        const nextPath = tokenPathForUid(uid);
+        if (nextPath === this.tokenPath) return; // already on this user's file
+
+        console.log(`[CalendarManager] Switching calendar scope: ${this.currentUid ?? 'anon'} -> ${uid ?? 'anon'}`);
+
+        this.reminderTimeouts.forEach(t => clearTimeout(t));
+        this.reminderTimeouts = [];
+
+        // Drop the previous account's in-memory tokens/events before loading
+        // the new user's file — loadTokens() only overwrites fields it finds,
+        // so a user with no calendar connected would otherwise keep seeing
+        // the last account's live token.
+        this.accessToken = null;
+        this.refreshToken = null;
+        this.expiryDate = null;
+        this.isConnected = false;
+
+        this.currentUid = uid;
+        this.tokenPath = nextPath;
+        this.loadTokens();
+
+        // Tell the UI to drop whatever it rendered under the old identity and
+        // re-fetch — connection status AND the event list both changed.
+        this.emit('connection-changed', this.isConnected);
+        this.emit('events-updated');
     }
 
     // =========================================================================
@@ -164,8 +212,25 @@ export class CalendarManager extends EventEmitter {
                     ...(popupX !== undefined && popupY !== undefined ? { x: popupX, y: popupY } : {}),
                     title: 'Connect Google Calendar',
                     webPreferences: { nodeIntegration: false, contextIsolation: true },
+                    // The main overlay/dock window runs at a high always-on-top
+                    // level (see WindowHelper.ts: 'floating' on macOS,
+                    // 'screen-saver' on Windows) so it stays visible over a
+                    // Zoom/Meet call. A plain BrowserWindow defaults to the
+                    // normal level, which sits BELOW that — so this popup was
+                    // opening behind the main window instead of in front of it.
+                    // Match its always-on-top level so it actually surfaces.
+                    alwaysOnTop: true,
                 });
+                if (process.platform === 'darwin') {
+                    authWindow.setAlwaysOnTop(true, 'floating');
+                } else {
+                    authWindow.setAlwaysOnTop(true, 'screen-saver');
+                }
                 authWindow.loadURL(authUrl);
+                authWindow.once('ready-to-show', () => {
+                    authWindow?.show();
+                    authWindow?.focus();
+                });
                 authWindow.on('closed', () => {
                     authWindow = null;
                     // If this fires after we've already resolved/rejected via
@@ -186,8 +251,8 @@ export class CalendarManager extends EventEmitter {
         this.expiryDate = null;
         this.isConnected = false;
 
-        if (fs.existsSync(TOKEN_PATH)) {
-            fs.unlinkSync(TOKEN_PATH);
+        if (fs.existsSync(this.tokenPath)) {
+            fs.unlinkSync(this.tokenPath);
         }
 
         this.emit('connection-changed', false);
@@ -306,18 +371,18 @@ export class CalendarManager extends EventEmitter {
         });
 
         const encrypted = safeStorage.encryptString(data);
-        const tmpPath = TOKEN_PATH + '.tmp';
+        const tmpPath = this.tokenPath + '.tmp';
         fs.writeFileSync(tmpPath, encrypted);
-        fs.renameSync(tmpPath, TOKEN_PATH);
+        fs.renameSync(tmpPath, this.tokenPath);
     }
 
     private loadTokens() {
-        if (!fs.existsSync(TOKEN_PATH)) return;
+        if (!fs.existsSync(this.tokenPath)) return;
 
         try {
             if (!safeStorage.isEncryptionAvailable()) return;
 
-            const encrypted = fs.readFileSync(TOKEN_PATH);
+            const encrypted = fs.readFileSync(this.tokenPath);
             const decrypted = safeStorage.decryptString(encrypted);
             const data = JSON.parse(decrypted);
 

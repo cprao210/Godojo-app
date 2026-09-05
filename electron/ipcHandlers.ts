@@ -3993,6 +3993,19 @@ export function initializeIpcHandlers(appState: AppState): void {
       } catch (err) {
         console.warn('[ipc] user-switched: credential re-sync failed:', err);
       }
+
+      // 5. Calendar (Google + Zoom). Both managers are main-process
+      //    singletons holding one global token file/in-memory token, so
+      //    without this the reloaded UI kept showing whichever account's
+      //    calendar was connected first, for every user on this machine.
+      try {
+        const { CalendarManager } = require('./services/CalendarManager');
+        CalendarManager.getInstance().switchUser(e.uid);
+        const { ZoomCalendarManager } = require('./services/ZoomCalendarManager');
+        ZoomCalendarManager.getInstance().switchUser(e.uid);
+      } catch (err) {
+        console.warn('[ipc] user-switched: calendar re-scope failed:', err);
+      }
     });
   } catch (e) {
     console.warn('[ipc] user-switched wiring failed:', e);

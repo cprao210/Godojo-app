@@ -10,7 +10,14 @@ import { CalendarEvent } from './CalendarManager';
 const CLIENT_ID = process.env.ZOOM_CLIENT_ID || '';
 const CLIENT_SECRET = process.env.ZOOM_CLIENT_SECRET || '';
 const REDIRECT_URI = 'http://localhost:11113/auth/callback';
-const TOKEN_PATH = path.join(app.getPath('userData'), 'zoom_calendar_tokens.enc');
+
+// Same fix as CalendarManager.tokenPathForUid: this was a single shared file,
+// so whichever app-user last connected Zoom stayed "connected" for every
+// account signed in afterwards.
+function tokenPathForUid(uid: string | null): string {
+    const safe = (uid ?? 'anon').replace(/[^A-Za-z0-9_-]/g, '') || 'anon';
+    return path.join(app.getPath('userData'), `zoom_calendar_tokens-${safe}.enc`);
+}
 
 const REGISTRANT_CACHE_TTL = 5 * 60 * 1000;
 
@@ -29,6 +36,8 @@ export class ZoomCalendarManager extends EventEmitter {
 
     private registrantCache: Map<string, RegistrantCacheEntry> = new Map();
     private currentUserEmail: string | null = null;
+    private currentUid: string | null = null;
+    private tokenPath: string = tokenPathForUid(null);
 
     private constructor() { super(); }
 
@@ -37,6 +46,31 @@ export class ZoomCalendarManager extends EventEmitter {
             ZoomCalendarManager.instance = new ZoomCalendarManager();
         }
         return ZoomCalendarManager.instance;
+    }
+
+    /** See CalendarManager.switchUser — wired to the same 'user-switched' event. */
+    public switchUser(uid: string | null): void {
+        const nextPath = tokenPathForUid(uid);
+        if (nextPath === this.tokenPath) return;
+
+        console.log(`[ZoomCalendarManager] Switching calendar scope: ${this.currentUid ?? 'anon'} -> ${uid ?? 'anon'}`);
+
+        this.reminderTimeouts.forEach(t => clearTimeout(t));
+        this.reminderTimeouts = [];
+        this.registrantCache.clear(); // keyed by meetingId, but the meetings belong to the old account
+
+        this.accessToken = null;
+        this.refreshToken = null;
+        this.expiryDate = null;
+        this.isConnected = false;
+        this.currentUserEmail = null;
+
+        this.currentUid = uid;
+        this.tokenPath = nextPath;
+        this.loadTokens();
+
+        this.emit('connection-changed', this.isConnected);
+        this.emit('events-updated');
     }
 
     public init() { this.loadTokens(); }
@@ -131,8 +165,21 @@ export class ZoomCalendarManager extends EventEmitter {
                     ...(popupX !== undefined && popupY !== undefined ? { x: popupX, y: popupY } : {}),
                     title: 'Connect Zoom Calendar',
                     webPreferences: { nodeIntegration: false, contextIsolation: true },
+                    // See CalendarManager.startAuthFlow for why this is needed:
+                    // the main overlay window runs at a high always-on-top
+                    // level, which otherwise puts this popup behind it.
+                    alwaysOnTop: true,
                 });
+                if (process.platform === 'darwin') {
+                    authWindow.setAlwaysOnTop(true, 'floating');
+                } else {
+                    authWindow.setAlwaysOnTop(true, 'screen-saver');
+                }
                 authWindow.loadURL(this.getAuthUrl());
+                authWindow.once('ready-to-show', () => {
+                    authWindow?.show();
+                    authWindow?.focus();
+                });
                 authWindow.on('closed', () => {
                     authWindow = null;
                     finish(() => reject(new Error('AUTH_CANCELLED')));
@@ -148,7 +195,7 @@ export class ZoomCalendarManager extends EventEmitter {
         this.refreshToken = null;
         this.expiryDate = null;
         this.isConnected = false;
-        if (fs.existsSync(TOKEN_PATH)) fs.unlinkSync(TOKEN_PATH);
+        if (fs.existsSync(this.tokenPath)) fs.unlinkSync(this.tokenPath);
         this.emit('connection-changed', false);
     }
 
@@ -251,15 +298,15 @@ export class ZoomCalendarManager extends EventEmitter {
             expiryDate: this.expiryDate,
         });
         const encrypted = safeStorage.encryptString(data);
-        const tmp = TOKEN_PATH + '.tmp';
+        const tmp = this.tokenPath + '.tmp';
         fs.writeFileSync(tmp, encrypted);
-        fs.renameSync(tmp, TOKEN_PATH);
+        fs.renameSync(tmp, this.tokenPath);
     }
 
     private loadTokens() {
-        if (!fs.existsSync(TOKEN_PATH) || !safeStorage.isEncryptionAvailable()) return;
+        if (!fs.existsSync(this.tokenPath) || !safeStorage.isEncryptionAvailable()) return;
         try {
-            const encrypted = fs.readFileSync(TOKEN_PATH);
+            const encrypted = fs.readFileSync(this.tokenPath);
             const data = JSON.parse(safeStorage.decryptString(encrypted));
             this.accessToken = data.accessToken;
             this.refreshToken = data.refreshToken;

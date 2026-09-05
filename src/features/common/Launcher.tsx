@@ -27,7 +27,7 @@ import { posthogAnalytics } from '@/lib/analytics/posthog.service';
 const Launcher: React.FC<LauncherProps> = ({ onStartMeeting, onOpenSettings, onCloseSettings, onOpenManagerDashboard, onCloseManagerDashboard, isManagerDashboardOpen = false, isSettingsOpen = false, onPageChange, ollamaPullStatus = 'idle', ollamaPullPercent = 0, ollamaPullMessage = '', authUser, onSignOut }) => {
 
     const launcherStates = useLauncher({ onStartMeeting, onPageChange, ollamaPullStatus, authUser });
-    const { isLight, meetings, deleteMutation, upcomingEvents, isCalendarConnected, setIsCalendarConnected } = launcherStates;
+    const { isLight, meetings, deleteMutation, upcomingEvents, isCalendarConnected, handleCalendarConnected, handleCalendarDisconnected } = launcherStates;
     const { isMeetingsLoading, isMeetingsRefreshing } = launcherStates;
     const { focusedMeeting, focusedMeetingId, setFocusedMeetingId, getMeetingStartText } = launcherStates;
     const { isDetectable, toggleDetectable, isRefreshing, handleRefresh, isMeetingActive, onStartMeetingClick } = launcherStates;
@@ -211,8 +211,8 @@ const Launcher: React.FC<LauncherProps> = ({ onStartMeeting, onOpenSettings, onC
                                         <CalendarConnectCard
                                             isCalendarConnected={isCalendarConnected}
                                             isLight={isLight}
-                                            onConnect={() => setIsCalendarConnected(true)}
-                                            onDisconnect={() => setIsCalendarConnected(false)}
+                                            onConnect={handleCalendarConnected}
+                                            onDisconnect={handleCalendarDisconnected}
                                         />
 
                                     </div>
