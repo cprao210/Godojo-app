@@ -332,6 +332,14 @@ export interface ChatStreamHandlers {
    * answer have started rendering — a partial answer is never retried,
    * since re-sending would duplicate or garble what's already shown. */
   onRetry?: (attempt: number, maxAttempts: number) => void;
+  /** Fired when the backend discards what it has already streamed and starts
+   * the answer again — an upstream drop mid-sentence, or a refusal it caught
+   * and is retrying. Clear this message's accumulated text: the replacement
+   * arrives as fresh `token` frames right after. Distinct from `onRetry`,
+   * which fires only BEFORE anything has rendered and needs no clearing.
+   * Without this, a mid-call failure leaves half a sentence with the retry
+   * appended to it. */
+  onReset?: () => void;
   /** Fired once per response, after the final token, with the backend's
    * interaction_id for this turn. Only emitted on `/chat/live` — collect
    * these across the call and POST them to `chatApi.linkMeetingInteractions`

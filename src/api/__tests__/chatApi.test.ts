@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 
 // chatApi talks to the backend via raw `fetch` (for streaming), not apiFetch —
 // mock the pieces of apiClient it actually uses.
@@ -56,6 +56,7 @@ function collectHandlers() {
     let ragAnswer: unknown;
     let error: string | undefined;
     let done = false;
+    let resets = 0;
 
     let resolveSettled!: () => void;
     const settled = new Promise<void>((resolve) => {
@@ -71,6 +72,13 @@ function collectHandlers() {
         onRagAnswer: (r: unknown) => {
             ragAnswer = r;
         },
+        onReset: () => {
+            resets += 1;
+            // Mirror what every real consumer does: throw away what has
+            // rendered so far, so `tokens` ends up holding only the answer the
+            // user is actually left looking at.
+            tokens.length = 0;
+        },
         onError: (msg: string) => {
             error = msg;
             resolveSettled();
@@ -81,7 +89,7 @@ function collectHandlers() {
         },
     };
 
-    return { handlers, settled, tokens, statuses, get sources() { return sources; }, get ragAnswer() { return ragAnswer; }, get error() { return error; }, get done() { return done; } };
+    return { handlers, settled, tokens, statuses, get sources() { return sources; }, get ragAnswer() { return ragAnswer; }, get error() { return error; }, get done() { return done; }, get resets() { return resets; } };
 }
 
 describe('statusLabel', () => {
@@ -89,6 +97,13 @@ describe('statusLabel', () => {
         expect(statusLabel('connected')).toBe('Connecting…');
         expect(statusLabel('searching')).toBe('Searching meetings…');
         expect(statusLabel('generating')).toBe('Generating response…');
+    });
+
+    it('maps the live-call statuses', () => {
+        // "Searching meetings…" would be wrong mid-call: the source is the
+        // conversation in progress, not the archive.
+        expect(statusLabel('searching_transcript')).toBe('Reading the call…');
+        expect(statusLabel('coaching')).toBe('Checking their objections…');
     });
 
     it('falls back to a generic label for unknown statuses', () => {
@@ -104,6 +119,12 @@ describe('chatApi.queryGlobal', () => {
         fetchMock = vi.fn();
         vi.stubGlobal('fetch', fetchMock);
         mockedGetAuthHeaders.mockClear();
+    });
+
+    // The two retry tests below swap in fake timers to skip chatApi's backoff.
+    // No-op for every other test in this block, which never installs them.
+    afterEach(() => {
+        vi.useRealTimers();
     });
 
     it('POSTs to the global RAG query route with auth headers, session_id, and history', async () => {
@@ -200,9 +221,16 @@ describe('chatApi.queryGlobal', () => {
         fetchMock.mockImplementation(() =>
             Promise.resolve(errorResponse(500, 'internal_error', 'Something broke')),
         );
+        // chatApi sleeps 600ms/1.2s/2.4s between attempts — 4.2s of real waiting
+        // for a test that asserts nothing about timing. The stream loop runs
+        // detached, so pump the fake clock instead of only awaiting `settled`;
+        // runAllTimersAsync flushes microtasks between timers, letting each
+        // retry's fetch rejection schedule the next backoff.
+        vi.useFakeTimers();
         const result = collectHandlers();
 
         chatApi.queryGlobal('hi', null, [], result.handlers);
+        await vi.runAllTimersAsync();
         await result.settled;
 
         expect(result.error).toBe('Something broke');
@@ -211,9 +239,11 @@ describe('chatApi.queryGlobal', () => {
 
     it('calls onError with a generic message on a network failure', async () => {
         fetchMock.mockRejectedValue(new TypeError('Failed to fetch'));
+        vi.useFakeTimers(); // same 4.2s of retry backoff as the test above
         const result = collectHandlers();
 
         chatApi.queryGlobal('hi', null, [], result.handlers);
+        await vi.runAllTimersAsync();
         await result.settled;
 
         expect(result.error).toBe("Couldn't get a response. Please try again.");
@@ -377,4 +407,64 @@ describe('chatApi.createSession / listSessions / getSessionMessages', () => {
         expect((mockedApiFetch.mock.calls[0][1] as RequestInit).method).toBe('DELETE');
     });
 
+});
+
+describe('reset frame', () => {
+    let fetchMock: ReturnType<typeof vi.fn>;
+
+    beforeEach(() => {
+        fetchMock = vi.fn();
+        vi.stubGlobal('fetch', fetchMock);
+    });
+
+    it('tells the consumer to discard a partial answer before the replacement streams', async () => {
+        // What a dropped upstream looks like on the wire: the backend had
+        // already sent half a sentence, gave up, told the client to clear, and
+        // streamed the answer again.
+        fetchMock.mockResolvedValueOnce(sseResponse([
+            'event: token\ndata: {"chunk": "The main concern they raised was pri"}',
+            'event: reset\ndata: {"reason": "stream_error"}',
+            'event: token\ndata: {"chunk": "Linda\'s concern is the repetitive follow-up work."}',
+            'event: done\ndata: {}',
+        ]));
+        // Keep the object: `resets` is a getter, so destructuring it here would
+        // snapshot 0 before the stream ever runs.
+        const result = collectHandlers();
+
+        chatApi.queryLive('what is her concern', [], [], undefined, result.handlers);
+        await result.settled;
+
+        expect(result.resets).toBe(1);
+        // The half sentence must not survive into what the rep reads.
+        expect(result.tokens.join('')).toBe("Linda's concern is the repetitive follow-up work.");
+        expect(result.tokens.join('')).not.toContain('was pri');
+    });
+
+    it('is harmless when it arrives before any token', async () => {
+        fetchMock.mockResolvedValueOnce(sseResponse([
+            'event: reset\ndata: {"reason": "refusal"}',
+            'event: token\ndata: {"chunk": "A grounded answer."}',
+            'event: done\ndata: {}',
+        ]));
+        const result = collectHandlers();
+
+        chatApi.queryLive('help me', [], [], undefined, result.handlers);
+        await result.settled;
+
+        expect(result.resets).toBe(1);
+        expect(result.tokens.join('')).toBe('A grounded answer.');
+    });
+
+    it('does not fire on a clean stream', async () => {
+        fetchMock.mockResolvedValueOnce(sseResponse([
+            'event: token\ndata: {"chunk": "All good."}',
+            'event: done\ndata: {}',
+        ]));
+        const result = collectHandlers();
+
+        chatApi.queryLive('anything', [], [], undefined, result.handlers);
+        await result.settled;
+
+        expect(result.resets).toBe(0);
+    });
 });
