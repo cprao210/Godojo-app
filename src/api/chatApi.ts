@@ -182,6 +182,12 @@ function dispatchFrame(frame: string, handlers: ChatStreamHandlers): void {
             handlers.onTitleUpdated?.(parsed.title);
             break;
         }
+        case "reset": {
+            // Backend threw away a partial answer and is starting over. The
+            // payload carries `reason` for logs; the UI only needs to clear.
+            handlers.onReset?.();
+            break;
+        }
         case "error": {
             const parsed = JSON.parse(data) as { error?: string };
             handlers.onError(parsed.error ?? "Something went wrong.");
@@ -207,6 +213,12 @@ export function statusLabel(status: string): string {
             return "Connecting…";
         case "searching":
             return "Searching meetings…";
+        // Live-call statuses. During a call "searching meetings" is misleading —
+        // the source is the conversation happening right now, not the archive.
+        case "searching_transcript":
+            return "Reading the call…";
+        case "coaching":
+            return "Checking their objections…";
         case "generating":
             return "Generating response…";
         default:

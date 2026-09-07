@@ -152,6 +152,15 @@ export function useGlobalChat({ isOpen, onClose, initialQuery = "" }: UseGlobalC
                     prev.map((s) => (s.id === sessionId ? { ...s, title } : s)),
                 );
             },
+            // Backend discarded a partial answer and is starting over — clear
+            // the buffer and the rendered text so the retry replaces it.
+            onReset: () => {
+                streamBuffer.reset();
+                setStatusText("Rewriting…");
+                setMessages((prev) =>
+                    prev.map((msg) => (msg.id === assistantMessageId ? { ...msg, content: "" } : msg)),
+                );
+            },
             onToken: (chunk) => {
                 setChatState("streaming_response");
                 setStatusText(null);

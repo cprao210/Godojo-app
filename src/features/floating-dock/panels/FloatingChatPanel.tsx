@@ -423,6 +423,20 @@ export const FloatingChatPanel: React.FC<FloatingChatPanelProps> = ({ transcript
                 onInteractionId: (interactionId) => {
                     onInteractionId?.(interactionId);
                 },
+                onReset: () => {
+                    // The backend discarded a partial answer. Drop the text we
+                    // have rendered and any frame queued to render it, so the
+                    // replacement replaces rather than appends. Status comes
+                    // back so the rep sees work continuing, not a blank bubble.
+                    localBuffer = '';
+                    if (rafId !== null) {
+                        cancelAnimationFrame(rafId);
+                        rafId = null;
+                    }
+                    setMessages(prev => prev.map(m =>
+                        m.id === assistantId ? { ...m, text: '', status: 'Rewriting…' } : m
+                    ));
+                },
                 onToken: (chunk) => {
                     localBuffer += chunk;
                     if (rafId === null) rafId = requestAnimationFrame(flush);
