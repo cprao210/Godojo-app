@@ -49,13 +49,17 @@ const FilmRollTranscript: React.FC<FilmRollTranscriptProps> = ({ text, speakerLa
                     WebkitMaskImage: 'linear-gradient(to right, transparent 0%, black 8%, black 100%)',
                 }}
             >
-                <motion.p
+                {/* Plain <p>: this used to be a motion.p whose only animation was
+                    `animate={{ x: 0 }}` — a no-op target that still made
+                    framer-motion track the node on every one of the 10+ text
+                    updates per second during a call. The horizontal scroll comes
+                    from `scrollLeft` above, not from motion. */}
+                <p
                     className="text-[11px] text-white/40 leading-relaxed whitespace-nowrap"
-                    animate={{ x: 0 }}
                     style={{ display: 'inline-block' }}
                 >
                     {text}
-                </motion.p>
+                </p>
             </div>
 
             {/* LIVE badge */}
@@ -203,7 +207,14 @@ const MessageBubble: React.FC<{ msg: Message }> = ({ msg }) => {
     );
 };
 
-export const FloatingChatPanel: React.FC<FloatingChatPanelProps> = ({ transcriptRef, rollingTranscriptUser, rollingTranscriptClient, isClientSpeaking, isUserSpeaking, isMeetingPaused, showTranscript, speakerNames, messages, onMessagesChange, onInteractionId, calendarEventMetadata, isPerformanceMode = false }) => {
+// Memoized: this panel stays mounted for the rest of the call once it has been
+// opened once (so chat history survives a panel switch), which means every
+// FloatingDock render reconciles it — message list, markdown bodies and all —
+// even when nothing it displays changed. All of its props are stable by
+// construction from FloatingDock (state values, state setters, refs, and
+// ref-backed callbacks), so the only renders that get through are the ones that
+// actually change what it shows.
+export const FloatingChatPanel: React.FC<FloatingChatPanelProps> = React.memo(({ transcriptRef, rollingTranscriptUser, rollingTranscriptClient, isClientSpeaking, isUserSpeaking, isMeetingPaused, showTranscript, speakerNames, messages, onMessagesChange, onInteractionId, calendarEventMetadata, isPerformanceMode = false }) => {
 
     const setMessages = onMessagesChange;
     const [inputValue, setInputValue] = useState('');
@@ -700,4 +711,6 @@ export const FloatingChatPanel: React.FC<FloatingChatPanelProps> = ({ transcript
             </div>
         </div>
     );
-};
+});
+
+FloatingChatPanel.displayName = 'FloatingChatPanel';

@@ -429,7 +429,7 @@ impl SpeakerInput {
 
                             synth_accum_ms += elapsed_ms;
                             if synth_accum_ms >= 30_000 {
-                                println!(
+                                crate::vlog!(
                                     "[wasapi] synthesized {}ms silence (render idle)",
                                     synth_accum_ms
                                 );

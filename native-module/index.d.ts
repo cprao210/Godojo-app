@@ -55,7 +55,10 @@ export interface CaptureOptions {
 
 /**
  * JSON snapshot of the echo pipeline (mode, gate state, ERLE, delay,
- * alignment, mute ratio). Poll from JS for field telemetry / debug panel.
+ * alignment, mute ratio) plus the mic gate's own counters
+ * (`mic_gate_*`: how many frames each stage of the RMS+VAD gate rejected, and
+ * the peak RMS the microphone actually produced). Poll from JS for field
+ * telemetry / debug panel.
  */
 export declare function getAudioPipelineStats(): string
 
@@ -84,6 +87,12 @@ export declare function getInputDevices(): Array<AudioDeviceInfo>
  */
 export declare function getNativeFeatureLevel(): number
 
+/**
+ * Effective state, including the env override — so JS can report what the
+ * native layer is actually doing rather than what it last asked for.
+ */
+export declare function getNativeVerboseLogging(): boolean
+
 export declare function getOutputDevices(): Array<AudioDeviceInfo>
 
 /**
@@ -98,6 +107,15 @@ export interface OutputRouteJs {
   transport: string
   name: string
 }
+
+/**
+ * Mirror the JS `verboseLogging` flag into the native module.
+ *
+ * Called from `setVerboseLoggingFlag` (electron/verboseLog.ts) so the two
+ * halves are the same switch. Older .node binaries lack this export, so the JS
+ * side treats it as optional.
+ */
+export declare function setNativeVerboseLogging(enabled: boolean): void
 
 /**
  * Validates a Gumroad license key by calling the Gumroad Licenses API.

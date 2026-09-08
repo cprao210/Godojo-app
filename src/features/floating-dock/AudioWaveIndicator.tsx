@@ -40,16 +40,25 @@
  * `filter` are rebuilt a few times a second rather than 60 times, parks itself
  * completely when both channels are idle or the window is hidden, and drops to
  * static bars under `prefers-reduced-motion`.
+ *
+ * Levels can arrive two ways. Passing `micLevel`/`systemLevel` keeps the
+ * original behaviour: the parent owns them as state, so the parent (and its
+ * whole subtree) re-renders on every level change. Omitting BOTH switches the
+ * loop to `lib/audioLevelFeed`, which carries the identical numbers outside
+ * React — the frame loop reads them itself and nothing above this component
+ * renders at all. The overlay dock uses the feed; the launcher tray, which
+ * needs the levels as reactive state anyway, still passes props.
  */
 
 import { useEffect, useMemo, useRef, useState } from 'react';
 import type React from 'react';
+import { readMicLevel, readSystemLevel, retainAudioLevelFeed, subscribeAudioLevelWake } from '@/lib/audioLevelFeed';
 
 interface AudioWaveIndicatorProps {
-    /** 0–1 live microphone level ("You"). */
-    micLevel: number;
-    /** 0–1 live system-audio level ("Client" / other party). */
-    systemLevel: number;
+    /** 0–1 live microphone level ("You"). Omit (with `systemLevel`) to read the shared feed. */
+    micLevel?: number;
+    /** 0–1 live system-audio level ("Client" / other party). Omit (with `micLevel`) to read the shared feed. */
+    systemLevel?: number;
     /** Color when mic is dominant, e.g. 'rgb(56, 189, 248)' (sky-400). */
     micColor?: string;
     /** Color when system audio is dominant, e.g. 'rgb(251, 146, 60)' (orange-400). */
@@ -229,6 +238,11 @@ export const AudioWaveIndicator: React.FC<AudioWaveIndicatorProps> = ({
     const micRgb = useMemo(() => parseRgb(micColor), [micColor]);
     const systemRgb = useMemo(() => parseRgb(systemColor), [systemColor]);
 
+    // No props at all → the frame loop pulls from the out-of-React feed instead.
+    // Deliberately all-or-nothing: a half-fed meter would show one live channel
+    // against one permanently idle one, which is worse than either mode.
+    const usesFeed = micLevel === undefined && systemLevel === undefined;
+
     const barWidth = size === 'sm' ? 3 : 4;
     const gap = size === 'sm' ? 3 : 4;
     const maxHeight = size === 'sm' ? 16 : 20;
@@ -285,6 +299,14 @@ export const AudioWaveIndicator: React.FC<AudioWaveIndicatorProps> = ({
         if (!reducedMotion) ensureKeyframes();
     }, [reducedMotion]);
 
+    // Held for as long as this meter is feed-driven. Kept out of the animation
+    // effect below so a mid-meeting fidelity toggle re-creates the frame loop
+    // without churning the IPC subscription.
+    useEffect(() => {
+        if (!usesFeed) return;
+        return retainAudioLevelFeed();
+    }, [usesFeed]);
+
     // Set by the animation effect so the props effect below can restart a parked
     // loop without owning any of the loop's closures.
     const wake = useRef<() => void>(() => { });
@@ -306,6 +328,15 @@ export const AudioWaveIndicator: React.FC<AudioWaveIndicatorProps> = ({
         if (!enableAuraSwell && auraRef.current) auraRef.current.style.transform = 'scale(1.6)';
 
         const commit = (dt: number) => {
+            // Feed mode pulls the targets here rather than receiving them from a
+            // render. Both accessors already return a quantized, decayed 0–1, so
+            // this is the exact input the props path produces — one step earlier
+            // in the same frame, and with no React involvement.
+            if (usesFeed) {
+                a.micTarget = shapeLevel(readMicLevel(), micGain);
+                a.sysTarget = shapeLevel(readSystemLevel(), systemGain);
+            }
+
             // Peak-hold with linear decay, then the asymmetric one-pole.
             const decay = dt * PEAK_DECAY_PER_MS;
             a.micHold = Math.max(a.micTarget, a.micHold - decay);
@@ -467,20 +498,28 @@ export const AudioWaveIndicator: React.FC<AudioWaveIndicatorProps> = ({
         start();
         document.addEventListener('visibilitychange', onVisibility);
 
+        // In feed mode nothing renders when audio resumes, so the feed itself is
+        // what un-parks the loop. `start()` no-ops while a frame is already
+        // scheduled, which is the common case during speech.
+        const unsubscribeWake = usesFeed ? subscribeAudioLevelWake(start) : null;
+
         return () => {
+            unsubscribeWake?.();
             document.removeEventListener('visibilitychange', onVisibility);
             park();
             wake.current = () => { };
         };
-    }, [reducedMotion, isPerformanceMode, micRgb, systemRgb, minScale, dotSize]);
+    }, [reducedMotion, isPerformanceMode, micRgb, systemRgb, minScale, dotSize, usesFeed, micGain, systemGain]);
 
     // Props → animation targets. Written in an effect rather than during render
     // so a discarded concurrent render cannot advance the meter, and runs on
     // every render because that is exactly when a new level has arrived.
+    // Inert in feed mode, where `commit()` owns the targets.
     useEffect(() => {
+        if (usesFeed) return;
         const a = anim.current;
-        a.micTarget = shapeLevel(clamp01(micLevel), micGain);
-        a.sysTarget = shapeLevel(clamp01(systemLevel), systemGain);
+        a.micTarget = shapeLevel(clamp01(micLevel ?? 0), micGain);
+        a.sysTarget = shapeLevel(clamp01(systemLevel ?? 0), systemGain);
         if (a.parked && (a.micTarget > 0 || a.sysTarget > 0)) wake.current();
     });
 

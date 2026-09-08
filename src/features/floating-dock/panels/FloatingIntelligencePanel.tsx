@@ -53,13 +53,12 @@ const FilmRollTranscript: React.FC<FilmRollTranscriptProps> = ({ text, speakerLa
                     WebkitMaskImage: 'linear-gradient(to right, transparent 0%, black 8%, black 100%)',
                 }}
             >
-                <motion.p
+                <p
                     className="text-[11px] text-white/40 leading-relaxed whitespace-nowrap"
-                    animate={{ x: 0 }}
                     style={{ display: 'inline-block' }}
                 >
                     {text}
-                </motion.p>
+                </p>
             </div>
 
             {/* LIVE badge */}
@@ -74,6 +73,11 @@ const FilmRollTranscript: React.FC<FilmRollTranscriptProps> = ({ text, speakerLa
 };
 
 // ─── AI Skeleton Loader ──────────────────────────────────────────────────────
+// The sweep is a CSS keyframe, not a framer-motion loop. This component is
+// instanced 27 times in the skeleton below, which the panel holds for MINUTES at
+// the start of every call — as JS animations that was 27 values re-stepped on the
+// main thread every frame, for UI the user often cannot even see (the dock starts
+// collapsed). Identical sweep, no main-thread cost.
 const Shimmer: React.FC<{ className?: string; style?: React.CSSProperties }> = ({ className = '', style }) => (
     <div
         className={`rounded-lg overflow-hidden relative ${className}`}
@@ -82,13 +86,11 @@ const Shimmer: React.FC<{ className?: string; style?: React.CSSProperties }> = (
             ...style,
         }}
     >
-        <motion.div
-            className="absolute inset-0"
+        <div
+            className="absolute inset-0 animate-shimmer-sweep"
             style={{
                 background: 'linear-gradient(90deg, transparent 0%, rgba(59,130,246,0.08) 50%, transparent 100%)',
             }}
-            animate={{ x: ['-100%', '100%'] }}
-            transition={{ duration: 1.6, repeat: Infinity, ease: 'linear' }}
         />
     </div>
 );
@@ -99,22 +101,22 @@ const IntelligenceSkeleton: React.FC = () => (
         <div className="flex items-center gap-3 px-1">
             <div className="flex gap-1 items-end h-4">
                 {[0.4, 0.7, 1, 0.6, 0.85, 0.5, 0.9].map((h, i) => (
-                    <motion.div
+                    <div
                         key={i}
-                        className="w-0.5 rounded-full bg-blue-400/60"
-                        style={{ height: `${h * 100}%` }}
-                        animate={{ scaleY: [1, h * 0.4 + 0.2, 1] }}
-                        transition={{ duration: 0.8, repeat: Infinity, delay: i * 0.1, ease: 'easeInOut' }}
+                        className="w-0.5 rounded-full bg-blue-400/60 animate-bar-pulse-fast"
+                        // --bar-peak / animationDelay carry the exact per-bar
+                        // amplitude and stagger framer-motion was applying.
+                        style={{
+                            height: `${h * 100}%`,
+                            '--bar-peak': h * 0.4 + 0.2,
+                            animationDelay: `${i * 0.1}s`,
+                        } as React.CSSProperties}
                     />
                 ))}
             </div>
-            <motion.span
-                className="text-[11px] font-semibold text-blue-400/80 tracking-wide"
-                animate={{ opacity: [0.5, 1, 0.5] }}
-                transition={{ duration: 1.8, repeat: Infinity }}
-            >
+            <span className="text-[11px] font-semibold text-blue-400/80 tracking-wide animate-soft-pulse">
                 Analysing live call...
-            </motion.span>
+            </span>
         </div>
 
         {/* BANT block */}
@@ -345,15 +347,21 @@ const CountdownPlaceholder: React.FC<{ openedAt: number; intervalMins: number; i
                 </p>
             </div>
 
-            {/* Waveform — stills when paused */}
+            {/* Waveform — stills when paused. CSS keyframes rather than seven
+                framer-motion loops: this placeholder is on screen for the whole
+                auto-refresh interval, up to 20 minutes. Omitting the class is the
+                exact equivalent of the old `repeat: isPaused ? 0 : Infinity`. */}
             <div className="flex gap-1 items-end h-5">
                 {[0.3, 0.6, 0.4, 0.8, 0.35, 0.65, 0.45].map((h, i) => (
-                    <motion.div
+                    <div
                         key={i}
-                        className="w-0.5 rounded-full"
-                        style={{ height: `${h * 100}%`, background: isPaused ? 'rgba(245,158,11,0.25)' : 'rgba(59,130,246,0.30)' }}
-                        animate={isPaused ? { scaleY: 1 } : { scaleY: [1, h * 0.4 + 0.15, 1] }}
-                        transition={{ duration: 1.8, repeat: isPaused ? 0 : Infinity, delay: i * 0.15, ease: 'easeInOut' }}
+                        className={`w-0.5 rounded-full ${isPaused ? '' : 'animate-bar-pulse-slow'}`}
+                        style={{
+                            height: `${h * 100}%`,
+                            background: isPaused ? 'rgba(245,158,11,0.25)' : 'rgba(59,130,246,0.30)',
+                            '--bar-peak': h * 0.4 + 0.15,
+                            animationDelay: `${i * 0.15}s`,
+                        } as React.CSSProperties}
                     />
                 ))}
             </div>
@@ -415,7 +423,13 @@ const MeetingTypeSelector: React.FC<{ selected: MeetingType[]; onChange: (types:
     );
 };
 
-export const FloatingIntelligencePanel: React.FC<FloatingIntelligencePanelProps> = ({
+// Memoized: this panel is mounted for the whole call (analysis starts on meeting
+// start, and its countdown/refresh state must survive panel switches), so every
+// FloatingDock render used to reconcile it plus the ~1000-line
+// LiveAnalysisContent below it. Its props are all stable by construction from
+// FloatingDock — state values, state setters, and ref-backed callbacks — so what
+// gets through now is only what changes what it shows.
+export const FloatingIntelligencePanel: React.FC<FloatingIntelligencePanelProps> = React.memo(({
     isMeetingPaused,
     analysisData,
     analysisError,
@@ -795,4 +809,6 @@ export const FloatingIntelligencePanel: React.FC<FloatingIntelligencePanelProps>
             </div>
         </div>
     );
-};
+});
+
+FloatingIntelligencePanel.displayName = 'FloatingIntelligencePanel';

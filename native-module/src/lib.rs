@@ -18,6 +18,7 @@ pub mod audio_config;
 pub mod echo_align;
 pub mod echo_control;
 pub mod license;
+pub mod log_gate;
 pub mod microphone;
 pub mod output_route;
 pub mod silence_suppression;
@@ -883,7 +884,10 @@ pub fn get_output_route() -> OutputRouteJs {
 }
 
 /// JSON snapshot of the echo pipeline (mode, gate state, ERLE, delay,
-/// alignment, mute ratio). Poll from JS for field telemetry / debug panel.
+/// alignment, mute ratio) plus the mic gate's own counters
+/// (`mic_gate_*`: how many frames each stage of the RMS+VAD gate rejected, and
+/// the peak RMS the microphone actually produced). Poll from JS for field
+/// telemetry / debug panel.
 #[napi]
 pub fn get_audio_pipeline_stats() -> String {
     echo_control::pipeline_stats_json(&WEBRTC_APM)

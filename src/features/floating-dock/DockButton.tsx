@@ -2,7 +2,13 @@ import React, { useEffect, useState } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
 import { DockButtonProps } from '@/types';
 
-export const DockButton: React.FC<DockButtonProps> = ({ icon, tooltip, isActive, activeColor = '#3b82f6', dangerColor = false, showActiveDot = false, frozen = false, onClick, zIndex, isPerformanceMode = false }) => {
+// Memoized: six of these sit in the dock during a live call, each with a
+// framer-motion button (whileHover/whileTap) and, when active, a `layoutId` glow
+// that makes framer-motion measure on every commit. Reconciling all six on an
+// unrelated parent update was forced layout for nothing. All props are stable by
+// construction now — the icons are module constants and the handlers are
+// useCallback'd in FloatingDock.
+export const DockButton: React.FC<DockButtonProps> = React.memo(({ icon, tooltip, isActive, activeColor = '#3b82f6', dangerColor = false, showActiveDot = false, frozen = false, onClick, zIndex, isPerformanceMode = false }) => {
 
     const [showTooltip, setShowTooltip] = useState(false);
     const tooltipTimerRef = React.useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -128,4 +134,6 @@ export const DockButton: React.FC<DockButtonProps> = ({ icon, tooltip, isActive,
             </motion.button>
         </div>
     );
-};
+});
+
+DockButton.displayName = 'DockButton';

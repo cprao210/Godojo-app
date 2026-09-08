@@ -639,6 +639,17 @@ export interface LiveAnalysisData {
   objections: Objection[];
   signals: Signal[];
   dealOptimizer?: DealOptimizerAlert[];
+  /**
+   * Set by the backend when it ran out of budget and mirrored the previous
+   * analysis back instead of producing a new one (HTTP 200, not an error — see
+   * `live_analysis_total_budget_s` in godojo-apis). It means "nothing new here",
+   * so the transcript cursor must NOT advance past this window:
+   * `shouldAdvanceCursor` in src/lib/meetingLifecycle.ts owns that rule.
+   *
+   * Never present on a successful response, and never persisted — the backend
+   * ignores it if it rides back inside `previous_analysis`.
+   */
+  degraded?: boolean;
 }
 
 // --- src/features/meetings/api/meetingsApi.ts ---
@@ -1370,7 +1381,10 @@ export interface ParsedReleaseNotes {
 }
 
 // --- src/lib/apiClient.ts ---
-export type RetryConfig = InternalAxiosRequestConfig & { _retry?: boolean };
+/** `_startedAt` is stamped by the request interceptor so a failure can report how
+ *  long it waited — the difference between "the backend is down" (fails at once)
+ *  and "the backend never answered" (fails at the 60s ceiling). */
+export type RetryConfig = InternalAxiosRequestConfig & { _retry?: boolean; _startedAt?: number };
 
 // --- src/lib/curl-validator.ts ---
 export interface CurlValidationResult {

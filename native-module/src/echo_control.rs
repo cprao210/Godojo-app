@@ -162,6 +162,12 @@ pub static SPEAKER_ACTIVE: AtomicBool = AtomicBool::new(false);
 
 /// Counts 10 ms render frames pushed to the APM (stat; legacy warmup input).
 pub static APM_RENDER_FRAMES: AtomicUsize = AtomicUsize::new(0);
+
+/// Counts 10 ms CAPTURE frames pushed through the APM. Replaces the old 2 Hz
+/// `[WebRtcAec] frame=…` println: climbing at ~100/s is the evidence that the
+/// mic DSP thread is alive and feeding AEC3, and it costs one relaxed add per
+/// frame instead of a line of stdout every 500 ms.
+pub static APM_CAPTURE_FRAMES: AtomicUsize = AtomicUsize::new(0);
 pub const APM_WARMUP_FRAMES: usize = 10; // 100 ms — legacy mode only
 
 /// Wall-clock ms (now_ms) of the last render frame whose RMS cleared
@@ -1028,10 +1034,12 @@ pub fn on_mic_start(proc: &Processor) {
     if prev == 0 {
         proc.reinitialize();
         APM_RENDER_FRAMES.store(0, Ordering::SeqCst);
+        APM_CAPTURE_FRAMES.store(0, Ordering::SeqCst);
         FRAMES_TOTAL.store(0, Ordering::Relaxed);
         FRAMES_MUTED.store(0, Ordering::Relaxed);
         FRAMES_DUCKED.store(0, Ordering::Relaxed);
         TALKOVER_ESCAPES.store(0, Ordering::Relaxed);
+        crate::silence_suppression::reset_gate_stats();
         MIC_SESSION_START_MS.store(now_ms(), Ordering::Release);
         RENDER_WAIT_WARNED.store(false, Ordering::Release);
         echo_align::reset_envelopes();
@@ -1083,6 +1091,11 @@ pub fn pipeline_stats_json(proc: &Processor) -> String {
     let seed_eff = ALIGN_SEED_EFF_MS.load(Ordering::Acquire);
     let converged = CONVERGED_STAT.load(Ordering::Acquire);
     let last_render = LAST_RENDER_FRAME_MS.load(Ordering::Acquire);
+    // Mic-gate telemetry: which of the two stages is rejecting frames, and
+    // whether the microphone is producing usable signal at all. See the
+    // telemetry block in silence_suppression.rs for how to read these.
+    let (g_frames, g_speech, g_rms_rej, g_vad_rej, g_peak, g_last, g_thresh) =
+        crate::silence_suppression::gate_stats();
 
     serde_json::json!({
         "mode": mode().as_str(),
@@ -1106,6 +1119,16 @@ pub fn pipeline_stats_json(proc: &Processor) -> String {
         "muted_pct": if total > 0 { muted as f64 * 100.0 / total as f64 } else { 0.0 },
         "talkover_escapes": TALKOVER_ESCAPES.load(Ordering::Relaxed),
         "render_frames": APM_RENDER_FRAMES.load(Ordering::Acquire),
+        "capture_frames": APM_CAPTURE_FRAMES.load(Ordering::Acquire),
+        // Mic gate (pre-echo-gate). frames_total above counts what SURVIVED
+        // this gate, so mic_gate_frames vs frames_total is the drop ratio.
+        "mic_gate_frames": g_frames,
+        "mic_gate_speech": g_speech,
+        "mic_gate_rms_rejects": g_rms_rej,
+        "mic_gate_vad_rejects": g_vad_rej,
+        "mic_gate_peak_rms": g_peak,
+        "mic_gate_last_rms": g_last,
+        "mic_gate_threshold": g_thresh,
         "render_backend": render_backend_str(),
         "render_pipeline_alive": render_pipeline_alive(),
         "last_render_frame_age_ms":

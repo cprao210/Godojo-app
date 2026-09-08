@@ -19,6 +19,7 @@
 import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import { useShortcuts } from "@/hooks";
 import { OVERLAY_OPACITY_DEFAULT } from "@/lib/overlayAppearance";
+import { boundRolling } from "@/lib/rollingTranscript";
 import { CalendarEvent, GodojoInterfaceMessage, GodojoInterfaceProps } from "@/types";
 
 export function useGodojoInterface({ overlayOpacity = OVERLAY_OPACITY_DEFAULT }: GodojoInterfaceProps) {
@@ -650,12 +651,12 @@ export function useGodojoInterface({ overlayOpacity = OVERLAY_OPACITY_DEFAULT }:
                     const lastSeparator = prev.lastIndexOf('  ·  ');
                     if (hadPendingPartial) {
                         const accumulated = lastSeparator >= 0 ? prev.substring(0, lastSeparator + 5) : '';
-                        return accumulated + speakerMarker + transcript.text;
+                        return boundRolling(accumulated + speakerMarker + transcript.text);
                     }
                     const lastSegment = lastSeparator >= 0 ? prev.substring(lastSeparator + 5) : prev;
                     if (lastSegment.trim() === transcript.text.trim()) return prev; // skip exact duplicate
                     const separator = prev ? '  ·  ' : '';
-                    return prev + separator + speakerMarker + transcript.text;
+                    return boundRolling(prev + separator + speakerMarker + transcript.text);
                 });
 
                 // Guard liveTranscriptRef against exact-text duplicates from rapid final events
@@ -688,10 +689,10 @@ export function useGodojoInterface({ overlayOpacity = OVERLAY_OPACITY_DEFAULT }:
                     if (hadPendingPartial) {
                         const lastSeparator = prev.lastIndexOf('  ·  ');
                         const accumulated = lastSeparator >= 0 ? prev.substring(0, lastSeparator + 5) : '';
-                        return accumulated + transcript.text;
+                        return boundRolling(accumulated + transcript.text);
                     }
                     const separator = prev ? '  ·  ' : '';
-                    return prev + separator + transcript.text;
+                    return boundRolling(prev + separator + transcript.text);
                 });
             }
         }));

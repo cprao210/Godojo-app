@@ -19,6 +19,23 @@ const GodojoInterface: React.FC<GodojoInterfaceProps> = ({ onEndMeeting, overlay
     const { isClientSpeaking, isUserSpeaking, showTranscript, setShowTranscript } = godojoInterfaceState;
     const { currentModel, setCurrentModel, speakerNames, shortcuts, overlayPanelClass, companyIntel } = godojoInterfaceState;
     const { calendarEventMetadata } = godojoInterfaceState;
+
+    // This component re-renders on every rolling-transcript update (10+/s during
+    // a call), so these two handlers must not be inline arrows: a fresh identity
+    // each time would invalidate the memo on the dock buttons that receive them.
+    // `isUndetectable` in the deps is not churn — it changes only when the user
+    // toggles ghost mode, which re-renders that button anyway (isActive flips).
+    const handleToggleGhost = React.useCallback(() => {
+        const next = !isUndetectable;
+        setIsUndetectable(next);
+        window.electronAPI?.setUndetectable(next);
+    }, [isUndetectable, setIsUndetectable]);
+
+    const handleToggleTranscript = React.useCallback((v: boolean) => {
+        setShowTranscript(v);
+        localStorage.setItem('natively_interviewer_transcript', String(v));
+    }, [setShowTranscript]);
+
     return (
         <motion.div
             ref={contentRef}
@@ -33,21 +50,14 @@ const GodojoInterface: React.FC<GodojoInterfaceProps> = ({ onEndMeeting, overlay
                 onPauseResume={handlePauseMeeting}
                 onEndCall={onEndMeeting ?? (() => { })}
                 isUndetectable={isUndetectable}
-                onToggleGhost={() => {
-                    const next = !isUndetectable;
-                    setIsUndetectable(next);
-                    window.electronAPI?.setUndetectable(next);
-                }}
+                onToggleGhost={handleToggleGhost}
                 transcriptRef={liveTranscriptRef}
                 rollingTranscriptUser={rollingTranscriptUser}
                 rollingTranscriptClient={rollingTranscriptClient}
                 isClientSpeaking={isClientSpeaking}
                 isUserSpeaking={isUserSpeaking}
                 showTranscript={showTranscript}
-                onToggleTranscript={(v) => {
-                    setShowTranscript(v);
-                    localStorage.setItem('natively_interviewer_transcript', String(v));
-                }}
+                onToggleTranscript={handleToggleTranscript}
                 currentModel={currentModel}
                 onSelectModel={setCurrentModel}
                 speakerNames={speakerNames}

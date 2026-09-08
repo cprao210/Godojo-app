@@ -241,7 +241,13 @@ const FieldRow: React.FC<FieldRowProps> = ({ label, field, themed = false, isLig
 };
 
 // ─── Main component ────────────────────────────────────────────────────────
-export const LiveAnalysisContent: React.FC<LiveAnalysisContentProps> = ({
+// Memoized: this is the largest subtree in the live overlay (every MEDDICC/BANT
+// field, the signal lists, the objection cards) and it sits inside a panel that
+// stays mounted for the whole call. Its four props change only when a new
+// analysis lands or the user switches tabs, but it used to be reconciled by every
+// unrelated dock render — including, before the audio-level feed landed, ~40 per
+// second while anyone was speaking.
+export const LiveAnalysisContent: React.FC<LiveAnalysisContentProps> = React.memo(({
     analysisData,
     // aiInsight,
     hideBar = null,
@@ -982,4 +988,6 @@ export const LiveAnalysisContent: React.FC<LiveAnalysisContentProps> = ({
             )}
         </div>
     );
-};
+});
+
+LiveAnalysisContent.displayName = 'LiveAnalysisContent';

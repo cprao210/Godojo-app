@@ -45,6 +45,11 @@ export const intelligenceApi = {
    * analysis and returns the full updated result. Omit it and `turns` is treated as the
    * full call, analysed fresh. An empty delta with a previous analysis is a no-op on the
    * backend (it echoes the prior analysis back without an LLM call).
+   *
+   * A 200 can still mean "no new analysis": when the backend spends its provider budget
+   * without an answer it mirrors `previous_analysis` back with `degraded: true` instead of
+   * 5xx-ing. Callers must not advance their transcript cursor over one — see
+   * `shouldAdvanceCursor` in src/lib/meetingLifecycle.ts.
    */
   analyzeLive: (
     turns: LiveAnalysisTurn[],

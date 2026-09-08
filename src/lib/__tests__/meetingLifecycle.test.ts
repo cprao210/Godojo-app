@@ -5,11 +5,14 @@
 import { describe, expect, it } from 'vitest';
 
 import {
+    decideAutoRefresh,
     decideFinalAnalysis,
     deriveProcessingStage,
+    AutoRefreshInput,
     FinalAnalysisInput,
     hasGeneratedSummary,
     ProcessingStageInput,
+    shouldAdvanceCursor,
 } from '@/lib/meetingLifecycle';
 
 /** A call that was analyzed once, with no new turns since. */
@@ -131,5 +134,77 @@ describe('hasGeneratedSummary', () => {
         expect(hasGeneratedSummary({ salesCoachReview: { whatIMissedCompletely: ['No champion'] } })).toBe(true);
         expect(hasGeneratedSummary({ nextCallPlaybook: { openingRecap: 'Recap the ROI' } })).toBe(true);
         expect(hasGeneratedSummary({ nextCallPlaybook: { questionsToAsk: ['Who signs?'] } })).toBe(true);
+    });
+});
+
+// The rule that decides whether live analysis keeps updating during a call. The
+// regression it guards: a single-shot deadline meant a call got exactly ONE
+// analysis, fired at two prospect turns — all BANT/MEDDIC still `missing`, and
+// never refreshed, so nothing was ever confirmed.
+describe('decideAutoRefresh', () => {
+    /** Mid-call, four turns arrived since the last analysis. */
+    const midCall = (over: Partial<AutoRefreshInput> = {}): AutoRefreshInput => ({
+        isCallLive: true,
+        isLoading: false,
+        hasEnoughTranscript: true,
+        lastAnalyzedTurnIndex: 8,
+        humanTurnCount: 12,
+        ...over,
+    });
+
+    it('runs when turns arrived since the last analysis', () => {
+        expect(decideAutoRefresh(midCall())).toBe('run');
+    });
+
+    it('runs the first analysis of a call (cursor still at zero)', () => {
+        expect(decideAutoRefresh(midCall({ lastAnalyzedTurnIndex: 0, humanTurnCount: 3 }))).toBe('run');
+    });
+
+    it('stops once the call has ended', () => {
+        // The overlay is hidden between meetings, not destroyed, and the
+        // transcript ref survives until the NEXT meeting starts — so without
+        // this the deadline would keep analyzing a finished call.
+        expect(decideAutoRefresh(midCall({ isCallLive: false }))).toBe('stop');
+    });
+
+    it('stops on a dead call even with fresh turns and a run in flight', () => {
+        expect(decideAutoRefresh(midCall({ isCallLive: false, isLoading: true }))).toBe('stop');
+    });
+
+    it('checks back soon rather than racing a run already in flight', () => {
+        expect(decideAutoRefresh(midCall({ isLoading: true }))).toBe('retry-soon');
+    });
+
+    it('reports no-transcript but stays armed for a prospect who talks late', () => {
+        expect(decideAutoRefresh(midCall({ hasEnoughTranscript: false }))).toBe('no-transcript');
+    });
+
+    it('waits out another interval when nothing was said since the last run', () => {
+        // An empty delta only earns a mirror-back of the previous analysis, so
+        // the round trip cannot tell the user anything new.
+        expect(decideAutoRefresh(midCall({ lastAnalyzedTurnIndex: 12, humanTurnCount: 12 }))).toBe('wait');
+        expect(decideAutoRefresh(midCall({ lastAnalyzedTurnIndex: 14, humanTurnCount: 12 }))).toBe('wait');
+    });
+});
+
+// The cursor is the only record of which turns have been accounted for, so
+// advancing it over a window no model actually read loses that window for the
+// rest of the call.
+describe('shouldAdvanceCursor', () => {
+    it('advances on a normal response', () => {
+        expect(shouldAdvanceCursor({})).toBe(true);
+        expect(shouldAdvanceCursor({ degraded: false })).toBe(true);
+    });
+
+    it('holds when the backend degraded to a mirrored previous analysis', () => {
+        // 200 OK, but nothing new in it. Advancing here would skip the delta
+        // permanently — worse than the failure the degraded path replaced, which
+        // self-heals by re-sending it.
+        expect(shouldAdvanceCursor({ degraded: true })).toBe(false);
+    });
+
+    it('holds on a missing response rather than assuming success', () => {
+        expect(shouldAdvanceCursor(null)).toBe(false);
+        expect(shouldAdvanceCursor(undefined)).toBe(false);
     });
 });

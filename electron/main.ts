@@ -57,6 +57,13 @@ import {
   type MacScreenCaptureCapability,
 } from './utils/macPermissions';
 
+// Must match FINAL_ANALYSIS_MAX_WAIT_MS in src/lib/meetingLifecycle.ts — that
+// file is the renderer's copy of the same deadline (it used to be the only
+// place this was enforced, blocking the End Call button; see
+// AppState.waitForLiveAnalysisToSettle and endMeeting() below for where main
+// now enforces it independently so the UI never has to wait on it).
+const FINAL_ANALYSIS_MAX_WAIT_MS = 10_000;
+
 // One-time, masked diagnostic so a "keys not falling back to env" report can
 // be triaged directly from a shipped build's logs (Console.app on mac,
 // %APPDATA% logs on Windows) AND from PostHog, instead of guessing blind or
@@ -354,6 +361,13 @@ import { SystemAudioCapture } from "./audio/SystemAudioCapture"
 import { MicrophoneCapture } from "./audio/MicrophoneCapture"
 import { AudioDeviceWatcher, isSameSnapshot, type DeviceSnapshot, type DevicesChangedEvent } from "./audio/AudioDeviceWatcher"
 import { loadNativeModule } from "./audio/nativeModuleLoader"
+import { monitorEventLoopDelay, type IntervalHistogram } from "perf_hooks"
+import {
+  createLevelGateState,
+  quantizeLevel,
+  shouldSendLevel,
+  type LevelGateState,
+} from "./audio/audioLevelGate"
 import { TranscriptEchoFilter, type AecTelemetry } from "./audio/TranscriptEchoFilter"
 import { TranscriptTranslator } from "./services/TranscriptTranslator"
 import type { SttWord } from "./audio/sttWordUtils"
@@ -432,6 +446,11 @@ export class AppState {
   // after the late-arriving result is saved.
   private _pendingLiveAnalysisMeetingId: string | null = null;
   private _liveAnalysisInFlight: boolean = false;
+  // Resolved (and cleared) the moment setLiveAnalysisInFlight(false, ...) runs.
+  // Lets stopMeeting() wait for a final analysis that's already running in the
+  // renderer, instead of the renderer having to block its own UI on it — see
+  // waitForLiveAnalysisToSettle() below.
+  private _liveAnalysisSettledWaiters: Array<() => void> = [];
   // Monotonic id for "which call are we on", bumped once per startMeeting.
   // Live analysis is computed asynchronously in the renderer and can resolve
   // after its meeting ended — every renderer write carries the generation it
@@ -763,10 +782,22 @@ export class AppState {
   // lag behind or stay silent on a provider hiccup while audio is still
   // capturing fine.
   //
-  // Throttled per-channel to ~20fps: 'data' chunks can arrive much faster than
+  // Sampled per-channel at ~20fps: 'data' chunks can arrive much faster than
   // any UI needs to redraw, and this fires on every meeting window.
-  private _lastAudioLevelSentAt: Record<'mic' | 'system', number> = { mic: 0, system: 0 };
+  //
+  // Sampling and sending are separate concerns. This timestamp paces the RMS
+  // computation; the gate below decides whether the result is worth an IPC
+  // message. Keeping them apart means a suppressed duplicate does not delay the
+  // next sample, and the heartbeat deadline is measured from real sends only.
+  private _lastAudioLevelSampledAt: Record<'mic' | 'system', number> = { mic: 0, system: 0 };
   private static readonly AUDIO_LEVEL_THROTTLE_MS = 50;
+  // Per-channel dedupe state. No reset needed between meetings: lastSentAt from a
+  // previous meeting is always far enough in the past that the heartbeat fires on
+  // the first sample of the next one.
+  private readonly _audioLevelGate: Record<'mic' | 'system', LevelGateState> = {
+    mic: createLevelGateState(),
+    system: createLevelGateState(),
+  };
 
   private computeAudioRmsLevel(chunk: Buffer): number {
     let sum = 0;
@@ -784,9 +815,15 @@ export class AppState {
 
   private sendAudioLevel(channel: 'mic' | 'system', chunk: Buffer): void {
     const now = Date.now();
-    if (now - this._lastAudioLevelSentAt[channel] < AppState.AUDIO_LEVEL_THROTTLE_MS) return;
-    this._lastAudioLevelSentAt[channel] = now;
-    const level = this.computeAudioRmsLevel(chunk);
+    if (now - this._lastAudioLevelSampledAt[channel] < AppState.AUDIO_LEVEL_THROTTLE_MS) return;
+    this._lastAudioLevelSampledAt[channel] = now;
+    // Quantize to the renderer's own grid, then only send what it does not
+    // already have. See audioLevelGate.ts for why the heartbeat is mandatory.
+    const level = quantizeLevel(this.computeAudioRmsLevel(chunk));
+    const gate = this._audioLevelGate[channel];
+    if (!shouldSendLevel(gate, level, now)) return;
+    gate.lastSent = level;
+    gate.lastSentAt = now;
     this.sendToMeetingSurfaces('audio-level', { channel, level });
   }
 
@@ -1032,8 +1069,52 @@ export class AppState {
   private wireMicrophoneCapture(capture: MicrophoneCapture, label: string = ''): void {
     const prefix = label ? `[Main] ${label} ` : '[Main] ';
 
+    // ── Detector: no chunks at all ──────────────────────────────────────────
+    //
+    // Mirrors wireSystemCapture's Detector 1. Previously mic capture only
+    // raised a banner from the native module's own 'capture-failed' retry
+    // event — which never fires for the macOS case this exists to catch: TCC
+    // reports the microphone grant as 'granted' (so nothing errors, nothing
+    // retries) but the grant is orphaned by a code-signature change after an
+    // app update, exactly like the documented Screen Recording case, and the
+    // capture just never produces a chunk. System audio already detects this;
+    // mic silently had no equivalent, which is why the in-meeting "Audio
+    // capture issue" banner only ever appeared for the system-audio channel.
+    let chunkCount = 0;
+    let stuckTimer: NodeJS.Timeout | null = null;
+    const disarmStuckWatchdog = () => {
+      if (stuckTimer) { clearTimeout(stuckTimer); stuckTimer = null; }
+    };
+    // Exposed the same way system audio does, so endMeeting()/pause can cancel
+    // this deterministically before stop() instead of racing the timer.
+    (capture as any).__disarmStuckWatchdog = disarmStuckWatchdog;
+
+    const armStuckWatchdog = () => {
+      disarmStuckWatchdog();
+      stuckTimer = setTimeout(() => {
+        if (this.microphoneCapture !== capture) return; // replaced
+        if (chunkCount > 0) return;                      // producing fine
+        if (!this.isMeetingActive) return;               // meeting ended
+
+        console.warn(`${prefix}MicrophoneCapture produced 0 chunks in ${STUCK_WATCHDOG_MS / 1000}s — silent capture (permission revoked or device gone).`);
+        this.sendAudioCaptureFailed({
+          channel: 'mic',
+          message: formatPermissionMessage('mic-capture-stuck'),
+          attempt: 0,
+          maxAttempts: 3,
+          terminal: false,
+          stuck: true,
+        });
+      }, STUCK_WATCHDOG_MS);
+    };
+
+    capture.on('start', armStuckWatchdog);
+    capture.on('stop', disarmStuckWatchdog);
+
     capture.on('data', (chunk: Buffer) => {
       if (this.microphoneCapture !== capture) return;
+      chunkCount++;
+      if (chunkCount === 1) disarmStuckWatchdog();
       this.sendAudioLevel('mic', chunk);
       // Local speech is the evidence that a meeting is actually in progress,
       // which is what makes a silent far end suspicious rather than just quiet.
@@ -1100,6 +1181,16 @@ export class AppState {
    */
   private disarmSystemCaptureWatchdog(): void {
     (this.systemAudioCapture as any)?.__disarmStuckWatchdog?.();
+  }
+
+  /**
+   * Mirrors disarmSystemCaptureWatchdog for the mic-side stuck watchdog added
+   * in wireMicrophoneCapture. Same reason it must run before any deliberate
+   * stop(): otherwise pausing/ending within the watchdog window reports "no
+   * audio detected" about a capture the user intentionally stopped.
+   */
+  private disarmMicCaptureWatchdog(): void {
+    (this.microphoneCapture as any)?.__disarmStuckWatchdog?.();
   }
 
   public getIsMeetingActive(): boolean {
@@ -1630,14 +1721,61 @@ export class AppState {
   // AEC alignment seed lookup when getOutputRoute() is unavailable pre-start.
   private _lastStatsRouteName: string | null = null;
 
+  // Fingerprint of the last pipeline-stats line that was logged.
+  //
+  // The poll fires every 5 s for the whole meeting and used to print the full
+  // ~1.2 KB stats JSON every time, so a quiet 40-minute call emitted ~480 near
+  // identical lines — noise that buries the transitions actually worth reading
+  // (gate convergence, a route change, the pipeline going quiet) and makes the
+  // shipped log file roll over sooner. Only the fields that describe the
+  // pipeline's *state* go into this fingerprint; the monotonic counters
+  // (frames_total, render_frames, last_render_frame_age_ms) are deliberately
+  // excluded, because they change on every tick and would defeat the compare.
+  //
+  // Verbose logging still gets every raw line — that is what it is for.
+  private _lastStatsFingerprint: string | null = null;
+
+  /**
+   * State fields worth a log line. Anything not listed here is either a
+   * monotonic counter or a value that jitters continuously (erle_ema, delay_ms,
+   * the residual-echo likelihoods), neither of which marks a transition.
+   */
+  private static readonly STATS_FINGERPRINT_KEYS = [
+    'gate_state',
+    'converged',
+    'mode',
+    'route_name',
+    'route_transport',
+    'render_backend',
+    'render_pipeline_alive',
+    'speaker_active',
+    'headphones',
+    'align_frozen',
+    'active_mic_captures',
+  ] as const;
+
+  private _statsFingerprint(statsJson: string): string | null {
+    try {
+      const stats = JSON.parse(statsJson);
+      return AppState.STATS_FINGERPRINT_KEYS.map((k) => `${k}=${stats?.[k]}`).join('|');
+    } catch {
+      return null; // unparseable — fall back to logging it
+    }
+  }
+
   private _startPipelineStatsPolling(): void {
     if (this._pipelineStatsTimer) return;
     const native = loadNativeModule();
     if (!native?.getAudioPipelineStats) return; // stale .node binary — no stats surface
+    this._lastStatsFingerprint = null; // first tick of a meeting always logs
     this._pipelineStatsTimer = setInterval(() => {
       try {
         const stats = native.getAudioPipelineStats!();
-        console.log(`[AudioPipeline] ${stats} filter=${JSON.stringify(this._echoFilter.getStats())}`);
+        const fingerprint = this._statsFingerprint(stats);
+        if (this._verboseLogging || fingerprint === null || fingerprint !== this._lastStatsFingerprint) {
+          console.log(`[AudioPipeline] ${stats} filter=${JSON.stringify(this._echoFilter.getStats())}`);
+        }
+        this._lastStatsFingerprint = fingerprint;
         this._maybePersistEchoAlignSeed(stats);
       } catch (e) {
         console.warn('[AudioPipeline] stats poll failed:', e);
@@ -1700,6 +1838,46 @@ export class AppState {
     if (this._pipelineStatsTimer) {
       clearInterval(this._pipelineStatsTimer);
       this._pipelineStatsTimer = null;
+    }
+  }
+
+  // ── Main-thread responsiveness measurement ────────────────────────────────
+  //
+  // "The app gets stuck during calls" is unactionable until it is a number.
+  // monitorEventLoopDelay samples how late the loop is servicing its own timers,
+  // which is precisely the quantity a blocking native call (device enumeration,
+  // a synchronous file write) or a long JS turn inflates — and it costs nothing
+  // while running, because libuv records the interval in C and only builds the
+  // histogram when it is read.
+  //
+  // Meeting-scoped and verbose-gated: one line per meeting, no new setting, no
+  // new IPC. Whether the device-list probes need staggering is a question this
+  // answers rather than one we guess at.
+  private _loopDelay: IntervalHistogram | null = null;
+
+  private _startLoopDelayMonitor(): void {
+    if (!this._verboseLogging || this._loopDelay) return;
+    try {
+      this._loopDelay = monitorEventLoopDelay({ resolution: 20 });
+      this._loopDelay.enable();
+    } catch {
+      this._loopDelay = null; // never let instrumentation break a meeting
+    }
+  }
+
+  private _stopLoopDelayMonitor(): void {
+    const h = this._loopDelay;
+    if (!h) return;
+    this._loopDelay = null;
+    try {
+      h.disable();
+      const ms = (ns: number): string => (ns / 1e6).toFixed(1);
+      console.log(
+        `[Main][debug] Event-loop delay over meeting: mean=${ms(h.mean)}ms ` +
+        `p50=${ms(h.percentile(50))}ms p99=${ms(h.percentile(99))}ms max=${ms(h.max)}ms`
+      );
+    } catch {
+      // A histogram read must never be the reason endMeeting fails.
     }
   }
 
@@ -2566,7 +2744,9 @@ export class AppState {
   //
   // Cross-checking the two channels is what breaks the tie: if the mic is
   // carrying real speech and the system channel has been bit-silent throughout,
-  // the far end is not simply quiet. One speculative rebind, then an advisory.
+  // the far end is not simply quiet. One speculative rebind, then an advisory —
+  // the rebind on every platform, the advisory on macOS only (see stage 2 for
+  // why a muted prospect is indistinguishable from a misrouted endpoint here).
   private _lastRealSystemAudioAt = 0;
   private _lastRealMicAudioAt = 0;
   private _farEndTimer: NodeJS.Timeout | null = null;
@@ -2641,7 +2821,24 @@ export class AppState {
     if (this._farEndWarned || now - this._farEndSwapAt < AppState.FAR_END_SILENCE_MS) return;
     this._farEndWarned = true;
     if (this._systemBannerShown) return;
-    console.warn(`[Main] System audio still silent ${Math.round((now - this._farEndSwapAt) / 1000)}s after a rebind while the mic is active — surfacing an advisory.`);
+
+    // The advisory is macOS-only; the detection above is not.
+    //
+    // On a sales call the rep routinely talks for minutes while the prospect
+    // listens on mute, and a muted far end means the loopback capture carries
+    // bit-exact silence — so this condition is satisfied by a perfectly healthy
+    // Windows meeting, and the banner was firing mid-call on exactly the most
+    // common call shape. It is also unactionable there: SystemAudioPermissionBanner
+    // renders its "Open Settings" / "Repair Permissions" buttons on macOS only,
+    // so on Windows it is a warning with no fix attached.
+    //
+    // Stage 1's speculative rebind still runs on every platform, so the Windows
+    // eConsole/eCommunications mismatch this watch was built for is still
+    // repaired silently — only the advisory is withheld. The log line stays so
+    // the detection remains visible in a support bundle.
+    const advise = process.platform === 'darwin';
+    console.warn(`[Main] System audio still silent ${Math.round((now - this._farEndSwapAt) / 1000)}s after a rebind while the mic is active — ${advise ? 'surfacing an advisory' : 'advisory withheld (non-macOS: a muted far end looks identical)'}.`);
+    if (!advise) return;
     this.sendAudioCaptureFailed({
       channel: 'system',
       message: formatPermissionMessage('system-audio-stuck'),
@@ -2720,6 +2917,7 @@ export class AppState {
     // still in-flight call this.googleSTT?.write() while googleSTT is already null.
     if (this.isMeetingActive) {
       this.disarmSystemCaptureWatchdog();
+      this.disarmMicCaptureWatchdog();
       this.systemAudioCapture?.stop();
       this.microphoneCapture?.stop();
     }
@@ -3106,6 +3304,8 @@ export class AppState {
         }
         // Field telemetry for the echo pipeline (ERLE, gate state, mute ratio).
         this._startPipelineStatsPolling();
+        // Objective answer to "is the main process blocking during calls".
+        this._startLoopDelayMonitor();
         // Only now: the baseline snapshot must reflect the device graph AFTER our
         // own captures have grabbed their endpoints, or the tap/aggregate device
         // appearing would read as a user device change and trigger a hot-swap.
@@ -3139,8 +3339,10 @@ export class AppState {
 
     // Stop audio captures synchronously — these are fire-and-forget internally
     this._stopPipelineStatsPolling();
+    this._stopLoopDelayMonitor();
     this._stopDeviceWatcher();
     this.disarmSystemCaptureWatchdog();
+    this.disarmMicCaptureWatchdog();
     this.systemAudioCapture?.stop();
     this.googleSTT?.stop();
     this.microphoneCapture?.stop();
@@ -3151,6 +3353,16 @@ export class AppState {
     // Capture the meetingId NOW so the background IIFE uses a deterministic ID
     // rather than getRecentMeetings(1) which could return a different meeting if the
     // user starts a new session before background processing finishes.
+    //
+    // Wait here — not in the renderer — for any final analysis run that's
+    // still in flight. stopMeeting() takes the live-analysis snapshot by value,
+    // so this is the last moment a running analysis can still reach the
+    // generated summary/BANT-MEDDIC reconciliation instead of only patching the
+    // saved row afterwards. Doing it here means the End Call button can switch
+    // to the launcher immediately (see FloatingDock.handleEndCallClick) — this
+    // whole endMeeting() call is already unawaited by the renderer, so a few
+    // seconds spent here is invisible to the user.
+    await this.waitForLiveAnalysisToSettle(FINAL_ANALYSIS_MAX_WAIT_MS);
     const meetingId = await this.intelligenceManager.stopMeeting(meetingTypes, tenantId);
     // Tell the overlay window EXACTLY which meeting this call became — don't
     // make it infer this from getRecentMeetings()[0]. That list is sorted by
@@ -3405,9 +3617,16 @@ export class AppState {
     //    The device watcher stops too: a swap while paused would restart a capture
     //    the user deliberately stopped, and resume() re-baselines anyway. Snapshot
     //    first — that is what lets resume() notice a device change made while off.
+    //    The stats poll stops for the same reason: with both captures stopped it
+    //    reports a frozen snapshot, so every 5 s it was paying a native FFI call
+    //    and a JSON parse to re-describe a pipeline that is not running. Nothing
+    //    is lost — the align-seed persist it feeds only acts on `converged`, which
+    //    cannot become true with no audio flowing.
     this._snapshotDevicesForPause();
     this._stopDeviceWatcher();
+    this._stopPipelineStatsPolling();
     this.disarmSystemCaptureWatchdog();
+    this.disarmMicCaptureWatchdog();
     this.systemAudioCapture?.stop();
     this.microphoneCapture?.stop();
 
@@ -3505,6 +3724,8 @@ export class AppState {
       // 2b. Re-arm device hot-swap. After the captures, so the baseline snapshot
       //     reflects the graph including our own tap/loopback endpoints.
       this._startDeviceWatcher();
+      // 2c. Echo telemetry resumes with the pipeline it describes.
+      this._startPipelineStatsPolling();
 
       // 3. Resume live RAG indexing using the SAME session key 'live-meeting-current'
       //    so all new transcript segments are appended to the existing session,
@@ -3605,6 +3826,36 @@ export class AppState {
       return;
     }
     this._liveAnalysisInFlight = inFlight;
+    if (!inFlight) {
+      const waiters = this._liveAnalysisSettledWaiters;
+      this._liveAnalysisSettledWaiters = [];
+      waiters.forEach((resolve) => resolve());
+    }
+  }
+
+  /**
+   * Wait for the current runAnalysis() call (if any) to finish writing into
+   * _currentLiveAnalysis, up to maxWaitMs.
+   *
+   * Lets the End Call button return instantly — see FloatingDock.handleEndCallClick
+   * — while stopMeeting() itself still gets the guarantee it needs: the summary
+   * snapshot in MeetingPersistence.stopMeeting() is taken by value, so a result
+   * that lands after that point can only patch the saved row (routeLiveAnalysisWrite),
+   * never the generated summary text. Bounded by the same deadline the renderer
+   * used to enforce on itself (FINAL_ANALYSIS_MAX_WAIT_MS in meetingLifecycle.ts) —
+   * a hung provider must not delay the save indefinitely, it just falls back to
+   * the existing patch-on-arrival path.
+   */
+  public async waitForLiveAnalysisToSettle(maxWaitMs: number): Promise<void> {
+    if (!this._liveAnalysisInFlight) return;
+    await new Promise<void>((resolve) => {
+      const timer = setTimeout(() => {
+        this._liveAnalysisSettledWaiters = this._liveAnalysisSettledWaiters.filter((w) => w !== onSettled);
+        resolve();
+      }, maxWaitMs);
+      const onSettled = () => { clearTimeout(timer); resolve(); };
+      this._liveAnalysisSettledWaiters.push(onSettled);
+    });
   }
 
   public setCurrentLiveAnalysis(data: LiveAnalysisData | null, generation?: number | null): void {

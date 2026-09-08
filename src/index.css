@@ -644,3 +644,15 @@ a {
 .disable-transitions * {
   transition: none !important;
 }
+
+/* Applied by FloatingPanelWrapper once a dock panel has finished fading out and
+   flipped to visibility:hidden. The placeholder animations in the Intelligence
+   panel are infinite and run for minutes (skeleton) or up to the whole
+   auto-refresh interval (countdown), and the dock starts collapsed — so without
+   this they burn frames for UI that is not on screen. A hidden panel has nothing
+   to show, so this is invisible to the user; the animations resume from where
+   they paused when the panel is revealed. */
+.dock-panel-hidden,
+.dock-panel-hidden * {
+  animation-play-state: paused !important;
+}

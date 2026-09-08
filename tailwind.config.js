@@ -51,9 +51,32 @@ module.exports = {
         shimmer: "shimmer 2s linear infinite",
         "text-gradient-wave": "textGradientWave 2s infinite ease-in-out",
         "fade-in-up": "fadeInUp 0.3s cubic-bezier(0.25, 1, 0.5, 1) forwards",
-        "scale-in": "scaleIn 0.2s cubic-bezier(0.34, 1.56, 0.64, 1) forwards"
+        "scale-in": "scaleIn 0.2s cubic-bezier(0.34, 1.56, 0.64, 1) forwards",
+        /* Live-overlay placeholders. These replace framer-motion `repeat: Infinity`
+           loops that ran for minutes at the start of every call: each one was a JS
+           value animation stepped on the main thread every frame, ~35 of them at
+           once. As CSS keyframes on transform/opacity only, they run on the
+           compositor. Durations, easings and amplitudes match what framer-motion
+           was producing, so the motion on screen is unchanged. `barPulse` reads
+           its peak from --bar-peak so one class covers all seven bar heights. */
+        "shimmer-sweep": "shimmerSweep 1.6s linear infinite",
+        "bar-pulse-fast": "barPulse 0.8s ease-in-out infinite",
+        "bar-pulse-slow": "barPulse 1.8s ease-in-out infinite",
+        "soft-pulse": "softPulse 1.8s ease-in-out infinite"
       },
       keyframes: {
+        shimmerSweep: {
+          from: { transform: "translateX(-100%)" },
+          to: { transform: "translateX(100%)" }
+        },
+        barPulse: {
+          "0%, 100%": { transform: "scaleY(1)" },
+          "50%": { transform: "scaleY(var(--bar-peak, 0.6))" }
+        },
+        softPulse: {
+          "0%, 100%": { opacity: 0.5 },
+          "50%": { opacity: 1 }
+        },
         textGradientWave: {
           "0%": { backgroundPosition: "0% 50%" },
           "100%": { backgroundPosition: "200% 50%" }

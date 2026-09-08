@@ -44,6 +44,15 @@ export interface NativeModule {
    * last-resort window instead of the aggressive default.
    */
   getNativeFeatureLevel?: () => number;
+  /**
+   * Optional — mirrors the JS `verboseLogging` flag into the native module, so
+   * periodic Rust diagnostics obey the same switch as the TS ones. Absent on
+   * binaries built before the log gate existed; callers must guard.
+   * Wired from setVerboseLoggingFlag (electron/verboseLog.ts).
+   */
+  setNativeVerboseLogging?: (enabled: boolean) => void;
+  /** Optional — effective native verbose state, including the NATIVELY_VERBOSE override. */
+  getNativeVerboseLogging?: () => boolean;
   SystemAudioCapture: new (
     deviceId?: string | null,
     options?: NativeCaptureOptions | null
