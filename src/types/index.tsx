@@ -639,6 +639,14 @@ export interface LiveAnalysisData {
   objections: Objection[];
   signals: Signal[];
   dealOptimizer?: DealOptimizerAlert[];
+  /**
+   * Backend-only flag (NOT part of persisted analysis state): set on a 200
+   * response when the backend could not produce a fresh analysis (LLM chain
+   * down, budget exhausted) and mirrored the previous result instead. The
+   * client must hold its transcript cursor so the same delta is re-sent on
+   * the next tick. Dropped by the renderer before state/persistence.
+   */
+  degraded?: boolean;
 }
 
 // --- src/features/meetings/api/meetingsApi.ts ---

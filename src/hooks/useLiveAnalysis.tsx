@@ -48,6 +48,20 @@ const URGENT_TRIGGER_PATTERNS = [
 const hasUrgentTrigger = (text: string): boolean =>
   URGENT_TRIGGER_PATTERNS.some(r => r.test(text));
 
+// ── Self-contained tick mode (optional) ────────────────────────────────────
+// false = incremental delta contract (default): each refresh sends ONLY the new
+//         speech since the last successful run plus the prior analysis, and the
+//         backend merges. ~80% smaller prompts — but a tick lost to a hard client
+//         failure costs its slice of speech.
+// true  = every tick sends the CUMULATIVE transcript-so-far with NO
+//         previous_analysis, so each tick is a fresh, self-contained analysis and
+//         a lost/failed tick costs nothing (the next one re-analyzes everything).
+//         Recommended while the transport is flaky; the trade-off is a larger
+//         prompt (and re-deriving BANT/MEDDIC from scratch) on every tick.
+//         The client-owned objection list is still re-applied at merge time, so
+//         objections are unaffected by the missing previous_analysis.
+const SELF_CONTAINED_TICKS = false;
+
 // ── Shared output format + signal catalogue (reused verbatim in both prompts) ──
 const SHARED_SIGNAL_CATALOGUE = `
     ── SIGNAL TYPES (use ALL that apply per signal, can be multiple) ──────────────────
@@ -369,7 +383,8 @@ const getFirstRunPrompt = (fullProspectContext: string): string =>
     ${DEAL_OPTIMIZER_SECTION}
 
     ═══════════════════════════════════════
-    CLIENT TRANSCRIPT (client turns only — full call so far):
+    FULL CALL TRANSCRIPT (both speakers — extract BANT/MEDDIC/signal evidence from
+    CLIENT/PROSPECT lines only; also scan SALES PERSON lines for TYPE B AE deferrals):
     ═══════════════════════════════════════
     ${fullProspectContext}
 `;
@@ -660,6 +675,18 @@ export const useLiveAnalysis = (
   const lastAnalysisTimeRef = useRef<number>(0);
   // Cursor for urgent-trigger scanning — avoids re-scanning already-checked turns.
   const lastTriggerScanIndexRef = useRef<number>(0);
+  // Queue-not-drop: a tick that lands while a run is in flight is queued here and
+  // chained off the in-flight run's finally, instead of being skipped. With the
+  // delta contract, skipping a tick while advancing the cursor afterwards would
+  // lose that slice of speech permanently; queueing guarantees every tick's delta
+  // is analyzed exactly once.
+  const runQueuedRef = useRef(false);
+  // `force` of the latest dropped caller — a manual Refresh outranks an auto tick.
+  const queuedForceRef = useRef(false);
+  // Stable self-reference so the queued run can re-enter runAnalysis after the
+  // in-flight run unwinds (a direct self-call from finally would also work, but
+  // the ref indirection keeps the useCallback deps unchanged).
+  const runAnalysisSelfRef = useRef<((force?: boolean) => Promise<void>) | null>(null);
 
   const companyIntelRef = useRef<Record<string, any> | null | undefined>(companyIntel);
   useEffect(() => {
@@ -706,7 +733,14 @@ export const useLiveAnalysis = (
     if (!transcript?.length || (!force && isMeetingPaused)) return;
 
     if (isLoadingRef.current) {
-      console.warn('[useLiveAnalysis] Analysis already in-flight, skipping duplicate call.');
+      // Queue, don't drop: the caller's delta must not be skipped (see
+      // runQueuedRef above). Repeated drops collapse into ONE queued run.
+      if (!runQueuedRef.current) {
+        runQueuedRef.current = true;
+      }
+      // Manual Refresh outranks an auto tick for the queued run's force flag.
+      if (force) queuedForceRef.current = true;
+      console.warn('[useLiveAnalysis] Analysis already in-flight — queueing next tick.');
       return;
     }
 
@@ -767,41 +801,44 @@ export const useLiveAnalysis = (
 
       if (!priorState) {
         setIsRefreshRun(false);
-        // ── FIRST RUN: full CLIENT-only transcript, derive everything from scratch ──
-        // We still include SALES PERSON turns as labelled lines so the LLM has call context
-        // for objection/AE-deferral detection, but BANT/MEDDIC signal extraction
-        // is scoped to prospect lines via the prompt instruction.
+        // ── FIRST RUN: full transcript, both speakers, derive everything from scratch ──
+        // SALES PERSON turns are included as labelled lines — the prompt scopes
+        // BANT/MEDDIC/signal extraction to prospect lines, but TYPE B objection
+        // detection (AE deferrals) is impossible without the seller's own turns.
         //
         // For long calls (>30 min), older turns are compressed to their first 80 characters
         // to prevent context overflow on providers with smaller context windows (Groq).
         const COMPRESSION_CUTOFF_MS = 30 * 60 * 1000;
         const now = Date.now();
-        const prospectTurns = humanTurns.filter(t => t.speaker !== 'user');
+
+        // Role labeling shared by the recent window and the fallback (no-old-turns)
+        // path. Local mic labels resolve to SALES PERSON — a seller turn arriving
+        // under any known local label must never read as prospect.
+        const formatTurn = (t: { speaker: string; displayName?: string; text: string }, compress = false) => {
+          const s = (t.speaker ?? '').toLowerCase();
+          const isLocal = ['user', 'me', 'self', 'sales'].includes(s) || s.startsWith('user');
+          const role = isLocal ? 'SALES PERSON (Me)' : 'PROSPECT (Client)';
+          const name = t.displayName && t.displayName !== "Them" && t.displayName !== "Me" ? ` (${t.displayName})` : '';
+          const text = compress
+            ? `${t.text.substring(0, 80)}${t.text.length > 80 ? '…' : ''}`
+            : t.text;
+          return `${role}${name}: ${text}`;
+        };
+
+        const recentTurns = humanTurns.filter(t => (now - t.timestamp) <= COMPRESSION_CUTOFF_MS);
+        const olderTurns = humanTurns.filter(t => (now - t.timestamp) > COMPRESSION_CUTOFF_MS);
+        const hasOldTurns = olderTurns.length > 0;
 
         let firstRunContext: string;
-        const hasOldTurns = prospectTurns.some(t => (now - t.timestamp) > COMPRESSION_CUTOFF_MS);
         if (hasOldTurns) {
-          const recentTurns = prospectTurns.filter(t => (now - t.timestamp) <= COMPRESSION_CUTOFF_MS);
-          const olderTurns = prospectTurns.filter(t => (now - t.timestamp) > COMPRESSION_CUTOFF_MS);
           const olderBlock = olderTurns.length > 0
-            ? `[EARLIER CALL CONTEXT — ${olderTurns.length} prospect turns]\n` +
-            olderTurns.map(t => {
-              const name = t.displayName && t.displayName !== "Them" ? ` (${t.displayName})` : '';
-              return `CLIENT${name}: ${t.text.substring(0, 80)}${t.text.length > 80 ? '…' : ''}`;
-            }).join('\n')
+            ? `[EARLIER CALL CONTEXT — ${olderTurns.length} turns]\n` +
+            olderTurns.map(t => formatTurn(t, true)).join('\n')
             : '';
-          const recentBlock = recentTurns.map(t => {
-            const role = 'CLIENT';
-            const name = t.displayName && t.displayName !== "Them" ? ` (${t.displayName})` : '';
-            return `${role}${name}: ${t.text}`;
-          }).join('\n');
+          const recentBlock = recentTurns.map(t => formatTurn(t)).join('\n');
           firstRunContext = olderBlock ? `${olderBlock}\n\n[RECENT TURNS — full fidelity]\n${recentBlock}` : recentBlock;
         } else {
-          firstRunContext = humanTurns.filter(t => t.speaker !== 'user').map(t => {
-            const role = t.speaker === 'user' ? 'SALES PERSON (Me)' : 'PROSPECT (Client)';
-            const name = t.displayName && t.displayName !== "Them" && t.displayName !== "Me" ? ` (${t.displayName})` : '';
-            return `${role}${name}: ${t.text}`;
-          }).join('\n');
+          firstRunContext = humanTurns.map(t => formatTurn(t)).join('\n');
         }
 
         const companyBlock = buildCompanyBlock(companyIntel);
@@ -841,9 +878,12 @@ export const useLiveAnalysis = (
       // stays reachable without narrowing the global the rest of the app relies on.
       const electronAPI: typeof window.electronAPI | undefined = window.electronAPI;
       if (electronAPI) {
+        // SELF_CONTAINED_TICKS mode: ignore the delta slice and prior state — every
+        // tick ships the cumulative transcript and re-derives the full analysis.
+        const selfContained = SELF_CONTAINED_TICKS && !!priorState;
         // The cursor indexes humanTurns, so slice humanTurns (then narrow to the two
         // real speakers) to keep the delta aligned with currentEndIndex.
-        const deltaTurns = priorState
+        const deltaTurns = priorState && !selfContained
           ? humanTurns.slice(adjustedDeltaStartIndex)
           : humanTurns;
         const turns: LiveAnalysisTurn[] = deltaTurns
@@ -853,18 +893,34 @@ export const useLiveAnalysis = (
         const parsed = await intelligenceApi.analyzeLive(turns, null, {
           meetingTypes: meetingTypesRef.current,
           // null on the first run → backend analyses `turns` as the full call.
+          // Also null in SELF_CONTAINED_TICKS mode → every tick is a full-call
+          // analysis; the client-owned objection list is re-applied from
+          // objectionsRef at merge time below, so objections stay intact.
           // When the objection watcher is active, the objections we send are the
           // client-owned accumulated list, not whatever the last response happened
           // to contain — the client is the owner of that slice of state.
           previousAnalysis:
-            priorState && objectionsRef
-              ? { ...priorState, objections: objectionsRef.current }
-              : priorState,
+            priorState && !selfContained
+              ? (objectionsRef
+                ? { ...priorState, objections: objectionsRef.current }
+                : priorState)
+              : null,
         });
 
         // Stale-session guard: discard a response that belongs to a meeting
         // that's no longer current instead of writing it into the new one.
         if (sessionIdRef.current !== runSessionId) return;
+
+        // Degraded tick: the backend answered 200 but could NOT run the analysis
+        // (LLM chain down / budget exhausted) and mirrored the previous result.
+        // Hold the transcript cursor — the same delta must be re-sent next tick —
+        // and keep the current state (the mirror is what's already on screen).
+        // Advancing lastAnalyzedIndexRef here would permanently lose this slice
+        // of the conversation from the incremental contract.
+        if (parsed.degraded) {
+          console.warn('[useLiveAnalysis] Degraded response — holding transcript cursor; delta will be re-sent next tick.');
+          return;
+        }
 
         // Backend already merged (see stampIds note); just re-stamp stable ids + dedupe.
         // Objections are then overridden from the watcher's ref read HERE, at response
@@ -906,6 +962,9 @@ export const useLiveAnalysis = (
       if (sessionIdRef.current === runSessionId) {
         setError(e?.message || 'Analysis failed');
       }
+      // NOTE: lastAnalyzedIndexRef is intentionally NOT advanced on failure/abort —
+      // the same delta is re-sent next tick (self-healing under the incremental
+      // contract; in SELF_CONTAINED_TICKS mode nothing was lost anyway).
     } finally {
       // Unconditional: this gates whether the NEXT session's runAnalysis can run at
       // all — must always clear regardless of which session it belonged to.
@@ -915,8 +974,30 @@ export const useLiveAnalysis = (
       // meeting, and a run from the previous call clearing the flag would tell
       // main "nothing in flight" for a meeting that is mid-analysis.
       window.electronAPI?.setLiveAnalysisInFlight?.(false, runGeneration).catch(() => { });
+
+      // Chain the queued tick — but only after this run has fully unwound
+      // (setTimeout 0, not a direct call) so the in-flight guard is already
+      // clear when it re-enters runAnalysis.
+      if (runQueuedRef.current) {
+        const queuedForce = queuedForceRef.current;
+        runQueuedRef.current = false;
+        queuedForceRef.current = false;
+        const sid = sessionIdRef.current;
+        if (sid === runSessionId) {
+          setTimeout(() => {
+            if (sessionIdRef.current === sid) {
+              void runAnalysisSelfRef.current?.(queuedForce);
+            }
+          }, 0);
+        }
+      }
     }
   }, [transcriptRef, isMeetingPaused, setAnalysisDataAndRef]);
+
+  // Keep the self-reference in sync with the (stable) runAnalysis identity.
+  useEffect(() => {
+    runAnalysisSelfRef.current = runAnalysis;
+  }, [runAnalysis]);
 
   // ── Urgent-signal trigger ──────────────────────────────────────────────────
   // Scans new prospect turns for high-value signal patterns (competitor mentions,
@@ -953,6 +1034,10 @@ export const useLiveAnalysis = (
     lastAnalyzedIndexRef.current = 0;
     lastAnalysisTimeRef.current = 0;
     lastTriggerScanIndexRef.current = 0;
+    // Drop any tick queued for the PREVIOUS meeting — the chained run re-checks
+    // the session id, but clearing here keeps the flags honest.
+    runQueuedRef.current = false;
+    queuedForceRef.current = false;
     setAnalysisData(null);
     setError(null);
   }, []);

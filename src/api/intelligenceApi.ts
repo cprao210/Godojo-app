@@ -13,9 +13,26 @@ import { ObjectionDelta, OBJECTION_WINDOW_TURNS, MAX_OPEN_OBJECTIONS } from "@/l
 const MAX_TURNS = 80;
 
 /**
- * Format turns into the backend's speaker-labeled transcript: `user` → SALES PERSON,
- * everyone else → PROSPECT. The backend prompt speaker-scopes on these labels (and RAG
- * uses the recent PROSPECT lines as its query), so the labels must match exactly.
+ * Local mic labels. The mic stream is single-speaker by role, so any variant of
+ * "the person at this end of the call" resolves to SALES PERSON. Everything
+ * else (client/interviewer/them/prospect/customer, or anything unrecognized)
+ * falls through to PROSPECT.
+ */
+const LOCAL_SPEAKER_LABELS = new Set(["user", "me", "self", "sales"]);
+
+/**
+ * Format turns into the backend's speaker-labeled transcript: local mic speech →
+ * `SALES PERSON`, far-end speech → `PROSPECT`. The backend prompt speaker-scopes on
+ * these labels (and RAG uses the recent PROSPECT lines as its query), so the labels
+ * must match exactly — only ever emit these two strings.
+ *
+ * The mapping is an explicit allow-list, not a binary flip: labeling every non-`user`
+ * turn as PROSPECT silently relabeled seller speech as prospect speech whenever a
+ * mic turn arrived under a legacy/alias label, which is exactly the failure mode that
+ * produced weak analyses (seller signals scoped out of extraction, prospect-scoped
+ * RAG queries built from the rep's own words). Unrecognized labels still fall through
+ * to PROSPECT (a sales call's unattributed audio is far more likely the far end),
+ * but every known local label is now pinned to SALES PERSON.
  *
  * `maxTurns` is the trailing-window cap. live-analysis sends a large window; the
  * objection-handler tick sends a deliberately tiny one — that (plus the delta-out
@@ -25,7 +42,14 @@ function formatTranscript(turns: LiveAnalysisTurn[], maxTurns = MAX_TURNS): stri
   return turns
     .filter((t) => t.text?.trim())
     .slice(-maxTurns)
-    .map((t) => `${t.speaker === "user" ? "SALES PERSON" : "PROSPECT"}: ${t.text.trim()}`)
+    .map((t) => {
+      const speaker = (t.speaker ?? "").toLowerCase();
+      const isLocal =
+        LOCAL_SPEAKER_LABELS.has(speaker) ||
+        // `user` with a qualifier (e.g. "user_mobile") still means the mic.
+        speaker.startsWith("user");
+      return `${isLocal ? "SALES PERSON" : "PROSPECT"}: ${t.text.trim()}`;
+    })
     .join("\n");
 }
 
