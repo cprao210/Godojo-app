@@ -1,5 +1,6 @@
 
 import { net } from "electron";
+import { RELEASE_FEED } from "../../utils/updateFeed";
 
 export interface ReleaseNoteSection {
     title: string;
@@ -17,8 +18,11 @@ export interface ParsedReleaseNotes {
 export class ReleaseNotesManager {
     private static instance: ReleaseNotesManager;
     private cachedNotes: ParsedReleaseNotes | null = null;
-    private readonly repoOwner = "cprao210";
-    private readonly repoName = "Godojo-app";
+    // Release repo lives in utils/updateFeed.ts (shared with the renderer's
+    // manual-DMG links and release-page buttons) — keep in sync with
+    // package.json "build.publish".
+    private readonly repoOwner = RELEASE_FEED.owner;
+    private readonly repoName = RELEASE_FEED.repo;
 
     private constructor() { }
 

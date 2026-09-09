@@ -29,7 +29,8 @@
     "**/*.ts",
     "**/*.js",
     "../premium/electron/**/*.ts",
-    "../src/app/vite-env.d.ts"
+    "../src/app/vite-env.d.ts",
+    "../utils/updateFeed.ts"
   ],
   "exclude": [
     "db/seedDemo.ts",

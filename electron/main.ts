@@ -436,7 +436,6 @@ export class AppState {
   private ragManager: RAGManager | null = null
   private knowledgeOrchestrator: any = null
   private tray: Tray | null = null
-  private updateAvailable: boolean = false
   private disguiseMode: 'terminal' | 'settings' | 'activity' | 'none' = 'none'
   private _currentLiveAnalysis: LiveAnalysisData | null = null;
   private _companyIntel: Record<string, any> | null = null;
@@ -1469,7 +1468,6 @@ export class AppState {
 
     autoUpdater.on("update-available", async (info) => {
       console.log("[AutoUpdater] Update available:", info.version)
-      this.updateAvailable = true
 
       // Fetch structured release notes
       const releaseManager = ReleaseNotesManager.getInstance();
@@ -1512,81 +1510,64 @@ export class AppState {
     // Gate on app.isPackaged rather than process.env.NODE_ENV: NODE_ENV isn't
     // guaranteed to be set (or set correctly) in a packaged build, whereas
     // isPackaged is Electron's own reliable dev-vs-production signal.
-    setTimeout(() => {
-      if (!app.isPackaged) {
-        console.log("[AutoUpdater] Development build: skipping auto check entirely");
-      } else {
-        autoUpdater.checkForUpdatesAndNotify().catch(err => {
-          if (this.isNoReleaseAvailableError(err)) {
-            console.log("[AutoUpdater] No published release found on GitHub — treating as up to date");
-            this.broadcast("update-not-available", { version: app.getVersion() });
-            return;
-          }
-          console.error("[AutoUpdater] Failed to check for updates:", err);
-        });
-      }
-    }, 10000);
+    //
+    // The check is RESILIENT, not one-shot: a machine that is offline (or
+    // behind a captive portal) at the 10s mark used to never check again
+    // until the user manually clicked "Check for Updates". Now a failed
+    // check is retried with backoff (5min → 10min → 20min → … capped), and
+    // successful checks re-run every UPDATE_CHECK_INTERVAL_MS so long-running
+    // sessions still hear about new releases.
+    this.scheduleAutoUpdateCheck(10_000);
   }
 
-  private async checkForUpdatesManual(): Promise<void> {
+  /** Interval between auto-checks once one has completed successfully. */
+  private static readonly UPDATE_CHECK_INTERVAL_MS = 6 * 60 * 60 * 1000; // 6h
+  /** First retry delay after a failed auto-check; doubles per consecutive failure. */
+  private static readonly UPDATE_CHECK_RETRY_BASE_MS = 5 * 60 * 1000; // 5min
+
+  private autoCheckTimer: NodeJS.Timeout | null = null;
+  private autoCheckFailures = 0;
+
+  private scheduleAutoUpdateCheck(delayMs: number): void {
+    if (this.autoCheckTimer) clearTimeout(this.autoCheckTimer);
+    this.autoCheckTimer = setTimeout(() => {
+      this.runAutoUpdateCheck().catch((err) => {
+        console.error('[AutoUpdater] Unexpected auto-check failure:', err);
+      });
+    }, delayMs);
+    // Never hold the app open just to run an update check.
+    this.autoCheckTimer.unref?.();
+  }
+
+  private async runAutoUpdateCheck(): Promise<void> {
+    if (!app.isPackaged) return;
+
     try {
-      console.log('[AutoUpdater] Checking for updates manually via GitHub API...');
-      const releaseManager = ReleaseNotesManager.getInstance();
-      // Fetch latest release
-      const notes = await releaseManager.fetchReleaseNotes('latest');
-
-      if (notes) {
-        const currentVersion = app.getVersion();
-        const latestVersionTag = notes.version; // e.g., "v1.2.0" or "1.2.0"
-        const latestVersion = latestVersionTag.replace(/^v/, '');
-
-        console.log(`[AutoUpdater] Manual Check: Current=${currentVersion}, Latest=${latestVersion}`);
-
-        if (this.isVersionNewer(currentVersion, latestVersion)) {
-          console.log('[AutoUpdater] Manual Check: New version found!');
-          this.updateAvailable = true;
-
-          // Mock an info object compatible with electron-updater
-          const info = {
-            version: latestVersion,
-            files: [] as any[],
-            path: '',
-            sha512: '',
-            releaseName: notes.summary,
-            releaseNotes: notes.fullBody
-          };
-
-          // Notify renderer
-          this.broadcast("update-available", {
-            ...info,
-            parsedNotes: notes
-          });
-        } else {
-          console.log('[AutoUpdater] Manual Check: App is up to date.');
-          this.broadcast("update-not-available", { version: currentVersion });
-        }
+      await autoUpdater.checkForUpdatesAndNotify();
+      // Completed (available or up to date) — resume the steady cadence.
+      this.autoCheckFailures = 0;
+      this.scheduleAutoUpdateCheck(AppState.UPDATE_CHECK_INTERVAL_MS);
+    } catch (err: any) {
+      if (this.isNoReleaseAvailableError(err)) {
+        console.log('[AutoUpdater] No published release found on GitHub — treating as up to date');
+        this.broadcast('update-not-available', { version: app.getVersion() });
+        this.autoCheckFailures = 0;
+        this.scheduleAutoUpdateCheck(AppState.UPDATE_CHECK_INTERVAL_MS);
+        return;
       }
-    } catch (err) {
-      console.error('[AutoUpdater] Manual update check failed:', err);
+      // A transient failure (offline, DNS, rate limit). Unlike a MANUAL check
+      // (which broadcasts update-error so the user sees why their click did
+      // nothing), a background check failing is nobody's business — retry
+      // quietly with backoff instead of nagging with error popups.
+      this.autoCheckFailures++;
+      const backoff = Math.min(
+        AppState.UPDATE_CHECK_RETRY_BASE_MS * Math.pow(2, this.autoCheckFailures - 1),
+        AppState.UPDATE_CHECK_INTERVAL_MS,
+      );
+      console.error(`[AutoUpdater] Auto check failed (attempt ${this.autoCheckFailures}), retrying in ${Math.round(backoff / 60000)}min:`, err?.message ?? err);
+      this.scheduleAutoUpdateCheck(backoff);
     }
   }
-
-  private isVersionNewer(current: string, latest: string): boolean {
-    // EC-01 fix: strip pre-release suffixes (e.g. "2.1.0-beta.1" → "2.1.0")
-    // before splitting so Number() never returns NaN on comparison.
-    const stripPre = (v: string) => v.replace(/-.*$/, '');
-    const c = stripPre(current).split('.').map(Number);
-    const l = stripPre(latest).split('.').map(Number);
-
-    for (let i = 0; i < 3; i++) {
-      const cv = c[i] || 0;
-      const lv = l[i] || 0;
-      if (lv > cv) return true;
-      if (lv < cv) return false;
-    }
-    return false;
-  }
-
 
   public async quitAndInstallUpdate(): Promise<void> {
     console.log('[AutoUpdater] quitAndInstall called - applying update...')
@@ -1609,18 +1590,31 @@ export class AppState {
           setTimeout(() => app.quit(), 1000)
           return
         }
+
+        // Nothing was actually downloaded (e.g. the click raced the download,
+        // or the state was stale). Falling through to quitAndInstall used to
+        // end in app.exit(0): the app closes with NO update installed and NO
+        // feedback. Refuse and let the renderer show an error instead.
+        console.error('[AutoUpdater] macOS install refused: no downloaded update file')
+        this.broadcast('update-error', 'No downloaded update was found. Please download the update again.')
+        return
       } catch (err) {
         console.error('[AutoUpdater] Failed to open update directory:', err)
+        this.broadcast('update-error', 'Could not open the downloaded update. Please try again.')
+        return
       }
     }
 
-    // Fallback to standard quitAndInstall (works on Windows/Linux or if signed)
+    // Fallback to standard quitAndInstall (works on Windows/Linux or if signed).
+    // If it throws, the app is still running — broadcast the error and leave the
+    // user with a working app and a visible failure message. The old behavior
+    // (app.exit(0) here) killed the process with NO install and NO feedback.
     setImmediate(() => {
       try {
         autoUpdater.quitAndInstall(false, true)
       } catch (err) {
         console.error('[AutoUpdater] quitAndInstall failed:', err)
-        app.exit(0)
+        this.broadcast('update-error', 'Could not restart to install the update. Please try again.')
       }
     })
   }
@@ -1654,17 +1648,35 @@ export class AppState {
   }
 
   private isNoReleaseAvailableError(err: any): boolean {
+    // A genuine "no releases published yet" surfaces either as HTTP 404 from
+    // the feed request (electron-updater sets statusCode) or as one of its
+    // known "cannot find latest.yml" messages. Bare message substring checks
+    // for '404' / 'not found' used to match ANY error text containing them —
+    // e.g. a proxy's HTML 404 page or a DNS failure — and reported "up to
+    // date" for what was really a network problem.
+    if (err?.statusCode === 404 || err?.status === 404) return true;
     const msg = (err?.message || err?.toString() || '').toLowerCase()
     return (
-      msg.includes('404') ||
       msg.includes('cannot find latest') ||
-      msg.includes('no published versions') ||
-      msg.includes('not found')
+      msg.includes('no published versions')
     )
   }
 
   public downloadUpdate(): void {
     console.log('[AutoUpdater] Starting download...')
+    // deb (Linux) and portable (Windows) installs can't be self-updated by
+    // electron-updater — only AppImage/NSIS can. A "Download Update" click
+    // there used to spin forever at 0%: the feed's latest.yml lists no
+    // installable file for those package types, so nothing ever downloads
+    // and no error ever fires. Tell the user up front instead.
+    if (process.platform === 'linux' && !process.env.APPIMAGE) {
+      this.broadcast('update-error', "Updates aren't supported for the .deb install. Please download the new version from the releases page.")
+      return
+    }
+    if (process.platform === 'win32' && process.env.PORTABLE_EXECUTABLE_DIR) {
+      this.broadcast('update-error', "The portable version can't update itself. Please download the installer from the releases page.")
+      return
+    }
     try {
       // Errors during download are surfaced via autoUpdater.on("error") which
       // already broadcasts "update-error". Do not broadcast here to avoid duplicates.

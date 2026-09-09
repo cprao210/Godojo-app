@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState, useCallback } from 'react';
 import { ParsedReleaseNotes } from '@/types';
+import { macDmgDownloadUrl } from '@/../utils/updateFeed';
 
 export type UpdateStatus = 'idle' | 'checking' | 'downloading' | 'ready' | 'error' | 'instructions';
 
@@ -18,15 +19,30 @@ export interface UseUpdateStatusResult {
     downloadProgress: number;
     errorMessage: string | null;
     lastCheckedAt: Date | null;
+    /** Arch of the pending macOS manual download ('arm64' | 'x64') — used to
+     *  render the expected DMG filename in the manual-install instructions. */
+    instructionsArch: 'arm64' | 'x64' | null;
     /** True once we've confirmed this is a packaged (production) build.
      *  Updates are a production-only feature, so consumers should treat
      *  `false` (including the initial default before the IPC round-trip
      *  settles) as "don't show/allow this". */
     isPackaged: boolean;
     checkForUpdates: () => Promise<void>;
-    downloadUpdate: () => void;
+    /** Starts the install for an available update. On macOS this opens the
+     *  DMG in the browser and flips status to 'instructions' (unsigned app —
+     *  electron-updater can't self-restart); on Windows/Linux it downloads
+     *  via electron-updater and 'ready' arrives through onUpdateDownloaded. */
+    startInstall: () => void;
+    /** Quits and installs a downloaded update. Refuses (with an error message)
+     *  while a meeting is active or in dev builds. */
     installUpdate: () => Promise<void>;
 }
+
+// Persisted across restarts: the version we sent the user off to manually
+// install on macOS. UpdateBanner compares it against app.getVersion() on next
+// launch to surface an explicit success toast — the one thing macOS doesn't
+// give us for free the way quitAndInstall's auto-restart does on Windows/Linux.
+export const PENDING_MANUAL_UPDATE_KEY = 'godojo_pending_manual_update_version';
 
 /**
  * Single source of truth for update state, backed by the electron-updater
@@ -43,6 +59,7 @@ export function useUpdateStatus(): UseUpdateStatusResult {
     const [downloadProgress, setDownloadProgress] = useState(0);
     const [errorMessage, setErrorMessage] = useState<string | null>(null);
     const [lastCheckedAt, setLastCheckedAt] = useState<Date | null>(null);
+    const [instructionsArch, setInstructionsArch] = useState<'arm64' | 'x64' | null>(null);
     const [isPackaged, setIsPackaged] = useState(false);
 
     // Guards against setting 'checking' -> stuck forever if a checking-for-update
@@ -79,15 +96,22 @@ export function useUpdateStatus(): UseUpdateStatusResult {
             setIsUpdateAvailable(true);
             setErrorMessage(null);
             setLastCheckedAt(new Date());
+            // A newly announced update starts a fresh lifecycle — never carry
+            // the previous download's progress into it.
+            setDownloadProgress(0);
             if (info?.parsedNotes) setParsedNotes(info.parsedNotes);
-            setStatus(prev => (prev === 'downloading' || prev === 'ready' ? prev : 'idle'));
+            // A check result must never clobber an in-flight download or an
+            // update that's already downloaded and waiting to install.
+            setStatus(prev => (prev === 'downloading' || prev === 'ready' || prev === 'instructions' ? prev : 'idle'));
         });
 
         const unsubNotAvailable = window.electronAPI.onUpdateNotAvailable(() => {
             if (checkingTimeoutRef.current) clearTimeout(checkingTimeoutRef.current);
             setIsUpdateAvailable(false);
             setLastCheckedAt(new Date());
-            setStatus('idle');
+            // Same protection as update-available above: a re-check that comes
+            // back "up to date" must not erase an already-downloaded install.
+            setStatus(prev => (prev === 'downloading' || prev === 'ready' || prev === 'instructions' ? prev : 'idle'));
         });
 
         const unsubProgress = window.electronAPI.onDownloadProgress((progressObj: any) => {
@@ -103,7 +127,10 @@ export function useUpdateStatus(): UseUpdateStatusResult {
 
         const unsubError = window.electronAPI.onUpdateError((err: string) => {
             if (checkingTimeoutRef.current) clearTimeout(checkingTimeoutRef.current);
-            setStatus('error');
+            // An in-flight download that failed is over — drop back so a retry
+            // can start cleanly. Ready installs are untouched: an unrelated
+            // later error must not unready an already-downloaded update.
+            setStatus(prev => (prev === 'ready' || prev === 'instructions' ? prev : 'error'));
             setErrorMessage(err);
         });
 
@@ -137,15 +164,66 @@ export function useUpdateStatus(): UseUpdateStatusResult {
         }
     }, [isPackaged]);
 
-    const downloadUpdate = useCallback(() => {
+    const startInstall = useCallback(() => {
         if (!isPackaged) return;
-        setStatus('downloading');
-        window.electronAPI.downloadUpdate();
-    }, [isPackaged]);
+        setErrorMessage(null);
+        setDownloadProgress(0);
+        // macOS: manual browser download + install, until Developer ID
+        // signing + notarization are set up (electron-updater's Squirrel.Mac
+        // requires a real code signature — see package.json mac.identity,
+        // currently null, and scripts/ad-hoc-sign.js). Windows/Linux are
+        // unaffected either way.
+        if (window.electronAPI.platform === 'darwin') {
+            window.electronAPI.getArch()
+                .then((arch) => {
+                    const dmgSuffix: 'arm64' | 'x64' = arch === 'arm64' ? 'arm64' : 'x64';
+                    const version = updateInfo?.version;
+                    if (!version) throw new Error('No update version known');
+                    setInstructionsArch(dmgSuffix);
+                    localStorage.setItem(PENDING_MANUAL_UPDATE_KEY, version.replace(/^v/, ''));
+                    window.electronAPI.openExternal(macDmgDownloadUrl(version, dmgSuffix));
+                    setStatus('instructions');
+                })
+                .catch((err) => {
+                    // Can't determine arch/version — fall back to the
+                    // electron-updater download; if the build can't use it the
+                    // resulting update-error surfaces normally.
+                    console.error('[useUpdateStatus] macOS manual install setup failed:', err);
+                    setStatus('downloading');
+                    window.electronAPI.downloadUpdate();
+                });
+        } else {
+            setStatus('downloading');
+            window.electronAPI.downloadUpdate();
+        }
+    }, [isPackaged, updateInfo]);
 
     const installUpdate = useCallback(async () => {
-        await window.electronAPI.restartAndInstall();
-    }, []);
+        if (!isPackaged) {
+            setStatus('error');
+            setErrorMessage('Updates are disabled in development builds');
+            return;
+        }
+        // Never kill a live call to apply an update — the quit tears down the
+        // audio pipeline and ends the meeting with no summary. Mirror of the
+        // main-process guard in AppState.quitAndInstallUpdate (which protects
+        // every caller, including UpdateModal's direct restartAndInstall).
+        try {
+            if (await window.electronAPI.getMeetingActive()) {
+                setStatus('error');
+                setErrorMessage('End the current meeting before restarting to install the update.');
+                return;
+            }
+        } catch { /* can't tell — let the main-process guard decide */ }
+        try {
+            await window.electronAPI.restartAndInstall();
+        } catch (err: any) {
+            // The main process broadcasts update-error for its own guard
+            // rejections, but a hard IPC failure should surface too.
+            setStatus('error');
+            setErrorMessage(err?.message || 'Could not restart to install the update.');
+        }
+    }, [isPackaged]);
 
     return {
         appVersion,
@@ -157,8 +235,9 @@ export function useUpdateStatus(): UseUpdateStatusResult {
         downloadProgress,
         errorMessage,
         lastCheckedAt,
+        instructionsArch,
         checkForUpdates,
-        downloadUpdate,
+        startInstall,
         installUpdate,
     };
 }

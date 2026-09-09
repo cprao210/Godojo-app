@@ -2161,9 +2161,12 @@ export interface UpdateModalProps {
   onInstall: () => void;
   onRemindLater?: () => void;
   downloadProgress: number;
-  status: 'idle' | 'downloading' | 'ready' | 'error' | 'instructions';
+  status: 'idle' | 'checking' | 'downloading' | 'ready' | 'error' | 'instructions';
   errorMessage?: string | null;
-  instructionsArch?: 'arm64' | 'x64' | null;
+  /** Quit + install a downloaded update. The guarded path (refuses while a
+   *  meeting is active or in dev) — the modal must never call
+   *  restartAndInstall directly. */
+  onInstallUpdate: () => void;
 }
 
 // --- src/pages/EmailVerification.tsx ---

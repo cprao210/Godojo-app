@@ -104,32 +104,43 @@ export function initializeIpcHandlers(appState: AppState): void {
   });
 
   // --- NEW Test Helper ---
+  // Dev/diagnostics only (triggered by the UpdateBanner's Cmd/Ctrl+I shortcut).
+  // Deliberately shipped unguarded in the IPC surface but gated here: a stray
+  // production invocation would force a GitHub API fetch and fake an
+  // "update-available" modal out of the latest release's notes.
   safeHandle("test-release-fetch", async () => {
-    try {
-      console.log("[IPC] Manual Test Fetch triggered (forcing refresh)...");
-      const { ReleaseNotesManager } = require('./update/ReleaseNotesManager');
-      const notes = await ReleaseNotesManager.getInstance().fetchReleaseNotes('latest', true);
+    if (!app.isPackaged) {
+      try {
+        console.log("[IPC] Manual Test Fetch triggered (forcing refresh)...");
+        const { ReleaseNotesManager } = require('./update/ReleaseNotesManager');
+        const notes = await ReleaseNotesManager.getInstance().fetchReleaseNotes('latest', true);
 
-      if (notes) {
-        console.log("[IPC] Notes fetched for:", notes.version);
-        const info = {
-          version: notes.version || 'latest',
-          files: [] as any[],
-          path: '',
-          sha512: '',
-          releaseName: notes.summary,
-          releaseNotes: notes.fullBody,
-          parsedNotes: notes
-        };
-        // Send to renderer
-        appState.getMainWindow()?.webContents.send("update-available", info);
-        return { success: true };
+        if (notes) {
+          console.log("[IPC] Notes fetched for:", notes.version);
+          const info = {
+            version: notes.version || 'latest',
+            files: [] as any[],
+            path: '',
+            sha512: '',
+            releaseName: notes.summary,
+            releaseNotes: notes.fullBody,
+            parsedNotes: notes
+          };
+          // Broadcast like every other update event — the dev shortcut can be
+          // hit from any window, and getMainWindow() only covers the
+          // launcher/overlay split.
+          BrowserWindow.getAllWindows().forEach(win => {
+            if (!win.isDestroyed()) win.webContents.send("update-available", info);
+          });
+          return { success: true };
+        }
+        return { success: false, error: "No notes returned" };
+      } catch (err: any) {
+        console.error("[IPC] test-release-fetch failed:", err);
+        return { success: false, error: err.message };
       }
-      return { success: false, error: "No notes returned" };
-    } catch (err: any) {
-      console.error("[IPC] test-release-fetch failed:", err);
-      return { success: false, error: err.message };
     }
+    return { success: false, error: 'test-release-fetch is dev-only' };
   });
 
   safeHandle("license:activate", async (event, key: string) => {
@@ -667,6 +678,18 @@ export function initializeIpcHandlers(appState: AppState): void {
   });
 
   safeHandle("quit-and-install-update", async () => {
+    // Production-only, like its siblings check-for-updates / download-update:
+    // in dev there is no downloaded update and the fallback path used to
+    // app.exit(0), silently killing a dev session from a stray click.
+    if (!app.isPackaged) {
+      return { success: false, error: 'Updates are disabled in development builds' }
+    }
+    // Never tear down a live call to apply an update. The renderer refuses
+    // too (useUpdateStatus.installUpdate); this is the backstop for any
+    // other caller.
+    if (appState.getIsMeetingActive()) {
+      return { success: false, error: 'End the current meeting before restarting to install the update.' }
+    }
     try {
       console.log('[IPC] Quit and install update requested')
       await appState.quitAndInstallUpdate()
