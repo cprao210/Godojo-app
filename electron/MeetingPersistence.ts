@@ -15,6 +15,14 @@ import { BANT_ORDER, MEDDICC_ORDER } from '../src/lib/bantMeddic';
 
 const crypto = require('crypto');
 
+// Bounded wait for an in-flight final live-analysis run before background
+// summary generation kicks off (see the deferred phase in stopMeeting below).
+// Must match FINAL_ANALYSIS_MAX_WAIT_MS in src/lib/meetingLifecycle.ts — that
+// file is the renderer's copy of the same deadline (it used to be the only
+// place this was enforced, blocking the End Call button; main enforces it here
+// now so the UI never has to wait on it).
+const FINAL_ANALYSIS_MAX_WAIT_MS = 10_000;
+
 /** The LLM half of scorecard generation, before grounding and persistence.
  *  Carries the criteria snapshot along so finalizeScorecard() can store the
  *  exact criteria the score was produced against. */
@@ -394,6 +402,11 @@ export class MeetingPersistence {
             // this call, so anything left in it can only ever be read by the
             // NEXT meeting's summary generation.
             appState?.clearCurrentLiveAnalysis?.();
+            // endMeeting used to clear any stale pending-live-analysis target on
+            // this path too (its else-branch ran for a null meetingId) — keep
+            // that now that the bookkeeping lives in the deferred phase below,
+            // which never runs for a meeting that wasn't saved.
+            appState?.recordPendingLiveAnalysis?.(null);
             this.session.reset();
             return null;
         }
@@ -402,6 +415,13 @@ export class MeetingPersistence {
         // call is over, so from here on the slot belongs to whatever comes
         // next. Clearing only when a result happened to be present left a
         // non-null companyIntel behind on the empty-analysis path.
+        //
+        // Read in this synchronous phase, NOT after the analysis-settle wait in
+        // the deferred phase below: endMeeting has already flipped
+        // isMeetingActive to false, so liveAnalysisRouting drops any result
+        // landing from here on ('no meeting is active and nothing is pending')
+        // — the slot content at this instant is exactly what the old post-wait
+        // read saw, just without holding the transcript save hostage to get it.
         const liveAnalysisData = appState?.getCurrentLiveAnalysis?.() || null;
         console.log('[MeetingPersistence] Retrieved liveAnalysisData:', !!liveAnalysisData);
         if (liveAnalysisData) {
@@ -483,19 +503,37 @@ export class MeetingPersistence {
             console.error("Failed to save placeholder", e);
         }
 
-        // 4. Background processing (title/summary/scorecard + final save).
-        this.processAndSaveMeeting(
-            snapshot,
-            meetingId,
-            metadataSnapshot,
-            liveAnalysisData,
-            speakerNamesSnapshot,
-            undefined,      // companyIntel — not captured at stop time for live calls
-            meetingTypes,    // ← rep's live selection, was previously dropped (always undefined)
-            tenantId || null
-        ).catch(err => {
-            console.error('[MeetingPersistence] Background processing failed:', err);
-        });
+        // 4. Background processing (title/summary/scorecard + final save) —
+        // deferred behind the analysis-settle wait. This wait used to sit in
+        // AppState.endMeeting IN FRONT of this entire method, which held the
+        // placeholder save (and with it the transcript's availability in
+        // SQLite, the Recent Meetings card data, and the live-call-ended
+        // broadcast) hostage behind up to FINAL_ANALYSIS_MAX_WAIT_MS of LLM
+        // latency. The wait only guards which live-analysis snapshot the
+        // SUMMARY is generated from — the transcript persisted above is
+        // complete the moment captures stop, so it must never wait on it.
+        // The pending-live-analysis bookkeeping moved here too: it must run
+        // after the wait to keep the original routing window (a result landing
+        // mid-wait routes 'drop' exactly as it did when the wait sat in
+        // endMeeting).
+        void (async () => {
+            try {
+                await appState?.waitForLiveAnalysisToSettle?.(FINAL_ANALYSIS_MAX_WAIT_MS);
+                appState?.recordPendingLiveAnalysis?.(meetingId);
+                await this.processAndSaveMeeting(
+                    snapshot,
+                    meetingId,
+                    metadataSnapshot,
+                    liveAnalysisData,
+                    speakerNamesSnapshot,
+                    undefined,      // companyIntel — not captured at stop time for live calls
+                    meetingTypes,    // ← rep's live selection, was previously dropped (always undefined)
+                    tenantId || null
+                );
+            } catch (err) {
+                console.error('[MeetingPersistence] Background processing failed:', err);
+            }
+        })();
 
         return meetingId;
     }

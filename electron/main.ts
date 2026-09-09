@@ -57,12 +57,11 @@ import {
   type MacScreenCaptureCapability,
 } from './utils/macPermissions';
 
-// Must match FINAL_ANALYSIS_MAX_WAIT_MS in src/lib/meetingLifecycle.ts — that
-// file is the renderer's copy of the same deadline (it used to be the only
-// place this was enforced, blocking the End Call button; see
-// AppState.waitForLiveAnalysisToSettle and endMeeting() below for where main
-// now enforces it independently so the UI never has to wait on it).
-const FINAL_ANALYSIS_MAX_WAIT_MS = 10_000;
+// FINAL_ANALYSIS_MAX_WAIT_MS now lives in MeetingPersistence.ts, next to the
+// deferred finalize phase that enforces the deadline (the renderer keeps its
+// copy in src/lib/meetingLifecycle.ts). The wait used to run here in endMeeting
+// ahead of stopMeeting(); it moved so a just-ended call's transcript is
+// persisted synchronously and never waits on analysis latency.
 
 // One-time, masked diagnostic so a "keys not falling back to env" report can
 // be triaged directly from a shipped build's logs (Console.app on mac,
@@ -3348,21 +3347,14 @@ export class AppState {
     this.microphoneCapture?.stop();
     this.googleSTT_User?.stop();
 
-    // Save session state and reset context — MeetingPersistence.stopMeeting() is
-    // already fire-and-forget internally (processAndSaveMeeting runs in background).
-    // Capture the meetingId NOW so the background IIFE uses a deterministic ID
-    // rather than getRecentMeetings(1) which could return a different meeting if the
-    // user starts a new session before background processing finishes.
-    //
-    // Wait here — not in the renderer — for any final analysis run that's
-    // still in flight. stopMeeting() takes the live-analysis snapshot by value,
-    // so this is the last moment a running analysis can still reach the
-    // generated summary/BANT-MEDDIC reconciliation instead of only patching the
-    // saved row afterwards. Doing it here means the End Call button can switch
-    // to the launcher immediately (see FloatingDock.handleEndCallClick) — this
-    // whole endMeeting() call is already unawaited by the renderer, so a few
-    // seconds spent here is invisible to the user.
-    await this.waitForLiveAnalysisToSettle(FINAL_ANALYSIS_MAX_WAIT_MS);
+    // Save session state and reset context — MeetingPersistence.stopMeeting()
+    // persists the placeholder row (with the full transcript) synchronously and
+    // defers only summary generation to a background phase that first waits for
+    // any in-flight analysis to settle, so a just-ended call is queryable the
+    // moment endMeeting() returns. Capture the meetingId NOW so the background
+    // phase uses a deterministic ID rather than getRecentMeetings(1) which
+    // could return a different meeting if the user starts a new session before
+    // background processing finishes.
     const meetingId = await this.intelligenceManager.stopMeeting(meetingTypes, tenantId);
     // Tell the overlay window EXACTLY which meeting this call became — don't
     // make it infer this from getRecentMeetings()[0]. That list is sorted by
@@ -3374,20 +3366,11 @@ export class AppState {
     if (meetingId) {
       this.broadcast('live-call-ended', { meetingId });
     }
-    // If an analysis call is currently in-flight, record the meetingId so
-    // setCurrentLiveAnalysis() can patch the DB when the result arrives. The
-    // generation is recorded with it: by the time that result shows up the user
-    // may already be in the next call, and matching on the generation is the
-    // only way to tell "A's late result" from "B's current result".
-    if (this._liveAnalysisInFlight && meetingId) {
-      this._pendingLiveAnalysisMeetingId = meetingId;
-      this._pendingLiveAnalysisGeneration = this._meetingGeneration;
-    } else {
-      // Nothing in flight — make sure a previous call's pending slot can't be
-      // mistaken for this one's.
-      this._pendingLiveAnalysisMeetingId = null;
-      this._pendingLiveAnalysisGeneration = null;
-    }
+    // Pending-live-analysis bookkeeping moved into MeetingPersistence's
+    // deferred finalize phase — it must run after the analysis-settle wait to
+    // preserve the original routing window (a result landing mid-wait routes
+    // 'drop' exactly as it did when the wait sat here). See
+    // recordPendingLiveAnalysis().
 
     // Revert to Default Model — synchronous, no blocking I/O
     try {
@@ -3856,6 +3839,32 @@ export class AppState {
       const onSettled = () => { clearTimeout(timer); resolve(); };
       this._liveAnalysisSettledWaiters.push(onSettled);
     });
+  }
+
+  /**
+   * Moved from endMeeting (it used to run right after stopMeeting() returned —
+   * which, now that stopMeeting() defers its own analysis-settle wait, would
+   * have recorded the pending target BEFORE the wait and changed which results
+   * route to the patch path). Called by MeetingPersistence's deferred finalize
+   * phase right after waitForLiveAnalysisToSettle(), preserving the original
+   * order: wait → record.
+   *
+   * If an analysis call is currently in-flight, record the meetingId so
+   * setCurrentLiveAnalysis() can patch the DB when the result arrives. The
+   * generation is recorded with it: by the time that result shows up the user
+   * may already be in the next call, and matching on the generation is the
+   * only way to tell "A's late result" from "B's current result".
+   */
+  public recordPendingLiveAnalysis(meetingId: string | null): void {
+    if (this._liveAnalysisInFlight && meetingId) {
+      this._pendingLiveAnalysisMeetingId = meetingId;
+      this._pendingLiveAnalysisGeneration = this._meetingGeneration;
+    } else {
+      // Nothing in flight — make sure a previous call's pending slot can't be
+      // mistaken for this one's.
+      this._pendingLiveAnalysisMeetingId = null;
+      this._pendingLiveAnalysisGeneration = null;
+    }
   }
 
   public setCurrentLiveAnalysis(data: LiveAnalysisData | null, generation?: number | null): void {

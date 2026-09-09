@@ -204,6 +204,15 @@ export function useMeetingDetails(initialMeeting: Meeting) {
     const { data: localTranscript, isLoading: isLoadingLocalTranscript } = useQuery<MeetingTranscriptLine[] | null>(
         ["meeting-local-transcript", initialMeeting.id],
         async () => {
+            // Read the local SQLite copy first: the placeholder row saved the instant
+            // the call ended already carries the full transcript, while the Supabase
+            // mirror (which window.electronAPI.getMeetingDetails prefers) only gets
+            // the meetings row and its transcript batch when the async outbox drains
+            // — a cloud read in that window returns null or a transcript-less
+            // meeting, which is exactly the state a processing meeting is opened in.
+            const localDetails = await window.electronAPI?.getMeetingDetailsLocal?.(initialMeeting.id);
+            if (localDetails?.transcript?.length) return localDetails.transcript as MeetingTranscriptLine[];
+            // No local row (e.g. meeting created on another device) — cloud copy.
             const details = await window.electronAPI?.getMeetingDetails?.(initialMeeting.id);
             return details?.transcript ?? null;
         },

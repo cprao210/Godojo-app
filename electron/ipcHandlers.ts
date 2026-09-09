@@ -2014,6 +2014,22 @@ export function initializeIpcHandlers(appState: AppState): void {
     return DatabaseManager.getInstance().getRecentMeetings(50);
   });
 
+  // Deliberately local-only — no SupabaseReadService preference, same rationale
+  // as get-recent-meetings-local above. MeetingPersistence.stopMeeting writes the
+  // placeholder row WITH the full transcript to SQLite synchronously the moment a
+  // call ends, while the Supabase copy only gets the meetings row and its
+  // transcript batch when the async mirror queue drains (separate outbox items).
+  // During that window the cloud-preferring get-meeting-details read returns null
+  // (row not mirrored yet) or a transcript-less meeting — which is exactly the
+  // state a processing meeting is opened in, so the Transcript tab showed "No
+  // transcript recorded" even though the transcript was already in SQLite. The
+  // renderer's transcript fallback uses this channel to read the local copy
+  // immediately and fall back to get-meeting-details only for meetings this
+  // device has no row for (created on another device).
+  safeHandle("get-meeting-details-local", async (_, id: string) => {
+    return DatabaseManager.getInstance().getMeetingDetails(id);
+  });
+
   // Add this handler
   safeHandle("get-display-name", async (_, role: 'user' | 'client' | 'assistant') => {
     const intelligenceManager = appState.getIntelligenceManager();

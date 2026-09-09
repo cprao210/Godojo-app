@@ -907,6 +907,7 @@ contextBridge.exposeInMainWorld("electronAPI", {
   getRecentMeetings: () => ipcRenderer.invoke("get-recent-meetings"),
   getRecentMeetingsLocal: () => ipcRenderer.invoke("get-recent-meetings-local"),
   getMeetingDetails: (id: string) => ipcRenderer.invoke("get-meeting-details", id),
+  getMeetingDetailsLocal: (id: string) => ipcRenderer.invoke("get-meeting-details-local", id),
   updateMeetingTitle: (id: string, title: string) => ipcRenderer.invoke("update-meeting-title", { id, title }),
   updateMeetingSummary: (id: string, updates: any) => ipcRenderer.invoke("update-meeting-summary", { id, updates }),
   regenerateMeetingSummary: (id: string) => ipcRenderer.invoke('regenerate-meeting-summary', { id }),

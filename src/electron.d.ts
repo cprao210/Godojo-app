@@ -398,6 +398,16 @@ export interface ElectronAPI {
    */
   getRecentMeetingsLocal: () => Promise<Array<{ id: string; title: string; date: string; duration: string; summary: string; isProcessed?: boolean }>>
   getMeetingDetails: (id: string) => Promise<any>
+  /**
+   * Local SQLite only — never the Supabase mirror (which `getMeetingDetails`
+   * prefers when a cloud session exists). The placeholder row saved the moment
+   * a call ends already carries the full transcript in SQLite, while the cloud
+   * copy only exists once the async mirror queue drains. Use it for
+   * immediately-after-a-call detail reads (e.g. the Transcript tab of a
+   * meeting still in its "Processing..." state); use getMeetingDetails for
+   * everything else.
+   */
+  getMeetingDetailsLocal: (id: string) => Promise<any>
   updateMeetingTitle: (id: string, title: string) => Promise<boolean>
   updateMeetingSummary: (id: string, updates: { overview?: string, actionItems?: string[], keyPoints?: string[], actionItemsTitle?: string, keyPointsTitle?: string }) => Promise<boolean>
   regenerateMeetingSummary: (id: string) => Promise<any>
