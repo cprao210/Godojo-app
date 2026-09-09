@@ -10,6 +10,10 @@ export interface AppSettings {
     disguiseMode?: 'terminal' | 'settings' | 'activity' | 'none';
     verboseLogging?: boolean;
     actionButtonMode?: 'recap' | 'brainstorm';
+    // One-time marker: whether the production "open at login" default has
+    // already been applied. Prevents re-forcing openAtLogin=true on every
+    // launch after a user has deliberately turned it off — see main.ts.
+    openAtLoginDefaultApplied?: boolean;
 }
 
 export class SettingsManager {

@@ -462,7 +462,10 @@ export class AppState {
 
   // View management
   private view: "queue" | "solutions" = "queue"
-  private isUndetectable: boolean = true
+  // Overwritten unconditionally in the constructor below (which reads the
+  // persisted setting with an app.isPackaged-based default) — this field
+  // default only matters for the brief window before the constructor runs.
+  private isUndetectable: boolean = app.isPackaged ? true : false
 
   private problemInfo: {
     problem_statement: string
@@ -506,11 +509,15 @@ export class AppState {
     // 1. Load boot-critical settings first (used by WindowHelpers)
     const settingsManager = SettingsManager.getInstance();
     // Ghost mode (undetectable / hidden from screen-share capture) is ON by
-    // default for the overlay + launcher windows for any user who hasn't
-    // explicitly set a preference yet — hence `?? true`, not `?? false`.
+    // default in PRODUCTION ONLY, for any user who hasn't explicitly set a
+    // preference yet. Dev builds default OFF so ghost mode doesn't hide
+    // windows from screen-share/dock during local development unless a dev
+    // opts in. Gated on app.isPackaged (this codebase's established
+    // prod-vs-dev signal, not NODE_ENV — see the isDevTccBypassEnabled note
+    // near app.isPackaged usage elsewhere in this file).
     // Once the user has ever toggled it, SettingsManager persists their
     // explicit choice and that value wins regardless of this default.
-    this.isUndetectable = settingsManager.get('isUndetectable') ?? true;
+    this.isUndetectable = settingsManager.get('isUndetectable') ?? app.isPackaged;
     this.disguiseMode = settingsManager.get('disguiseMode') ?? 'none';
     this._verboseLogging = settingsManager.get('verboseLogging') ?? false;
     setVerboseLoggingFlag(this._verboseLogging);
@@ -4973,12 +4980,31 @@ async function initializeApp() {
   // constructed yet, so we cannot call appState.getUndetectable().
   if (process.platform === 'darwin') {
     // SettingsManager is already statically imported — no require() needed.
-    // Same default as the AppState constructor above — ghost mode ON by
-    // default (pre-emptive dock hide on macOS must match, or the dock icon
-    // would flash visible for a first-run user before AppState corrects it).
-    const isUndetectableOnStartup = SettingsManager.getInstance().get('isUndetectable') ?? true;
+    // Same default as the AppState constructor below — ghost mode ON by
+    // default in PRODUCTION ONLY (pre-emptive dock hide on macOS must match
+    // that env-based default, or the dock icon would flash visible/hidden
+    // incorrectly for a first-run user before AppState corrects it).
+    const isUndetectableOnStartup = SettingsManager.getInstance().get('isUndetectable') ?? app.isPackaged;
     if (isUndetectableOnStartup) {
       app.dock.hide();
+    }
+  }
+
+  // 2b. Default "Open GoDojo when you log in" to ON, production builds only.
+  // Applied exactly once — SettingsManager persists a marker so a user who
+  // later flips this off in Settings is never overridden on a later launch.
+  // Gated on app.isPackaged (this codebase's established prod-vs-dev signal,
+  // not NODE_ENV) so dev builds never register themselves as a login item.
+  if (app.isPackaged) {
+    const sm = SettingsManager.getInstance();
+    if (!sm.get('openAtLoginDefaultApplied')) {
+      app.setLoginItemSettings({
+        openAtLogin: true,
+        openAsHidden: false,
+        path: app.getPath('exe'),
+      });
+      sm.set('openAtLoginDefaultApplied', true);
+      console.log('[Main] Applied production default: openAtLogin=true');
     }
   }
 

@@ -2,6 +2,7 @@ import { BrowserWindow, screen, app, Menu } from "electron"
 import { AppState } from "./main"
 import { KeybindManager } from "./services/KeybindManager"
 import { startStaticServer } from "./staticServer"
+import { isVerboseLogging } from "./verboseLog"
 import path from "node:path"
 
 const isEnvDev = process.env.NODE_ENV === "development"
@@ -13,12 +14,26 @@ console.log(`[WindowHelper] isEnvDev: ${isEnvDev}, isPackaged: ${isPackaged}, in
 // Force production mode if running as packaged app or inside app bundle
 const isDev = isEnvDev && !isPackaged;
 
-// Must match DEFAULT_DOCK_HEIGHT in src/hooks/useFloatingDock.ts — the
-// brand-bar-only (collapsed) dock height. Every meeting starts collapsed
-// (see useFloatingDock's onSessionReset handler), so switchToOverlay uses
-// this directly on a fresh meeting start instead of a taller placeholder —
-// see the freshMeetingStart param below for why.
-const COLLAPSED_OVERLAY_HEIGHT = 64;
+// Must match FloatingDock's collapsed target height (52 — brand bar only).
+// Every meeting starts collapsed (see useFloatingDock's onSessionReset
+// handler), so switchToOverlay uses this directly on a fresh meeting start
+// instead of a taller placeholder — see the freshMeetingStart param below
+// for why. (Not useFloatingDock's DEFAULT_DOCK_HEIGHT — that is a
+// pre-ResizeObserver fallback for panel positioning, not the dock's real
+// rendered height.)
+const COLLAPSED_OVERLAY_HEIGHT = 52;
+
+// The dock's fixed content width — FloatingDock's outer container is
+// `w-[430px]`, and the overlay window's body is `width: fit-content`, so the
+// window content is always exactly this wide. The window must be created and
+// snapped at the SAME width: it used to open at a 600px placeholder, and
+// since the fit-content body sits at the window's left edge, the first
+// content resize then re-anchored the right edge and teleported the visible
+// dock ~170px sideways — on every meeting start, and again on the first
+// resize after every hide/show (setBounds here re-widened the window each
+// time). Matching the content width means widthChanged can never fire on the
+// common path, so those re-anchors (and the jump they caused) are gone.
+const OVERLAY_DOCK_WIDTH = 430;
 
 // Z-order level the live-call overlay is pinned at, on every platform. The
 // named level matters as much as the flag itself:
@@ -138,7 +153,11 @@ export class WindowHelper {
   // Dedicated method for overlay window resizing - decoupled from launcher
   public setOverlayDimensions(width: number, height: number): void {
     if (!this.overlayWindow || this.overlayWindow.isDestroyed()) return
-    console.log('[WindowHelper] setOverlayDimensions:', width, height);
+
+    // Fires once per discrete dock size change (and once per settled fallback
+    // measurement) — gate behind verbose logging so a normal call's console
+    // isn't spammed with a line per expand/collapse step.
+    if (isVerboseLogging()) console.log('[WindowHelper] setOverlayDimensions:', width, height);
 
     const currentBounds = this.overlayWindow.getBounds()
     const currentDisplay = screen.getDisplayNearestPoint({ x: currentBounds.x, y: currentBounds.y });
@@ -147,6 +166,21 @@ export class WindowHelper {
     const maxAllowedHeight = Math.floor(workArea.height * 0.9)
     const newWidth = Math.min(Math.max(width, 300), maxAllowedWidth) // min 300, max 90%
     const newHeight = Math.min(Math.max(height, 1), maxAllowedHeight) // min 1, max 90%
+
+    // Sub-pixel jitter guards. getBoundingClientRect returns floats and the
+    // renderer rounds them; clamps + display scaling can flip a settled size
+    // by a pixel (e.g. 680 → 681 → 680 during a spring's last frames). Both
+    // guards dedupe that to a no-op, because each accepted resize here is a
+    // real native window resize — and the trailing-edge fallback observer
+    // in useGodojoInterface re-measures after every animation, so without a
+    // tolerance this method would keep bouncing the real window ±1px after
+    // every expand/collapse settled.
+    const WIDTH_JITTER_TOLERANCE_PX = 2
+    const HEIGHT_JITTER_TOLERANCE_PX = 1
+    const widthChanged = Math.abs(newWidth - currentBounds.width) > WIDTH_JITTER_TOLERANCE_PX
+    const heightChanged = newHeight > currentBounds.height + HEIGHT_JITTER_TOLERANCE_PX
+        || newHeight < currentBounds.height - HEIGHT_JITTER_TOLERANCE_PX
+    if (!widthChanged && !heightChanged) return
 
     // Anchor the TOP edge: keep the window's top edge fixed as its content
     // grows/shrinks, so the dock's brand bar — which is pinned to the window
@@ -167,17 +201,24 @@ export class WindowHelper {
     // fits on screen — no cross-cycle drift. It's only nudged upward (smoothly,
     // since the resize is tracked per animation frame) when a tall panel opened
     // near the bottom edge would otherwise run off-screen.
-    const WIDTH_JITTER_TOLERANCE_PX = 2
-    const widthChanged = Math.abs(newWidth - currentBounds.width) > WIDTH_JITTER_TOLERANCE_PX
     const maxX = workArea.x + workArea.width - newWidth
     const maxY = workArea.y + workArea.height - newHeight
+    // Only reposition when something actually changes: setPosition is a real
+    // native call on every platform (and on X11 an async round-trip), so
+    // firing it with the same x/y it already has nudged the window by a
+    // rounding pixel after animations settled — the "dock drifted/jumped"
+    // reports. The desired position derives identically from unchanged
+    // inputs, so skipping the call is always safe.
     const newX = widthChanged
       ? Math.min(Math.max(currentBounds.x + currentBounds.width - newWidth, workArea.x), maxX)
       : Math.min(Math.max(currentBounds.x, workArea.x), maxX)
     const newY = Math.min(Math.max(currentBounds.y, workArea.y), maxY)
 
-    this.overlayWindow.setContentSize(newWidth, newHeight)
-    this.overlayWindow.setPosition(newX, newY)
+    // setBounds in ONE native call: setContentSize+setPosition back-to-back
+    // produces two commits (intermediate frame possible), and several WM/DWM
+    // combinations transiently re-stack or re-composite a resized window —
+    // pairing the calls doubles that surface for no benefit.
+    this.overlayWindow.setBounds({ x: newX, y: newY, width: newWidth, height: newHeight })
   }
 
   public createWindow(): void {
@@ -411,7 +452,7 @@ export class WindowHelper {
 
     // --- 2. Create Overlay Window (Hidden initially) ---
     const overlaySettings: Electron.BrowserWindowConstructorOptions = {
-      width: 600,
+      width: OVERLAY_DOCK_WIDTH,
       height: 1,
       minWidth: 300,
       minHeight: 1,
@@ -884,16 +925,18 @@ export class WindowHelper {
         // top-pinned brand bar has the full screen height BELOW it to expand
         // into: setOverlayDimensions anchors the TOP edge and grows the window
         // downward, so starting at the top means panels open straight down in
-        // place — no upward slide or ceiling clamp. Width stays at the 600
-        // placeholder; the renderer's ResizeObserver settles it to the real
-        // content width via setOverlayDimensions, which preserves this corner.
+        // place — no upward slide or ceiling clamp. Width is the dock's real
+        // content width (OVERLAY_DOCK_WIDTH), so the window lands exactly where
+        // the visible dock will be on the very first frame — the old 600px
+        // placeholder made the first content resize re-anchor the right edge
+        // and slide the dock sideways right after it appeared.
         const shouldSnap = this.overlayNeedsReposition || !onSameDisplay;
-        x = shouldSnap ? workArea.x + workArea.width - 600 - this.overlayEdgeMargin : currentBounds.x;
+        x = shouldSnap ? workArea.x + workArea.width - OVERLAY_DOCK_WIDTH - this.overlayEdgeMargin : currentBounds.x;
         y = shouldSnap ? workArea.y + this.overlayEdgeMargin : currentBounds.y;
         this.overlayNeedsReposition = false;
       }
 
-      this.overlayWindow.setBounds({ x, y, width: 600, height: targetHeight });
+      this.overlayWindow.setBounds({ x, y, width: OVERLAY_DOCK_WIDTH, height: targetHeight });
 
       if (process.platform === 'win32' && this.contentProtection) {
         // Opacity Shield: Show at 0 opacity first to prevent frame leak

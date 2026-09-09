@@ -327,16 +327,29 @@ export function useGodojoInterface({ overlayOpacity = OVERLAY_OPACITY_DEFAULT }:
         window.electronAPI?.updateContentDimensions({ width, height });
     };
 
+    // Pending trailing-edge measurement from the fallback ResizeObserver below.
+    // Declared above requestOverlayResize so the explicit path can cancel it.
+    const fallbackResizeTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
     // Explicit, single-shot resize for known/discrete size changes (the
     // dock's own expand/collapse + panel-switch states). Bypasses the
     // fallback observer's debounce entirely — callers control timing.
     const requestOverlayResize = (height: number, width?: number) => {
+        // An explicit resize OWNS the current transition. Any fallback
+        // measurement scheduled before it must be cancelled: it would fire
+        // mid-animation with a stale or intermediate height and shrink the
+        // window underneath the animating content (visible clip/jump until
+        // the next observation corrected it). The observer reschedules after
+        // the animation settles, and its settled measurement then dedupes to
+        // a no-op in applyContentDimensions.
+        if (fallbackResizeTimeoutRef.current) {
+            clearTimeout(fallbackResizeTimeoutRef.current);
+            fallbackResizeTimeoutRef.current = null;
+        }
         const resolvedWidth =
             width ?? appliedDimsRef.current?.width ?? Math.ceil(contentRef.current?.getBoundingClientRect().width ?? 430);
         applyContentDimensions(resolvedWidth, Math.ceil(height));
     };
-
-    const fallbackResizeTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
     useLayoutEffect(() => {
         if (!contentRef.current) return;

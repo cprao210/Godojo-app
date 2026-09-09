@@ -75,7 +75,7 @@ export const FloatingDock: React.FC<FloatingDockProps> = ({
         posthogAnalytics.trackPageView('floating_dock');
     }, []);
 
-    const { activePanel, togglePanel, isDockExpanded, collapseDock, expandDock, isFrozen, dockOpacity, handleDockOpacityChange, dockRef, ensureFinalAnalysisBeforeEndCall } = floatingDockStates;
+    const { activePanel, togglePanel, isDockExpanded, collapseDock, expandDock, isFrozen, dockOpacity, handleDockOpacityChange, ensureFinalAnalysisBeforeEndCall } = floatingDockStates;
     const { panelTopOffset, meetingTypes, setMeetingTypes, analysisData, analysisLoading, analysisError } = floatingDockStates;
     const { runAnalysis, isRefreshRun, chatMessages, setChatMessages, autoRefreshInterval, setAutoRefreshInterval } = floatingDockStates;
     const { intelligencePanelFirstOpenedAt, noAnalysisCaptured, isCountdownActive, handleInteractionId } = floatingDockStates;
@@ -190,73 +190,60 @@ export const FloatingDock: React.FC<FloatingDockProps> = ({
 
     // ── Native overlay-window resize orchestration ──────────────────────
     // See the "Window resize pipeline" note in useGodojoInterface.ts for the
-    // full rationale. Summary: resizing the real OS window on every
-    // animation frame (the naive ResizeObserver approach) causes visible
-    // stutter/hangs on mid-range/integrated-GPU machines, because a native
-    // window resize is comparatively expensive — nothing like a GPU-composited
-    // CSS transform.
+    // full rationale. Summary: a native OS window resize is a real, expensive
+    // operation — nothing like a GPU-composited CSS transform — so the window
+    // is resized EXPLICITLY and ONCE per known size transition, never per
+    // animation frame:
     //
-    // IMPORTANT: WindowHelper.setOverlayDimensions anchors the window's TOP
-    // edge, so the window grows DOWNWARD and its top-pinned brand bar stays
-    // put on screen (matching this component's top-down layout — brand bar on
-    // top, panels rendered below it). On capable hardware the ResizeObserver
-    // tracks the animated height every frame, so the real OS window grows and
-    // shrinks in lockstep with the spring — which is what gives the dock its
-    // smooth feel. The height spring is deliberately non-overshooting
-    // (dockHeightSpring, bounce:0): because the window tracks the height
-    // per-frame, any overshoot would make the real window spring past its
-    // final size and snap back. Weak-GPU machines skip the per-frame tracking
-    // and fall back to the cheaper single-shot jump below.
-    const outerRef = React.useRef<HTMLDivElement>(null);
-    useEffect(() => {
-        if (isPerformanceMode) return; // weak GPU: handled by the single-shot path below
-        const el = outerRef.current;
-        if (!el) return;
-        const observer = new ResizeObserver((entries) => {
-            const h = entries[0]?.contentRect.height;
-            if (h) requestOverlayResize(Math.ceil(h));
-        });
-        observer.observe(el);
-        return () => observer.disconnect();
-    }, [isPerformanceMode, requestOverlayResize]);
-
-    // Single-shot resize for weak-GPU machines only (Performance Mode on):
     //   - Growing: resize to the target height IMMEDIATELY, before/alongside
     //     the spring starting, so the window is already large enough and the
     //     growing content is never clipped by window bounds that haven't
-    //     caught up yet.
+    //     caught up yet. The window is fully transparent — its temporarily
+    //     oversized region is invisible — so the instant resize shows
+    //     nothing; only the content's own spring is visible.
     //   - Shrinking: do NOT resize immediately — the window needs to stay at
     //     its current (larger) size for the full duration of the shrink
-    //     animation, or the collapsing content would be clipped mid-animation.
-    //     The resize is deferred to `onAnimationComplete` below instead.
-    // On capable hardware this is a no-op — the live ResizeObserver above
-    // already keeps the window in sync every frame, so firing this too would
-    // just fight it.
+    //     animation, or the fading/collapsing content would be clipped
+    //     mid-animation. The resize is deferred to `onAnimationComplete`
+    //     below instead.
+    //
+    // IMPORTANT: WindowHelper.setOverlayDimensions anchors the window's TOP
+    // edge (and its right edge when the width changes), so the window grows
+    // DOWNWARD and its top-pinned brand bar stays put on screen (matching
+    // this component's top-down layout — brand bar on top, panels rendered
+    // below it).
+    //
+    // The ResizeObserver-per-frame tracking this used to run on capable GPUs
+    // was removed on purpose: it re-drove the exact per-frame native-resize
+    // storm this pipeline exists to avoid (visible stutter on integrated
+    // GPUs, dozens of setOverlayDimensions calls per toggle, resize fighting
+    // the drag handle), while the window being transparent means per-frame
+    // tracking had no visual effect — only the content needs to animate.
+    // The height spring stays deliberately non-overshooting (bounce:0) so
+    // collapsing content always stays inside the still-current window bounds
+    // until the deferred shrink resize lands.
     const prevTargetHeightRef = React.useRef(targetHeight);
     useEffect(() => {
-        if (!isPerformanceMode) {
-            prevTargetHeightRef.current = targetHeight;
-            return;
-        }
         if (targetHeight > prevTargetHeightRef.current) {
             requestOverlayResize(targetHeight);
         }
         prevTargetHeightRef.current = targetHeight;
-    }, [targetHeight, requestOverlayResize, isPerformanceMode]);
+    }, [targetHeight, requestOverlayResize]);
 
-    // Fires when the outer height spring settles. On weak-GPU machines this
-    // is the one point a shrink actually resizes the window (grow already
-    // happened above). On capable hardware the live tracker has already
-    // brought the window to the right size every frame, so this is a
-    // harmless dedupe no-op.
+    // Fires when the outer height spring settles — the one point a shrink
+    // actually resizes the window (grow already happened above). For grows
+    // this is a harmless dedupe no-op. This is also the reconciliation point
+    // for interrupted animations: framer never fires onAnimationComplete for
+    // an interrupted run, only for the retargeted one — so the deferred
+    // resize can never be "lost" mid-toggle and the window always ends at
+    // the latest target instead of a stale mid-animation size.
     const handleHeightAnimationComplete = useCallback(() => {
-        if (isPerformanceMode) requestOverlayResize(targetHeight);
-    }, [isPerformanceMode, requestOverlayResize, targetHeight]);
+        requestOverlayResize(targetHeight);
+    }, [requestOverlayResize, targetHeight]);
 
     return (
         <>
             <motion.div
-                ref={outerRef}
                 className={`relative w-[430px] mx-auto h-fit bg-transparent max-w-full rounded-2xl items-center flex flex-col min-h-0 ${overlayPanelClass}`}
                 animate={{ height: targetHeight }}
                 transition={dockHeightSpring}
@@ -303,39 +290,48 @@ export const FloatingDock: React.FC<FloatingDockProps> = ({
                     />
                 </FloatingPanelWrapper>
 
-                {/* Chat panel — mounts on first open, then stays mounted so history survives */}
-                {(chatMessages.length > 0 || effectiveActivePanel === 'chat') && (
-                    <FloatingPanelWrapper
-                        panelTopOffset={panelTopOffset}
-                        showFrozenOverlay={isFrozen && effectiveActivePanel === 'chat'}
-                        isInteractive={effectiveActivePanel === 'chat'}
-                        initial={{ opacity: 0, y: 20, scale: 0.96 }}
-                        animate={{
-                            opacity: effectiveActivePanel === 'chat' ? dockOpacity : 0,
-                            y: effectiveActivePanel === 'chat' ? 0 : 20,
-                            scale: effectiveActivePanel === 'chat' ? 1 : 0.96,
-                        }}
-                        transition={panelSpring}
-                    >
-                        <FloatingChatPanel
-                            onInteractionId={handleChatInteractionId}
-                            transcriptRef={transcriptRef}
-                            isMeetingPaused={isMeetingPaused}
-                            rollingTranscriptUser={rollingTranscriptUser}
-                            rollingTranscriptClient={rollingTranscriptClient}
-                            isClientSpeaking={isClientSpeaking}
-                            isUserSpeaking={isUserSpeaking}
-                            showTranscript={showTranscript}
-                            currentModel={currentModel}
-                            onSelectModel={onSelectModel}
-                            speakerNames={speakerNames}
-                            messages={chatMessages}
-                            onMessagesChange={setChatMessages}
-                            isPerformanceMode={isPerformanceMode}
-                            calendarEventMetadata={calendarEventMetadata}
-                        />
-                    </FloatingPanelWrapper>
-                )}
+                {/* Chat panel — mounts on first open. History lives in the lifted
+                    useFloatingDock state, so the panel itself can unmount when the
+                    call's chat is empty without losing anything. Wrapped in
+                    AnimatePresence (like Settings) so closing plays the same
+                    fade-out as every other panel instead of a one-frame hard cut
+                    against a still-expanded window. */}
+                <AnimatePresence>
+                    {(chatMessages.length > 0 || effectiveActivePanel === 'chat') && (
+                        <FloatingPanelWrapper
+                            key="chat-panel"
+                            panelTopOffset={panelTopOffset}
+                            showFrozenOverlay={isFrozen && effectiveActivePanel === 'chat'}
+                            isInteractive={effectiveActivePanel === 'chat'}
+                            initial={{ opacity: 0, y: 20, scale: 0.96 }}
+                            animate={{
+                                opacity: effectiveActivePanel === 'chat' ? dockOpacity : 0,
+                                y: effectiveActivePanel === 'chat' ? 0 : 20,
+                                scale: effectiveActivePanel === 'chat' ? 1 : 0.96,
+                            }}
+                            exit={{ opacity: 0, y: 12, scale: 0.97 }}
+                            transition={panelSpring}
+                        >
+                            <FloatingChatPanel
+                                onInteractionId={handleChatInteractionId}
+                                transcriptRef={transcriptRef}
+                                isMeetingPaused={isMeetingPaused}
+                                rollingTranscriptUser={rollingTranscriptUser}
+                                rollingTranscriptClient={rollingTranscriptClient}
+                                isClientSpeaking={isClientSpeaking}
+                                isUserSpeaking={isUserSpeaking}
+                                showTranscript={showTranscript}
+                                currentModel={currentModel}
+                                onSelectModel={onSelectModel}
+                                speakerNames={speakerNames}
+                                messages={chatMessages}
+                                onMessagesChange={setChatMessages}
+                                isPerformanceMode={isPerformanceMode}
+                                calendarEventMetadata={calendarEventMetadata}
+                            />
+                        </FloatingPanelWrapper>
+                    )}
+                </AnimatePresence>
 
                 {/* Settings panel — lightweight, can unmount freely (no timer state) */}
                 <AnimatePresence>
@@ -365,7 +361,6 @@ export const FloatingDock: React.FC<FloatingDockProps> = ({
                 </AnimatePresence>
 
                 <motion.div
-                    ref={dockRef}
                     initial={{ opacity: 0, y: 30 }}
                     animate={{ opacity: 1, y: 0, x: '-50%' }}
                     transition={{ type: 'spring', damping: 26, stiffness: 300 }}
@@ -375,9 +370,9 @@ export const FloatingDock: React.FC<FloatingDockProps> = ({
                     {/* Slim brand + expand/collapse bar, floating above the dock (with a
                         gap). Always visible — even when the nav dock + panel are hidden.
                         Its chevron expands (▽ → shows nav dock + last/default panel) or
-                        collapses (△ → hides nav dock + panel, brand bar stays). dockRef
-                        wraps bar + gap + pill, so the measured dockHeight — and thus
-                        panelTopOffset — includes it. */}
+                        collapses (△ → hides nav dock + panel, brand bar stays). The
+                        chrome's settled height (bar + gap + pill) is what panelTopOffset
+                        is derived from in useFloatingDock. */}
                     <DockBrandBar
                         isExpanded={isDockExpanded}
                         opacity={dockOpacity}

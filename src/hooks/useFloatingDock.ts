@@ -23,7 +23,6 @@ const MAX_OPACITY = 1;
 // of truth so every panel (intelligence, chat, settings) sits the same
 // distance above the dock regardless of platform DPI or dock size changes.
 const PANEL_DOCK_GAP = 65;
-const DEFAULT_DOCK_HEIGHT = 64; // sensible fallback before first ResizeObserver measure
 // Minimum number of prospect turns considered "enough transcript" to
 // generate an analysis from — used both to fire early (before the countdown
 // finishes) and to decide the zero-countdown outcome. Must count ONLY the
@@ -122,22 +121,27 @@ export function useFloatingDock({ transcriptRef, isMeetingPaused, companyIntel }
     // ── Meeting type multi-select (Discovery / Negotiation / …) ─────────────
     const [meetingTypes, setMeetingTypes] = useState<MeetingType[]>(['discovery']);
 
-    // ── Dock height measurement → panel vertical offset ──────────────────────
-    const dockRef = useRef<HTMLDivElement>(null);
-    const [dockHeight, setDockHeight] = useState(DEFAULT_DOCK_HEIGHT);
-
-    useEffect(() => {
-        const el = dockRef.current;
-        if (!el) return;
-        const observer = new ResizeObserver((entries) => {
-            const h = entries[0]?.contentRect.height;
-            if (h) setDockHeight(h);
-        });
-        observer.observe(el);
-        return () => observer.disconnect();
-    }, []);
-
-    const panelTopOffset = dockHeight + PANEL_DOCK_GAP - 52;
+    // ── Panel vertical offset ────────────────────────────────────────────────
+    // The dock chrome (brand bar + gap + nav pill) is fixed-size and only ever
+    // settles at two heights — COLLAPSED (brand bar only) or EXPANDED (brand
+    // bar + nav dock). Those settled extents are exactly FloatingDock's
+    // window-height targets (52 collapsed / 123 expanded), minus the chrome's
+    // own fixed `top: 6` offset which the window target includes but the
+    // chrome measurement (what this offset is computed from, previously a
+    // ResizeObserver on the chrome) never did.
+    //
+    // Deriving the offset from state instead of measuring removes a real
+    // glitch: the old observer streamed the spring's intermediate heights into
+    // setDockHeight during every expand/collapse, so a panel restoring while
+    // the dock expanded was positioned from a value that stepped ~46→117 over
+    // the animation and visibly slid into place. State-derived positioning is
+    // stable for the whole animation and lands on the same settled value the
+    // measurement used to produce. If DockBrandBar's paddings ever change,
+    // update these to match FloatingDock's targets.
+    const DOCK_CHROME_TOP_OFFSET_PX = 6; // the chrome motion.div's `top: 6`
+    const COLLAPSED_CHROME_HEIGHT = 52 - DOCK_CHROME_TOP_OFFSET_PX; // brand bar only
+    const EXPANDED_CHROME_HEIGHT = 123 - DOCK_CHROME_TOP_OFFSET_PX; // brand bar + gap + nav pill
+    const panelTopOffset = (isDockExpanded ? EXPANDED_CHROME_HEIGHT : COLLAPSED_CHROME_HEIGHT) + PANEL_DOCK_GAP - 52;
 
     // ── Fast objection watcher — ticks in seconds, not minutes ──────────────
     // Owns the objection list outright (delta-in/delta-out contract with
@@ -569,8 +573,7 @@ export function useFloatingDock({ transcriptRef, isMeetingPaused, companyIntel }
         // dock opacity
         dockOpacity,
         handleDockOpacityChange,
-        // dock height → panel offset
-        dockRef,
+        // panel offset (state-derived — see the comment above its computation)
         panelTopOffset,
         // meeting types
         meetingTypes,
