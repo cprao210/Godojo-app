@@ -30,7 +30,19 @@ export function groupSources(raw: { id: string; title: string; type: string }[] 
 const MAX_STREAM_RETRIES = 3;
 const RETRY_BASE_DELAY_MS = 600;
 
+/** The backend accepted the request (2xx) but closed the stream without ever
+ * sending an answer frame (no token, no rag_answer). Treated as transient:
+ * upstream LLM hiccups commonly surface as an empty 200 stream, and nothing
+ * has rendered, so re-asking is safe and invisible. */
+class EmptyStreamError extends Error {
+    constructor() {
+        super('stream closed without any content');
+        this.name = 'EmptyStreamError';
+    }
+}
+
 function isRetryableStreamError(err: unknown): boolean {
+    if (err instanceof EmptyStreamError) return true;
     if (err instanceof ApiError) return err.status >= 500 || err.status === 429;
     // fetch() rejects with a plain TypeError for network-level failures
     // (offline, DNS, connection reset) — anything else thrown here (e.g. a
@@ -49,11 +61,24 @@ function isRetryableStreamError(err: unknown): boolean {
  * or sources frame arrives, retries are disabled for the rest of this call:
  * re-sending the request after partial content has already rendered would
  * duplicate or garble what's on screen, which is worse than just surfacing
- * the error and letting the person hit "try again" themselves.
+ * the error and letting the person hit "try again" themselves. A stream that
+ * closes cleanly without ever sending content counts as transient too: the
+ * consumers would otherwise finalize an empty assistant bubble and call it a
+ * successful answer.
  */
 function streamSSE(path: string, body: unknown, handlers: ChatStreamHandlers): StreamHandle {
     const controller = new AbortController();
     let hasStreamedContent = false;
+    // Whether the backend sent its explicit `event: done` frame. That frame is
+    // the backend saying "this turn is complete" — a stream that ends right
+    // after it is a finished (possibly intentionally empty) answer, never an
+    // error. The empty-stream guard below only fires on a SILENT close:
+    // neither content nor `done`. Observed via dispatchFrame's onDoneFrame
+    // signal — dispatchFrame deliberately does NOT call handlers.onDone for
+    // the frame (the read loop's single onDone below is the only completion
+    // callback, exactly as before this guard existed).
+    let receivedDoneFrame = false;
+    const markDoneFrame = () => { receivedDoneFrame = true; };
 
     // Wrap onToken/onRagAnswer/onSources so we can flip the retry gate the
     // instant real content starts arriving, without touching every call site
@@ -99,11 +124,21 @@ function streamSSE(path: string, body: unknown, handlers: ChatStreamHandlers): S
                     // SSE frames are separated by a blank line.
                     let sep: number;
                     while ((sep = buffer.indexOf("\n\n")) !== -1) {
-                        dispatchFrame(buffer.slice(0, sep), guardedHandlers);
+                        dispatchFrame(buffer.slice(0, sep), guardedHandlers, markDoneFrame);
                         buffer = buffer.slice(sep + 2);
                     }
                 }
-                if (buffer.trim()) dispatchFrame(buffer, guardedHandlers); // trailing frame, no closing blank line
+                if (buffer.trim()) dispatchFrame(buffer, guardedHandlers, markDoneFrame); // trailing frame, no closing blank line
+
+                // A SILENT close (no content, no done frame) is not a success —
+                // the consumers would finalize an empty assistant bubble and
+                // call it done. Retry it like any other transient failure
+                // (safe: nothing has rendered, so a re-ask can't duplicate
+                // content). If the attempts run out, fall through to onError
+                // below with an explicit empty-response message instead. An
+                // explicit `done` frame means the backend completed the turn
+                // on purpose — never retried, even with no content.
+                if (!hasStreamedContent && !receivedDoneFrame) throw new EmptyStreamError();
 
                 handlers.onDone?.();
                 return; // success — stop the retry loop
@@ -125,7 +160,11 @@ function streamSSE(path: string, body: unknown, handlers: ChatStreamHandlers): S
 
                 console.error(`[chatApi] stream failed (${path}):`, err);
                 handlers.onError(
-                    err instanceof ApiError ? err.message : "Couldn't get a response. Please try again.",
+                    err instanceof EmptyStreamError
+                        ? "The assistant returned an empty response. Please try again."
+                        : err instanceof ApiError
+                            ? err.message
+                            : "Couldn't get a response. Please try again.",
                 );
                 return;
             }
@@ -135,7 +174,7 @@ function streamSSE(path: string, body: unknown, handlers: ChatStreamHandlers): S
     return { abort: () => controller.abort() };
 }
 
-function dispatchFrame(frame: string, handlers: ChatStreamHandlers): void {
+function dispatchFrame(frame: string, handlers: ChatStreamHandlers, onDoneFrame?: () => void): void {
     let event = "message";
     let data = "";
     for (const line of frame.split("\n")) {
@@ -194,8 +233,10 @@ function dispatchFrame(frame: string, handlers: ChatStreamHandlers): void {
             break;
         }
         case "done":
-            // `{}` — no payload to act on. The stream closing (handled in
-            // streamSSE's read loop) is what actually drives onDone().
+            // `{}` — no payload to act on. Signal streamSSE (its empty-stream
+            // guard keys off this) but do NOT call handlers.onDone here: the
+            // read loop's close is the single, existing completion point.
+            onDoneFrame?.();
             break;
         default:
             break;

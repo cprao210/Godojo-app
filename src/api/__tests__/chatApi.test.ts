@@ -271,6 +271,84 @@ describe('chatApi.queryGlobal', () => {
         await new Promise((resolve) => setTimeout(resolve, 0));
         expect(onError).not.toHaveBeenCalled();
     });
+
+    it('retries and completes when the stream closes silently but empty (2xx, no frames, no done)', async () => {
+        // Upstream LLM hiccup surfacing as a 200 whose body just ends: no
+        // content frames, no done frame. Without the empty-stream guard this
+        // would call onDone() and consumers would finalize an empty assistant
+        // bubble. Attempt 1 is empty (retryable); attempt 2 delivers.
+        fetchMock.mockImplementationOnce(() => Promise.resolve(sseResponse([])));
+        fetchMock.mockImplementationOnce(() =>
+            Promise.resolve(sseResponse([
+                'event: token\ndata: {"chunk":"Recovered answer"}',
+                'event: done\ndata: {}',
+            ])),
+        );
+        vi.useFakeTimers(); // skip the 600ms backoff between attempts
+        const onRetry = vi.fn();
+        const result = collectHandlers();
+
+        chatApi.queryGlobal('hi', null, [], { ...result.handlers, onRetry });
+        await vi.runAllTimersAsync();
+        await result.settled;
+
+        expect(result.done).toBe(true);
+        expect(result.error).toBeUndefined();
+        expect(result.tokens.join('')).toBe('Recovered answer');
+        expect(onRetry).toHaveBeenCalledTimes(1);
+        expect(fetchMock).toHaveBeenCalledTimes(2);
+    });
+
+    it('treats a done-frame-only stream as a completed turn, not an empty failure', async () => {
+        // The backend may legitimately finish a turn with just `done` (e.g. it
+        // answered via frames this test doesn't exercise, or intentionally sent
+        // nothing). The explicit done frame means "turn complete" — it must NOT
+        // trigger the silent-empty retry.
+        fetchMock.mockResolvedValueOnce(sseResponse(['event: done\ndata: {}']));
+        const onRetry = vi.fn();
+        const result = collectHandlers();
+
+        chatApi.queryGlobal('hi', null, [], { ...result.handlers, onRetry });
+        await result.settled;
+
+        expect(result.done).toBe(true);
+        expect(result.error).toBeUndefined();
+        expect(onRetry).not.toHaveBeenCalled();
+        expect(fetchMock).toHaveBeenCalledTimes(1);
+    });
+
+    it('retries an empty stream on every attempt, then errors with an explicit empty-response message', async () => {
+        fetchMock.mockImplementation(() => Promise.resolve(sseResponse([])));
+        vi.useFakeTimers();
+        const result = collectHandlers();
+
+        chatApi.queryGlobal('hi', null, [], result.handlers);
+        await vi.runAllTimersAsync();
+        await result.settled;
+
+        expect(result.done).toBe(false);
+        expect(result.error).toBe('The assistant returned an empty response. Please try again.');
+        expect(fetchMock).toHaveBeenCalledTimes(MAX_STREAM_RETRIES + 1);
+    });
+
+    it('finalizes a truncated stream (content delivered, then silent close) without retrying', async () => {
+        // Tokens arrived, then the server hung up without a done frame. The
+        // partial answer is already on screen, so retrying would duplicate it;
+        // the read loop finishing is treated as the end of the answer and
+        // onDone() synthesizes the completion instead.
+        fetchMock.mockResolvedValueOnce(sseResponse(['event: token\ndata: {"chunk":"Partial…"}']));
+        const onRetry = vi.fn();
+        const result = collectHandlers();
+
+        chatApi.queryGlobal('hi', null, [], { ...result.handlers, onRetry });
+        await result.settled;
+
+        expect(result.done).toBe(true);
+        expect(result.error).toBeUndefined();
+        expect(result.tokens.join('')).toBe('Partial…');
+        expect(onRetry).not.toHaveBeenCalled();
+        expect(fetchMock).toHaveBeenCalledTimes(1);
+    });
 });
 
 describe('chatApi.queryMeeting', () => {
