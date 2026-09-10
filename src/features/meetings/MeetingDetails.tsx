@@ -14,6 +14,8 @@ import { LiveAnalysisContent } from '@/features/live-analysis/LiveAnalysisConten
 import { MeetingDetailsProps, Meeting, DetailAnalysisAccordionProps } from '@/types';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
+import type { AiInteractionSource } from "@/types";
+import { FileText } from "lucide-react";
 
 // Skeleton pulse component
 const Skeleton: React.FC<{ className?: string }> = ({ className = '' }) => (
@@ -98,6 +100,22 @@ const DetailAnalysisAccordion: React.FC<DetailAnalysisAccordionProps> = ({ score
         </section>
     );
 };
+
+/** Ask Dojo history only has somewhere useful to show doc/asset sources —
+ * meeting/live-shaped entries (`{ title, meeting_id }`, often "live" as a
+ * placeholder, not a real openable meeting) are dropped. Dedupes on `id`
+ * since the same doc commonly appears once per matched chunk. */
+function docSourcesFor(sources: AiInteractionSource[] | undefined) {
+    if (!sources?.length) return [];
+    const seen = new Set<string>();
+    const out: { id: string; title: string }[] = [];
+    for (const s of sources) {
+        if (!("id" in s) || !s.id || seen.has(s.id)) continue;
+        seen.add(s.id);
+        out.push({ id: s.id, title: s.title });
+    }
+    return out;
+}
 
 const MeetingDetails: React.FC<MeetingDetailsProps> = ({ meeting: initialMeeting, viewContext }) => {
 
@@ -1262,6 +1280,24 @@ const MeetingDetails: React.FC<MeetingDetailsProps> = ({ meeting: initialMeeting
                                                                 {cleanMarkdown(interaction.ai_response || '')}
                                                             </ReactMarkdown>
                                                         </div>
+                                                        {(() => {
+                                                            const docSources = docSourcesFor(interaction.sources);
+                                                            if (docSources.length === 0) return null;
+                                                            return (
+                                                                <div className="flex flex-wrap items-center gap-1.5 mt-2">
+                                                                    {docSources.map((d) => (
+                                                                        <span
+                                                                            key={d.id}
+                                                                            className="flex items-center gap-1.5 text-[12px] text-text-tertiary max-w-[240px]"
+                                                                            title={d.title}
+                                                                        >
+                                                                            <FileText size={12} className="shrink-0" />
+                                                                            <span className="truncate">{d.title}</span>
+                                                                        </span>
+                                                                    ))}
+                                                                </div>
+                                                            );
+                                                        })()}
                                                     </div>
                                                 </div>
                                             )}

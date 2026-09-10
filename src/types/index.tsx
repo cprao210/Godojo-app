@@ -722,6 +722,28 @@ export interface AiInteractionMetadata {
   [key: string]: unknown;
 }
 
+// Raw shape from GET /meetings/:id/ai-interactions — a flat, mixed list, NOT
+// the grouped { meetings, assets } shape ChatSources/SourcesDisplay expect
+// (same distinction already called out on ChatHistoryTurn.sources). Two
+// observed shapes, distinguished by presence of `id`:
+//   - doc/asset sources:    { id, type: "doc", title }
+//   - meeting/live sources: { title, meeting_id }  — meeting_id is often the
+//     literal string "live" (not a real, openable meeting id), and these
+//     commonly repeat once per retrieved transcript chunk.
+// Only the doc-shaped ones are useful to show — see assetSourcesFor below.
+export interface AiInteractionDocSource {
+  id: string;
+  type: string;
+  title: string;
+}
+
+export interface AiInteractionMeetingSource {
+  title: string;
+  meeting_id: string;
+}
+
+export type AiInteractionSource = AiInteractionDocSource | AiInteractionMeetingSource;
+
 export interface AiInteractionItem {
   id: number;
   type: string;
@@ -729,6 +751,9 @@ export interface AiInteractionItem {
   user_query: string;
   ai_response: string;
   metadata_json: AiInteractionMetadata;
+  // Optional — plenty of interactions (e.g. the "couldn't find that" case)
+  // have no useful sources, or none at all. Never assume present.
+  sources?: AiInteractionSource[];
 }
 
 export interface AiInteractionsResponse {

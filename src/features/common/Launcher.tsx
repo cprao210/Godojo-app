@@ -237,7 +237,7 @@ const Launcher: React.FC<LauncherProps> = ({ onStartMeeting, onOpenSettings, onC
                                 }}
                                 transition={{ duration: 0.42, ease: [0.32, 0.72, 0, 1] }}
                             >
-                                <section className="px-8 py-5 min-h-full">
+                                <section className="px-8 py-5 mb-12 min-h-full">
                                     <div className="max-w-4xl mx-auto">
 
                                         {/* Section header */}

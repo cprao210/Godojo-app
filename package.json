@@ -140,7 +140,10 @@
         }
       ],
       "icon": "assets/icons/png/",
-      "category": "Office"
+      "category": "Office",
+      "appImage": {
+        "artifactName": "GoDojo.AI-${version}.${ext}"
+      }
     },
     "deb": {
       "depends": [

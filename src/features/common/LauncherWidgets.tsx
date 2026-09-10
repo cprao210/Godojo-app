@@ -602,6 +602,7 @@ export const RecentMeetingsHeader: React.FC<RecentMeetingsHeaderProps> = ({ isLi
 interface MeetingRowProps {
     meeting: Meeting;
     isLast: boolean;
+    isFirst: boolean;
     isLight: boolean;
     isMenuOpen: boolean;
     onOpen: (meeting: Meeting) => void;
@@ -612,7 +613,7 @@ interface MeetingRowProps {
 }
 
 export const MeetingRow: React.FC<MeetingRowProps> = ({
-    meeting: m, isLast, isLight, isMenuOpen,
+    meeting: m, isLast, isFirst, isLight, isMenuOpen,
     onOpen, onToggleMenu, onMenuMouseEnter, onMenuMouseLeave, onDelete,
 }) => {
     // Authoritative: `isProcessed === false` (see isMeetingProcessing). A calendar
@@ -622,153 +623,153 @@ export const MeetingRow: React.FC<MeetingRowProps> = ({
     const isProcessing = isMeetingProcessing(m);
 
     return (
-    <motion.div
-        layoutId={`meeting-${m.id}`}
-        onClick={() => onOpen(m)}
-        aria-busy={isProcessing || undefined}
-        className={[
-            'group relative flex items-center gap-4 px-5 py-4 cursor-pointer transition-colors',
-            !isLast ? 'border-b border-border-subtle' : '',
-            'bg-bg-sidebar hover:bg-bg-item-surface',
-        ].join(' ')}
-    >
-        {/* Left: Icon */}
-        <div className={[
-            'flex h-9 w-9 shrink-0 items-center justify-center rounded-lg bg-blue-500/10',
-            isLight ? 'text-accent-primary' : 'text-blue-400',
-        ].join(' ')}>
-            {isProcessing
-                ? <RefreshCw size={15} className="animate-spin text-blue-500" />
-                : <Calendar size={15} strokeWidth={2} />
-            }
-        </div>
-
-        {/* Center: Title + subtitle */}
-        <div className="flex-1 min-w-0">
+        <motion.div
+            layoutId={`meeting-${m.id}`}
+            onClick={() => onOpen(m)}
+            aria-busy={isProcessing || undefined}
+            className={[
+                'group relative flex items-center gap-4 px-5 py-4 cursor-pointer transition-colors',
+                !isLast ? isFirst ? 'rounded-t-xl hover:rounded-t-xl' : 'border-b border-border-subtle' : 'rounded-b-xl hover:rounded-b-xl',
+                'bg-bg-sidebar hover:bg-bg-item-surface',
+            ].join(' ')}
+        >
+            {/* Left: Icon */}
             <div className={[
-                'text-[13px] font-semibold truncate leading-tight',
-                isProcessing
-                    ? 'text-text-secondary animate-pulse'
-                    : 'text-text-primary',
+                'flex h-9 w-9 shrink-0 items-center justify-center rounded-lg bg-blue-500/10',
+                isLight ? 'text-accent-primary' : 'text-blue-400',
             ].join(' ')}>
-                {/* The real title appears only once processing has actually
+                {isProcessing
+                    ? <RefreshCw size={15} className="animate-spin text-blue-500" />
+                    : <Calendar size={15} strokeWidth={2} />
+                }
+            </div>
+
+            {/* Center: Title + subtitle */}
+            <div className="flex-1 min-w-0">
+                <div className={[
+                    'text-[13px] font-semibold truncate leading-tight',
+                    isProcessing
+                        ? 'text-text-secondary animate-pulse'
+                        : 'text-text-primary',
+                ].join(' ')}>
+                    {/* The real title appears only once processing has actually
                     finished. A calendar event's title (and an upload's typed
                     title) are known up front, but showing them early made a row
                     look done — and any source disagreement about is_processed
                     then read as the title appearing, vanishing, reappearing. */}
-                {isProcessing ? 'Processing meeting' : m.title}
-            </div>
-            <div className="flex items-center gap-1.5 mt-0.5 text-[11px] text-text-tertiary">
-                {isProcessing ? (
-                    // Explains what's still missing, so a row without a summary
-                    // reads as in-progress rather than as a broken meeting.
-                    <span className={['flex items-center gap-1.5 font-medium', isLight ? 'text-accent-primary' : 'text-blue-400'].join(' ')}>
-                        <span className="relative flex h-1.5 w-1.5">
-                            <span className="absolute inline-flex h-full w-full animate-ping rounded-full bg-blue-500 opacity-75" />
-                            <span className="relative inline-flex h-1.5 w-1.5 rounded-full bg-blue-500" />
+                    {isProcessing ? 'Processing meeting' : m.title}
+                </div>
+                <div className="flex items-center gap-1.5 mt-0.5 text-[11px] text-text-tertiary">
+                    {isProcessing ? (
+                        // Explains what's still missing, so a row without a summary
+                        // reads as in-progress rather than as a broken meeting.
+                        <span className={['flex items-center gap-1.5 font-medium', isLight ? 'text-accent-primary' : 'text-blue-400'].join(' ')}>
+                            <span className="relative flex h-1.5 w-1.5">
+                                <span className="absolute inline-flex h-full w-full animate-ping rounded-full bg-blue-500 opacity-75" />
+                                <span className="relative inline-flex h-1.5 w-1.5 rounded-full bg-blue-500" />
+                            </span>
+                            Preparing transcript &amp; summary
                         </span>
-                        Preparing transcript &amp; summary
-                    </span>
-                ) : (() => {
-                    const org = (m as any).organizer || (m as any).attendees?.[0]?.displayName || null;
-                    const count = (m as any).attendees?.length;
-                    return (
-                        <>
-                            {org && <span className="truncate max-w-[160px]">{org}</span>}
-                            {org && count && <span className="opacity-40">•</span>}
-                            {count && <span>{count} Participant{count !== 1 ? 's' : ''}</span>}
-                            {!org && !count && <span>{formatTime(m.date)}</span>}
-                        </>
-                    );
-                })()}
+                    ) : (() => {
+                        const org = (m as any).organizer || (m as any).attendees?.[0]?.displayName || null;
+                        const count = (m as any).attendees?.length;
+                        return (
+                            <>
+                                {org && <span className="truncate max-w-[160px]">{org}</span>}
+                                {org && count && <span className="opacity-40">•</span>}
+                                {count && <span>{count} Participant{count !== 1 ? 's' : ''}</span>}
+                                {!org && !count && <span>{formatTime(m.date)}</span>}
+                            </>
+                        );
+                    })()}
+                </div>
             </div>
-        </div>
 
-        {/* Right: Date + duration + chevron */}
-        <div className="flex items-center gap-4 shrink-0">
-            <span className="text-[12px] font-medium min-w-[120px] text-right text-text-secondary">
-                {getGroupLabel(m.date) === 'Today'
-                    ? `Today, ${formatTime(m.date)}`
-                    : getGroupLabel(m.date) === 'Yesterday'
-                        ? `Yesterday, ${formatTime(m.date)}`
-                        : `${getGroupLabel(m.date)}, ${formatTime(m.date)}`
-                }
-            </span>
-            {/* Same chip geometry as the duration pill, so the row doesn't shift
+            {/* Right: Date + duration + chevron */}
+            <div className="flex items-center gap-6 shrink-0">
+                <span className="text-[12px] font-medium min-w-[120px] text-right text-text-secondary">
+                    {getGroupLabel(m.date) === 'Today'
+                        ? `Today, ${formatTime(m.date)}`
+                        : getGroupLabel(m.date) === 'Yesterday'
+                            ? `Yesterday, ${formatTime(m.date)}`
+                            : `${getGroupLabel(m.date)}, ${formatTime(m.date)}`
+                    }
+                </span>
+                {/* Same chip geometry as the duration pill, so the row doesn't shift
                 horizontally the moment processing finishes. */}
-            {isProcessing ? (
-                <span className={[
-                    'flex items-center justify-center px-2.5 py-0.5 rounded-md border min-w-[46px]',
-                    isLight ? 'border-accent-primary/30 bg-accent-muted' : 'border-blue-500/30 bg-blue-500/10',
-                ].join(' ')}>
-                    <span className="flex gap-0.5">
-                        {[0, 150, 300].map((delay) => (
-                            <span
-                                key={delay}
-                                className="h-1 w-1 rounded-full bg-blue-500 animate-pulse"
-                                style={{ animationDelay: `${delay}ms` }}
-                            />
-                        ))}
+                {isProcessing ? (
+                    <span className={[
+                        'flex items-center justify-center px-2.5 py-0.5 rounded-md border min-w-[46px]',
+                        isLight ? 'border-accent-primary/30 bg-accent-muted' : 'border-blue-500/30 bg-blue-500/10',
+                    ].join(' ')}>
+                        <span className="flex gap-0.5">
+                            {[0, 150, 300].map((delay) => (
+                                <span
+                                    key={delay}
+                                    className="h-1 w-1 rounded-full bg-blue-500 animate-pulse"
+                                    style={{ animationDelay: `${delay}ms` }}
+                                />
+                            ))}
+                        </span>
                     </span>
-                </span>
-            ) : (
-                <span className="font-mono text-[12px] font-semibold px-2.5 py-0.5 rounded-md border border-border-muted bg-bg-item-surface text-text-secondary min-w-[46px] text-center tabular-nums">
-                    {formatDurationPill(m.duration)}
-                </span>
-            )}
-            <ChevronRight size={15} className="transition-all duration-200 shrink-0 text-text-tertiary group-hover:text-text-secondary group-hover:translate-x-0.5" />
-        </div>
+                ) : (
+                    <span className="font-mono text-[12px] font-semibold px-2.5 py-0.5 rounded-md border border-border-muted bg-bg-item-surface text-text-secondary min-w-[46px] text-center tabular-nums">
+                        {formatDurationPill(m.duration)}
+                    </span>
+                )}
+                <ChevronRight size={15} className="transition-all duration-200 shrink-0 text-text-tertiary group-hover:text-text-secondary group-hover:translate-x-0.5" />
+            </div>
 
-        {/* Context menu trigger */}
-        <div className="absolute right-5 top-1/2 -translate-y-1/2 opacity-0 group-hover:opacity-100 transition-all duration-200">
-            <button
-                className="p-1.5 rounded-md transition-colors text-text-tertiary hover:text-text-primary hover:bg-bg-item-surface"
-                onClick={(e) => { e.stopPropagation(); onToggleMenu(isMenuOpen ? null : m.id); }}
-            >
-                <MoreHorizontal size={15} />
-            </button>
-        </div>
-
-        {/* Dropdown — unchanged logic */}
-        <AnimatePresence>
-            {isMenuOpen && (
-                <motion.div
-                    initial={{ opacity: 0, scale: 0.95, y: 6 }}
-                    animate={{ opacity: 1, scale: 1, y: 0 }}
-                    exit={{ opacity: 0, scale: 0.95, y: 4 }}
-                    transition={{ duration: 0.1 }}
-                    className={['absolute right-5 top-10 mt-1 w-[100px] backdrop-blur-xl rounded-lg shadow-2xl z-[200] overflow-hidden border', isLight ? 'bg-bg-elevated border-border-muted shadow-[0_8px_24px_rgba(0,0,0,0.12)]' : 'bg-bg-card/90 border-border-muted'].join(' ')}
-                    onClick={(e) => e.stopPropagation()}
-                    onMouseEnter={onMenuMouseEnter}
-                    onMouseLeave={onMenuMouseLeave}
+            {/* Context menu trigger */}
+            <div className="absolute right-7 top-1/2 -translate-y-1/2 opacity-0 group-hover:opacity-100 transition-all duration-200">
+                <button
+                    className="p-1.5 rounded-md transition-colors text-text-tertiary hover:text-text-primary hover:bg-bg-item-surface"
+                    onClick={(e) => { e.stopPropagation(); onToggleMenu(isMenuOpen ? null : m.id); }}
                 >
-                    <div className="p-1 flex flex-col gap-0.5">
-                        <button
-                            className={['w-full flex items-center gap-2 px-3 py-1.5 text-[12px] rounded-lg transition-colors text-left text-text-primary', isLight ? 'hover:bg-bg-item-surface' : 'hover:bg-white/10'].join(' ')}
-                            onClick={async () => {
-                                onToggleMenu(null);
-                                if (window.electronAPI?.getMeetingDetails) {
-                                    try { generateMeetingPDF(await window.electronAPI.getMeetingDetails(m.id) ?? m); }
-                                    catch { generateMeetingPDF(m); }
-                                } else { generateMeetingPDF(m); }
-                            }}
-                        >
-                            <Download size={12} /> Export
-                        </button>
-                        <button
-                            className="w-full flex items-center gap-2 px-3 py-1.5 text-[12px] text-red-400 hover:bg-red-500/10 hover:text-red-300 rounded-lg transition-colors text-left"
-                            onClick={() => {
-                                onDelete(m.id);
-                                onToggleMenu(null);
-                            }}
-                        >
-                            <Trash2 size={12} /> Delete
-                        </button>
-                    </div>
-                </motion.div>
-            )}
-        </AnimatePresence>
-    </motion.div>
+                    <MoreHorizontal size={15} />
+                </button>
+            </div>
+
+            {/* Dropdown — unchanged logic */}
+            <AnimatePresence>
+                {isMenuOpen && (
+                    <motion.div
+                        initial={{ opacity: 0, scale: 0.95, y: 6 }}
+                        animate={{ opacity: 1, scale: 1, y: 0 }}
+                        exit={{ opacity: 0, scale: 0.95, y: 4 }}
+                        transition={{ duration: 0.1 }}
+                        className={['absolute -right-20 top-3 mt-1 w-[100px] backdrop-blur-xl rounded-lg shadow-2xl z-[200] overflow-hidden border', isLight ? 'bg-bg-elevated border-border-muted shadow-[0_8px_24px_rgba(0,0,0,0.12)]' : 'bg-bg-card/90 border-border-muted'].join(' ')}
+                        onClick={(e) => e.stopPropagation()}
+                        onMouseEnter={onMenuMouseEnter}
+                        onMouseLeave={onMenuMouseLeave}
+                    >
+                        <div className="p-1 flex flex-col gap-0.5">
+                            <button
+                                className={['w-full flex items-center gap-2 px-3 py-1.5 text-[12px] rounded-lg transition-colors text-left text-text-primary', isLight ? 'hover:bg-bg-item-surface' : 'hover:bg-white/10'].join(' ')}
+                                onClick={async () => {
+                                    onToggleMenu(null);
+                                    if (window.electronAPI?.getMeetingDetails) {
+                                        try { generateMeetingPDF(await window.electronAPI.getMeetingDetails(m.id) ?? m); }
+                                        catch { generateMeetingPDF(m); }
+                                    } else { generateMeetingPDF(m); }
+                                }}
+                            >
+                                <Download size={12} /> Export
+                            </button>
+                            <button
+                                className="w-full flex items-center gap-2 px-3 py-1.5 text-[12px] text-red-400 hover:bg-red-500/10 hover:text-red-300 rounded-lg transition-colors text-left"
+                                onClick={() => {
+                                    onDelete(m.id);
+                                    onToggleMenu(null);
+                                }}
+                            >
+                                <Trash2 size={12} /> Delete
+                            </button>
+                        </div>
+                    </motion.div>
+                )}
+            </AnimatePresence>
+        </motion.div>
     );
 };
 
@@ -916,6 +917,7 @@ export const MeetingsList: React.FC<MeetingsListProps> = ({
                 <MeetingRow
                     key={m.id}
                     meeting={m}
+                    isFirst={index === 0}
                     isLast={index === meetings.length - 1}
                     isLight={isLight}
                     isMenuOpen={activeMenuId === m.id}
