@@ -8,17 +8,36 @@
 import { getAuthHeaders, API_BASE, ApiError, apiFetch } from "@/lib/apiClient";
 import { ChatHistoryTurn, ChatSession, ChatSources, ChatStreamHandlers, CalendarEvent, LiveTranscriptSegment, RagAnswer, StreamHandle } from "@/types";
 
-/** Groups the backend's flat `{id, title, type}[]` source list into the
- * `{meetings, assets}` shape ChatSources/SourcesDisplay expect. Shared by the
- * live `source_ids` stream frame and by session-history rehydration
- * (getSessionMessages), since the backend returns the same flat shape in
- * both places. Handles missing/empty input — always returns valid empty
- * arrays rather than undefined. */
-export function groupSources(raw: { id: string; title: string; type: string }[] | undefined): ChatSources {
-    const all = raw ?? [];
+/** Groups a backend source list into the `{meetings, assets}` shape
+ * ChatSources/SourcesDisplay expect. Shared by the live `source_ids` stream
+ * frame, the queryGlobal/queryMeeting `source_ids` stream frame, and
+ * session-history rehydration (getSessionMessages).
+ *
+ * Two wire shapes are accepted because the backend doesn't use the same one
+ * everywhere: queryGlobal/queryMeeting/history send flat `{id, title, type}`,
+ * while `/chat/live` sends `{asset_id, title, kind}` (plus `raw_ids` /
+ * `raw_asset_ids` debug fields this ignores). An entry with no resolvable id
+ * (`id` for the flat shape, `asset_id` for the live shape) is dropped rather
+ * than rendered with a blank id — this is also how live sources with no
+ * asset_id end up invisible, matching "only show when sources include an
+ * asset_id, else don't show anything." Always returns valid empty arrays
+ * rather than undefined. */
+export function groupSources(
+    raw: (
+        | { id: string; title: string; type: string }
+        | { asset_id: string; title: string; kind: string }
+    )[] | undefined,
+): ChatSources {
+    const withId = (raw ?? [])
+        .map((s) => {
+            const id = 'id' in s ? s.id : s.asset_id;
+            const type = 'type' in s ? s.type : s.kind;
+            return id ? { id, title: s.title, type } : null;
+        })
+        .filter((s): s is { id: string; title: string; type: string } => s !== null);
     return {
-        meetings: all.filter((s) => s.type === "meeting").map(({ id, title }) => ({ id, title })),
-        assets: all.filter((s) => s.type !== "meeting").map(({ id, title }) => ({ id, title })),
+        meetings: withId.filter((s) => s.type === "meeting").map(({ id, title }) => ({ id, title })),
+        assets: withId.filter((s) => s.type !== "meeting").map(({ id, title }) => ({ id, title })),
     };
 }
 
@@ -196,7 +215,10 @@ function dispatchFrame(frame: string, handlers: ChatStreamHandlers, onDoneFrame?
         }
         case "source_ids": {
             const parsed = JSON.parse(data) as {
-                sources?: { id: string; title: string; type: string }[];
+                sources?: (
+                    | { id: string; title: string; type: string }
+                    | { asset_id: string; title: string; kind: string }
+                )[];
             };
             handlers.onSources?.(groupSources(parsed.sources));
             break;

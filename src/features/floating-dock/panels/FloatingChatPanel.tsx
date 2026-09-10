@@ -7,6 +7,7 @@ import remarkGfm from 'remark-gfm';
 import { useStreamBuffer } from '@/hooks';
 import { chatApi, statusLabel } from '@/api';
 import { chatMarkdownComponents } from '@/features/chat';
+import SourcesDisplay from '@/features/chat/SourcesDisplay';
 import { ChatHistoryTurn, FloatingChatPanelProps, LiveTranscriptSegment, Message, StreamHandle } from '@/types';
 import { getDockSurfaceStyle } from '../dockSurfaceStyle';
 import { posthogAnalytics } from '@/lib/analytics/posthog.service';
@@ -184,6 +185,15 @@ const MessageBubble: React.FC<{ msg: Message }> = ({ msg }) => {
                                         {msg.ragAnswer.sourceCount > 0 && (
                                             <span>· {msg.ragAnswer.sourceCount} source{msg.ragAnswer.sourceCount > 1 ? 's' : ''}</span>
                                         )}
+                                    </div>
+                                )}
+                                {msg.sources && (
+                                    <div className="mt-2">
+                                        {/* Live chat has nowhere to route a meeting click from yet
+                                            (no onOpenMeeting wired into FloatingChatPanelProps), and
+                                            live sources are asset-only in practice anyway — plain,
+                                            non-clickable chips. */}
+                                        <SourcesDisplay sources={msg.sources} />
                                     </div>
                                 )}
                             </div>
@@ -433,6 +443,15 @@ export const FloatingChatPanel: React.FC<FloatingChatPanelProps> = React.memo(({
                 },
                 onInteractionId: (interactionId) => {
                     onInteractionId?.(interactionId);
+                },
+                onSources: (sources) => {
+                    // Nothing to show for a turn with no asset_id-bearing
+                    // sources — leave msg.sources unset so SourcesDisplay
+                    // never mounts for it (redundant with its own
+                    // totalCount===0 guard, but avoids the message-list diff
+                    // churn of setting an empty object on every turn).
+                    if (sources.meetings.length === 0 && sources.assets.length === 0) return;
+                    setMessages(prev => prev.map(m => m.id === assistantId ? { ...m, sources } : m));
                 },
                 onReset: () => {
                     // The backend discarded a partial answer. Drop the text we

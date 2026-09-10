@@ -16,6 +16,7 @@ vi.mock('@/lib/apiClient', async () => {
 });
 
 import { chatApi, statusLabel } from '@/api';
+import { groupSources } from '@/api/chatApi';
 import { getAuthHeaders, apiFetch } from '@/lib/apiClient';
 
 const mockedGetAuthHeaders = vi.mocked(getAuthHeaders);
@@ -91,6 +92,38 @@ function collectHandlers() {
 
     return { handlers, settled, tokens, statuses, get sources() { return sources; }, get ragAnswer() { return ragAnswer; }, get error() { return error; }, get done() { return done; }, get resets() { return resets; } };
 }
+
+describe('groupSources', () => {
+    it('groups the flat {id, title, type} shape (queryGlobal/queryMeeting/history) into meetings and assets', () => {
+        expect(groupSources([
+            { id: 'm1', title: 'Call A', type: 'meeting' },
+            { id: 'a1', title: 'Doc A', type: 'asset' },
+        ])).toEqual({
+            meetings: [{ id: 'm1', title: 'Call A' }],
+            assets: [{ id: 'a1', title: 'Doc A' }],
+        });
+    });
+
+    it('groups the live {asset_id, title, kind} shape into meetings and assets', () => {
+        expect(groupSources([
+            { asset_id: 'product_specs-1', title: 'orbitly_product_specs.docx', kind: 'asset' },
+        ] as any)).toEqual({
+            meetings: [],
+            assets: [{ id: 'product_specs-1', title: 'orbitly_product_specs.docx' }],
+        });
+    });
+
+    it('drops entries with no resolvable id in either shape', () => {
+        expect(groupSources([
+            { title: 'no id at all', kind: 'asset' },
+        ] as any)).toEqual({ meetings: [], assets: [] });
+    });
+
+    it('returns empty arrays, not undefined, for undefined or empty input', () => {
+        expect(groupSources(undefined)).toEqual({ meetings: [], assets: [] });
+        expect(groupSources([])).toEqual({ meetings: [], assets: [] });
+    });
+});
 
 describe('statusLabel', () => {
     it('maps known status values to their labels', () => {
@@ -422,6 +455,39 @@ describe('chatApi.queryLive', () => {
         await settled;
 
         expect(onInteractionId).toHaveBeenCalledWith(441);
+    });
+
+    it('dispatches a source_ids frame in the live asset_id/kind shape, dropping entries with no asset_id', async () => {
+        fetchMock.mockResolvedValueOnce(sseResponse([
+            'event: source_ids\ndata: {"sources":[{"asset_id":"product_specs-1","title":"orbitly_product_specs.docx","kind":"asset"},{"asset_id":"sales_deck-2","title":"orbitly_sales_deck_meridian.pptx","kind":"asset"},{"title":"no id here","kind":"asset"}],"raw_ids":[],"raw_asset_ids":["product_specs-1","sales_deck-2"]}',
+            'event: done\ndata: {}',
+        ]));
+        const result = collectHandlers();
+
+        chatApi.queryLive('what is on page 2', [], [], undefined, result.handlers);
+        await result.settled;
+
+        expect(result.sources).toEqual({
+            meetings: [],
+            assets: [
+                { id: 'product_specs-1', title: 'orbitly_product_specs.docx' },
+                { id: 'sales_deck-2', title: 'orbitly_sales_deck_meridian.pptx' },
+            ],
+        });
+    });
+
+    it('never fires onSources for a live turn whose source_ids frame has no asset_id-bearing entries', async () => {
+        fetchMock.mockResolvedValueOnce(sseResponse([
+            'event: source_ids\ndata: {"sources":[],"raw_ids":[],"raw_asset_ids":[]}',
+            'event: token\ndata: {"chunk":"No sources for this one."}',
+            'event: done\ndata: {}',
+        ]));
+        const result = collectHandlers();
+
+        chatApi.queryLive('unrelated question', [], [], undefined, result.handlers);
+        await result.settled;
+
+        expect(result.sources).toEqual({ meetings: [], assets: [] });
     });
 });
 
