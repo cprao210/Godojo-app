@@ -43,6 +43,25 @@ function parseSummary(summaryJson: unknown): any {
 export const PROCESSING_TITLE = "Processing...";
 
 /**
+ * A meeting's summary is considered "actually generated" when it has more than
+ * placeholder/empty content. We check this narrowly (non-empty summary text,
+ * or at least one populated analysis field) so this can only ever RESCUE a
+ * meeting stuck behind a stale/unset isProcessed flag — it never overrides a
+ * flag that correctly says "still processing" for a meeting with no data yet.
+ */
+function hasGeneratedContent(m: Pick<Meeting, "summary" | "title">): boolean {
+  const summary = (m as any).summary;
+  const hasSummaryText =
+    typeof summary === "string"
+      ? summary.trim().length > 0
+      : summary && typeof summary === "object" && Object.keys(summary).length > 0;
+
+  const hasRealTitle = !!m.title && m.title !== PROCESSING_TITLE;
+
+  return hasSummaryText && hasRealTitle;
+}
+
+/**
  * True while a meeting's transcript/summary/scorecard are still being generated.
  *
  * `isProcessed === false` is the authoritative signal — MeetingPersistence saves
@@ -56,7 +75,22 @@ export const PROCESSING_TITLE = "Processing...";
  * as a finished meeting while its summary is still being generated.
  */
 export function isMeetingProcessing(m: Pick<Meeting, "isProcessed" | "title">): boolean {
-  return m.isProcessed === false || m.title === PROCESSING_TITLE;
+  const flaggedAsProcessing = m.isProcessed === false || m.title === PROCESSING_TITLE;
+
+  // Safety net: if the flag says "processing" but the meeting already has a
+  // real title and real summary content, trust the content instead. This
+  // guards against a backend bug/race where is_processed never gets flipped
+  // to true even after the summary/title/analysis were successfully written.
+  if (flaggedAsProcessing && hasGeneratedContent(m as any)) {
+    if (process.env.NODE_ENV !== "production") {
+      console.warn(
+        `[meetingMapping] Meeting ${(m as any).id ?? "?"} has generated content but isProcessed is still false — check backend flag-setting logic.`
+      );
+    }
+    return false;
+  }
+
+  return flaggedAsProcessing;
 }
 
 /**
