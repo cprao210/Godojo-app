@@ -1416,6 +1416,9 @@ export type FieldValuesType = {
   type: "text" | "tel" | "email" | "password";
   name: "email" | "password" | "displayName" | "phoneNumber";
   placeholder: string;
+  /** Optional — only the sign-up fields (name, email) set this; sign-in's
+   * single email field and phoneNumber intentionally leave it unset. */
+  required?: boolean;
 }
 
 // --- src/types/index.tsx ---
