@@ -866,7 +866,14 @@ export function useLauncher({ onStartMeeting, ollamaPullStatus = 'idle', onPageC
             if (isMeetingActive) {
                 window.electronAPI?.setWindowMode?.('overlay', true);
             } else {
-                onStartMeeting(nextMeeting);
+                // "Start GoDojo" is the quick-call CTA — deliberately called
+                // with no calendarEvent, unlike NextMeetingDetails' "Join
+                // Meeting" button (which passes `meeting`). Passing
+                // `nextMeeting` here meant every quick call was silently
+                // tagged with whatever event happened to be next on the
+                // calendar — wrong attendees/organizer/title, and transcript
+                // speaker labels derived from that event's attendee list.
+                onStartMeeting();
             }
         },
         showNotification,
