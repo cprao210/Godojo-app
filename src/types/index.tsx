@@ -742,7 +742,19 @@ export interface AiInteractionMeetingSource {
   meeting_id: string;
 }
 
-export type AiInteractionSource = AiInteractionDocSource | AiInteractionMeetingSource;
+// Live-chat rows (type "live") persist a third shape — the same one the
+// /chat/live stream emits and groupSources already normalizes: the id lives
+// on `asset_id`, the category on `kind`.
+export interface AiInteractionLiveSource {
+  asset_id: string;
+  title: string;
+  kind: string;
+}
+
+export type AiInteractionSource =
+  | AiInteractionDocSource
+  | AiInteractionMeetingSource
+  | AiInteractionLiveSource;
 
 export interface AiInteractionItem {
   id: number;
