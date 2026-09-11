@@ -102,9 +102,12 @@ export function useSystemAudioPermission() {
 
     useEffect(() => {
         const unsub = window.electronAPI?.onAudioCaptureFailed?.((payload: AudioCaptureFailure) => {
-            // Only terminal or stuck failures are worth a banner. Transient
-            // recovery attempts succeed within ~1.5s and would just flicker.
-            if (!payload.terminal && !payload.stuck) return;
+            // Only terminal failures are worth a banner. The 12s "stuck"
+            // watchdog fires on quiet stretches of a perfectly healthy call
+            // (nobody talking, wrong-but-live output device, etc.) and was
+            // showing an "Audio Capture Issue" notification for it — noisy
+            // and usually a false alarm, so it's intentionally ignored here.
+            if (!payload.terminal) return;
             setWarning({
                 kind: 'audio-capture-failure',
                 message: payload.message,
