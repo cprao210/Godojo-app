@@ -6,7 +6,7 @@ import { MessagesSquareIcon, ChartColumnIncreasing, CircleCheck, NotepadText, Re
 import { motion, AnimatePresence } from 'framer-motion';
 
 import { MeetingChatOverlay, FollowUpEmailModal, MeetingScorecardPanel } from '@/features/meetings';
-import { chatMarkdownComponents } from '@/features/chat';
+import { chatMarkdownComponents, SourcesDisplay } from '@/features/chat';
 import { EditableTextBlock } from '@/features/common';
 import { posthogAnalytics } from '@/lib/analytics/posthog.service';
 import { IMAGES } from '@/lib/assets';
@@ -15,7 +15,6 @@ import { MeetingDetailsProps, Meeting, DetailAnalysisAccordionProps } from '@/ty
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import type { AiInteractionSource } from "@/types";
-import { FileText } from "lucide-react";
 
 // Skeleton pulse component
 const Skeleton: React.FC<{ className?: string }> = ({ className = '' }) => (
@@ -1283,18 +1282,11 @@ const MeetingDetails: React.FC<MeetingDetailsProps> = ({ meeting: initialMeeting
                                                         {(() => {
                                                             const docSources = docSourcesFor(interaction.sources);
                                                             if (docSources.length === 0) return null;
+                                                            // Same "first chip + +N popover" treatment as Global Chat,
+                                                            // instead of wrapping every source into its own chip.
                                                             return (
-                                                                <div className="flex flex-wrap items-center gap-1.5 mt-2">
-                                                                    {docSources.map((d) => (
-                                                                        <span
-                                                                            key={d.id}
-                                                                            className="flex items-center gap-1.5 text-[12px] text-text-tertiary max-w-[240px]"
-                                                                            title={d.title}
-                                                                        >
-                                                                            <FileText size={12} className="shrink-0" />
-                                                                            <span className="truncate">{d.title}</span>
-                                                                        </span>
-                                                                    ))}
+                                                                <div className="mt-2">
+                                                                    <SourcesDisplay sources={{ meetings: [], assets: docSources }} />
                                                                 </div>
                                                             );
                                                         })()}
