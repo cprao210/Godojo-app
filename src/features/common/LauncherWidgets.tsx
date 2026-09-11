@@ -629,7 +629,7 @@ export const MeetingRow: React.FC<MeetingRowProps> = ({
             aria-busy={isProcessing || undefined}
             className={[
                 'group relative flex items-center gap-4 px-5 py-4 cursor-pointer transition-colors',
-                !isLast ? isFirst ? 'rounded-t-xl hover:rounded-t-xl' : 'border-b border-border-subtle' : 'rounded-b-xl hover:rounded-b-xl',
+                !isLast ? isFirst ? 'rounded-t-xl hover:rounded-t-xl border-b border-border-subtle' : 'border-b border-border-subtle' : isFirst ? 'rounded-t-xl rounded-b-xl hover:rounded-b-xl hover:rounded-t-xl' : 'rounded-b-xl hover:rounded-b-xl',
                 'bg-bg-sidebar hover:bg-bg-item-surface',
             ].join(' ')}
         >

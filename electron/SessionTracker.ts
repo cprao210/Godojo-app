@@ -215,49 +215,42 @@ export class SessionTracker {
         // The remaining non-self attendees are the remote participants (system audio = 'client').
         const others = attendees.filter(a => !a.self);
 
-        if (others.length >= 1) {
-            // Apply company-domain labeling rules for ALL cases (1 or more opposite attendees).
-            // BUG FIX: previously this logic only ran for others.length > 1, so a single
-            // professional-domain attendee (e.g. peter@salesforce.com) incorrectly fell through
-            // to resolveName() and showed "Peter" instead of "Salesforce".
-            const companyLabels: string[] = [];
-            let hasPersonalDomain = false;
-
-            for (const attendee of others) {
-                if (!attendee.email) continue;
-                const company = companyFromEmail(attendee.email);
-                if (company) {
-                    // Combine person + company (e.g. "Rahul (Raksham)") instead of
-                    // just the company name alone. Without the person's name here,
-                    // an LLM query like "what are Rahul's pain points?" has no way
-                    // to resolve "Rahul" against a transcript that only ever shows
-                    // "Raksham" as the speaker label — it has to guess/hallucinate.
-                    // Embedding the name directly in displayName means every
-                    // downstream consumer (transcript tab, DB, LLM prompt context)
-                    // gets it for free with no separate lookup.
-                    const personName = resolveName(attendee);
-                    const label = personName ? `${personName} (${company})` : company;
-                    if (!companyLabels.includes(label)) companyLabels.push(label);
-                } else {
-                    hasPersonalDomain = true;
-                }
-            }
-
-            if (companyLabels.length > 0 && !hasPersonalDomain) {
-                // All professional domains → e.g. "Salesforce" or "Instagram, Facebook"
-                this.speakerNameMap.client = companyLabels.join(', ');
-            } else if (companyLabels.length > 0 && hasPersonalDomain) {
-                // Mix of professional and personal → e.g. "Salesforce + Other Party"
-                this.speakerNameMap.client = companyLabels.join(', ') + ' + Other Party';
+        if (others.length === 1) {
+            // Single opposite-party attendee: full company/personal-domain
+            // resolution — e.g. "Salesforce", "Rahul (Raksham)", or a plain
+            // personal name for a personal-domain email.
+            const attendee = others[0];
+            const company = attendee.email ? companyFromEmail(attendee.email) : null;
+            if (company) {
+                // Combine person + company (e.g. "Rahul (Raksham)") instead of
+                // just the company name alone. Without the person's name here,
+                // an LLM query like "what are Rahul's pain points?" has no way
+                // to resolve "Rahul" against a transcript that only ever shows
+                // "Raksham" as the speaker label — it has to guess/hallucinate.
+                // Embedding the name directly in displayName means every
+                // downstream consumer (transcript tab, DB, LLM prompt context)
+                // gets it for free with no separate lookup.
+                const personName = resolveName(attendee);
+                this.speakerNameMap.client = personName ? `${personName} (${company})` : company;
             } else {
-                // All personal/unknown domains → use display name (single attendee) or generic fallback.
-                if (others.length === 1) {
-                    const name = resolveName(others[0]);
-                    if (name) this.speakerNameMap.client = name;
-                } else {
-                    this.speakerNameMap.client = 'Other Party';
-                }
+                const name = resolveName(attendee);
+                if (name) this.speakerNameMap.client = name;
             }
+        } else if (others.length > 1) {
+            // 2+ opposite-party attendees all share the same 'client' audio
+            // channel (system audio isn't diarized per-attendee), so there's
+            // no reliable way to attribute a given turn to one of them. This
+            // used to build a label out of every attendee — e.g. "Salesforce,
+            // Instagram" or "Salesforce + Other Party" — which reads as if
+            // those are separate identified speakers when they're really one
+            // undifferentiated channel. One flat, honest label for the whole
+            // channel avoids that: it never claims more precision than the
+            // audio actually gives us, and it renders sanely at any attendee
+            // count instead of growing an ever-longer joined string. "Other
+            // Party" also matches the existing all-personal-domain and
+            // mixed-domain fallbacks it's replacing, so this doesn't
+            // introduce a new term into the UI.
+            this.speakerNameMap.client = 'Other Party';
         } else {
             // No non-self attendees at all — try meeting title as last resort.
             if (metadata?.title) {

@@ -472,8 +472,32 @@ export function useMeetingDetails(initialMeeting: Meeting) {
         return false;
     }, [meeting.transcript]);
 
+    // Speaking Balance calls getSpeakerDisplayName('user'/'client') with no
+    // per-segment displayName (there's no single segment to derive one from
+    // for an aggregate stat), so without this it fell back straight past
+    // step 1 to speakerNames — which lags/is empty in some meetings even
+    // though individual transcript segments already carry a live-resolved
+    // displayName (e.g. "Nikhilbarot"). That's what produced the mismatch:
+    // transcript bubbles showed the resolved name while Speaking Balance sat
+    // on the generic "You"/"Other Party" fallback. Scanning the transcript
+    // once for the first non-generic displayName per role gives Speaking
+    // Balance the same answer the transcript itself is already showing.
+    const liveDisplayNames = useMemo(() => {
+        let user: string | undefined;
+        let client: string | undefined;
+        for (const seg of meeting.transcript || []) {
+            const name = (seg as any).displayName;
+            if (!name || name === 'Me' || name === 'Them') continue;
+            if (seg.speaker === 'user' && !user) user = name;
+            if ((seg.speaker === 'client' || seg.speaker === 'interviewer') && !client) client = name;
+            if (user && client) break;
+        }
+        return { user, client };
+    }, [meeting.transcript]);
+
     const getSpeakerDisplayName = (speaker: string, displayName?: string, speakerIndex?: number): string => {
-        // 1. Live transcription supplies displayName directly — always prefer it.
+        // 1. An explicit per-segment displayName (passed by the transcript
+        //    view) always wins — it's the ground truth for that exact turn.
         //    Exception: older meetings recorded before speaker labels were
         //    unified may have "Me"/"Them" baked into this field — normalize
         //    those legacy values so old meetings render the same "You" /
@@ -481,7 +505,18 @@ export function useMeetingDetails(initialMeeting: Meeting) {
         if (displayName === 'Me') displayName = undefined;
         if (displayName === 'Them') displayName = undefined;
         if (displayName) return displayName;
-        // 2. Use resolved calendar names saved in detailedSummary.speakerNames.
+        // 2. No segment displayName was passed in (e.g. Speaking Balance,
+        //    which shows one name per role rather than per turn) — fall back
+        //    to whatever live-resolved name the transcript itself used, so
+        //    this never disagrees with what's rendered just below it.
+        if (speaker === 'user' && liveDisplayNames.user) return liveDisplayNames.user;
+        if ((speaker === 'client' || speaker === 'interviewer') && liveDisplayNames.client) {
+            if (hasMultipleClientSpeakers && speakerIndex !== undefined && speakerIndex !== null) {
+                return `${liveDisplayNames.client} · Speaker ${speakerIndex + 1}`;
+            }
+            return liveDisplayNames.client;
+        }
+        // 3. Use resolved calendar names saved in detailedSummary.speakerNames.
         //    These are set by SessionTracker (e.g. "Nikhilbarot", "Salesforce").
         //    Fall back to "You" / "Other Party" only when no calendar data was resolved.
         if (speaker === 'user') return speakerNames?.user || 'You';
