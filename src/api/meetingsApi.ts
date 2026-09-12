@@ -15,8 +15,13 @@ import {
 } from "@/api/meetingMapping";
 
 export const meetingsApi = {
-  list: async (): Promise<Meeting[]> => {
-    const rows = await apiFetch<any[]>("/meetings");
+  // `limit` mirrors the backend's own query param (GET /meetings?limit=N) —
+  // it returns the N most recent meetings, not a page at some offset. "Load
+  // more" in the UI works by re-requesting with a larger limit rather than
+  // paging with an offset, since the backend doesn't expose one.
+  list: async (params?: { limit?: number }): Promise<Meeting[]> => {
+    const query = params?.limit ? `?limit=${params.limit}` : "";
+    const rows = await apiFetch<any[]>(`/meetings${query}`);
     // Dedupe by id (defensive — preserves the renderer's previous IPC-side dedup).
     const seen = new Set<string>();
     let backendMeetings = (rows ?? []).map(mapMeetingRow).filter((m) => {

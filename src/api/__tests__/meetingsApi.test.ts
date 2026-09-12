@@ -36,6 +36,18 @@ describe('meetingsApi.list', () => {
         ]);
     });
 
+    it('appends ?limit=N to the request when a limit is passed (used by "Load more")', async () => {
+        mockedApiFetch.mockResolvedValueOnce([]);
+        await meetingsApi.list({ limit: 30 });
+        expect(mockedApiFetch).toHaveBeenCalledWith('/meetings?limit=30');
+    });
+
+    it('omits the query string entirely when no limit is passed', async () => {
+        mockedApiFetch.mockResolvedValueOnce([]);
+        await meetingsApi.list();
+        expect(mockedApiFetch).toHaveBeenCalledWith('/meetings');
+    });
+
     it('dedupes rows with the same id, keeping the first occurrence', async () => {
         mockedApiFetch.mockResolvedValueOnce([
             { id: 'dup', title: 'First', created_at: '2024-01-01' },

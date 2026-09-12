@@ -21,6 +21,11 @@ import { posthogAnalytics } from '@/lib/analytics/posthog.service';
 const MINUTE = 60 * 1000;
 const HOUR = 60 * MINUTE;
 
+// Initial page size and the increment used each time "Load more" is
+// clicked. Matches the backend's documented example (`?limit=10`).
+const INITIAL_MEETINGS_LIMIT = 20;
+const LOAD_MORE_MEETINGS_STEP = 10;
+
 // ─── Pure formatting helpers ─────────────────────────────────────────────────
 // Exported so LauncherWidgets can format the same way without re-deriving
 // the logic.
@@ -149,8 +154,31 @@ export function useLauncher({ onStartMeeting, ollamaPullStatus = 'idle', onPageC
     // "Processing" because the Supabase mirror is a few seconds behind local
     // SQLite, and must not wipe the optimistic card for a call main hasn't
     // committed yet. See reconcileFetchedMeetings for both rules.
+    //
+    // "Load more" raises meetingsLimit and refetches — the backend has no
+    // offset/cursor param, only `?limit=N` returning the N most recent, so
+    // paging further just means asking for a bigger N. The query key stays
+    // the single ['meetings'] (not ['meetings', meetingsLimit]) deliberately:
+    // this hook has ~10 other spots that read/write the meetings cache via
+    // queryClient.*QueryData(['meetings'], ...) for optimistic updates (row
+    // delete, live-meeting patches, etc.) — keying by limit would silently
+    // detach every one of those from whatever page is actually on screen.
+    //
+    // A ref, not state, holds the limit: refetchQueries() below fires
+    // immediately and synchronously, before React has re-rendered with a new
+    // queryFn closure over a state update — a ref sidesteps that races by
+    // being readable (and bumped) synchronously in the same tick.
+    const meetingsLimitRef = React.useRef(INITIAL_MEETINGS_LIMIT);
+    // How many rows the backend itself returned for the current limit, before
+    // the local-only merge above adds any extra rows — that merge can only
+    // ever add local rows the backend hasn't synced yet, never true "next
+    // page" rows, so it would make hasMoreMeetings a false positive forever
+    // if counted instead.
+    const backendMeetingsCountRef = React.useRef(0);
+
     const { data: meetings = [], isLoading, isFetching } = useQuery<Meeting[]>(['meetings'], async () => {
-        const fresh = await meetingsApi.list();
+        const fresh = await meetingsApi.list({ limit: meetingsLimitRef.current });
+        backendMeetingsCountRef.current = fresh.length;
         return reconcileFetchedMeetings(queryClient.getQueryData<Meeting[]>(['meetings']) ?? [], fresh);
     }, {
         // Poll only while a meeting is still processing (replaces the manual setInterval).
@@ -166,6 +194,17 @@ export function useLauncher({ onStartMeeting, ollamaPullStatus = 'idle', onPageC
             return worthPolling ? PROCESSING_POLL_INTERVAL_MS : false;
         },
     });
+
+    // The backend returning a full page (exactly `limit` rows) is the only
+    // signal available that there might be more beyond it — there's no total
+    // count or cursor in the response. Once a page comes back short, there's
+    // nothing further to load.
+    const hasMoreMeetings = backendMeetingsCountRef.current >= meetingsLimitRef.current;
+    const isLoadingMoreMeetings = isFetching && meetingsLimitRef.current > INITIAL_MEETINGS_LIMIT;
+    const loadMoreMeetings = React.useCallback(() => {
+        meetingsLimitRef.current += LOAD_MORE_MEETINGS_STEP;
+        void queryClient.refetchQueries(['meetings']);
+    }, [queryClient]);
 
     // Detect whether any meeting in the list is still being processed
     const hasProcessingMeeting = meetings.some(isMeetingProcessing);
@@ -843,6 +882,9 @@ export function useLauncher({ onStartMeeting, ollamaPullStatus = 'idle', onPageC
         // true on background refetches over existing rows → header indicator.
         isMeetingsLoading,
         isMeetingsRefreshing,
+        hasMoreMeetings,
+        isLoadingMoreMeetings,
+        loadMoreMeetings,
 
         // calendar / events
         upcomingEvents,
