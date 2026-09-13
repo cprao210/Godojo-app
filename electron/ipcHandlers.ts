@@ -223,8 +223,15 @@ export function initializeIpcHandlers(appState: AppState): void {
       const settingsWin = appState.settingsWindowHelper.getSettingsWindow()
       const overlayWin = appState.getWindowHelper().getOverlayWindow()
       const launcherWin = appState.getWindowHelper().getLauncherWindow()
+      const meetingPopupWin = appState.meetingPopupWindowHelper.getWindow()
 
-      if (settingsWin && !settingsWin.isDestroyed() && settingsWin.webContents.id === senderWebContents.id) {
+      if (
+        meetingPopupWin && !meetingPopupWin.isDestroyed() && meetingPopupWin.webContents.id === senderWebContents.id
+      ) {
+        // The reminder card sizes itself to its content (title wrapping,
+        // attendee count, streamed blurb), so it reports its measured height.
+        appState.meetingPopupWindowHelper.setWindowDimensions(width, height)
+      } else if (settingsWin && !settingsWin.isDestroyed() && settingsWin.webContents.id === senderWebContents.id) {
         appState.settingsWindowHelper.setWindowDimensions(settingsWin, width, height)
       } else if (
         overlayWin && !overlayWin.isDestroyed() && overlayWin.webContents.id === senderWebContents.id
@@ -240,6 +247,21 @@ export function initializeIpcHandlers(appState: AppState): void {
       }
     }
   )
+
+  /**
+   * Overlay renderer handshake, mirroring `meeting-popup:ready`.
+   *
+   * `session-reset` — the floating dock's only "a call started" signal — is a
+   * fire-and-forget send that is silently dropped if the renderer has not yet
+   * subscribed. did-finish-load isn't enough: the page can be loaded before
+   * React runs its listener. The overlay announces itself here instead, so a
+   * meeting started with no user interaction (the calendar reminder popup) can
+   * wait for a renderer that is genuinely listening.
+   */
+  safeHandle("overlay:ready", async () => {
+    appState.getWindowHelper().markOverlayRendererReady();
+    return { success: true };
+  });
 
   safeHandle("set-window-mode", async (event, mode: 'launcher' | 'overlay', inactive?: boolean, freshMeetingStart?: boolean) => {
     appState.getWindowHelper().setWindowMode(mode, inactive, freshMeetingStart);
@@ -2257,6 +2279,26 @@ export function initializeIpcHandlers(appState: AppState): void {
     }
   });
 
+  // Auto-start meetings from the calendar reminder countdown.
+  // Defaults to ON — see AppSettings.autoStartMeetings.
+  safeHandle("get-auto-start-meetings", () => {
+    const { SettingsManager } = require('./services/SettingsManager');
+    return SettingsManager.getInstance().get('autoStartMeetings') ?? true;
+  });
+
+  safeHandle("set-auto-start-meetings", (_, enabled: boolean) => {
+    const { SettingsManager } = require('./services/SettingsManager');
+    SettingsManager.getInstance().set('autoStartMeetings', enabled);
+
+    BrowserWindow.getAllWindows().forEach(win => {
+      if (!win.isDestroyed()) {
+        win.webContents.send('auto-start-meetings-changed', enabled);
+      }
+    });
+
+    return { success: true };
+  });
+
   // Dynamic Action Button Mode (Recap vs Brainstorm)
   safeHandle("get-action-button-mode", () => {
     const { SettingsManager } = require('./services/SettingsManager');
@@ -2463,6 +2505,69 @@ export function initializeIpcHandlers(appState: AppState): void {
   safeHandle("calendar-refresh", async () => {
     const { CalendarManager } = require('./services/CalendarManager');
     await CalendarManager.getInstance().refreshState();
+    return { success: true };
+  });
+
+  // ==========================================
+  // Meeting Reminder Popup (floating card)
+  // ==========================================
+
+  /**
+   * Renderer handshake. The popup asks for its event once React has mounted
+   * and its listener is live, rather than main pushing on did-finish-load —
+   * which can fire first and drop the payload.
+   */
+  safeHandle("meeting-popup:ready", async () => {
+    const helper = appState.meetingPopupWindowHelper;
+    // autoStartAt rides along so a renderer that mounts after the countdown was
+    // armed still draws it (the push below can only reach a live listener).
+    return { event: helper.getPendingEvent(), autoStartAt: helper.getAutoStartAt() };
+  });
+
+  safeHandle("meeting-popup:take-notes", async () => {
+    const event = appState.meetingPopupWindowHelper.getPendingEvent();
+    // Dismiss first so the card is gone before the overlay comes forward.
+    appState.meetingPopupWindowHelper.dismiss();
+    if (!event) return { success: false, error: 'No meeting event to start' };
+    // Awaited so the meeting is actually running (and the dock shown) before
+    // the popup's click handler resolves.
+    await appState.startMeetingFromCalendarEvent(event);
+    return { success: true };
+  });
+
+  safeHandle("meeting-popup:join", async () => {
+    const event = appState.meetingPopupWindowHelper.getPendingEvent();
+    const link = event?.link;
+    if (!link) return { success: false, error: 'No meeting link on this event' };
+    await shell.openExternal(link);
+    return { success: true };
+  });
+
+  safeHandle("meeting-popup:dismiss", async () => {
+    appState.meetingPopupWindowHelper.dismiss();
+    return { success: true };
+  });
+
+  /**
+   * Dev-only: show the card with a synthetic event so the popup can be
+   * iterated on without waiting for a real meeting to be 2 minutes away.
+   */
+  safeHandle("meeting-popup:debug-show", async (_, overrides?: any) => {
+    if (process.env.NODE_ENV !== 'development') {
+      return { success: false, error: 'debug-show is development-only' };
+    }
+    const start = new Date(Date.now() + 2 * 60 * 1000).toISOString();
+    appState.meetingPopupWindowHelper.showReminder({
+      id: `debug-${Date.now()}`,
+      title: 'godojo<>lyzr.ai',
+      startTime: start,
+      endTime: new Date(Date.now() + 32 * 60 * 1000).toISOString(),
+      link: 'https://meet.google.com/abc-defg-hij',
+      source: 'google',
+      attendees: [{ email: 'cp@lyzr.ai', name: 'Cp' }],
+      organizer: 'cp@lyzr.ai',
+      ...overrides,
+    });
     return { success: true };
   });
 

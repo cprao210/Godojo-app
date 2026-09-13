@@ -584,4 +584,5 @@ module.exports.getInputDevices = nativeBinding.getInputDevices
 module.exports.getNativeFeatureLevel = nativeBinding.getNativeFeatureLevel
 module.exports.getOutputDevices = nativeBinding.getOutputDevices
 module.exports.getOutputRoute = nativeBinding.getOutputRoute
+module.exports.setNativeLogCallback = nativeBinding.setNativeLogCallback
 module.exports.verifyGumroadKey = nativeBinding.verifyGumroadKey

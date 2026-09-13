@@ -29,6 +29,22 @@ export async function initRendererUrl(): Promise<void> {
   startUrl = await startStaticServer(distDir)
 }
 
+/**
+ * The renderer origin every window loads from — the Vite dev server in dev,
+ * the loopback static server (see staticServer.ts) in production.
+ *
+ * Exported because `startUrl` is module-private and only resolved by
+ * initRendererUrl(). Helpers created outside this module (e.g.
+ * MeetingPopupWindowHelper) must go through this getter rather than
+ * re-deriving a `file://` URL the way the older helpers do — under file://
+ * there is no stable origin, which is the whole reason staticServer exists.
+ *
+ * Returns "" if called before initRendererUrl() resolves in production.
+ */
+export function getStartUrl(): string {
+  return startUrl
+}
+
 export class WindowHelper {
   private launcherWindow: BrowserWindow | null = null
   private overlayWindow: BrowserWindow | null = null
@@ -45,6 +61,11 @@ export class WindowHelper {
   // launcher (i.e. meeting end), so each "Start GoDojo" opens bottom-right,
   // while manual drags mid-meeting (and hide/show toggles) are respected.
   private overlayNeedsReposition: boolean = true
+
+  /** True once the overlay renderer has announced itself via `overlay:ready`. */
+  private overlayRendererReady: boolean = false
+  /** Resolver for an in-flight waitForOverlayReady(), if any. */
+  private overlayReadyResolver: (() => void) | null = null
   // Gap (px) between the overlay and the screen work-area edges when snapped.
   private readonly overlayEdgeMargin: number = 24
 
@@ -128,7 +149,21 @@ export class WindowHelper {
     const maxAllowedWidth = Math.floor(workArea.width * 0.9)
     const maxAllowedHeight = Math.floor(workArea.height * 0.9)
     const newWidth = Math.min(Math.max(width, 300), maxAllowedWidth) // min 300, max 90%
-    const newHeight = Math.min(Math.max(height, 1), maxAllowedHeight) // min 1, max 90%
+
+    // While a meeting is running the dock is never legitimately shorter than
+    // its collapsed brand bar, so floor it there instead of at 1px.
+    //
+    // Why this matters: the renderer drives this from a content measurement,
+    // and a measurement taken before paint reports 0. The old `Math.max(h, 1)`
+    // turned that into a 1px-tall window — isVisible() still true, the meeting
+    // still recording, but nothing for the user to see. That is reachable
+    // whenever the overlay renderer has been hidden and backgroundThrottled for
+    // a long time and only catches up after being shown, which is exactly the
+    // case when a meeting is started from the calendar reminder popup while the
+    // app sits minimised. Outside a meeting the 1px floor is kept, since the
+    // overlay is created at height 1 as a deliberate pre-content placeholder.
+    const minHeight = this.appState.getIsMeetingActive() ? COLLAPSED_OVERLAY_HEIGHT : 1
+    const newHeight = Math.min(Math.max(height, minHeight), maxAllowedHeight) // max 90%
 
     // Anchor the TOP edge: keep the window's top edge fixed as its content
     // grows/shrinks, so the dock's brand bar — which is pinned to the window
@@ -392,6 +427,29 @@ export class WindowHelper {
     // }
 
     // --- 2. Create Overlay Window (Hidden initially) ---
+    this.createOverlayWindow()
+
+    // --- 3. Startup Sequence ---
+    this.launcherWindow.once('ready-to-show', () => {
+      this.switchToLauncher()
+      this.isWindowVisible = true
+    })
+
+    this.setupWindowListeners()
+  }
+
+  /**
+   * Create the overlay (floating dock) window.
+   *
+   * Split out of createWindow() so the overlay can be rebuilt on its own.
+   * createWindow() early-returns on `this.launcherWindow !== null`, so without
+   * this the overlay could never be repaired once destroyed while the launcher
+   * was still alive — see ensureWindowsReady().
+   */
+  private createOverlayWindow(): void {
+    // A brand-new renderer has not subscribed to anything yet.
+    this.overlayRendererReady = false
+
     const overlaySettings: Electron.BrowserWindowConstructorOptions = {
       width: 600,
       height: 1,
@@ -428,13 +486,127 @@ export class WindowHelper {
       console.error('[WindowHelper] Failed to load Overlay URL:', e);
     })
 
-    // --- 3. Startup Sequence ---
-    this.launcherWindow.once('ready-to-show', () => {
-      this.switchToLauncher()
-      this.isWindowVisible = true
+    // Drop our reference when the window goes away, so isDestroyed() checks
+    // elsewhere don't keep consulting a dead object forever. The overlay's own
+    // 'close' handler only vetoes the close while it is visible, so closing it
+    // while hidden really does destroy it.
+    this.overlayWindow.on('closed', () => {
+      this.overlayWindow = null
+      this.overlayRendererReady = false
     })
 
-    this.setupWindowListeners()
+    // Only reattach here when rebuilding a lone overlay. On the normal boot path
+    // createWindow() calls setupWindowListeners() right after us, which wires
+    // these as part of its own pass — doing it twice would double every handler.
+    if (this.launcherWindow && !this.launcherWindow.isDestroyed()) {
+      this.setupOverlayListeners()
+    }
+  }
+
+  /**
+   * Guarantee the launcher and overlay windows exist, are loaded, and are
+   * actually drawable, then resolve.
+   *
+   * Needed because a meeting can now be started with no user interaction at all
+   * (the calendar reminder popup's "Take Notes"), in a state the launcher-driven
+   * flow can never reach:
+   *
+   *  - On macOS, closing the main window DESTROYS both windows — the
+   *    close-to-hide interception in setupWindowListeners() is
+   *    `process.platform !== 'darwin'` only, and window-all-closed doesn't quit
+   *    on darwin. switchToOverlay() then finds no overlay and silently shows
+   *    nothing, while the meeting records happily in the background.
+   *  - If the app is hidden (Cmd+H), macOS refuses to draw any of its windows,
+   *    so show() "succeeds" and isVisible() reports true with nothing on screen.
+   *
+   * Awaiting this BEFORE startMeeting() also matters for correctness, not just
+   * visibility: `session-reset` — the dock's only "a call started" signal — is a
+   * fire-and-forget send that is dropped outright if the renderer isn't
+   * listening yet. The overlay has to exist and be subscribed before that fires.
+   */
+  public async ensureWindowsReady(): Promise<void> {
+    // A destroyed window is not null, and every guard in this file tests
+    // isDestroyed() — so clear the references first or createWindow()'s
+    // `launcherWindow !== null` early-return will refuse to rebuild.
+    if (this.launcherWindow?.isDestroyed()) this.launcherWindow = null
+    if (this.overlayWindow?.isDestroyed()) this.overlayWindow = null
+
+    if (!this.launcherWindow) {
+      console.log('[WindowHelper] ensureWindowsReady: launcher missing — recreating both windows')
+      this.createWindow()
+    } else if (!this.overlayWindow) {
+      console.log('[WindowHelper] ensureWindowsReady: overlay missing — recreating it')
+      this.createOverlayWindow()
+    }
+
+    await this.waitForOverlayReady()
+
+    // macOS only: un-hide the app, or nothing we show will be drawn. This does
+    // NOT disturb ghost mode — app.dock.hide() is independent of app.show().
+    if (process.platform === 'darwin' && app.isHidden?.()) {
+      console.log('[WindowHelper] ensureWindowsReady: app was hidden (Cmd+H) — unhiding so windows can draw')
+      app.show()
+    }
+  }
+
+  /**
+   * Resolve once the overlay renderer has mounted and subscribed to IPC.
+   *
+   * Prefers the renderer's own `overlay:ready` handshake (see the
+   * `meeting-popup:ready` precedent in ipcHandlers.ts) because `did-finish-load`
+   * only means the page loaded — React may not have run its
+   * `ipcRenderer.on('session-reset')` yet. Falls back to did-finish-load and
+   * then a timeout so a renderer fault degrades instead of hanging a meeting.
+   */
+  private waitForOverlayReady(timeoutMs = 8000): Promise<void> {
+    const overlay = this.overlayWindow
+    if (!overlay || overlay.isDestroyed()) return Promise.resolve()
+    if (this.overlayRendererReady) return Promise.resolve()
+
+    return new Promise<void>((resolve) => {
+      let settled = false
+      const done = () => {
+        if (settled) return
+        settled = true
+        clearTimeout(timer)
+        this.overlayReadyResolver = null
+        resolve()
+      }
+
+      const timer = setTimeout(() => {
+        console.warn('[WindowHelper] Timed out waiting for the overlay renderer — continuing anyway')
+        done()
+      }, timeoutMs)
+
+      // Signalled by the overlay renderer via the `overlay:ready` IPC. This is
+      // the only signal that actually proves someone is subscribed.
+      this.overlayReadyResolver = done
+
+      // Backstop for a renderer that never sends the handshake (load failure,
+      // or a partially-upgraded build). Deliberately NOT keyed on
+      // isLoading(): right after loadURL() it can still read false because the
+      // navigation hasn't committed, which would settle us before the page even
+      // starts. Give the handshake a grace period after load instead.
+      const GRACE_AFTER_LOAD_MS = 1000
+      const armBackstop = () => setTimeout(() => {
+        if (settled) return
+        console.warn('[WindowHelper] Overlay loaded but never sent overlay:ready — continuing without the handshake')
+        done()
+      }, GRACE_AFTER_LOAD_MS)
+
+      overlay.webContents.once('did-finish-load', armBackstop)
+      if (!overlay.webContents.isLoading() && overlay.webContents.getURL()) {
+        // Already loaded before we got here (e.g. a pre-existing overlay whose
+        // renderer reloaded) — did-finish-load won't fire again.
+        armBackstop()
+      }
+    })
+  }
+
+  /** Called from the `overlay:ready` IPC when the overlay renderer mounts. */
+  public markOverlayRendererReady(): void {
+    this.overlayRendererReady = true
+    this.overlayReadyResolver?.()
   }
 
   private setupWindowListeners(): void {
@@ -494,6 +666,18 @@ export class WindowHelper {
       this.isWindowVisible = false
     })
 
+    this.setupOverlayListeners()
+  }
+
+  /**
+   * Wire the overlay window's own listeners.
+   *
+   * Split out of setupWindowListeners() so createOverlayWindow() can reattach
+   * them when the overlay is rebuilt on its own — otherwise a repaired overlay
+   * would come back without its always-on-top watchdog, its unexpected-hide
+   * recovery, or its close handler.
+   */
+  private setupOverlayListeners(): void {
     // The OS can silently drop the "always on top" flag on the overlay window
     // without us ever calling setAlwaysOnTop(false) ourselves — e.g. switching
     // between the editor/browser tabs, another app briefly requesting topmost
@@ -744,7 +928,13 @@ export class WindowHelper {
       let y = currentBounds.y;
 
       if (!skipReposition) {
-        const launcherBounds = this.launcherWindow?.getBounds();
+        // isDestroyed() matters as well as null: optional chaining doesn't cover
+        // a destroyed window, and getBounds() on one THROWS. On the calendar
+        // path that throw is swallowed by the caller's catch, so the dock would
+        // silently never appear.
+        const launcherBounds = this.launcherWindow && !this.launcherWindow.isDestroyed()
+          ? this.launcherWindow.getBounds()
+          : undefined;
         const referenceDisplay = launcherBounds
           ? screen.getDisplayMatching(launcherBounds)
           : screen.getDisplayNearestPoint(screen.getCursorScreenPoint());
@@ -799,6 +989,14 @@ export class WindowHelper {
         // macOS, stealing focus from Zoom/browser even when showInactive() was used.
       }
       this.isWindowVisible = true;
+    }
+
+    else {
+      // Previously this simply fell through, showing nothing and logging
+      // nothing — a meeting could record for its whole duration with no visible
+      // UI and a completely clean log. Callers that can hit this (the calendar
+      // reminder path) should await ensureWindowsReady() first.
+      console.warn('[WindowHelper] switchToOverlay: no overlay window to show — call ensureWindowsReady() first');
     }
 
     // Hide Launcher SECOND

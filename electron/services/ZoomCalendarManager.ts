@@ -14,6 +14,9 @@ const TOKEN_PATH = path.join(app.getPath('userData'), 'zoom_calendar_tokens.enc'
 
 const REGISTRANT_CACHE_TTL = 5 * 60 * 1000;
 
+/** Pre-warm lead for the floating reminder popup — see CalendarManager. */
+const PREWARM_LEAD_MS = 30 * 1000;
+
 interface RegistrantCacheEntry {
     attendees: Array<{ email: string; name?: string }>;
     fetchedAt: number;
@@ -439,7 +442,18 @@ export class ZoomCalendarManager extends EventEmitter {
             const startTime = new Date(event.startTime).getTime();
             const reminderTime = startTime - 2 * 60 * 1000;
             if (reminderTime > now && reminderTime - now < 24 * 60 * 60 * 1000) {
-                const timeout = setTimeout(() => this.showNotification(event), reminderTime - now);
+                const delay = reminderTime - now;
+
+                // Pre-warm the floating popup shortly before the reminder so it
+                // appears instantly — mirrors CalendarManager.scheduleReminders.
+                const prewarmDelay = delay - PREWARM_LEAD_MS;
+                if (prewarmDelay > 0) {
+                    this.reminderTimeouts.push(setTimeout(() => {
+                        this.emit('reminder-prewarm', event);
+                    }, prewarmDelay));
+                }
+
+                const timeout = setTimeout(() => this.showReminder(event), delay);
                 this.reminderTimeouts.push(timeout);
             }
         });
@@ -498,14 +512,12 @@ export class ZoomCalendarManager extends EventEmitter {
         }
     }
 
-    private showNotification(event: CalendarEvent) {
-        const { Notification } = require('electron');
-        const notif = new Notification({
-            title: 'Zoom Meeting starting soon',
-            body: `"${event.title}" starts in 2 minutes.`,
-            sound: true,
-        });
-        notif.on('click', () => this.emit('open-requested'));
-        notif.show();
+    /**
+     * Announce that a Zoom meeting is about to start. Emits `reminder-due` so
+     * main.ts can present it through the shared floating popup (with the
+     * native notification as a fallback) — see CalendarManager.showReminder.
+     */
+    private showReminder(event: CalendarEvent) {
+        this.emit('reminder-due', event);
     }
 }

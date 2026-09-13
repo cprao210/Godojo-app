@@ -65,6 +65,8 @@ export interface ElectronAPI {
   showOverlay: () => Promise<void>
   hideOverlay: () => Promise<void>
   setWindowMode: (mode: 'launcher' | 'overlay', inactive?: boolean, freshMeetingStart?: boolean) => Promise<void>
+  /** Overlay renderer handshake — tells main its IPC listeners are live. */
+  overlayReady: () => Promise<{ success: boolean }>
   openExternal: (url: string) => Promise<void>
   openKnownFolder: (key: 'downloads' | 'applications') => Promise<void>
   getArch: () => Promise<string>
@@ -503,6 +505,24 @@ export interface ElectronAPI {
   onSalesBriefStreamToken: (callback: (token: string) => void) => () => void
   onSalesBriefStreamDone: (callback: () => void) => () => void
   onSalesBriefStreamError: (callback: (error: string) => void) => () => void
+
+  // ===========================================================================
+  // Meeting reminder popup (floating card window)
+  // ===========================================================================
+  /** Handshake from the popup renderer — resolves with the event to display. */
+  meetingPopupReady: () => Promise<{ event: CalendarEvent | null; autoStartAt: number | null }>
+  /** Pushed when the auto-start countdown is armed; carries its deadline (epoch ms). */
+  onMeetingPopupAutoStart: (callback: (data: { autoStartAt: number }) => void) => () => void
+  /** Start recording automatically when a calendar meeting begins. Defaults to true. */
+  getAutoStartMeetings: () => Promise<boolean>
+  setAutoStartMeetings: (enabled: boolean) => Promise<{ success: boolean }>
+  onAutoStartMeetingsChanged: (callback: (enabled: boolean) => void) => () => void
+  meetingPopupTakeNotes: () => Promise<{ success: boolean }>
+  meetingPopupJoin: () => Promise<{ success: boolean; error?: string }>
+  meetingPopupDismiss: () => Promise<{ success: boolean }>
+  /** Dev-only: show the card with a synthetic event. */
+  meetingPopupDebugShow: (overrides?: Partial<CalendarEvent>) => Promise<{ success: boolean; error?: string }>
+  onMeetingPopupEvent: (callback: (event: CalendarEvent) => void) => () => void
 
   // ===========================================================================
   // Theme

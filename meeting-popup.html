@@ -1,0 +1,41 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>GoDojo AI — Meeting Reminder</title>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet" />
+  <!--
+    Deliberately much tighter than index.html's CSP.
+
+    The reminder card talks only to the main process over IPC — it makes no
+    network calls of its own, so there is no Firebase, PostHog, Google or
+    backend origin to allow here. Keeping this list short is part of what
+    makes this a separate entry rather than another ?window= route on the
+    2.9 MB main bundle.
+  -->
+  <meta http-equiv="Content-Security-Policy" content="
+    default-src 'self';
+    script-src 'self' 'unsafe-inline';
+    style-src 'self' 'unsafe-inline' https://fonts.googleapis.com;
+    font-src 'self' https://fonts.gstatic.com data:;
+    connect-src 'self';
+    img-src 'self' data: blob: https:;
+  ">
+</head>
+
+<body style="background-color: transparent; margin: 0; overflow: hidden;">
+  <!-- Apply the cached theme synchronously so the card never paints a wrong-theme frame. -->
+  <script>
+    try {
+      var t = localStorage.getItem('natively_resolved_theme');
+      document.documentElement.setAttribute('data-theme', (t === 'light' || t === 'dark') ? t : 'dark');
+    } catch (e) { }
+    document.documentElement.setAttribute('data-window', 'meeting-popup');
+  </script>
+  <div id="root"></div>
+  <script type="module" src="/src/meeting-popup/main.tsx"></script>
+</body>
+
+</html>

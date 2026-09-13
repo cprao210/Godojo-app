@@ -100,6 +100,12 @@ export interface OutputRouteJs {
 }
 
 /**
+ * Registers the JS-side sink for `native_log!`. Safe to call again (e.g. a
+ * dev hot-reload) — replaces whatever was previously registered.
+ */
+export declare function setNativeLogCallback(callback: ((err: Error | null, arg: string) => any)): void
+
+/**
  * Validates a Gumroad license key by calling the Gumroad Licenses API.
  * Returns a Promise that resolves to "OK" on success, or an error message string on failure.
  * The HTTP call runs on a libuv worker thread to prevent blocking the Node.js event loop.

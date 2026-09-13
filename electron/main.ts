@@ -345,6 +345,7 @@ import { WindowHelper, initRendererUrl } from "./WindowHelper"
 import { SettingsWindowHelper } from "./SettingsWindowHelper"
 import { ModelSelectorWindowHelper } from "./ModelSelectorWindowHelper"
 import { CropperWindowHelper } from "./CropperWindowHelper"
+import { MeetingPopupWindowHelper } from "./MeetingPopupWindowHelper"
 import { ScreenshotHelper } from "./ScreenshotHelper"
 import { KeybindManager } from "./services/KeybindManager"
 import { ProcessingHelper } from "./ProcessingHelper"
@@ -415,6 +416,7 @@ export class AppState {
   public settingsWindowHelper: SettingsWindowHelper
   public modelSelectorWindowHelper: ModelSelectorWindowHelper
   public cropperWindowHelper: CropperWindowHelper
+  public meetingPopupWindowHelper: MeetingPopupWindowHelper
   private screenshotHelper: ScreenshotHelper
   public processingHelper: ProcessingHelper
 
@@ -503,6 +505,14 @@ export class AppState {
     this.settingsWindowHelper = new SettingsWindowHelper()
     this.modelSelectorWindowHelper = new ModelSelectorWindowHelper()
     this.cropperWindowHelper = new CropperWindowHelper()
+    this.meetingPopupWindowHelper = new MeetingPopupWindowHelper()
+    // The popup refuses to auto-start while a meeting is already running, but
+    // it must not import AppState to find that out (require cycle).
+    this.meetingPopupWindowHelper.setMeetingActiveProvider(() => this.isMeetingActive)
+    this.meetingPopupWindowHelper.on('auto-start-due', (event: any) => {
+      console.log('[Main] Reminder countdown elapsed — auto-starting meeting', event?.title)
+      void this.startMeetingFromCalendarEvent(event)
+    })
 
     // 3. Initialize other helpers
     this.screenshotHelper = new ScreenshotHelper(this.view)
@@ -512,6 +522,7 @@ export class AppState {
     this.settingsWindowHelper.setContentProtection(this.isUndetectable);
     this.modelSelectorWindowHelper.setContentProtection(this.isUndetectable);
     this.cropperWindowHelper.setContentProtection(this.isUndetectable);
+    this.meetingPopupWindowHelper.setContentProtection(this.isUndetectable);
 
     if (process.platform === 'win32' || process.platform === 'darwin') {
       this.cropperWindowHelper.preload();
@@ -2925,6 +2936,59 @@ export class AppState {
   }
 
 
+  /**
+   * Bring the app up and start a meeting from a calendar event.
+   *
+   * Shared by the calendar reminder path and the floating reminder popup's
+   * "Take Notes" button so both produce identical meeting metadata — the full
+   * raw event is passed through as `calendarEvent`, which is what downstream
+   * persistence writes to meetings.calendar_event_metadata. startMeeting() is
+   * idempotent while a meeting is active, so racing a manual start is safe.
+   */
+  public async startMeetingFromCalendarEvent(event: any): Promise<void> {
+    try {
+      // MUST come before startMeeting(). Two reasons:
+      //
+      //  1. This path runs with no user interaction, so the windows may not
+      //     exist at all — on macOS, closing the main window destroys BOTH of
+      //     them (see WindowHelper's launcher 'closed' handler) while the app
+      //     keeps running. switchToOverlay() would then show nothing.
+      //  2. startMeeting() emits `session-reset`, the floating dock's only
+      //     "a call started" signal, as a fire-and-forget send. Recreating the
+      //     overlay afterwards would guarantee it missed that message and sat
+      //     there with live analysis never armed.
+      await this.windowHelper.ensureWindowsReady();
+
+      await this.startMeeting({
+        title: event.title,
+        calendarEventId: event.id,
+        source: 'calendar',
+        attendees: event.attendees || [],
+        organizer: event.organizer || '',
+        calendarEvent: event,
+      });
+
+      // startMeeting() only boots the session — it does NOT show the floating
+      // dock. The renderer's own start flow follows it with
+      // setWindowMode("overlay", …) (see useMeetingSession.handleStartMeetingRaw),
+      // and this path has to do the same or the meeting records with no visible
+      // interface. Note this deliberately replaces the old
+      // centerAndShowWindow() call: that switches to the LAUNCHER whenever the
+      // app isn't already in overlay mode, so it both failed to show the dock
+      // and flashed the launcher on the way.
+      //
+      // freshMeetingStart=true skips WindowHelper's stale-bounds/216px floor so
+      // the dock opens straight at its collapsed height without the
+      // expand→collapse flicker.
+      this.windowHelper.setWindowMode('overlay', undefined, true);
+    } catch (err) {
+      console.error('[Main] Failed to start meeting from calendar event:', err);
+      // Surface the app so the user sees the failure (e.g. a mic-permission
+      // error broadcast by startMeeting) instead of nothing happening at all.
+      this.centerAndShowWindow();
+    }
+  }
+
   public async startMeeting(metadata?: any): Promise<void> {
     console.log('[Main] Starting Meeting...', metadata);
 
@@ -4342,6 +4406,7 @@ export class AppState {
     this.settingsWindowHelper.setContentProtection(state)
     this.modelSelectorWindowHelper.setContentProtection(state)
     this.cropperWindowHelper.setContentProtection(state)
+    this.meetingPopupWindowHelper.setContentProtection(state)
 
     // Persist state via SettingsManager
     SettingsManager.getInstance().set('isUndetectable', state);
@@ -5034,31 +5099,60 @@ async function initializeApp() {
   // Pre-create settings window in background for faster first open
   appState.settingsWindowHelper.preloadWindow()
 
+  // Calendar reminders (Google + Zoom)
+  //
+  // Both managers schedule their own reminders and emit the same three events,
+  // so this wires them identically. Presentation lives here rather than in the
+  // managers: a reminder is shown in the custom floating popup window, and only
+  // falls back to a native OS notification if that window can't be shown — so a
+  // reminder is never silently lost.
+  const wireCalendarReminders = (mgr: any, label: string) => {
+    mgr.on('reminder-prewarm', (event: any) => {
+      // Create the popup window ~30s early so the show below is instant. The
+      // window is destroyed again on dismiss, so nothing stays resident.
+      appState.meetingPopupWindowHelper.prewarm(event);
+    });
+
+    mgr.on('reminder-due', (event: any) => {
+      const shown = appState.meetingPopupWindowHelper.showReminder(event);
+      if (shown) return;
+
+      console.warn(`[Main] ${label}: floating reminder unavailable — falling back to a native notification`);
+      // Electron's Notification, not the DOM one that `Notification` resolves
+      // to in this file's scope — same local require the managers used.
+      const { Notification: ElectronNotification } = require('electron');
+      const notif = new ElectronNotification({
+        title: 'Meeting starting soon',
+        body: `"${event.title}" starts in 2 minutes. Start GoDojo AI?`,
+        actions: [
+          { type: 'button', text: 'Start Meeting' },
+          { type: 'button', text: 'Dismiss' },
+        ],
+        sound: true,
+      });
+      notif.on('action', (_e: any, index: number) => {
+        if (index === 0) appState.startMeetingFromCalendarEvent(event);
+      });
+      notif.on('click', () => appState.centerAndShowWindow());
+      notif.show();
+    });
+
+    mgr.on('start-meeting-requested', (event: any) => {
+      console.log(`[Main] Start meeting requested from ${label}`, event);
+      appState.startMeetingFromCalendarEvent(event);
+    });
+
+    mgr.on('open-requested', () => {
+      appState.centerAndShowWindow();
+    });
+  };
+
   // Initialize CalendarManager
   try {
     const { CalendarManager } = require('./services/CalendarManager');
     const calMgr = CalendarManager.getInstance();
     calMgr.init();
-
-    calMgr.on('start-meeting-requested', (event: any) => {
-      console.log('[Main] Start meeting requested from calendar notification', event);
-      appState.centerAndShowWindow();
-      appState.startMeeting({
-        title: event.title,
-        calendarEventId: event.id,
-        source: 'calendar',
-        attendees: event.attendees || [],
-        organizer: event.organizer || '',
-        // Full raw calendar event (id, title, startTime, endTime, link, attendees,
-        // organizer, ...) — persisted verbatim to meetings.calendar_event_metadata.
-        calendarEvent: event,
-      });
-    });
-
-    calMgr.on('open-requested', () => {
-      appState.centerAndShowWindow();
-    });
-
+    wireCalendarReminders(calMgr, 'CalendarManager');
     console.log('[Main] CalendarManager initialized');
   } catch (e) {
     console.error('[Main] Failed to initialize CalendarManager:', e);
@@ -5069,6 +5163,8 @@ async function initializeApp() {
     const { ZoomCalendarManager } = require('./services/ZoomCalendarManager');
     const zoomCal = ZoomCalendarManager.getInstance();
     zoomCal.init();
+    // Previously unwired: Zoom reminders could not start a meeting at all.
+    wireCalendarReminders(zoomCal, 'ZoomCalendarManager');
     console.log('[Main] ZoomCalendarManager initialized');
   } catch (e) {
     console.error('[Main] Failed to initialize ZoomCalendarManager:', e);
