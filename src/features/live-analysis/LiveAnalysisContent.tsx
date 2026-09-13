@@ -195,7 +195,11 @@ const FieldRow: React.FC<FieldRowProps> = ({ label, field, themed = false, isLig
                         {field.evidence}
                     </p>
                 )}
-                {field.suggested_question !== "" ? (
+                {/* "Ask this" only for genuinely open fields — the backend contract
+                    (and normalizeUploadAnalysis) guarantee confirmed fields carry no
+                    question; this guard also covers legacy rows where the field is
+                    undefined (which `!== ""` used to render as an empty ask-this). */}
+                {field.suggested_question && field.status !== 'confirmed' ? (
                     <div className="flex items-start gap-1.5">
                         <span className="text-[9px] font-bold text-blue-500 uppercase tracking-wider mt-[2px] shrink-0">Ask this</span>
                         <p className={`text-[11px] leading-relaxed ${isLight ? 'text-blue-600' : 'text-blue-300/80'}`}>
@@ -226,7 +230,7 @@ const FieldRow: React.FC<FieldRowProps> = ({ label, field, themed = false, isLig
             {field.evidence !== "" && (
                 <p className="text-[12px] text-white/65 leading-normal">{field.evidence}</p>
             )}
-            {field.suggested_question !== "" ? (
+            {field.suggested_question && field.status !== 'confirmed' ? (
                 <div className="flex items-start gap-1.5">
                     <span className="text-[9px] font-bold text-blue-400/70 uppercase tracking-wider mt-[2px] shrink-0">Ask this</span>
                     <p className="text-[11px] text-blue-300/80 leading-relaxed">{field.suggested_question}</p>

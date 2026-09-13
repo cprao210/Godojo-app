@@ -747,32 +747,49 @@ export function useLauncher({ onStartMeeting, ollamaPullStatus = 'idle', onPageC
         });
 
         try {
-            // const result = await window.electronAPI.uploadTranscript(
-            //     uploadText.trim(),
-            //     uploadTitle.trim() || undefined,
-            //     uploadMeetingTypes
-            // );
-            // if (result?.success) {
-            //     setIsUploadOpen(false);
-            //     setUploadText('');
-            //     setUploadTitle('');
-            //     setUploadMeetingTypes(['discovery']);
-            //     fetchMeetings(); // replaces placeholder with real entry
-            // } else {
-            //     // Remove the placeholder on failure
-            //     queryClient.setQueryData<Meeting[]>(["meetings"], (prev = []) => prev.filter(m => m.id !== optimisticId));
-            //     setUploadError(result?.error || 'Upload failed');
-            // }
-            const result = await meetingsApi.uploadTranscript(
-                uploadTitle.trim() || PROCESSING_TITLE,
-                uploadText.trim()
+            // Uploaded transcripts ride the SAME lifecycle as a live meeting:
+            // MeetingPersistence.uploadTranscript parses the text, saves the
+            // placeholder row locally (with the full transcript), and runs the
+            // shared processAndSaveMeeting pipeline — summary generation,
+            // call analysis (the no-live-analysis branch exists precisely for
+            // this path), scorecard grounding, isProcessed flip, events, toast
+            // and the Supabase mirror. The old HTTP path delegated all of that
+            // to a backend that cannot run the LLM pipeline yet.
+            const tenantId = await window.electronAPI?.getCurrentTenantId?.() ?? null;
+            const result = await window.electronAPI.uploadTranscript(
+                uploadText.trim(),
+                uploadTitle.trim() || undefined,
+                uploadMeetingTypes,
+                tenantId
             );
-            setIsUploadOpen(false);
-            setUploadText('');
-            setUploadTitle('');
-            setUploadMeetingTypes(['discovery']);
-            fetchMeetings();
-
+            if (result?.success) {
+                // Link the optimistic card to the real meeting row so the
+                // local seed replaces this exact card instead of showing two
+                // rows for the same upload (same move the live-call-ended
+                // handler makes for the post-call placeholder).
+                if (result.meetingId) {
+                    const realId = result.meetingId;
+                    queryClient.setQueryData<Meeting[]>(['meetings'], (prev = []) => {
+                        const idx = prev.findIndex(m => m.id === optimisticId);
+                        if (idx === -1) return prev;
+                        if (prev.some((m, i) => i !== idx && m.id === realId)) {
+                            return prev.filter((_, i) => i !== idx);
+                        }
+                        const next = [...prev];
+                        next[idx] = { ...next[idx], id: realId };
+                        return next;
+                    });
+                }
+                setIsUploadOpen(false);
+                setUploadText('');
+                setUploadTitle('');
+                setUploadMeetingTypes(['discovery']);
+                fetchMeetings(); // reconciles with the real SQLite/backend rows
+            } else {
+                // Remove the placeholder on failure
+                queryClient.setQueryData<Meeting[]>(['meetings'], (prev = []) => prev.filter(m => m.id !== optimisticId));
+                setUploadError(result?.error || 'Upload failed');
+            }
         } catch (e) {
             queryClient.setQueryData<Meeting[]>(['meetings'], (prev = []) => prev.filter(m => m.id !== optimisticId));
             setUploadError(e instanceof ApiError ? e.message : 'Something went wrong');

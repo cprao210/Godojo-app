@@ -298,12 +298,8 @@ describe('meetingsApi.chunk', () => {
     });
 });
 
-describe('meetingsApi.uploadTranscript', () => {
-    beforeEach(() => mockedApiFetch.mockClear());
-
-    it('sends title and transcript in that order', async () => {
-        await meetingsApi.uploadTranscript('My title', 'full transcript text');
-        expect(mockedApiFetch.mock.calls[0][0]).toBe('/meetings/upload-transcript');
-        expect(bodyOfCall()).toEqual({ title: 'My title', transcript: 'full transcript text' });
+describe('meetingsApi — transcript upload is IPC-only', () => {
+    it('exposes no uploadTranscript HTTP method (the lifecycle runs through MeetingPersistence)', () => {
+        expect((meetingsApi as any).uploadTranscript).toBeUndefined();
     });
 });

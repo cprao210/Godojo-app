@@ -29,7 +29,7 @@ import { useEditableTextBlock } from "./useEditableTextBlock";
 import { useCropper } from "./useCropper";
 import { useFollowUpEmail } from "./useFollowUpEmail";
 import { useMeetingChat } from "./useMeetingChat";
-import { useMeetingDetails, isSummaryEmpty, cleanMarkdown, formatTime } from "./useMeetingDetails";
+import { useMeetingDetails, isSummaryEmpty, cleanMarkdown, formatTime, formatTranscriptTimestamp } from "./useMeetingDetails";
 import { useMeetingScorecard, scoreLabel, getTypeAccent } from "./useMeetingScorecard";
 import { useMeetingTimeline, formatTimeShort, getRelativeLabel } from "./useMeetingTimeline";
 import { useNextMeetingCountdown } from "./useNextMeetingCountdown";
@@ -104,6 +104,7 @@ export {
     isSummaryEmpty,
     cleanMarkdown,
     formatTime,
+    formatTranscriptTimestamp,
     useMeetingScorecard,
     scoreLabel,
     getTypeAccent,

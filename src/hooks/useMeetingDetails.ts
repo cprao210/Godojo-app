@@ -30,6 +30,22 @@ export const formatTime = (ms: number) => {
     return date.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }).toLowerCase();
 };
 
+/**
+ * Transcript row timestamp. Live-call segments carry absolute epoch ms (the
+ * renderer formats those as wall-clock times); uploaded transcripts carry
+ * RELATIVE ms since the call start ("12s", "1:15") — a transcript where any
+ * positive timestamp is far below the epoch floor is the latter. Without this
+ * split, an uploaded "[00:00:12]" rendered as a wall-clock time near midnight.
+ */
+export const formatTranscriptTimestamp = (ms: number, relative: boolean): string => {
+    if (!relative) return formatTime(ms);
+    const totalSec = Math.floor(ms / 1000);
+    if (totalSec < 60) return `${totalSec}s`;
+    const m = Math.floor(totalSec / 60);
+    const s = totalSec % 60;
+    return `${m}:${String(s).padStart(2, '0')}`;
+};
+
 export const cleanMarkdown = (content: string) => {
     if (!content) return '';
     // Ensure code blocks are on new lines to fix rendering issues
@@ -91,23 +107,50 @@ function dedupeTranscript<T extends { speaker: string; text: string; timestamp: 
     return result;
 }
 
-function computeTalkTime(transcript: { speaker: string; text: string; timestamp: number }[] | undefined) {
-    if (!transcript || transcript.length === 0) return { user: 0, client: 0, userWords: 0, clientWords: 0 };
-    let userWords = 0, clientWords = 0;
+export interface TalkTimeSpeaker {
+    /** Internal role — drives colour + which name-resolution path is used. */
+    speaker: 'user' | 'client';
+    displayName?: string;
+    speakerIndex?: number;
+    words: number;
+    percent: number;
+}
+
+const INTERNAL_SPEAKERS = new Set(['system', 'ai', 'assistant', 'model']);
+
+/**
+ * Per-SPEAKER talk time, not per-channel. Segments are grouped by their
+ * resolved identity — the original label when present (uploaded transcripts
+ * carry real names: "Alex", "Daniel", "Lara") or role+dial index otherwise —
+ * so multi-party calls and 3+ speaker uploads each get their own row
+ * ("Alex — 213 words · 54%"), and the sales/client split stays driven by the
+ * parser's first-speaker=mic-user rule rather than guesswork.
+ */
+export function computeTalkTime(
+    transcript: { speaker: string; text: string; displayName?: string; speakerIndex?: number }[] | undefined
+): { speakers: TalkTimeSpeaker[]; totalWords: number } {
+    if (!transcript || transcript.length === 0) return { speakers: [], totalWords: 0 };
+    const groups = new Map<string, TalkTimeSpeaker>();
     for (const seg of transcript) {
-        if (!seg.text?.trim()) continue; // Ignore empty/system messages
-        const wordCount = seg.text.trim().split(/\s+/).filter(Boolean).length; // Count words
-        if (seg.speaker === 'user') { userWords += wordCount; }
-        else if (seg.speaker === 'client') { clientWords += wordCount };
+        const raw = (seg.speaker || '').toLowerCase();
+        if (INTERNAL_SPEAKERS.has(raw)) continue; // system/AI turns are not participants
+        if (!seg.text?.trim()) continue;
+        const role: 'user' | 'client' = raw === 'user' ? 'user' : 'client';
+        const key = `${role}::${seg.displayName ?? '∅'}::${seg.speakerIndex ?? '∅'}`;
+        const words = seg.text.trim().split(/\s+/).filter(Boolean).length;
+        const existing = groups.get(key);
+        if (existing) {
+            existing.words += words;
+        } else {
+            groups.set(key, { speaker: role, displayName: seg.displayName, speakerIndex: seg.speakerIndex, words, percent: 0 });
+        }
     }
-    const totalWords = userWords + clientWords;
-    if (totalWords === 0) return { user: 0, client: 0, userWords, clientWords };
-    return {
-        user: Math.round((userWords / totalWords) * 100),
-        client: Math.round((clientWords / totalWords) * 100),
-        userWords,
-        clientWords,
-    };
+    const speakers = [...groups.values()];
+    const totalWords = speakers.reduce((sum, s) => sum + s.words, 0);
+    if (totalWords > 0) {
+        for (const s of speakers) s.percent = Math.round((s.words / totalWords) * 100);
+    }
+    return { speakers, totalWords };
 }
 
 export type MeetingDetailsTab = 'summary' | 'transcript' | 'usage' | 'analysis';
@@ -500,6 +543,13 @@ export function useMeetingDetails(initialMeeting: Meeting) {
         }
         return { user, client };
     }, [meeting.transcript]);
+
+    // See formatTranscriptTimestamp — epoch ms is ~1.7e12, so a transcript
+    // whose positive timestamps are all under a few decades is relative.
+    const transcriptTimesAreRelative = useMemo(
+        () => (meeting.transcript || []).some(t => t.timestamp > 0 && t.timestamp < 1e11),
+        [meeting.transcript]
+    );
 
     // "Morgan (Raksham)" style labels embed the company in parentheses — the
     // diarized base is the company part alone, matching SessionTracker's
@@ -944,6 +994,7 @@ ${formatNextCallPlaybook() || '  None'}
         isTalktimeOpen, setIsTalktimeOpen,
         talkTime,
         getSpeakerDisplayName,
+        transcriptTimesAreRelative,
         handleSubmitQuestion,
         handleInputKeyDown,
         handleCopy,

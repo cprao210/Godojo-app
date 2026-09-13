@@ -530,7 +530,7 @@ interface RecentMeetingsHeaderProps {
     isRefreshing?: boolean;
 }
 
-export const RecentMeetingsHeader: React.FC<RecentMeetingsHeaderProps> = ({ isLight, isMeetingsExpanded, onToggleExpand, isRefreshing = false }) => (
+export const RecentMeetingsHeader: React.FC<RecentMeetingsHeaderProps> = ({ isLight, isMeetingsExpanded, onToggleExpand, onOpenUpload, isRefreshing = false }) => (
     <div className="flex items-center justify-between mb-3">
         <div className="flex items-center gap-2.5">
             <div className={[
@@ -566,20 +566,18 @@ export const RecentMeetingsHeader: React.FC<RecentMeetingsHeaderProps> = ({ isLi
         <div className="flex items-center gap-2">
 
             {/* Upload Transcript */}
-            {/* {(
-                <button
-                    onClick={onOpenUpload}
-                    className={[
-                        'flex items-center gap-1.5 text-[11px] font-medium rounded-lg px-2.5 py-1.5 border transition-all duration-150',
-                        isLight
-                            ? 'text-text-secondary border-border-muted bg-bg-elevated hover:bg-bg-component hover:text-text-primary hover:border-border-muted shadow-sm'
-                            : 'text-text-tertiary border-border-muted bg-bg-item-surface hover:bg-white/[0.06] hover:border-white/[0.14] hover:text-text-secondary',
-                    ].join(' ')}
-                >
-                    <Upload size={11} />
-                    Upload Transcript
-                </button>
-            )} */}
+            <button
+                onClick={onOpenUpload}
+                className={[
+                    'flex items-center gap-1.5 text-[11px] font-medium rounded-lg px-2.5 py-1.5 border transition-all duration-150',
+                    isLight
+                        ? 'text-text-secondary border-border-muted bg-bg-elevated hover:bg-bg-component hover:text-text-primary hover:border-border-muted shadow-sm'
+                        : 'text-text-tertiary border-border-muted bg-bg-item-surface hover:bg-white/[0.06] hover:border-white/[0.14] hover:text-text-secondary',
+                ].join(' ')}
+            >
+                <Upload size={11} />
+                Upload Transcript
+            </button>
 
             {/* Expand / Collapse */}
             <motion.button
@@ -1345,7 +1343,7 @@ export const TranscriptUploadModal: React.FC<TranscriptUploadModalProps> = ({
                                 <textarea
                                     value={uploadText}
                                     onChange={e => setUploadText(e.target.value)}
-                                    placeholder={`Paste transcript here. Supported formats:\n\n[00:00:12] SALES PERSON: Hello, thanks for joining...\nCLIENT: Happy to be here...\n\nor plain text lines`}
+                                    placeholder={`Paste transcript here. Supported formats:\n\n[00:00:12] SALES PERSON: Hello, thanks for joining...\nCLIENT: Happy to be here...\n\nor plain speaker labels without timestamps:\nAlex: Thanks for making time, Daniel...\nDaniel: Yeah, dispatch is our biggest headache...`}
                                     rows={9}
                                     className={[
                                         'w-full rounded-[10px] px-3 py-2.5 text-[12px] text-text-primary focus:outline-none transition-colors resize-none font-mono leading-relaxed',

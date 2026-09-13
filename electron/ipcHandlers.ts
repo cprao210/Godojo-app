@@ -2128,9 +2128,9 @@ export function initializeIpcHandlers(appState: AppState): void {
     return { success: true };
   });
 
-  safeHandle("upload-transcript", async (_, { text, title, meetingTypes }: { text: string; title?: string; meetingTypes?: ('discovery' | 'demo' | 'negotiation')[] }) => {
+  safeHandle("upload-transcript", async (_, { text, title, meetingTypes, tenantId }: { text: string; title?: string; meetingTypes?: ('discovery' | 'demo' | 'negotiation')[]; tenantId?: string | null }) => {
     try {
-      const meetingId = await appState.getIntelligenceManager().uploadTranscript(text, title, meetingTypes);
+      const meetingId = await appState.getIntelligenceManager().uploadTranscript(text, title, meetingTypes, tenantId);
       if (meetingId) return { success: true, meetingId };
       return { success: false, error: 'Transcript too short or could not be parsed' };
     } catch (e) {

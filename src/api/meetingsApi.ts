@@ -151,12 +151,10 @@ export const meetingsApi = {
   chunk: (meetingId: string): Promise<ChunkMeetingResponse> =>
     apiFetch(`/meetings/${meetingId}/chunking`, { method: "POST" }),
 
-  // NOTE: upload stays on the IPC path until Phase 2 (the Phase-1 backend has no LLM,
-  // so an HTTP upload would store an un-summarized meeting). Kept here for completeness;
-  // arg order is (title, transcript) to match the TranscriptUpload body.
-  uploadTranscript: (title: string, transcript: string): Promise<unknown> =>
-    apiFetch("/meetings/upload-transcript", {
-      method: "POST",
-      body: JSON.stringify({ title, transcript }),
-    }),
+  // NOTE: transcript upload has NO HTTP endpoint here by design. It runs on the
+  // Electron IPC path (window.electronAPI.uploadTranscript → 'upload-transcript'
+  // handler → MeetingPersistence.uploadTranscript), which rides the same
+  // processAndSaveMeeting pipeline live meetings use: summary, call analysis,
+  // scorecard, mirror + chunking. A future backend that can run the LLM
+  // pipeline itself ("Phase 2") would add the route here and re-point the modal.
 };

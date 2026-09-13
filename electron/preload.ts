@@ -173,7 +173,7 @@ interface ElectronAPI {
   /** Generation of the call that is live right now — see liveAnalysisRouting.ts. */
   getMeetingGeneration: () => Promise<{ success: boolean; data?: number }>;
   regenerateMeetingSummary: (id: string) => Promise<{ success: boolean; meeting?: any; error?: string }>
-  uploadTranscript: (text: string, title?: string, meetingTypes?: ('discovery' | 'demo' | 'negotiation')[]) => Promise<{ success: boolean; meetingId?: string; error?: string }>
+  uploadTranscript: (text: string, title?: string, meetingTypes?: ('discovery' | 'demo' | 'negotiation')[], tenantId?: string | null) => Promise<{ success: boolean; meetingId?: string; error?: string }>
   updateMeetingSummary: (id: string, updates: { overview?: string, actionItems?: string[], keyPoints?: string[], actionItemsTitle?: string, keyPointsTitle?: string }) => Promise<boolean>
   onMeetingsUpdated: (callback: () => void) => () => void
   getDisplayName: (role: 'user' | 'client' | 'assistant') => Promise<string>;
@@ -911,7 +911,7 @@ contextBridge.exposeInMainWorld("electronAPI", {
   updateMeetingTitle: (id: string, title: string) => ipcRenderer.invoke("update-meeting-title", { id, title }),
   updateMeetingSummary: (id: string, updates: any) => ipcRenderer.invoke("update-meeting-summary", { id, updates }),
   regenerateMeetingSummary: (id: string) => ipcRenderer.invoke('regenerate-meeting-summary', { id }),
-  uploadTranscript: (text: string, title?: string, meetingTypes?: ('discovery' | 'demo' | 'negotiation')[]) => ipcRenderer.invoke('upload-transcript', { text, title, meetingTypes }),
+  uploadTranscript: (text: string, title?: string, meetingTypes?: ('discovery' | 'demo' | 'negotiation')[], tenantId?: string | null) => ipcRenderer.invoke('upload-transcript', { text, title, meetingTypes, tenantId }),
   deleteMeeting: (id: string) => ipcRenderer.invoke("delete-meeting", id),
 
   onMeetingsUpdated: (callback: () => void) => {

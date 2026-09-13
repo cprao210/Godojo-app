@@ -1,5 +1,5 @@
 import React, { useEffect, useState } from 'react';
-import { useResolvedTheme, useMeetingDetails, formatTime, cleanMarkdown, isSummaryEmpty } from '@/hooks';
+import { useResolvedTheme, useMeetingDetails, formatTime, formatTranscriptTimestamp, cleanMarkdown, isSummaryEmpty } from '@/hooks';
 import { hasGeneratedSummary } from '@/lib/meetingLifecycle';
 import { Mail, ChevronDown, BarChart3, ArrowUp, Copy, Check, TrendingUp, TriangleAlert, MessageSquare } from 'lucide-react';
 import { MessagesSquareIcon, ChartColumnIncreasing, CircleCheck, NotepadText, RefreshCcw, RefreshCw, NotebookPen, ClipboardList } from 'lucide-react';
@@ -142,6 +142,7 @@ const MeetingDetails: React.FC<MeetingDetailsProps> = ({ meeting: initialMeeting
         isTalktimeOpen, setIsTalktimeOpen,
         talkTime,
         getSpeakerDisplayName,
+        transcriptTimesAreRelative,
         handleSubmitQuestion,
         handleInputKeyDown,
         handleCopy,
@@ -1105,65 +1106,49 @@ const MeetingDetails: React.FC<MeetingDetailsProps> = ({ meeting: initialMeeting
                                                         >
                                                             <div className={`border-t px-4 py-4 ${isLight ? 'border-slate-200' : 'border-white/10'}`}>
 
-                                                                {/* User */}
-                                                                <div className="mb-4">
-                                                                    <div className="mb-2 flex items-center justify-between">
-                                                                        <div className='flex gap-3 items-center'>
+                                                                {talkTime.speakers.map((speakerEntry, i) => (
+                                                                    <div key={`${speakerEntry.speaker}-${speakerEntry.displayName ?? '∅'}-${speakerEntry.speakerIndex ?? '∅'}`} className={i === talkTime.speakers.length - 1 ? '' : 'mb-4'}>
+                                                                        <div className="mb-2 flex items-center justify-between">
+                                                                            <div className='flex gap-3 items-center'>
 
-                                                                            <div className="flex items-center gap-2">
-                                                                                <span className={`text-sm ${isLight ? 'text-slate-700' : 'text-white/80'}`}>
-                                                                                    {getSpeakerDisplayName('user')}
-                                                                                </span>
+                                                                                <div className="flex items-center gap-2">
+                                                                                    <span className={`text-sm ${isLight ? 'text-slate-700' : 'text-white/80'}`}>
+                                                                                        {getSpeakerDisplayName(
+                                                                                            speakerEntry.speaker,
+                                                                                            speakerEntry.displayName,
+                                                                                            speakerEntry.speakerIndex
+                                                                                        )}
+                                                                                    </span>
+                                                                                </div>
+
+                                                                                <div className={`text-xs ${isLight ? 'text-slate-400' : 'text-white/40'}`}>
+                                                                                    • {speakerEntry.words.toLocaleString()} words spoken
+                                                                                </div>
+
                                                                             </div>
 
-                                                                            <div className={`text-xs ${isLight ? 'text-slate-400' : 'text-white/40'}`}>
-                                                                                • {talkTime.userWords.toLocaleString()} words spoken
-                                                                            </div>
-
+                                                                            <span className={`text-sm font-medium ${isLight ? 'text-slate-800' : 'text-white'}`}>
+                                                                                {speakerEntry.percent}%
+                                                                            </span>
                                                                         </div>
 
-                                                                        <span className={`text-sm font-medium ${isLight ? 'text-slate-800' : 'text-white'}`}>
-                                                                            {talkTime.user}%
-                                                                        </span>
-                                                                    </div>
-
-                                                                    <div className={`h-1 overflow-hidden rounded-full ${isLight ? 'bg-slate-200' : 'bg-white/10'}`}>
-                                                                        <div
-                                                                            className="h-full rounded-full bg-blue-500 transition-all duration-500"
-                                                                            style={{ width: `${talkTime.user}%` }}
-                                                                        />
-                                                                    </div>
-                                                                </div>
-
-                                                                {/* Remote Participant */}
-                                                                <div>
-                                                                    <div className="mb-2 flex items-center justify-between">
-                                                                        <div className='flex gap-3 items-center'>
-
-                                                                            <div className="flex items-center gap-2">
-
-                                                                                <span className={`text-sm ${isLight ? 'text-slate-700' : 'text-white/80'}`}>
-                                                                                    {getSpeakerDisplayName('client')}
-                                                                                </span>
-                                                                            </div>
-
-                                                                            <div className={`text-xs ${isLight ? 'text-slate-400' : 'text-white/40'}`}>
-                                                                                • {talkTime.clientWords.toLocaleString()} words spoken
-                                                                            </div>
-
+                                                                        <div className={`h-1 overflow-hidden rounded-full ${isLight ? 'bg-slate-200' : 'bg-white/10'}`}>
+                                                                            <div
+                                                                                className={`h-full rounded-full transition-all duration-500 ${speakerEntry.speaker === 'user'
+                                                                                    ? 'bg-blue-500'
+                                                                                    : isLight ? 'bg-slate-400' : 'bg-blue-500/30'
+                                                                                    }`}
+                                                                                style={{ width: `${speakerEntry.percent}%` }}
+                                                                            />
                                                                         </div>
-                                                                        <span className={`text-sm font-medium ${isLight ? 'text-slate-800' : 'text-white'}`}>
-                                                                            {talkTime.client}%
-                                                                        </span>
                                                                     </div>
+                                                                ))}
 
-                                                                    <div className={`h-1 overflow-hidden rounded-full ${isLight ? 'bg-slate-200' : 'bg-white/10'}`}>
-                                                                        <div
-                                                                            className={`h-full rounded-full transition-all duration-500 ${isLight ? 'bg-slate-400' : 'bg-blue-500/30'}`}
-                                                                            style={{ width: `${talkTime.client}%` }}
-                                                                        />
-                                                                    </div>
-                                                                </div>
+                                                                {talkTime.speakers.length === 0 && (
+                                                                    <p className={`text-xs ${isLight ? 'text-slate-400' : 'text-white/40'}`}>
+                                                                        No speaker data recorded for this meeting yet.
+                                                                    </p>
+                                                                )}
 
                                                                 {/* Optional Footer */}
                                                                 <div className={`mt-4 border-t pt-3 ${isLight ? 'border-slate-100' : 'border-white/5'}`}>
@@ -1215,9 +1200,9 @@ const MeetingDetails: React.FC<MeetingDetailsProps> = ({ meeting: initialMeeting
                                                                         entry.speakerIndex
                                                                     )}
                                                                 </span>
-                                                                <span className="text-xs text-text-tertiary font-mono">{entry.timestamp ? formatTime(entry.timestamp) : '0:00'}</span>
+                                                                <span className="text-xs text-text-tertiary font-mono">{entry.timestamp ? formatTranscriptTimestamp(entry.timestamp, transcriptTimesAreRelative) : '0:00'}</span>
                                                             </div>
-                                                            <p className="text-text-secondary text-[15px] leading-relaxed transition-colors select-text cursor-text">{entry.text}</p>
+                                                            <p className="text-text-secondary text-[15px] leading-relaxed transition-colors select-text cursor-text whitespace-pre-line">{entry.text}</p>
 
 
                                                         </div>
