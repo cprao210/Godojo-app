@@ -352,7 +352,7 @@ export function useFloatingDock({ transcriptRef, isMeetingPaused, companyIntel }
     // ── Auto-refresh countdown timer ─────────────────────────────────────────
     // Owned here (not in the panel) so the timer survives panel close/open
     // cycles and responds correctly to isMeetingPaused changes.
-    const [autoRefreshInterval, setAutoRefreshInterval] = useState<number | null>(2);
+    const [autoRefreshInterval, setAutoRefreshInterval] = useState<number | null>(1);
     const autoRefreshTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
     const earlyTriggerPollRef = useRef<ReturnType<typeof setInterval> | null>(null);
 

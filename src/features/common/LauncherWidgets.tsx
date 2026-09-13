@@ -104,7 +104,23 @@ export const LauncherHeader: React.FC<LauncherHeaderProps> = ({
                     GoDojo AI
                 </span>
             </div> */}
-            <img src={IMAGES.godojoLogoV3} alt="GoDojo AI" className="h-5 object-contain" />
+            {/* <img src={IMAGES.godojoLogoV3} alt="GoDojo AI" className="h-5 object-contain" /> */}
+            <button
+                type="button"
+                onClick={() => {
+                    // Same "go Home" behavior as the Home nav item below —
+                    // close any open Dashboard/Settings overlay first, then
+                    // hand off to onBack() to land on the Launcher screen.
+                    if (isManagerDashboardOpen) onCloseManagerDashboard?.();
+                    if (isSettingsOpen) onCloseSettings?.();
+                    onBack();
+                }}
+                className="no-drag flex items-center shrink-0"
+                title="Go to Launcher"
+                aria-label="Go to Launcher"
+            >
+                <img src={IMAGES.godojoLogoV3} alt="GoDojo AI" className="h-5 object-contain" />
+            </button>
 
             {/* Left-of-center: Nav menu — Home + Dashboard (text labels) */}
             <nav className="flex items-center gap-1 no-drag ml-2">

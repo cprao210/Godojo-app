@@ -7,11 +7,12 @@ import { resolveIntelligenceView } from '@/lib/intelligenceView';
 import { getDockSurfaceStyle } from '../dockSurfaceStyle';
 
 const AUTO_REFRESH_OPTIONS = [
+    { label: '1-min', value: 1 },
     { label: '2-min', value: 2 },
+    { label: '3-min', value: 3 },
     { label: '5-min', value: 5 },
     { label: '10-min', value: 10 },
     { label: '15-min', value: 15 },
-    { label: '20-min', value: 20 },
 ];
 
 interface FilmRollTranscriptProps {
@@ -563,7 +564,7 @@ export const FloatingIntelligencePanel: React.FC<FloatingIntelligencePanelProps>
                                     initial={{ opacity: 0, y: 6, scale: 0.96 }}
                                     animate={{ opacity: 1, y: 0, scale: 1 }}
                                     exit={{ opacity: 0, y: 4, scale: 0.97 }}
-                                    className="absolute -right-2.5 rounded-xl overflow-hidden z-20"
+                                    className="absolute top-1 -right-2.5 rounded-xl overflow-hidden z-20"
                                     style={{
                                         bottom: 'calc(100% - 230px)',
                                         background: 'rgba(18,22,34,0.98)',
