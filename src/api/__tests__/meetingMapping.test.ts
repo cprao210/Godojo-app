@@ -13,6 +13,7 @@ import {
     formatDuration,
     isMeetingProcessing,
     isOptimisticId,
+    mapMeetingDetail,
     mergeMeetingCopies,
     reconcileFetchedMeetings,
     shouldMergeLocalMeeting,
@@ -187,5 +188,42 @@ describe('formatDuration', () => {
     it('treats a missing duration as zero rather than NaN', () => {
         expect(formatDuration(undefined)).toBe('0:00');
         expect(formatDuration(null)).toBe('0:00');
+    });
+});
+
+describe('mapMeetingDetail — transcript speaker attribution', () => {
+    const row = (transcript: any[]) => ({
+        id: 'm1',
+        title: 'Discovery call',
+        created_at: new Date().toISOString(),
+        duration_ms: 600_000,
+        summary_json: '{}',
+        is_processed: 1,
+        transcript,
+        usage: [],
+    });
+
+    it('maps camelCase transcript keys (normalized backend payload)', () => {
+        const m = mapMeetingDetail(row([
+            { speaker: 'client', text: 'hi', timestamp: 1000, displayName: 'Raksham · Speaker 1', speakerIndex: 0 },
+        ]));
+        expect(m.transcript?.[0].displayName).toBe('Raksham · Speaker 1');
+        expect(m.transcript?.[0].speakerIndex).toBe(0);
+    });
+
+    it('accepts raw snake_case columns so diarization data is never dropped', () => {
+        const m = mapMeetingDetail(row([
+            { speaker: 'client', text: 'hi', timestamp: 1000, display_name: 'Raksham · Speaker 2', speaker_index: 1 },
+        ]));
+        expect(m.transcript?.[0].displayName).toBe('Raksham · Speaker 2');
+        expect(m.transcript?.[0].speakerIndex).toBe(1);
+    });
+
+    it('leaves index/label undefined for non-diarized segments', () => {
+        const m = mapMeetingDetail(row([
+            { speaker: 'user', text: 'hi', timestamp: 1000 },
+        ]));
+        expect(m.transcript?.[0].speakerIndex).toBeUndefined();
+        expect(m.transcript?.[0].displayName).toBeUndefined();
     });
 });

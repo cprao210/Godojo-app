@@ -871,6 +871,7 @@ export interface MeetingTranscriptLine {
   timestamp: number;
   final?: boolean;
   confidence?: number;
+  speakerIndex?: number;
 }
 
 export interface MeetingUsageEntry {

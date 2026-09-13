@@ -1680,22 +1680,22 @@ export class DatabaseManager {
                         segment.speakerIndex ?? null,
                         displayName
                     );
-                    // NOTE: speaker_index is deliberately EXCLUDED from the mirror
-                    // payload until the Supabase transcripts table gains the column —
-                    // an unknown column fails the whole cloud upsert. TODO(supabase):
-                    // migrate cloud schema, then add speaker_index here.
-                    // display_name IS already a real column on the Supabase transcripts
-                    // table (see SupabaseMirrorService's CREATE TABLE) and is NOT in
-                    // either LOCAL_ONLY_COLUMNS list (SupabaseBackfill.ts /
-                    // SupabaseSyncAudit.ts) — it was just missing from this payload,
-                    // which is why the transcript tab (reads local SQLite) showed names
-                    // fine while the cloud row stayed empty.
+                    // speaker_index IS included in the mirror: the Supabase
+                    // transcripts table now has the column (backend manages it),
+                    // and without it the cloud copy loses diarization — the
+                    // transcript tab reads local SQLite fine but every
+                    // Supabase-first read path (get-meeting-details, other
+                    // devices, the FastAPI backend) gets NULL speaker_index and
+                    // renders far-end turns without the "· Speaker N" labels.
+                    // display_name is likewise a real cloud column (see
+                    // SupabaseMirrorService's CREATE TABLE).
                     transcriptMirror.push({
                         id: Number(info.lastInsertRowid),
                         meeting_id: meeting.id,
                         speaker: segment.speaker,
                         content: segment.text,
                         timestamp_ms: segment.timestamp,
+                        speaker_index: segment.speakerIndex ?? null,
                         display_name: displayName
                     });
                 }

@@ -2340,7 +2340,13 @@ export class AppState {
       segment.speakerIndex !== undefined &&
       this._clientSpeakerIndicesSeen.size >= 2
     ) {
-      displayName = `${displayName} · Speaker ${segment.speakerIndex + 1}`;
+      // Diarization has now told us there's more than one distinct voice on
+      // the client side, so the resolved name (calendar attendee / company)
+      // can't be attributed to any single index with confidence — showing
+      // e.g. "Shahjad (Indosales) · Speaker 1" implies a certainty we don't
+      // have and mislabels whoever isn't actually Shahjad. Fall back to a
+      // plain, generic per-index label instead.
+      displayName = `${speakerNameMap.clientDiarized || 'Other Party'} · Speaker ${segment.speakerIndex + 1}`;
     }
     const payload = {
       speaker: speaker,          // internal role — kept for renderer routing logic

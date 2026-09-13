@@ -75,9 +75,10 @@ export class SessionTracker {
         calendarEvent?: any;
     } | null = null;
 
-    private speakerNameMap: { user: string; client: string } = {
+    private speakerNameMap: { user: string; client: string; clientDiarized: string } = {
         user: 'Me',
-        client: 'Them'
+        client: 'Them',
+        clientDiarized: 'Other Party'
     };
 
     // Full Session Tracking (Persisted)
@@ -137,7 +138,7 @@ export class SessionTracker {
         this.currentMeetingMetadata = metadata;
 
         // Reset to defaults first so a re-used session never bleeds names from a previous meeting.
-        this.speakerNameMap = { user: 'Me', client: 'Them' };
+        this.speakerNameMap = { user: 'Me', client: 'Them', clientDiarized: 'Other Party' };
 
         const attendees: any[] = metadata?.attendees || [];
 
@@ -145,7 +146,10 @@ export class SessionTracker {
             // No attendee list — try to extract the opposite party's name from the meeting title.
             if (metadata?.title) {
                 const fromTitle = this.extractNameFromTitle(metadata.title);
-                if (fromTitle) this.speakerNameMap.client = fromTitle;
+                if (fromTitle) {
+                    this.speakerNameMap.client = fromTitle;
+                    this.speakerNameMap.clientDiarized = fromTitle;
+                }
             }
             console.log('[SessionTracker] Speaker name map resolved (no attendees):', this.speakerNameMap);
             return;
@@ -232,9 +236,11 @@ export class SessionTracker {
                 // gets it for free with no separate lookup.
                 const personName = resolveName(attendee);
                 this.speakerNameMap.client = personName ? `${personName} (${company})` : company;
+                this.speakerNameMap.clientDiarized = company;
             } else {
                 const name = resolveName(attendee);
                 if (name) this.speakerNameMap.client = name;
+                this.speakerNameMap.clientDiarized = 'Other Party';
             }
         } else if (others.length > 1) {
             // 2+ opposite-party attendees all share the same 'client' audio
@@ -251,11 +257,15 @@ export class SessionTracker {
             // mixed-domain fallbacks it's replacing, so this doesn't
             // introduce a new term into the UI.
             this.speakerNameMap.client = 'Other Party';
+            this.speakerNameMap.clientDiarized = 'Other Party';
         } else {
             // No non-self attendees at all — try meeting title as last resort.
             if (metadata?.title) {
                 const fromTitle = this.extractNameFromTitle(metadata.title);
-                if (fromTitle) this.speakerNameMap.client = fromTitle;
+                if (fromTitle) {
+                    this.speakerNameMap.client = fromTitle;
+                    this.speakerNameMap.clientDiarized = fromTitle;
+                }
             }
         }
         console.log('[SessionTracker] Speaker name map resolved:', this.speakerNameMap);
@@ -279,7 +289,7 @@ export class SessionTracker {
     }
 
     // Expose for IPC / display layer:
-    public getSpeakerNameMap(): { user: string; client: string } {
+    public getSpeakerNameMap(): { user: string; client: string; clientDiarized: string } {
         return { ...this.speakerNameMap };
     }
 
@@ -289,6 +299,7 @@ export class SessionTracker {
         }
         if (names.client && names.client.trim()) {
             this.speakerNameMap.client = names.client.trim();
+            this.speakerNameMap.clientDiarized = names.client.trim();
         }
         console.log('[SessionTracker] Speaker names updated manually:', this.speakerNameMap);
     }
@@ -775,7 +786,7 @@ export class SessionTracker {
         this.codingQuestionSource = null;
         this.codingQuestionSetAt = null;
         this.recentClientBuffer = [];
-        this.speakerNameMap = { user: 'Me', client: 'Them' };
+        this.speakerNameMap = { user: 'Me', client: 'Them', clientDiarized: 'Other Party' };
 
     }
 

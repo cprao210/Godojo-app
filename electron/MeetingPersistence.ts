@@ -11,6 +11,7 @@ import { AppState } from './main';
 import { buildCompanyContextBlock } from '../electron/utils/salesBriefUtils';
 import { buildScorecardPrompt } from './llm/ScoreCardLLM';
 import { reconcileScorecardWithLiveAnalysis } from './scorecardReconciliation';
+import { hasMultipleClientSpeakers, resolveSpeakerDisplayName } from './utils/speakerLabels';
 import { BANT_ORDER, MEDDICC_ORDER } from '../src/lib/bantMeddic';
 
 const crypto = require('crypto');
@@ -461,13 +462,15 @@ export class MeetingPersistence {
         //
         // Same displayName stamping as the final save in processAndSaveMeeting
         // — without it, this placeholder briefly persists with generic
-        // "Other Party" labels until the background save replaces it.
+        // "Other Party" labels until the background save replaces it. The
+        // diarization-aware helper is what keeps the post-call labels identical
+        // to the ones broadcast during the call ("Raksham · Speaker 1"), instead
+        // of flattening every far-end turn onto the plain client name.
+        const placeholderMultiClientSpeakers = hasMultipleClientSpeakers(snapshot.transcript);
         const placeholderTranscript = snapshot.transcript.map(segment => ({
             ...segment,
             displayName: segment.displayName
-                ?? (segment.speaker === 'user' ? speakerNamesSnapshot.user
-                    : (segment.speaker === 'client' || segment.speaker === 'interviewer') ? speakerNamesSnapshot.client
-                        : undefined),
+                ?? resolveSpeakerDisplayName(segment.speaker, segment.speakerIndex, speakerNamesSnapshot, placeholderMultiClientSpeakers),
         }))
 
         const placeholder: Meeting = {
@@ -546,13 +549,13 @@ export class MeetingPersistence {
         meetingId: string,
         metadata?: { title?: string; calendarEventId?: string; source?: 'manual' | 'calendar'; calendarEvent?: any } | null,
         liveAnalysisData?: LiveAnalysisData | null,
-        speakerNames?: { user: string; client: string },
+        speakerNames?: { user: string; client: string; clientDiarized?: string },
         companyIntel?: Record<string, any> | null,
         hintMeetingTypes?: ('discovery' | 'demo' | 'negotiation')[],
         tenantId?: string | null
     ): Promise<void> {
         let title = "Untitled Session";
-        let summaryData: { actionItems: string[], keyPoints: string[], liveAnalysis?: LiveAnalysisData, speakerNames?: { user: string, client: string } } = { actionItems: [], keyPoints: [] };
+        let summaryData: { actionItems: string[], keyPoints: string[], liveAnalysis?: LiveAnalysisData, speakerNames?: { user: string, client: string, clientDiarized?: string } } = { actionItems: [], keyPoints: [] };
 
         // Use passed-in metadata snapshot (NOT this.session.getMeetingMetadata() which is already cleared)
         let calendarEventId: string | undefined;
@@ -854,13 +857,13 @@ export class MeetingPersistence {
             // is why the persisted transcript view showed "Other Party"
             // even when Speaking Balance (which reads resolvedSpeakerNames
             // directly, not per-segment displayName) correctly showed the
-            // real company name.
+            // real company name. When diarization found 2+ far-end voices,
+            // the same helper appends "· Speaker N" off clientDiarized so the
+            // saved labels match what _dispatchTranscript broadcast live.
             const transcriptWithDisplayNames = data.transcript.map(segment => ({
                 ...segment,
                 displayName: segment.displayName
-                    ?? (segment.speaker === 'user' ? resolvedSpeakerNames.user
-                        : (segment.speaker === 'client' || segment.speaker === 'interviewer') ? resolvedSpeakerNames.client
-                            : undefined),
+                    ?? resolveSpeakerDisplayName(segment.speaker, segment.speakerIndex, resolvedSpeakerNames, multiClientSpeakers),
             }));
 
             const meetingData: Meeting = {

@@ -89,7 +89,7 @@ export class IntelligenceManager extends EventEmitter {
     // Context Management (delegates to session)
     // ============================================
 
-    public getSpeakerNameMap(): { user: string; client: string } {
+    public getSpeakerNameMap(): { user: string; client: string; clientDiarized: string } {
         return this.session.getSpeakerNameMap();
     }
 

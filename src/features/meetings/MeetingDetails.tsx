@@ -1208,11 +1208,11 @@ const MeetingDetails: React.FC<MeetingDetailsProps> = ({ meeting: initialMeeting
                                                                 <span className={`text-xs font-semibold text-white ${entry.speaker === 'user'
                                                                     ? 'bg-blue-600'
                                                                     : isLight ? 'bg-slate-400' : 'bg-blue-500/30'
-                                                                    } px-2 py-1 rounded-full truncate max-w-[120px]`}>
+                                                                    } px-2 py-1 rounded-full truncate max-w-[180px]`}>
                                                                     {getSpeakerDisplayName(
                                                                         entry.speaker,
                                                                         entry.displayName,
-                                                                        (entry as any).speakerIndex
+                                                                        entry.speakerIndex
                                                                     )}
                                                                 </span>
                                                                 <span className="text-xs text-text-tertiary font-mono">{entry.timestamp ? formatTime(entry.timestamp) : '0:00'}</span>

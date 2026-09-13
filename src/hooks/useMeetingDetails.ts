@@ -456,7 +456,7 @@ export function useMeetingDetails(initialMeeting: Meeting) {
     const canRegenerate = !isRegenerating && (!isProcessing || isProcessingStalled);
 
     const speakerNames = (meeting.detailedSummary as any)?.speakerNames as
-        { user: string; client: string } | undefined;
+        { user: string; client: string; clientDiarized?: string } | undefined;
 
     // Diarization: suffix far-end labels only when 2+ distinct speaker indices
     // were recorded for this meeting — 1:1 calls render exactly as before.
@@ -486,8 +486,14 @@ export function useMeetingDetails(initialMeeting: Meeting) {
         let user: string | undefined;
         let client: string | undefined;
         for (const seg of meeting.transcript || []) {
-            const name = (seg as any).displayName;
-            if (!name || name === 'Me' || name === 'Them') continue;
+            const raw = (seg as any).displayName as string | undefined;
+            if (!raw || raw === 'Me' || raw === 'Them') continue;
+            // Diarized rows carry a "· Speaker N" suffix; the aggregate stats
+            // need the BASE name only, so strip it before selecting a first
+            // non-generic per-role label. Without this, Speaking Balance would
+            // show "Raksham · Speaker 1" as the whole client-side aggregate.
+            const suffixIdx = raw.indexOf(' · Speaker ');
+            const name = suffixIdx === -1 ? raw : raw.slice(0, suffixIdx);
             if (seg.speaker === 'user' && !user) user = name;
             if ((seg.speaker === 'client' || seg.speaker === 'interviewer') && !client) client = name;
             if (user && client) break;
@@ -495,25 +501,51 @@ export function useMeetingDetails(initialMeeting: Meeting) {
         return { user, client };
     }, [meeting.transcript]);
 
+    // "Morgan (Raksham)" style labels embed the company in parentheses — the
+    // diarized base is the company part alone, matching SessionTracker's
+    // clientDiarized rule for 1-attendee-with-company meetings.
+    const companyFromLabel = (label?: string): string | undefined => {
+        if (!label) return undefined;
+        const m = label.match(/\(([^)]+)\)\s*$/);
+        return m?.[1]?.trim() || undefined;
+    };
+
     const getSpeakerDisplayName = (speaker: string, displayName?: string, speakerIndex?: number): string => {
-        // 1. An explicit per-segment displayName (passed by the transcript
-        //    view) always wins — it's the ground truth for that exact turn.
-        //    Exception: older meetings recorded before speaker labels were
-        //    unified may have "Me"/"Them" baked into this field — normalize
-        //    those legacy values so old meetings render the same "You" /
-        //    "Other Party" labels as new ones instead of the stale wording.
+        // Normalize legacy "Me"/"Them" stamps so old meetings render the same
+        // "You" / "Other Party" wording as new ones.
         if (displayName === 'Me') displayName = undefined;
         if (displayName === 'Them') displayName = undefined;
+        // Diarization first for far-end turns: when 2+ distinct client voices
+        // were recorded, the per-segment displayName is only meaningful if it
+        // already carries the "· Speaker N" suffix. Rows saved before that
+        // stamping existed (or via a source that flattened every client turn
+        // onto the plain name) must still re-derive the label — otherwise the
+        // plain stamp shadows the suffix and the tab loses the attribution the
+        // live call showed. Manual rename sets clientDiarized to the typed
+        // value, so the explicit override still wins here.
+        if (
+            (speaker === 'client' || speaker === 'interviewer') &&
+            hasMultipleClientSpeakers &&
+            speakerIndex !== undefined &&
+            speakerIndex !== null &&
+            !displayName?.includes(' · Speaker ')
+        ) {
+            const diarizedBase =
+                speakerNames?.clientDiarized ||
+                companyFromLabel(displayName) ||
+                'Other Party';
+            return `${diarizedBase} · Speaker ${speakerIndex + 1}`;
+        }
+        // 1. An explicit per-segment displayName (passed by the transcript
+        //    view) wins — it's the ground truth for that exact turn.
         if (displayName) return displayName;
         // 2. No segment displayName was passed in (e.g. Speaking Balance,
         //    which shows one name per role rather than per turn) — fall back
-        //    to whatever live-resolved name the transcript itself used, so
-        //    this never disagrees with what's rendered just below it.
+        //    to whatever live-resolved name the transcript itself used (base,
+        //    suffix stripped — see liveDisplayNames above), so this never
+        //    disagrees with what's rendered just below it.
         if (speaker === 'user' && liveDisplayNames.user) return liveDisplayNames.user;
         if ((speaker === 'client' || speaker === 'interviewer') && liveDisplayNames.client) {
-            if (hasMultipleClientSpeakers && speakerIndex !== undefined && speakerIndex !== null) {
-                return `${liveDisplayNames.client} · Speaker ${speakerIndex + 1}`;
-            }
             return liveDisplayNames.client;
         }
         // 3. Use resolved calendar names saved in detailedSummary.speakerNames.
@@ -521,11 +553,7 @@ export function useMeetingDetails(initialMeeting: Meeting) {
         //    Fall back to "You" / "Other Party" only when no calendar data was resolved.
         if (speaker === 'user') return speakerNames?.user || 'You';
         if (speaker === 'client' || speaker === "interviewer") {
-            const base = speakerNames?.client || 'Other Party';
-            if (hasMultipleClientSpeakers && speakerIndex !== undefined && speakerIndex !== null) {
-                return `${base} · Speaker ${speakerIndex + 1}`;
-            }
-            return base;
+            return speakerNames?.client || 'Other Party';
         }
         if (speaker === 'assistant') return 'Assistant';
         return speaker;

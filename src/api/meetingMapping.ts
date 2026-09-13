@@ -241,8 +241,15 @@ export function mapMeetingDetail(row: any): Meeting {
   const transcript: MeetingTranscriptLine[] = Array.isArray(row?.transcript)
     ? row.transcript.map((t: any) => ({
       speaker: t.speaker,
+      // The backend column is speaker_index/display_name; older payloads that
+      // already normalized pass camelCase. Accept both so diarization labels
+      // can't be silently dropped on a key mismatch.
+      displayName: t.displayName ?? t.display_name ?? undefined,
       text: t.text,
       timestamp: t.timestamp,
+      final: t.final ?? undefined,
+      confidence: t.confidence ?? undefined,
+      speakerIndex: t.speakerIndex ?? t.speaker_index ?? undefined,
     }))
     : [];
 
