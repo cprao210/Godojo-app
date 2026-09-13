@@ -5,6 +5,7 @@
 
 import { useEffect, useState } from 'react';
 import { isMac } from '@/../utils/platformUtils';
+import { playTestSound as playTestSoundUtil } from '@/lib/audioTest';
 
 interface UseAudioDeviceSettingsArgs {
     isOpen: boolean;
@@ -140,41 +141,7 @@ export function useAudioDeviceSettings({ isOpen, activeTab }: UseAudioDeviceSett
     };
 
     /** Plays a short beep through the selected output device, so the user can confirm it's the right one. */
-    const playTestSound = async () => {
-        try {
-            const AudioContextCtor = window.AudioContext || (window as any).webkitAudioContext;
-            if (!AudioContextCtor) {
-                console.error('[useAudioDeviceSettings] Web Audio API not supported');
-                return;
-            }
-
-            const ctx = new AudioContextCtor();
-            if (ctx.state === 'suspended') await ctx.resume();
-
-            const oscillator = ctx.createOscillator();
-            const gainNode = ctx.createGain();
-            oscillator.connect(gainNode);
-            gainNode.connect(ctx.destination);
-
-            oscillator.type = 'sine';
-            oscillator.frequency.setValueAtTime(523.25, ctx.currentTime);
-            gainNode.gain.setValueAtTime(0.5, ctx.currentTime);
-            gainNode.gain.exponentialRampToValueAtTime(0.01, ctx.currentTime + 1.0);
-
-            if (selectedOutput && (ctx as any).setSinkId) {
-                try {
-                    await (ctx as any).setSinkId(selectedOutput);
-                } catch (e) {
-                    console.warn('[useAudioDeviceSettings] Error setting sink for AudioContext:', e);
-                }
-            }
-
-            oscillator.start();
-            oscillator.stop(ctx.currentTime + 1.0);
-        } catch (e) {
-            console.error('[useAudioDeviceSettings] Error playing test sound:', e);
-        }
-    };
+    const playTestSound = () => playTestSoundUtil(selectedOutput);
 
     return {
         inputDevices,

@@ -1,9 +1,10 @@
 import React, { useCallback, useEffect, useState } from 'react';
 import { createPortal } from 'react-dom';
-import { Activity, AlertTriangle, CheckCircle2, ExternalLink, Mic, Volume2, Wrench, X } from 'lucide-react';
+import { Activity, AlertTriangle, CheckCircle2, ExternalLink, Mic, Speaker, Volume2, Wrench, X } from 'lucide-react';
 import { motion, AnimatePresence } from 'framer-motion';
 import { useResolvedTheme, useSystemAudioPermission, useAudioStatusTray } from '@/hooks';
 import { shapeLevel, DEFAULT_MIC_GAIN, DEFAULT_SYSTEM_GAIN } from '@/features/floating-dock/AudioWaveIndicator';
+import { playTestSound } from '@/lib/audioTest';
 import { posthogAnalytics } from '@/lib/analytics/posthog.service';
 import type { AudioStatusTrayProps, AudioChannelCardProps, AudioLevelMeterProps } from '@/types';
 
@@ -306,6 +307,14 @@ export const AudioStatusTray: React.FC<AudioStatusTrayProps> = ({ isVisible, onC
         await recheck();
     };
 
+    // Speaker check — plays a short beep through the user's saved output
+    // device (same localStorage key Settings > Audio writes to via
+    // selectOutputDevice), independent of the mic/system capture test above.
+    const handleTestSound = () => {
+        posthogAnalytics.trackEvent("audio_tray_test_sound_clicked", { platform: platformName() });
+        void playTestSound(localStorage.getItem('preferredOutputDeviceId') || undefined);
+    };
+
     const handleTestToggle = () => {
         posthogAnalytics.trackEvent("audio_tray_test_toggled", {
             action: testing ? 'stopped' : 'started',
@@ -544,6 +553,16 @@ export const AudioStatusTray: React.FC<AudioStatusTrayProps> = ({ isVisible, onC
                                           it on panel open would both fight that window and record
                                           the user because they clicked a status icon.
                                         */}
+                                        {!meetingLive && (
+                                            <button
+                                                onClick={handleTestSound}
+                                                disabled={!testing}
+                                                title={testing ? 'Play a short tone through your speakers to confirm output' : 'Start Test audio first to enable this'}
+                                                className="px-3 py-2 rounded-lg text-xs font-medium border border-border-muted text-text-secondary hover:text-text-primary hover:bg-bg-elevated transition-colors flex items-center gap-1.5 disabled:opacity-40 disabled:cursor-not-allowed disabled:hover:bg-transparent disabled:hover:text-text-secondary"
+                                            >
+                                                <Speaker size={12} /> Test sound
+                                            </button>
+                                        )}
                                         {!meetingLive && permissions.microphone && (
                                             <button
                                                 onClick={handleTestToggle}
