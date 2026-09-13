@@ -2752,20 +2752,25 @@ export class AppState {
   }
 
 
-  public async startAudioTest(deviceId?: string): Promise<void> {
+  /**
+   * `outputDeviceId` selects the system-audio probe's backend exactly as a
+   * meeting would (`'sck'` sentinel or a device id; undefined = platform
+   * default), so the Settings meter reflects the backend meetings run on.
+   */
+  public async startAudioTest(deviceId?: string, outputDeviceId?: string): Promise<void> {
     // P2-12: guard against two concurrent calls both passing the async permission check
     // before either has created a capture — the second call would orphan the first capture.
     if (this._audioTestStarting) return;
     this._audioTestStarting = true;
     try {
-      await this._startAudioTestImpl(deviceId);
+      await this._startAudioTestImpl(deviceId, outputDeviceId);
     } finally {
       this._audioTestStarting = false;
     }
   }
 
-  private async _startAudioTestImpl(deviceId?: string): Promise<void> {
-    console.log(`[Main] Starting Audio Test on device: ${deviceId || 'default'}`);
+  private async _startAudioTestImpl(deviceId?: string, outputDeviceId?: string): Promise<void> {
+    console.log(`[Main] Starting Audio Test on device: ${deviceId || 'default'} (system audio: ${outputDeviceId || 'default'})`);
     this.stopAudioTest(); // Stop any existing test (also bumps _audioTestEpoch)
     const startEpoch = ++this._audioTestEpoch;
     const isCurrentTest = () => this._audioTestEpoch === startEpoch;
@@ -2832,7 +2837,7 @@ export class AppState {
     };
 
     try {
-      const testVadDisabled = this._isBuiltinOnly(deviceId, undefined);
+      const testVadDisabled = this._isBuiltinOnly(deviceId, outputDeviceId);
       // Pass the route-keyed alignment seed here too: the native seed contract
       // is per-construction (omitted = clear), so an unseeded audio-test
       // constructor would wipe the pending seed of a concurrent meeting.
@@ -2879,7 +2884,7 @@ export class AppState {
           target.webContents.send('audio-test-system-error', message);
         }
       } else {
-        this.audioTestSystemCapture = new SystemAudioCapture(undefined, { echoMode: this._echoMode() });
+        this.audioTestSystemCapture = new SystemAudioCapture(outputDeviceId || undefined, { echoMode: this._echoMode() });
         attachSystemTestListeners(this.audioTestSystemCapture);
         this.audioTestSystemCapture.start();
         // Re-check: stopAudioTest may have fired while we were constructing.

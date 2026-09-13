@@ -225,7 +225,7 @@ interface ElectronAPI {
   openMailto: (params: { to: string; subject: string; body: string }) => Promise<{ success: boolean; error?: string }>
 
   // Audio Test
-  startAudioTest: (deviceId?: string) => Promise<{ success: boolean }>
+  startAudioTest: (deviceId?: string, outputDeviceId?: string) => Promise<{ success: boolean }>
   stopAudioTest: () => Promise<{ success: boolean }>
   onAudioTestLevel: (callback: (level: number) => void) => () => void
   // System-audio probe, emitted during the same startAudioTest lifecycle as the
@@ -1115,7 +1115,7 @@ contextBridge.exposeInMainWorld("electronAPI", {
   openMailto: (params: { to: string; subject: string; body: string }) => ipcRenderer.invoke('open-mailto', params),
 
   // Audio Test
-  startAudioTest: (deviceId?: string) => ipcRenderer.invoke('start-audio-test', deviceId),
+  startAudioTest: (deviceId?: string, outputDeviceId?: string) => ipcRenderer.invoke('start-audio-test', deviceId, outputDeviceId),
   stopAudioTest: () => ipcRenderer.invoke('stop-audio-test'),
   onAudioTestLevel: (callback: (level: number) => void) => {
     const subscription = (_: any, level: number) => callback(level)

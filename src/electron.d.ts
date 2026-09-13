@@ -284,7 +284,7 @@ export interface ElectronAPI {
   /** Live per-chunk RMS level (0–1) from the meeting's real mic/system-audio captures — drives the dock wave indicator. */
   onAudioLevel: (callback: (payload: { channel: 'mic' | 'system'; level: number }) => void) => () => void
   getNativeAudioStatus: () => Promise<{ connected: boolean }>
-  startAudioTest: (deviceId?: string) => Promise<{ success: boolean }>
+  startAudioTest: (deviceId?: string, outputDeviceId?: string) => Promise<{ success: boolean }>
   stopAudioTest: () => Promise<{ success: boolean }>
   onAudioTestLevel: (callback: (level: number) => void) => () => void
   /** System-audio probe, emitted during the same startAudioTest lifecycle. */

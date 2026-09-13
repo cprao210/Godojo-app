@@ -22,6 +22,8 @@
 
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { useLiveAudioLevels } from './useLiveAudioLevels';
+import { isMac as isMacPlatform } from '@/../utils/platformUtils';
+import { resolveSckPreference, SCK_BACKEND_PREF_KEY, SCK_OUTPUT_ID } from '@/lib/systemAudioBackend';
 
 /** Re-read the device list this often while the panel is open. */
 const DEVICE_POLL_MS = 5000;
@@ -226,7 +228,12 @@ export function useAudioStatusTray(panelOpen: boolean): AudioStatusTrayState {
         setTestSystemSeen(false);
         setTesting(true);
         const preferred = localStorage.getItem('preferredInputDeviceId') || undefined;
-        window.electronAPI?.startAudioTest?.(preferred).catch((err: unknown) => {
+        // Probe the backend meetings actually use (SCK by default on macOS);
+        // the probe otherwise keeps following the default output device.
+        const systemOutput = resolveSckPreference(localStorage.getItem(SCK_BACKEND_PREF_KEY), isMacPlatform)
+            ? SCK_OUTPUT_ID
+            : undefined;
+        window.electronAPI?.startAudioTest?.(preferred, systemOutput).catch((err: unknown) => {
             if (!mountedRef.current) return;
             const message = err instanceof Error ? err.message : String(err);
             setTestError(message || 'Could not start the audio check.');

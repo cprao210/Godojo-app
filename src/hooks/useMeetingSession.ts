@@ -2,6 +2,8 @@ import { useEffect, useRef, useState } from "react";
 import { verifySessionIsActive, signOut as fbSignOut } from "../lib/firebase";
 import { TranscriptSegmentInput, MeetingSessionControls } from "@/types";
 import { posthogAnalytics } from "@/lib/analytics/posthog.service";
+import { isMac } from "@/../utils/platformUtils";
+import { resolveSystemAudioBackend, SCK_BACKEND_PREF_KEY } from "@/lib/systemAudioBackend";
 
 /**
  * Owns the Electron IPC meeting lifecycle (start/end + window-mode switching)
@@ -69,17 +71,19 @@ export function useMeetingSession(
 
             localStorage.setItem("natively_last_meeting_start", Date.now().toString());
             const inputDeviceId = localStorage.getItem("preferredInputDeviceId");
-            let outputDeviceId = localStorage.getItem("preferredOutputDeviceId");
-            const useExperimentalSck = localStorage.getItem("useExperimentalSckBackend") === "true";
-
-            // Override output device ID to force SCK if experimental mode is enabled.
-            // Default to CoreAudio unless experimental is enabled.
-            if (useExperimentalSck) {
-                console.log("[useMeetingSession] Using ScreenCaptureKit backend (Experimental).");
-                outputDeviceId = "sck";
-            } else {
-                console.log("[useMeetingSession] Using CoreAudio backend (Default).");
-            }
+            // One resolver shared with the Settings toggle, so what the toggle
+            // shows is what the meeting runs (see src/lib/systemAudioBackend.ts).
+            const backend = resolveSystemAudioBackend({
+                savedPreference: localStorage.getItem(SCK_BACKEND_PREF_KEY),
+                isMac,
+                preferredOutputDeviceId: localStorage.getItem("preferredOutputDeviceId"),
+            });
+            const outputDeviceId = backend.outputDeviceId;
+            console.log(
+                backend.useSck
+                    ? "[useMeetingSession] System audio backend: ScreenCaptureKit (default)."
+                    : `[useMeetingSession] System audio backend: platform default (CoreAudio tap on macOS), output=${outputDeviceId || "default"}.`,
+            );
 
             // Merge calendar event data if provided.
             const meetingMetadata = {
