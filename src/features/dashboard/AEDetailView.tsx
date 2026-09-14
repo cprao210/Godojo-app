@@ -26,7 +26,7 @@ import { posthogAnalytics } from '@/lib/analytics/posthog.service';
 import { MeetingDetails } from '@/features/meetings';
 import { AeDetailViewProps } from '@/types';
 import { avatarColorFor, initialsFor, AVATAR_PALETTE } from './shared';
-import { DimensionGaugeSkeleton, RecentCallsSkeleton, StrengthsAndGapsSkeleton, DimensionGauge, StrengthsAndGapsList, RecentCallsList } from './AeDetailWidgets';
+import { DimensionGaugeSkeleton, RecentCallsSkeleton, StrengthsAndGapsSkeleton, DimensionGauge, StrengthsAndGapsList, RecentCallsList, RecentCallsPagination } from './AeDetailWidgets';
 
 // ─── Main export ─────────────────────────────────────────────────────────────
 
@@ -44,7 +44,8 @@ export const AeDetailView: React.FC<AeDetailViewProps> = ({ ae, tenantId, onBack
     const AeDetailsStates = useAeDetail({ ae, tenantId });
 
     const { isLoadingDetail, detailError, displayName, displayRole, displayCalls, displayScore } = AeDetailsStates;
-    const { dimensions, strengthsAndGaps, recentCalls, selectedMeeting, setSelectedMeeting, handleSelectCall } = AeDetailsStates;
+    const { dimensions, strengthsAndGaps, recentCalls, pagedCalls, callsPage, setCallsPage, callsTotalPages, callsRangeStart, callsRangeEnd } = AeDetailsStates;
+    const { selectedMeeting, setSelectedMeeting, handleSelectCall } = AeDetailsStates;
 
     const cardCls = isLight ? 'bg-white border-slate-200' : 'bg-[#141820] border-border-subtle';
     const avatarColor = ae ? avatarColorFor(ae.name) : AVATAR_PALETTE[0];
@@ -159,17 +160,28 @@ export const AeDetailView: React.FC<AeDetailViewProps> = ({ ae, tenantId, onBack
                                 </div>
 
                                 {/* Recent calls */}
-                                <div className={`rounded-2xl border p-5 ${cardCls}`}>
-                                    <h3 className="text-sm font-bold text-text-primary mb-1">Recent calls</h3>
+                                <div className={`rounded-2xl border mb-10 p-5 ${cardCls}`}>
+                                    <h3 className="text-sm font-bold text-text-primary mb-1">Meeting calls</h3>
                                     <p className="text-xs text-text-tertiary mb-2">Click to open the post-call analysis</p>
                                     {isLoadingDetail ? (
                                         <RecentCallsSkeleton isLight={isLight} />
                                     ) : (
-                                        <RecentCallsList
-                                            calls={recentCalls}
-                                            isLight={isLight}
-                                            onSelectCall={handleSelectCall}
-                                        />
+                                        <>
+                                            <RecentCallsList
+                                                calls={pagedCalls}
+                                                isLight={isLight}
+                                                onSelectCall={handleSelectCall}
+                                            />
+                                            <RecentCallsPagination
+                                                page={callsPage}
+                                                totalPages={callsTotalPages}
+                                                rangeStart={callsRangeStart}
+                                                rangeEnd={callsRangeEnd}
+                                                total={recentCalls.length}
+                                                isLight={isLight}
+                                                onPageChange={setCallsPage}
+                                            />
+                                        </>
                                     )}
                                 </div>
                             </div>

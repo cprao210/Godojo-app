@@ -20,6 +20,12 @@ import {
     MemberDetailRecentCall,
 } from "@/types";
 
+// How many of the AE's meetings are shown per page in the "Recent calls"
+// list on their profile. Pagination here is client-side, over whatever
+// `recent_calls` the member-detail endpoint returns — see the note on
+// `useAeDetail` below.
+export const AE_CALLS_PAGE_SIZE = 5;
+
 // ─── Dimension metadata (icon/color per radar_scores key) ──────────────────
 // Order here drives the order the segments are drawn in on the gauge.
 const DIMENSION_META: { key: keyof MemberDetailRadarScores; label: string; icon: LucideIcon; color: string; ring: string }[] = [
@@ -139,6 +145,30 @@ export function useAeDetail({ ae, tenantId }: UseAeDetailArgs) {
     const recentCalls = detail ? recentCallsFrom(detail) : [];
     const sparkline = recentCalls.map((c) => c.score).reverse();
 
+    // ── "Recent calls" pagination (client-side, over the array the member-
+    // detail endpoint already returned) ──────────────────────────────────
+    // NOTE: the backend's GET /tenants/:tenant_id/members/:user_id route
+    // doesn't currently take a page/limit for recent_calls (unlike
+    // listMembers, which does) — it hands back whatever it considers
+    // "recent". This paginates that array so the admin can page through it
+    // instead of scrolling one long list; if the backend caps recent_calls
+    // itself (e.g. only ever sends the last N), this can't surface calls
+    // beyond that cap until the route grows its own pagination.
+    const [callsPage, setCallsPage] = useState(1);
+
+    // Re-fetching a different AE, or the list getting shorter (e.g. a
+    // narrower detail response) than the page we were on — snap back to
+    // page 1 rather than landing on an empty page.
+    useEffect(() => {
+        setCallsPage(1);
+    }, [ae?.userId]);
+
+    const callsTotalPages = Math.max(1, Math.ceil(recentCalls.length / AE_CALLS_PAGE_SIZE));
+    const safeCallsPage = Math.min(callsPage, callsTotalPages);
+    const callsRangeStart = recentCalls.length === 0 ? 0 : (safeCallsPage - 1) * AE_CALLS_PAGE_SIZE + 1;
+    const callsRangeEnd = Math.min(safeCallsPage * AE_CALLS_PAGE_SIZE, recentCalls.length);
+    const pagedCalls = recentCalls.slice((safeCallsPage - 1) * AE_CALLS_PAGE_SIZE, safeCallsPage * AE_CALLS_PAGE_SIZE);
+
     // ── Post-call analysis (opens the same MeetingDetails view used elsewhere) ─
     const [selectedMeeting, setSelectedMeeting] = useState<Meeting | null>(null);
 
@@ -165,6 +195,12 @@ export function useAeDetail({ ae, tenantId }: UseAeDetailArgs) {
         dimensions,
         strengthsAndGaps,
         recentCalls,
+        pagedCalls,
+        callsPage: safeCallsPage,
+        setCallsPage,
+        callsTotalPages,
+        callsRangeStart,
+        callsRangeEnd,
         sparkline,
         selectedMeeting,
         setSelectedMeeting,
