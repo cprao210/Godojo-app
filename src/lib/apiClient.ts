@@ -6,7 +6,9 @@
 //   - attaching the Firebase ID token as a Bearer header (request interceptor),
 //   - parsing the {"error":{code,message,details?}} envelope into a typed ApiError,
 //   - refreshing the token once on a 401 and retrying (response interceptor),
-//   - surfacing network/timeout failures as a 503 ApiError.
+//   - surfacing status-less failures as a typed ApiError that says WHICH kind it
+//     was: 504 client_timeout (we stopped waiting), 499 request_aborted (a caller
+//     cancelled), 503 service_unavailable (nothing was listening).
 //
 // The renderer already owns the Firebase user (src/lib/firebase.ts), so the token
 // is read directly here — no IPC round-trip. `apiFetch` keeps its fetch-era
@@ -83,6 +85,10 @@ const http = axios.create({
 
 // Request: attach the Firebase ID token. Force-refresh only on the retry pass.
 http.interceptors.request.use(async (config: RetryConfig) => {
+  // Stamped before anything can go wrong, and preserved across the 401 retry
+  // (the same config object is re-issued) so the elapsed figure a failure
+  // reports covers the whole attempt, not just the last leg of it.
+  config._startedAt ??= Date.now();
   const user = getFirebaseAuth().currentUser;
   if (!user) throw new ApiError(401, "unauthorized", "Not signed in");
   const token = await user.getIdToken(Boolean(config._retry));
@@ -146,16 +152,46 @@ http.interceptors.response.use(
       );
     }
 
-    // Backend down / DNS / CSP-blocked / timeout never reaches an HTTP status —
-    // surface it as the same 503 path the UI maps to "backend unavailable".
-    throw new ApiError(503, "service_unavailable", "Backend unavailable", String(error));
+    // No HTTP status at all: the request never got an answer. Four very different
+    // causes used to collapse into one indistinguishable 503 "Backend
+    // unavailable" — and telling them apart is the whole diagnosis when a slow
+    // route is being blamed for an outage. `elapsedMs` is the tiebreaker: a
+    // timeout lands at the ceiling, an unreachable backend fails in milliseconds.
+    const elapsedMs = config?._startedAt ? Date.now() - config._startedAt : undefined;
+    const details = { code: axiosError.code, elapsedMs, message: String(error) };
+
+    // A caller aborted deliberately (its own tighter deadline, or an unmount).
+    // Checked first: this is not a failure of the backend, and must not be
+    // reported as one.
+    if (axios.isCancel(error)) {
+      throw new ApiError(499, "request_aborted", "Request aborted", details);
+    }
+
+    // The instance's own `timeout` fired — the backend accepted the request and
+    // never answered inside the ceiling. axios aborts the XHR to do it, which is
+    // what Chrome's network panel renders as "(canceled)": that entry means WE
+    // gave up waiting, not that the server dropped anything. `ETIMEDOUT` is the
+    // same event under `transitional.clarifyTimeoutError`.
+    if (axiosError.code === "ECONNABORTED" || axiosError.code === "ETIMEDOUT") {
+      throw new ApiError(
+        504,
+        "client_timeout",
+        `Backend did not answer within ${http.defaults.timeout}ms`,
+        details,
+      );
+    }
+
+    // Backend down / DNS / CSP-blocked — surface it as the same 503 path the UI
+    // maps to "backend unavailable".
+    throw new ApiError(503, "service_unavailable", "Backend unavailable", details);
   },
 );
 
 /**
  * Call `${BASE}/api/v1${path}`. Attaches the Bearer token, retries once with a
  * force-refreshed token on the first 401, and throws ApiError on any non-2xx
- * (or network failure → synthesized service_unavailable). 204 resolves to undefined.
+ * (or, when there is no status at all, one of client_timeout / request_aborted /
+ * service_unavailable — see the response interceptor). 204 resolves to undefined.
  *
  * Keeps the fetch-era `(path, init)` signature: `init.body` is a pre-stringified
  * JSON string and is forwarded verbatim (axios sends strings as-is, no re-encoding).

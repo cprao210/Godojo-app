@@ -173,7 +173,7 @@ interface ElectronAPI {
   /** Generation of the call that is live right now — see liveAnalysisRouting.ts. */
   getMeetingGeneration: () => Promise<{ success: boolean; data?: number }>;
   regenerateMeetingSummary: (id: string) => Promise<{ success: boolean; meeting?: any; error?: string }>
-  uploadTranscript: (text: string, title?: string, meetingTypes?: ('discovery' | 'demo' | 'negotiation')[]) => Promise<{ success: boolean; meetingId?: string; error?: string }>
+  uploadTranscript: (text: string, title?: string, meetingTypes?: ('discovery' | 'demo' | 'negotiation')[], tenantId?: string | null) => Promise<{ success: boolean; meetingId?: string; error?: string }>
   updateMeetingSummary: (id: string, updates: { overview?: string, actionItems?: string[], keyPoints?: string[], actionItemsTitle?: string, keyPointsTitle?: string }) => Promise<boolean>
   onMeetingsUpdated: (callback: () => void) => () => void
   getDisplayName: (role: 'user' | 'client' | 'assistant') => Promise<string>;
@@ -701,6 +701,7 @@ contextBridge.exposeInMainWorld("electronAPI", {
   getOverlayMousePassthrough: () => ipcRenderer.invoke("get-overlay-mouse-passthrough"),
   setOpenAtLogin: (open: boolean) => ipcRenderer.invoke("set-open-at-login", open),
   getOpenAtLogin: () => ipcRenderer.invoke("get-open-at-login"),
+  showAppNotification: (title: string, message: string) => ipcRenderer.invoke("show-app-notification", { title, message }),
   setDisguise: (mode: 'terminal' | 'settings' | 'activity' | 'none') => ipcRenderer.invoke("set-disguise", mode),
   getDisguise: () => ipcRenderer.invoke("get-disguise"),
   onDisguiseChanged: (callback: (mode: 'terminal' | 'settings' | 'activity' | 'none') => void) => {
@@ -919,10 +920,11 @@ contextBridge.exposeInMainWorld("electronAPI", {
   getRecentMeetings: () => ipcRenderer.invoke("get-recent-meetings"),
   getRecentMeetingsLocal: () => ipcRenderer.invoke("get-recent-meetings-local"),
   getMeetingDetails: (id: string) => ipcRenderer.invoke("get-meeting-details", id),
+  getMeetingDetailsLocal: (id: string) => ipcRenderer.invoke("get-meeting-details-local", id),
   updateMeetingTitle: (id: string, title: string) => ipcRenderer.invoke("update-meeting-title", { id, title }),
   updateMeetingSummary: (id: string, updates: any) => ipcRenderer.invoke("update-meeting-summary", { id, updates }),
   regenerateMeetingSummary: (id: string) => ipcRenderer.invoke('regenerate-meeting-summary', { id }),
-  uploadTranscript: (text: string, title?: string, meetingTypes?: ('discovery' | 'demo' | 'negotiation')[]) => ipcRenderer.invoke('upload-transcript', { text, title, meetingTypes }),
+  uploadTranscript: (text: string, title?: string, meetingTypes?: ('discovery' | 'demo' | 'negotiation')[], tenantId?: string | null) => ipcRenderer.invoke('upload-transcript', { text, title, meetingTypes, tenantId }),
   deleteMeeting: (id: string) => ipcRenderer.invoke("delete-meeting", id),
 
   onMeetingsUpdated: (callback: () => void) => {

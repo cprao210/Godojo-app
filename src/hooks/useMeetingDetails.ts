@@ -30,6 +30,22 @@ export const formatTime = (ms: number) => {
     return date.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }).toLowerCase();
 };
 
+/**
+ * Transcript row timestamp. Live-call segments carry absolute epoch ms (the
+ * renderer formats those as wall-clock times); uploaded transcripts carry
+ * RELATIVE ms since the call start ("12s", "1:15") — a transcript where any
+ * positive timestamp is far below the epoch floor is the latter. Without this
+ * split, an uploaded "[00:00:12]" rendered as a wall-clock time near midnight.
+ */
+export const formatTranscriptTimestamp = (ms: number, relative: boolean): string => {
+    if (!relative) return formatTime(ms);
+    const totalSec = Math.floor(ms / 1000);
+    if (totalSec < 60) return `${totalSec}s`;
+    const m = Math.floor(totalSec / 60);
+    const s = totalSec % 60;
+    return `${m}:${String(s).padStart(2, '0')}`;
+};
+
 export const cleanMarkdown = (content: string) => {
     if (!content) return '';
     // Ensure code blocks are on new lines to fix rendering issues
@@ -91,23 +107,50 @@ function dedupeTranscript<T extends { speaker: string; text: string; timestamp: 
     return result;
 }
 
-function computeTalkTime(transcript: { speaker: string; text: string; timestamp: number }[] | undefined) {
-    if (!transcript || transcript.length === 0) return { user: 0, client: 0, userWords: 0, clientWords: 0 };
-    let userWords = 0, clientWords = 0;
+export interface TalkTimeSpeaker {
+    /** Internal role — drives colour + which name-resolution path is used. */
+    speaker: 'user' | 'client';
+    displayName?: string;
+    speakerIndex?: number;
+    words: number;
+    percent: number;
+}
+
+const INTERNAL_SPEAKERS = new Set(['system', 'ai', 'assistant', 'model']);
+
+/**
+ * Per-SPEAKER talk time, not per-channel. Segments are grouped by their
+ * resolved identity — the original label when present (uploaded transcripts
+ * carry real names: "Alex", "Daniel", "Lara") or role+dial index otherwise —
+ * so multi-party calls and 3+ speaker uploads each get their own row
+ * ("Alex — 213 words · 54%"), and the sales/client split stays driven by the
+ * parser's first-speaker=mic-user rule rather than guesswork.
+ */
+export function computeTalkTime(
+    transcript: { speaker: string; text: string; displayName?: string; speakerIndex?: number }[] | undefined
+): { speakers: TalkTimeSpeaker[]; totalWords: number } {
+    if (!transcript || transcript.length === 0) return { speakers: [], totalWords: 0 };
+    const groups = new Map<string, TalkTimeSpeaker>();
     for (const seg of transcript) {
-        if (!seg.text?.trim()) continue; // Ignore empty/system messages
-        const wordCount = seg.text.trim().split(/\s+/).filter(Boolean).length; // Count words
-        if (seg.speaker === 'user') { userWords += wordCount; }
-        else if (seg.speaker === 'client') { clientWords += wordCount };
+        const raw = (seg.speaker || '').toLowerCase();
+        if (INTERNAL_SPEAKERS.has(raw)) continue; // system/AI turns are not participants
+        if (!seg.text?.trim()) continue;
+        const role: 'user' | 'client' = raw === 'user' ? 'user' : 'client';
+        const key = `${role}::${seg.displayName ?? '∅'}::${seg.speakerIndex ?? '∅'}`;
+        const words = seg.text.trim().split(/\s+/).filter(Boolean).length;
+        const existing = groups.get(key);
+        if (existing) {
+            existing.words += words;
+        } else {
+            groups.set(key, { speaker: role, displayName: seg.displayName, speakerIndex: seg.speakerIndex, words, percent: 0 });
+        }
     }
-    const totalWords = userWords + clientWords;
-    if (totalWords === 0) return { user: 0, client: 0, userWords, clientWords };
-    return {
-        user: Math.round((userWords / totalWords) * 100),
-        client: Math.round((clientWords / totalWords) * 100),
-        userWords,
-        clientWords,
-    };
+    const speakers = [...groups.values()];
+    const totalWords = speakers.reduce((sum, s) => sum + s.words, 0);
+    if (totalWords > 0) {
+        for (const s of speakers) s.percent = Math.round((s.words / totalWords) * 100);
+    }
+    return { speakers, totalWords };
 }
 
 export type MeetingDetailsTab = 'summary' | 'transcript' | 'usage' | 'analysis';
@@ -204,6 +247,15 @@ export function useMeetingDetails(initialMeeting: Meeting) {
     const { data: localTranscript, isLoading: isLoadingLocalTranscript } = useQuery<MeetingTranscriptLine[] | null>(
         ["meeting-local-transcript", initialMeeting.id],
         async () => {
+            // Read the local SQLite copy first: the placeholder row saved the instant
+            // the call ended already carries the full transcript, while the Supabase
+            // mirror (which window.electronAPI.getMeetingDetails prefers) only gets
+            // the meetings row and its transcript batch when the async outbox drains
+            // — a cloud read in that window returns null or a transcript-less
+            // meeting, which is exactly the state a processing meeting is opened in.
+            const localDetails = await window.electronAPI?.getMeetingDetailsLocal?.(initialMeeting.id);
+            if (localDetails?.transcript?.length) return localDetails.transcript as MeetingTranscriptLine[];
+            // No local row (e.g. meeting created on another device) — cloud copy.
             const details = await window.electronAPI?.getMeetingDetails?.(initialMeeting.id);
             return details?.transcript ?? null;
         },
@@ -447,7 +499,7 @@ export function useMeetingDetails(initialMeeting: Meeting) {
     const canRegenerate = !isRegenerating && (!isProcessing || isProcessingStalled);
 
     const speakerNames = (meeting.detailedSummary as any)?.speakerNames as
-        { user: string; client: string } | undefined;
+        { user: string; client: string; clientDiarized?: string } | undefined;
 
     // Diarization: suffix far-end labels only when 2+ distinct speaker indices
     // were recorded for this meeting — 1:1 calls render exactly as before.
@@ -463,25 +515,95 @@ export function useMeetingDetails(initialMeeting: Meeting) {
         return false;
     }, [meeting.transcript]);
 
+    // Speaking Balance calls getSpeakerDisplayName('user'/'client') with no
+    // per-segment displayName (there's no single segment to derive one from
+    // for an aggregate stat), so without this it fell back straight past
+    // step 1 to speakerNames — which lags/is empty in some meetings even
+    // though individual transcript segments already carry a live-resolved
+    // displayName (e.g. "Nikhilbarot"). That's what produced the mismatch:
+    // transcript bubbles showed the resolved name while Speaking Balance sat
+    // on the generic "You"/"Other Party" fallback. Scanning the transcript
+    // once for the first non-generic displayName per role gives Speaking
+    // Balance the same answer the transcript itself is already showing.
+    const liveDisplayNames = useMemo(() => {
+        let user: string | undefined;
+        let client: string | undefined;
+        for (const seg of meeting.transcript || []) {
+            const raw = (seg as any).displayName as string | undefined;
+            if (!raw || raw === 'Me' || raw === 'Them') continue;
+            // Diarized rows carry a "· Speaker N" suffix; the aggregate stats
+            // need the BASE name only, so strip it before selecting a first
+            // non-generic per-role label. Without this, Speaking Balance would
+            // show "Raksham · Speaker 1" as the whole client-side aggregate.
+            const suffixIdx = raw.indexOf(' · Speaker ');
+            const name = suffixIdx === -1 ? raw : raw.slice(0, suffixIdx);
+            if (seg.speaker === 'user' && !user) user = name;
+            if ((seg.speaker === 'client' || seg.speaker === 'interviewer') && !client) client = name;
+            if (user && client) break;
+        }
+        return { user, client };
+    }, [meeting.transcript]);
+
+    // See formatTranscriptTimestamp — epoch ms is ~1.7e12, so a transcript
+    // whose positive timestamps are all under a few decades is relative.
+    const transcriptTimesAreRelative = useMemo(
+        () => (meeting.transcript || []).some(t => t.timestamp > 0 && t.timestamp < 1e11),
+        [meeting.transcript]
+    );
+
+    // "Morgan (Raksham)" style labels embed the company in parentheses — the
+    // diarized base is the company part alone, matching SessionTracker's
+    // clientDiarized rule for 1-attendee-with-company meetings.
+    const companyFromLabel = (label?: string): string | undefined => {
+        if (!label) return undefined;
+        const m = label.match(/\(([^)]+)\)\s*$/);
+        return m?.[1]?.trim() || undefined;
+    };
+
     const getSpeakerDisplayName = (speaker: string, displayName?: string, speakerIndex?: number): string => {
-        // 1. Live transcription supplies displayName directly — always prefer it.
-        //    Exception: older meetings recorded before speaker labels were
-        //    unified may have "Me"/"Them" baked into this field — normalize
-        //    those legacy values so old meetings render the same "You" /
-        //    "Other Party" labels as new ones instead of the stale wording.
+        // Normalize legacy "Me"/"Them" stamps so old meetings render the same
+        // "You" / "Other Party" wording as new ones.
         if (displayName === 'Me') displayName = undefined;
         if (displayName === 'Them') displayName = undefined;
+        // Diarization first for far-end turns: when 2+ distinct client voices
+        // were recorded, the per-segment displayName is only meaningful if it
+        // already carries the "· Speaker N" suffix. Rows saved before that
+        // stamping existed (or via a source that flattened every client turn
+        // onto the plain name) must still re-derive the label — otherwise the
+        // plain stamp shadows the suffix and the tab loses the attribution the
+        // live call showed. Manual rename sets clientDiarized to the typed
+        // value, so the explicit override still wins here.
+        if (
+            (speaker === 'client' || speaker === 'interviewer') &&
+            hasMultipleClientSpeakers &&
+            speakerIndex !== undefined &&
+            speakerIndex !== null &&
+            !displayName?.includes(' · Speaker ')
+        ) {
+            const diarizedBase =
+                speakerNames?.clientDiarized ||
+                companyFromLabel(displayName) ||
+                'Other Party';
+            return `${diarizedBase} · Speaker ${speakerIndex + 1}`;
+        }
+        // 1. An explicit per-segment displayName (passed by the transcript
+        //    view) wins — it's the ground truth for that exact turn.
         if (displayName) return displayName;
-        // 2. Use resolved calendar names saved in detailedSummary.speakerNames.
+        // 2. No segment displayName was passed in (e.g. Speaking Balance,
+        //    which shows one name per role rather than per turn) — fall back
+        //    to whatever live-resolved name the transcript itself used (base,
+        //    suffix stripped — see liveDisplayNames above), so this never
+        //    disagrees with what's rendered just below it.
+        if (speaker === 'user' && liveDisplayNames.user) return liveDisplayNames.user;
+        if ((speaker === 'client' || speaker === 'interviewer') && liveDisplayNames.client) {
+            return liveDisplayNames.client;
+        }
+        // 3. Use resolved calendar names saved in detailedSummary.speakerNames.
         //    These are set by SessionTracker (e.g. "Nikhilbarot", "Salesforce").
         //    Fall back to "You" / "Other Party" only when no calendar data was resolved.
         if (speaker === 'user') return speakerNames?.user || 'You';
         if (speaker === 'client' || speaker === "interviewer") {
-            const base = speakerNames?.client || 'Other Party';
-            if (hasMultipleClientSpeakers && speakerIndex !== undefined && speakerIndex !== null) {
-                return `${base} · Speaker ${speakerIndex + 1}`;
-            }
-            return base;
+            return speakerNames?.client || 'Other Party';
         }
         if (speaker === 'assistant') return 'Assistant';
         return speaker;
@@ -872,6 +994,7 @@ ${formatNextCallPlaybook() || '  None'}
         isTalktimeOpen, setIsTalktimeOpen,
         talkTime,
         getSpeakerDisplayName,
+        transcriptTimesAreRelative,
         handleSubmitQuestion,
         handleInputKeyDown,
         handleCopy,

@@ -1,9 +1,10 @@
-import React, { useEffect, useState } from 'react';
+import React, { useCallback, useEffect, useState } from 'react';
 import { createPortal } from 'react-dom';
-import { Activity, AlertTriangle, CheckCircle2, ExternalLink, Mic, Volume2, Wrench, X } from 'lucide-react';
+import { Activity, AlertTriangle, CheckCircle2, ExternalLink, Mic, Speaker, Volume2, Wrench, X } from 'lucide-react';
 import { motion, AnimatePresence } from 'framer-motion';
 import { useResolvedTheme, useSystemAudioPermission, useAudioStatusTray } from '@/hooks';
 import { shapeLevel, DEFAULT_MIC_GAIN, DEFAULT_SYSTEM_GAIN } from '@/features/floating-dock/AudioWaveIndicator';
+import { playTestSound } from '@/lib/audioTest';
 import { posthogAnalytics } from '@/lib/analytics/posthog.service';
 import type { AudioStatusTrayProps, AudioChannelCardProps, AudioLevelMeterProps } from '@/types';
 
@@ -32,6 +33,16 @@ const toneText = (tone: 'mic' | 'system', isLight: boolean): string =>
 
 const meterTrack = (isLight: boolean): string => (isLight ? 'bg-black/[0.07]' : 'bg-white/10');
 
+// Hoisted so the memo on AudioChannelCard can actually hold: an inline
+// `<Mic size={16}/>` allocates a fresh element on every tray render, and this
+// tray re-renders on every audio-level publish (~20/s per channel) for the whole
+// meeting — by design, since its meters are the launcher's liveness indicator.
+const ICON_MIC = <Mic size={16} />;
+const ICON_SYSTEM = <Volume2 size={16} />;
+
+/** Module scope so the memoized handlers below need not depend on it. */
+const platformName = (): string => window.electronAPI?.getPlatform?.() || 'unknown';
+
 /**
  * Level meter for both tray surfaces. Animates via `transform` only — no layout,
  * no paint of a changing box — because it can update ~20 times a second for the
@@ -39,8 +50,12 @@ const meterTrack = (isLight: boolean): string => (isLight ? 'bg-black/[0.07]' : 
  *
  * Marked aria-hidden: a value that changes 20x/s is noise to a screen reader.
  * The textual status badge beside it carries the same meaning.
+ *
+ * Memoized: both channels' meters are re-rendered by every level publish, but a
+ * publish only ever carries one channel — so the other one now skips entirely,
+ * along with its four bar computations.
  */
-export const AudioLevelMeter: React.FC<AudioLevelMeterProps> = ({
+export const AudioLevelMeter: React.FC<AudioLevelMeterProps> = React.memo(({
     level,
     isLive,
     tone,
@@ -82,15 +97,22 @@ export const AudioLevelMeter: React.FC<AudioLevelMeterProps> = ({
             />
         </div>
     );
-};
+});
+
+AudioLevelMeter.displayName = 'AudioLevelMeter';
 
 /**
  * One channel of the panel. Replaces the old PermissionRow: same permission
  * affordances, plus the device it resolves to and a live meter, because
  * "allowed" and "actually receiving audio" are different questions and only the
  * second one predicts whether the meeting will transcribe.
+ *
+ * Memoized for the same reason as the meter: while a meeting is live this card is
+ * inside a subtree that re-renders ~20x/s per channel, and only `level` actually
+ * moves. Its icon is a hoisted constant and its two callbacks are stable, so the
+ * comparison holds.
  */
-const AudioChannelCard: React.FC<AudioChannelCardProps> = ({
+const AudioChannelCard: React.FC<AudioChannelCardProps> = React.memo(({
     icon,
     title,
     isGranted,
@@ -188,7 +210,9 @@ const AudioChannelCard: React.FC<AudioChannelCardProps> = ({
             )}
         </div>
     );
-};
+});
+
+AudioChannelCard.displayName = 'AudioChannelCard';
 
 export const AudioStatusTray: React.FC<AudioStatusTrayProps> = ({ isVisible, onClose, onAllGranted }) => {
     const {
@@ -258,25 +282,37 @@ export const AudioStatusTray: React.FC<AudioStatusTrayProps> = ({ isVisible, onC
         if (!isAllGranted) setExpanded(true);
     }, [checked, isAllGranted]);
 
-    const platformName = () => window.electronAPI?.getPlatform?.() || 'unknown';
-
-    const handleRequest = async (type: 'microphone' | 'screen') => {
+    const handleRequest = useCallback(async (type: 'microphone' | 'screen') => {
         posthogAnalytics.trackEvent("audio_permission_requested", { type, platform: platformName() });
         const granted = await request(type);
         posthogAnalytics.trackEvent("audio_permission_result", { type, granted, platform: platformName() });
-    };
+    }, [request]);
 
     // Deep-link to the pane matching the row. This previously always opened
     // Microphone, so the System Audio row sent users somewhere useless.
-    const openSettings = (pane: 'microphone' | 'screen') => {
+    const openSettings = useCallback((pane: 'microphone' | 'screen') => {
         posthogAnalytics.trackEvent("audio_permission_settings_opened", { pane, platform: platformName() });
         openPane(pane);
-    };
+    }, [openPane]);
+
+    // Per-card bindings, stable so the memo on AudioChannelCard holds.
+    const requestMic = useCallback(() => { void handleRequest('microphone'); }, [handleRequest]);
+    const requestSystem = useCallback(() => { void handleRequest('screen'); }, [handleRequest]);
+    const openMicSettings = useCallback(() => openSettings('microphone'), [openSettings]);
+    const openSystemSettings = useCallback(() => openSettings('screen'), [openSettings]);
 
     const handleRepair = async () => {
         posthogAnalytics.trackEvent("audio_permission_repair_clicked", { platform: platformName() });
         await repair();
         await recheck();
+    };
+
+    // Speaker check — plays a short beep through the user's saved output
+    // device (same localStorage key Settings > Audio writes to via
+    // selectOutputDevice), independent of the mic/system capture test above.
+    const handleTestSound = () => {
+        posthogAnalytics.trackEvent("audio_tray_test_sound_clicked", { platform: platformName() });
+        void playTestSound(localStorage.getItem('preferredOutputDeviceId') || undefined);
     };
 
     const handleTestToggle = () => {
@@ -446,7 +482,7 @@ export const AudioStatusTray: React.FC<AudioStatusTrayProps> = ({ isVisible, onC
 
                                     {/* Microphone */}
                                     <AudioChannelCard
-                                        icon={<Mic size={16} />}
+                                        icon={ICON_MIC}
                                         title="Microphone"
                                         isGranted={permissions.microphone}
                                         status={microphoneStatus}
@@ -458,14 +494,14 @@ export const AudioStatusTray: React.FC<AudioStatusTrayProps> = ({ isVisible, onC
                                         errorText={testError}
                                         tone="mic"
                                         isLight={isLight}
-                                        onRequest={() => handleRequest('microphone')}
-                                        onOpenSettings={() => openSettings('microphone')}
+                                        onRequest={requestMic}
+                                        onOpenSettings={openMicSettings}
                                     />
 
                                     {/* System Audio — gated by Screen Recording on macOS,
                                     which is why it deep-links to a different pane. */}
                                     <AudioChannelCard
-                                        icon={<Volume2 size={16} />}
+                                        icon={ICON_SYSTEM}
                                         title="System Audio"
                                         isGranted={permissions.screenCapture}
                                         status={screenStatus}
@@ -479,8 +515,8 @@ export const AudioStatusTray: React.FC<AudioStatusTrayProps> = ({ isVisible, onC
                                         errorText={systemError}
                                         tone="system"
                                         isLight={isLight}
-                                        onRequest={() => handleRequest('screen')}
-                                        onOpenSettings={() => openSettings('screen')}
+                                        onRequest={requestSystem}
+                                        onOpenSettings={openSystemSettings}
                                     />
                                 </div>
 
@@ -517,6 +553,16 @@ export const AudioStatusTray: React.FC<AudioStatusTrayProps> = ({ isVisible, onC
                                           it on panel open would both fight that window and record
                                           the user because they clicked a status icon.
                                         */}
+                                        {!meetingLive && (
+                                            <button
+                                                onClick={handleTestSound}
+                                                disabled={!testing}
+                                                title={testing ? 'Play a short tone through your speakers to confirm output' : 'Start Test audio first to enable this'}
+                                                className="px-3 py-2 rounded-lg text-xs font-medium border border-border-muted text-text-secondary hover:text-text-primary hover:bg-bg-elevated transition-colors flex items-center gap-1.5 disabled:opacity-40 disabled:cursor-not-allowed disabled:hover:bg-transparent disabled:hover:text-text-secondary"
+                                            >
+                                                <Speaker size={12} /> Test sound
+                                            </button>
+                                        )}
                                         {!meetingLive && permissions.microphone && (
                                             <button
                                                 onClick={handleTestToggle}

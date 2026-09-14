@@ -15,8 +15,80 @@
 // - Speech onset: 0ms delay (immediate)
 // - Hangover: Only affects AFTER speech ends (no latency impact)
 
+use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
 use std::time::{Duration, Instant};
 use webrtc_vad::{SampleRate as VadSampleRate, Vad, VadMode};
+
+// ── Mic-gate telemetry ───────────────────────────────────────────────────────
+//
+// The two-stage gate is the single biggest thing standing between the
+// microphone and the STT provider, and until now it reported nothing. A call
+// where `frames_total` (echo_control's post-gate counter) sat at 18 over three
+// minutes was indistinguishable from three different faults:
+//
+//   * the rep genuinely never spoke,
+//   * the mic delivered near-silence (muted in Windows, wrong input device,
+//     input level at zero),
+//   * or the gate itself rejected real speech — stage 1 because
+//     `adaptive_threshold` (= noise_floor_ema × 3, floored at 20) outran a quiet
+//     mic, or stage 2 because `VadMode::Aggressive` refused to call it voice.
+//
+// Those need completely different fixes, so guessing was not an option. These
+// counters separate them, and land in getAudioPipelineStats() where main's 5 s
+// poll already prints them:
+//
+//   peak_rms ≈ 0                      → the mic is delivering nothing
+//   peak_rms healthy, rms_rejects ≈ frames → stage 1 threshold is too high
+//   rms_rejects low, vad_rejects high → stage 2 (Aggressive VAD) is the filter
+//   speech high but frames_total low  → the problem is downstream of the gate
+//
+// Published only by the microphone suppressor (`publish_telemetry`), never the
+// system-audio one — two writers would make every number meaningless. Relaxed
+// ordering: diagnostics read from a different thread, where exact-instant
+// coherence buys nothing.
+
+/// Frames the gate examined this mic session.
+pub static GATE_FRAMES: AtomicU64 = AtomicU64::new(0);
+/// Frames that passed BOTH stages (RMS and VAD) — real detected speech.
+pub static GATE_SPEECH: AtomicU64 = AtomicU64::new(0);
+/// Frames rejected by stage 1: RMS below the adaptive threshold.
+pub static GATE_RMS_REJECTS: AtomicU64 = AtomicU64::new(0);
+/// Frames that cleared stage 1 but which the WebRTC VAD did not call voice.
+pub static GATE_VAD_REJECTS: AtomicU64 = AtomicU64::new(0);
+/// Loudest frame RMS seen this session, f32 bits. The one number that says
+/// whether the microphone is producing signal at all.
+static GATE_PEAK_RMS_BITS: AtomicU32 = AtomicU32::new(0);
+/// Most recent frame RMS, f32 bits.
+static GATE_LAST_RMS_BITS: AtomicU32 = AtomicU32::new(0);
+/// Current adaptive threshold, f32 bits — what stage 1 is comparing against.
+static GATE_THRESHOLD_BITS: AtomicU32 = AtomicU32::new(0);
+
+/// Zero the counters at the start of a mic session, so the ratios describe this
+/// call rather than every call since launch. Called from
+/// `echo_control::on_mic_start` alongside the other per-session resets.
+pub fn reset_gate_stats() {
+    GATE_FRAMES.store(0, Ordering::Relaxed);
+    GATE_SPEECH.store(0, Ordering::Relaxed);
+    GATE_RMS_REJECTS.store(0, Ordering::Relaxed);
+    GATE_VAD_REJECTS.store(0, Ordering::Relaxed);
+    GATE_PEAK_RMS_BITS.store(0, Ordering::Relaxed);
+    GATE_LAST_RMS_BITS.store(0, Ordering::Relaxed);
+    GATE_THRESHOLD_BITS.store(0, Ordering::Relaxed);
+}
+
+/// Snapshot for the pipeline stats JSON: (frames, speech, rms_rejects,
+/// vad_rejects, peak_rms, last_rms, threshold).
+pub fn gate_stats() -> (u64, u64, u64, u64, f32, f32, f32) {
+    (
+        GATE_FRAMES.load(Ordering::Relaxed),
+        GATE_SPEECH.load(Ordering::Relaxed),
+        GATE_RMS_REJECTS.load(Ordering::Relaxed),
+        GATE_VAD_REJECTS.load(Ordering::Relaxed),
+        f32::from_bits(GATE_PEAK_RMS_BITS.load(Ordering::Relaxed)),
+        f32::from_bits(GATE_LAST_RMS_BITS.load(Ordering::Relaxed)),
+        f32::from_bits(GATE_THRESHOLD_BITS.load(Ordering::Relaxed)),
+    )
+}
 
 /// Configuration for silence suppression
 /// Optimized for low latency with adaptive threshold
@@ -44,6 +116,12 @@ pub struct SilenceSuppressionConfig {
     /// Native sample rate of the audio being processed (e.g. 48000)
     /// Used to calculate decimation ratio for 16kHz VAD input.
     pub native_sample_rate: u32,
+
+    /// Publish this suppressor's gate decisions to the module-level telemetry
+    /// counters. True for the microphone only — the counters describe one gate,
+    /// and the system-audio suppressor writing to them too would make every
+    /// ratio meaningless.
+    pub publish_telemetry: bool,
 }
 
 impl Default for SilenceSuppressionConfig {
@@ -56,6 +134,7 @@ impl Default for SilenceSuppressionConfig {
             adaptive_min_floor: 20.0,
             ema_alpha: 0.02,
             native_sample_rate: 48000,
+            publish_telemetry: false,
         }
     }
 }
@@ -71,6 +150,7 @@ impl SilenceSuppressionConfig {
             adaptive_min_floor: 10.0,
             ema_alpha: 0.02,
             native_sample_rate: 48000,
+            publish_telemetry: false,
         }
     }
 
@@ -84,6 +164,9 @@ impl SilenceSuppressionConfig {
             adaptive_min_floor: 20.0,
             ema_alpha: 0.02,
             native_sample_rate: 48000,
+            // The mic gate is the one on the STT-critical path, so it is the one
+            // worth instrumenting. See the telemetry block at the top.
+            publish_telemetry: true,
         }
     }
 }
@@ -136,7 +219,7 @@ impl SilenceSuppressor {
 
         let vad = Vad::new_with_rate_and_mode(VadSampleRate::Rate16kHz, VadMode::Aggressive);
 
-        println!(
+        crate::vlog!(
             "[SilenceSuppressor] Created: threshold={} (adaptive), hangover={}ms, \
              keepalive={}ms, native_rate={}Hz, decimation={:.2}x, VAD=Aggressive",
             config.speech_threshold_rms,
@@ -176,12 +259,32 @@ impl SilenceSuppressor {
         // ── TWO-STAGE GATE ──────────────────────────────────────────────
         // Stage 1: Fast RMS check (rejects obvious silence cheaply)
         // Stage 2: WebRTC VAD (rejects non-speech noise: typing, dogs, fans)
-        let has_speech = if rms >= self.adaptive_threshold {
+        let passed_rms = rms >= self.adaptive_threshold;
+        let has_speech = if passed_rms {
             // Stage 2: Decimate to 16kHz and run ML-based voice detection
             self.is_voice(frame)
         } else {
             false
         };
+
+        // Record which stage decided, before the state machine runs — this is
+        // the only place that distinction exists.
+        if self.config.publish_telemetry {
+            GATE_FRAMES.fetch_add(1, Ordering::Relaxed);
+            if !passed_rms {
+                GATE_RMS_REJECTS.fetch_add(1, Ordering::Relaxed);
+            } else if has_speech {
+                GATE_SPEECH.fetch_add(1, Ordering::Relaxed);
+            } else {
+                GATE_VAD_REJECTS.fetch_add(1, Ordering::Relaxed);
+            }
+            GATE_LAST_RMS_BITS.store(rms.to_bits(), Ordering::Relaxed);
+            GATE_THRESHOLD_BITS.store(self.adaptive_threshold.to_bits(), Ordering::Relaxed);
+            let peak = f32::from_bits(GATE_PEAK_RMS_BITS.load(Ordering::Relaxed));
+            if rms > peak {
+                GATE_PEAK_RMS_BITS.store(rms.to_bits(), Ordering::Relaxed);
+            }
+        }
 
         // ALWAYS check for speech first - immediate response
         if has_speech {
@@ -358,6 +461,9 @@ mod tests {
             adaptive_min_floor: 20.0,
             ema_alpha: 0.02,
             native_sample_rate: 16000,
+            // Off in tests: the counters are process-global, so a test writing
+            // to them would make `cargo test` order affect their values.
+            publish_telemetry: false,
         });
 
         let silent_frame: Vec<i16> = vec![0; 320];
@@ -378,6 +484,7 @@ mod tests {
             adaptive_min_floor: 20.0,
             ema_alpha: 0.02,
             native_sample_rate: 16000,
+            publish_telemetry: false,
         });
 
         // Send a loud speech-like frame
@@ -395,5 +502,54 @@ mod tests {
         // Another silent frame should NOT trigger speech_ended again
         let (_, ended) = suppressor.process(&silent_frame);
         assert!(!ended, "Speech_ended should only fire once per transition");
+    }
+
+    /// The telemetry exists to answer one question — *which* stage dropped the
+    /// frame — so the thing worth testing is the attribution, not the totals.
+    ///
+    /// Safe to run in parallel with the tests above because `publish_telemetry`
+    /// is off everywhere else in the crate (only `for_microphone()` turns it on,
+    /// and no test builds that), making this the process's only writer.
+    #[test]
+    fn test_gate_stats_attribute_the_rejecting_stage() {
+        reset_gate_stats();
+
+        let mut suppressor = SilenceSuppressor::new(SilenceSuppressionConfig {
+            speech_threshold_rms: 100.0,
+            native_sample_rate: 16000,
+            publish_telemetry: true,
+            ..SilenceSuppressionConfig::default()
+        });
+
+        // Silence is below the stage-1 RMS threshold, so it must never reach
+        // the VAD — a silent frame counted as a VAD reject would mean the two
+        // stages are being conflated and the field could not be trusted.
+        let silent_frame: Vec<i16> = vec![0; 320];
+        suppressor.process(&silent_frame);
+
+        let (frames, speech, rms_rejects, vad_rejects, _peak, _last, _thresh) = gate_stats();
+        assert_eq!(frames, 1, "every examined frame should be counted");
+        assert_eq!(rms_rejects, 1, "silence should be rejected at stage 1");
+        assert_eq!(vad_rejects, 0, "stage 2 should not have seen the frame");
+        assert_eq!(speech, 0);
+
+        // A frame loud enough to clear both stages moves the speech counter,
+        // and peak_rms holds the loudest RMS the mic actually produced — the
+        // field that tells "nobody spoke" apart from "the gate was too strict".
+        let loud_frame: Vec<i16> = (0..320)
+            .map(|i| ((i as f32 * 0.1).sin() * 10000.0) as i16)
+            .collect();
+        suppressor.process(&loud_frame);
+
+        let (frames, speech, rms_rejects, _vad_rejects, peak, last, _thresh) = gate_stats();
+        assert_eq!(frames, 2);
+        assert_eq!(speech, 1, "a loud voiced frame should count as speech");
+        assert_eq!(rms_rejects, 1, "the earlier reject should still stand");
+        assert!(peak > 100.0, "peak_rms should track the loud frame, got {peak}");
+        assert_eq!(peak, last, "the loud frame is both the latest and the peak");
+
+        reset_gate_stats();
+        let (frames, ..) = gate_stats();
+        assert_eq!(frames, 0, "reset should clear the counters between sessions");
     }
 }

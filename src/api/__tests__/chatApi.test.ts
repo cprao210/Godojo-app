@@ -16,6 +16,7 @@ vi.mock('@/lib/apiClient', async () => {
 });
 
 import { chatApi, statusLabel } from '@/api';
+import { groupSources } from '@/api/chatApi';
 import { getAuthHeaders, apiFetch } from '@/lib/apiClient';
 
 const mockedGetAuthHeaders = vi.mocked(getAuthHeaders);
@@ -91,6 +92,38 @@ function collectHandlers() {
 
     return { handlers, settled, tokens, statuses, get sources() { return sources; }, get ragAnswer() { return ragAnswer; }, get error() { return error; }, get done() { return done; }, get resets() { return resets; } };
 }
+
+describe('groupSources', () => {
+    it('groups the flat {id, title, type} shape (queryGlobal/queryMeeting/history) into meetings and assets', () => {
+        expect(groupSources([
+            { id: 'm1', title: 'Call A', type: 'meeting' },
+            { id: 'a1', title: 'Doc A', type: 'asset' },
+        ])).toEqual({
+            meetings: [{ id: 'm1', title: 'Call A' }],
+            assets: [{ id: 'a1', title: 'Doc A' }],
+        });
+    });
+
+    it('groups the live {asset_id, title, kind} shape into meetings and assets', () => {
+        expect(groupSources([
+            { asset_id: 'product_specs-1', title: 'orbitly_product_specs.docx', kind: 'asset' },
+        ] as any)).toEqual({
+            meetings: [],
+            assets: [{ id: 'product_specs-1', title: 'orbitly_product_specs.docx' }],
+        });
+    });
+
+    it('drops entries with no resolvable id in either shape', () => {
+        expect(groupSources([
+            { title: 'no id at all', kind: 'asset' },
+        ] as any)).toEqual({ meetings: [], assets: [] });
+    });
+
+    it('returns empty arrays, not undefined, for undefined or empty input', () => {
+        expect(groupSources(undefined)).toEqual({ meetings: [], assets: [] });
+        expect(groupSources([])).toEqual({ meetings: [], assets: [] });
+    });
+});
 
 describe('statusLabel', () => {
     it('maps known status values to their labels', () => {
@@ -271,6 +304,84 @@ describe('chatApi.queryGlobal', () => {
         await new Promise((resolve) => setTimeout(resolve, 0));
         expect(onError).not.toHaveBeenCalled();
     });
+
+    it('retries and completes when the stream closes silently but empty (2xx, no frames, no done)', async () => {
+        // Upstream LLM hiccup surfacing as a 200 whose body just ends: no
+        // content frames, no done frame. Without the empty-stream guard this
+        // would call onDone() and consumers would finalize an empty assistant
+        // bubble. Attempt 1 is empty (retryable); attempt 2 delivers.
+        fetchMock.mockImplementationOnce(() => Promise.resolve(sseResponse([])));
+        fetchMock.mockImplementationOnce(() =>
+            Promise.resolve(sseResponse([
+                'event: token\ndata: {"chunk":"Recovered answer"}',
+                'event: done\ndata: {}',
+            ])),
+        );
+        vi.useFakeTimers(); // skip the 600ms backoff between attempts
+        const onRetry = vi.fn();
+        const result = collectHandlers();
+
+        chatApi.queryGlobal('hi', null, [], { ...result.handlers, onRetry });
+        await vi.runAllTimersAsync();
+        await result.settled;
+
+        expect(result.done).toBe(true);
+        expect(result.error).toBeUndefined();
+        expect(result.tokens.join('')).toBe('Recovered answer');
+        expect(onRetry).toHaveBeenCalledTimes(1);
+        expect(fetchMock).toHaveBeenCalledTimes(2);
+    });
+
+    it('treats a done-frame-only stream as a completed turn, not an empty failure', async () => {
+        // The backend may legitimately finish a turn with just `done` (e.g. it
+        // answered via frames this test doesn't exercise, or intentionally sent
+        // nothing). The explicit done frame means "turn complete" — it must NOT
+        // trigger the silent-empty retry.
+        fetchMock.mockResolvedValueOnce(sseResponse(['event: done\ndata: {}']));
+        const onRetry = vi.fn();
+        const result = collectHandlers();
+
+        chatApi.queryGlobal('hi', null, [], { ...result.handlers, onRetry });
+        await result.settled;
+
+        expect(result.done).toBe(true);
+        expect(result.error).toBeUndefined();
+        expect(onRetry).not.toHaveBeenCalled();
+        expect(fetchMock).toHaveBeenCalledTimes(1);
+    });
+
+    it('retries an empty stream on every attempt, then errors with an explicit empty-response message', async () => {
+        fetchMock.mockImplementation(() => Promise.resolve(sseResponse([])));
+        vi.useFakeTimers();
+        const result = collectHandlers();
+
+        chatApi.queryGlobal('hi', null, [], result.handlers);
+        await vi.runAllTimersAsync();
+        await result.settled;
+
+        expect(result.done).toBe(false);
+        expect(result.error).toBe('The assistant returned an empty response. Please try again.');
+        expect(fetchMock).toHaveBeenCalledTimes(MAX_STREAM_RETRIES + 1);
+    });
+
+    it('finalizes a truncated stream (content delivered, then silent close) without retrying', async () => {
+        // Tokens arrived, then the server hung up without a done frame. The
+        // partial answer is already on screen, so retrying would duplicate it;
+        // the read loop finishing is treated as the end of the answer and
+        // onDone() synthesizes the completion instead.
+        fetchMock.mockResolvedValueOnce(sseResponse(['event: token\ndata: {"chunk":"Partial…"}']));
+        const onRetry = vi.fn();
+        const result = collectHandlers();
+
+        chatApi.queryGlobal('hi', null, [], { ...result.handlers, onRetry });
+        await result.settled;
+
+        expect(result.done).toBe(true);
+        expect(result.error).toBeUndefined();
+        expect(result.tokens.join('')).toBe('Partial…');
+        expect(onRetry).not.toHaveBeenCalled();
+        expect(fetchMock).toHaveBeenCalledTimes(1);
+    });
 });
 
 describe('chatApi.queryMeeting', () => {
@@ -344,6 +455,39 @@ describe('chatApi.queryLive', () => {
         await settled;
 
         expect(onInteractionId).toHaveBeenCalledWith(441);
+    });
+
+    it('dispatches a source_ids frame in the live asset_id/kind shape, dropping entries with no asset_id', async () => {
+        fetchMock.mockResolvedValueOnce(sseResponse([
+            'event: source_ids\ndata: {"sources":[{"asset_id":"product_specs-1","title":"orbitly_product_specs.docx","kind":"asset"},{"asset_id":"sales_deck-2","title":"orbitly_sales_deck_meridian.pptx","kind":"asset"},{"title":"no id here","kind":"asset"}],"raw_ids":[],"raw_asset_ids":["product_specs-1","sales_deck-2"]}',
+            'event: done\ndata: {}',
+        ]));
+        const result = collectHandlers();
+
+        chatApi.queryLive('what is on page 2', [], [], undefined, result.handlers);
+        await result.settled;
+
+        expect(result.sources).toEqual({
+            meetings: [],
+            assets: [
+                { id: 'product_specs-1', title: 'orbitly_product_specs.docx' },
+                { id: 'sales_deck-2', title: 'orbitly_sales_deck_meridian.pptx' },
+            ],
+        });
+    });
+
+    it('never fires onSources for a live turn whose source_ids frame has no asset_id-bearing entries', async () => {
+        fetchMock.mockResolvedValueOnce(sseResponse([
+            'event: source_ids\ndata: {"sources":[],"raw_ids":[],"raw_asset_ids":[]}',
+            'event: token\ndata: {"chunk":"No sources for this one."}',
+            'event: done\ndata: {}',
+        ]));
+        const result = collectHandlers();
+
+        chatApi.queryLive('unrelated question', [], [], undefined, result.handlers);
+        await result.settled;
+
+        expect(result.sources).toEqual({ meetings: [], assets: [] });
     });
 });
 

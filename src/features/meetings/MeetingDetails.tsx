@@ -1,12 +1,12 @@
 import React, { useEffect, useState } from 'react';
-import { useResolvedTheme, useMeetingDetails, formatTime, cleanMarkdown, isSummaryEmpty } from '@/hooks';
+import { useResolvedTheme, useMeetingDetails, formatTime, formatTranscriptTimestamp, cleanMarkdown, isSummaryEmpty } from '@/hooks';
 import { hasGeneratedSummary } from '@/lib/meetingLifecycle';
 import { Mail, ChevronDown, BarChart3, ArrowUp, Copy, Check, TrendingUp, TriangleAlert, MessageSquare } from 'lucide-react';
 import { MessagesSquareIcon, ChartColumnIncreasing, CircleCheck, NotepadText, RefreshCcw, RefreshCw, NotebookPen, ClipboardList } from 'lucide-react';
 import { motion, AnimatePresence } from 'framer-motion';
 
 import { MeetingChatOverlay, FollowUpEmailModal, MeetingScorecardPanel } from '@/features/meetings';
-import { chatMarkdownComponents } from '@/features/chat';
+import { chatMarkdownComponents, SourcesDisplay } from '@/features/chat';
 import { EditableTextBlock } from '@/features/common';
 import { posthogAnalytics } from '@/lib/analytics/posthog.service';
 import { IMAGES } from '@/lib/assets';
@@ -14,6 +14,7 @@ import { LiveAnalysisContent } from '@/features/live-analysis/LiveAnalysisConten
 import { MeetingDetailsProps, Meeting, DetailAnalysisAccordionProps } from '@/types';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
+import type { AiInteractionSource } from "@/types";
 
 // Skeleton pulse component
 const Skeleton: React.FC<{ className?: string }> = ({ className = '' }) => (
@@ -99,6 +100,22 @@ const DetailAnalysisAccordion: React.FC<DetailAnalysisAccordionProps> = ({ score
     );
 };
 
+/** Ask Dojo history only has somewhere useful to show doc/asset sources —
+ * meeting/live-shaped entries (`{ title, meeting_id }`, often "live" as a
+ * placeholder, not a real openable meeting) are dropped. Dedupes on `id`
+ * since the same doc commonly appears once per matched chunk. */
+function docSourcesFor(sources: AiInteractionSource[] | undefined) {
+    if (!sources?.length) return [];
+    const seen = new Set<string>();
+    const out: { id: string; title: string }[] = [];
+    for (const s of sources) {
+        if (!("id" in s) || !s.id || seen.has(s.id)) continue;
+        seen.add(s.id);
+        out.push({ id: s.id, title: s.title });
+    }
+    return out;
+}
+
 const MeetingDetails: React.FC<MeetingDetailsProps> = ({ meeting: initialMeeting, viewContext }) => {
 
     const isLight = useResolvedTheme() === 'light';
@@ -125,6 +142,7 @@ const MeetingDetails: React.FC<MeetingDetailsProps> = ({ meeting: initialMeeting
         isTalktimeOpen, setIsTalktimeOpen,
         talkTime,
         getSpeakerDisplayName,
+        transcriptTimesAreRelative,
         handleSubmitQuestion,
         handleInputKeyDown,
         handleCopy,
@@ -1088,65 +1106,49 @@ const MeetingDetails: React.FC<MeetingDetailsProps> = ({ meeting: initialMeeting
                                                         >
                                                             <div className={`border-t px-4 py-4 ${isLight ? 'border-slate-200' : 'border-white/10'}`}>
 
-                                                                {/* User */}
-                                                                <div className="mb-4">
-                                                                    <div className="mb-2 flex items-center justify-between">
-                                                                        <div className='flex gap-3 items-center'>
+                                                                {talkTime.speakers.map((speakerEntry, i) => (
+                                                                    <div key={`${speakerEntry.speaker}-${speakerEntry.displayName ?? '∅'}-${speakerEntry.speakerIndex ?? '∅'}`} className={i === talkTime.speakers.length - 1 ? '' : 'mb-4'}>
+                                                                        <div className="mb-2 flex items-center justify-between">
+                                                                            <div className='flex gap-3 items-center'>
 
-                                                                            <div className="flex items-center gap-2">
-                                                                                <span className={`text-sm ${isLight ? 'text-slate-700' : 'text-white/80'}`}>
-                                                                                    {getSpeakerDisplayName('user')}
-                                                                                </span>
+                                                                                <div className="flex items-center gap-2">
+                                                                                    <span className={`text-sm ${isLight ? 'text-slate-700' : 'text-white/80'}`}>
+                                                                                        {getSpeakerDisplayName(
+                                                                                            speakerEntry.speaker,
+                                                                                            speakerEntry.displayName,
+                                                                                            speakerEntry.speakerIndex
+                                                                                        )}
+                                                                                    </span>
+                                                                                </div>
+
+                                                                                <div className={`text-xs ${isLight ? 'text-slate-400' : 'text-white/40'}`}>
+                                                                                    • {speakerEntry.words.toLocaleString()} words spoken
+                                                                                </div>
+
                                                                             </div>
 
-                                                                            <div className={`text-xs ${isLight ? 'text-slate-400' : 'text-white/40'}`}>
-                                                                                • {talkTime.userWords.toLocaleString()} words spoken
-                                                                            </div>
-
+                                                                            <span className={`text-sm font-medium ${isLight ? 'text-slate-800' : 'text-white'}`}>
+                                                                                {speakerEntry.percent}%
+                                                                            </span>
                                                                         </div>
 
-                                                                        <span className={`text-sm font-medium ${isLight ? 'text-slate-800' : 'text-white'}`}>
-                                                                            {talkTime.user}%
-                                                                        </span>
-                                                                    </div>
-
-                                                                    <div className={`h-1 overflow-hidden rounded-full ${isLight ? 'bg-slate-200' : 'bg-white/10'}`}>
-                                                                        <div
-                                                                            className="h-full rounded-full bg-blue-500 transition-all duration-500"
-                                                                            style={{ width: `${talkTime.user}%` }}
-                                                                        />
-                                                                    </div>
-                                                                </div>
-
-                                                                {/* Remote Participant */}
-                                                                <div>
-                                                                    <div className="mb-2 flex items-center justify-between">
-                                                                        <div className='flex gap-3 items-center'>
-
-                                                                            <div className="flex items-center gap-2">
-
-                                                                                <span className={`text-sm ${isLight ? 'text-slate-700' : 'text-white/80'}`}>
-                                                                                    {getSpeakerDisplayName('client')}
-                                                                                </span>
-                                                                            </div>
-
-                                                                            <div className={`text-xs ${isLight ? 'text-slate-400' : 'text-white/40'}`}>
-                                                                                • {talkTime.clientWords.toLocaleString()} words spoken
-                                                                            </div>
-
+                                                                        <div className={`h-1 overflow-hidden rounded-full ${isLight ? 'bg-slate-200' : 'bg-white/10'}`}>
+                                                                            <div
+                                                                                className={`h-full rounded-full transition-all duration-500 ${speakerEntry.speaker === 'user'
+                                                                                    ? 'bg-blue-500'
+                                                                                    : isLight ? 'bg-slate-400' : 'bg-blue-500/30'
+                                                                                    }`}
+                                                                                style={{ width: `${speakerEntry.percent}%` }}
+                                                                            />
                                                                         </div>
-                                                                        <span className={`text-sm font-medium ${isLight ? 'text-slate-800' : 'text-white'}`}>
-                                                                            {talkTime.client}%
-                                                                        </span>
                                                                     </div>
+                                                                ))}
 
-                                                                    <div className={`h-1 overflow-hidden rounded-full ${isLight ? 'bg-slate-200' : 'bg-white/10'}`}>
-                                                                        <div
-                                                                            className={`h-full rounded-full transition-all duration-500 ${isLight ? 'bg-slate-400' : 'bg-blue-500/30'}`}
-                                                                            style={{ width: `${talkTime.client}%` }}
-                                                                        />
-                                                                    </div>
-                                                                </div>
+                                                                {talkTime.speakers.length === 0 && (
+                                                                    <p className={`text-xs ${isLight ? 'text-slate-400' : 'text-white/40'}`}>
+                                                                        No speaker data recorded for this meeting yet.
+                                                                    </p>
+                                                                )}
 
                                                                 {/* Optional Footer */}
                                                                 <div className={`mt-4 border-t pt-3 ${isLight ? 'border-slate-100' : 'border-white/5'}`}>
@@ -1191,16 +1193,16 @@ const MeetingDetails: React.FC<MeetingDetailsProps> = ({ meeting: initialMeeting
                                                                 <span className={`text-xs font-semibold text-white ${entry.speaker === 'user'
                                                                     ? 'bg-blue-600'
                                                                     : isLight ? 'bg-slate-400' : 'bg-blue-500/30'
-                                                                    } px-2 py-1 rounded-full truncate max-w-[120px]`}>
+                                                                    } px-2 py-1 rounded-full truncate max-w-[180px]`}>
                                                                     {getSpeakerDisplayName(
                                                                         entry.speaker,
                                                                         entry.displayName,
-                                                                        (entry as any).speakerIndex
+                                                                        entry.speakerIndex
                                                                     )}
                                                                 </span>
-                                                                <span className="text-xs text-text-tertiary font-mono">{entry.timestamp ? formatTime(entry.timestamp) : '0:00'}</span>
+                                                                <span className="text-xs text-text-tertiary font-mono">{entry.timestamp ? formatTranscriptTimestamp(entry.timestamp, transcriptTimesAreRelative) : '0:00'}</span>
                                                             </div>
-                                                            <p className="text-text-secondary text-[15px] leading-relaxed transition-colors select-text cursor-text">{entry.text}</p>
+                                                            <p className="text-text-secondary text-[15px] leading-relaxed transition-colors select-text cursor-text whitespace-pre-line">{entry.text}</p>
 
 
                                                         </div>
@@ -1262,6 +1264,17 @@ const MeetingDetails: React.FC<MeetingDetailsProps> = ({ meeting: initialMeeting
                                                                 {cleanMarkdown(interaction.ai_response || '')}
                                                             </ReactMarkdown>
                                                         </div>
+                                                        {(() => {
+                                                            const docSources = docSourcesFor(interaction.sources);
+                                                            if (docSources.length === 0) return null;
+                                                            // Same "first chip + +N popover" treatment as Global Chat,
+                                                            // instead of wrapping every source into its own chip.
+                                                            return (
+                                                                <div className="mt-2">
+                                                                    <SourcesDisplay sources={{ meetings: [], assets: docSources }} />
+                                                                </div>
+                                                            );
+                                                        })()}
                                                     </div>
                                                 </div>
                                             )}

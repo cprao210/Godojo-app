@@ -13,22 +13,23 @@
  */
 
 import React from 'react';
-import { useEffect } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { AnimatePresence, motion } from 'framer-motion';
 import { IoSparklesSharp } from 'react-icons/io5';
 import { MeetingDetails, MeetingTimeline, NextMeetingDetails, NextMeetingEmptyState, SalesBriefPanel } from '@/features/meetings';
 import { GlobalChatOverlay, FloatingChatButton } from '@/features/chat';
 import { useLauncher } from '@/hooks';
 import { LauncherHeader, GhostModeToggle, RefreshButton, StartMeetingButton, OllamaPullBadge } from './LauncherWidgets';
-import { CalendarConnectCard, RecentMeetingsHeader, MeetingsList, RefreshToast, TranscriptUploadModal } from './LauncherWidgets';
+import { CalendarConnectCard, RecentMeetingsHeader, MeetingsList, RefreshToast, TranscriptUploadModal, LoadMoreMeetingsButton } from './LauncherWidgets';
 import { LauncherProps, Meeting } from '@/types';
 import { posthogAnalytics } from '@/lib/analytics/posthog.service';
 
 const Launcher: React.FC<LauncherProps> = ({ onStartMeeting, onOpenSettings, onCloseSettings, onOpenManagerDashboard, onCloseManagerDashboard, isManagerDashboardOpen = false, isSettingsOpen = false, onPageChange, ollamaPullStatus = 'idle', ollamaPullPercent = 0, ollamaPullMessage = '', authUser, onSignOut }) => {
 
     const launcherStates = useLauncher({ onStartMeeting, onPageChange, ollamaPullStatus, authUser });
-    const { isLight, meetings, deleteMutation, upcomingEvents, isCalendarConnected, setIsCalendarConnected } = launcherStates;
+    const { isLight, meetings, deleteMutation, upcomingEvents, isCalendarConnected, handleCalendarConnected, handleCalendarDisconnected } = launcherStates;
     const { isMeetingsLoading, isMeetingsRefreshing } = launcherStates;
+    const { hasMoreMeetings, isLoadingMoreMeetings, loadMoreMeetings } = launcherStates;
     const { focusedMeeting, focusedMeetingId, setFocusedMeetingId, getMeetingStartText } = launcherStates;
     const { isDetectable, toggleDetectable, isRefreshing, handleRefresh, isMeetingActive, onStartMeetingClick } = launcherStates;
     const { showNotification, effectiveName, selectedMeeting, forwardMeeting, handleOpenMeeting, handleBack, handleForward } = launcherStates;
@@ -36,6 +37,18 @@ const Launcher: React.FC<LauncherProps> = ({ onStartMeeting, onOpenSettings, onC
     const { isUploadOpen, setIsUploadOpen, uploadText, setUploadText, uploadTitle, setUploadTitle } = launcherStates;
     const { isUploading, uploadMeetingTypes, setUploadMeetingTypes, uploadError, handleUploadTranscript } = launcherStates;
     const { salesBriefEvent, setSalesBriefEvent, isGlobalChatOpen, setIsGlobalChatOpen, submittedGlobalQuery, setSubmittedGlobalQuery } = launcherStates;
+
+    // ─── Floating "Load more" button visibility ─────────────────────────────
+    // Purely presentational scroll tracking (not data), so it lives here
+    // rather than in useLauncher: shows once the user has scrolled any
+    // meaningful distance into the recent-meetings list, hides again back at
+    // the top. Independent of hasMoreMeetings so the button can disappear
+    // immediately on click without waiting on a scroll event.
+    const meetingsScrollRef = useRef<HTMLElement>(null);
+    const [isScrolledIntoMeetings, setIsScrolledIntoMeetings] = useState(false);
+    const handleMeetingsScroll = (e: React.UIEvent<HTMLElement>) => {
+        setIsScrolledIntoMeetings(e.currentTarget.scrollTop > 24);
+    };
 
     // Search (TopSearchPill, in LauncherHeader) is reachable from every screen —
     // its header sits at z-[200], above SettingsOverlay/ManagerDashboard (z-50).
@@ -211,8 +224,8 @@ const Launcher: React.FC<LauncherProps> = ({ onStartMeeting, onOpenSettings, onC
                                         <CalendarConnectCard
                                             isCalendarConnected={isCalendarConnected}
                                             isLight={isLight}
-                                            onConnect={() => setIsCalendarConnected(true)}
-                                            onDisconnect={() => setIsCalendarConnected(false)}
+                                            onConnect={handleCalendarConnected}
+                                            onDisconnect={handleCalendarDisconnected}
                                         />
 
                                     </div>
@@ -222,6 +235,8 @@ const Launcher: React.FC<LauncherProps> = ({ onStartMeeting, onOpenSettings, onC
 
                             {/* BOTTOM SECTION: Black Background (Scrollable content) */}
                             <motion.main className="overflow-y-auto custom-scrollbar"
+                                ref={meetingsScrollRef}
+                                onScroll={handleMeetingsScroll}
                                 animate={{
                                     flex: isMeetingsExpanded ? '1 1 100%' : '1 1 0%',
                                     borderRadius: isMeetingsExpanded ? '16px 16px 0 0' : '0px',
@@ -237,7 +252,7 @@ const Launcher: React.FC<LauncherProps> = ({ onStartMeeting, onOpenSettings, onC
                                 }}
                                 transition={{ duration: 0.42, ease: [0.32, 0.72, 0, 1] }}
                             >
-                                <section className="px-8 py-5 min-h-full">
+                                <section className="px-8 py-5 mb-12 min-h-full">
                                     <div className="max-w-4xl mx-auto">
 
                                         {/* Section header */}
@@ -254,6 +269,7 @@ const Launcher: React.FC<LauncherProps> = ({ onStartMeeting, onOpenSettings, onC
                                             meetings={meetings}
                                             isLight={isLight}
                                             isLoading={isMeetingsLoading}
+                                            isLoadingMore={isLoadingMoreMeetings}
                                             activeMenuId={activeMenuId}
                                             onOpen={handleOpenMeeting}
                                             onToggleMenu={setActiveMenuId}
@@ -264,6 +280,16 @@ const Launcher: React.FC<LauncherProps> = ({ onStartMeeting, onOpenSettings, onC
                                     </div>
                                 </section>
                             </motion.main>
+
+                            {/* Floating "Load more" — only ever visible on this
+                                (non-meeting-detail) branch, matching where the
+                                scrollable meetings list itself lives. */}
+                            <LoadMoreMeetingsButton
+                                isLight={isLight}
+                                visible={isScrolledIntoMeetings && hasMoreMeetings}
+                                isLoading={isLoadingMoreMeetings}
+                                onClick={loadMoreMeetings}
+                            />
                         </motion.div>
                     )}
                 </AnimatePresence>

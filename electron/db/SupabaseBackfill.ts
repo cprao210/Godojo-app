@@ -28,7 +28,6 @@ const BACKFILL_CURSOR_PREFIX = 'supabase_backfill_cursor_';
 // are added to the cloud schema, delete the corresponding entry here.
 const LOCAL_ONLY_COLUMNS: Record<string, string[]> = {
     meetings: ['meeting_types', 'owner_uid'],
-    transcripts: ['speaker_index'],
 };
 
 function _stripLocalOnlyColumns(table: string, row: Record<string, any>): Record<string, any> {

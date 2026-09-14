@@ -19,6 +19,7 @@
 import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import { useShortcuts } from "@/hooks";
 import { OVERLAY_OPACITY_DEFAULT } from "@/lib/overlayAppearance";
+import { boundRolling } from "@/lib/rollingTranscript";
 import { CalendarEvent, GodojoInterfaceMessage, GodojoInterfaceProps } from "@/types";
 
 export function useGodojoInterface({ overlayOpacity = OVERLAY_OPACITY_DEFAULT }: GodojoInterfaceProps) {
@@ -326,16 +327,29 @@ export function useGodojoInterface({ overlayOpacity = OVERLAY_OPACITY_DEFAULT }:
         window.electronAPI?.updateContentDimensions({ width, height });
     };
 
+    // Pending trailing-edge measurement from the fallback ResizeObserver below.
+    // Declared above requestOverlayResize so the explicit path can cancel it.
+    const fallbackResizeTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
     // Explicit, single-shot resize for known/discrete size changes (the
     // dock's own expand/collapse + panel-switch states). Bypasses the
     // fallback observer's debounce entirely — callers control timing.
     const requestOverlayResize = (height: number, width?: number) => {
+        // An explicit resize OWNS the current transition. Any fallback
+        // measurement scheduled before it must be cancelled: it would fire
+        // mid-animation with a stale or intermediate height and shrink the
+        // window underneath the animating content (visible clip/jump until
+        // the next observation corrected it). The observer reschedules after
+        // the animation settles, and its settled measurement then dedupes to
+        // a no-op in applyContentDimensions.
+        if (fallbackResizeTimeoutRef.current) {
+            clearTimeout(fallbackResizeTimeoutRef.current);
+            fallbackResizeTimeoutRef.current = null;
+        }
         const resolvedWidth =
             width ?? appliedDimsRef.current?.width ?? Math.ceil(contentRef.current?.getBoundingClientRect().width ?? 430);
         applyContentDimensions(resolvedWidth, Math.ceil(height));
     };
-
-    const fallbackResizeTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
     useLayoutEffect(() => {
         if (!contentRef.current) return;
@@ -650,12 +664,12 @@ export function useGodojoInterface({ overlayOpacity = OVERLAY_OPACITY_DEFAULT }:
                     const lastSeparator = prev.lastIndexOf('  ·  ');
                     if (hadPendingPartial) {
                         const accumulated = lastSeparator >= 0 ? prev.substring(0, lastSeparator + 5) : '';
-                        return accumulated + speakerMarker + transcript.text;
+                        return boundRolling(accumulated + speakerMarker + transcript.text);
                     }
                     const lastSegment = lastSeparator >= 0 ? prev.substring(lastSeparator + 5) : prev;
                     if (lastSegment.trim() === transcript.text.trim()) return prev; // skip exact duplicate
                     const separator = prev ? '  ·  ' : '';
-                    return prev + separator + speakerMarker + transcript.text;
+                    return boundRolling(prev + separator + speakerMarker + transcript.text);
                 });
 
                 // Guard liveTranscriptRef against exact-text duplicates from rapid final events
@@ -688,10 +702,10 @@ export function useGodojoInterface({ overlayOpacity = OVERLAY_OPACITY_DEFAULT }:
                     if (hadPendingPartial) {
                         const lastSeparator = prev.lastIndexOf('  ·  ');
                         const accumulated = lastSeparator >= 0 ? prev.substring(0, lastSeparator + 5) : '';
-                        return accumulated + transcript.text;
+                        return boundRolling(accumulated + transcript.text);
                     }
                     const separator = prev ? '  ·  ' : '';
-                    return prev + separator + transcript.text;
+                    return boundRolling(prev + separator + transcript.text);
                 });
             }
         }));

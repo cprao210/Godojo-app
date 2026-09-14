@@ -21,6 +21,7 @@
 import { EventEmitter } from 'events';
 import { CredentialsManager } from './CredentialsManager';
 import { DatabaseManager } from '../db/DatabaseManager';
+import { isVerboseLogging } from '../verboseLog';
 
 export interface FirebaseSession {
     uid: string;
@@ -55,10 +56,55 @@ export class AuthManager extends EventEmitter {
     }
 
     /**
+     * Everything a `setSession` call can actually change downstream. Two calls
+     * with the same fingerprint are the same session described twice.
+     *
+     * expiresAt is omitted deliberately: it is derived from the ID token, so an
+     * identical token implies an identical expiry.
+     *
+     * NUL joins the parts because a display name may contain any printable
+     * character, and a separator that can appear inside a field would let two
+     * different sessions share a fingerprint.
+     */
+    private static fingerprint(s: FirebaseSession): string {
+        return [
+            s.uid,
+            s.idToken,
+            s.refreshToken,
+            s.email ?? '',
+            s.displayName ?? '',
+            s.photoURL ?? '',
+        ].join('\x00');
+    }
+
+    /**
      * Called by the renderer (via IPC) whenever Firebase's `onIdTokenChanged`
      * fires — initial sign-in, hourly refresh, or session restore.
      */
     setSession(session: FirebaseSession): void {
+        // Every renderer installs its own onIdTokenChanged bridge (see
+        // src/main.tsx bootFirebaseAuthBridge), so one hourly token refresh
+        // arrives here once per open window — launcher, overlay, settings — each
+        // carrying a byte-identical session. That was previously treated as N
+        // distinct auth changes, and 'auth-changed' is not a cheap event: each
+        // emission re-fetches the backend fallback keys over HTTPS, re-decrypts
+        // them, re-syncs the LLM and STT clients, re-upserts the Supabase users
+        // row, drains the mirror outbox, and broadcasts to every window. Doing
+        // that N times produces exactly one useful result and N-1 duplicates,
+        // and it can land mid-call.
+        //
+        // Suppress the duplicates. Every side effect below is idempotent by
+        // value, so running them once instead of N times is not a behaviour
+        // change — a genuine token rotation or profile edit has a different
+        // fingerprint and still flows through untouched.
+        const fingerprint = AuthManager.fingerprint(session);
+        if (this.session && AuthManager.fingerprint(this.session) === fingerprint) {
+            if (isVerboseLogging()) {
+                console.log(`[AuthManager] Duplicate session forward ignored for uid=${session.uid}`);
+            }
+            return;
+        }
+
         const isFirstSignIn = !this.session || this.session.uid !== session.uid;
         const uidChanged = this.session?.uid !== session.uid;
         const previousUid = this.session?.uid ?? null;

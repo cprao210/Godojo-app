@@ -142,6 +142,9 @@
       "icon": "assets/icons/png/",
       "category": "Office"
     },
+    "appImage": {
+      "artifactName": "GoDojo.AI-${version}.${ext}"
+    },
     "deb": {
       "depends": [
         "libgtk-3-0",

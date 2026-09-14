@@ -124,6 +124,8 @@ export interface ElectronAPI {
   // ===========================================================================
   setOpenAtLogin: (open: boolean) => Promise<{ success: boolean; error?: string }>
   getOpenAtLogin: () => Promise<boolean>
+  /** Native cross-screen toast (same pipeline as pause/resume/summary toasts). */
+  showAppNotification: (title: string, message: string) => Promise<{ success: boolean; error?: string }>
   getVerboseLogging: () => Promise<boolean>
   setVerboseLogging: (enabled: boolean) => Promise<{ success: boolean }>
   flushDatabase: () => Promise<{ success: boolean }>
@@ -400,10 +402,20 @@ export interface ElectronAPI {
    */
   getRecentMeetingsLocal: () => Promise<Array<{ id: string; title: string; date: string; duration: string; summary: string; isProcessed?: boolean }>>
   getMeetingDetails: (id: string) => Promise<any>
+  /**
+   * Local SQLite only — never the Supabase mirror (which `getMeetingDetails`
+   * prefers when a cloud session exists). The placeholder row saved the moment
+   * a call ends already carries the full transcript in SQLite, while the cloud
+   * copy only exists once the async mirror queue drains. Use it for
+   * immediately-after-a-call detail reads (e.g. the Transcript tab of a
+   * meeting still in its "Processing..." state); use getMeetingDetails for
+   * everything else.
+   */
+  getMeetingDetailsLocal: (id: string) => Promise<any>
   updateMeetingTitle: (id: string, title: string) => Promise<boolean>
   updateMeetingSummary: (id: string, updates: { overview?: string, actionItems?: string[], keyPoints?: string[], actionItemsTitle?: string, keyPointsTitle?: string }) => Promise<boolean>
   regenerateMeetingSummary: (id: string) => Promise<any>
-  uploadTranscript: (text: string, title?: string, meetingTypes?: ('discovery' | 'demo' | 'negotiation')[]) => Promise<{ success: boolean; meetingId?: string; error?: string }>
+  uploadTranscript: (text: string, title?: string, meetingTypes?: ('discovery' | 'demo' | 'negotiation')[], tenantId?: string | null) => Promise<{ success: boolean; meetingId?: string; error?: string }>
   deleteMeeting: (id: string) => Promise<boolean>
   onMeetingsUpdated: (callback: () => void) => () => void
 

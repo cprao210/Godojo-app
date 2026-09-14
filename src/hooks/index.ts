@@ -29,7 +29,7 @@ import { useEditableTextBlock } from "./useEditableTextBlock";
 import { useCropper } from "./useCropper";
 import { useFollowUpEmail } from "./useFollowUpEmail";
 import { useMeetingChat } from "./useMeetingChat";
-import { useMeetingDetails, isSummaryEmpty, cleanMarkdown, formatTime } from "./useMeetingDetails";
+import { useMeetingDetails, isSummaryEmpty, cleanMarkdown, formatTime, formatTranscriptTimestamp } from "./useMeetingDetails";
 import { useMeetingScorecard, scoreLabel, getTypeAccent } from "./useMeetingScorecard";
 import { useMeetingTimeline, formatTimeShort, getRelativeLabel } from "./useMeetingTimeline";
 import { useNextMeetingCountdown } from "./useNextMeetingCountdown";
@@ -37,6 +37,8 @@ import { useProviderCard } from "./useProviderCard";
 import { useAIProvidersSettings } from "./useAIProvidersSettings";
 import { useUserProfileTab, loadUserProfile, saveUserProfile } from "./useUserProfileTab";
 import { useInvitationResponseModal } from "./useInvitationResponseModal";
+import { useTeamInvitationWatcher } from "./useTeamInvitationWatcher";
+import { useInviteAcceptedWatcher, diffAcceptedInvitations } from "./useInviteAcceptedWatcher";
 import { useMeetingTypeSection } from "./useMeetingTypeSection";
 import { useCategoryModal } from "./useCategoryModal";
 import { useCategoryRow } from "./useCategoryRow";
@@ -104,6 +106,7 @@ export {
     isSummaryEmpty,
     cleanMarkdown,
     formatTime,
+    formatTranscriptTimestamp,
     useMeetingScorecard,
     scoreLabel,
     getTypeAccent,
@@ -115,6 +118,9 @@ export {
     useAIProvidersSettings,
     useUserProfileTab,
     useInvitationResponseModal,
+    useTeamInvitationWatcher,
+    useInviteAcceptedWatcher,
+    diffAcceptedInvitations,
     loadUserProfile,
     saveUserProfile,
     useMeetingTypeSection,

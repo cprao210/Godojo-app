@@ -10,16 +10,20 @@ import { Prism as SyntaxHighlighter } from 'react-syntax-highlighter';
 import { vscDarkPlus } from 'react-syntax-highlighter/dist/esm/styles/prism';
 
 export const chatMarkdownComponents = {
-    p: ({ node, ...props }: any) => <p className="mb-2 last:mb-0 whitespace-pre-wrap" {...props} />,
-    a: ({ node, ...props }: any) => <a className="text-blue-500 hover:underline" {...props} />,
+    p: ({ node, ...props }: any) => <p className="mb-2 last:mb-0 whitespace-pre-wrap break-words" {...props} />,
+    a: ({ node, ...props }: any) => (
+        <a className="text-blue-500 hover:underline break-words" {...props} />
+    ),
 
     ul: ({ node, ...props }: any) => (
-        <ul className="list-disc pl-5 mb-2 last:mb-0 space-y-1 marker:text-text-tertiary" {...props} />
+        <ul className="list-disc pl-5 mb-2 last:mb-0 space-y-1 marker:text-text-tertiary max-w-full" {...props} />
     ),
     ol: ({ node, ...props }: any) => (
-        <ol className="list-decimal pl-5 mb-2 last:mb-0 space-y-1 marker:text-text-tertiary" {...props} />
+        <ol className="list-decimal pl-5 mb-2 last:mb-0 space-y-1 marker:text-text-tertiary max-w-full" {...props} />
     ),
-    li: ({ node, ...props }: any) => <li className="leading-relaxed pl-1" {...props} />,
+    li: ({ node, ...props }: any) => (
+        <li className="leading-relaxed pl-1 break-words" {...props} />
+    ),
 
     strong: ({ node, ...props }: any) => <strong className="font-semibold" {...props} />,
 
@@ -65,13 +69,13 @@ export const chatMarkdownComponents = {
         const lang = match ? match[1] : '';
 
         return !isInline ? (
-            <div className="my-3 rounded-xl overflow-hidden border border-white/[0.08] shadow-lg bg-zinc-800/60 backdrop-blur-md">
+            <div className="my-3 max-w-full rounded-xl overflow-hidden border border-white/[0.08] shadow-lg bg-zinc-800/60 backdrop-blur-md">
                 <div className="bg-white/[0.04] px-3 py-1.5 border-b border-white/[0.08]">
                     <span className="text-[10px] uppercase tracking-widest font-semibold text-white/40 font-mono">
                         {lang || 'CODE'}
                     </span>
                 </div>
-                <div className="bg-transparent">
+                <div className="bg-transparent max-w-full overflow-x-auto">
                     <SyntaxHighlighter
                         language={lang || 'text'}
                         style={vscDarkPlus}
@@ -94,7 +98,7 @@ export const chatMarkdownComponents = {
                 </div>
             </div>
         ) : (
-            <code className="bg-bg-tertiary px-1.5 py-0.5 rounded text-[13px] font-mono text-text-primary border border-border-subtle whitespace-pre-wrap" {...props}>
+            <code className="bg-bg-tertiary px-1.5 py-0.5 rounded text-[13px] font-mono text-text-primary border border-border-subtle whitespace-pre-wrap break-words max-w-full" {...props}>
                 {children}
             </code>
         );

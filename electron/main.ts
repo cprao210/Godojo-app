@@ -57,6 +57,12 @@ import {
   type MacScreenCaptureCapability,
 } from './utils/macPermissions';
 
+// FINAL_ANALYSIS_MAX_WAIT_MS now lives in MeetingPersistence.ts, next to the
+// deferred finalize phase that enforces the deadline (the renderer keeps its
+// copy in src/lib/meetingLifecycle.ts). The wait used to run here in endMeeting
+// ahead of stopMeeting(); it moved so a just-ended call's transcript is
+// persisted synchronously and never waits on analysis latency.
+
 // One-time, masked diagnostic so a "keys not falling back to env" report can
 // be triaged directly from a shipped build's logs (Console.app on mac,
 // %APPDATA% logs on Windows) AND from PostHog, instead of guessing blind or
@@ -355,6 +361,13 @@ import { SystemAudioCapture } from "./audio/SystemAudioCapture"
 import { MicrophoneCapture } from "./audio/MicrophoneCapture"
 import { AudioDeviceWatcher, isSameSnapshot, type DeviceSnapshot, type DevicesChangedEvent } from "./audio/AudioDeviceWatcher"
 import { loadNativeModule } from "./audio/nativeModuleLoader"
+import { monitorEventLoopDelay, type IntervalHistogram } from "perf_hooks"
+import {
+  createLevelGateState,
+  quantizeLevel,
+  shouldSendLevel,
+  type LevelGateState,
+} from "./audio/audioLevelGate"
 import { TranscriptEchoFilter, type AecTelemetry } from "./audio/TranscriptEchoFilter"
 import { TranscriptTranslator } from "./services/TranscriptTranslator"
 import type { SttWord } from "./audio/sttWordUtils"
@@ -425,7 +438,6 @@ export class AppState {
   private ragManager: RAGManager | null = null
   private knowledgeOrchestrator: any = null
   private tray: Tray | null = null
-  private updateAvailable: boolean = false
   private disguiseMode: 'terminal' | 'settings' | 'activity' | 'none' = 'none'
   private _currentLiveAnalysis: LiveAnalysisData | null = null;
   private _companyIntel: Record<string, any> | null = null;
@@ -434,6 +446,11 @@ export class AppState {
   // after the late-arriving result is saved.
   private _pendingLiveAnalysisMeetingId: string | null = null;
   private _liveAnalysisInFlight: boolean = false;
+  // Resolved (and cleared) the moment setLiveAnalysisInFlight(false, ...) runs.
+  // Lets stopMeeting() wait for a final analysis that's already running in the
+  // renderer, instead of the renderer having to block its own UI on it — see
+  // waitForLiveAnalysisToSettle() below.
+  private _liveAnalysisSettledWaiters: Array<() => void> = [];
   // Monotonic id for "which call are we on", bumped once per startMeeting.
   // Live analysis is computed asynchronously in the renderer and can resolve
   // after its meeting ended — every renderer write carries the generation it
@@ -446,7 +463,10 @@ export class AppState {
 
   // View management
   private view: "queue" | "solutions" = "queue"
-  private isUndetectable: boolean = true
+  // Overwritten unconditionally in the constructor below (which reads the
+  // persisted setting with an app.isPackaged-based default) — this field
+  // default only matters for the brief window before the constructor runs.
+  private isUndetectable: boolean = app.isPackaged ? true : false
 
   private problemInfo: {
     problem_statement: string
@@ -490,11 +510,15 @@ export class AppState {
     // 1. Load boot-critical settings first (used by WindowHelpers)
     const settingsManager = SettingsManager.getInstance();
     // Ghost mode (undetectable / hidden from screen-share capture) is ON by
-    // default for the overlay + launcher windows for any user who hasn't
-    // explicitly set a preference yet — hence `?? true`, not `?? false`.
+    // default in PRODUCTION ONLY, for any user who hasn't explicitly set a
+    // preference yet. Dev builds default OFF so ghost mode doesn't hide
+    // windows from screen-share/dock during local development unless a dev
+    // opts in. Gated on app.isPackaged (this codebase's established
+    // prod-vs-dev signal, not NODE_ENV — see the isDevTccBypassEnabled note
+    // near app.isPackaged usage elsewhere in this file).
     // Once the user has ever toggled it, SettingsManager persists their
     // explicit choice and that value wins regardless of this default.
-    this.isUndetectable = settingsManager.get('isUndetectable') ?? true;
+    this.isUndetectable = settingsManager.get('isUndetectable') ?? app.isPackaged;
     this.disguiseMode = settingsManager.get('disguiseMode') ?? 'none';
     this._verboseLogging = settingsManager.get('verboseLogging') ?? false;
     setVerboseLoggingFlag(this._verboseLogging);
@@ -774,10 +798,22 @@ export class AppState {
   // lag behind or stay silent on a provider hiccup while audio is still
   // capturing fine.
   //
-  // Throttled per-channel to ~20fps: 'data' chunks can arrive much faster than
+  // Sampled per-channel at ~20fps: 'data' chunks can arrive much faster than
   // any UI needs to redraw, and this fires on every meeting window.
-  private _lastAudioLevelSentAt: Record<'mic' | 'system', number> = { mic: 0, system: 0 };
+  //
+  // Sampling and sending are separate concerns. This timestamp paces the RMS
+  // computation; the gate below decides whether the result is worth an IPC
+  // message. Keeping them apart means a suppressed duplicate does not delay the
+  // next sample, and the heartbeat deadline is measured from real sends only.
+  private _lastAudioLevelSampledAt: Record<'mic' | 'system', number> = { mic: 0, system: 0 };
   private static readonly AUDIO_LEVEL_THROTTLE_MS = 50;
+  // Per-channel dedupe state. No reset needed between meetings: lastSentAt from a
+  // previous meeting is always far enough in the past that the heartbeat fires on
+  // the first sample of the next one.
+  private readonly _audioLevelGate: Record<'mic' | 'system', LevelGateState> = {
+    mic: createLevelGateState(),
+    system: createLevelGateState(),
+  };
 
   private computeAudioRmsLevel(chunk: Buffer): number {
     let sum = 0;
@@ -795,9 +831,15 @@ export class AppState {
 
   private sendAudioLevel(channel: 'mic' | 'system', chunk: Buffer): void {
     const now = Date.now();
-    if (now - this._lastAudioLevelSentAt[channel] < AppState.AUDIO_LEVEL_THROTTLE_MS) return;
-    this._lastAudioLevelSentAt[channel] = now;
-    const level = this.computeAudioRmsLevel(chunk);
+    if (now - this._lastAudioLevelSampledAt[channel] < AppState.AUDIO_LEVEL_THROTTLE_MS) return;
+    this._lastAudioLevelSampledAt[channel] = now;
+    // Quantize to the renderer's own grid, then only send what it does not
+    // already have. See audioLevelGate.ts for why the heartbeat is mandatory.
+    const level = quantizeLevel(this.computeAudioRmsLevel(chunk));
+    const gate = this._audioLevelGate[channel];
+    if (!shouldSendLevel(gate, level, now)) return;
+    gate.lastSent = level;
+    gate.lastSentAt = now;
     this.sendToMeetingSurfaces('audio-level', { channel, level });
   }
 
@@ -1043,8 +1085,52 @@ export class AppState {
   private wireMicrophoneCapture(capture: MicrophoneCapture, label: string = ''): void {
     const prefix = label ? `[Main] ${label} ` : '[Main] ';
 
+    // ── Detector: no chunks at all ──────────────────────────────────────────
+    //
+    // Mirrors wireSystemCapture's Detector 1. Previously mic capture only
+    // raised a banner from the native module's own 'capture-failed' retry
+    // event — which never fires for the macOS case this exists to catch: TCC
+    // reports the microphone grant as 'granted' (so nothing errors, nothing
+    // retries) but the grant is orphaned by a code-signature change after an
+    // app update, exactly like the documented Screen Recording case, and the
+    // capture just never produces a chunk. System audio already detects this;
+    // mic silently had no equivalent, which is why the in-meeting "Audio
+    // capture issue" banner only ever appeared for the system-audio channel.
+    let chunkCount = 0;
+    let stuckTimer: NodeJS.Timeout | null = null;
+    const disarmStuckWatchdog = () => {
+      if (stuckTimer) { clearTimeout(stuckTimer); stuckTimer = null; }
+    };
+    // Exposed the same way system audio does, so endMeeting()/pause can cancel
+    // this deterministically before stop() instead of racing the timer.
+    (capture as any).__disarmStuckWatchdog = disarmStuckWatchdog;
+
+    const armStuckWatchdog = () => {
+      disarmStuckWatchdog();
+      stuckTimer = setTimeout(() => {
+        if (this.microphoneCapture !== capture) return; // replaced
+        if (chunkCount > 0) return;                      // producing fine
+        if (!this.isMeetingActive) return;               // meeting ended
+
+        console.warn(`${prefix}MicrophoneCapture produced 0 chunks in ${STUCK_WATCHDOG_MS / 1000}s — silent capture (permission revoked or device gone).`);
+        this.sendAudioCaptureFailed({
+          channel: 'mic',
+          message: formatPermissionMessage('mic-capture-stuck'),
+          attempt: 0,
+          maxAttempts: 3,
+          terminal: false,
+          stuck: true,
+        });
+      }, STUCK_WATCHDOG_MS);
+    };
+
+    capture.on('start', armStuckWatchdog);
+    capture.on('stop', disarmStuckWatchdog);
+
     capture.on('data', (chunk: Buffer) => {
       if (this.microphoneCapture !== capture) return;
+      chunkCount++;
+      if (chunkCount === 1) disarmStuckWatchdog();
       this.sendAudioLevel('mic', chunk);
       // Local speech is the evidence that a meeting is actually in progress,
       // which is what makes a silent far end suspicious rather than just quiet.
@@ -1111,6 +1197,16 @@ export class AppState {
    */
   private disarmSystemCaptureWatchdog(): void {
     (this.systemAudioCapture as any)?.__disarmStuckWatchdog?.();
+  }
+
+  /**
+   * Mirrors disarmSystemCaptureWatchdog for the mic-side stuck watchdog added
+   * in wireMicrophoneCapture. Same reason it must run before any deliberate
+   * stop(): otherwise pausing/ending within the watchdog window reports "no
+   * audio detected" about a capture the user intentionally stopped.
+   */
+  private disarmMicCaptureWatchdog(): void {
+    (this.microphoneCapture as any)?.__disarmStuckWatchdog?.();
   }
 
   public getIsMeetingActive(): boolean {
@@ -1383,7 +1479,6 @@ export class AppState {
 
     autoUpdater.on("update-available", async (info) => {
       console.log("[AutoUpdater] Update available:", info.version)
-      this.updateAvailable = true
 
       // Fetch structured release notes
       const releaseManager = ReleaseNotesManager.getInstance();
@@ -1426,81 +1521,64 @@ export class AppState {
     // Gate on app.isPackaged rather than process.env.NODE_ENV: NODE_ENV isn't
     // guaranteed to be set (or set correctly) in a packaged build, whereas
     // isPackaged is Electron's own reliable dev-vs-production signal.
-    setTimeout(() => {
-      if (!app.isPackaged) {
-        console.log("[AutoUpdater] Development build: skipping auto check entirely");
-      } else {
-        autoUpdater.checkForUpdatesAndNotify().catch(err => {
-          if (this.isNoReleaseAvailableError(err)) {
-            console.log("[AutoUpdater] No published release found on GitHub — treating as up to date");
-            this.broadcast("update-not-available", { version: app.getVersion() });
-            return;
-          }
-          console.error("[AutoUpdater] Failed to check for updates:", err);
-        });
-      }
-    }, 10000);
+    //
+    // The check is RESILIENT, not one-shot: a machine that is offline (or
+    // behind a captive portal) at the 10s mark used to never check again
+    // until the user manually clicked "Check for Updates". Now a failed
+    // check is retried with backoff (5min → 10min → 20min → … capped), and
+    // successful checks re-run every UPDATE_CHECK_INTERVAL_MS so long-running
+    // sessions still hear about new releases.
+    this.scheduleAutoUpdateCheck(10_000);
   }
 
-  private async checkForUpdatesManual(): Promise<void> {
+  /** Interval between auto-checks once one has completed successfully. */
+  private static readonly UPDATE_CHECK_INTERVAL_MS = 6 * 60 * 60 * 1000; // 6h
+  /** First retry delay after a failed auto-check; doubles per consecutive failure. */
+  private static readonly UPDATE_CHECK_RETRY_BASE_MS = 5 * 60 * 1000; // 5min
+
+  private autoCheckTimer: NodeJS.Timeout | null = null;
+  private autoCheckFailures = 0;
+
+  private scheduleAutoUpdateCheck(delayMs: number): void {
+    if (this.autoCheckTimer) clearTimeout(this.autoCheckTimer);
+    this.autoCheckTimer = setTimeout(() => {
+      this.runAutoUpdateCheck().catch((err) => {
+        console.error('[AutoUpdater] Unexpected auto-check failure:', err);
+      });
+    }, delayMs);
+    // Never hold the app open just to run an update check.
+    this.autoCheckTimer.unref?.();
+  }
+
+  private async runAutoUpdateCheck(): Promise<void> {
+    if (!app.isPackaged) return;
+
     try {
-      console.log('[AutoUpdater] Checking for updates manually via GitHub API...');
-      const releaseManager = ReleaseNotesManager.getInstance();
-      // Fetch latest release
-      const notes = await releaseManager.fetchReleaseNotes('latest');
-
-      if (notes) {
-        const currentVersion = app.getVersion();
-        const latestVersionTag = notes.version; // e.g., "v1.2.0" or "1.2.0"
-        const latestVersion = latestVersionTag.replace(/^v/, '');
-
-        console.log(`[AutoUpdater] Manual Check: Current=${currentVersion}, Latest=${latestVersion}`);
-
-        if (this.isVersionNewer(currentVersion, latestVersion)) {
-          console.log('[AutoUpdater] Manual Check: New version found!');
-          this.updateAvailable = true;
-
-          // Mock an info object compatible with electron-updater
-          const info = {
-            version: latestVersion,
-            files: [] as any[],
-            path: '',
-            sha512: '',
-            releaseName: notes.summary,
-            releaseNotes: notes.fullBody
-          };
-
-          // Notify renderer
-          this.broadcast("update-available", {
-            ...info,
-            parsedNotes: notes
-          });
-        } else {
-          console.log('[AutoUpdater] Manual Check: App is up to date.');
-          this.broadcast("update-not-available", { version: currentVersion });
-        }
+      await autoUpdater.checkForUpdatesAndNotify();
+      // Completed (available or up to date) — resume the steady cadence.
+      this.autoCheckFailures = 0;
+      this.scheduleAutoUpdateCheck(AppState.UPDATE_CHECK_INTERVAL_MS);
+    } catch (err: any) {
+      if (this.isNoReleaseAvailableError(err)) {
+        console.log('[AutoUpdater] No published release found on GitHub — treating as up to date');
+        this.broadcast('update-not-available', { version: app.getVersion() });
+        this.autoCheckFailures = 0;
+        this.scheduleAutoUpdateCheck(AppState.UPDATE_CHECK_INTERVAL_MS);
+        return;
       }
-    } catch (err) {
-      console.error('[AutoUpdater] Manual update check failed:', err);
+      // A transient failure (offline, DNS, rate limit). Unlike a MANUAL check
+      // (which broadcasts update-error so the user sees why their click did
+      // nothing), a background check failing is nobody's business — retry
+      // quietly with backoff instead of nagging with error popups.
+      this.autoCheckFailures++;
+      const backoff = Math.min(
+        AppState.UPDATE_CHECK_RETRY_BASE_MS * Math.pow(2, this.autoCheckFailures - 1),
+        AppState.UPDATE_CHECK_INTERVAL_MS,
+      );
+      console.error(`[AutoUpdater] Auto check failed (attempt ${this.autoCheckFailures}), retrying in ${Math.round(backoff / 60000)}min:`, err?.message ?? err);
+      this.scheduleAutoUpdateCheck(backoff);
     }
   }
-
-  private isVersionNewer(current: string, latest: string): boolean {
-    // EC-01 fix: strip pre-release suffixes (e.g. "2.1.0-beta.1" → "2.1.0")
-    // before splitting so Number() never returns NaN on comparison.
-    const stripPre = (v: string) => v.replace(/-.*$/, '');
-    const c = stripPre(current).split('.').map(Number);
-    const l = stripPre(latest).split('.').map(Number);
-
-    for (let i = 0; i < 3; i++) {
-      const cv = c[i] || 0;
-      const lv = l[i] || 0;
-      if (lv > cv) return true;
-      if (lv < cv) return false;
-    }
-    return false;
-  }
-
 
   public async quitAndInstallUpdate(): Promise<void> {
     console.log('[AutoUpdater] quitAndInstall called - applying update...')
@@ -1523,18 +1601,31 @@ export class AppState {
           setTimeout(() => app.quit(), 1000)
           return
         }
+
+        // Nothing was actually downloaded (e.g. the click raced the download,
+        // or the state was stale). Falling through to quitAndInstall used to
+        // end in app.exit(0): the app closes with NO update installed and NO
+        // feedback. Refuse and let the renderer show an error instead.
+        console.error('[AutoUpdater] macOS install refused: no downloaded update file')
+        this.broadcast('update-error', 'No downloaded update was found. Please download the update again.')
+        return
       } catch (err) {
         console.error('[AutoUpdater] Failed to open update directory:', err)
+        this.broadcast('update-error', 'Could not open the downloaded update. Please try again.')
+        return
       }
     }
 
-    // Fallback to standard quitAndInstall (works on Windows/Linux or if signed)
+    // Fallback to standard quitAndInstall (works on Windows/Linux or if signed).
+    // If it throws, the app is still running — broadcast the error and leave the
+    // user with a working app and a visible failure message. The old behavior
+    // (app.exit(0) here) killed the process with NO install and NO feedback.
     setImmediate(() => {
       try {
         autoUpdater.quitAndInstall(false, true)
       } catch (err) {
         console.error('[AutoUpdater] quitAndInstall failed:', err)
-        app.exit(0)
+        this.broadcast('update-error', 'Could not restart to install the update. Please try again.')
       }
     })
   }
@@ -1568,17 +1659,35 @@ export class AppState {
   }
 
   private isNoReleaseAvailableError(err: any): boolean {
+    // A genuine "no releases published yet" surfaces either as HTTP 404 from
+    // the feed request (electron-updater sets statusCode) or as one of its
+    // known "cannot find latest.yml" messages. Bare message substring checks
+    // for '404' / 'not found' used to match ANY error text containing them —
+    // e.g. a proxy's HTML 404 page or a DNS failure — and reported "up to
+    // date" for what was really a network problem.
+    if (err?.statusCode === 404 || err?.status === 404) return true;
     const msg = (err?.message || err?.toString() || '').toLowerCase()
     return (
-      msg.includes('404') ||
       msg.includes('cannot find latest') ||
-      msg.includes('no published versions') ||
-      msg.includes('not found')
+      msg.includes('no published versions')
     )
   }
 
   public downloadUpdate(): void {
     console.log('[AutoUpdater] Starting download...')
+    // deb (Linux) and portable (Windows) installs can't be self-updated by
+    // electron-updater — only AppImage/NSIS can. A "Download Update" click
+    // there used to spin forever at 0%: the feed's latest.yml lists no
+    // installable file for those package types, so nothing ever downloads
+    // and no error ever fires. Tell the user up front instead.
+    if (process.platform === 'linux' && !process.env.APPIMAGE) {
+      this.broadcast('update-error', "Updates aren't supported for the .deb install. Please download the new version from the releases page.")
+      return
+    }
+    if (process.platform === 'win32' && process.env.PORTABLE_EXECUTABLE_DIR) {
+      this.broadcast('update-error', "The portable version can't update itself. Please download the installer from the releases page.")
+      return
+    }
     try {
       // Errors during download are surfaced via autoUpdater.on("error") which
       // already broadcasts "update-error". Do not broadcast here to avoid duplicates.
@@ -1641,14 +1750,61 @@ export class AppState {
   // AEC alignment seed lookup when getOutputRoute() is unavailable pre-start.
   private _lastStatsRouteName: string | null = null;
 
+  // Fingerprint of the last pipeline-stats line that was logged.
+  //
+  // The poll fires every 5 s for the whole meeting and used to print the full
+  // ~1.2 KB stats JSON every time, so a quiet 40-minute call emitted ~480 near
+  // identical lines — noise that buries the transitions actually worth reading
+  // (gate convergence, a route change, the pipeline going quiet) and makes the
+  // shipped log file roll over sooner. Only the fields that describe the
+  // pipeline's *state* go into this fingerprint; the monotonic counters
+  // (frames_total, render_frames, last_render_frame_age_ms) are deliberately
+  // excluded, because they change on every tick and would defeat the compare.
+  //
+  // Verbose logging still gets every raw line — that is what it is for.
+  private _lastStatsFingerprint: string | null = null;
+
+  /**
+   * State fields worth a log line. Anything not listed here is either a
+   * monotonic counter or a value that jitters continuously (erle_ema, delay_ms,
+   * the residual-echo likelihoods), neither of which marks a transition.
+   */
+  private static readonly STATS_FINGERPRINT_KEYS = [
+    'gate_state',
+    'converged',
+    'mode',
+    'route_name',
+    'route_transport',
+    'render_backend',
+    'render_pipeline_alive',
+    'speaker_active',
+    'headphones',
+    'align_frozen',
+    'active_mic_captures',
+  ] as const;
+
+  private _statsFingerprint(statsJson: string): string | null {
+    try {
+      const stats = JSON.parse(statsJson);
+      return AppState.STATS_FINGERPRINT_KEYS.map((k) => `${k}=${stats?.[k]}`).join('|');
+    } catch {
+      return null; // unparseable — fall back to logging it
+    }
+  }
+
   private _startPipelineStatsPolling(): void {
     if (this._pipelineStatsTimer) return;
     const native = loadNativeModule();
     if (!native?.getAudioPipelineStats) return; // stale .node binary — no stats surface
+    this._lastStatsFingerprint = null; // first tick of a meeting always logs
     this._pipelineStatsTimer = setInterval(() => {
       try {
         const stats = native.getAudioPipelineStats!();
-        console.log(`[AudioPipeline] ${stats} filter=${JSON.stringify(this._echoFilter.getStats())}`);
+        const fingerprint = this._statsFingerprint(stats);
+        if (this._verboseLogging || fingerprint === null || fingerprint !== this._lastStatsFingerprint) {
+          console.log(`[AudioPipeline] ${stats} filter=${JSON.stringify(this._echoFilter.getStats())}`);
+        }
+        this._lastStatsFingerprint = fingerprint;
         this._maybePersistEchoAlignSeed(stats);
       } catch (e) {
         console.warn('[AudioPipeline] stats poll failed:', e);
@@ -1711,6 +1867,46 @@ export class AppState {
     if (this._pipelineStatsTimer) {
       clearInterval(this._pipelineStatsTimer);
       this._pipelineStatsTimer = null;
+    }
+  }
+
+  // ── Main-thread responsiveness measurement ────────────────────────────────
+  //
+  // "The app gets stuck during calls" is unactionable until it is a number.
+  // monitorEventLoopDelay samples how late the loop is servicing its own timers,
+  // which is precisely the quantity a blocking native call (device enumeration,
+  // a synchronous file write) or a long JS turn inflates — and it costs nothing
+  // while running, because libuv records the interval in C and only builds the
+  // histogram when it is read.
+  //
+  // Meeting-scoped and verbose-gated: one line per meeting, no new setting, no
+  // new IPC. Whether the device-list probes need staggering is a question this
+  // answers rather than one we guess at.
+  private _loopDelay: IntervalHistogram | null = null;
+
+  private _startLoopDelayMonitor(): void {
+    if (!this._verboseLogging || this._loopDelay) return;
+    try {
+      this._loopDelay = monitorEventLoopDelay({ resolution: 20 });
+      this._loopDelay.enable();
+    } catch {
+      this._loopDelay = null; // never let instrumentation break a meeting
+    }
+  }
+
+  private _stopLoopDelayMonitor(): void {
+    const h = this._loopDelay;
+    if (!h) return;
+    this._loopDelay = null;
+    try {
+      h.disable();
+      const ms = (ns: number): string => (ns / 1e6).toFixed(1);
+      console.log(
+        `[Main][debug] Event-loop delay over meeting: mean=${ms(h.mean)}ms ` +
+        `p50=${ms(h.percentile(50))}ms p99=${ms(h.percentile(99))}ms max=${ms(h.max)}ms`
+      );
+    } catch {
+      // A histogram read must never be the reason endMeeting fails.
     }
   }
 
@@ -2155,7 +2351,13 @@ export class AppState {
       segment.speakerIndex !== undefined &&
       this._clientSpeakerIndicesSeen.size >= 2
     ) {
-      displayName = `${displayName} · Speaker ${segment.speakerIndex + 1}`;
+      // Diarization has now told us there's more than one distinct voice on
+      // the client side, so the resolved name (calendar attendee / company)
+      // can't be attributed to any single index with confidence — showing
+      // e.g. "Shahjad (Indosales) · Speaker 1" implies a certainty we don't
+      // have and mislabels whoever isn't actually Shahjad. Fall back to a
+      // plain, generic per-index label instead.
+      displayName = `${speakerNameMap.clientDiarized || 'Other Party'} · Speaker ${segment.speakerIndex + 1}`;
     }
     const payload = {
       speaker: speaker,          // internal role — kept for renderer routing logic
@@ -2577,7 +2779,9 @@ export class AppState {
   //
   // Cross-checking the two channels is what breaks the tie: if the mic is
   // carrying real speech and the system channel has been bit-silent throughout,
-  // the far end is not simply quiet. One speculative rebind, then an advisory.
+  // the far end is not simply quiet. One speculative rebind, then an advisory —
+  // the rebind on every platform, the advisory on macOS only (see stage 2 for
+  // why a muted prospect is indistinguishable from a misrouted endpoint here).
   private _lastRealSystemAudioAt = 0;
   private _lastRealMicAudioAt = 0;
   private _farEndTimer: NodeJS.Timeout | null = null;
@@ -2652,7 +2856,24 @@ export class AppState {
     if (this._farEndWarned || now - this._farEndSwapAt < AppState.FAR_END_SILENCE_MS) return;
     this._farEndWarned = true;
     if (this._systemBannerShown) return;
-    console.warn(`[Main] System audio still silent ${Math.round((now - this._farEndSwapAt) / 1000)}s after a rebind while the mic is active — surfacing an advisory.`);
+
+    // The advisory is macOS-only; the detection above is not.
+    //
+    // On a sales call the rep routinely talks for minutes while the prospect
+    // listens on mute, and a muted far end means the loopback capture carries
+    // bit-exact silence — so this condition is satisfied by a perfectly healthy
+    // Windows meeting, and the banner was firing mid-call on exactly the most
+    // common call shape. It is also unactionable there: SystemAudioPermissionBanner
+    // renders its "Open Settings" / "Repair Permissions" buttons on macOS only,
+    // so on Windows it is a warning with no fix attached.
+    //
+    // Stage 1's speculative rebind still runs on every platform, so the Windows
+    // eConsole/eCommunications mismatch this watch was built for is still
+    // repaired silently — only the advisory is withheld. The log line stays so
+    // the detection remains visible in a support bundle.
+    const advise = process.platform === 'darwin';
+    console.warn(`[Main] System audio still silent ${Math.round((now - this._farEndSwapAt) / 1000)}s after a rebind while the mic is active — ${advise ? 'surfacing an advisory' : 'advisory withheld (non-macOS: a muted far end looks identical)'}.`);
+    if (!advise) return;
     this.sendAudioCaptureFailed({
       channel: 'system',
       message: formatPermissionMessage('system-audio-stuck'),
@@ -2731,6 +2952,7 @@ export class AppState {
     // still in-flight call this.googleSTT?.write() while googleSTT is already null.
     if (this.isMeetingActive) {
       this.disarmSystemCaptureWatchdog();
+      this.disarmMicCaptureWatchdog();
       this.systemAudioCapture?.stop();
       this.microphoneCapture?.stop();
     }
@@ -3175,6 +3397,8 @@ export class AppState {
         }
         // Field telemetry for the echo pipeline (ERLE, gate state, mute ratio).
         this._startPipelineStatsPolling();
+        // Objective answer to "is the main process blocking during calls".
+        this._startLoopDelayMonitor();
         // Only now: the baseline snapshot must reflect the device graph AFTER our
         // own captures have grabbed their endpoints, or the tap/aggregate device
         // appearing would read as a user device change and trigger a hot-swap.
@@ -3208,18 +3432,23 @@ export class AppState {
 
     // Stop audio captures synchronously — these are fire-and-forget internally
     this._stopPipelineStatsPolling();
+    this._stopLoopDelayMonitor();
     this._stopDeviceWatcher();
     this.disarmSystemCaptureWatchdog();
+    this.disarmMicCaptureWatchdog();
     this.systemAudioCapture?.stop();
     this.googleSTT?.stop();
     this.microphoneCapture?.stop();
     this.googleSTT_User?.stop();
 
-    // Save session state and reset context — MeetingPersistence.stopMeeting() is
-    // already fire-and-forget internally (processAndSaveMeeting runs in background).
-    // Capture the meetingId NOW so the background IIFE uses a deterministic ID
-    // rather than getRecentMeetings(1) which could return a different meeting if the
-    // user starts a new session before background processing finishes.
+    // Save session state and reset context — MeetingPersistence.stopMeeting()
+    // persists the placeholder row (with the full transcript) synchronously and
+    // defers only summary generation to a background phase that first waits for
+    // any in-flight analysis to settle, so a just-ended call is queryable the
+    // moment endMeeting() returns. Capture the meetingId NOW so the background
+    // phase uses a deterministic ID rather than getRecentMeetings(1) which
+    // could return a different meeting if the user starts a new session before
+    // background processing finishes.
     const meetingId = await this.intelligenceManager.stopMeeting(meetingTypes, tenantId);
     // Tell the overlay window EXACTLY which meeting this call became — don't
     // make it infer this from getRecentMeetings()[0]. That list is sorted by
@@ -3231,20 +3460,11 @@ export class AppState {
     if (meetingId) {
       this.broadcast('live-call-ended', { meetingId });
     }
-    // If an analysis call is currently in-flight, record the meetingId so
-    // setCurrentLiveAnalysis() can patch the DB when the result arrives. The
-    // generation is recorded with it: by the time that result shows up the user
-    // may already be in the next call, and matching on the generation is the
-    // only way to tell "A's late result" from "B's current result".
-    if (this._liveAnalysisInFlight && meetingId) {
-      this._pendingLiveAnalysisMeetingId = meetingId;
-      this._pendingLiveAnalysisGeneration = this._meetingGeneration;
-    } else {
-      // Nothing in flight — make sure a previous call's pending slot can't be
-      // mistaken for this one's.
-      this._pendingLiveAnalysisMeetingId = null;
-      this._pendingLiveAnalysisGeneration = null;
-    }
+    // Pending-live-analysis bookkeeping moved into MeetingPersistence's
+    // deferred finalize phase — it must run after the analysis-settle wait to
+    // preserve the original routing window (a result landing mid-wait routes
+    // 'drop' exactly as it did when the wait sat here). See
+    // recordPendingLiveAnalysis().
 
     // Revert to Default Model — synchronous, no blocking I/O
     try {
@@ -3474,9 +3694,16 @@ export class AppState {
     //    The device watcher stops too: a swap while paused would restart a capture
     //    the user deliberately stopped, and resume() re-baselines anyway. Snapshot
     //    first — that is what lets resume() notice a device change made while off.
+    //    The stats poll stops for the same reason: with both captures stopped it
+    //    reports a frozen snapshot, so every 5 s it was paying a native FFI call
+    //    and a JSON parse to re-describe a pipeline that is not running. Nothing
+    //    is lost — the align-seed persist it feeds only acts on `converged`, which
+    //    cannot become true with no audio flowing.
     this._snapshotDevicesForPause();
     this._stopDeviceWatcher();
+    this._stopPipelineStatsPolling();
     this.disarmSystemCaptureWatchdog();
+    this.disarmMicCaptureWatchdog();
     this.systemAudioCapture?.stop();
     this.microphoneCapture?.stop();
 
@@ -3574,6 +3801,8 @@ export class AppState {
       // 2b. Re-arm device hot-swap. After the captures, so the baseline snapshot
       //     reflects the graph including our own tap/loopback endpoints.
       this._startDeviceWatcher();
+      // 2c. Echo telemetry resumes with the pipeline it describes.
+      this._startPipelineStatsPolling();
 
       // 3. Resume live RAG indexing using the SAME session key 'live-meeting-current'
       //    so all new transcript segments are appended to the existing session,
@@ -3656,6 +3885,18 @@ export class AppState {
   }
 
   /**
+   * Generic renderer-triggered native toast — same display-aware, cross-screen
+   * pipeline as pause/resume/summary-ready. Exposed over the
+   * 'show-app-notification' IPC channel so renderer-side watchers (e.g. the
+   * invite-accepted notifier, which fires when a teammate joins after the
+   * admin invited them) can surface background notifications no matter which
+   * app or screen the admin is on.
+   */
+  public showAppNotification(title: string, message: string): void {
+    this.showNotificationOnActiveDisplay(title, message);
+  }
+
+  /**
    * Generation of the call that is live right now. The renderer reads this once
    * on mount (it also arrives with every `session-reset`) and stamps it onto
    * every live-analysis write so results can be attributed to the right call.
@@ -3674,6 +3915,62 @@ export class AppState {
       return;
     }
     this._liveAnalysisInFlight = inFlight;
+    if (!inFlight) {
+      const waiters = this._liveAnalysisSettledWaiters;
+      this._liveAnalysisSettledWaiters = [];
+      waiters.forEach((resolve) => resolve());
+    }
+  }
+
+  /**
+   * Wait for the current runAnalysis() call (if any) to finish writing into
+   * _currentLiveAnalysis, up to maxWaitMs.
+   *
+   * Lets the End Call button return instantly — see FloatingDock.handleEndCallClick
+   * — while stopMeeting() itself still gets the guarantee it needs: the summary
+   * snapshot in MeetingPersistence.stopMeeting() is taken by value, so a result
+   * that lands after that point can only patch the saved row (routeLiveAnalysisWrite),
+   * never the generated summary text. Bounded by the same deadline the renderer
+   * used to enforce on itself (FINAL_ANALYSIS_MAX_WAIT_MS in meetingLifecycle.ts) —
+   * a hung provider must not delay the save indefinitely, it just falls back to
+   * the existing patch-on-arrival path.
+   */
+  public async waitForLiveAnalysisToSettle(maxWaitMs: number): Promise<void> {
+    if (!this._liveAnalysisInFlight) return;
+    await new Promise<void>((resolve) => {
+      const timer = setTimeout(() => {
+        this._liveAnalysisSettledWaiters = this._liveAnalysisSettledWaiters.filter((w) => w !== onSettled);
+        resolve();
+      }, maxWaitMs);
+      const onSettled = () => { clearTimeout(timer); resolve(); };
+      this._liveAnalysisSettledWaiters.push(onSettled);
+    });
+  }
+
+  /**
+   * Moved from endMeeting (it used to run right after stopMeeting() returned —
+   * which, now that stopMeeting() defers its own analysis-settle wait, would
+   * have recorded the pending target BEFORE the wait and changed which results
+   * route to the patch path). Called by MeetingPersistence's deferred finalize
+   * phase right after waitForLiveAnalysisToSettle(), preserving the original
+   * order: wait → record.
+   *
+   * If an analysis call is currently in-flight, record the meetingId so
+   * setCurrentLiveAnalysis() can patch the DB when the result arrives. The
+   * generation is recorded with it: by the time that result shows up the user
+   * may already be in the next call, and matching on the generation is the
+   * only way to tell "A's late result" from "B's current result".
+   */
+  public recordPendingLiveAnalysis(meetingId: string | null): void {
+    if (this._liveAnalysisInFlight && meetingId) {
+      this._pendingLiveAnalysisMeetingId = meetingId;
+      this._pendingLiveAnalysisGeneration = this._meetingGeneration;
+    } else {
+      // Nothing in flight — make sure a previous call's pending slot can't be
+      // mistaken for this one's.
+      this._pendingLiveAnalysisMeetingId = null;
+      this._pendingLiveAnalysisGeneration = null;
+    }
   }
 
   public setCurrentLiveAnalysis(data: LiveAnalysisData | null, generation?: number | null): void {
@@ -4783,12 +5080,35 @@ async function initializeApp() {
   // constructed yet, so we cannot call appState.getUndetectable().
   if (process.platform === 'darwin') {
     // SettingsManager is already statically imported — no require() needed.
-    // Same default as the AppState constructor above — ghost mode ON by
-    // default (pre-emptive dock hide on macOS must match, or the dock icon
-    // would flash visible for a first-run user before AppState corrects it).
-    const isUndetectableOnStartup = SettingsManager.getInstance().get('isUndetectable') ?? true;
+    // Same default as the AppState constructor below — ghost mode ON by
+    // default in PRODUCTION ONLY (pre-emptive dock hide on macOS must match
+    // that env-based default, or the dock icon would flash visible/hidden
+    // incorrectly for a first-run user before AppState corrects it).
+    const isUndetectableOnStartup = SettingsManager.getInstance().get('isUndetectable') ?? app.isPackaged;
     if (isUndetectableOnStartup) {
       app.dock.hide();
+    }
+  }
+
+  // 2b. Default "Open GoDojo when you log in" to ON, production builds only.
+  // Applied exactly once — SettingsManager persists a marker so a user who
+  // later flips this off in Settings is never overridden on a later launch.
+  // Gated on app.isPackaged (this codebase's established prod-vs-dev signal,
+  // not NODE_ENV) so dev builds never register themselves as a login item.
+  if (app.isPackaged) {
+    const sm = SettingsManager.getInstance();
+    if (!sm.get('openAtLoginDefaultApplied')) {
+      app.setLoginItemSettings({
+        openAtLogin: true,
+        openAsHidden: false,
+        path: app.getPath('exe'),
+      });
+      sm.set('openAtLoginDefaultApplied', true);
+      // Record the registration the Settings toggle reads back — the OS
+      // getter misreports false in packaged builds, which made this default
+      // work (app opens at login) while the toggle looked disabled.
+      sm.set('openAtLogin', true);
+      console.log('[Main] Applied production default: openAtLogin=true');
     }
   }
 

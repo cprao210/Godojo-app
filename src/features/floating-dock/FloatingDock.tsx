@@ -9,7 +9,7 @@
  */
 
 import React from 'react';
-import { useEffect, useState } from 'react';
+import { useCallback, useEffect, useMemo, useState } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
 import { Radio, Brain, Pause, Play, StopCircle, Settings, Ghost, Loader2 } from 'lucide-react';
 import { FloatingSettingsPanel, FloatingChatPanel, FloatingIntelligencePanel, DockButton } from '@/features/floating-dock';
@@ -17,10 +17,22 @@ import { FloatingPanelWrapper, DockDivider, DockDragHandle, PausedIndicatorDot }
 // Imported relatively (not via the barrel above) — the barrel re-exports
 // FloatingDock, so pulling DockBrandBar from it would be a circular import.
 import { DockBrandBar } from './DockBrandBar';
-import { useFloatingDock, usePerformanceMode, useLiveAudioLevels } from '@/hooks';
+import { useFloatingDock, usePerformanceMode } from '@/hooks';
 import { posthogAnalytics } from '@/lib/analytics/posthog.service';
 import { FloatingDockProps } from '@/types';
 import { getDockSurfaceStyle } from './dockSurfaceStyle';
+
+// Hoisted so DockButton's memo comparison actually holds. Inline `<Radio …/>`
+// allocates a fresh element on every dock render, which alone would defeat the
+// memo on all six buttons.
+const ICON_RADIO = <Radio size={22} strokeWidth={1.6} />;
+const ICON_BRAIN = <Brain size={22} strokeWidth={1.6} />;
+const ICON_GHOST = <Ghost size={22} strokeWidth={1.6} />;
+const ICON_PLAY = <Play size={22} strokeWidth={1.6} />;
+const ICON_PAUSE = <Pause size={22} strokeWidth={1.6} />;
+const ICON_STOP = <StopCircle size={22} strokeWidth={1.6} />;
+const ICON_ENDING = <Loader2 size={22} strokeWidth={1.6} className="animate-spin" />;
+const ICON_SETTINGS = <Settings size={22} strokeWidth={1.6} />;
 
 export const FloatingDock: React.FC<FloatingDockProps> = ({
     isMeetingPaused,
@@ -47,11 +59,13 @@ export const FloatingDock: React.FC<FloatingDockProps> = ({
 
     const floatingDockStates = useFloatingDock({ transcriptRef, isMeetingPaused, companyIntel });
     const { isPerformanceMode, preference: performanceModePreference, setPreference: setPerformanceModePreference } = usePerformanceMode();
-    // Live wave-indicator levels for the brand bar — FloatingDock only mounts
-    // during a live meeting, so this is always "on"; when the meeting is
-    // paused, capture stops emitting and the hook's own idle-decay drops both
-    // bars to 0 within ~400ms without any extra wiring here.
-    const { micLevel, systemLevel } = useLiveAudioLevels(true);
+    // Live wave-indicator levels are NOT read here. They used to arrive as
+    // component state (useLiveAudioLevels), which put a ~20Hz-per-channel feed at
+    // the root of this tree and reconciled the whole overlay — both panels, six
+    // dock buttons, LiveAnalysisContent — to move eight bars in one leaf. The
+    // indicator now reads lib/audioLevelFeed directly inside its own rAF loop,
+    // so the same numbers reach the meter with zero renders above it. Nothing
+    // else here needs the levels.
 
     // True while the awaited end-of-call analysis is running. Local to the
     // button: nothing else in the dock changes behaviour because of it.
@@ -61,7 +75,7 @@ export const FloatingDock: React.FC<FloatingDockProps> = ({
         posthogAnalytics.trackPageView('floating_dock');
     }, []);
 
-    const { activePanel, togglePanel, isDockExpanded, collapseDock, expandDock, isFrozen, dockOpacity, handleDockOpacityChange, dockRef, ensureFinalAnalysisBeforeEndCall } = floatingDockStates;
+    const { activePanel, togglePanel, isDockExpanded, collapseDock, expandDock, isFrozen, dockOpacity, handleDockOpacityChange, ensureFinalAnalysisBeforeEndCall } = floatingDockStates;
     const { panelTopOffset, meetingTypes, setMeetingTypes, analysisData, analysisLoading, analysisError } = floatingDockStates;
     const { runAnalysis, isRefreshRun, chatMessages, setChatMessages, autoRefreshInterval, setAutoRefreshInterval } = floatingDockStates;
     const { intelligencePanelFirstOpenedAt, noAnalysisCaptured, isCountdownActive, handleInteractionId } = floatingDockStates;
@@ -69,12 +83,14 @@ export const FloatingDock: React.FC<FloatingDockProps> = ({
     // In Performance Mode we swap these springs for short tweens: fewer animated
     // frames (no spring settling/overshoot) = less layout/paint per panel switch
     // and height change, which matters most on software-composited machines.
-    const panelSpring = isPerformanceMode
+    // Memoized because they are passed as `transition` to memoized children — a
+    // fresh object per render would invalidate every one of them.
+    const panelSpring = useMemo(() => isPerformanceMode
         ? ({ type: 'tween', duration: 0.14, ease: 'easeOut' } as const)
-        : ({ type: 'spring', damping: 28, stiffness: 380, mass: 0.8 } as const);
-    const dockSpring = isPerformanceMode
+        : ({ type: 'spring', damping: 28, stiffness: 380, mass: 0.8 } as const), [isPerformanceMode]);
+    const dockSpring = useMemo(() => isPerformanceMode
         ? ({ type: 'tween', duration: 0.14, ease: 'easeOut' } as const)
-        : ({ type: 'spring', damping: 26, stiffness: 300 } as const);
+        : ({ type: 'spring', damping: 26, stiffness: 300 } as const), [isPerformanceMode]);
     // The outer container's height drives the native OS-window resize every
     // animation frame (see the ResizeObserver below). panelSpring/dockSpring are
     // slightly underdamped so the panels/nav feel lively, but the SAME overshoot
@@ -82,9 +98,79 @@ export const FloatingDock: React.FC<FloatingDockProps> = ({
     // and snap back — the "spring/jump" the dock showed on expand/collapse.
     // dockHeightSpring is a no-overshoot spring (bounce:0) so the window grows
     // and shrinks smoothly and settles exactly once, at the same pace.
-    const dockHeightSpring = isPerformanceMode
+    const dockHeightSpring = useMemo(() => isPerformanceMode
         ? ({ type: 'tween', duration: 0.16, ease: 'easeOut' } as const)
-        : ({ type: 'spring', duration: 0.34, bounce: 0 } as const);
+        : ({ type: 'spring', duration: 0.34, bounce: 0 } as const), [isPerformanceMode]);
+
+    // Same reasoning: the dock pill's surface style is spread into an inline
+    // style object, and rebuilding it per render (it parses/builds gradient and
+    // backdrop-filter strings) is pure waste while opacity and mode are fixed.
+    const dockSurfaceStyle = useMemo(
+        () => getDockSurfaceStyle({ opacity: dockOpacity, rgb: '18, 22, 34', blurPx: 24, isPerformanceMode }),
+        [dockOpacity, isPerformanceMode]
+    );
+
+    // ── Stable handlers for the memoized children ───────────────────────
+    // useFloatingDock re-creates its functions on every render, so a useCallback
+    // that closed over them directly would change identity every render and
+    // defeat the memo on all six dock buttons. This box holds the current
+    // closures; the handlers below read through it, so their identity never
+    // changes while the call always lands on the newest closure — exactly what
+    // an inline arrow does today, minus the re-render. Written during render (not
+    // in an effect) so a click can never see a value from the previous commit.
+    const latest = React.useRef({
+        togglePanel, collapseDock, expandDock, runAnalysis, ensureFinalAnalysisBeforeEndCall,
+        onEndCall, meetingTypes, isDockExpanded, isEndingCall, handleInteractionId,
+        onRequestOverlayResize, onPauseResume,
+    });
+    latest.current = {
+        togglePanel, collapseDock, expandDock, runAnalysis, ensureFinalAnalysisBeforeEndCall,
+        onEndCall, meetingTypes, isDockExpanded, isEndingCall, handleInteractionId,
+        onRequestOverlayResize, onPauseResume,
+    };
+
+    const openIntelligencePanel = useCallback(() => latest.current.togglePanel('intelligence'), []);
+    const openChatPanel = useCallback(() => latest.current.togglePanel('chat'), []);
+    const openSettingsPanel = useCallback(() => latest.current.togglePanel('settings'), []);
+    const handleRegenerate = useCallback(() => { latest.current.runAnalysis(true); }, []);
+    const toggleDock = useCallback(() => {
+        if (latest.current.isDockExpanded) latest.current.collapseDock();
+        else latest.current.expandDock();
+    }, []);
+    const handleEndCallClick = useCallback(async () => {
+        // ensureFinalAnalysisBeforeEndCall no longer blocks on the final LLM
+        // analysis itself — it only awaits the quick "mark analysis in-flight"
+        // IPC round-trip, then returns. The actual wait now happens inside
+        // main's endMeeting() (AppState.waitForLiveAnalysisToSettle), which
+        // this click handler never has to know about. isEndingCall now only
+        // guards the brief moment this await takes, so a double-click can't
+        // fire the in-flight IPC call twice.
+        if (latest.current.isEndingCall) return;
+        setIsEndingCall(true);
+        try {
+            await latest.current.ensureFinalAnalysisBeforeEndCall();
+        } finally {
+            setIsEndingCall(false);
+        }
+        latest.current.onEndCall(latest.current.meetingTypes);
+    }, []);
+    const handleChatInteractionId = useCallback((interactionId: number) => {
+        latest.current.handleInteractionId(interactionId);
+    }, []);
+    // useGodojoInterface re-creates handlePauseMeeting every render too, and that
+    // hook renders on every transcript update — so without this the Pause button
+    // would be the one dock button whose memo never held.
+    const handlePauseResume = useCallback(() => {
+        latest.current.onPauseResume();
+    }, []);
+    // Also stable: `onRequestOverlayResize` arrives from useGodojoInterface as a
+    // fresh function every render, and it is in the deps of the ResizeObserver
+    // effect below — so every dock render was disconnecting and re-observing the
+    // outer box, and each `observe()` fires an immediate callback (a forced
+    // layout). Reading it through the ref pins the effect to isPerformanceMode.
+    const requestOverlayResize = useCallback((height: number) => {
+        latest.current.onRequestOverlayResize?.(height);
+    }, []);
 
     // The nav dock + panels are only ever visible while the dock is expanded —
     // collapsing hides both, regardless of which panel was previously active.
@@ -104,73 +190,60 @@ export const FloatingDock: React.FC<FloatingDockProps> = ({
 
     // ── Native overlay-window resize orchestration ──────────────────────
     // See the "Window resize pipeline" note in useGodojoInterface.ts for the
-    // full rationale. Summary: resizing the real OS window on every
-    // animation frame (the naive ResizeObserver approach) causes visible
-    // stutter/hangs on mid-range/integrated-GPU machines, because a native
-    // window resize is comparatively expensive — nothing like a GPU-composited
-    // CSS transform.
+    // full rationale. Summary: a native OS window resize is a real, expensive
+    // operation — nothing like a GPU-composited CSS transform — so the window
+    // is resized EXPLICITLY and ONCE per known size transition, never per
+    // animation frame:
     //
-    // IMPORTANT: WindowHelper.setOverlayDimensions anchors the window's TOP
-    // edge, so the window grows DOWNWARD and its top-pinned brand bar stays
-    // put on screen (matching this component's top-down layout — brand bar on
-    // top, panels rendered below it). On capable hardware the ResizeObserver
-    // tracks the animated height every frame, so the real OS window grows and
-    // shrinks in lockstep with the spring — which is what gives the dock its
-    // smooth feel. The height spring is deliberately non-overshooting
-    // (dockHeightSpring, bounce:0): because the window tracks the height
-    // per-frame, any overshoot would make the real window spring past its
-    // final size and snap back. Weak-GPU machines skip the per-frame tracking
-    // and fall back to the cheaper single-shot jump below.
-    const outerRef = React.useRef<HTMLDivElement>(null);
-    useEffect(() => {
-        if (isPerformanceMode) return; // weak GPU: handled by the single-shot path below
-        const el = outerRef.current;
-        if (!el) return;
-        const observer = new ResizeObserver((entries) => {
-            const h = entries[0]?.contentRect.height;
-            if (h) onRequestOverlayResize?.(Math.ceil(h));
-        });
-        observer.observe(el);
-        return () => observer.disconnect();
-    }, [isPerformanceMode, onRequestOverlayResize]);
-
-    // Single-shot resize for weak-GPU machines only (Performance Mode on):
     //   - Growing: resize to the target height IMMEDIATELY, before/alongside
     //     the spring starting, so the window is already large enough and the
     //     growing content is never clipped by window bounds that haven't
-    //     caught up yet.
+    //     caught up yet. The window is fully transparent — its temporarily
+    //     oversized region is invisible — so the instant resize shows
+    //     nothing; only the content's own spring is visible.
     //   - Shrinking: do NOT resize immediately — the window needs to stay at
     //     its current (larger) size for the full duration of the shrink
-    //     animation, or the collapsing content would be clipped mid-animation.
-    //     The resize is deferred to `onAnimationComplete` below instead.
-    // On capable hardware this is a no-op — the live ResizeObserver above
-    // already keeps the window in sync every frame, so firing this too would
-    // just fight it.
+    //     animation, or the fading/collapsing content would be clipped
+    //     mid-animation. The resize is deferred to `onAnimationComplete`
+    //     below instead.
+    //
+    // IMPORTANT: WindowHelper.setOverlayDimensions anchors the window's TOP
+    // edge (and its right edge when the width changes), so the window grows
+    // DOWNWARD and its top-pinned brand bar stays put on screen (matching
+    // this component's top-down layout — brand bar on top, panels rendered
+    // below it).
+    //
+    // The ResizeObserver-per-frame tracking this used to run on capable GPUs
+    // was removed on purpose: it re-drove the exact per-frame native-resize
+    // storm this pipeline exists to avoid (visible stutter on integrated
+    // GPUs, dozens of setOverlayDimensions calls per toggle, resize fighting
+    // the drag handle), while the window being transparent means per-frame
+    // tracking had no visual effect — only the content needs to animate.
+    // The height spring stays deliberately non-overshooting (bounce:0) so
+    // collapsing content always stays inside the still-current window bounds
+    // until the deferred shrink resize lands.
     const prevTargetHeightRef = React.useRef(targetHeight);
     useEffect(() => {
-        if (!isPerformanceMode) {
-            prevTargetHeightRef.current = targetHeight;
-            return;
-        }
         if (targetHeight > prevTargetHeightRef.current) {
-            onRequestOverlayResize?.(targetHeight);
+            requestOverlayResize(targetHeight);
         }
         prevTargetHeightRef.current = targetHeight;
-    }, [targetHeight, onRequestOverlayResize, isPerformanceMode]);
+    }, [targetHeight, requestOverlayResize]);
 
-    // Fires when the outer height spring settles. On weak-GPU machines this
-    // is the one point a shrink actually resizes the window (grow already
-    // happened above). On capable hardware the live tracker has already
-    // brought the window to the right size every frame, so this is a
-    // harmless dedupe no-op.
-    const handleHeightAnimationComplete = () => {
-        if (isPerformanceMode) onRequestOverlayResize?.(targetHeight);
-    };
+    // Fires when the outer height spring settles — the one point a shrink
+    // actually resizes the window (grow already happened above). For grows
+    // this is a harmless dedupe no-op. This is also the reconciliation point
+    // for interrupted animations: framer never fires onAnimationComplete for
+    // an interrupted run, only for the retargeted one — so the deferred
+    // resize can never be "lost" mid-toggle and the window always ends at
+    // the latest target instead of a stale mid-animation size.
+    const handleHeightAnimationComplete = useCallback(() => {
+        requestOverlayResize(targetHeight);
+    }, [requestOverlayResize, targetHeight]);
 
     return (
         <>
             <motion.div
-                ref={outerRef}
                 className={`relative w-[430px] mx-auto h-fit bg-transparent max-w-full rounded-2xl items-center flex flex-col min-h-0 ${overlayPanelClass}`}
                 animate={{ height: targetHeight }}
                 transition={dockHeightSpring}
@@ -204,7 +277,7 @@ export const FloatingDock: React.FC<FloatingDockProps> = ({
                         speakerNames={speakerNames}
                         showTranscript={showTranscript}
                         isLoading={analysisLoading}
-                        onRegenerate={() => runAnalysis(true)}
+                        onRegenerate={handleRegenerate}
                         autoRefreshInterval={autoRefreshInterval}
                         onAutoRefreshIntervalChange={setAutoRefreshInterval}
                         isRefreshRun={isRefreshRun}
@@ -217,39 +290,48 @@ export const FloatingDock: React.FC<FloatingDockProps> = ({
                     />
                 </FloatingPanelWrapper>
 
-                {/* Chat panel — mounts on first open, then stays mounted so history survives */}
-                {(chatMessages.length > 0 || effectiveActivePanel === 'chat') && (
-                    <FloatingPanelWrapper
-                        panelTopOffset={panelTopOffset}
-                        showFrozenOverlay={isFrozen && effectiveActivePanel === 'chat'}
-                        isInteractive={effectiveActivePanel === 'chat'}
-                        initial={{ opacity: 0, y: 20, scale: 0.96 }}
-                        animate={{
-                            opacity: effectiveActivePanel === 'chat' ? dockOpacity : 0,
-                            y: effectiveActivePanel === 'chat' ? 0 : 20,
-                            scale: effectiveActivePanel === 'chat' ? 1 : 0.96,
-                        }}
-                        transition={panelSpring}
-                    >
-                        <FloatingChatPanel
-                            onInteractionId={handleInteractionId}
-                            transcriptRef={transcriptRef}
-                            isMeetingPaused={isMeetingPaused}
-                            rollingTranscriptUser={rollingTranscriptUser}
-                            rollingTranscriptClient={rollingTranscriptClient}
-                            isClientSpeaking={isClientSpeaking}
-                            isUserSpeaking={isUserSpeaking}
-                            showTranscript={showTranscript}
-                            currentModel={currentModel}
-                            onSelectModel={onSelectModel}
-                            speakerNames={speakerNames}
-                            messages={chatMessages}
-                            onMessagesChange={setChatMessages}
-                            isPerformanceMode={isPerformanceMode}
-                            calendarEventMetadata={calendarEventMetadata}
-                        />
-                    </FloatingPanelWrapper>
-                )}
+                {/* Chat panel — mounts on first open. History lives in the lifted
+                    useFloatingDock state, so the panel itself can unmount when the
+                    call's chat is empty without losing anything. Wrapped in
+                    AnimatePresence (like Settings) so closing plays the same
+                    fade-out as every other panel instead of a one-frame hard cut
+                    against a still-expanded window. */}
+                <AnimatePresence>
+                    {(chatMessages.length > 0 || effectiveActivePanel === 'chat') && (
+                        <FloatingPanelWrapper
+                            key="chat-panel"
+                            panelTopOffset={panelTopOffset}
+                            showFrozenOverlay={isFrozen && effectiveActivePanel === 'chat'}
+                            isInteractive={effectiveActivePanel === 'chat'}
+                            initial={{ opacity: 0, y: 20, scale: 0.96 }}
+                            animate={{
+                                opacity: effectiveActivePanel === 'chat' ? dockOpacity : 0,
+                                y: effectiveActivePanel === 'chat' ? 0 : 20,
+                                scale: effectiveActivePanel === 'chat' ? 1 : 0.96,
+                            }}
+                            exit={{ opacity: 0, y: 12, scale: 0.97 }}
+                            transition={panelSpring}
+                        >
+                            <FloatingChatPanel
+                                onInteractionId={handleChatInteractionId}
+                                transcriptRef={transcriptRef}
+                                isMeetingPaused={isMeetingPaused}
+                                rollingTranscriptUser={rollingTranscriptUser}
+                                rollingTranscriptClient={rollingTranscriptClient}
+                                isClientSpeaking={isClientSpeaking}
+                                isUserSpeaking={isUserSpeaking}
+                                showTranscript={showTranscript}
+                                currentModel={currentModel}
+                                onSelectModel={onSelectModel}
+                                speakerNames={speakerNames}
+                                messages={chatMessages}
+                                onMessagesChange={setChatMessages}
+                                isPerformanceMode={isPerformanceMode}
+                                calendarEventMetadata={calendarEventMetadata}
+                            />
+                        </FloatingPanelWrapper>
+                    )}
+                </AnimatePresence>
 
                 {/* Settings panel — lightweight, can unmount freely (no timer state) */}
                 <AnimatePresence>
@@ -279,7 +361,6 @@ export const FloatingDock: React.FC<FloatingDockProps> = ({
                 </AnimatePresence>
 
                 <motion.div
-                    ref={dockRef}
                     initial={{ opacity: 0, y: 30 }}
                     animate={{ opacity: 1, y: 0, x: '-50%' }}
                     transition={{ type: 'spring', damping: 26, stiffness: 300 }}
@@ -289,15 +370,13 @@ export const FloatingDock: React.FC<FloatingDockProps> = ({
                     {/* Slim brand + expand/collapse bar, floating above the dock (with a
                         gap). Always visible — even when the nav dock + panel are hidden.
                         Its chevron expands (▽ → shows nav dock + last/default panel) or
-                        collapses (△ → hides nav dock + panel, brand bar stays). dockRef
-                        wraps bar + gap + pill, so the measured dockHeight — and thus
-                        panelTopOffset — includes it. */}
+                        collapses (△ → hides nav dock + panel, brand bar stays). The
+                        chrome's settled height (bar + gap + pill) is what panelTopOffset
+                        is derived from in useFloatingDock. */}
                     <DockBrandBar
                         isExpanded={isDockExpanded}
                         opacity={dockOpacity}
-                        onToggle={isDockExpanded ? collapseDock : expandDock}
-                        micLevel={micLevel}
-                        systemLevel={systemLevel}
+                        onToggle={toggleDock}
                         isPerformanceMode={isPerformanceMode}
                     />
 
@@ -316,7 +395,7 @@ export const FloatingDock: React.FC<FloatingDockProps> = ({
                                 <div
                                     className="flex items-center gap-2.5 px-3 py-3 rounded-2xl relative select-none draggable-area"
                                     style={{
-                                        ...getDockSurfaceStyle({ opacity: dockOpacity, rgb: '18, 22, 34', blurPx: 24, isPerformanceMode }),
+                                        ...dockSurfaceStyle,
                                         border: '1px solid rgba(255,255,255,0.09)',
                                         boxShadow: 'inset 0 1px 0 rgba(255,255,255,0.06)',
                                         width: 420,
@@ -336,31 +415,31 @@ export const FloatingDock: React.FC<FloatingDockProps> = ({
 
                                     {/* Call Intelligence */}
                                     <DockButton
-                                        icon={<Radio size={22} strokeWidth={1.6} />}
+                                        icon={ICON_RADIO}
                                         tooltip="GoDojo Intelligence"
                                         isActive={effectiveActivePanel === 'intelligence'}
                                         activeColor="#3b82f6"
                                         showActiveDot
                                         frozen={isFrozen}
                                         isPerformanceMode={isPerformanceMode}
-                                        onClick={() => togglePanel('intelligence')}
+                                        onClick={openIntelligencePanel}
                                     />
 
                                     {/* Chat Assistant */}
                                     <DockButton
-                                        icon={<Brain size={22} strokeWidth={1.6} />}
+                                        icon={ICON_BRAIN}
                                         tooltip="GoDojo Chat Assistant"
                                         isActive={effectiveActivePanel === 'chat'}
                                         activeColor="#8b5cf6"
                                         showActiveDot
                                         frozen={isFrozen}
                                         isPerformanceMode={isPerformanceMode}
-                                        onClick={() => togglePanel('chat')}
+                                        onClick={openChatPanel}
                                     />
 
                                     {/* Ghost Mode */}
                                     <DockButton
-                                        icon={<Ghost size={22} strokeWidth={1.6} />}
+                                        icon={ICON_GHOST}
                                         tooltip={isUndetectable ? 'Ghost Mode ON' : 'Ghost Mode'}
                                         isActive={isUndetectable}
                                         activeColor="#10b981"
@@ -374,52 +453,36 @@ export const FloatingDock: React.FC<FloatingDockProps> = ({
 
                                     {/* Pause / Resume */}
                                     <DockButton
-                                        icon={isMeetingPaused ? <Play size={22} strokeWidth={1.6} /> : <Pause size={22} strokeWidth={1.6} />}
+                                        icon={isMeetingPaused ? ICON_PLAY : ICON_PAUSE}
                                         tooltip={isMeetingPaused ? 'Resume Meeting' : 'Pause Meeting'}
                                         isActive={false}
                                         frozen={isFrozen}
                                         isPerformanceMode={isPerformanceMode}
-                                        onClick={onPauseResume}
+                                        onClick={handlePauseResume}
                                     />
                                     {isMeetingPaused && <PausedIndicatorDot />}
 
                                     {/* End Call */}
                                     <DockButton
-                                        icon={isEndingCall
-                                            ? <Loader2 size={22} strokeWidth={1.6} className="animate-spin" />
-                                            : <StopCircle size={22} strokeWidth={1.6} />}
+                                        icon={isEndingCall ? ICON_ENDING : ICON_STOP}
                                         tooltip={isEndingCall ? 'Wrapping up the call…' : 'End Call'}
                                         isActive={false}
                                         dangerColor
                                         frozen={isFrozen}
                                         isPerformanceMode={isPerformanceMode}
-                                        onClick={async () => {
-                                            // ensureFinalAnalysisBeforeEndCall is awaited so the final
-                                            // analysis is in main's slot before stopMeeting() snapshots
-                                            // it. That can take a few seconds, so show it rather than
-                                            // leaving the dock looking unresponsive — and ignore repeat
-                                            // clicks while it runs.
-                                            if (isEndingCall) return;
-                                            setIsEndingCall(true);
-                                            try {
-                                                await ensureFinalAnalysisBeforeEndCall();
-                                            } finally {
-                                                setIsEndingCall(false);
-                                            }
-                                            onEndCall(meetingTypes);
-                                        }}
+                                        onClick={handleEndCallClick}
                                     />
 
                                     {/* Settings */}
                                     <DockButton
-                                        icon={<Settings size={22} strokeWidth={1.6} />}
+                                        icon={ICON_SETTINGS}
                                         tooltip="Settings"
                                         isActive={effectiveActivePanel === 'settings'}
                                         activeColor="#64748b"
                                         showActiveDot
                                         frozen={isFrozen}
                                         isPerformanceMode={isPerformanceMode}
-                                        onClick={() => togglePanel('settings')}
+                                        onClick={openSettingsPanel}
                                     />
 
                                     <DockDivider />

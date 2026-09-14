@@ -125,8 +125,24 @@ export const OBJECTION_MIN_GAP_MS = 6_000;
 export const OBJECTION_WINDOW_TURNS = 16;
 /** Re-send a few pre-cursor turns so a quote straddling a boundary isn't lost. */
 export const OBJECTION_OVERLAP_TURNS = 4;
-/** Client-side deadline. The route targets p95 ≤ 1.5s; this is a hang guard. */
-export const OBJECTION_CLIENT_TIMEOUT_MS = 4_000;
+/**
+ * Client-side deadline — a HANG guard, not a latency budget.
+ *
+ * The route targets p95 ≤ 1.5s, but its slow path is real: a cold
+ * `aget_seller_context` cache miss adds blocking DB work, and `classify_quotes`
+ * adds a batched embedding call *only when the tick actually found something*.
+ * At the old 4s this cut off exactly the ticks that mattered most — and because
+ * `cursorRef` only advances on success, an aborted tick throws its result away
+ * and re-posts a wider window next time. That showed up as a stream of cancelled
+ * `objection-handler` requests in the network tab with the Objections tab never
+ * filling in.
+ *
+ * Raising it cannot cause a request storm: useObjectionWatch already refuses to
+ * start a tick while one is in flight (`inFlightRef`) and `shouldTick` enforces
+ * OBJECTION_MIN_GAP_MS between attempts. Still well under apiClient's 60s axios
+ * timeout, so a genuinely hung request is cut here rather than there.
+ */
+export const OBJECTION_CLIENT_TIMEOUT_MS = 12_000;
 
 export interface TickDecisionArgs {
   now: number;

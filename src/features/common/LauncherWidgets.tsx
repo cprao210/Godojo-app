@@ -4,12 +4,13 @@
 // upload modal, ...) lives here so it can be reused and tested on its own.
 // Same split as ManagerDashboardWidgets.tsx / AeDetailWidgets.tsx.
 
-import React from 'react';
+import React, { useEffect, useRef, useState } from 'react';
+import ReactDOM from 'react-dom';
 import { motion, AnimatePresence } from 'framer-motion';
 import {
     Zap, Calendar, ArrowRight, ArrowLeft, MoreHorizontal, ChevronRight,
     Settings, RefreshCw, Ghost, Trash2, Download, DownloadCloud, CheckCircle,
-    AlertCircle, Briefcase, Upload, X, ChevronUp,
+    AlertCircle, Briefcase, Upload, X, ChevronUp, ChevronDown,
 } from 'lucide-react';
 import { TopSearchPill, WindowControls } from '@/features/common';
 import { ConnectCalendarButton } from '@/features/calendar';
@@ -61,9 +62,7 @@ export const LauncherHeader: React.FC<LauncherHeaderProps> = ({
         <header className={[
             'relative w-full shrink-0 flex items-center gap-3 drag-region select-none border-b z-[200] backdrop-blur-xl',
             isMac ? 'h-[56px]' : 'h-[42px]',   // ← Windows keeps original 40px height
-            isLight
-                ? 'bg-bg-sidebar/70 border-border-subtle'
-                : 'bg-bg-primary/70 border-border-subtle',
+            'bg-bg-secondary border-border-subtle'
         ].join(' ')}>
             {/* Left: Spacing for Traffic Lights + Navigation Arrows */}
             <div className="flex items-center gap-1 no-drag">
@@ -103,7 +102,23 @@ export const LauncherHeader: React.FC<LauncherHeaderProps> = ({
                     GoDojo AI
                 </span>
             </div> */}
-            <img src={IMAGES.godojoLogoV3} alt="GoDojo AI" className="h-5 object-contain" />
+            {/* <img src={IMAGES.godojoLogoV3} alt="GoDojo AI" className="h-5 object-contain" /> */}
+            <button
+                type="button"
+                onClick={() => {
+                    // Same "go Home" behavior as the Home nav item below —
+                    // close any open Dashboard/Settings overlay first, then
+                    // hand off to onBack() to land on the Launcher screen.
+                    if (isManagerDashboardOpen) onCloseManagerDashboard?.();
+                    if (isSettingsOpen) onCloseSettings?.();
+                    onBack();
+                }}
+                className="no-drag flex items-center shrink-0"
+                title="Go to Launcher"
+                aria-label="Go to Launcher"
+            >
+                <img src={IMAGES.godojoLogoV3} alt="GoDojo AI" className="h-5 object-contain" />
+            </button>
 
             {/* Left-of-center: Nav menu — Home + Dashboard (text labels) */}
             <nav className="flex items-center gap-1 no-drag ml-2">
@@ -513,7 +528,7 @@ interface RecentMeetingsHeaderProps {
     isRefreshing?: boolean;
 }
 
-export const RecentMeetingsHeader: React.FC<RecentMeetingsHeaderProps> = ({ isLight, isMeetingsExpanded, onToggleExpand, isRefreshing = false }) => (
+export const RecentMeetingsHeader: React.FC<RecentMeetingsHeaderProps> = ({ isLight, isMeetingsExpanded, onToggleExpand, onOpenUpload, isRefreshing = false }) => (
     <div className="flex items-center justify-between mb-3">
         <div className="flex items-center gap-2.5">
             <div className={[
@@ -523,7 +538,7 @@ export const RecentMeetingsHeader: React.FC<RecentMeetingsHeaderProps> = ({ isLi
                 <Calendar size={14} strokeWidth={2.2} />
             </div>
             <span className="text-[15px] font-semibold text-text-primary tracking-tight">
-                Recent Meetings
+                My Meetings
             </span>
             {/* Refetch happening over already-rendered rows: a quiet inline hint,
                 never a skeleton — the visible rows are still valid. */}
@@ -549,20 +564,18 @@ export const RecentMeetingsHeader: React.FC<RecentMeetingsHeaderProps> = ({ isLi
         <div className="flex items-center gap-2">
 
             {/* Upload Transcript */}
-            {/* {(
-                <button
-                    onClick={onOpenUpload}
-                    className={[
-                        'flex items-center gap-1.5 text-[11px] font-medium rounded-lg px-2.5 py-1.5 border transition-all duration-150',
-                        isLight
-                            ? 'text-text-secondary border-border-muted bg-bg-elevated hover:bg-bg-component hover:text-text-primary hover:border-border-muted shadow-sm'
-                            : 'text-text-tertiary border-border-muted bg-bg-item-surface hover:bg-white/[0.06] hover:border-white/[0.14] hover:text-text-secondary',
-                    ].join(' ')}
-                >
-                    <Upload size={11} />
-                    Upload Transcript
-                </button>
-            )} */}
+            <button
+                onClick={onOpenUpload}
+                className={[
+                    'flex items-center gap-1.5 text-[11px] font-medium rounded-lg px-2.5 py-1.5 border transition-all duration-150',
+                    isLight
+                        ? 'text-text-secondary border-border-muted bg-bg-elevated hover:bg-bg-component hover:text-text-primary hover:border-border-muted shadow-sm'
+                        : 'text-text-tertiary border-border-muted bg-bg-item-surface hover:bg-white/[0.06] hover:border-white/[0.14] hover:text-text-secondary',
+                ].join(' ')}
+            >
+                <Upload size={11} />
+                Upload Transcript
+            </button>
 
             {/* Expand / Collapse */}
             <motion.button
@@ -602,6 +615,7 @@ export const RecentMeetingsHeader: React.FC<RecentMeetingsHeaderProps> = ({ isLi
 interface MeetingRowProps {
     meeting: Meeting;
     isLast: boolean;
+    isFirst: boolean;
     isLight: boolean;
     isMenuOpen: boolean;
     onOpen: (meeting: Meeting) => void;
@@ -612,6 +626,9 @@ interface MeetingRowProps {
 }
 
 export const MeetingRow: React.FC<MeetingRowProps> = ({
+    // isFirst is still accepted (callers pass it) but no longer drives any
+    // styling — see the border-b comment below for why per-row rounding
+    // (which is what isFirst used to control) was removed.
     meeting: m, isLast, isLight, isMenuOpen,
     onOpen, onToggleMenu, onMenuMouseEnter, onMenuMouseLeave, onDelete,
 }) => {
@@ -621,154 +638,212 @@ export const MeetingRow: React.FC<MeetingRowProps> = ({
     // was still being generated.
     const isProcessing = isMeetingProcessing(m);
 
-    return (
-    <motion.div
-        layoutId={`meeting-${m.id}`}
-        onClick={() => onOpen(m)}
-        aria-busy={isProcessing || undefined}
-        className={[
-            'group relative flex items-center gap-4 px-5 py-4 cursor-pointer transition-colors',
-            !isLast ? 'border-b border-border-subtle' : '',
-            'bg-bg-sidebar hover:bg-bg-item-surface',
-        ].join(' ')}
-    >
-        {/* Left: Icon */}
-        <div className={[
-            'flex h-9 w-9 shrink-0 items-center justify-center rounded-lg bg-blue-500/10',
-            isLight ? 'text-accent-primary' : 'text-blue-400',
-        ].join(' ')}>
-            {isProcessing
-                ? <RefreshCw size={15} className="animate-spin text-blue-500" />
-                : <Calendar size={15} strokeWidth={2} />
-            }
-        </div>
+    // The Export/Delete menu used to be an in-flow `absolute` child of this
+    // row, but MeetingsList wraps every row in `overflow-hidden` (needed
+    // purely for the card's rounded corners — see the comment above). That
+    // clips anything that pops out past the card's edge regardless of
+    // z-index, which is why the menu was getting trimmed/hidden behind the
+    // card for rows near the bottom. Same fix as PerformanceModeDropdown in
+    // FloatingSettingsPanel.tsx: portal the menu to document.body and
+    // position it against the trigger button instead of relying on in-flow
+    // `absolute` positioning inside a clipped ancestor.
+    const triggerRef = useRef<HTMLButtonElement>(null);
+    const menuRef = useRef<HTMLDivElement>(null);
+    const [menuPos, setMenuPos] = useState<{ top: number; left: number } | null>(null);
 
-        {/* Center: Title + subtitle */}
-        <div className="flex-1 min-w-0">
+    useEffect(() => {
+        if (!isMenuOpen || !triggerRef.current) return;
+        const rect = triggerRef.current.getBoundingClientRect();
+        // Right-align the menu to the trigger, same offset the old
+        // `-right-20 top-3` in-flow positioning produced.
+        setMenuPos({ top: rect.bottom + 4, left: rect.right - 100 });
+    }, [isMenuOpen]);
+
+    useEffect(() => {
+        if (!isMenuOpen) return;
+        const handler = (e: MouseEvent) => {
+            if (
+                menuRef.current && !menuRef.current.contains(e.target as Node) &&
+                triggerRef.current && !triggerRef.current.contains(e.target as Node)
+            ) {
+                onToggleMenu(null);
+            }
+        };
+        document.addEventListener('mousedown', handler);
+        return () => document.removeEventListener('mousedown', handler);
+    }, [isMenuOpen, onToggleMenu]);
+
+    return (
+        <motion.div
+            layoutId={`meeting-${m.id}`}
+            onClick={() => onOpen(m)}
+            aria-busy={isProcessing || undefined}
+            className={[
+                'group relative flex items-center gap-4 px-5 py-4 cursor-pointer transition-colors',
+                // No per-row rounding: the outer card (rounded-xl + overflow-hidden
+                // in MeetingsList) already clips the whole stack into the right
+                // shape. Rounding individual rows was redundant with that — and
+                // whenever a row's own rounded corner sat somewhere that wasn't
+                // actually the visual edge of the card (e.g. the last real row
+                // while a "load more" skeleton is appended below it), that
+                // corner clipped itself and, for a frame or two before the
+                // sibling beneath it had painted, showed the page background
+                // straight through the cut — a "thick white border" flash right
+                // at that seam. A plain border-b divider can't do that.
+                !isLast && 'border-b',
+                'bg-bg-sidebar hover:bg-bg-item-surface',
+            ].join(' ')}
+            // Solid divider color instead of border-border-subtle
+            // (rgba(255,255,255,.05) in dark theme) — same reasoning as the
+            // outer card's border: an alpha color blended against whatever
+            // happened to be painted behind this row (which changes the
+            // instant the "load more" skeleton mounts below it) flashed
+            // brighter for a frame, every time, dark-theme-only. Opaque can't
+            // do that.
+            style={!isLast ? { borderBottomColor: isLight ? '#E2E8F0' : '#191D23' } : undefined}
+        >
+            {/* Left: Icon */}
             <div className={[
-                'text-[13px] font-semibold truncate leading-tight',
-                isProcessing
-                    ? 'text-text-secondary animate-pulse'
-                    : 'text-text-primary',
+                'flex h-9 w-9 shrink-0 items-center justify-center rounded-lg bg-blue-500/10',
+                isLight ? 'text-accent-primary' : 'text-blue-400',
             ].join(' ')}>
-                {/* The real title appears only once processing has actually
+                {isProcessing
+                    ? <RefreshCw size={15} className="animate-spin text-blue-500" />
+                    : <Calendar size={15} strokeWidth={2} />
+                }
+            </div>
+
+            {/* Center: Title + subtitle */}
+            <div className="flex-1 min-w-0">
+                <div className={[
+                    'text-[13px] font-semibold truncate leading-tight',
+                    isProcessing
+                        ? 'text-text-secondary animate-pulse'
+                        : 'text-text-primary',
+                ].join(' ')}>
+                    {/* The real title appears only once processing has actually
                     finished. A calendar event's title (and an upload's typed
                     title) are known up front, but showing them early made a row
                     look done — and any source disagreement about is_processed
                     then read as the title appearing, vanishing, reappearing. */}
-                {isProcessing ? 'Processing meeting' : m.title}
-            </div>
-            <div className="flex items-center gap-1.5 mt-0.5 text-[11px] text-text-tertiary">
-                {isProcessing ? (
-                    // Explains what's still missing, so a row without a summary
-                    // reads as in-progress rather than as a broken meeting.
-                    <span className={['flex items-center gap-1.5 font-medium', isLight ? 'text-accent-primary' : 'text-blue-400'].join(' ')}>
-                        <span className="relative flex h-1.5 w-1.5">
-                            <span className="absolute inline-flex h-full w-full animate-ping rounded-full bg-blue-500 opacity-75" />
-                            <span className="relative inline-flex h-1.5 w-1.5 rounded-full bg-blue-500" />
+                    {isProcessing ? 'Processing meeting' : m.title}
+                </div>
+                <div className="flex items-center gap-1.5 mt-0.5 text-[11px] text-text-tertiary">
+                    {isProcessing ? (
+                        // Explains what's still missing, so a row without a summary
+                        // reads as in-progress rather than as a broken meeting.
+                        <span className={['flex items-center gap-1.5 font-medium', isLight ? 'text-accent-primary' : 'text-blue-400'].join(' ')}>
+                            <span className="relative flex h-1.5 w-1.5">
+                                <span className="absolute inline-flex h-full w-full animate-ping rounded-full bg-blue-500 opacity-75" />
+                                <span className="relative inline-flex h-1.5 w-1.5 rounded-full bg-blue-500" />
+                            </span>
+                            Preparing transcript &amp; summary
                         </span>
-                        Preparing transcript &amp; summary
-                    </span>
-                ) : (() => {
-                    const org = (m as any).organizer || (m as any).attendees?.[0]?.displayName || null;
-                    const count = (m as any).attendees?.length;
-                    return (
-                        <>
-                            {org && <span className="truncate max-w-[160px]">{org}</span>}
-                            {org && count && <span className="opacity-40">•</span>}
-                            {count && <span>{count} Participant{count !== 1 ? 's' : ''}</span>}
-                            {!org && !count && <span>{formatTime(m.date)}</span>}
-                        </>
-                    );
-                })()}
+                    ) : (() => {
+                        const org = (m as any).organizer || (m as any).attendees?.[0]?.displayName || null;
+                        const count = (m as any).attendees?.length;
+                        return (
+                            <>
+                                {org && <span className="truncate max-w-[160px]">{org}</span>}
+                                {org && count && <span className="opacity-40">•</span>}
+                                {count && <span>{count} Participant{count !== 1 ? 's' : ''}</span>}
+                                {!org && !count && <span>{formatTime(m.date)}</span>}
+                            </>
+                        );
+                    })()}
+                </div>
             </div>
-        </div>
 
-        {/* Right: Date + duration + chevron */}
-        <div className="flex items-center gap-4 shrink-0">
-            <span className="text-[12px] font-medium min-w-[120px] text-right text-text-secondary">
-                {getGroupLabel(m.date) === 'Today'
-                    ? `Today, ${formatTime(m.date)}`
-                    : getGroupLabel(m.date) === 'Yesterday'
-                        ? `Yesterday, ${formatTime(m.date)}`
-                        : `${getGroupLabel(m.date)}, ${formatTime(m.date)}`
-                }
-            </span>
-            {/* Same chip geometry as the duration pill, so the row doesn't shift
+            {/* Right: Date + duration + chevron */}
+            <div className="flex items-center gap-6 shrink-0">
+                <span className="text-[12px] font-medium min-w-[120px] text-right text-text-secondary">
+                    {getGroupLabel(m.date) === 'Today'
+                        ? `Today, ${formatTime(m.date)}`
+                        : getGroupLabel(m.date) === 'Yesterday'
+                            ? `Yesterday, ${formatTime(m.date)}`
+                            : `${getGroupLabel(m.date)}, ${formatTime(m.date)}`
+                    }
+                </span>
+                {/* Same chip geometry as the duration pill, so the row doesn't shift
                 horizontally the moment processing finishes. */}
-            {isProcessing ? (
-                <span className={[
-                    'flex items-center justify-center px-2.5 py-0.5 rounded-md border min-w-[46px]',
-                    isLight ? 'border-accent-primary/30 bg-accent-muted' : 'border-blue-500/30 bg-blue-500/10',
-                ].join(' ')}>
-                    <span className="flex gap-0.5">
-                        {[0, 150, 300].map((delay) => (
-                            <span
-                                key={delay}
-                                className="h-1 w-1 rounded-full bg-blue-500 animate-pulse"
-                                style={{ animationDelay: `${delay}ms` }}
-                            />
-                        ))}
+                {isProcessing ? (
+                    <span className={[
+                        'flex items-center justify-center px-2.5 py-0.5 rounded-md border min-w-[46px]',
+                        isLight ? 'border-accent-primary/30 bg-accent-muted' : 'border-blue-500/30 bg-blue-500/10',
+                    ].join(' ')}>
+                        <span className="flex gap-0.5">
+                            {[0, 150, 300].map((delay) => (
+                                <span
+                                    key={delay}
+                                    className="h-1 w-1 rounded-full bg-blue-500 animate-pulse"
+                                    style={{ animationDelay: `${delay}ms` }}
+                                />
+                            ))}
+                        </span>
                     </span>
-                </span>
-            ) : (
-                <span className="font-mono text-[12px] font-semibold px-2.5 py-0.5 rounded-md border border-border-muted bg-bg-item-surface text-text-secondary min-w-[46px] text-center tabular-nums">
-                    {formatDurationPill(m.duration)}
-                </span>
-            )}
-            <ChevronRight size={15} className="transition-all duration-200 shrink-0 text-text-tertiary group-hover:text-text-secondary group-hover:translate-x-0.5" />
-        </div>
+                ) : (
+                    <span className="font-mono text-[12px] font-semibold px-2.5 py-0.5 rounded-md border border-border-muted bg-bg-item-surface text-text-secondary min-w-[46px] text-center tabular-nums">
+                        {formatDurationPill(m.duration)}
+                    </span>
+                )}
+                <ChevronRight size={15} className="transition-all duration-200 shrink-0 text-text-tertiary group-hover:text-text-secondary group-hover:translate-x-0.5" />
+            </div>
 
-        {/* Context menu trigger */}
-        <div className="absolute right-5 top-1/2 -translate-y-1/2 opacity-0 group-hover:opacity-100 transition-all duration-200">
-            <button
-                className="p-1.5 rounded-md transition-colors text-text-tertiary hover:text-text-primary hover:bg-bg-item-surface"
-                onClick={(e) => { e.stopPropagation(); onToggleMenu(isMenuOpen ? null : m.id); }}
-            >
-                <MoreHorizontal size={15} />
-            </button>
-        </div>
-
-        {/* Dropdown — unchanged logic */}
-        <AnimatePresence>
-            {isMenuOpen && (
-                <motion.div
-                    initial={{ opacity: 0, scale: 0.95, y: 6 }}
-                    animate={{ opacity: 1, scale: 1, y: 0 }}
-                    exit={{ opacity: 0, scale: 0.95, y: 4 }}
-                    transition={{ duration: 0.1 }}
-                    className={['absolute right-5 top-10 mt-1 w-[100px] backdrop-blur-xl rounded-lg shadow-2xl z-[200] overflow-hidden border', isLight ? 'bg-bg-elevated border-border-muted shadow-[0_8px_24px_rgba(0,0,0,0.12)]' : 'bg-bg-card/90 border-border-muted'].join(' ')}
-                    onClick={(e) => e.stopPropagation()}
-                    onMouseEnter={onMenuMouseEnter}
-                    onMouseLeave={onMenuMouseLeave}
+            {/* Context menu trigger */}
+            <div className="absolute right-7 top-1/2 -translate-y-1/2 opacity-0 group-hover:opacity-100 transition-all duration-200">
+                <button
+                    ref={triggerRef}
+                    className="p-1.5 rounded-md transition-colors text-text-tertiary hover:text-text-primary hover:bg-bg-item-surface"
+                    onClick={(e) => { e.stopPropagation(); onToggleMenu(isMenuOpen ? null : m.id); }}
                 >
-                    <div className="p-1 flex flex-col gap-0.5">
-                        <button
-                            className={['w-full flex items-center gap-2 px-3 py-1.5 text-[12px] rounded-lg transition-colors text-left text-text-primary', isLight ? 'hover:bg-bg-item-surface' : 'hover:bg-white/10'].join(' ')}
-                            onClick={async () => {
-                                onToggleMenu(null);
-                                if (window.electronAPI?.getMeetingDetails) {
-                                    try { generateMeetingPDF(await window.electronAPI.getMeetingDetails(m.id) ?? m); }
-                                    catch { generateMeetingPDF(m); }
-                                } else { generateMeetingPDF(m); }
-                            }}
-                        >
-                            <Download size={12} /> Export
-                        </button>
-                        <button
-                            className="w-full flex items-center gap-2 px-3 py-1.5 text-[12px] text-red-400 hover:bg-red-500/10 hover:text-red-300 rounded-lg transition-colors text-left"
-                            onClick={() => {
-                                onDelete(m.id);
-                                onToggleMenu(null);
-                            }}
-                        >
-                            <Trash2 size={12} /> Delete
-                        </button>
-                    </div>
-                </motion.div>
+                    <MoreHorizontal size={15} />
+                </button>
+            </div>
+
+            {/* Dropdown — portaled to document.body so MeetingsList's
+            overflow-hidden (rounded-corner clipping) can't trim/hide it. */}
+            {isMenuOpen && menuPos && ReactDOM.createPortal(
+                <AnimatePresence>
+                    <motion.div
+                        ref={menuRef}
+                        initial={{ opacity: 0, scale: 0.95, y: 6 }}
+                        animate={{ opacity: 1, scale: 1, y: 0 }}
+                        exit={{ opacity: 0, scale: 0.95, y: 4 }}
+                        transition={{ duration: 0.1 }}
+                        style={{ position: 'fixed', top: menuPos.top, left: menuPos.left }}
+                        className={['w-[100px] backdrop-blur-xl rounded-lg shadow-2xl z-[9999] overflow-hidden border', isLight ? 'bg-bg-elevated border-border-muted shadow-[0_8px_24px_rgba(0,0,0,0.12)]' : 'bg-bg-card/90 border-border-muted'].join(' ')}
+                        onClick={(e) => e.stopPropagation()}
+                        onMouseEnter={onMenuMouseEnter}
+                        onMouseLeave={onMenuMouseLeave}
+                    >
+                        <div className="p-1 flex flex-col gap-0.5">
+                            <button
+                                className={['w-full flex items-center gap-2 px-3 py-1.5 text-[12px] rounded-lg transition-colors text-left text-text-primary', isLight ? 'hover:bg-bg-item-surface' : 'hover:bg-white/10'].join(' ')}
+                                onClick={async () => {
+                                    onToggleMenu(null);
+                                    if (window.electronAPI?.getMeetingDetails) {
+                                        try { generateMeetingPDF(await window.electronAPI.getMeetingDetails(m.id) ?? m); }
+                                        catch { generateMeetingPDF(m); }
+                                    } else { generateMeetingPDF(m); }
+                                }}
+                            >
+                                <Download size={12} /> Export
+                            </button>
+                            <button
+                                className="w-full flex items-center gap-2 px-3 py-1.5 text-[12px] text-red-400 hover:bg-red-500/10 hover:text-red-300 rounded-lg transition-colors text-left"
+                                onClick={() => {
+                                    onDelete(m.id);
+                                    onToggleMenu(null);
+                                }}
+                            >
+                                <Trash2 size={12} /> Delete
+                            </button>
+                        </div>
+                    </motion.div>
+                </AnimatePresence>,
+                document.body
             )}
-        </AnimatePresence>
-    </motion.div>
+        </motion.div>
     );
 };
 
@@ -789,64 +864,123 @@ interface MeetingsListSkeletonProps {
     rows?: number;
 }
 
-export const MeetingsListSkeleton: React.FC<MeetingsListSkeletonProps> = ({ isLight, rows = 3 }) => {
+// Row geometry shared by the first-load skeleton (own bordered card) and the
+// "load more" append skeleton (bare rows tacked onto the existing list card)
+// so the two never drift apart.
+// isFirst is still accepted (callers pass it) but no longer drives any
+// styling — see the border-b comment below.
+const MeetingRowSkeleton: React.FC<{ isLight: boolean; index: number; isLast: boolean; isFirst: boolean }> = ({ isLight, index, isLast }) => {
     const bar = isLight ? 'bg-slate-200' : 'bg-white/10';
     // Varied title widths read as content rather than as a repeating pattern.
     const titleWidths = ['62%', '48%', '55%', '40%'];
+    const delay = index * 120;
 
     return (
         <div
-            className="rounded-xl border border-border-muted overflow-hidden"
-            role="status"
-            aria-label="Loading recent meetings"
+            className={[
+                'flex items-center gap-4 px-5 py-4 bg-bg-sidebar',
+                // Same reasoning as MeetingRow: no per-row rounding, just a
+                // border-b divider — the outer card does the clipping/rounding.
+                !isLast && 'border-b',
+            ].join(' ')}
+            // Solid divider color — see the matching comment in MeetingRow.
+            style={!isLast ? { borderBottomColor: isLight ? '#E2E8F0' : '#191D23' } : undefined}
         >
-            {Array.from({ length: rows }).map((_, i) => {
-                const delay = i * 120;
-                return (
+            <div
+                className={`h-9 w-9 shrink-0 rounded-lg animate-pulse ${bar}`}
+                style={{ animationDelay: `${delay}ms` }}
+            />
+            <div className="flex-1 min-w-0">
+                <div
+                    className={`h-3 rounded animate-pulse ${bar}`}
+                    style={{ width: titleWidths[index % titleWidths.length], animationDelay: `${delay}ms` }}
+                />
+                <div
+                    className={`mt-2 h-2 w-24 rounded animate-pulse ${bar}`}
+                    style={{ animationDelay: `${delay + 60}ms` }}
+                />
+            </div>
+            <div className="flex items-center gap-4 shrink-0">
+                {/* min-w-[120px] mirrors the real row's date column so
+                    the pill and chevron sit at the same x offset. */}
+                <div className="min-w-[120px] flex justify-end">
                     <div
-                        key={i}
-                        className={[
-                            'flex items-center gap-4 px-5 py-4 bg-bg-sidebar',
-                            i !== rows - 1 ? 'border-b border-border-subtle' : '',
-                        ].join(' ')}
-                    >
-                        <div
-                            className={`h-9 w-9 shrink-0 rounded-lg animate-pulse ${bar}`}
-                            style={{ animationDelay: `${delay}ms` }}
-                        />
-                        <div className="flex-1 min-w-0">
-                            <div
-                                className={`h-3 rounded animate-pulse ${bar}`}
-                                style={{ width: titleWidths[i % titleWidths.length], animationDelay: `${delay}ms` }}
-                            />
-                            <div
-                                className={`mt-2 h-2 w-24 rounded animate-pulse ${bar}`}
-                                style={{ animationDelay: `${delay + 60}ms` }}
-                            />
-                        </div>
-                        <div className="flex items-center gap-4 shrink-0">
-                            {/* min-w-[120px] mirrors the real row's date column so
-                                the pill and chevron sit at the same x offset. */}
-                            <div className="min-w-[120px] flex justify-end">
-                                <div
-                                    className={`h-3 w-[104px] rounded animate-pulse ${bar}`}
-                                    style={{ animationDelay: `${delay}ms` }}
-                                />
-                            </div>
-                            <div
-                                className={`h-[22px] w-[46px] rounded-md animate-pulse ${bar}`}
-                                style={{ animationDelay: `${delay + 60}ms` }}
-                            />
-                            {/* Chevron spacer — keeps the row's right edge identical. */}
-                            <div className="h-[15px] w-[15px] shrink-0" />
-                        </div>
-                    </div>
-                );
-            })}
-            <span className="sr-only">Loading recent meetings…</span>
+                        className={`h-3 w-[104px] rounded animate-pulse ${bar}`}
+                        style={{ animationDelay: `${delay}ms` }}
+                    />
+                </div>
+                <div
+                    className={`h-[22px] w-[46px] rounded-md animate-pulse ${bar}`}
+                    style={{ animationDelay: `${delay + 60}ms` }}
+                />
+                {/* Chevron spacer — keeps the row's right edge identical. */}
+                <div className="h-[15px] w-[15px] shrink-0" />
+            </div>
         </div>
     );
 };
+
+export const MeetingsListSkeleton: React.FC<MeetingsListSkeletonProps> = ({ isLight, rows = 3 }) => (
+    <div
+        className="rounded-xl border border-border-muted overflow-hidden"
+        role="status"
+        aria-label="Loading recent meetings"
+    >
+        {Array.from({ length: rows }).map((_, i) => (
+            <MeetingRowSkeleton key={i} isLight={isLight} index={i} isLast={i === rows - 1} isFirst={i === 0} />
+        ))}
+        <span className="sr-only">Loading recent meetings…</span>
+    </div>
+);
+
+// ─────────────────────────────────────────────────────────────────────────
+// Append skeleton for "Load more" — bare rows (no own border/rounding) meant
+// to sit inside the existing meetings card, directly below the last real
+// row, so the next page appears to grow out of the list instead of popping
+// in below a spinner-only button.
+// ─────────────────────────────────────────────────────────────────────────
+
+interface MeetingsListAppendSkeletonProps {
+    isLight: boolean;
+    /** Rows to render — one "page" worth, so the card grows by roughly a page each time. */
+    rows?: number;
+}
+
+export const MeetingsListAppendSkeleton: React.FC<MeetingsListAppendSkeletonProps> = ({ isLight, rows = 2 }) => (
+    // No border-t here: MeetingsList now un-rounds and un-hides-the-border on
+    // the real last row while this is mounted (its isLast goes false while
+    // isLoadingMore is true), so that row already draws a normal
+    // border-b border-border-subtle divider above us. Adding our own border-t
+    // on top of that stacked a second hairline right underneath it — the two
+    // together read as one noticeably thicker seam ("thick white border")
+    // for the first frame or two before anything had settled visually.
+    //
+    // Wrapped in motion.div with its own fade-in: a CSS animate-pulse
+    // keyframe has no "enter" transition of its own — the bars/icon
+    // placeholder inside MeetingRowSkeleton snap straight to the keyframe's
+    // opacity:1 peak the instant this mounts. Against the row below it that
+    // read as a filled white/light chunk popping in at the seam for a frame
+    // before easing into its normal dim pulsing rhythm. Fading the whole
+    // block in over ~150ms first means the pulse never gets to snap in at
+    // full brightness against nothing.
+    <motion.div
+        role="status"
+        aria-label="Loading more meetings"
+        initial={{ opacity: 0 }}
+        animate={{ opacity: 1 }}
+        transition={{ duration: 0.15, ease: 'easeOut' }}
+    >
+        {Array.from({ length: rows }).map((_, i) => (
+            // isFirst is always false: these rows are appended below the
+            // real rows already in the card, so none of them is the card's
+            // first row. Passing isFirst on row 0 here was what applied
+            // rounded-t-xl (+ its border) mid-list, showing up as a stray
+            // border between the last real row and the first skeleton row.
+            <MeetingRowSkeleton key={i} isLight={isLight} index={i} isLast={i === rows - 1} isFirst={false} />
+        ))}
+        <span className="sr-only">Loading more meetings…</span>
+    </motion.div>
+);
 
 // ─────────────────────────────────────────────────────────────────────────
 // The full meetings list — empty state, or bordered rows with dividers.
@@ -863,12 +997,63 @@ interface MeetingsListProps {
     onDelete: (id: string) => void;
     /** First load, nothing cached yet — render skeleton rows, not the empty state. */
     isLoading?: boolean;
+    /** A "Load more" fetch is in flight — append skeleton rows below the real ones. */
+    isLoadingMore?: boolean;
 }
+
+// ─────────────────────────────────────────────────────────────────────────
+// Floating "Load more" pill — bottom-center-aligned, appears while the user
+// is scrolled into the recent-meetings list and another page is available.
+// Launcher.tsx owns the scroll listener (it owns the scroll container) and
+// passes `visible`/`hasMore` down; this component is purely presentational.
+// ─────────────────────────────────────────────────────────────────────────
+
+interface LoadMoreMeetingsButtonProps {
+    isLight: boolean;
+    visible: boolean;
+    isLoading: boolean;
+    onClick: () => void;
+}
+
+export const LoadMoreMeetingsButton: React.FC<LoadMoreMeetingsButtonProps> = ({ isLight, visible, isLoading, onClick }) => (
+    <AnimatePresence>
+        {visible && (
+            <motion.button
+                type="button"
+                onClick={onClick}
+                disabled={isLoading}
+                initial={{ opacity: 0, y: 12 }}
+                animate={{ opacity: 1, y: 0 }}
+                exit={{ opacity: 0, y: 12 }}
+                transition={{ duration: 0.2, ease: [0.22, 1, 0.36, 1] }}
+                // Fixed + centered horizontally, pinned a short distance above
+                // the bottom of the viewport — deliberately position: fixed
+                // rather than sticky, so it floats over the scrolling list
+                // content instead of participating in its layout/scroll.
+                className={[
+                    'fixed bottom-[5rem] left-[45%] -translate-x-1/2 z-20',
+                    'flex items-center gap-2 rounded-full px-4 py-2 text-[13px] font-medium shadow-lg',
+                    'transition-colors disabled:cursor-not-allowed disabled:opacity-60',
+                    isLight
+                        ? 'bg-white text-slate-700 border border-slate-200 hover:bg-slate-50 shadow-slate-900/10'
+                        : 'bg-gray-800 text-white/90 border border-white/10 hover:bg-gray-700 shadow-black/40',
+                ].join(' ')}
+            >
+                {isLoading ? (
+                    <RefreshCw size={14} className="animate-spin" />
+                ) : (
+                    <ChevronDown size={14} />
+                )}
+                {isLoading ? 'Loading…' : 'Load more'}
+            </motion.button>
+        )}
+    </AnimatePresence>
+);
 
 export const MeetingsList: React.FC<MeetingsListProps> = ({
     meetings, isLight, activeMenuId,
     onOpen, onToggleMenu, onMenuMouseEnter, onMenuMouseLeave, onDelete,
-    isLoading = false,
+    isLoading = false, isLoadingMore = false,
 }) => {
     // Order matters: without this, an in-flight first fetch renders the
     // "No recent meetings yet" card and then swaps to rows — the empty flash
@@ -911,12 +1096,44 @@ export const MeetingsList: React.FC<MeetingsListProps> = ({
     }
 
     return (
-        <div className="rounded-xl first:rounded-t-xl last:rounded-b-xl border border-border-muted">
+        <div
+            className="rounded-xl first:rounded-t-xl last:rounded-b-xl border overflow-hidden bg-bg-sidebar"
+            // Solid, non-alpha border color instead of the border-border-muted
+            // utility (rgba(255,255,255,.08) in dark theme). An alpha border
+            // has to be blended against whatever's painted behind it — and
+            // that blend briefly went wrong every time this card's height
+            // changed (e.g. the append-skeleton mounting on "Load more"),
+            // making the border flash noticeably brighter for a frame. Light
+            // theme's border is rgba(0,0,0,…) so the same timing glitch is
+            // invisible there — an opaque color can't misblend regardless of
+            // what's behind it, so this removes the flash outright rather
+            // than fighting the timing.
+            style={{ borderColor: isLight ? '#E2E8F0' : '#20242A' }}
+        >
             {meetings.map((m, index) => (
                 <MeetingRow
                     key={m.id}
                     meeting={m}
-                    isLast={index === meetings.length - 1}
+                    isFirst={index === 0}
+                    // The last real row must NOT render rounded-b-xl while the
+                    // append skeleton is mounted below it — with overflow-hidden
+                    // on the outer card, rounding this row's bottom corners
+                    // clips them, and for the first paint of the skeleton
+                    // (before its background has actually painted in) that clip
+                    // briefly reveals the page background underneath — a "thick
+                    // white border" flash right at the seam that then
+                    // disappears once the skeleton's own background settles in.
+                    //
+                    // isLoadingMore is read here in the exact same render as
+                    // the one that decides whether to mount
+                    // MeetingsListAppendSkeleton below (see the map's sibling
+                    // a few lines down), so this can never desync from the
+                    // skeleton the way an isLast tied to a separate,
+                    // click-triggered flag could — both flip together in the
+                    // same commit, so there's no frame where the row is
+                    // "un-rounded" but the skeleton hasn't appeared yet (or
+                    // vice versa).
+                    isLast={index === meetings.length - 1 && !isLoadingMore}
                     isLight={isLight}
                     isMenuOpen={activeMenuId === m.id}
                     onOpen={onOpen}
@@ -926,6 +1143,7 @@ export const MeetingsList: React.FC<MeetingsListProps> = ({
                     onDelete={onDelete}
                 />
             ))}
+            {isLoadingMore && <MeetingsListAppendSkeleton isLight={isLight} />}
         </div>
     );
 };
@@ -1123,7 +1341,7 @@ export const TranscriptUploadModal: React.FC<TranscriptUploadModalProps> = ({
                                 <textarea
                                     value={uploadText}
                                     onChange={e => setUploadText(e.target.value)}
-                                    placeholder={`Paste transcript here. Supported formats:\n\n[00:00:12] SALES PERSON: Hello, thanks for joining...\nCLIENT: Happy to be here...\n\nor plain text lines`}
+                                    placeholder={`Paste transcript here. Supported formats:\n\n[00:00:12] SALES PERSON: Hello, thanks for joining...\nCLIENT: Happy to be here...\n\nor plain speaker labels without timestamps:\nAlex: Thanks for making time, Daniel...\nDaniel: Yeah, dispatch is our biggest headache...`}
                                     rows={9}
                                     className={[
                                         'w-full rounded-[10px] px-3 py-2.5 text-[12px] text-text-primary focus:outline-none transition-colors resize-none font-mono leading-relaxed',

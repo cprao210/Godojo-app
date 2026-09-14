@@ -15,8 +15,13 @@ import {
 } from "@/api/meetingMapping";
 
 export const meetingsApi = {
-  list: async (): Promise<Meeting[]> => {
-    const rows = await apiFetch<any[]>("/meetings");
+  // `limit` mirrors the backend's own query param (GET /meetings?limit=N) —
+  // it returns the N most recent meetings, not a page at some offset. "Load
+  // more" in the UI works by re-requesting with a larger limit rather than
+  // paging with an offset, since the backend doesn't expose one.
+  list: async (params?: { limit?: number }): Promise<Meeting[]> => {
+    const query = params?.limit ? `?limit=${params.limit}` : "";
+    const rows = await apiFetch<any[]>(`/meetings${query}`);
     // Dedupe by id (defensive — preserves the renderer's previous IPC-side dedup).
     const seen = new Set<string>();
     let backendMeetings = (rows ?? []).map(mapMeetingRow).filter((m) => {
@@ -146,12 +151,10 @@ export const meetingsApi = {
   chunk: (meetingId: string): Promise<ChunkMeetingResponse> =>
     apiFetch(`/meetings/${meetingId}/chunking`, { method: "POST" }),
 
-  // NOTE: upload stays on the IPC path until Phase 2 (the Phase-1 backend has no LLM,
-  // so an HTTP upload would store an un-summarized meeting). Kept here for completeness;
-  // arg order is (title, transcript) to match the TranscriptUpload body.
-  uploadTranscript: (title: string, transcript: string): Promise<unknown> =>
-    apiFetch("/meetings/upload-transcript", {
-      method: "POST",
-      body: JSON.stringify({ title, transcript }),
-    }),
+  // NOTE: transcript upload has NO HTTP endpoint here by design. It runs on the
+  // Electron IPC path (window.electronAPI.uploadTranscript → 'upload-transcript'
+  // handler → MeetingPersistence.uploadTranscript), which rides the same
+  // processAndSaveMeeting pipeline live meetings use: summary, call analysis,
+  // scorecard, mirror + chunking. A future backend that can run the LLM
+  // pipeline itself ("Phase 2") would add the route here and re-point the modal.
 };

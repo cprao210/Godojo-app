@@ -147,7 +147,14 @@ impl PulseProbe {
             OP_TIMEOUT,
         );
 
-        out.borrow().clone()
+        // Bind before returning: `out.borrow()` yields a Ref guard whose drop
+        // must not race the Rc's own drop. As a bare tail expression the guard
+        // is a block temporary dropped AFTER locals — newer rustc (correctly)
+        // rejects that as `out` not living long enough. Binding to a local
+        // drops the guard at the end of the let statement, then we move the
+        // clone out.
+        let result = out.borrow().clone();
+        result
     }
 
     /// Every output sink the server knows about, in server order.
@@ -199,7 +206,9 @@ impl PulseProbe {
             OP_TIMEOUT,
         );
 
-        out.borrow().clone()
+        // Same drop-order reasoning as default_sink_name above.
+        let result = out.borrow().clone();
+        result
     }
 
     /// The default sink resolved to a full summary. Two round-trips.

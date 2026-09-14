@@ -55,7 +55,7 @@ impl VadIndicator {
             VadState::Idle => {
                 if rms > self.start_threshold {
                     self.state = VadState::Speech;
-                    println!("[VAD-UI] Speech detected (RMS: {})", rms as i32);
+                    crate::vlog!("[VAD-UI] Speech detected (RMS: {})", rms as i32);
                 }
             }
             VadState::Speech => {
@@ -71,7 +71,7 @@ impl VadIndicator {
                     let time_in_hangover = now - self.hangover_start_time;
                     if time_in_hangover > self.hangover_duration_ms {
                         self.state = VadState::Idle;
-                        println!("[VAD-UI] Speech ended");
+                        crate::vlog!("[VAD-UI] Speech ended");
                     }
                 }
             }

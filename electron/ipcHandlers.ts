@@ -104,32 +104,43 @@ export function initializeIpcHandlers(appState: AppState): void {
   });
 
   // --- NEW Test Helper ---
+  // Dev/diagnostics only (triggered by the UpdateBanner's Cmd/Ctrl+I shortcut).
+  // Deliberately shipped unguarded in the IPC surface but gated here: a stray
+  // production invocation would force a GitHub API fetch and fake an
+  // "update-available" modal out of the latest release's notes.
   safeHandle("test-release-fetch", async () => {
-    try {
-      console.log("[IPC] Manual Test Fetch triggered (forcing refresh)...");
-      const { ReleaseNotesManager } = require('./update/ReleaseNotesManager');
-      const notes = await ReleaseNotesManager.getInstance().fetchReleaseNotes('latest', true);
+    if (!app.isPackaged) {
+      try {
+        console.log("[IPC] Manual Test Fetch triggered (forcing refresh)...");
+        const { ReleaseNotesManager } = require('./update/ReleaseNotesManager');
+        const notes = await ReleaseNotesManager.getInstance().fetchReleaseNotes('latest', true);
 
-      if (notes) {
-        console.log("[IPC] Notes fetched for:", notes.version);
-        const info = {
-          version: notes.version || 'latest',
-          files: [] as any[],
-          path: '',
-          sha512: '',
-          releaseName: notes.summary,
-          releaseNotes: notes.fullBody,
-          parsedNotes: notes
-        };
-        // Send to renderer
-        appState.getMainWindow()?.webContents.send("update-available", info);
-        return { success: true };
+        if (notes) {
+          console.log("[IPC] Notes fetched for:", notes.version);
+          const info = {
+            version: notes.version || 'latest',
+            files: [] as any[],
+            path: '',
+            sha512: '',
+            releaseName: notes.summary,
+            releaseNotes: notes.fullBody,
+            parsedNotes: notes
+          };
+          // Broadcast like every other update event — the dev shortcut can be
+          // hit from any window, and getMainWindow() only covers the
+          // launcher/overlay split.
+          BrowserWindow.getAllWindows().forEach(win => {
+            if (!win.isDestroyed()) win.webContents.send("update-available", info);
+          });
+          return { success: true };
+        }
+        return { success: false, error: "No notes returned" };
+      } catch (err: any) {
+        console.error("[IPC] test-release-fetch failed:", err);
+        return { success: false, error: err.message };
       }
-      return { success: false, error: "No notes returned" };
-    } catch (err: any) {
-      console.error("[IPC] test-release-fetch failed:", err);
-      return { success: false, error: err.message };
     }
+    return { success: false, error: 'test-release-fetch is dev-only' };
   });
 
   safeHandle("license:activate", async (event, key: string) => {
@@ -689,6 +700,18 @@ export function initializeIpcHandlers(appState: AppState): void {
   });
 
   safeHandle("quit-and-install-update", async () => {
+    // Production-only, like its siblings check-for-updates / download-update:
+    // in dev there is no downloaded update and the fallback path used to
+    // app.exit(0), silently killing a dev session from a stray click.
+    if (!app.isPackaged) {
+      return { success: false, error: 'Updates are disabled in development builds' }
+    }
+    // Never tear down a live call to apply an update. The renderer refuses
+    // too (useUpdateStatus.installUpdate); this is the backstop for any
+    // other caller.
+    if (appState.getIsMeetingActive()) {
+      return { success: false, error: 'End the current meeting before restarting to install the update.' }
+    }
     try {
       console.log('[IPC] Quit and install update requested')
       await appState.quitAndInstallUpdate()
@@ -848,12 +871,43 @@ export function initializeIpcHandlers(appState: AppState): void {
       openAsHidden: false,
       path: app.getPath('exe') // Explicitly point to executable for production reliability
     });
+    // Remember what we registered. The OS getter below is unreliable in
+    // packaged builds, so the persisted value is what the Settings toggle
+    // actually reflects.
+    const { SettingsManager } = require('./services/SettingsManager');
+    SettingsManager.getInstance().set('openAtLogin', openAtLogin);
     return { success: true };
   });
 
   safeHandle("get-open-at-login", async () => {
-    const settings = app.getLoginItemSettings();
-    return settings.openAtLogin;
+    // Trust our own registration record first. app.getLoginItemSettings()
+    // routinely misreports false for packaged apps (macOS registers the login
+    // item asynchronously via SMAppService and matches on bundle identity;
+    // Windows compares the Startup shortcut's target against the `path`
+    // option) — the functional behavior was correct while the toggle showed
+    // OFF. Fall back to the OS only for installs that predate this record,
+    // querying with the SAME path the setter used so the comparison is
+    // symmetric.
+    const { SettingsManager } = require('./services/SettingsManager');
+    const persisted = SettingsManager.getInstance().get('openAtLogin');
+    if (typeof persisted === 'boolean') return persisted;
+    try {
+      return app.getLoginItemSettings({ path: app.getPath('exe') }).openAtLogin;
+    } catch {
+      return false;
+    }
+  });
+
+  // Generic native toast for renderer-side watchers (invite-accepted, etc.) —
+  // routes to AppState.showAppNotification (same cross-screen pipeline as the
+  // meeting pause/resume/summary toasts). Copy is supplied by the renderer;
+  // main just renders it.
+  safeHandle("show-app-notification", async (_, { title, message }: { title: string; message: string }) => {
+    const safeTitle = String(title ?? '').slice(0, 80);
+    const safeMessage = String(message ?? '').slice(0, 200);
+    if (!safeTitle) return { success: false, error: 'title required' };
+    appState.showAppNotification(safeTitle, safeMessage);
+    return { success: true };
   });
 
   safeHandle("get-verbose-logging", async () => {
@@ -2036,6 +2090,22 @@ export function initializeIpcHandlers(appState: AppState): void {
     return DatabaseManager.getInstance().getRecentMeetings(50);
   });
 
+  // Deliberately local-only — no SupabaseReadService preference, same rationale
+  // as get-recent-meetings-local above. MeetingPersistence.stopMeeting writes the
+  // placeholder row WITH the full transcript to SQLite synchronously the moment a
+  // call ends, while the Supabase copy only gets the meetings row and its
+  // transcript batch when the async mirror queue drains (separate outbox items).
+  // During that window the cloud-preferring get-meeting-details read returns null
+  // (row not mirrored yet) or a transcript-less meeting — which is exactly the
+  // state a processing meeting is opened in, so the Transcript tab showed "No
+  // transcript recorded" even though the transcript was already in SQLite. The
+  // renderer's transcript fallback uses this channel to read the local copy
+  // immediately and fall back to get-meeting-details only for meetings this
+  // device has no row for (created on another device).
+  safeHandle("get-meeting-details-local", async (_, id: string) => {
+    return DatabaseManager.getInstance().getMeetingDetails(id);
+  });
+
   // Add this handler
   safeHandle("get-display-name", async (_, role: 'user' | 'client' | 'assistant') => {
     const intelligenceManager = appState.getIntelligenceManager();
@@ -2111,9 +2181,9 @@ export function initializeIpcHandlers(appState: AppState): void {
     return { success: true };
   });
 
-  safeHandle("upload-transcript", async (_, { text, title, meetingTypes }: { text: string; title?: string; meetingTypes?: ('discovery' | 'demo' | 'negotiation')[] }) => {
+  safeHandle("upload-transcript", async (_, { text, title, meetingTypes, tenantId }: { text: string; title?: string; meetingTypes?: ('discovery' | 'demo' | 'negotiation')[]; tenantId?: string | null }) => {
     try {
-      const meetingId = await appState.getIntelligenceManager().uploadTranscript(text, title, meetingTypes);
+      const meetingId = await appState.getIntelligenceManager().uploadTranscript(text, title, meetingTypes, tenantId);
       if (meetingId) return { success: true, meetingId };
       return { success: false, error: 'Transcript too short or could not be parsed' };
     } catch (e) {
@@ -4097,6 +4167,19 @@ export function initializeIpcHandlers(appState: AppState): void {
         CredentialsManager.getInstance().trackKeySourceSnapshot('user_switched');
       } catch (err) {
         console.warn('[ipc] user-switched: credential re-sync failed:', err);
+      }
+
+      // 5. Calendar (Google + Zoom). Both managers are main-process
+      //    singletons holding one global token file/in-memory token, so
+      //    without this the reloaded UI kept showing whichever account's
+      //    calendar was connected first, for every user on this machine.
+      try {
+        const { CalendarManager } = require('./services/CalendarManager');
+        CalendarManager.getInstance().switchUser(e.uid);
+        const { ZoomCalendarManager } = require('./services/ZoomCalendarManager');
+        ZoomCalendarManager.getInstance().switchUser(e.uid);
+      } catch (err) {
+        console.warn('[ipc] user-switched: calendar re-scope failed:', err);
       }
     });
   } catch (e) {

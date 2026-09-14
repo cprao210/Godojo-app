@@ -4,9 +4,6 @@ import { motion, AnimatePresence } from 'framer-motion';
 import { IMAGES } from '@/lib/assets';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
-import remarkMath from 'remark-math';
-import rehypeKatex from 'rehype-katex';
-import 'katex/dist/katex.min.css';
 import { chatMarkdownComponents } from '@/features/chat';
 import { useMeetingChat } from '@/hooks';
 import { ChatSources, MeetingChatOverlayProps } from '@/types';
@@ -132,8 +129,9 @@ const AssistantMessage: React.FC<{ content: string; isStreaming?: boolean; sourc
             <div className="text-text-primary text-[15px] leading-relaxed max-w-[85%]">
                 <div className="markdown-content">
                     <ReactMarkdown
-                        remarkPlugins={[remarkGfm, remarkMath]}
-                        rehypePlugins={[rehypeKatex]}
+                        // See ChatMessage.tsx: math parsing is disabled app-wide
+                        // so currency never renders as inline LaTeX.
+                        remarkPlugins={[remarkGfm]}
                         components={chatMarkdownComponents}
                     >
                         {content}

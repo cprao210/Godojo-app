@@ -89,7 +89,7 @@ export class IntelligenceManager extends EventEmitter {
     // Context Management (delegates to session)
     // ============================================
 
-    public getSpeakerNameMap(): { user: string; client: string } {
+    public getSpeakerNameMap(): { user: string; client: string; clientDiarized: string } {
         return this.session.getSpeakerNameMap();
     }
 
@@ -276,8 +276,8 @@ export class IntelligenceManager extends EventEmitter {
         return this.persistence.regenerateSummary(meetingId);
     }
 
-    async uploadTranscript(rawText: string, title?: string, meetingTypes?: ('discovery' | 'demo' | 'negotiation')[]): Promise<string | null> {
-        return this.persistence.uploadTranscript(rawText, title, meetingTypes);
+    async uploadTranscript(rawText: string, title?: string, meetingTypes?: ('discovery' | 'demo' | 'negotiation')[], tenantId?: string | null): Promise<string | null> {
+        return this.persistence.uploadTranscript(rawText, title, meetingTypes, tenantId);
     }
 
     async recoverUnprocessedMeetings(): Promise<void> {

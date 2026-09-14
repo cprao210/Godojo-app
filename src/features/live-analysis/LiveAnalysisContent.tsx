@@ -195,7 +195,11 @@ const FieldRow: React.FC<FieldRowProps> = ({ label, field, themed = false, isLig
                         {field.evidence}
                     </p>
                 )}
-                {field.suggested_question !== "" ? (
+                {/* "Ask this" only for genuinely open fields — the backend contract
+                    (and normalizeUploadAnalysis) guarantee confirmed fields carry no
+                    question; this guard also covers legacy rows where the field is
+                    undefined (which `!== ""` used to render as an empty ask-this). */}
+                {field.suggested_question && field.status !== 'confirmed' ? (
                     <div className="flex items-start gap-1.5">
                         <span className="text-[9px] font-bold text-blue-500 uppercase tracking-wider mt-[2px] shrink-0">Ask this</span>
                         <p className={`text-[11px] leading-relaxed ${isLight ? 'text-blue-600' : 'text-blue-300/80'}`}>
@@ -226,7 +230,7 @@ const FieldRow: React.FC<FieldRowProps> = ({ label, field, themed = false, isLig
             {field.evidence !== "" && (
                 <p className="text-[12px] text-white/65 leading-normal">{field.evidence}</p>
             )}
-            {field.suggested_question !== "" ? (
+            {field.suggested_question && field.status !== 'confirmed' ? (
                 <div className="flex items-start gap-1.5">
                     <span className="text-[9px] font-bold text-blue-400/70 uppercase tracking-wider mt-[2px] shrink-0">Ask this</span>
                     <p className="text-[11px] text-blue-300/80 leading-relaxed">{field.suggested_question}</p>
@@ -241,7 +245,13 @@ const FieldRow: React.FC<FieldRowProps> = ({ label, field, themed = false, isLig
 };
 
 // ─── Main component ────────────────────────────────────────────────────────
-export const LiveAnalysisContent: React.FC<LiveAnalysisContentProps> = ({
+// Memoized: this is the largest subtree in the live overlay (every MEDDICC/BANT
+// field, the signal lists, the objection cards) and it sits inside a panel that
+// stays mounted for the whole call. Its four props change only when a new
+// analysis lands or the user switches tabs, but it used to be reconciled by every
+// unrelated dock render — including, before the audio-level feed landed, ~40 per
+// second while anyone was speaking.
+export const LiveAnalysisContent: React.FC<LiveAnalysisContentProps> = React.memo(({
     analysisData,
     // aiInsight,
     hideBar = null,
@@ -982,4 +992,6 @@ export const LiveAnalysisContent: React.FC<LiveAnalysisContentProps> = ({
             )}
         </div>
     );
-};
+});
+
+LiveAnalysisContent.displayName = 'LiveAnalysisContent';

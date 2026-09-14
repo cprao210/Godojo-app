@@ -18,7 +18,7 @@ import { useTeamInvite, useOverlayOpacity, useAppLifecycleListeners, useMeetingS
 // features
 // ---------------------------------------------------------------------------
 import { ManagerDashboard } from "@/features/dashboard";
-import { InviteAccountMismatchBanner } from "@/features/tenant";
+import { InviteAccountMismatchBanner, TeamInviteNotification, InviteAcceptedNotifier } from "@/features/tenant";
 import { SettingsPopup, SettingsOverlay } from "@/features/settings"; // Keeping for legacy/specific window support if needed
 import { StartupSequence } from "@/features/onboarding";
 // import UpdateBanner from "../features/updates/UpdateBanner";
@@ -302,6 +302,16 @@ const App: React.FC = () => {
                         onClose={() => setShowPermissionTray?.(false)}
                         onAllGranted={proceedWithMeeting}
                       />
+                      {/* Team-invite popup — watches GET /invitations/me at the
+                          app root so an invitation from a teammate/admin surfaces
+                          over EVERY launcher screen (list, meeting details,
+                          Settings, Dashboard, chat) instead of only when the
+                          Roles & Permissions tab happens to be opened. */}
+                      <TeamInviteNotification authUser={authUser} suppressed={!!deepLinkInviteToken} />
+                      {/* Mirror side: when someone accepts OUR team's invitation,
+                          notify the owner/admin — in-app toast + native cross-screen
+                          notification (same pipeline as Summary Ready). */}
+                      <InviteAcceptedNotifier tenant={tenant} isAdmin={isAdmin} />
                       <ToastViewport />
                     </ToastProvider>
                   </QueryClientProvider>

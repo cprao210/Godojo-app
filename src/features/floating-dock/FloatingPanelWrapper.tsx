@@ -47,6 +47,12 @@ export const FloatingPanelWrapper: React.FC<FloatingPanelWrapperProps> = ({
     // pops in blank. Gating on animation completion preserves the cross-fade.
     // visibility:hidden (not display:none) keeps the layout box, so the dock's
     // height measurements are unaffected.
+    //
+    // The same flip also adds `dock-panel-hidden`, which pauses every CSS
+    // animation inside the panel (see index.css). The Intelligence panel's
+    // skeleton and countdown placeholders animate for minutes at a time, and the
+    // dock starts collapsed — so without this they would run for UI nobody can
+    // see. Nothing hidden has anything to show, so pausing is invisible.
     const [renderHidden, setRenderHidden] = useState(!isInteractive);
 
     useEffect(() => {
@@ -62,7 +68,7 @@ export const FloatingPanelWrapper: React.FC<FloatingPanelWrapperProps> = ({
             onAnimationComplete={() => {
                 if (!isInteractive) setRenderHidden(true);
             }}
-            className="fixed left-[5px]"
+            className={`fixed left-[5px]${renderHidden ? ' dock-panel-hidden' : ''}`}
             style={{
                 position: 'fixed',
                 top: panelTopOffset,

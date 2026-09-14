@@ -1,16 +1,20 @@
 /**
  * meetingLifecycle.ts
  *
- * The two decisions in the meeting lifecycle that are easy to get wrong and
- * hard to test in place, extracted as pure functions:
+ * The decisions in the meeting lifecycle that are easy to get wrong and hard to
+ * test in place, extracted as pure functions:
  *
  *  1. `decideFinalAnalysis` — should ending a call trigger one more analysis
  *     run? Exactly once, never twice, never zero times when the call was never
  *     analyzed at all.
- *  2. `deriveProcessingStage` — what is a meeting actually doing right now?
+ *  2. `decideAutoRefresh` — what should the recurring auto-refresh deadline do
+ *     when it lands mid-call?
+ *  3. `deriveProcessingStage` — what is a meeting actually doing right now?
  *     Every stage here maps to a real, observable piece of persisted state, not
  *     to a timer. There is deliberately no stage the UI can show that isn't
  *     backed by something main has really finished.
+ *  4. `shouldAdvanceCursor` — did a live-analysis response actually consume the
+ *     transcript window it was sent, or is it a degraded mirror to be retried?
  */
 
 // ─── Final analysis at end of call ──────────────────────────────────────────
@@ -82,6 +86,89 @@ export function decideFinalAnalysis(input: FinalAnalysisInput): FinalAnalysisDec
  * call ends anyway and main patches the result into the saved row instead.
  */
 export const FINAL_ANALYSIS_MAX_WAIT_MS = 10_000;
+
+// ─── Recurring auto-refresh deadline ────────────────────────────────────────
+
+export type AutoRefreshAction =
+    /** The call is over. Stand the cadence down; a new call re-arms it. */
+    | 'stop'
+    /** A run is already in flight — check back shortly, don't burn an interval. */
+    | 'retry-soon'
+    /** Nothing new since the last run. Re-arm and wait out another interval. */
+    | 'wait'
+    /** Too little prospect transcript to analyze. Report it, then keep waiting. */
+    | 'no-transcript'
+    /** Run a delta analysis now. */
+    | 'run';
+
+export interface AutoRefreshInput {
+    /** Is a call live right now? False from call-end until the next call starts. */
+    isCallLive: boolean;
+    /** Is an analysis run in flight right now? */
+    isLoading: boolean;
+    /** Does the transcript clear the minimum-prospect-turns bar? */
+    hasEnoughTranscript: boolean;
+    /** Cursor: how many human turns the last completed run consumed. */
+    lastAnalyzedTurnIndex: number;
+    /** Human turns currently in the transcript. */
+    humanTurnCount: number;
+}
+
+/**
+ * What the auto-refresh deadline should do when it fires.
+ *
+ * This deadline is RECURRING, and that is the whole point of it. It used to be
+ * single-shot, which combined with two other things to give a call exactly one
+ * analysis, ever: the early trigger fires the first run as soon as the prospect
+ * has spoken twice (so the transcript is tiny and BANT/MEDDIC comes back all
+ * `missing`) and it cleared the pending deadline on its way out, while the
+ * urgent-signal trigger that was supposed to own the cadence afterwards was a
+ * dead effect. Net effect for the user: live analysis showed one near-empty
+ * result and never updated again, so nothing was ever confirmed.
+ *
+ * Two guards keep the recurrence honest, and both matter:
+ *   - `isCallLive`, because the overlay window is hidden between meetings rather
+ *     than destroyed and the transcript ref is only cleared when the NEXT
+ *     meeting starts. Without it the deadline keeps analyzing a finished call.
+ *   - the cursor check, because the backend answers an empty delta by mirroring
+ *     the previous analysis back unchanged — a round trip that cannot tell the
+ *     user anything new.
+ */
+export function decideAutoRefresh(input: AutoRefreshInput): AutoRefreshAction {
+    if (!input.isCallLive) return 'stop';
+    if (input.isLoading) return 'retry-soon';
+    if (!input.hasEnoughTranscript) return 'no-transcript';
+    if (input.lastAnalyzedTurnIndex >= input.humanTurnCount) return 'wait';
+    return 'run';
+}
+
+// ─── Did a live-analysis response consume its transcript window? ─────────────
+
+/**
+ * May the transcript cursors advance past the window this response was built
+ * from?
+ *
+ * The client owns the analysis state, so the cursor is the only record of which
+ * turns have been accounted for. A 200 is therefore not automatically a success:
+ * when the backend runs out of its provider budget it answers 200 with the
+ * previous analysis mirrored straight back and `degraded: true`, deliberately, so
+ * the panel keeps the fields it had already confirmed instead of blanking to the
+ * all-missing shell (which is what a 5xx would do — the app maps every non-2xx to
+ * "Backend unavailable" and leaves `analysisData` null).
+ *
+ * Treating that mirror as a success is strictly worse than the failure it
+ * replaced: the cursor would move past turns no model ever read, so those turns
+ * are skipped for the rest of the call and whatever they contained can never be
+ * confirmed. An outright failure at least self-heals, because it leaves the
+ * cursor alone and the next tick re-sends the delta. Holding the cursor here is
+ * what keeps the degraded path a genuine improvement rather than silent data loss.
+ */
+export function shouldAdvanceCursor(
+    response: { degraded?: boolean } | null | undefined,
+): boolean {
+    if (!response) return false;
+    return response.degraded !== true;
+}
 
 // ─── Post-meeting processing stages ─────────────────────────────────────────
 

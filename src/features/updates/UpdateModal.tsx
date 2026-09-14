@@ -1,6 +1,7 @@
 import React from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
 import { UpdateModalProps } from '@/types';
+import { releasesPageUrl } from '@/../utils/updateFeed';
 
 const CopyBlock = ({ command }: { command: string }) => {
     const [copied, setCopied] = React.useState(false);
@@ -39,6 +40,7 @@ const UpdateModal: React.FC<UpdateModalProps> = ({
     downloadProgress,
     status,
     errorMessage,
+    onInstallUpdate,
 }) => {
     // Helper to format version string
     const formatVersion = (v: string) => {
@@ -189,9 +191,7 @@ const UpdateModal: React.FC<UpdateModalProps> = ({
                                         Done
                                     </button>
                                     <button
-                                        onClick={() =>
-                                            window.electronAPI.openExternal('https://github.com/cprao210/Godojo-app/releases/latest')
-                                        }
+                                        onClick={() => window.electronAPI.openExternal(releasesPageUrl())}
                                         className="text-[11px] font-medium text-white/30 hover:text-white/55 transition-colors"
                                     >
                                         Having trouble? Open the Releases page instead
@@ -319,10 +319,13 @@ const UpdateModal: React.FC<UpdateModalProps> = ({
                                         Remind Me Later
                                     </button>
 
-                                    {/* Primary Action - Right Aligned, System Blue */}
+                                    {/* Primary Action - Right Aligned, System Blue.
+                                        onInstallUpdate is the guarded path (meeting-active +
+                                        dev refusal live in useUpdateStatus) — never call
+                                        restartAndInstall directly from here. */}
                                     {status === 'ready' ? (
                                         <button
-                                            onClick={() => window.electronAPI.restartAndInstall()}
+                                            onClick={onInstallUpdate}
                                             className="px-5 py-[6px] bg-[#007AFF] hover:bg-[#0062CC] text-white text-[13px] font-medium rounded-lg shadow-sm transition-colors"
                                         >
                                             Restart & Install

@@ -36,6 +36,18 @@ describe('meetingsApi.list', () => {
         ]);
     });
 
+    it('appends ?limit=N to the request when a limit is passed (used by "Load more")', async () => {
+        mockedApiFetch.mockResolvedValueOnce([]);
+        await meetingsApi.list({ limit: 30 });
+        expect(mockedApiFetch).toHaveBeenCalledWith('/meetings?limit=30');
+    });
+
+    it('omits the query string entirely when no limit is passed', async () => {
+        mockedApiFetch.mockResolvedValueOnce([]);
+        await meetingsApi.list();
+        expect(mockedApiFetch).toHaveBeenCalledWith('/meetings');
+    });
+
     it('dedupes rows with the same id, keeping the first occurrence', async () => {
         mockedApiFetch.mockResolvedValueOnce([
             { id: 'dup', title: 'First', created_at: '2024-01-01' },
@@ -286,12 +298,8 @@ describe('meetingsApi.chunk', () => {
     });
 });
 
-describe('meetingsApi.uploadTranscript', () => {
-    beforeEach(() => mockedApiFetch.mockClear());
-
-    it('sends title and transcript in that order', async () => {
-        await meetingsApi.uploadTranscript('My title', 'full transcript text');
-        expect(mockedApiFetch.mock.calls[0][0]).toBe('/meetings/upload-transcript');
-        expect(bodyOfCall()).toEqual({ title: 'My title', transcript: 'full transcript text' });
+describe('meetingsApi — transcript upload is IPC-only', () => {
+    it('exposes no uploadTranscript HTTP method (the lifecycle runs through MeetingPersistence)', () => {
+        expect((meetingsApi as any).uploadTranscript).toBeUndefined();
     });
 });

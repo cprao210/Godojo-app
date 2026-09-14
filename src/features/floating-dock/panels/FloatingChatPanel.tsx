@@ -7,6 +7,7 @@ import remarkGfm from 'remark-gfm';
 import { useStreamBuffer } from '@/hooks';
 import { chatApi, statusLabel } from '@/api';
 import { chatMarkdownComponents } from '@/features/chat';
+import SourcesDisplay from '@/features/chat/SourcesDisplay';
 import { ChatHistoryTurn, FloatingChatPanelProps, LiveTranscriptSegment, Message, StreamHandle } from '@/types';
 import { getDockSurfaceStyle } from '../dockSurfaceStyle';
 import { posthogAnalytics } from '@/lib/analytics/posthog.service';
@@ -49,13 +50,17 @@ const FilmRollTranscript: React.FC<FilmRollTranscriptProps> = ({ text, speakerLa
                     WebkitMaskImage: 'linear-gradient(to right, transparent 0%, black 8%, black 100%)',
                 }}
             >
-                <motion.p
+                {/* Plain <p>: this used to be a motion.p whose only animation was
+                    `animate={{ x: 0 }}` — a no-op target that still made
+                    framer-motion track the node on every one of the 10+ text
+                    updates per second during a call. The horizontal scroll comes
+                    from `scrollLeft` above, not from motion. */}
+                <p
                     className="text-[11px] text-white/40 leading-relaxed whitespace-nowrap"
-                    animate={{ x: 0 }}
                     style={{ display: 'inline-block' }}
                 >
                     {text}
-                </motion.p>
+                </p>
             </div>
 
             {/* LIVE badge */}
@@ -182,6 +187,15 @@ const MessageBubble: React.FC<{ msg: Message }> = ({ msg }) => {
                                         )}
                                     </div>
                                 )}
+                                {msg.sources && (
+                                    <div className="mt-2">
+                                        {/* Live chat has nowhere to route a meeting click from yet
+                                            (no onOpenMeeting wired into FloatingChatPanelProps), and
+                                            live sources are asset-only in practice anyway — plain,
+                                            non-clickable chips. */}
+                                        <SourcesDisplay sources={msg.sources} />
+                                    </div>
+                                )}
                             </div>
                             {!msg.isStreaming && (
                                 <button
@@ -203,7 +217,14 @@ const MessageBubble: React.FC<{ msg: Message }> = ({ msg }) => {
     );
 };
 
-export const FloatingChatPanel: React.FC<FloatingChatPanelProps> = ({ transcriptRef, rollingTranscriptUser, rollingTranscriptClient, isClientSpeaking, isUserSpeaking, isMeetingPaused, showTranscript, speakerNames, messages, onMessagesChange, onInteractionId, calendarEventMetadata, isPerformanceMode = false }) => {
+// Memoized: this panel stays mounted for the rest of the call once it has been
+// opened once (so chat history survives a panel switch), which means every
+// FloatingDock render reconciles it — message list, markdown bodies and all —
+// even when nothing it displays changed. All of its props are stable by
+// construction from FloatingDock (state values, state setters, refs, and
+// ref-backed callbacks), so the only renders that get through are the ones that
+// actually change what it shows.
+export const FloatingChatPanel: React.FC<FloatingChatPanelProps> = React.memo(({ transcriptRef, rollingTranscriptUser, rollingTranscriptClient, isClientSpeaking, isUserSpeaking, isMeetingPaused, showTranscript, speakerNames, messages, onMessagesChange, onInteractionId, calendarEventMetadata, isPerformanceMode = false }) => {
 
     const setMessages = onMessagesChange;
     const [inputValue, setInputValue] = useState('');
@@ -422,6 +443,15 @@ export const FloatingChatPanel: React.FC<FloatingChatPanelProps> = ({ transcript
                 },
                 onInteractionId: (interactionId) => {
                     onInteractionId?.(interactionId);
+                },
+                onSources: (sources) => {
+                    // Nothing to show for a turn with no asset_id-bearing
+                    // sources — leave msg.sources unset so SourcesDisplay
+                    // never mounts for it (redundant with its own
+                    // totalCount===0 guard, but avoids the message-list diff
+                    // churn of setting an empty object on every turn).
+                    if (sources.meetings.length === 0 && sources.assets.length === 0) return;
+                    setMessages(prev => prev.map(m => m.id === assistantId ? { ...m, sources } : m));
                 },
                 onReset: () => {
                     // The backend discarded a partial answer. Drop the text we
@@ -700,4 +730,6 @@ export const FloatingChatPanel: React.FC<FloatingChatPanelProps> = ({ transcript
             </div>
         </div>
     );
-};
+});
+
+FloatingChatPanel.displayName = 'FloatingChatPanel';

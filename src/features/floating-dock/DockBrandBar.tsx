@@ -34,15 +34,14 @@ interface DockBrandBarProps {
     onToggle: () => void;
     /** Shared dock opacity (from the appearance slider) so the bar matches the pill. */
     opacity: number;
-    /** 0–1 live microphone level ("You"). Omit/0 renders a dim, idle indicator. */
-    micLevel?: number;
-    /** 0–1 live system-audio level ("Client" — covers built-in speakers or any connected external playback device). */
-    systemLevel?: number;
     /** Reduced-fidelity mode — forwarded to the wave indicator's animation budget. */
     isPerformanceMode?: boolean;
 }
 
-export const DockBrandBar: React.FC<DockBrandBarProps> = ({ isExpanded, onToggle, opacity, micLevel = 0, systemLevel = 0, isPerformanceMode = false }) => (
+// Memoized: the only props left are three values that change on user action, so
+// a transcript update in the dock's parent no longer reconciles this bar or the
+// wave indicator under it.
+export const DockBrandBar: React.FC<DockBrandBarProps> = React.memo(({ isExpanded, onToggle, opacity, isPerformanceMode = false }) => (
     <div
         className="flex items-center justify-between gap-3 px-3 py-1.5 rounded-xl cursor-grab active:cursor-grabbing draggable-area"
         style={{
@@ -61,9 +60,11 @@ export const DockBrandBar: React.FC<DockBrandBarProps> = ({ isExpanded, onToggle
 
         {/* Live capture indicator — one wave for both sides of the call.
             Color shifts blue ("You") ↔ orange ("Client") to show which
-            channel is currently dominant, instead of two separate meters. */}
+            channel is currently dominant, instead of two separate meters.
+            No level props: the indicator reads the shared out-of-React feed, so
+            live levels never re-render the dock. */}
         <div className="flex items-center no-drag">
-            <AudioWaveIndicator micLevel={micLevel} systemLevel={systemLevel} isPerformanceMode={isPerformanceMode} />
+            <AudioWaveIndicator isPerformanceMode={isPerformanceMode} />
         </div>
 
         {/* Expand / collapse the active panel */}
@@ -76,6 +77,8 @@ export const DockBrandBar: React.FC<DockBrandBarProps> = ({ isExpanded, onToggle
             {isExpanded ? <ChevronUp size={16} strokeWidth={2.4} /> : <ChevronDown size={16} strokeWidth={2.4} />}
         </button>
     </div>
-);
+));
+
+DockBrandBar.displayName = 'DockBrandBar';
 
 export default DockBrandBar;

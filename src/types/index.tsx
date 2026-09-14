@@ -639,6 +639,17 @@ export interface LiveAnalysisData {
   objections: Objection[];
   signals: Signal[];
   dealOptimizer?: DealOptimizerAlert[];
+  /**
+   * Set by the backend when it ran out of budget and mirrored the previous
+   * analysis back instead of producing a new one (HTTP 200, not an error — see
+   * `live_analysis_total_budget_s` in godojo-apis). It means "nothing new here",
+   * so the transcript cursor must NOT advance past this window:
+   * `shouldAdvanceCursor` in src/lib/meetingLifecycle.ts owns that rule.
+   *
+   * Never present on a successful response, and never persisted — the backend
+   * ignores it if it rides back inside `previous_analysis`.
+   */
+  degraded?: boolean;
 }
 
 // --- src/features/meetings/api/meetingsApi.ts ---
@@ -711,6 +722,28 @@ export interface AiInteractionMetadata {
   [key: string]: unknown;
 }
 
+// Raw shape from GET /meetings/:id/ai-interactions — a flat, mixed list, NOT
+// the grouped { meetings, assets } shape ChatSources/SourcesDisplay expect
+// (same distinction already called out on ChatHistoryTurn.sources). Two
+// observed shapes, distinguished by presence of `id`:
+//   - doc/asset sources:    { id, type: "doc", title }
+//   - meeting/live sources: { title, meeting_id }  — meeting_id is often the
+//     literal string "live" (not a real, openable meeting id), and these
+//     commonly repeat once per retrieved transcript chunk.
+// Only the doc-shaped ones are useful to show — see assetSourcesFor below.
+export interface AiInteractionDocSource {
+  id: string;
+  type: string;
+  title: string;
+}
+
+export interface AiInteractionMeetingSource {
+  title: string;
+  meeting_id: string;
+}
+
+export type AiInteractionSource = AiInteractionDocSource | AiInteractionMeetingSource;
+
 export interface AiInteractionItem {
   id: number;
   type: string;
@@ -718,6 +751,9 @@ export interface AiInteractionItem {
   user_query: string;
   ai_response: string;
   metadata_json: AiInteractionMetadata;
+  // Optional — plenty of interactions (e.g. the "couldn't find that" case)
+  // have no useful sources, or none at all. Never assume present.
+  sources?: AiInteractionSource[];
 }
 
 export interface AiInteractionsResponse {
@@ -840,6 +876,7 @@ export interface MeetingTranscriptLine {
   timestamp: number;
   final?: boolean;
   confidence?: number;
+  speakerIndex?: number;
 }
 
 export interface MeetingUsageEntry {
@@ -941,7 +978,7 @@ export type MeetingType = 'discovery' | 'demo' | 'negotiation';
 export interface ScoredCategory {
   categoryName: string;
   key?: string;           // config key this row came from; kept so the score can be
-                          // reconciled against live analysis after label edits
+  // reconciled against live analysis after label edits
   score: number;          // 0–maxScore
   maxScore: number;
   weight: number;         // 0–100 (percentage weight of this category)
@@ -1375,7 +1412,10 @@ export interface ParsedReleaseNotes {
 }
 
 // --- src/lib/apiClient.ts ---
-export type RetryConfig = InternalAxiosRequestConfig & { _retry?: boolean };
+/** `_startedAt` is stamped by the request interceptor so a failure can report how
+ *  long it waited — the difference between "the backend is down" (fails at once)
+ *  and "the backend never answered" (fails at the 60s ceiling). */
+export type RetryConfig = InternalAxiosRequestConfig & { _retry?: boolean; _startedAt?: number };
 
 // --- src/lib/curl-validator.ts ---
 export interface CurlValidationResult {
@@ -1407,6 +1447,8 @@ export type FieldValuesType = {
   type: "text" | "tel" | "email" | "password";
   name: "email" | "password" | "displayName" | "phoneNumber";
   placeholder: string;
+  /** Optional — only the sign-up fields (name, email) set this; sign-in's
+   * single email field and phoneNumber intentionally leave it unset. */
   required?: boolean;
 }
 
@@ -1704,6 +1746,11 @@ export interface Message {
   isStreaming?: boolean;
   intent?: string;
   ragAnswer?: { confidence: number; sourceCount: number };
+  /** Retrieved sources for this turn, from the `source_ids` stream frame.
+   * Only ever has entries when the backend sent at least one source with an
+   * asset_id — SourcesDisplay itself also renders nothing for an empty
+   * ChatSources, so this is safe to always set. */
+  sources?: ChatSources;
   /** Latest backend status label ("Searching meetings…", etc.) while this
    * message is still streaming with no text yet. Cleared once the first
    * token/rag_answer arrives. */
@@ -1758,8 +1805,8 @@ export interface FloatingIntelligencePanelProps {
   panelFirstOpenedAt: number | null; // timestamp when intelligence panel was first opened
   noAnalysisCaptured?: boolean; // true when the countdown ended without enough transcript to analyse
   isCountdownActive?: boolean; // true only while the single startup countdown cycle is still armed
-                              // AND no analysis result has landed — the countdown must never be
-                              // re-entered after the loading skeleton (see useFloatingDock)
+  // AND no analysis result has landed — the countdown must never be
+  // re-entered after the loading skeleton (see useFloatingDock)
   meetingTypes: MeetingType[];
   onMeetingTypesChange: (types: MeetingType[]) => void;
   /** See usePerformanceMode.ts — drops backdrop-filter blur when true. */
@@ -2153,9 +2200,12 @@ export interface UpdateModalProps {
   onInstall: () => void;
   onRemindLater?: () => void;
   downloadProgress: number;
-  status: 'idle' | 'downloading' | 'ready' | 'error' | 'instructions';
+  status: 'idle' | 'checking' | 'downloading' | 'ready' | 'error' | 'instructions';
   errorMessage?: string | null;
-  instructionsArch?: 'arm64' | 'x64' | null;
+  /** Quit + install a downloaded update. The guarded path (refuses while a
+   *  meeting is active or in dev) — the modal must never call
+   *  restartAndInstall directly. */
+  onInstallUpdate: () => void;
 }
 
 // --- src/pages/EmailVerification.tsx ---
