@@ -2935,56 +2935,17 @@ export function initializeIpcHandlers(appState: AppState): void {
           const fileBuffer = Buffer.from(asset.fileData, 'base64');
           db.saveAssetFile(asset.id, asset.fileName, asset.mimeType, fileBuffer);
 
-          // Chunk + embed synchronously (awaited) so the caller (handleSave) can
-          // be certain the asset is actually indexed before it returns success.
+          // The backend commit now happens exclusively via company:uploadAssetToBackend
+          // in handleSave's pre-save loop — ONE POST per asset. This block used to
+          // re-upload every fileData-carrying asset to /company-assets/upload as
+          // well, and because that endpoint parses + vision-describes + embeds fully
+          // synchronously, every document got indexed TWICE per Save.
           //
-          // All supported types (pdf/doc/docx/ppt/pptx/csv/xlsx) now go through
-          // the backend's /company-assets/upload endpoint: docx/pptx/xlsx/csv get
-          // precise native text extraction there, PDFs/legacy doc/ppt fall back
-          // to Document AI. This replaces the old split where non-PDF types were
-          // extracted+embedded locally — one code path, one source of truth for
-          // "is this asset actually indexed".
-          try {
-            const token = getAuthToken();
-            if (!token) {
-              db.upsertCompanyAsset({ id: asset.id, type: asset.type, label: asset.label, status: 'error' });
-              console.error(`[IPC] company:saveContext — no auth token available for asset ${asset.id}`);
-            } else {
-              const form = new FormData();
-              form.append('file', new Blob([fileBuffer], { type: asset.mimeType }), asset.fileName);
-              form.append('asset_id', asset.id);
-              form.append('label', asset.label);
-              form.append('asset_type', asset.type);
-
-              // Without X-Tenant-Id, the backend's OptionalTenant resolves this
-              // to the admin's PERSONAL scope (tenant_id IS NULL) even when
-              // they're on a team — meaning teammates would never see a doc the
-              // admin just uploaded, since GET /intelligence/company-assets
-              // (correctly sent with X-Tenant-Id from the renderer) queries the
-              // shared tenant row, not the admin's personal one.
-              const currentTenantId = tenantContext.get();
-              const resp = await fetch(`${BACKEND_URL}/api/v1/intelligence/company-assets/upload`, {
-                method: 'POST',
-                headers: {
-                  Authorization: `Bearer ${token}`,
-                  ...(currentTenantId ? { 'X-Tenant-Id': currentTenantId } : {}),
-                },
-                body: form,
-              });
-
-              const result = await resp.json();
-              console.log(`[IPC] company:saveContext — upload result for ${asset.id}:`, result);
-              db.upsertCompanyAsset({
-                id: asset.id, type: asset.type, label: asset.label,
-                status: result.status === 'indexed' ? 'mapped' : 'error',
-              });
-            }
-          } catch (uploadErr: any) {
-            console.error(`[IPC] company:saveContext — upload failed for asset ${asset.id}:`, uploadErr.message);
-            db.upsertCompanyAsset({ id: asset.id, type: asset.type, label: asset.label, status: 'error' });
-          }
-
-
+          // Assets reaching this branch still have fileData, i.e. they were staged
+          // but not committed in this session; the unconditional upsert above leaves
+          // them 'processing' locally. Committed assets arrive here with fileData
+          // stripped (handleSave clears it) and fall through to the 'mapped' else
+          // branch.
         } else {
           // Existing asset already in DB — just keep its current status
           // Re-upsert with 'mapped' since it was already processed before
@@ -3057,7 +3018,9 @@ export function initializeIpcHandlers(appState: AppState): void {
       const result: any = await dialog.showOpenDialog(win!, {
         properties: ['openFile', 'multiSelections'],
         filters: [
-          { name: 'Documents', extensions: ['pdf', 'doc', 'docx', 'ppt', 'pptx', 'csv', 'xlsx'] }
+          { name: 'All Supported', extensions: ['pdf', 'doc', 'docx', 'ppt', 'pptx', 'csv', 'xlsx', 'png', 'jpg', 'jpeg', 'gif', 'webp'] },
+          { name: 'Documents', extensions: ['pdf', 'doc', 'docx', 'ppt', 'pptx', 'csv', 'xlsx'] },
+          { name: 'Images', extensions: ['png', 'jpg', 'jpeg', 'gif', 'webp'] },
         ]
       });
       if (result.canceled || result.filePaths.length === 0) {
@@ -3099,6 +3062,11 @@ export function initializeIpcHandlers(appState: AppState): void {
         pptx: 'application/vnd.openxmlformats-officedocument.presentationml.presentation',
         csv: 'text/csv',
         xlsx: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+        png: 'image/png',
+        jpg: 'image/jpeg',
+        jpeg: 'image/jpeg',
+        gif: 'image/gif',
+        webp: 'image/webp',
       };
       const mimeType = MIME_MAP[ext] ?? 'application/octet-stream';
 
@@ -3130,7 +3098,17 @@ export function initializeIpcHandlers(appState: AppState): void {
     }
   });
 
-  safeHandle("company:uploadAssetToBackend", async (_event, payload: {
+  // The backend's /company-assets/upload endpoint is FULLY SYNCHRONOUS:
+  // parse → extract+describe every embedded image (Gemini vision, sequential)
+  // → batch-embed all chunks → Supabase writes, all inside one request. An
+  // image-heavy multi-page PDF can legitimately take minutes; the platform
+  // ceiling is Cloud Run's 900 s. The old 60 s axios cap aborted the request
+  // while the server kept indexing it, so users saw failures for documents
+  // that actually succeeded. This cap sits deliberately under 900 s: anything
+  // still running past 10 minutes is failing server-side, not slow.
+  const COMPANY_ASSET_UPLOAD_TIMEOUT_MS = 10 * 60_000;
+
+  safeHandle("company:uploadAssetToBackend", async (event, payload: {
     filePath: string;
     assetId: string;
     label: string;
@@ -3161,6 +3139,8 @@ export function initializeIpcHandlers(appState: AppState): void {
       ".png": "image/png",
       ".jpg": "image/jpeg",
       ".jpeg": "image/jpeg",
+      ".gif": "image/gif",
+      ".webp": "image/webp",
     };
     const mimeType = extToMime[ext] ?? "application/octet-stream";
 
@@ -3188,14 +3168,47 @@ export function initializeIpcHandlers(appState: AppState): void {
     };
     if (tenantId) headers["X-Tenant-Id"] = tenantId;
 
+    // Byte-level upload progress streamed to the requesting window; the
+    // renderer shows percent during 'uploading' and an indeterminate
+    // "Indexing on server…" state afterwards (the server-side chunk/embed
+    // work has no client-observable progress — the response IS its completion).
+    const sendProgress = (phase: 'uploading' | 'indexing', percent: number) => {
+      try {
+        if (!event.sender.isDestroyed()) {
+          event.sender.send('company:upload-progress', { assetId, phase, percent });
+        }
+      } catch { /* window gone — progress is best-effort */ }
+    };
+
     try {
       const res = await axios.post(
         `${BACKEND_URL}/api/v1/intelligence/company-assets/upload`,
         form,
-        { headers, timeout: 60000, maxBodyLength: Infinity, maxContentLength: Infinity },
+        {
+          headers,
+          timeout: COMPANY_ASSET_UPLOAD_TIMEOUT_MS,
+          maxBodyLength: Infinity,
+          maxContentLength: Infinity,
+          onUploadProgress: (e: any) => {
+            const total = e.total ?? fileBuffer.length;
+            const percent = total ? Math.min(100, Math.round((e.loaded / total) * 100)) : 0;
+            if (percent >= 100) sendProgress('indexing', 100);
+            else sendProgress('uploading', percent);
+          },
+        },
       );
       return res.data; // { status: "indexed", chunks: N } | { status: "empty", chunks: 0 }
     } catch (error: any) {
+      const isTimeout = error?.code === 'ECONNABORTED' || error?.code === 'ETIMEDOUT'
+        || /timeout/i.test(error?.message ?? '');
+      if (isTimeout) {
+        return {
+          status: "error",
+          code: "timeout",
+          statusCode: 504,
+          error: "The server is still indexing this document — large PDFs can take a few minutes. Keep the app open and retry Save shortly; the file may already have finished indexing.",
+        };
+      }
       const statusCode = error?.response?.status ?? 500;
       const body = error?.response?.data;
       const message =

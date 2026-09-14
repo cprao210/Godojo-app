@@ -1432,6 +1432,15 @@ contextBridge.exposeInMainWorld("electronAPI", {
   companyUploadAssetToBackend: (payload: {
     filePath: string; assetId: string; label: string; assetType: string; tenantId: string | null;
   }) => ipcRenderer.invoke('company:uploadAssetToBackend', payload),
+  // Upload progress for the backend commit (main → renderer events). Mirrors
+  // onDownloadProgress: returns an unsubscribe function.
+  onCompanyUploadProgress: (callback: (p: { assetId: string; phase: 'uploading' | 'indexing'; percent: number }) => void) => {
+    const subscription = (_: any, p: any) => callback(p)
+    ipcRenderer.on("company:upload-progress", subscription)
+    return () => {
+      ipcRenderer.removeListener("company:upload-progress", subscription)
+    }
+  },
   companyDeleteAsset: (assetId: string) => ipcRenderer.invoke('company:deleteAsset', assetId),
   companySyncAsset: (assetId: string) => ipcRenderer.invoke('company:syncAsset', assetId),
   companySetPersonaEngine: (enabled: boolean) => ipcRenderer.invoke('company:setPersonaEngine', enabled),

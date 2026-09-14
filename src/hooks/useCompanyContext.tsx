@@ -15,8 +15,17 @@ import { BookOpen, FileText, FlaskConical, Presentation } from 'lucide-react';
 import { settingsToast } from '@/lib/settingsToastBus';
 
 // ─── Constants ────────────────────────────────────────────────────────────────
-export const ALLOWED_EXTENSIONS = ['.pdf', '.doc', '.docx', '.ppt', '.pptx', '.csv', '.xlsx'];
+// Images included: the backend's /company-assets/upload routes image files
+// through Document AI OCR + Gemini vision (png/jpeg/gif/webp supported), and
+// the main-process upload IPC already maps their MIMEs.
+export const ALLOWED_EXTENSIONS = ['.pdf', '.doc', '.docx', '.ppt', '.pptx', '.csv', '.xlsx', '.png', '.jpg', '.jpeg', '.gif', '.webp'];
 export const MAX_FILE_SIZE_BYTES = 5 * 1024 * 1024; // 5 MB
+
+/** Per-asset commit progress streamed from main during the Save-time upload. */
+export interface AssetUploadProgress {
+    phase: 'uploading' | 'indexing';
+    percent: number;
+}
 
 export const ASSET_CONFIG: Record<KnowledgeAsset['type'], {
     label: string;
@@ -128,6 +137,28 @@ export const useCompanyContext = ({
 
     // ── Local draft state ──────────────────────────────────────────────────────
     const [draft, setDraft] = useState<CompanyContextData>(() => normalizeContext(companyContext));
+
+    // ── Backend commit progress ────────────────────────────────────────────────
+    // company:uploadAssetToBackend streams byte-level 'uploading' percents from
+    // the main process, then flips to 'indexing' once the bytes are sent — the
+    // backend's parse → vision → embed pipeline runs synchronously inside the
+    // request, so "indexing" stays indeterminate until the response lands.
+    const [assetProgress, setAssetProgress] = useState<Record<string, AssetUploadProgress>>({});
+
+    useEffect(() => {
+        const unsubscribe = window.electronAPI?.onCompanyUploadProgress?.((p) => {
+            if (!p?.assetId) return;
+            setAssetProgress(prev => (
+                // Only track assets whose commit is currently in flight —
+                // stale events from an aborted/failed Save must not resurrect
+                // a bar that has no promise left to clear it.
+                prev[p.assetId]
+                    ? { ...prev, [p.assetId]: { phase: p.phase, percent: p.percent ?? 0 } }
+                    : prev
+            ));
+        });
+        return () => unsubscribe?.();
+    }, []);
     const savedSnapshot = useRef<CompanyContextData>(draft);
     const [isDirty, setIsDirty] = useState(false);
 
@@ -185,11 +216,17 @@ export const useCompanyContext = ({
     // ── Sync draft when context reloads ───────────────────────────────────────
     useEffect(() => {
         if (companyContext) {
+            // Never clobber the draft mid-Save: the commit loop's draft (staged
+            // rows, upload progress, committed flips) is newer than whatever
+            // this reload carries. The next companyContext change after the
+            // save settles re-syncs normally.
+            if (companySaving || Object.keys(assetProgress).length > 0) return;
             const normalized = normalizeContext(companyContext);
             setDraft(normalized);
             savedSnapshot.current = normalized;
             setIsDirty(false);
         }
+        // eslint-disable-next-line react-hooks/exhaustive-deps
     }, [companyContext]);
 
     // Hydrate the shared, tenant-scoped asset list from the backend. For a team
@@ -273,9 +310,11 @@ export const useCompanyContext = ({
             pendingDeletedAssetIds.current.clear();
 
             // Commit staged asset uploads to the backend now (chunking + embeddings happen
-            // here, not on the upload button). Do this before reindex so vectors exist.
+            // server-side here, not on the upload button). Do this before reindex so vectors exist.
             const uploads = Array.from(pendingUploads.current.entries());
+            const committedAssetIds = new Set<string>();
             for (const [assetId, info] of uploads) {
+                setAssetProgress(prev => ({ ...prev, [assetId]: { phase: 'uploading', percent: 0 } }));
                 try {
                     await intelligenceApi.uploadCompanyAsset({
                         filePath: info.filePath,
@@ -283,23 +322,42 @@ export const useCompanyContext = ({
                         label: info.label,
                         assetType: info.type,
                     });
+                    committedAssetIds.add(assetId);
                     pendingUploads.current.delete(assetId);
-                    // Flip the committed asset to 'mapped' in the draft.
+                    // Flip the committed asset to 'mapped' in the draft and drop the
+                    // staged file — it's on the server now; the draft doesn't need to
+                    // hold a base64 copy of an indexed document.
                     setDraft(prev => ({
                         ...prev,
-                        assets: prev.assets.map(a => a.id === assetId ? { ...a, status: 'mapped' as const } : a),
+                        assets: prev.assets.map(a => a.id === assetId
+                            ? { ...a, status: 'mapped' as const, fileData: undefined }
+                            : a),
                     }));
                 } catch (err: any) {
                     const message = err?.status === 415
                         ? err.message
-                        : err?.status === 403
-                            ? "Only your team's admin can upload company assets."
-                            : `Backend upload failed for "${info.label}"`;
+                        : err?.code === 'timeout'
+                            ? 'The server is still indexing this document — large PDFs can take a few minutes. Keep this window open and try Save again shortly; the file may already have finished indexing.'
+                            : err?.status === 403
+                                ? "Only your team's admin can upload company assets."
+                                : (err?.message ? `Backend upload failed for "${info.label}": ${err.message}` : `Backend upload failed for "${info.label}"`);
+
+                    console.log("upload error:: ", err);
                     setCompanyError(message);
                     settingsToast.error(message);
                     setCompanySaving(false);
+                    setAssetProgress(prev => {
+                        const next = { ...prev };
+                        delete next[assetId];
+                        return next;
+                    });
                     return; // leave remaining uploads staged + isDirty true so the user can retry Save
                 }
+                setAssetProgress(prev => {
+                    const next = { ...prev };
+                    delete next[assetId];
+                    return next;
+                });
             }
 
             // 1. Upsert the singleton identity + value prop fields.
@@ -346,22 +404,25 @@ export const useCompanyContext = ({
                 }
             }
 
-            // 4. Persist assets. This is NOT redundant with the REST calls above —
-            // company:saveContext is still the only path that actually commits an
-            // uploaded document: company:uploadAsset only stages the file in memory
-            // (base64 in draft.assets[].fileData) and does no DB write or backend
-            // call at all. The real work — db.upsertCompanyAsset, the
-            // POST /company-assets/upload that triggers chunking + embeddings, and
-            // the KnowledgeOrchestrator sync — all lives inside company:saveContext,
-            // gated on `asset.fileData` being present. Skipping this call means an
-            // uploaded document silently never reaches the DB or gets embedded, even
-            // though the rest of Save reports success.
-            //
-            // It also re-mirrors identity/personas/competitors into local SQLite,
-            // which is now redundant with the REST calls above — but harmless, since
-            // company:getContext already treats that local copy as a fallback if
-            // Supabase is unreachable, not a competing source of truth.
-            const assetSaveResult = await (window as any).electronAPI?.companySaveContext?.(draft);
+            // 4. Mirror assets into the local SQLite store. This used to be the
+            // ONLY path that POSTed a staged file to /company-assets/upload —
+            // step above now owns that (once per asset; the backend endpoint is
+            // fully synchronous, so doing it twice per Save meant two complete
+            // vision+embedding pipelines per document). companySaveContext still
+            // persists local state and re-mirrors identity/personas/competitors
+            // into SQLite, which company:getContext uses as its offline
+            // fallback — so this call stays, with committed assets' staged
+            // bytes stripped (the `draft` closure here predates the commit
+            // loop's setDraft calls, so the stripping is applied explicitly).
+            const draftForSave = committedAssetIds.size
+                ? {
+                    ...draft,
+                    assets: draft.assets.map(a => committedAssetIds.has(a.id)
+                        ? { ...a, fileData: undefined, status: 'mapped' as const }
+                        : a),
+                }
+                : draft;
+            const assetSaveResult = await (window as any).electronAPI?.companySaveContext?.(draftForSave);
             if (!assetSaveResult?.success) {
                 const message = assetSaveResult?.error || 'Failed to save uploaded documents';
                 setCompanyError(message);
@@ -371,10 +432,26 @@ export const useCompanyContext = ({
             }
 
             posthogAnalytics.trackCompanyContextSave();
-            setCompanyContext(draft);
-            savedSnapshot.current = draft;
+            // Publish the SAME committed-aware draft handed to companySaveContext
+            // above — the raw `draft` closure predates the commit loop's flips, so
+            // publishing it would re-seed the tab (and the [companyContext]
+            // draft-sync effect) with pre-commit 'processing' rows.
+            setCompanyContext(draftForSave);
+            savedSnapshot.current = draftForSave;
             setIsDirty(false);
             settingsToast.success('Saved Successfully');
+            // Native cross-screen toast — same pipeline as "Summary Ready" and the
+            // meeting pause/resume toasts, so the result follows the user even if
+            // they've left the app while a large document was indexing (the
+            // backend's upload endpoint runs its full parse → vision → embed
+            // pipeline synchronously, which can take minutes).
+            const assetNote = committedAssetIds.size > 0
+                ? ` ${committedAssetIds.size} document${committedAssetIds.size === 1 ? '' : 's'} uploaded and indexed.`
+                : '';
+            window.electronAPI?.showAppNotification?.(
+                'Company Context Saved',
+                `Your company knowledge base is up to date.${assetNote}`,
+            ).catch(() => { });
             // Trigger reindex (best-effort)
             intelligenceApi.reindexCompanyAssets().catch(err =>
                 console.error('[CompanyContext] Failed to reindex:', err)
@@ -559,6 +636,7 @@ export const useCompanyContext = ({
         companySaving,
         companyError,
         assetUploading,
+        assetProgress,
         patch,
         patchIdentity,
         handleSave,

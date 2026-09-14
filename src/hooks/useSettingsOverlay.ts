@@ -57,7 +57,12 @@ export function useSettingsOverlay({ isOpen, onClose, initialTab = 'general' }: 
     useEffect(() => {
         if (isOpen && initialTab) {
             setActiveTabState(initialTab);
-            if (initialTab === 'company-context') companyContext.loadCompanyContext();
+            // Never reload over an in-flight Save: the tab (kept mounted across
+            // tab switches) holds staged uploads and live progress bars that a
+            // fresh companyContext would wipe via the draft-sync effect.
+            if (initialTab === 'company-context' && !companyContext.companySaving) {
+                companyContext.loadCompanyContext();
+            }
         }
         // profile.loadProfile() is already triggered for initialTab === 'profile'
         // inside useProfileIntelligenceSettings itself.
@@ -67,7 +72,9 @@ export function useSettingsOverlay({ isOpen, onClose, initialTab = 'general' }: 
     /** Sidebar nav -> Company Context: switches tabs and (re)loads its data, matching the initial-open behavior above. */
     const navigateToCompanyContext = () => {
         setActiveTabState('company-context');
-        companyContext.loadCompanyContext();
+        // Same guard as above — a Save with backend uploads running is newer
+        // than anything a refetch could bring back; reload after it settles.
+        if (!companyContext.companySaving) companyContext.loadCompanyContext();
     };
 
     const setActiveTab = (tab: string) => setActiveTabState(tab);

@@ -468,6 +468,12 @@ export const ValuePropositionSection: React.FC<{
 export const KnowledgeBaseSection: React.FC<{
     assets: KnowledgeAsset[];
     assetUploading: string | null;
+    /** Live backend-commit progress for the Save-time upload, keyed by asset id.
+     *  'uploading' = bytes streaming to the server (percent); 'indexing' = bytes
+     *  sent, server-side parse/vision/embed running (indeterminate — the
+     *  backend's /company-assets/upload is synchronous, so the response IS the
+     *  completion signal). */
+    assetProgress?: Record<string, { phase: 'uploading' | 'indexing'; percent: number }>;
     onUpload: (type: KnowledgeAsset['type']) => void;
     onDelete: (id: string) => void;
     onDeleteAll: (type: KnowledgeAsset['type']) => void;
@@ -481,7 +487,7 @@ export const KnowledgeBaseSection: React.FC<{
      * is unaffected.
      */
     readOnly?: boolean;
-}> = ({ assets, assetUploading, onUpload, onDelete, onDeleteAll, onSync, isLight, readOnly = false }) => {
+}> = ({ assets, assetUploading, assetProgress = {}, onUpload, onDelete, onDeleteAll, onSync, isLight, readOnly = false }) => {
     const assetTypes: KnowledgeAsset['type'][] = ['sales_deck', 'product_specs', 'case_studies'];
 
     return (
@@ -567,44 +573,70 @@ export const KnowledgeBaseSection: React.FC<{
                                     {assetsForType.map(asset => {
                                         const isUploading = assetUploading === asset.id;
                                         const badge = STATUS_BADGE[asset.status];
+                                        // Only surface the bar for a row that isn't already showing the
+                                        // staging spinner — the commit loop sets progress for one asset
+                                        // at a time during Save.
+                                        const progress = isUploading ? undefined : assetProgress[asset.id];
                                         return (
                                             <div
                                                 key={asset.id}
-                                                className="flex items-center justify-between gap-3 rounded-lg px-3 py-2 border"
+                                                className="rounded-lg px-3 py-2 border"
                                                 style={{
                                                     background: isLight ? '#fff' : 'var(--bg-item-surface)',
                                                     borderColor: isLight ? 'rgba(0,0,0,0.08)' : 'var(--border-subtle)',
                                                 }}
                                             >
-                                                <div className="flex items-center gap-2 min-w-0">
-                                                    {isUploading
-                                                        ? <RefreshCw size={12} className="animate-spin text-text-tertiary shrink-0" />
-                                                        : <FileText size={12} className="text-text-tertiary shrink-0" />}
-                                                    <span className="text-xs text-text-primary truncate">{asset.label}</span>
-                                                    {badge && (
-                                                        <span className={`text-[9px] font-bold px-1.5 py-0.5 rounded border shrink-0 ${badge.className}`}>
-                                                            {badge.label}
-                                                        </span>
+                                                <div className="flex items-center justify-between gap-3">
+                                                    <div className="flex items-center gap-2 min-w-0">
+                                                        {(isUploading || progress)
+                                                            ? <RefreshCw size={12} className="animate-spin text-text-tertiary shrink-0" />
+                                                            : <FileText size={12} className="text-text-tertiary shrink-0" />}
+                                                        <span className="text-xs text-text-primary truncate">{asset.label}</span>
+                                                        {badge && (
+                                                            <span className={`text-[9px] font-bold px-1.5 py-0.5 rounded border shrink-0 ${badge.className}`}>
+                                                                {badge.label}
+                                                            </span>
+                                                        )}
+                                                    </div>
+                                                    {/* Same rule as above: nothing clickable at all when readOnly. */}
+                                                    {!readOnly && (
+                                                        <div className="flex items-center gap-1 shrink-0">
+                                                            <button
+                                                                onClick={() => onSync(asset.id)}
+                                                                disabled={!!assetUploading || isUploading || !!progress}
+                                                                title="Re-process file"
+                                                                className="w-6 h-6 rounded-md flex items-center justify-center text-text-tertiary hover:text-text-primary hover:bg-bg-input transition-all disabled:opacity-50"
+                                                            >
+                                                                <RefreshCw size={11} />
+                                                            </button>
+                                                            <button
+                                                                onClick={() => onDelete(asset.id)}
+                                                                title="Remove file"
+                                                                className="w-6 h-6 rounded-md flex items-center justify-center text-text-tertiary hover:text-red-400 hover:bg-red-500/10 transition-all"
+                                                            >
+                                                                <Trash2 size={11} />
+                                                            </button>
+                                                        </div>
                                                     )}
                                                 </div>
-                                                {/* Same rule as above: nothing clickable at all when readOnly. */}
-                                                {!readOnly && (
-                                                    <div className="flex items-center gap-1 shrink-0">
-                                                        <button
-                                                            onClick={() => onSync(asset.id)}
-                                                            disabled={!!assetUploading || isUploading}
-                                                            title="Re-process file"
-                                                            className="w-6 h-6 rounded-md flex items-center justify-center text-text-tertiary hover:text-text-primary hover:bg-bg-input transition-all disabled:opacity-50"
-                                                        >
-                                                            <RefreshCw size={11} />
-                                                        </button>
-                                                        <button
-                                                            onClick={() => onDelete(asset.id)}
-                                                            title="Remove file"
-                                                            className="w-6 h-6 rounded-md flex items-center justify-center text-text-tertiary hover:text-red-400 hover:bg-red-500/10 transition-all"
-                                                        >
-                                                            <Trash2 size={11} />
-                                                        </button>
+                                                {progress && (
+                                                    <div className="mt-2">
+                                                        <p className={`text-[10px] font-medium mb-1 ${isLight ? 'text-slate-500' : 'text-white/45'}`}>
+                                                            {progress.phase === 'indexing'
+                                                                ? 'Bytes sent — indexing on server… (large PDFs can take a few minutes)'
+                                                                : `Uploading to server… ${progress.percent}%`}
+                                                        </p>
+                                                        <div className={`h-1 overflow-hidden rounded-full ${isLight ? 'bg-slate-200' : 'bg-white/10'}`}>
+                                                            <div
+                                                                className={`h-full rounded-full ${progress.phase === 'indexing'
+                                                                    ? 'w-full animate-pulse bg-blue-500/60'
+                                                                    : 'bg-blue-500 transition-all duration-300'
+                                                                    }`}
+                                                                style={progress.phase === 'uploading'
+                                                                    ? { width: `${Math.max(progress.percent, 4)}%` }
+                                                                    : undefined}
+                                                            />
+                                                        </div>
                                                     </div>
                                                 )}
                                             </div>

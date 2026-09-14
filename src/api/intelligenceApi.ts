@@ -110,11 +110,11 @@ export const intelligenceApi = {
 
   /**
    * Tells the backend to re-index company knowledge assets (the docs uploaded
-   * in Settings → Company Context) for RAG. The upload itself is still handled
-   * entirely by Electron (companySelectFile / companyUploadAsset write the file
-   * and register it locally) — this call just lets the backend know it should
-   * pick up the new/changed asset set. Fire-and-forget from the caller's side;
-   * the response has no fields the UI needs to act on.
+   * in Settings → Company Context) for RAG. Note the stale-era wording this
+   * used to carry ("upload handled entirely by Electron") predates
+   * uploadCompanyAsset below — committing an uploaded file to the backend is
+   * that function's job (via the company:uploadAssetToBackend IPC); this
+   * reindex call only refreshes derived state afterwards. Fire-and-forget.
    */
   reindexCompanyAssets: (): Promise<void> =>
     apiFetch<void>("/intelligence/company-assets/reindex", { method: "POST" }),
@@ -155,9 +155,9 @@ export const intelligenceApi = {
     });
 
     // Main returns a structured error instead of throwing; normalize to ApiError
-    // so the hook's existing 415/403 handling works unchanged.
+    // (carrying main's `code`, e.g. 'timeout', so callers can branch on it).
     if (res.status === "error") {
-      throw new ApiError(res.statusCode ?? 500, "upload_failed", res.error ?? "Upload failed");
+      throw new ApiError(res.statusCode ?? 500, res.code ?? "upload_failed", res.error ?? "Upload failed");
     }
     return res;
   },

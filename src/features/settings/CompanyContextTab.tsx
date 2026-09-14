@@ -28,6 +28,7 @@ export const CompanyContextTab: React.FC<CompanyContextTabProps> = ({
         companySaving: saving,
         companyError: error,
         assetUploading: uploading,
+        assetProgress,
         patch,
         patchIdentity,
         handleSave,
@@ -123,6 +124,7 @@ export const CompanyContextTab: React.FC<CompanyContextTabProps> = ({
                     <KnowledgeBaseSection
                         assets={draft.assets}
                         assetUploading={uploading}
+                        assetProgress={assetProgress}
                         onUpload={handleUploadAsset}
                         onDelete={handleDeleteAsset}
                         onDeleteAll={handleDeleteAllForType}

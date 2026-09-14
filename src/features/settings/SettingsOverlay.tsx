@@ -12,7 +12,7 @@ import AudioTab from './AudioTab';
 import CalendarTab from './CalendarTab';
 import { SettingsSaveToast } from './SettingsSaveToast';
 
-import { useEffect } from 'react';
+import { useEffect, useState } from 'react';
 import { isMac } from '@/../utils/platformUtils';
 import { posthogAnalytics } from '@/lib/analytics/posthog.service';
 
@@ -74,6 +74,19 @@ const SettingsOverlay: React.FC<SettingsOverlayProps> = ({
     const showUpdateBadge = (isUpdateAvailable || updateStatusValue === 'ready') && activeTab !== 'updates';
 
     const visibleNavItems = NAV_ITEMS.filter(item => !item.productionOnly || isPackaged);
+
+    // Company Context is mounted on FIRST visit and then stays mounted (hidden
+    // while inactive). Its draft, staged uploads and the live upload-progress
+    // bars all live in the tab's own state — unmounting it on every tab
+    // switch is what made an in-progress upload's UI vanish when the user
+    // hopped to General and back. Hidden via CSS instead of a conditional
+    // mount, so a Save running in the background keeps its state and its
+    // rows keep animating when the user returns. The visited flag keeps users
+    // who never open the tab from paying its mount-time backend fetches.
+    const [companyContextVisited, setCompanyContextVisited] = useState(false);
+    useEffect(() => {
+        if (activeTab === 'company-context') setCompanyContextVisited(true);
+    }, [activeTab]);
 
     // Fires once per genuine open. Reads `activeTab` here (not the raw
     // `initialTab` prop) because useSettingsOverlay can redirect on open —
@@ -178,23 +191,28 @@ const SettingsOverlay: React.FC<SettingsOverlayProps> = ({
 
                                     {activeTab === 'calendar' && <CalendarTab overlay={overlay} />}
 
-                                    {activeTab === 'company-context' && (
-                                        <CompanyContextTab
-                                            companyContext={overlay.companyContext.companyContext}
-                                            setCompanyContext={overlay.companyContext.setCompanyContext}
-                                            companyLoading={overlay.companyContext.companyLoading}
-                                            setCompanyLoading={overlay.companyContext.setCompanyLoading}
-                                            companySaving={overlay.companyContext.companySaving}
-                                            setCompanySaving={overlay.companyContext.setCompanySaving}
-                                            companyError={overlay.companyContext.companyError}
-                                            setCompanyError={overlay.companyContext.setCompanyError}
-                                            assetUploading={overlay.companyContext.assetUploading}
-                                            setAssetUploading={overlay.companyContext.setAssetUploading}
-                                            isPremium={overlay.profile.isPremium}
-                                            setIsPremiumModalOpen={overlay.profile.setIsPremiumModalOpen}
-                                            isLight={isLight}
-                                            readOnly={isCompanyContextReadOnly}
-                                        />
+                                    {companyContextVisited && (
+                                        // NOT a conditional mount — see companyContextVisited above.
+                                        // Hidden while another tab is active so the tab's state
+                                        // (upload progress included) survives tab switches.
+                                        <div className={activeTab === 'company-context' ? '' : 'hidden'}>
+                                            <CompanyContextTab
+                                                companyContext={overlay.companyContext.companyContext}
+                                                setCompanyContext={overlay.companyContext.setCompanyContext}
+                                                companyLoading={overlay.companyContext.companyLoading}
+                                                setCompanyLoading={overlay.companyContext.setCompanyLoading}
+                                                companySaving={overlay.companyContext.companySaving}
+                                                setCompanySaving={overlay.companyContext.setCompanySaving}
+                                                companyError={overlay.companyContext.companyError}
+                                                setCompanyError={overlay.companyContext.setCompanyError}
+                                                assetUploading={overlay.companyContext.assetUploading}
+                                                setAssetUploading={overlay.companyContext.setAssetUploading}
+                                                isPremium={overlay.profile.isPremium}
+                                                setIsPremiumModalOpen={overlay.profile.setIsPremiumModalOpen}
+                                                isLight={isLight}
+                                                readOnly={isCompanyContextReadOnly}
+                                            />
+                                        </div>
                                     )}
 
                                     {activeTab === 'scoring-criteria' && <ScoringCriteriaTab />}
