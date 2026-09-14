@@ -1,4 +1,4 @@
-import { BrowserWindow, screen, systemPreferences } from "electron"
+import { BrowserWindow, screen, systemPreferences, shell } from "electron"
 import { EventEmitter } from "node:events"
 import path from "node:path"
 import { getStartUrl } from "./WindowHelper"
@@ -25,7 +25,23 @@ import type { CalendarEvent } from "./services/CalendarManager"
  *     setAlwaysOnTop is asserted ONCE at creation — re-asserting it on each
  *     show triggers [NSApp activate] on macOS and pulls focus (see the
  *     comment in WindowHelper.showOverlayWindow).
+ *
+ *  3. It must reach the user regardless of which monitor they're looking at.
+ *     There is no reliable signal for "which screen is the user's attention
+ *     on" — the previous cursor-based placement just showed the card on
+ *     whichever display the mouse last happened to idle over, which is not
+ *     the same thing. So the card is shown on EVERY connected display at
+ *     once (one BrowserWindow per display, all standing in for the same
+ *     meeting/countdown — acting on any one of them, e.g. Cancel, tears down
+ *     all of them), plus a single system beep so a user who is heads-down on
+ *     a monitor the card didn't happen to land near still gets a cue.
  */
+
+/** One popup BrowserWindow, paired with the display it was placed on. */
+interface PopupInstance {
+    win: BrowserWindow
+    display: Electron.Display
+}
 
 /** How long before the reminder we create the window so the show is instant. */
 export const PREWARM_LEAD_MS = 30 * 1000
@@ -67,7 +83,8 @@ const DEDUPE_TTL_MS = 10 * 60 * 1000
  *    (WindowHelper already imports main.ts).
  */
 export class MeetingPopupWindowHelper extends EventEmitter {
-    private window: BrowserWindow | null = null
+    /** One entry per connected display currently showing the card. */
+    private windows: PopupInstance[] = []
 
     /**
      * The event the renderer will ask for via the `meeting-popup:ready`
@@ -79,6 +96,7 @@ export class MeetingPopupWindowHelper extends EventEmitter {
 
     private contentProtection: boolean = false
     private autoDismissTimer: NodeJS.Timeout | null = null
+    /** Windows-only opacity shield timer, shared across every display's window. */
     private opacityTimeout: NodeJS.Timeout | null = null
 
     /** Pending auto-start, if one is armed for the current card. */
@@ -100,8 +118,19 @@ export class MeetingPopupWindowHelper extends EventEmitter {
      */
     private recentlyShown = new Map<string, number>()
 
+    /**
+     * Returns the first display's window, for callers that only need to check
+     * "is this webContents one of mine" against a single reference (legacy
+     * shape). Prefer `ownsWebContentsId` for that check — it's correct across
+     * every display's window, not just the first.
+     */
     public getWindow(): BrowserWindow | null {
-        return this.window
+        return this.windows[0]?.win ?? null
+    }
+
+    /** True if `webContentsId` belongs to any of the (possibly several) popup windows. */
+    public ownsWebContentsId(webContentsId: number): boolean {
+        return this.windows.some(({ win }) => !win.isDestroyed() && win.webContents.id === webContentsId)
     }
 
     public setMeetingActiveProvider(fn: () => boolean): void {
@@ -122,21 +151,22 @@ export class MeetingPopupWindowHelper extends EventEmitter {
     // =========================================================================
 
     /**
-     * Create the window off-screen and start loading it, without showing it.
-     * Called ~30s before the reminder so showReminder() is instant.
+     * Create one window per connected display, off-screen and not shown yet,
+     * so showReminder() below is instant. Called ~30s before the reminder.
      */
     public prewarm(event: CalendarEvent): void {
         if (this.isDuplicate(event)) return
         this.pendingEvent = event
-        if (this.window && !this.window.isDestroyed()) return
-        this.createWindow()
+        if (this.windows.length > 0) return
+        this.createWindows()
     }
 
     /**
-     * Show the card for `event`.
+     * Show the card for `event`, on every connected display at once.
      *
-     * Returns false when the popup could not be shown, so the caller can fall
-     * back to a native Notification rather than silently losing the reminder.
+     * Returns false when the popup could not be shown on any display, so the
+     * caller can fall back to a native Notification rather than silently
+     * losing the reminder.
      */
     public showReminder(event: CalendarEvent): boolean {
         try {
@@ -145,18 +175,28 @@ export class MeetingPopupWindowHelper extends EventEmitter {
 
             this.pendingEvent = event
 
-            if (!this.window || this.window.isDestroyed()) {
-                this.createWindow()
+            if (this.windows.length === 0) {
+                this.createWindows()
             } else {
-                // Window was pre-warmed with a (possibly different) event —
-                // push the current one so a late-arriving reminder wins.
-                this.window.webContents.send("meeting-popup:event", event)
+                // Windows were pre-warmed with a (possibly different) event —
+                // push the current one so a late-arriving reminder wins. (If
+                // the set of connected displays changed since prewarm, the
+                // pre-warmed windows are reused as-is rather than reconciled —
+                // a monitor being plugged/unplugged in this exact 30s window
+                // is rare enough not to be worth the extra bookkeeping.)
+                for (const { win } of this.windows) {
+                    if (!win.isDestroyed()) win.webContents.send("meeting-popup:event", event)
+                }
             }
 
-            if (!this.window) return false
+            if (this.windows.length === 0) return false
 
-            this.positionTopRight()
-            this.presentWithoutFocus()
+            this.positionAll()
+            this.presentAllWithoutFocus()
+            // Placement can only ever be a best guess at which screen the user
+            // is actually looking at, even shown on every display — a system
+            // beep is the part that reaches them regardless.
+            shell.beep()
 
             // Only arm auto-start once the card is genuinely on screen, so the
             // user always had a countdown they could cancel. armAutoStart
@@ -173,29 +213,34 @@ export class MeetingPopupWindowHelper extends EventEmitter {
         }
     }
 
-    /** Hide and destroy the window — the popup leaves no renderer behind. */
+    /** Hide and destroy every window — the popup leaves no renderer behind. */
     public dismiss(): void {
         this.clearTimers()
         this.pendingEvent = null
 
-        const win = this.window
-        this.window = null
-        if (win && !win.isDestroyed()) {
-            try { win.destroy() } catch { /* already gone */ }
+        const instances = this.windows
+        this.windows = []
+        for (const { win } of instances) {
+            if (!win.isDestroyed()) {
+                try { win.destroy() } catch { /* already gone */ }
+            }
         }
     }
 
     /** Ghost mode. Mirrors the contract implemented by the other helpers. */
     public setContentProtection(enable: boolean): void {
         this.contentProtection = enable
-        if (this.window && !this.window.isDestroyed()) {
-            this.window.setContentProtection(enable)
+        for (const { win } of this.windows) {
+            if (!win.isDestroyed()) win.setContentProtection(enable)
         }
     }
 
     /**
-     * Resize to the renderer's measured content HEIGHT. Routed through the
-     * shared `update-content-dimensions` channel, like the other helpers.
+     * Resize every display's window to the renderer's measured content
+     * HEIGHT. Routed through the shared `update-content-dimensions` channel,
+     * like the other helpers. Each display's window runs its own independent
+     * renderer, but they show identical content, so every reporter's measured
+     * height is applied uniformly to keep every copy of the card the same size.
      *
      * The reported width is deliberately ignored and POPUP_WIDTH is kept.
      * The card is `w-full`, so applying a measured width feeds back: the
@@ -204,32 +249,43 @@ export class MeetingPopupWindowHelper extends EventEmitter {
      * The popup is a fixed-width card by design, so width is simply pinned.
      */
     public setWindowDimensions(_width: number, height: number): void {
-        if (!this.window || this.window.isDestroyed() || !this.window.isVisible()) return
+        if (this.windows.length === 0) return
 
-        const current = this.window.getBounds()
         const nextHeight = Math.round(height)
-        // No-op on unchanged size, otherwise renderer→main→renderer can loop.
-        if (current.width === POPUP_WIDTH && current.height === nextHeight) return
+        for (const entry of this.windows) {
+            const { win, display } = entry
+            if (win.isDestroyed() || !win.isVisible()) continue
 
-        this.window.setSize(POPUP_WIDTH, nextHeight)
-        this.positionTopRight()
+            const current = win.getBounds()
+            // No-op on unchanged size, otherwise renderer→main→renderer can loop.
+            if (current.width === POPUP_WIDTH && current.height === nextHeight) continue
+
+            win.setSize(POPUP_WIDTH, nextHeight)
+            this.positionOnDisplay(win, display)
+        }
     }
 
     // =========================================================================
     // Internals
     // =========================================================================
 
-    private createWindow(): void {
+    private createWindows(): void {
         const startUrl = getStartUrl()
         if (!startUrl) {
             console.warn("[MeetingPopupWindowHelper] Renderer URL not ready — skipping popup")
             return
         }
 
-        this.window = new BrowserWindow({
+        for (const display of screen.getAllDisplays()) {
+            this.windows.push({ win: this.createWindowOnDisplay(startUrl), display })
+        }
+    }
+
+    private createWindowOnDisplay(startUrl: string): BrowserWindow {
+        const win = new BrowserWindow({
             width: POPUP_WIDTH,
             height: POPUP_HEIGHT,
-            // Created off-screen; positionTopRight() places it before showing.
+            // Created off-screen; positionAll() places it before showing.
             x: -10000,
             y: -10000,
             frame: false,
@@ -258,13 +314,13 @@ export class MeetingPopupWindowHelper extends EventEmitter {
             },
         })
 
-        this.window.setContentProtection(this.contentProtection)
+        win.setContentProtection(this.contentProtection)
 
         // Assert the float level exactly once, here. See the class comment.
         if (process.platform === "darwin") {
-            this.window.setHiddenInMissionControl(true)
+            win.setHiddenInMissionControl(true)
             // Join every Space, including other apps' fullscreen Spaces.
-            this.applyMacWorkspaceVisibility()
+            this.applyMacWorkspaceVisibilityFor(win)
             // "screen-saver" (NSWindowLevel 1000), not "floating" (3).
             //
             // A reminder that only shows while the user happens to be looking at
@@ -274,63 +330,71 @@ export class MeetingPopupWindowHelper extends EventEmitter {
             // windows and loses to the active app's fullscreen Space, which is
             // exactly the reported symptom. This matches the level the non-mac
             // branch below has always used.
-            this.window.setAlwaysOnTop(true, "screen-saver")
+            win.setAlwaysOnTop(true, "screen-saver")
         } else {
-            this.window.setAlwaysOnTop(true, "screen-saver")
+            win.setAlwaysOnTop(true, "screen-saver")
         }
 
         // Watchdog: the OS can silently drop the topmost flag (DWM z-order
         // churn on Alt-Tab, another app requesting topmost). Electron only
         // fires this on an actual state change, so it costs nothing at rest.
-        this.window.on("always-on-top-changed", (_e, isAlwaysOnTop) => {
+        win.on("always-on-top-changed", (_e, isAlwaysOnTop) => {
             if (isAlwaysOnTop) return
-            if (!this.window || this.window.isDestroyed()) return
-            this.window.setAlwaysOnTop(true, "screen-saver")
+            if (win.isDestroyed()) return
+            win.setAlwaysOnTop(true, "screen-saver")
         })
 
-        this.window.on("closed", () => {
-            this.window = null
-            this.clearTimers()
+        win.on("closed", () => {
+            this.windows = this.windows.filter((entry) => entry.win !== win)
+            // Only tear down the shared timers once every display's card is
+            // gone — one display's window closing unexpectedly (e.g. that
+            // monitor was unplugged) shouldn't cancel a countdown the user can
+            // still see and cancel on another screen.
+            if (this.windows.length === 0) this.clearTimers()
         })
 
-        this.window
-            .loadURL(`${startUrl}/meeting-popup.html`)
-            .catch((e) => {
-                console.error("[MeetingPopupWindowHelper] Failed to load popup URL:", e)
-            })
+        win.loadURL(`${startUrl}/meeting-popup.html`).catch((e) => {
+            console.error("[MeetingPopupWindowHelper] Failed to load popup URL:", e)
+        })
+
+        return win
     }
 
     /**
-     * Show without taking focus, with the Windows "opacity shield" so the card
-     * never leaks a frame into a screen share before content protection has
-     * been applied to the freshly-shown window.
+     * Show every display's window without taking focus, with the Windows
+     * "opacity shield" so no card leaks a frame into a screen share before
+     * content protection has been applied to the freshly-shown window.
      */
-    private presentWithoutFocus(): void {
-        if (!this.window || this.window.isDestroyed()) return
+    private presentAllWithoutFocus(): void {
+        for (const { win } of this.windows) {
+            if (win.isDestroyed()) continue
 
-        // Re-assert Space membership immediately before showing — see
-        // applyMacWorkspaceVisibility for why once at creation isn't enough.
-        this.applyMacWorkspaceVisibility()
+            // Re-assert Space membership immediately before showing — see
+            // applyMacWorkspaceVisibilityFor for why once at creation isn't enough.
+            this.applyMacWorkspaceVisibilityFor(win)
+
+            if (process.platform === "win32" && this.contentProtection) {
+                win.setOpacity(0)
+                win.showInactive()
+                win.setContentProtection(true)
+            } else {
+                win.setContentProtection(this.contentProtection)
+                win.showInactive()
+            }
+        }
 
         if (process.platform === "win32" && this.contentProtection) {
-            this.window.setOpacity(0)
-            this.window.showInactive()
-            this.window.setContentProtection(true)
-
             if (this.opacityTimeout) clearTimeout(this.opacityTimeout)
             this.opacityTimeout = setTimeout(() => {
-                if (this.window && !this.window.isDestroyed()) {
-                    this.window.setOpacity(1)
+                for (const { win } of this.windows) {
+                    if (!win.isDestroyed()) win.setOpacity(1)
                 }
             }, 60)
-        } else {
-            this.window.setContentProtection(this.contentProtection)
-            this.window.showInactive()
         }
     }
 
     /**
-     * macOS: make the card join every Space, including other apps' fullscreen
+     * macOS: make one card join every Space, including other apps' fullscreen
      * Spaces.
      *
      * Re-applied on every show, not just at creation. macOS drops or rebinds a
@@ -339,35 +403,40 @@ export class MeetingPopupWindowHelper extends EventEmitter {
      * — the "only appears on the desktop" symptom. Unlike setAlwaysOnTop, this
      * does not trigger [NSApp activate], so re-asserting it steals no focus.
      */
-    private applyMacWorkspaceVisibility(): void {
+    private applyMacWorkspaceVisibilityFor(win: BrowserWindow): void {
         if (process.platform !== "darwin") return
-        if (!this.window || this.window.isDestroyed()) return
+        if (win.isDestroyed()) return
         try {
-            this.window.setVisibleOnAllWorkspaces(true, { visibleOnFullScreen: true })
+            win.setVisibleOnAllWorkspaces(true, { visibleOnFullScreen: true })
         } catch (e) {
             console.warn("[MeetingPopupWindowHelper] Could not set workspace visibility:", e)
         }
     }
 
-    /** Top-right of the work area of the display the cursor is currently on. */
-    private positionTopRight(): void {
-        if (!this.window || this.window.isDestroyed()) return
-
+    /** Top-right of the work area of the display this window was created for. */
+    private positionOnDisplay(win: BrowserWindow, display: Electron.Display): void {
+        if (win.isDestroyed()) return
         try {
-            const cursor = screen.getCursorScreenPoint()
-            const { workArea } = screen.getDisplayNearestPoint(cursor)
-            const { width } = this.window.getBounds()
+            const { workArea } = display
+            const { width } = win.getBounds()
 
             const x = workArea.x + workArea.width - width - SCREEN_MARGIN
             const y = workArea.y + SCREEN_MARGIN
 
             // Clamp so the card is always fully on-screen.
-            this.window.setPosition(
+            win.setPosition(
                 Math.round(Math.max(workArea.x, x)),
                 Math.round(Math.max(workArea.y, y))
             )
         } catch (e) {
             console.warn("[MeetingPopupWindowHelper] Could not position popup:", e)
+        }
+    }
+
+    /** positionOnDisplay for every currently-tracked window. */
+    private positionAll(): void {
+        for (const { win, display } of this.windows) {
+            this.positionOnDisplay(win, display)
         }
     }
 
@@ -384,11 +453,13 @@ export class MeetingPopupWindowHelper extends EventEmitter {
      * thing that is impossible to debug later.
      */
     private armAutoStart(event: CalendarEvent): boolean {
-        // The card has to actually be on screen: this is what guarantees we
-        // never start recording without the user having had a visible chance to
-        // cancel. createWindow() no-ops when the renderer URL isn't ready yet.
-        if (!this.window || this.window.isDestroyed() || !this.window.isVisible()) {
-            console.warn("[MeetingPopupWindowHelper] Card not visible — not arming auto-start")
+        // At least one card has to actually be on screen: this is what
+        // guarantees we never start recording without the user having had a
+        // visible chance to cancel. createWindows() no-ops when the renderer
+        // URL isn't ready yet.
+        const liveWindows = this.windows.filter(({ win }) => !win.isDestroyed() && win.isVisible())
+        if (liveWindows.length === 0) {
+            console.warn("[MeetingPopupWindowHelper] No card visible on any display — not arming auto-start")
             return false
         }
 
@@ -421,12 +492,14 @@ export class MeetingPopupWindowHelper extends EventEmitter {
         this.autoStartAt = Date.now() + AUTO_START_COUNTDOWN_MS
         this.autoStartTimer = setTimeout(() => this.fireAutoStart(event), AUTO_START_COUNTDOWN_MS)
 
-        // Hand the renderer the deadline so it can draw the countdown. It only
-        // renders the number — main owns the authoritative timer, because this
-        // window is background-throttled by design and is destroyed on dismiss.
-        // A renderer that mounts later picks the same value up from the
-        // `meeting-popup:ready` handshake instead.
-        this.window.webContents.send("meeting-popup:auto-start", { autoStartAt: this.autoStartAt })
+        // Hand every card the deadline so each can draw the countdown. They
+        // only render the number — main owns the authoritative timer, because
+        // these windows are background-throttled by design and are destroyed
+        // on dismiss. A renderer that mounts later picks the same value up
+        // from the `meeting-popup:ready` handshake instead.
+        for (const { win } of liveWindows) {
+            win.webContents.send("meeting-popup:auto-start", { autoStartAt: this.autoStartAt })
+        }
         return true
     }
 
@@ -445,7 +518,7 @@ export class MeetingPopupWindowHelper extends EventEmitter {
             this.dismiss()
         }
 
-        if (!this.window || this.window.isDestroyed()) return bail("the card is gone")
+        if (this.windows.length === 0) return bail("the card is gone")
         if (this.isMeetingActive()) return bail("a meeting is already running")
 
         const now = Date.now()

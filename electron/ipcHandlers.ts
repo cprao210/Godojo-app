@@ -234,13 +234,12 @@ export function initializeIpcHandlers(appState: AppState): void {
       const settingsWin = appState.settingsWindowHelper.getSettingsWindow()
       const overlayWin = appState.getWindowHelper().getOverlayWindow()
       const launcherWin = appState.getWindowHelper().getLauncherWindow()
-      const meetingPopupWin = appState.meetingPopupWindowHelper.getWindow()
 
-      if (
-        meetingPopupWin && !meetingPopupWin.isDestroyed() && meetingPopupWin.webContents.id === senderWebContents.id
-      ) {
+      if (appState.meetingPopupWindowHelper.ownsWebContentsId(senderWebContents.id)) {
         // The reminder card sizes itself to its content (title wrapping,
         // attendee count, streamed blurb), so it reports its measured height.
+        // One popup window per connected display can report this — the
+        // helper applies whichever height it gets to every copy of the card.
         appState.meetingPopupWindowHelper.setWindowDimensions(width, height)
       } else if (settingsWin && !settingsWin.isDestroyed() && settingsWin.webContents.id === senderWebContents.id) {
         appState.settingsWindowHelper.setWindowDimensions(settingsWin, width, height)
