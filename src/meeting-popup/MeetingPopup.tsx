@@ -436,12 +436,12 @@ export default function MeetingPopup() {
                     that recording is about to begin by itself, so it names the
                     action and carries an explicit Cancel. */}
                 {isCountingDown && (
-                    <div className={`rounded-xl border overflow-hidden ${isLight ? "border-red-500/25 bg-red-500/[0.06]" : "border-red-500/25 bg-red-500/[0.08]"}`}>
+                    <div className={`rounded-xl border overflow-hidden ${isLight ? "border-blue-500/25 bg-blue-500/[0.06]" : "border-blue-500/25 bg-blue-500/[0.08]"}`}>
                         <div className="flex items-center justify-between gap-2 px-3 pt-2 pb-2">
-                            <span className={`flex items-center gap-2 text-[12px] font-semibold ${isLight ? "text-red-700" : "text-red-300"}`}>
+                            <span className={`flex items-center gap-2 text-[12px] font-semibold ${isLight ? "text-blue-700" : "text-blue-300"}`}>
                                 <span className="relative flex w-2 h-2">
-                                    <span className="absolute inline-flex w-full h-full rounded-full bg-red-500 opacity-60 animate-ping" />
-                                    <span className="relative inline-flex w-2 h-2 rounded-full bg-red-500" />
+                                    <span className="absolute inline-flex w-full h-full rounded-full bg-blue-500 opacity-60 animate-ping" />
+                                    <span className="relative inline-flex w-2 h-2 rounded-full bg-blue-500" />
                                 </span>
                                 Recording starts in {formatSeconds(secondsLeft!)}
                             </span>
@@ -455,7 +455,7 @@ export default function MeetingPopup() {
                         {/* Full-bleed depletion bar pinned to the panel's edge */}
                         <div className={`h-[3px] ${isLight ? "bg-black/[0.07]" : "bg-white/10"}`}>
                             <div
-                                className="h-full bg-red-500 transition-[width] duration-1000 ease-linear"
+                                className="h-full bg-blue-500 transition-[width] duration-1000 ease-linear"
                                 style={{ width: `${countdownPercent}%` }}
                             />
                         </div>
