@@ -37,6 +37,8 @@ import { useProviderCard } from "./useProviderCard";
 import { useAIProvidersSettings } from "./useAIProvidersSettings";
 import { useUserProfileTab, loadUserProfile, saveUserProfile } from "./useUserProfileTab";
 import { useInvitationResponseModal } from "./useInvitationResponseModal";
+import { useTeamInvitationWatcher } from "./useTeamInvitationWatcher";
+import { useInviteAcceptedWatcher, diffAcceptedInvitations } from "./useInviteAcceptedWatcher";
 import { useMeetingTypeSection } from "./useMeetingTypeSection";
 import { useCategoryModal } from "./useCategoryModal";
 import { useCategoryRow } from "./useCategoryRow";
@@ -116,6 +118,9 @@ export {
     useAIProvidersSettings,
     useUserProfileTab,
     useInvitationResponseModal,
+    useTeamInvitationWatcher,
+    useInviteAcceptedWatcher,
+    diffAcceptedInvitations,
     loadUserProfile,
     saveUserProfile,
     useMeetingTypeSection,

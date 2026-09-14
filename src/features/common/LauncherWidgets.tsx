@@ -62,9 +62,7 @@ export const LauncherHeader: React.FC<LauncherHeaderProps> = ({
         <header className={[
             'relative w-full shrink-0 flex items-center gap-3 drag-region select-none border-b z-[200] backdrop-blur-xl',
             isMac ? 'h-[56px]' : 'h-[42px]',   // ← Windows keeps original 40px height
-            isLight
-                ? 'bg-bg-sidebar/70 border-border-subtle'
-                : 'bg-bg-primary/70 border-border-subtle',
+            'bg-bg-secondary border-border-subtle'
         ].join(' ')}>
             {/* Left: Spacing for Traffic Lights + Navigation Arrows */}
             <div className="flex items-center gap-1 no-drag">

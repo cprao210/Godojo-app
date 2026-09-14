@@ -3816,6 +3816,18 @@ export class AppState {
   }
 
   /**
+   * Generic renderer-triggered native toast — same display-aware, cross-screen
+   * pipeline as pause/resume/summary-ready. Exposed over the
+   * 'show-app-notification' IPC channel so renderer-side watchers (e.g. the
+   * invite-accepted notifier, which fires when a teammate joins after the
+   * admin invited them) can surface background notifications no matter which
+   * app or screen the admin is on.
+   */
+  public showAppNotification(title: string, message: string): void {
+    this.showNotificationOnActiveDisplay(title, message);
+  }
+
+  /**
    * Generation of the call that is live right now. The renderer reads this once
    * on mount (it also arrives with every `session-reset`) and stamps it onto
    * every live-analysis write so results can be attributed to the right call.

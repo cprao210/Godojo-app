@@ -876,6 +876,18 @@ export function initializeIpcHandlers(appState: AppState): void {
     }
   });
 
+  // Generic native toast for renderer-side watchers (invite-accepted, etc.) —
+  // routes to AppState.showAppNotification (same cross-screen pipeline as the
+  // meeting pause/resume/summary toasts). Copy is supplied by the renderer;
+  // main just renders it.
+  safeHandle("show-app-notification", async (_, { title, message }: { title: string; message: string }) => {
+    const safeTitle = String(title ?? '').slice(0, 80);
+    const safeMessage = String(message ?? '').slice(0, 200);
+    if (!safeTitle) return { success: false, error: 'title required' };
+    appState.showAppNotification(safeTitle, safeMessage);
+    return { success: true };
+  });
+
   safeHandle("get-verbose-logging", async () => {
     return appState.getVerboseLogging();
   });

@@ -122,6 +122,8 @@ export interface ElectronAPI {
   // ===========================================================================
   setOpenAtLogin: (open: boolean) => Promise<{ success: boolean; error?: string }>
   getOpenAtLogin: () => Promise<boolean>
+  /** Native cross-screen toast (same pipeline as pause/resume/summary toasts). */
+  showAppNotification: (title: string, message: string) => Promise<{ success: boolean; error?: string }>
   getVerboseLogging: () => Promise<boolean>
   setVerboseLogging: (enabled: boolean) => Promise<{ success: boolean }>
   flushDatabase: () => Promise<{ success: boolean }>
