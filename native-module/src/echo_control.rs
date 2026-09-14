@@ -149,6 +149,18 @@ static RENDER_ALIVE_MS: Lazy<u64> = Lazy::new(|| env_u64("NATIVELY_RENDER_ALIVE_
 /// broken system capture must never permanently mute the mic.
 static RENDER_WAIT_MAX_MS: Lazy<u64> =
     Lazy::new(|| env_u64("NATIVELY_RENDER_WAIT_MAX_MS", 10_000));
+/// How long the full_duplex gate may hard-mute continuously, with AEC3 never
+/// having converged, before it falls back to the loud+VAD escape.
+///
+/// Field evidence for why this valve has to exist: on a built-in-mic +
+/// built-in-speaker MacBook the ERLE EMA peaked at 1.3 dB across a whole
+/// session (0 of 102 telemetry samples cleared either ERLE_ENTER_DB or
+/// TALKOVER_MIN_ERLE_DB), so `unconverged_action` muted 96-99 % of frames for
+/// the entire meeting and its own talk-over escape could never open — that
+/// escape is itself gated on ERLE evidence the hardware never produces. The
+/// mic was off by arithmetic, with no recovery path.
+static GATE_STARVATION_MS: Lazy<u64> =
+    Lazy::new(|| env_u64("NATIVELY_GATE_STARVATION_MS", 20_000));
 static ALIGN_ENABLED: Lazy<bool> =
     Lazy::new(|| std::env::var("NATIVELY_ECHO_ALIGN").map(|v| v != "off").unwrap_or(true));
 
@@ -181,6 +193,8 @@ static LAST_RENDER_FRAME_MS: AtomicU64 = AtomicU64::new(0);
 static MIC_SESSION_START_MS: AtomicU64 = AtomicU64::new(0);
 /// One eprintln! per session when the render wait times out (fail-open).
 static RENDER_WAIT_WARNED: AtomicBool = AtomicBool::new(false);
+/// One eprintln! per session when the starvation valve first opens.
+static STARVATION_WARNED: AtomicBool = AtomicBool::new(false);
 
 /// Render backend actually capturing (set by the system DSP thread after
 /// SpeakerInput::new succeeds): 0 none, 1 core_audio_tap, 2 sck,
@@ -339,6 +353,49 @@ fn render_alive_policy(
     } else {
         RenderAlivePolicy::FailOpen
     }
+}
+
+/// True when the gate has hard-muted for `window_ms` straight without AEC3
+/// ever converging this session — the one state `unconverged_action` cannot
+/// escape on its own.
+///
+/// `last_open_ms` is the timestamp of the most recent non-Mute verdict, seeded
+/// at MicGate construction from the mic-session start so a gate that mutes
+/// from its very first frame still trips the window. A session that has
+/// converged even once is working as designed and disarms the valve for good.
+fn gate_starved(now: u64, last_open_ms: u64, ever_converged: bool, window_ms: u64) -> bool {
+    if ever_converged || last_open_ms == 0 {
+        return false;
+    }
+    now.saturating_sub(last_open_ms) >= window_ms
+}
+
+/// Latching form of `gate_starved`, and the form the gate actually uses.
+///
+/// Starvation MUST latch. `last_open_ms` advances on every non-Mute verdict,
+/// so an un-latched valve re-arms its own timer the instant the loud+VAD
+/// escape passes a single frame — the gate drops straight back to hard mute
+/// and the user gets a fraction of a second of audio per window instead of a
+/// working microphone. Once the window has elapsed, the verdict is "AEC is not
+/// working on this hardware", and that stays true for the session.
+///
+/// Cleared only by convergence (the gate started working) or by
+/// `check_route_generation` (the echo path physically changed).
+fn update_starvation_latch(
+    latched: &mut bool,
+    now: u64,
+    last_open_ms: u64,
+    ever_converged: bool,
+    window_ms: u64,
+) -> bool {
+    if ever_converged {
+        *latched = false;
+        return false;
+    }
+    if gate_starved(now, last_open_ms, ever_converged, window_ms) {
+        *latched = true;
+    }
+    *latched
 }
 
 // ============================================================================
@@ -691,6 +748,13 @@ pub struct MicGate {
     last_corr_ms: u64,
     last_muted: bool,
     route_generation: u64,
+    /// now_ms() of the last verdict that let audio through (Emit or Duck).
+    last_open_ms: u64,
+    /// Latched once the session reaches convergence — disarms the valve.
+    ever_converged: bool,
+    /// Latched once the starvation window has elapsed; see
+    /// `update_starvation_latch` for why this must not re-arm.
+    starved_latched: bool,
 }
 
 impl MicGate {
@@ -713,6 +777,11 @@ impl MicGate {
         } else {
             echo_align::AlignController::new()
         };
+        // Anchor the starvation window on the mic-session start, so a gate
+        // muted from its very first frame still trips it. Fall back to now if
+        // the session timestamp has not been published yet.
+        let session_start = MIC_SESSION_START_MS.load(Ordering::Acquire);
+        let last_open_ms = if session_start != 0 { session_start } else { now_ms() };
         Self {
             proc,
             convergence: Convergence::new(),
@@ -722,6 +791,9 @@ impl MicGate {
             last_corr_ms: 0,
             last_muted: false,
             route_generation,
+            last_open_ms,
+            ever_converged: false,
+            starved_latched: false,
         }
     }
 
@@ -774,6 +846,10 @@ impl MicGate {
             self.convergence.invalidate();
             self.align = echo_align::AlignController::new();
             echo_align::AlignController::publish(0);
+            // The physical echo path changed — AEC deserves a fresh chance
+            // before we decide this hardware cannot converge.
+            self.starved_latched = false;
+            self.last_open_ms = now_ms();
         }
     }
 
@@ -834,6 +910,12 @@ impl MicGate {
             }
             GateAction::Emit => {}
         }
+        // Starvation bookkeeping: any verdict that lets audio through resets
+        // the window, and convergence latches the valve off for the session.
+        if action != GateAction::Mute {
+            self.last_open_ms = now;
+        }
+        self.ever_converged |= self.convergence.converged();
         let mute = action == GateAction::Mute;
         if mute != self.last_muted {
             self.last_muted = mute;
@@ -876,8 +958,28 @@ impl MicGate {
                 }
                 self.run_correlator(now);
                 let speaker = speaker_recently_active();
+                // Decide the discriminator BEFORE running it: the detector is
+                // stateful (voice_run / escape_hold), so it must be invoked
+                // exactly once per frame.
+                let starvation = update_starvation_latch(
+                    &mut self.starved_latched,
+                    now,
+                    self.last_open_ms,
+                    self.ever_converged,
+                    *GATE_STARVATION_MS,
+                );
+                let starved = speaker && !self.convergence.converged() && starvation;
                 let escape = if speaker {
-                    self.talkover.check(cleaned)
+                    // Starved: use the non-absorbing baseline, the same
+                    // discriminator startup_hold uses when no usable ERLE
+                    // exists. check()'s baseline tracks upward and swallows
+                    // sustained near-end speech, which is why the escape fired
+                    // 0-2 times on the affected hardware.
+                    if starved {
+                        self.talkover.check_hold(cleaned)
+                    } else {
+                        self.talkover.check(cleaned)
+                    }
                 } else {
                     self.talkover.reset_frame();
                     false
@@ -894,6 +996,23 @@ impl MicGate {
                         Ordering::Release,
                     );
                     action
+                } else if starved {
+                    // AEC3 never converged and the gate has been muting for the
+                    // whole window, so unconverged_action() can never open.
+                    // Fall back to loud+VAD only.
+                    GATE_STATE.store(6, Ordering::Release);
+                    if !STARVATION_WARNED.swap(true, Ordering::AcqRel) {
+                        eprintln!(
+                            "[EchoGate] hard-muted for {}ms with no AEC convergence (erle_ema={:.2}dB) — falling back to the loud+VAD escape; far-end audio may leak into the near-end lane",
+                            *GATE_STARVATION_MS, erle_ema
+                        );
+                    }
+                    if escape {
+                        TALKOVER_ESCAPES.fetch_add(1, Ordering::Relaxed);
+                        GateAction::Emit
+                    } else {
+                        GateAction::Mute
+                    }
                 } else {
                     GATE_STATE.store(2, Ordering::Release);
                     let action = unconverged_action(speaker, erle_ema, escape);
@@ -1042,6 +1161,7 @@ pub fn on_mic_start(proc: &Processor) {
         crate::silence_suppression::reset_gate_stats();
         MIC_SESSION_START_MS.store(now_ms(), Ordering::Release);
         RENDER_WAIT_WARNED.store(false, Ordering::Release);
+        STARVATION_WARNED.store(false, Ordering::Release);
         echo_align::reset_envelopes();
         echo_align::reset_targets();
         // Seed AFTER the resets so the published targets survive. Seeding is
@@ -1079,6 +1199,7 @@ pub fn pipeline_stats_json(proc: &Processor) -> String {
         3 => "legacy",
         4 => "startup_hold",
         5 => "converged_ducked",
+        6 => "starved",
         _ => "unconverged",
     };
     let (route_transport, route_name) = ROUTE_INFO
@@ -1401,5 +1522,71 @@ mod tests {
         assert_eq!(unconverged_action(true, 6.0, true), GateAction::Emit);
         assert_eq!(unconverged_action(true, 6.0, false), GateAction::Mute);
         assert_eq!(unconverged_action(false, 0.0, false), GateAction::Emit);
+    }
+
+    // ── Starvation valve ────────────────────────────────────────────────
+    //
+    // Regression cover for the field failure this valve exists for: on a
+    // built-in-mic + built-in-speaker Mac, AEC3's ERLE EMA peaked at 1.3 dB
+    // across a whole session, so the unconverged gate muted 96-99 % of frames
+    // for the entire meeting with no path back — unconverged_action's own
+    // escape is gated on ERLE the hardware never produces.
+
+    const STARVE_WINDOW: u64 = 20_000;
+
+    #[test]
+    fn starvation_does_not_trip_inside_the_window() {
+        // Muted since t=1_000, only 19.9 s ago — still inside the window.
+        assert!(!gate_starved(20_900, 1_000, false, STARVE_WINDOW));
+    }
+
+    #[test]
+    fn starvation_trips_once_the_window_elapses_without_convergence() {
+        assert!(gate_starved(21_000, 1_000, false, STARVE_WINDOW));
+        assert!(gate_starved(90_000, 1_000, false, STARVE_WINDOW));
+    }
+
+    #[test]
+    fn starvation_never_trips_once_the_session_has_converged() {
+        // A gate that converged even once is working as designed; the valve
+        // must stay disarmed for the rest of the session no matter how long
+        // it subsequently mutes (converged muting is legitimate echo control).
+        assert!(!gate_starved(10_000_000, 1_000, true, STARVE_WINDOW));
+    }
+
+    #[test]
+    fn starvation_window_resets_when_the_gate_opens() {
+        // last_open_ms advances on every non-Mute verdict, so a gate that
+        // lets audio through — even intermittently — never starves.
+        assert!(gate_starved(30_000, 1_000, false, STARVE_WINDOW));
+        assert!(!gate_starved(30_000, 29_000, false, STARVE_WINDOW));
+    }
+
+    #[test]
+    fn starvation_latches_and_does_not_re_arm_on_every_escape() {
+        // The bug this guards: last_open_ms advances whenever the gate lets a
+        // frame through, so an un-latched valve would fall back to hard mute
+        // immediately after its first escape and hand the user a sliver of
+        // audio every window instead of an open mic.
+        let mut latched = false;
+        assert!(!update_starvation_latch(&mut latched, 10_000, 1_000, false, STARVE_WINDOW));
+        assert!(update_starvation_latch(&mut latched, 21_000, 1_000, false, STARVE_WINDOW));
+        // Escape fired, last_open_ms is now "just now" — must STAY starved.
+        assert!(update_starvation_latch(&mut latched, 21_020, 21_000, false, STARVE_WINDOW));
+        assert!(update_starvation_latch(&mut latched, 25_000, 24_980, false, STARVE_WINDOW));
+    }
+
+    #[test]
+    fn starvation_latch_clears_once_the_session_converges() {
+        let mut latched = true;
+        assert!(!update_starvation_latch(&mut latched, 99_000, 1_000, true, STARVE_WINDOW));
+        assert!(!latched, "convergence must clear the latch, not just mask it");
+    }
+
+    #[test]
+    fn starvation_is_inert_before_the_window_is_anchored() {
+        // last_open_ms == 0 means "no anchor yet" — never report starvation
+        // off an unset timestamp, or a fresh gate would trip immediately.
+        assert!(!gate_starved(10_000_000, 0, false, STARVE_WINDOW));
     }
 }

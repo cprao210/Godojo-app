@@ -73,6 +73,19 @@ const App: React.FC = () => {
     return () => unsubscribeMeetingCompleted?.();
   }, [isLauncherWindow]);
 
+  // Tell main this window's IPC listeners are live. `session-reset` — the
+  // floating dock's only "a call started" signal — is fire-and-forget, so a
+  // meeting started with no user interaction (the calendar reminder popup,
+  // which can recreate a destroyed overlay) would otherwise send it before
+  // anyone is subscribed and have it silently dropped. Runs after the
+  // dock's own subscriptions. React runs child effects before parent effects,
+  // so by the time this fires, GodojoInterface/useFloatingDock have already
+  // registered their `session-reset` listener.
+  useEffect(() => {
+    if (!isOverlayWindow) return;
+    window.electronAPI?.overlayReady?.();
+  }, [isOverlayWindow]);
+
   const FirebaseAuthStates = useFirebaseAuth(isLauncherWindow, isDefault, isOverlayWindow);
   const { authUser, authChecked, pendingVerificationUser, sessionExpiredMessage } = FirebaseAuthStates;
   const { setSessionExpiredMessage, completeEmailVerification, signOut } = FirebaseAuthStates;

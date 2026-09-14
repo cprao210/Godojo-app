@@ -45,6 +45,15 @@ export interface NativeModule {
    */
   getNativeFeatureLevel?: () => number;
   /**
+   * Optional — present in .node binaries built after the native log bridge
+   * was added. Registers a JS sink for native diagnostic lines (println!-style
+   * logging in the speaker backends) that would otherwise never reach
+   * natively_debug.log in a packaged build, since raw addon stdout/stderr is
+   * not captured there the way console.log is. loadNativeModule() wires this
+   * up once, right after the binary loads.
+   */
+  setNativeLogCallback?: (callback: (line: string) => void) => void;
+  /**
    * Optional — mirrors the JS `verboseLogging` flag into the native module, so
    * periodic Rust diagnostics obey the same switch as the TS ones. Absent on
    * binaries built before the log gate existed; callers must guard.
@@ -170,6 +179,15 @@ export function loadNativeModule(): NativeModule | null {
             validateNativeModule(mod);
             cached = mod;
             console.log(`[nativeModuleLoader] Loaded ${binary} from: ${filePath}`);
+            // Route native diagnostic lines (CoreAudioTap/SpeakerInput/etc.)
+            // through the JS logger so they land in natively_debug.log in a
+            // packaged build. Optional: older binaries built before this
+            // bridge existed simply don't have the method.
+            try {
+                mod.setNativeLogCallback?.((line: string) => console.log('[native]', line));
+            } catch (e) {
+                console.warn('[nativeModuleLoader] Failed to register native log callback:', e);
+            }
             return cached;
         } catch (err: unknown) {
             // Log per-path failure so developers can diagnose ABI mismatches,

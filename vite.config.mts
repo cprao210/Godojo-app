@@ -30,6 +30,24 @@ export default defineConfig({
     },
     build: {
         chunkSizeWarningLimit: 1000,
+        rollupOptions: {
+            // Two entries: the main app, and the floating meeting-reminder
+            // popup window (electron/MeetingPopupWindowHelper.ts loads
+            // meeting-popup.html directly).
+            //
+            // The popup gets its own entry specifically so it does NOT pay for
+            // the ~2.9 MB app bundle — it's a transient notification window
+            // that is created and destroyed around each meeting reminder.
+            //
+            // This is NOT the manualChunks pattern warned about below: Rollup's
+            // automatic multi-entry splitting emits real import statements
+            // between chunks, so evaluation order is guaranteed. The old bug
+            // came from hand-split chunks with no declared dependency edge.
+            input: {
+                main: path.resolve(__dirname, 'index.html'),
+                'meeting-popup': path.resolve(__dirname, 'meeting-popup.html'),
+            },
+        },
         // Emit sourcemaps so PostHog Error Tracking can show real
         // file/line info instead of the minified Rollup bundle output.
         // Uploaded to PostHog and stripped from the packaged app by the

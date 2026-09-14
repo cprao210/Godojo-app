@@ -28,6 +28,9 @@ export function useGeneralSettings({ isOpen }: UseGeneralSettingsArgs) {
     const [openOnLogin, setOpenOnLoginState] = useState(false);
     const [themeMode, setThemeModeState] = useState<ThemeMode>('system');
     const [verboseLogging, setVerboseLoggingState] = useState(false);
+    // Defaults ON in main (AppSettings.autoStartMeetings) — mirror that here so
+    // the row doesn't flash 'off' before the real value loads.
+    const [autoStartMeetings, setAutoStartMeetingsState] = useState(true);
 
     // ── Load current values from the main process whenever the overlay opens ─
     useEffect(() => {
@@ -36,6 +39,7 @@ export function useGeneralSettings({ isOpen }: UseGeneralSettingsArgs) {
         window.electronAPI?.getOverlayMousePassthrough?.().then(setIsMousePassthrough).catch(() => { });
         window.electronAPI?.getDisguise?.().then(setDisguiseModeState).catch(() => { });
         window.electronAPI?.getVerboseLogging?.().then(setVerboseLoggingState).catch(() => { });
+        window.electronAPI?.getAutoStartMeetings?.().then(setAutoStartMeetingsState).catch(() => { });
         window.electronAPI?.getOpenAtLogin?.().then(setOpenOnLoginState).catch(() => { });
         window.electronAPI?.getThemeMode?.().then(({ mode }) => setThemeModeState(mode)).catch(() => { });
     }, [isOpen]);
@@ -81,6 +85,12 @@ export function useGeneralSettings({ isOpen }: UseGeneralSettingsArgs) {
         window.electronAPI?.setVerboseLogging?.(newState);
     }, [verboseLogging]);
 
+    const toggleAutoStartMeetings = useCallback(() => {
+        const newState = !autoStartMeetings;
+        setAutoStartMeetingsState(newState);
+        window.electronAPI?.setAutoStartMeetings?.(newState);
+    }, [autoStartMeetings]);
+
     const setDisguiseMode = useCallback((mode: DisguiseMode) => {
         // Disguise mode can't be changed while Undetectable is on — the caller
         // (row UI) should already disable the control, this is a hard backstop.
@@ -103,6 +113,8 @@ export function useGeneralSettings({ isOpen }: UseGeneralSettingsArgs) {
         openOnLogin,
         themeMode,
         verboseLogging,
+        autoStartMeetings,
+        toggleAutoStartMeetings,
         toggleUndetectable,
         toggleMousePassthrough,
         toggleOpenOnLogin,

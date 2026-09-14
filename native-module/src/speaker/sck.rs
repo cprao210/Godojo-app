@@ -5,6 +5,7 @@
 // cannot rewrite from here.
 #![allow(clippy::useless_transmute, clippy::transmutes_expressible_as_ptr_casts)]
 
+use crate::native_log;
 use anyhow::Result;
 use cidre::sc::StreamOutput;
 use cidre::{arc, cm, define_obj_type, dispatch, ns, objc, sc};
@@ -86,7 +87,7 @@ impl sc::stream::OutputImpl for AudioHandler {
                 }
             }
             Err(e) => {
-                println!("[SystemAudio-SCK] Failed to get audio buffer: {:?}", e);
+                native_log!("[SystemAudio-SCK] Failed to get audio buffer: {:?}", e);
             }
         }
     }
@@ -99,7 +100,7 @@ pub struct SpeakerInput {
 
 impl SpeakerInput {
     pub fn new(_device_id: Option<String>) -> Result<Self> {
-        println!("[SpeakerInput] Initializing ScreenCaptureKit audio capture...");
+        native_log!("[SpeakerInput] Initializing ScreenCaptureKit audio capture...");
 
         // NOTE: ScreenCaptureKit captures ALL system audio, not per-device
         // The device_id parameter is ignored
@@ -127,7 +128,7 @@ impl SpeakerInput {
 
         sc::ShareableContent::current_with_ch(move |content_opt, error_opt| {
             if let Some(e) = error_opt {
-                println!(
+                native_log!(
                     "[SpeakerInput] ERROR: ScreenCaptureKit access denied: {:?}",
                     e
                 );
@@ -161,7 +162,7 @@ impl SpeakerInput {
         }
 
         if content_error.load(Ordering::SeqCst) {
-            println!("[SpeakerInput] Please grant Screen Recording permission in System Settings > Privacy & Security");
+            native_log!("[SpeakerInput] Please grant Screen Recording permission in System Settings > Privacy & Security");
             return Err(anyhow::anyhow!("ScreenCaptureKit access denied"));
         }
 
@@ -174,7 +175,7 @@ impl SpeakerInput {
         }
 
         let display = &displays[0];
-        println!(
+        native_log!(
             "[SpeakerInput] Using display: {}x{}",
             display.width(),
             display.height()
@@ -197,7 +198,7 @@ impl SpeakerInput {
         cfg.set_height(2);
         cfg.set_minimum_frame_interval(cm::Time::new(1, 1)); // 1 FPS
 
-        println!("[SpeakerInput] Config: 48kHz mono, queue_depth=8");
+        native_log!("[SpeakerInput] Config: 48kHz mono, queue_depth=8");
 
         Ok(Self { cfg, filter })
     }
@@ -225,11 +226,11 @@ impl SpeakerInput {
             sc::stream::OutputType::Audio,
             Some(&queue),
         ) {
-            println!("[SpeakerInput] ERROR: Failed to add audio output: {:?}", e);
+            native_log!("[SpeakerInput] ERROR: Failed to add audio output: {:?}", e);
         }
 
         // Start with completion handler to detect errors
-        println!("[SpeakerInput] Starting ScreenCaptureKit stream...");
+        native_log!("[SpeakerInput] Starting ScreenCaptureKit stream...");
 
         use std::sync::{
             atomic::{AtomicBool, AtomicU8, Ordering},
@@ -244,11 +245,11 @@ impl SpeakerInput {
 
         stream.start_with_ch(move |err| {
             if let Some(e) = err {
-                println!("[SpeakerInput] ERROR: Stream start FAILED: {:?}", e);
-                println!("[SpeakerInput] Check Screen Recording permission in System Settings!");
+                native_log!("[SpeakerInput] ERROR: Stream start FAILED: {:?}", e);
+                native_log!("[SpeakerInput] Check Screen Recording permission in System Settings!");
                 error_clone.store(2, Ordering::SeqCst);
             } else {
-                println!("[SpeakerInput] ✅ Stream started successfully!");
+                native_log!("[SpeakerInput] ✅ Stream started successfully!");
                 error_clone.store(1, Ordering::SeqCst);
             }
             complete_clone.store(true, Ordering::SeqCst);
@@ -264,9 +265,9 @@ impl SpeakerInput {
 
         let status = start_error.load(Ordering::SeqCst);
         if status == 0 {
-            println!("[SpeakerInput] WARNING: Start callback not received after 2s");
+            native_log!("[SpeakerInput] WARNING: Start callback not received after 2s");
         } else if status == 2 {
-            println!("[SpeakerInput] WARNING: Stream started with error - audio may not work");
+            native_log!("[SpeakerInput] WARNING: Stream started with error - audio may not work");
         }
 
         SpeakerStream {
@@ -299,9 +300,9 @@ impl SpeakerStream {
 
 impl Drop for SpeakerStream {
     fn drop(&mut self) {
-        println!("[SpeakerStream] Stopping ScreenCaptureKit stream...");
+        native_log!("[SpeakerStream] Stopping ScreenCaptureKit stream...");
         self.stream.stop_with_ch(|_| {
-            println!("[SpeakerStream] Stream stopped");
+            native_log!("[SpeakerStream] Stream stopped");
         });
         std::thread::sleep(std::time::Duration::from_millis(100));
     }

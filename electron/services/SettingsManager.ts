@@ -10,6 +10,12 @@ export interface AppSettings {
     disguiseMode?: 'terminal' | 'settings' | 'activity' | 'none';
     verboseLogging?: boolean;
     actionButtonMode?: 'recap' | 'brainstorm';
+    /**
+     * Start recording automatically when a calendar meeting is about to begin,
+     * unless the user cancels the countdown on the reminder card.
+     * Defaults to ON — read it as `get('autoStartMeetings') ?? true`.
+     */
+    autoStartMeetings?: boolean;
     // One-time marker: whether the production "open at login" default has
     // already been applied. Prevents re-forcing openAtLogin=true on every
     // launch after a user has deliberately turned it off — see main.ts.

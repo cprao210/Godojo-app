@@ -347,11 +347,11 @@ const AudioTab: React.FC<{ overlay: SettingsOverlayHook }> = ({ overlay }) => {
                                 </div>
                                 <div>
                                     <div className="flex items-center gap-2 mb-0.5">
-                                        <h3 className="text-sm font-bold text-text-primary">SCK Backend</h3>
-                                        <span className="px-1.5 py-0.5 rounded text-[10px] font-bold bg-indigo-500/20 text-indigo-400 uppercase tracking-wide">Alternative</span>
+                                        <h3 className="text-sm font-bold text-text-primary">ScreenCaptureKit Backend</h3>
+                                        <span className="px-1.5 py-0.5 rounded text-[10px] font-bold bg-indigo-500/20 text-indigo-400 uppercase tracking-wide">Default</span>
                                     </div>
                                     <p className="text-xs text-text-secondary leading-relaxed max-w-[300px]">
-                                        Use the ScreenCaptureKit backend. An optimized alternative to CoreAudio if you experience any capture issues.
+                                        Captures system audio with ScreenCaptureKit (recommended). Turn off to use the experimental CoreAudio Tap backend, which produces unusable audio on some Macs.
                                     </p>
                                 </div>
                             </div>

@@ -5,6 +5,7 @@
 
 import { useEffect, useState } from 'react';
 import { isMac } from '@/../utils/platformUtils';
+import { resolveSckPreference, SCK_BACKEND_PREF_KEY, SCK_OUTPUT_ID } from '@/lib/systemAudioBackend';
 import { playTestSound as playTestSoundUtil } from '@/lib/audioTest';
 
 interface UseAudioDeviceSettingsArgs {
@@ -25,7 +26,9 @@ export function useAudioDeviceSettings({ isOpen, activeTab }: UseAudioDeviceSett
     const [systemAudioLevel, setSystemAudioLevel] = useState(0);
     const [systemAudioError, setSystemAudioError] = useState<string | null>(null);
     const [micError, setMicError] = useState<string | null>(null);
-    const [useExperimentalSck, setUseExperimentalSck] = useState(isMac);
+    const [useExperimentalSck, setUseExperimentalSck] = useState(
+        () => resolveSckPreference(localStorage.getItem(SCK_BACKEND_PREF_KEY), isMac),
+    );
 
     // ── Load devices + saved preferences whenever the overlay opens ─────────
     useEffect(() => {
@@ -70,8 +73,9 @@ export function useAudioDeviceSettings({ isOpen, activeTab }: UseAudioDeviceSett
         };
         loadDevices();
 
-        const savedSckPref = localStorage.getItem('useExperimentalSckBackend');
-        setUseExperimentalSck(savedSckPref !== null ? savedSckPref === 'true' : isMac);
+        // Same resolver as meeting start — the toggle must show the backend the
+        // meeting will actually run (see src/lib/systemAudioBackend.ts).
+        setUseExperimentalSck(resolveSckPreference(localStorage.getItem(SCK_BACKEND_PREF_KEY), isMac));
         // Re-run if isOpen changes, or if a selected device was cleared elsewhere.
     }, [isOpen, selectedInput, selectedOutput]);
 
@@ -104,7 +108,14 @@ export function useAudioDeviceSettings({ isOpen, activeTab }: UseAudioDeviceSett
             setSystemAudioLevel(0);
         });
 
-        window.electronAPI?.startAudioTest(selectedInput || undefined).catch((error) => {
+        // Probe the same system-audio backend a meeting would use, so the meter
+        // reflects reality (the CoreAudio tap can show a level while producing
+        // audio Deepgram cannot transcribe). Only the backend choice is passed;
+        // the probe keeps following the default output device as before.
+        const testOutput = resolveSckPreference(localStorage.getItem(SCK_BACKEND_PREF_KEY), isMac)
+            ? SCK_OUTPUT_ID
+            : undefined;
+        window.electronAPI?.startAudioTest(selectedInput || undefined, testOutput).catch((error) => {
             console.error('[useAudioDeviceSettings] Error starting microphone test:', error);
             setMicLevel(0);
             // Surface it instead of silently flatlining the meter — a mic-denied
@@ -137,7 +148,7 @@ export function useAudioDeviceSettings({ isOpen, activeTab }: UseAudioDeviceSett
     const toggleExperimentalSck = () => {
         const next = !useExperimentalSck;
         setUseExperimentalSck(next);
-        localStorage.setItem('useExperimentalSckBackend', String(next));
+        localStorage.setItem(SCK_BACKEND_PREF_KEY, String(next));
     };
 
     /** Plays a short beep through the selected output device, so the user can confirm it's the right one. */

@@ -841,6 +841,11 @@ export interface CalendarEvent {
   link?: string;
   organizer?: string;
   attendees?: any[];
+  /** Which calendar this came from — Google and Zoom are synced separately. */
+  source?: 'google' | 'microsoft' | 'zoom';
+  /** Free-text location from the calendar entry, when the organizer set one. */
+  location?: string;
+  description?: string;
 }
 
 // --- src/features/meetings/components/NextMeetingCard.tsx ---

@@ -225,7 +225,7 @@ interface ElectronAPI {
   openMailto: (params: { to: string; subject: string; body: string }) => Promise<{ success: boolean; error?: string }>
 
   // Audio Test
-  startAudioTest: (deviceId?: string) => Promise<{ success: boolean }>
+  startAudioTest: (deviceId?: string, outputDeviceId?: string) => Promise<{ success: boolean }>
   stopAudioTest: () => Promise<{ success: boolean }>
   onAudioTestLevel: (callback: (level: number) => void) => () => void
   // System-audio probe, emitted during the same startAudioTest lifecycle as the
@@ -281,6 +281,18 @@ interface ElectronAPI {
   getCalendarStatus: () => Promise<{ connected: boolean; email?: string }>
   getUpcomingEvents: () => Promise<Array<{ id: string; title: string; startTime: string; endTime: string; link?: string; source: 'google' }>>
   calendarRefresh: () => Promise<{ success: boolean; error?: string }>
+
+  // Meeting reminder popup (floating card window)
+  meetingPopupReady: () => Promise<{ event: CalendarEvent | null; autoStartAt: number | null }>
+  onMeetingPopupAutoStart: (callback: (data: { autoStartAt: number }) => void) => () => void
+  getAutoStartMeetings: () => Promise<boolean>
+  setAutoStartMeetings: (enabled: boolean) => Promise<{ success: boolean }>
+  onAutoStartMeetingsChanged: (callback: (enabled: boolean) => void) => () => void
+  meetingPopupTakeNotes: () => Promise<{ success: boolean }>
+  meetingPopupJoin: () => Promise<{ success: boolean; error?: string }>
+  meetingPopupDismiss: () => Promise<{ success: boolean }>
+  meetingPopupDebugShow: (overrides?: Partial<CalendarEvent>) => Promise<{ success: boolean; error?: string }>
+  onMeetingPopupEvent: (callback: (event: CalendarEvent) => void) => () => void
 
   // Zoom Calendar
   zoomCalendarConnect: () => Promise<{ success: boolean; error?: string }>
@@ -933,6 +945,10 @@ contextBridge.exposeInMainWorld("electronAPI", {
   setWindowMode: (mode: 'launcher' | 'overlay', inactive?: boolean, freshMeetingStart?: boolean) =>
     ipcRenderer.invoke("set-window-mode", mode, inactive, freshMeetingStart),
 
+  // Announced by the overlay renderer once it has mounted and subscribed, so
+  // main can hold off sending `session-reset` until someone is listening.
+  overlayReady: () => ipcRenderer.invoke("overlay:ready"),
+
   // Intelligence Mode Events
   onIntelligenceAssistUpdate: (callback: (data: { insight: string }) => void) => {
     const subscription = (_: any, data: any) => callback(data)
@@ -1117,7 +1133,7 @@ contextBridge.exposeInMainWorld("electronAPI", {
   openMailto: (params: { to: string; subject: string; body: string }) => ipcRenderer.invoke('open-mailto', params),
 
   // Audio Test
-  startAudioTest: (deviceId?: string) => ipcRenderer.invoke('start-audio-test', deviceId),
+  startAudioTest: (deviceId?: string, outputDeviceId?: string) => ipcRenderer.invoke('start-audio-test', deviceId, outputDeviceId),
   stopAudioTest: () => ipcRenderer.invoke('stop-audio-test'),
   onAudioTestLevel: (callback: (level: number) => void) => {
     const subscription = (_: any, level: number) => callback(level)
@@ -1211,6 +1227,31 @@ contextBridge.exposeInMainWorld("electronAPI", {
   getCalendarStatus: () => ipcRenderer.invoke('get-calendar-status'),
   getUpcomingEvents: () => ipcRenderer.invoke('get-upcoming-events'),
   calendarRefresh: () => ipcRenderer.invoke('calendar-refresh'),
+
+  // Meeting reminder popup (floating card window)
+  meetingPopupReady: () => ipcRenderer.invoke('meeting-popup:ready'),
+  onMeetingPopupAutoStart: (callback: (data: { autoStartAt: number }) => void) => {
+    const sub = (_event: any, data: { autoStartAt: number }) => callback(data);
+    ipcRenderer.on('meeting-popup:auto-start', sub);
+    return () => { ipcRenderer.removeListener('meeting-popup:auto-start', sub); };
+  },
+  getAutoStartMeetings: () => ipcRenderer.invoke('get-auto-start-meetings'),
+  setAutoStartMeetings: (enabled: boolean) => ipcRenderer.invoke('set-auto-start-meetings', enabled),
+  onAutoStartMeetingsChanged: (callback: (enabled: boolean) => void) => {
+    const sub = (_event: any, enabled: boolean) => callback(enabled);
+    ipcRenderer.on('auto-start-meetings-changed', sub);
+    return () => { ipcRenderer.removeListener('auto-start-meetings-changed', sub); };
+  },
+  meetingPopupTakeNotes: () => ipcRenderer.invoke('meeting-popup:take-notes'),
+  meetingPopupJoin: () => ipcRenderer.invoke('meeting-popup:join'),
+  meetingPopupDismiss: () => ipcRenderer.invoke('meeting-popup:dismiss'),
+  meetingPopupDebugShow: (overrides?: any) => ipcRenderer.invoke('meeting-popup:debug-show', overrides),
+  onMeetingPopupEvent: (callback: (event: CalendarEvent) => void) => {
+    const sub = (_event: any, data: CalendarEvent) => callback(data);
+    ipcRenderer.on('meeting-popup:event', sub);
+    return () => { ipcRenderer.removeListener('meeting-popup:event', sub); };
+  },
+
   streamSalesBrief: (eventData: any) => ipcRenderer.invoke('stream-sales-brief', eventData),
   onSalesBriefStreamToken: (callback: (token: string) => void) => {
     const sub = (_event: any, token: string) => callback(token);

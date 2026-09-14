@@ -109,6 +109,12 @@ export interface OutputRouteJs {
 }
 
 /**
+ * Registers the JS-side sink for `native_log!`. Safe to call again (e.g. a
+ * dev hot-reload) — replaces whatever was previously registered.
+ */
+export declare function setNativeLogCallback(callback: ((err: Error | null, arg: string) => any)): void
+
+/**
  * Mirror the JS `verboseLogging` flag into the native module.
  *
  * Called from `setVerboseLoggingFlag` (electron/verboseLog.ts) so the two

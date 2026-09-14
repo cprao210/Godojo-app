@@ -1,5 +1,5 @@
 import React, { useState } from 'react';
-import { Ghost, PointerOff, Power, Terminal, MessageSquare, Palette, Monitor, Sun, Moon, Globe, ChevronDown, Eye, Layout, Settings, Activity, Skull, Database, Flame, HardDrive, Trash2 } from 'lucide-react';
+import { CalendarClock, Ghost, PointerOff, Power, Terminal, MessageSquare, Palette, Monitor, Sun, Moon, Globe, ChevronDown, Eye, Layout, Settings, Activity, Skull, Database, Flame, HardDrive, Trash2 } from 'lucide-react';
 import { OVERLAY_OPACITY_MIN } from '@/lib/overlayAppearance';
 import { useSettingsOverlay } from '@/hooks';
 import { getFirebaseAuth } from '@/lib/firebase';
@@ -206,6 +206,25 @@ const GeneralTab: React.FC<{ overlay: SettingsOverlayHook }> = ({ overlay }) => 
                                     className={`w-11 h-6 rounded-full relative transition-colors cursor-pointer ${general.openOnLogin ? 'bg-accent-primary' : 'bg-bg-toggle-switch border border-border-muted'}`}
                                 >
                                     <div className={`absolute top-1 left-1 w-4 h-4 rounded-full bg-white transition-transform ${general.openOnLogin ? 'translate-x-5' : 'translate-x-0'}`} />
+                                </div>
+                            </div>
+
+                            {/* Auto-start meetings from the calendar reminder */}
+                            <div className="flex items-center justify-between px-4 py-3">
+                                <div className="flex items-center gap-4">
+                                    <div className={`w-10 h-10 bg-bg-item-surface rounded-lg border flex items-center justify-center transition-colors ${general.autoStartMeetings ? 'border-accent-primary/40 text-accent-primary' : 'border-border-subtle text-text-tertiary'}`}>
+                                        <CalendarClock size={20} />
+                                    </div>
+                                    <div>
+                                        <h3 className="text-sm font-bold text-text-primary">Start meetings automatically</h3>
+                                        <p className="text-xs text-text-secondary mt-0.5">When a calendar meeting is about to begin, the reminder counts down and GoDojo starts recording on its own. Close the reminder to cancel.</p>
+                                    </div>
+                                </div>
+                                <div
+                                    onClick={general.toggleAutoStartMeetings}
+                                    className={`w-11 h-6 rounded-full relative transition-colors cursor-pointer ${general.autoStartMeetings ? 'bg-accent-primary' : 'bg-bg-toggle-switch border border-border-muted'}`}
+                                >
+                                    <div className={`absolute top-1 left-1 w-4 h-4 rounded-full bg-white transition-transform ${general.autoStartMeetings ? 'translate-x-5' : 'translate-x-0'}`} />
                                 </div>
                             </div>
 

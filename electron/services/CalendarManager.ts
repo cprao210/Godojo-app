@@ -25,6 +25,15 @@ function tokenPathForUid(uid: string | null): string {
     return path.join(app.getPath('userData'), `calendar_tokens-${safe}.enc`);
 }
 
+/**
+ * How long before a reminder we ask main to pre-warm the floating popup
+ * window. Defined locally rather than imported from MeetingPopupWindowHelper
+ * on purpose: that module pulls in WindowHelper, which imports main.ts, and
+ * main.ts only require()s this file lazily. Importing it here would turn that
+ * into a module-load cycle for the sake of one number.
+ */
+const PREWARM_LEAD_MS = 30 * 1000;
+
 if (GOOGLE_CLIENT_ID === "YOUR_CLIENT_ID_HERE" || GOOGLE_CLIENT_SECRET === "YOUR_CLIENT_SECRET_HERE") {
     console.warn('[CalendarManager] Google OAuth credentials are using defaults. Calendar features will not work until valid credentials are provided via env vars.');
 }
@@ -39,6 +48,8 @@ export interface CalendarEvent {
     attendees?: Array<{ email: string; name?: string; organizer?: boolean; self?: boolean }>;
     organizer?: string;
     description?: string;
+    /** Free-text location from the calendar entry, when the organizer set one. */
+    location?: string;
 }
 
 export class CalendarManager extends EventEmitter {
@@ -427,8 +438,18 @@ export class CalendarManager extends EventEmitter {
                 const delay = reminderTime - now;
                 // Only schedule if within next 24h (which fetch already limits)
                 if (delay < 24 * 60 * 60 * 1000) {
+                    // Pre-warm the floating popup window shortly before the
+                    // reminder so it appears instantly and still costs nothing
+                    // at rest — it is destroyed again once dismissed.
+                    const prewarmDelay = delay - PREWARM_LEAD_MS;
+                    if (prewarmDelay > 0) {
+                        this.reminderTimeouts.push(setTimeout(() => {
+                            this.emit('reminder-prewarm', event);
+                        }, prewarmDelay));
+                    }
+
                     const timeout = setTimeout(() => {
-                        this.showNotification(event);
+                        this.showReminder(event);
                     }, delay);
                     this.reminderTimeouts.push(timeout);
                 }
@@ -436,33 +457,18 @@ export class CalendarManager extends EventEmitter {
         });
     }
 
-    private showNotification(event: CalendarEvent) {
-        const { Notification } = require('electron');
-        const notif = new Notification({
-            title: 'Meeting starting soon',
-            body: `"${event.title}" starts in 2 minutes. Start Godojo.ai?`,
-            actions: [
-                { type: 'button', text: 'Start Meeting' },
-                { type: 'button', text: 'Dismiss' }
-            ],
-            sound: true
-        });
-
-        notif.on('action', (event_unused: any, index: number) => {
-            if (index === 0) {
-                // Start Meeting
-                // We need to tell the main process to open window and start meeting
-                // Ideally we emit an event that AppState listens to
-                this.emit('start-meeting-requested', event);
-            }
-        });
-
-        notif.on('click', () => {
-            // Just open window
-            this.emit('open-requested');
-        });
-
-        notif.show();
+    /**
+     * Announce that a meeting is about to start.
+     *
+     * This used to raise a native OS Notification directly. It now emits
+     * `reminder-due` and lets main.ts decide how to present it — normally the
+     * custom floating popup window (MeetingPopupWindowHelper), falling back to
+     * the native notification if the popup can't be shown. Keeping the
+     * decision in main.ts is what lets Google and Zoom reminders share one
+     * presentation path.
+     */
+    private showReminder(event: CalendarEvent) {
+        this.emit('reminder-due', event);
     }
 
     // =========================================================================
@@ -525,7 +531,7 @@ export class CalendarManager extends EventEmitter {
                     timeMax: tomorrow.toISOString(),
                     singleEvents: true,
                     orderBy: 'startTime',
-                    fields: 'items(id,summary,start,end,hangoutLink,description,attendees,organizer,creator)'
+                    fields: 'items(id,summary,start,end,hangoutLink,description,location,attendees,organizer,creator)'
                 }
             });
 
@@ -596,6 +602,7 @@ export class CalendarManager extends EventEmitter {
                         attendees,
                         organizer: item.organizer?.email || '',
                         description: item.description || undefined,
+                        location: item.location || undefined,
                     };
                 });
 

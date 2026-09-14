@@ -4,7 +4,7 @@
 extern crate napi_derive;
 
 use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::Duration;
 
@@ -34,6 +34,61 @@ use crate::webrtc_aec::{ApmCapture, ApmRender};
 // MicrophoneCapture owns an ApmCapture (per-thread capture accumulator).
 static WEBRTC_APM: Lazy<std::sync::Arc<crate::apm_shim::Processor>> =
     Lazy::new(webrtc_aec::create_processor);
+
+// ============================================================================
+// Native → JS diagnostic log bridge
+// ============================================================================
+//
+// Raw stdout/stderr from this addon (println!/eprintln!) is NOT captured by
+// electron/main.ts's console.log override in a packaged build, so any
+// diagnostic printed only that way is invisible in natively_debug.log — the
+// one thing a field report actually contains. `native_log!` prints exactly as
+// before (dev console / `npm run app:dev` is unaffected) and additionally
+// forwards the same formatted line to a JS callback, when one is registered,
+// so it lands in natively_debug.log like every other log line.
+//
+// Registered once by nativeModuleLoader right after the addon loads. Absent
+// (e.g. a native unit-test binary, or before the JS side has wired it up),
+// native_log! silently behaves like plain println! — audio capture must never
+// depend on a JS logger being attached.
+static NATIVE_LOG_CALLBACK: Lazy<Mutex<Option<ThreadsafeFunction<String>>>> =
+    Lazy::new(|| Mutex::new(None));
+
+/// Registers the JS-side sink for `native_log!`. Safe to call again (e.g. a
+/// dev hot-reload) — replaces whatever was previously registered.
+#[napi]
+pub fn set_native_log_callback(callback: ThreadsafeFunction<String>) {
+    if let Ok(mut slot) = NATIVE_LOG_CALLBACK.lock() {
+        *slot = Some(callback);
+    }
+}
+
+/// Forwards one already-formatted line to the registered JS callback, if any.
+/// NonBlocking so a slow or absent JS sink never stalls the calling thread
+/// (some call sites are on the real-time audio path's setup/teardown edges).
+#[doc(hidden)]
+pub fn __forward_native_log(line: String) {
+    if let Ok(slot) = NATIVE_LOG_CALLBACK.lock() {
+        if let Some(tsfn) = slot.as_ref() {
+            tsfn.call(Ok(line), ThreadsafeFunctionCallMode::NonBlocking);
+        }
+    }
+}
+
+/// Prints a line exactly like `println!`, and additionally forwards the same
+/// formatted line to the JS logger if `set_native_log_callback` has been
+/// called — so it reaches `natively_debug.log` in a packaged build, where raw
+/// native stdout does not. Use for anything a field report needs to show
+/// (backend init, format negotiation, permission failures); the per-frame DSP
+/// loop should keep using plain println!/eprintln! (or nothing).
+#[macro_export]
+macro_rules! native_log {
+    ($($arg:tt)*) => {{
+        let line = format!($($arg)*);
+        println!("{}", line);
+        $crate::__forward_native_log(line);
+    }};
+}
 
 // Echo gating policy lives in echo_control (mode flag, headphone bypass,
 // convergence-tracked soft gate). Legacy statics SPEAKER_ACTIVE /
@@ -909,4 +964,31 @@ pub fn get_audio_pipeline_stats() -> String {
 #[napi]
 pub fn get_native_feature_level() -> u32 {
     2
+}
+#[cfg(test)]
+mod native_log_tests {
+    use super::__forward_native_log;
+
+    // ThreadsafeFunction construction requires a live napi::Env (a real JS
+    // runtime), which `cargo test` does not have — so these tests cover the
+    // one part that runs identically with or without a registered callback:
+    // native_log! and the forwarding path must never panic or block when
+    // nothing is registered, since audio capture must not depend on a JS
+    // logger being attached (dev binaries, native-only test runs, or a
+    // binary loaded before nativeModuleLoader wires the callback up).
+
+    #[test]
+    fn forward_native_log_is_a_no_op_with_no_callback_registered() {
+        // No set_native_log_callback call has happened in this test binary —
+        // this must not panic.
+        __forward_native_log("test line, no sink registered".to_string());
+    }
+
+    #[test]
+    fn native_log_macro_prints_and_forwards_without_panicking() {
+        // Exercises the macro's println! + forward_native_log expansion with
+        // format-string arguments, matching real call sites like
+        // `native_log!("[CoreAudioTap] Format: {}Hz, {}ch", rate, channels)`.
+        native_log!("[Test] {}Hz, {}ch", 48_000, 1);
+    }
 }
