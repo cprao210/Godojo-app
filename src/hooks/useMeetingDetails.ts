@@ -14,7 +14,7 @@
  *
  * MeetingDetails.tsx (and its tab components) just render what this returns.
  */
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { useQuery, useMutation, useQueryClient } from 'react-query';
 import { meetingsApi, chatApi } from '@/api';
 import { isMeetingProcessing } from '@/api/meetingMapping';
@@ -154,6 +154,10 @@ export function computeTalkTime(
 }
 
 export type MeetingDetailsTab = 'summary' | 'transcript' | 'usage' | 'analysis';
+
+// Initial page size and the "Load more" step for the Ask Dojo history —
+// matches the backend's default page (?limit=50).
+const AI_INTERACTIONS_PAGE_SIZE = 50;
 
 export function useMeetingDetails(initialMeeting: Meeting) {
     const queryClient = useQueryClient();
@@ -398,19 +402,41 @@ export function useMeetingDetails(initialMeeting: Meeting) {
         !isLiveMeetingPlaceholder &&
         !isOptimisticMeetingId(meeting?.id) &&
         !isProcessing;
+    // "Load more" for the Ask Dojo history follows the meetings-list pattern
+    // (useLauncher): the backend has no offset/cursor param, only ?limit=N
+    // returning the N most recent interactions, so paging further just means
+    // asking for a bigger N. The limit lives in a ref, not state, so the
+    // refetch in loadMoreAiInteractions reads the bumped value synchronously
+    // instead of racing the next render's queryFn closure.
+    const aiInteractionsLimitRef = useRef(AI_INTERACTIONS_PAGE_SIZE);
+    // The limit is per-meeting — reset it when the meeting changes so a
+    // different meeting's tab starts from a fresh first page.
+    useEffect(() => {
+        aiInteractionsLimitRef.current = AI_INTERACTIONS_PAGE_SIZE;
+    }, [meeting?.id]);
     const {
         data: aiInteractionsData,
         isLoading: isLoadingAiInteractions,
+        isFetching: isFetchingAiInteractions,
         dataUpdatedAt: aiInteractionsUpdatedAt,
         error: aiInteractionsError,
     } = useQuery(
         ['ai-interactions', meeting?.id],
-        () => meetingsApi.getAiInteractions(meeting!.id),
+        () => meetingsApi.getAiInteractions(meeting!.id, aiInteractionsLimitRef.current),
         {
             enabled: askDojoEnabled,
             staleTime: 30_000,
         }
     );
+    // A full page (exactly `limit` rows) is the only signal available that
+    // there might be more beyond it — the response carries no total count or
+    // cursor. Once a page comes back short, there's nothing further to load.
+    const hasMoreAiInteractions = (aiInteractionsData?.items?.length ?? 0) >= aiInteractionsLimitRef.current;
+    const isLoadingMoreAiInteractions = isFetchingAiInteractions && aiInteractionsLimitRef.current > AI_INTERACTIONS_PAGE_SIZE;
+    const loadMoreAiInteractions = () => {
+        aiInteractionsLimitRef.current += AI_INTERACTIONS_PAGE_SIZE;
+        void queryClient.refetchQueries(['ai-interactions', meeting?.id]);
+    };
 
     // The tab's own loading flag. `isLoadingAiInteractions` alone is not enough:
     // on the very first render after the tab is clicked the query hasn't been
@@ -983,6 +1009,7 @@ ${formatNextCallPlaybook() || '  None'}
         canRegenerate,
         activeTab, setActiveTab,
         aiInteractionsData, isLoadingAiInteractions,
+        hasMoreAiInteractions, isLoadingMoreAiInteractions, loadMoreAiInteractions,
         query, setQuery,
         isCopied,
         isRegenerating,

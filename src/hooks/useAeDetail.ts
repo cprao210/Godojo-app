@@ -24,7 +24,7 @@ import {
 // list on their profile. Pagination here is client-side, over whatever
 // `recent_calls` the member-detail endpoint returns — see the note on
 // `useAeDetail` below.
-export const AE_CALLS_PAGE_SIZE = 5;
+export const AE_CALLS_PAGE_SIZE = 10;
 
 // ─── Dimension metadata (icon/color per radar_scores key) ──────────────────
 // Order here drives the order the segments are drawn in on the gauge.

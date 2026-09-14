@@ -182,6 +182,11 @@ describe('meetingsApi.getAiInteractions', () => {
         await meetingsApi.getAiInteractions('m1');
         expect(mockedApiFetch).toHaveBeenCalledWith('/meetings/m1/ai-interactions');
     });
+
+    it('appends ?limit=N for load-more paging', async () => {
+        await meetingsApi.getAiInteractions('m1', 100);
+        expect(mockedApiFetch).toHaveBeenCalledWith('/meetings/m1/ai-interactions?limit=100');
+    });
 });
 
 describe('meetingsApi.updateTitle', () => {

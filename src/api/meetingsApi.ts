@@ -82,8 +82,11 @@ export const meetingsApi = {
 
   // Persisted "Ask Dojo" Q&A history for a meeting — fetched lazily when the
   // user opens the tab, rather than bundled into the main meeting payload.
-  getAiInteractions: (meetingId: string): Promise<AiInteractionsResponse> =>
-    apiFetch(`/meetings/${meetingId}/ai-interactions`),
+  // `limit` mirrors GET /meetings?limit=N: the backend has no offset/cursor,
+  // it returns the N most recent interactions, so "Load more" re-requests
+  // with a bigger N (default page is 50).
+  getAiInteractions: (meetingId: string, limit?: number): Promise<AiInteractionsResponse> =>
+    apiFetch(`/meetings/${meetingId}/ai-interactions${limit ? `?limit=${limit}` : ""}`),
 
   updateTitle: (id: string, title: string): Promise<unknown> =>
     apiFetch(`/meetings/${id}/title`, {

@@ -1,7 +1,7 @@
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import { useResolvedTheme, useMeetingDetails, formatTime, formatTranscriptTimestamp, cleanMarkdown, isSummaryEmpty } from '@/hooks';
 import { hasGeneratedSummary } from '@/lib/meetingLifecycle';
-import { Mail, ChevronDown, BarChart3, ArrowUp, Copy, Check, TrendingUp, TriangleAlert, MessageSquare } from 'lucide-react';
+import { Mail, ChevronDown, ChevronUp, BarChart3, ArrowUp, Copy, Check, TrendingUp, TriangleAlert, MessageSquare } from 'lucide-react';
 import { MessagesSquareIcon, ChartColumnIncreasing, CircleCheck, NotepadText, RefreshCcw, RefreshCw, NotebookPen, ClipboardList } from 'lucide-react';
 import { motion, AnimatePresence } from 'framer-motion';
 
@@ -131,6 +131,7 @@ const MeetingDetails: React.FC<MeetingDetailsProps> = ({ meeting: initialMeeting
         canRegenerate,
         activeTab, setActiveTab,
         aiInteractionsData,
+        hasMoreAiInteractions, isLoadingMoreAiInteractions, loadMoreAiInteractions,
         query, setQuery,
         isCopied,
         isRegenerating,
@@ -164,6 +165,42 @@ const MeetingDetails: React.FC<MeetingDetailsProps> = ({ meeting: initialMeeting
         // eslint-disable-next-line react-hooks/exhaustive-deps
     }, [initialMeeting?.id]);
 
+    // The Ask Dojo tab renders Q&A oldest-first, so landing at the top of the
+    // page shows the oldest exchange. Jump to the bottom of the page scroller
+    // whenever the tab is showing loaded history — instant (not smooth) since
+    // the history can be long. Skipped when there's no history so the empty
+    // state doesn't cause a pointless page jump.
+    const askDojoEndRef = useRef<HTMLDivElement>(null);
+    const askDojoScrollRef = useRef<HTMLElement>(null);
+    useEffect(() => {
+        if (activeTab === 'usage' && !isLoadingAskDojo && (aiInteractionsData?.items?.length ?? 0) > 0) {
+            askDojoEndRef.current?.scrollIntoView({ behavior: 'auto' });
+        }
+        // Deliberately NOT keyed on aiInteractionsData: "Load more" refetches
+        // swap the array (older Q&A prepended above) and must not yank the
+        // user back down to the newest exchange.
+        // eslint-disable-next-line react-hooks/exhaustive-deps
+    }, [activeTab, isLoadingAskDojo]);
+
+    // "Load more" prepends older Q&A ABOVE the current viewport, which would
+    // shift what the page scroller shows. Record the scroller position before
+    // the fetch, then restore it over the same newest content once the page
+    // has grown.
+    const askDojoAnchorRef = useRef<{ scrollTop: number; scrollHeight: number } | null>(null);
+    const handleAskDojoLoadMore = () => {
+        const el = askDojoScrollRef.current;
+        if (el) askDojoAnchorRef.current = { scrollTop: el.scrollTop, scrollHeight: el.scrollHeight };
+        loadMoreAiInteractions();
+    };
+    useEffect(() => {
+        const anchor = askDojoAnchorRef.current;
+        const el = askDojoScrollRef.current;
+        if (!anchor || !el) return;
+        el.scrollTop = anchor.scrollTop + Math.max(0, el.scrollHeight - anchor.scrollHeight);
+        askDojoAnchorRef.current = null;
+        // eslint-disable-next-line react-hooks/exhaustive-deps
+    }, [aiInteractionsData]);
+
     // Regenerate is triggered from three separate buttons in this file (tab
     // bar + two empty-state variants) — wrap once here so all three fire the
     // same tracked call instead of instrumenting each onClick separately.
@@ -183,7 +220,7 @@ const MeetingDetails: React.FC<MeetingDetailsProps> = ({ meeting: initialMeeting
         <div className={`relative h-full w-full flex flex-col font-sans overflow-hidden ${isLight ? 'bg-[#f0f2f8] text-slate-700' : 'bg-[#0a0c14] text-slate-300'}`}>
 
             {/* Main Content */}
-            <main className="flex-1 overflow-y-auto custom-scrollbar">
+            <main ref={askDojoScrollRef} className="flex-1 overflow-y-auto custom-scrollbar">
                 <motion.div
                     initial={{ opacity: 0, y: 10 }}
                     animate={{ opacity: 1, y: 0 }}
@@ -1225,7 +1262,33 @@ const MeetingDetails: React.FC<MeetingDetailsProps> = ({ meeting: initialMeeting
                                         </div>
                                     ))
                                 ) : (
-                                    (aiInteractionsData?.items ?? []).map((interaction) => (
+                                    <>
+                                    {/* Older Q&A pages in — above the newest exchange the
+                                        tab auto-scrolls to, hence ChevronUp. Kept visible
+                                        while loading (hasMore || isLoadingMore) so it doesn't
+                                        flicker out and back between click and refetch. */}
+                                    {(hasMoreAiInteractions || isLoadingMoreAiInteractions) && (aiInteractionsData?.items?.length ?? 0) > 0 && (
+                                        <div className="flex justify-center">
+                                            <button
+                                                type="button"
+                                                onClick={handleAskDojoLoadMore}
+                                                disabled={isLoadingMoreAiInteractions}
+                                                className={[
+                                                    'flex items-center gap-2 rounded-full px-4 py-2 text-[13px] font-medium shadow-lg',
+                                                    'transition-colors disabled:cursor-not-allowed disabled:opacity-60',
+                                                    isLight
+                                                        ? 'bg-white text-slate-700 border border-slate-200 hover:bg-slate-50 shadow-slate-900/10'
+                                                        : 'bg-gray-800 text-white/90 border border-white/10 hover:bg-gray-700 shadow-black/40',
+                                                ].join(' ')}
+                                            >
+                                                {isLoadingMoreAiInteractions
+                                                    ? <RefreshCw size={14} className="animate-spin" />
+                                                    : <ChevronUp size={14} />}
+                                                {isLoadingMoreAiInteractions ? 'Loading…' : 'Load more'}
+                                            </button>
+                                        </div>
+                                    )}
+                                    {(aiInteractionsData?.items ?? []).map((interaction) => (
                                         <div key={interaction.id} className="space-y-4">
                                             {/* User Question */}
                                             {interaction.user_query && (
@@ -1279,7 +1342,9 @@ const MeetingDetails: React.FC<MeetingDetailsProps> = ({ meeting: initialMeeting
                                                 </div>
                                             )}
                                         </div>
-                                    )))}
+                                    ))}
+                                    </>
+                                )}
                                 {!isLoadingAskDojo && !(aiInteractionsData?.items?.length) && (
                                     <div className={`flex flex-col items-center justify-center py-16 gap-4 rounded-2xl border border-dashed ${isLight ? 'border-slate-200 bg-slate-50/50' : 'border-white/[0.07] bg-white/[0.02]'}`}>
                                         <div className={`w-12 h-12 rounded-2xl flex items-center justify-center ${isLight ? 'bg-slate-100' : 'bg-white/[0.05]'}`}>
@@ -1295,6 +1360,8 @@ const MeetingDetails: React.FC<MeetingDetailsProps> = ({ meeting: initialMeeting
                                         </div>
                                     </div>
                                 )}
+                                {/* Sentinel for the auto-scroll-on-open above. */}
+                                <div ref={askDojoEndRef} />
                             </motion.section>
                         )}
 
