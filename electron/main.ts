@@ -5022,6 +5022,10 @@ async function initializeApp() {
         path: app.getPath('exe'),
       });
       sm.set('openAtLoginDefaultApplied', true);
+      // Record the registration the Settings toggle reads back — the OS
+      // getter misreports false in packaged builds, which made this default
+      // work (app opens at login) while the toggle looked disabled.
+      sm.set('openAtLogin', true);
       console.log('[Main] Applied production default: openAtLogin=true');
     }
   }

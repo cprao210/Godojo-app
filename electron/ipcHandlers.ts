@@ -849,12 +849,31 @@ export function initializeIpcHandlers(appState: AppState): void {
       openAsHidden: false,
       path: app.getPath('exe') // Explicitly point to executable for production reliability
     });
+    // Remember what we registered. The OS getter below is unreliable in
+    // packaged builds, so the persisted value is what the Settings toggle
+    // actually reflects.
+    const { SettingsManager } = require('./services/SettingsManager');
+    SettingsManager.getInstance().set('openAtLogin', openAtLogin);
     return { success: true };
   });
 
   safeHandle("get-open-at-login", async () => {
-    const settings = app.getLoginItemSettings();
-    return settings.openAtLogin;
+    // Trust our own registration record first. app.getLoginItemSettings()
+    // routinely misreports false for packaged apps (macOS registers the login
+    // item asynchronously via SMAppService and matches on bundle identity;
+    // Windows compares the Startup shortcut's target against the `path`
+    // option) — the functional behavior was correct while the toggle showed
+    // OFF. Fall back to the OS only for installs that predate this record,
+    // querying with the SAME path the setter used so the comparison is
+    // symmetric.
+    const { SettingsManager } = require('./services/SettingsManager');
+    const persisted = SettingsManager.getInstance().get('openAtLogin');
+    if (typeof persisted === 'boolean') return persisted;
+    try {
+      return app.getLoginItemSettings({ path: app.getPath('exe') }).openAtLogin;
+    } catch {
+      return false;
+    }
   });
 
   safeHandle("get-verbose-logging", async () => {

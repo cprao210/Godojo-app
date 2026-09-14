@@ -14,6 +14,11 @@ export interface AppSettings {
     // already been applied. Prevents re-forcing openAtLogin=true on every
     // launch after a user has deliberately turned it off — see main.ts.
     openAtLoginDefaultApplied?: boolean;
+    // Last login-item state WE registered (user toggle or the production
+    // default). getLoginItemSettings() can misreport this in packaged builds,
+    // so the Settings toggle reads this instead — see the get-open-at-login
+    // handler in ipcHandlers.ts.
+    openAtLogin?: boolean;
 }
 
 export class SettingsManager {
