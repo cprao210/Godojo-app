@@ -9,6 +9,7 @@ import TypingIndicator from './TypingIndicator';
 import { UserMessage, AssistantMessage } from './ChatMessage';
 import EmptyState from './EmptyState';
 import ChatInputBar from './ChatInputBar';
+import MeetingScopeChip from './MeetingScopeChip';
 import ChatSessionSidebar from './ChatSessionSidebar';
 
 // ============================================
@@ -23,6 +24,7 @@ const GlobalChatOverlay: React.FC<GlobalChatOverlayProps> = ({ isOpen, onClose, 
     const isLight = useResolvedTheme() === "light";
     const { messages, chatState, errorMessage, statusText, query, setQuery } = globalChatStates;
     const { messagesEndRef, chatWindowRef, inputRef, submitQuestion, handleInputKeyDown } = globalChatStates;
+    const { pickClarification, meetingScope, clearMeetingScope, isBusy } = globalChatStates;
     const { handleSendClick, resetOnExit, sessionId, sessions, isLoadingSessions } = globalChatStates;
     const { startNewChat, loadSession, deleteSession } = globalChatStates;
 
@@ -101,7 +103,16 @@ const GlobalChatOverlay: React.FC<GlobalChatOverlayProps> = ({ isOpen, onClose, 
                                     {messages.map((msg) => (
                                         msg.role === 'user'
                                             ? <UserMessage key={msg.id} content={msg.content} />
-                                            : <AssistantMessage key={msg.id} content={msg.content} isStreaming={msg.isStreaming} sources={msg.sources} onOpenMeeting={onOpenMeeting} />
+                                            : <AssistantMessage
+                                                key={msg.id}
+                                                content={msg.content}
+                                                isStreaming={msg.isStreaming}
+                                                sources={msg.sources}
+                                                onOpenMeeting={onOpenMeeting}
+                                                clarification={msg.clarification}
+                                                clarificationResolved={msg.clarificationResolved}
+                                                onPickClarification={pickClarification}
+                                            />
                                     ))}
 
                                     {chatState === 'waiting_for_llm' && <TypingIndicator label={statusText ?? undefined} />}
@@ -119,6 +130,16 @@ const GlobalChatOverlay: React.FC<GlobalChatOverlayProps> = ({ isOpen, onClose, 
                                     <div ref={messagesEndRef} />
                                 </div>
                             )}
+
+                            {/* Sticky meeting scope — sits directly above the
+                                input because that's where the user looks before
+                                typing the next question, which is when knowing
+                                the conversation is narrowed actually matters. */}
+                            <MeetingScopeChip
+                                scope={meetingScope}
+                                onClear={clearMeetingScope}
+                                disabled={isBusy}
+                            />
 
                             {/* Input bar */}
                             <ChatInputBar

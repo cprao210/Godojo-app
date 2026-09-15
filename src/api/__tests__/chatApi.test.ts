@@ -1,4 +1,6 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
+import { readFileSync } from 'node:fs';
+import type { Clarification } from '@/types';
 
 // chatApi talks to the backend via raw `fetch` (for streaming), not apiFetch —
 // mock the pieces of apiClient it actually uses.
@@ -58,6 +60,8 @@ function collectHandlers() {
     let error: string | undefined;
     let done = false;
     let resets = 0;
+    const clarifications: unknown[] = [];
+    const scopes: unknown[] = [];
 
     let resolveSettled!: () => void;
     const settled = new Promise<void>((resolve) => {
@@ -72,6 +76,12 @@ function collectHandlers() {
         },
         onRagAnswer: (r: unknown) => {
             ragAnswer = r;
+        },
+        onClarification: (c: unknown) => {
+            clarifications.push(c);
+        },
+        onMeetingScope: (sc: unknown) => {
+            scopes.push(sc);
         },
         onReset: () => {
             resets += 1;
@@ -90,7 +100,7 @@ function collectHandlers() {
         },
     };
 
-    return { handlers, settled, tokens, statuses, get sources() { return sources; }, get ragAnswer() { return ragAnswer; }, get error() { return error; }, get done() { return done; }, get resets() { return resets; } };
+    return { handlers, settled, tokens, statuses, clarifications, scopes, get sources() { return sources; }, get ragAnswer() { return ragAnswer; }, get error() { return error; }, get done() { return done; }, get resets() { return resets; } };
 }
 
 describe('groupSources', () => {
@@ -610,5 +620,261 @@ describe('reset frame', () => {
         await result.settled;
 
         expect(result.resets).toBe(0);
+    });
+});
+
+// ── Clarification (human-in-the-loop) ───────────────────────────────────────
+// The backend asks which of several same-named reps the user meant, then ends
+// the turn. Answering happens on the NEXT ordinary POST, carrying the option id.
+describe('chatApi clarification', () => {
+    let fetchMock: ReturnType<typeof vi.fn>;
+
+    beforeEach(() => {
+        fetchMock = vi.fn();
+        vi.stubGlobal('fetch', fetchMock);
+        mockedGetAuthHeaders.mockClear();
+    });
+
+    const CLARIFICATION = {
+        clarification_id: 8123,
+        kind: 'member',
+        question: 'You’ve got more than one person matching that — which one?',
+        options: [
+            { id: 'opt_1', label: 'Nikhil Sharma', detail: 'nikhil@acme.com' },
+            { id: 'opt_2', label: 'Nikhil Rao', detail: 'n.rao@acme.com' },
+        ],
+        allow_free_text: true,
+    };
+
+    // Contract check against the REAL backend payload. The fixture is the
+    // verbatim output of clarify.build_member_clarification(...).to_wire() in
+    // godojo-apis — if the backend shape drifts, regenerate it and this fails.
+    it('parses the real backend wire payload', async () => {
+        const wire = JSON.parse(
+            readFileSync(new URL('./clarification.wire.json', import.meta.url), 'utf8'),
+        ) as Clarification;
+
+        fetchMock.mockResolvedValueOnce(sseResponse([
+            `event: token\ndata: ${JSON.stringify({ chunk: wire.question })}`,
+            `event: clarification\ndata: ${JSON.stringify(wire)}`,
+            'event: done\ndata: {}',
+        ]));
+        const result = collectHandlers();
+
+        chatApi.queryGlobal('how did nikhil do', 's1', [], result.handlers);
+        await result.settled;
+
+        const got = result.clarifications[0] as Clarification;
+        expect(typeof got.clarification_id).toBe('number');
+        expect(got.kind).toBe('member');
+        expect(got.allow_free_text).toBe(true);
+        expect(got.options.map((o) => o.id)).toEqual(['opt_1', 'opt_2']);
+        expect(got.options.every((o) => typeof o.label === 'string' && o.label.length > 0)).toBe(true);
+        // The uid must never reach the client.
+        expect(got.options.every((o) => !('uid' in o))).toBe(true);
+    });
+
+    // Phase 2 (meeting ambiguity) reuses the SAME event and the same echo — the
+    // client is deliberately kind-agnostic, so a new trigger server-side needs
+    // no client change. This fixture is the real to_wire() output for kind
+    // "meeting"; if the client ever starts branching on `kind`, this catches it.
+    it('handles a meeting-kind clarification with no client change', async () => {
+        const wire = JSON.parse(
+            readFileSync(new URL('./clarification.meeting.wire.json', import.meta.url), 'utf8'),
+        ) as Clarification;
+
+        fetchMock.mockResolvedValueOnce(sseResponse([
+            `event: token\ndata: ${JSON.stringify({ chunk: wire.question })}`,
+            `event: clarification\ndata: ${JSON.stringify(wire)}`,
+            'event: done\ndata: {}',
+        ]));
+        const result = collectHandlers();
+
+        chatApi.queryGlobal('how did the Acme call go?', 's1', [], result.handlers);
+        await result.settled;
+
+        const got = result.clarifications[0] as Clarification;
+        expect(got.kind).toBe('meeting');
+        expect(got.multi_select).toBe(true);
+        expect(got.options.map((o) => o.id)).toEqual(['opt_1', 'opt_2']);
+        // Resolution data (meeting_id) must stay server-side, exactly as uid does.
+        expect(got.options.every((o) => !('meeting_id' in o) && !('uid' in o))).toBe(true);
+    });
+
+    it('dispatches a clarification frame to onClarification', async () => {
+        fetchMock.mockResolvedValueOnce(sseResponse([
+            `event: token\ndata: ${JSON.stringify({ chunk: CLARIFICATION.question })}`,
+            `event: clarification\ndata: ${JSON.stringify(CLARIFICATION)}`,
+            'event: done\ndata: {}',
+        ]));
+        const result = collectHandlers();
+
+        chatApi.queryGlobal('how did nikhil do', 's1', [], result.handlers);
+        await result.settled;
+
+        expect(result.clarifications).toEqual([CLARIFICATION]);
+        // The question ALSO arrives as a token — that is what keeps clients
+        // which ignore the event working. Consumers must not re-render
+        // `question` from the payload or it shows twice.
+        expect(result.tokens.join('')).toBe(CLARIFICATION.question);
+        expect(result.done).toBe(true);
+    });
+
+    it('omits clarification_response from the body on an ordinary turn', async () => {
+        fetchMock.mockResolvedValueOnce(sseResponse(['event: done\ndata: {}']));
+        const result = collectHandlers();
+
+        chatApi.queryGlobal('hello', 's1', [], result.handlers);
+        await result.settled;
+
+        const [, init] = fetchMock.mock.calls[0];
+        // Exact-match: the ordinary request body must stay byte-identical to
+        // what shipped before this feature.
+        expect(JSON.parse(init.body as string)).toEqual({
+            query: 'hello', session_id: 's1', history: [],
+        });
+    });
+
+    it('sends clarification_response when answering a clarification', async () => {
+        fetchMock.mockResolvedValueOnce(sseResponse([
+            'event: token\ndata: {"chunk": "Nikhil Sharma had 4 calls."}',
+            'event: done\ndata: {}',
+        ]));
+        const result = collectHandlers();
+
+        chatApi.queryGlobal('Nikhil Sharma', 's1', [], result.handlers, {
+            clarification_id: 8123,
+            option_id: 'opt_1',
+        });
+        await result.settled;
+
+        const [, init] = fetchMock.mock.calls[0];
+        expect(JSON.parse(init.body as string)).toEqual({
+            query: 'Nikhil Sharma',
+            session_id: 's1',
+            history: [],
+            clarification_response: { clarification_id: 8123, option_id: 'opt_1' },
+        });
+    });
+
+    it('does not retry a stream whose only content was a clarification', async () => {
+        // A clarification IS the turn's output. If it did not count as
+        // content, a drop before `done` would re-ask the user the same
+        // question and leave a second pending row on the backend.
+        fetchMock.mockResolvedValueOnce(sseResponse([
+            `event: clarification\ndata: ${JSON.stringify(CLARIFICATION)}`,
+        ]));
+        const result = collectHandlers();
+
+        chatApi.queryGlobal('how did nikhil do', 's1', [], result.handlers);
+        await result.settled;
+
+        expect(fetchMock).toHaveBeenCalledTimes(1);
+        expect(result.error).toBeUndefined();
+        expect(result.clarifications).toHaveLength(1);
+    });
+});
+
+// ── Sticky meeting scope ────────────────────────────────────────────────────
+// Picking meetings pins them for the session; later meeting questions keep
+// using them until released. The chip above the input mirrors this state.
+describe('chatApi meeting scope', () => {
+    let fetchMock: ReturnType<typeof vi.fn>;
+
+    beforeEach(() => {
+        fetchMock = vi.fn();
+        vi.stubGlobal('fetch', fetchMock);
+        mockedGetAuthHeaders.mockClear();
+    });
+
+    it('dispatches a meeting_scope frame to onMeetingScope', async () => {
+        fetchMock.mockResolvedValueOnce(sseResponse([
+            'event: meeting_scope\ndata: {"meeting_ids":["m1","m2"],"labels":["Acme — pricing","Acme — intro"]}',
+            'event: token\ndata: {"chunk": "From those two calls…"}',
+            'event: done\ndata: {}',
+        ]));
+        const result = collectHandlers();
+
+        chatApi.queryGlobal('and the timeline?', 's1', [], result.handlers);
+        await result.settled;
+
+        expect(result.scopes).toEqual([
+            { meeting_ids: ['m1', 'm2'], labels: ['Acme — pricing', 'Acme — intro'] },
+        ]);
+    });
+
+    it('an empty meeting_ids is the release signal', async () => {
+        fetchMock.mockResolvedValueOnce(sseResponse([
+            'event: meeting_scope\ndata: {"meeting_ids":[],"labels":[]}',
+            'event: token\ndata: {"chunk": "Searching everything…"}',
+            'event: done\ndata: {}',
+        ]));
+        const result = collectHandlers();
+
+        chatApi.queryGlobal('search all meetings', 's1', [], result.handlers);
+        await result.settled;
+
+        expect(result.scopes).toEqual([{ meeting_ids: [], labels: [] }]);
+    });
+
+    it('a malformed scope frame degrades to empty rather than undefined', async () => {
+        fetchMock.mockResolvedValueOnce(sseResponse([
+            'event: meeting_scope\ndata: {}',
+            'event: done\ndata: {}',
+        ]));
+        const result = collectHandlers();
+
+        chatApi.queryGlobal('x', 's1', [], result.handlers);
+        await result.settled;
+
+        expect(result.scopes).toEqual([{ meeting_ids: [], labels: [] }]);
+    });
+
+    it('sends option_ids when several meetings are picked', async () => {
+        fetchMock.mockResolvedValueOnce(sseResponse([
+            'event: token\ndata: {"chunk": "From both calls…"}',
+            'event: done\ndata: {}',
+        ]));
+        const result = collectHandlers();
+
+        chatApi.queryGlobal('Acme — pricing, Acme — intro', 's1', [], result.handlers, {
+            clarification_id: 9001,
+            option_ids: ['opt_1', 'opt_2'],
+        });
+        await result.settled;
+
+        const [, init] = fetchMock.mock.calls[0];
+        expect(JSON.parse(init.body as string).clarification_response).toEqual({
+            clarification_id: 9001,
+            option_ids: ['opt_1', 'opt_2'],
+        });
+    });
+
+    it('sends clear_meeting_scope when the chip is dismissed', async () => {
+        fetchMock.mockResolvedValueOnce(sseResponse([
+            'event: token\ndata: {"chunk": "ok"}',
+            'event: done\ndata: {}',
+        ]));
+        const result = collectHandlers();
+
+        chatApi.queryGlobal('Search all my meetings again.', 's1', [], result.handlers, undefined, true);
+        await result.settled;
+
+        const [, init] = fetchMock.mock.calls[0];
+        expect(JSON.parse(init.body as string).clear_meeting_scope).toBe(true);
+    });
+
+    it('omits clear_meeting_scope on an ordinary turn', async () => {
+        fetchMock.mockResolvedValueOnce(sseResponse(['event: done\ndata: {}']));
+        const result = collectHandlers();
+
+        chatApi.queryGlobal('hello', 's1', [], result.handlers);
+        await result.settled;
+
+        const [, init] = fetchMock.mock.calls[0];
+        // Still byte-identical to the pre-feature body.
+        expect(JSON.parse(init.body as string)).toEqual({
+            query: 'hello', session_id: 's1', history: [],
+        });
     });
 });

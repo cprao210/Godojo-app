@@ -377,11 +377,28 @@ export function useLauncher({ onStartMeeting, ollamaPullStatus = 'idle', onPageC
         setLocalProfile(loadUserProfile());
     }, [authUser?.email]);
 
-    // Meeting ids already sent to the backend chunking endpoint (or seen as
-    // already-processed on first load — see the effect below). Prevents
-    // re-firing chunk() on every subsequent poll tick once a meeting is done.
+    // Meeting ids CONFIRMED chunked by the backend (2xx from /chunking).
+    // Persisted: this used to be an in-memory ref, so every app reload dropped
+    // it — combined with the seed pass below that permanently skipped anything
+    // already `isProcessed`, a meeting missed once was missed forever. Seven
+    // meetings with real transcripts ended up invisible to chat that way.
+    const CHUNKED_STORAGE_KEY = 'godojo.chunkedMeetingIds';
     const chunkedMeetingIdsRef = React.useRef<Set<string>>(new Set());
+    // Requests currently in flight — prevents a double-fire on the next poll
+    // tick without pretending the request already succeeded.
+    const chunkingInFlightRef = React.useRef<Set<string>>(new Set());
     const hasSeededChunkedRef = React.useRef(false);
+
+    const persistChunkedIds = React.useCallback(() => {
+        try {
+            localStorage.setItem(
+                CHUNKED_STORAGE_KEY,
+                JSON.stringify([...chunkedMeetingIdsRef.current].slice(-500)),
+            );
+        } catch {
+            // Private window / quota — degrade to in-memory for this session.
+        }
+    }, []);
     // Dedupes trackCalendarEventsFetched() across fetchEvents()'s 60s poll —
     // see fetchEvents below.
     const lastTrackedEventsSignatureRef = React.useRef<string>('');
@@ -394,27 +411,48 @@ export function useLauncher({ onStartMeeting, ollamaPullStatus = 'idle', onPageC
     useEffect(() => {
         if (meetings.length === 0) return;
 
-        // On first load, treat every already-processed meeting as already
-        // handled — this effect is for newly-completed meetings going
-        // forward, not for retroactively chunking existing history.
+        // Seed from what the backend has CONFIRMED chunking for, not from
+        // `isProcessed`. isProcessed only ever reflected the summary, so
+        // seeding from it marked never-chunked meetings as handled forever.
         if (!hasSeededChunkedRef.current) {
-            meetings.forEach(m => {
-                if (m.isProcessed) chunkedMeetingIdsRef.current.add(m.id);
-            });
+            try {
+                const saved = JSON.parse(localStorage.getItem(CHUNKED_STORAGE_KEY) || '[]');
+                if (Array.isArray(saved)) saved.forEach((id: string) => chunkedMeetingIdsRef.current.add(id));
+            } catch {
+                // Unreadable store — worst case we re-request chunking, which
+                // the backend handles idempotently.
+            }
             hasSeededChunkedRef.current = true;
-            return;
+            // Deliberately fall through: a meeting that finished while the app
+            // was closed still needs its chunking call.
         }
 
         meetings.forEach(m => {
             if (!m.isProcessed) return;
             if (chunkedMeetingIdsRef.current.has(m.id)) return;
+            if (chunkingInFlightRef.current.has(m.id)) return;
 
-            chunkedMeetingIdsRef.current.add(m.id); // mark immediately — avoid double-fire on the next poll tick
-            meetingsApi.chunk(m.id).catch(err =>
-                console.error(`[Launcher] Failed to chunk meeting ${m.id} for RAG:`, err)
-            );
+            chunkingInFlightRef.current.add(m.id);
+            meetingsApi.chunk(m.id)
+                .then(() => {
+                    // Mark done ONLY on success. Marking before the request is
+                    // what turned every transient 5xx/404/offline blip into
+                    // permanent, silent data loss.
+                    chunkedMeetingIdsRef.current.add(m.id);
+                    persistChunkedIds();
+                })
+                .catch(err => {
+                    // Left unmarked on purpose so the next poll retries. A 404
+                    // is expected when the Supabase mirror hasn't pushed the
+                    // meeting row yet (same race useFloatingDock documents for
+                    // link-meeting).
+                    console.error(`[Launcher] chunk ${m.id} failed — will retry:`, err);
+                })
+                .finally(() => {
+                    chunkingInFlightRef.current.delete(m.id);
+                });
         });
-    }, [meetings]);
+    }, [meetings, persistChunkedIds]);
 
     const effectiveName = localProfile.displayName || authUser?.displayName || authUser?.email?.split('@')[0] || '';
 

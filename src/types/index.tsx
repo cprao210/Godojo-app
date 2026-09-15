@@ -302,6 +302,54 @@ export interface RagAnswer {
   confidence?: number;
 }
 
+/** One tappable choice on a `clarification` card. The backend deliberately
+ * omits the resolved user id — send `id` back and it resolves server-side. */
+export interface ClarificationOption {
+  id: string;
+  label: string;
+  detail?: string;
+}
+
+/** Payload of the `clarification` SSE frame. The agent could not tell which
+ * person the query meant and has ended the turn; answering happens on the next
+ * normal POST, carrying `ClarificationAnswer`.
+ *
+ * NOTE: `question` has ALREADY been streamed as `token` frames and is in the
+ * bubble — render the chips only, or it shows twice. It is kept on the payload
+ * for session reload, where there is no token stream. */
+export interface Clarification {
+  clarification_id: number;
+  kind: string;
+  question: string;
+  options: ClarificationOption[];
+  allow_free_text: boolean;
+  /** True (meetings) = the user may tick SEVERAL options before confirming; a
+   * question often spans more than one call. False (members) = one-tap. */
+  multi_select?: boolean;
+}
+
+/** The meetings the conversation is currently narrowed to.
+ *
+ * Set when the user answers a meeting clarification, and then STICKY: later
+ * meeting-related questions keep searching only these until they say "all
+ * meetings", ask about a different company, or hit ✕. An empty `meeting_ids`
+ * means the pin was released — clear the chip. */
+export interface MeetingScope {
+  meeting_ids: string[];
+  labels: string[];
+}
+
+/** Echoed on the follow-up turn. Without this the backend cannot narrow the
+ * search — a prose reply naming the person still matches everyone who shares
+ * that first name, so the answer stays team-wide. */
+export interface ClarificationAnswer {
+  clarification_id: number;
+  /** Single pick (original contract). */
+  option_id?: string;
+  /** Multi pick. The server unions both and keeps only ids it actually offered. */
+  option_ids?: string[];
+}
+
 export interface ChatStreamHandlers {
   /** Fired for every `token` frame — `chunk` is the incremental text to append. */
   onToken: (chunk: string) => void;
@@ -340,6 +388,16 @@ export interface ChatStreamHandlers {
    * Without this, a mid-call failure leaves half a sentence with the retry
    * appended to it. */
   onReset?: () => void;
+  /** Fired when the backend needs the user to disambiguate before it can
+   * answer. The turn ENDS here — no answer follows. The question text has
+   * already arrived via `onToken`, so render only `options` as chips; the
+   * chosen chip's id goes back through `chatApi.queryGlobal`'s
+   * `clarificationAnswer` argument on the next turn. */
+  onClarification?: (clarification: Clarification) => void;
+  /** Fired on a global turn whose answer is narrowed to pinned meetings, and
+   * once more with an EMPTY `meeting_ids` when the pin is released. Drives the
+   * "scoped to…" chip above the input. */
+  onMeetingScope?: (scope: MeetingScope) => void;
   /** Fired once per response, after the final token, with the backend's
    * interaction_id for this turn. Only emitted on `/chat/live` — collect
    * these across the call and POST them to `chatApi.linkMeetingInteractions`
@@ -361,6 +419,10 @@ export interface ChatHistoryTurn {
   // chatApi.ts). Only present on assistant turns that answered from RAG
   // context, and can be missing/empty even then — never assume it's there.
   sources?: { id: string; title: string; type: string }[];
+  // Present only on an assistant turn that asked a clarifying question, so a
+  // reopened chat re-renders the chips. Disable them if a user turn follows —
+  // that clarification is already resolved or abandoned.
+  clarification?: Clarification;
 }
 
 export interface ChatSession {
@@ -390,6 +452,10 @@ export interface GlobalChatMessage {
   content: string;
   isStreaming?: boolean;
   sources?: ChatSources;
+  // Set when this assistant turn asked a clarifying question. `resolved` is
+  // true once the user has answered (or moved on), which disables the chips.
+  clarification?: Clarification;
+  clarificationResolved?: boolean;
 }
 
 export type GlobalChatState = 'idle' | 'waiting_for_llm' | 'streaming_response' | 'error';

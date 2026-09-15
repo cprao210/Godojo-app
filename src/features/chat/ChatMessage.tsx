@@ -5,7 +5,8 @@ import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import { chatMarkdownComponents } from './markdownComponents';
 import SourcesDisplay from './SourcesDisplay';
-import { ChatSources } from '@/types';
+import ClarificationChips from './ClarificationChips';
+import { ChatSources, Clarification } from '@/types';
 
 // ============================================
 // Message Components
@@ -29,9 +30,21 @@ interface AssistantMessageProps {
     isStreaming?: boolean;
     sources?: ChatSources;
     onOpenMeeting?: (meetingId: string) => void;
+    // Set when this turn asked a clarifying question instead of answering.
+    clarification?: Clarification;
+    clarificationResolved?: boolean;
+    onPickClarification?: (clarification: Clarification, optionIds: string[], labels: string[]) => void;
 }
 
-export const AssistantMessage: React.FC<AssistantMessageProps> = ({ content, isStreaming, sources, onOpenMeeting }) => {
+export const AssistantMessage: React.FC<AssistantMessageProps> = ({
+    content,
+    isStreaming,
+    sources,
+    onOpenMeeting,
+    clarification,
+    clarificationResolved,
+    onPickClarification,
+}) => {
     const [copied, setCopied] = useState(false);
 
     // While waiting for the first frame the assistant placeholder has no
@@ -39,7 +52,7 @@ export const AssistantMessage: React.FC<AssistantMessageProps> = ({ content, isS
     // (rendered by the parent list) own the "thinking" state. Without this,
     // an empty bubble + blinking cursor would show *alongside* the status
     // pill, which is the "two loaders" bug.
-    if (isStreaming && !content) return null;
+    if (isStreaming && !content && !clarification) return null;
 
     const handleCopy = async () => {
         try {
@@ -85,6 +98,13 @@ export const AssistantMessage: React.FC<AssistantMessageProps> = ({ content, isS
                         />
                     )}
                 </div>
+                {!isStreaming && clarification && onPickClarification && (
+                    <ClarificationChips
+                        clarification={clarification}
+                        disabled={clarificationResolved}
+                        onPick={onPickClarification}
+                    />
+                )}
                 {!isStreaming && content && (
                     <div className="flex items-center gap-3 mt-1.5 px-1">
                         <button

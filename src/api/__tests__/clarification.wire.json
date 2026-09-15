@@ -1,0 +1,1 @@
+{"clarification_id": 8123, "kind": "member", "question": "You've got more than one person matching that \u2014 Nikhil Sharma or Nikhil Rao. Which one do you mean?", "options": [{"id": "opt_1", "label": "Nikhil Sharma", "detail": "nikhil@acme.com"}, {"id": "opt_2", "label": "Nikhil Rao", "detail": "n.rao@acme.com"}], "allow_free_text": true}

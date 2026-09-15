@@ -8,7 +8,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { chatApi, statusLabel, groupSources } from "@/api/chatApi";
 import { useStreamBuffer } from "@/hooks/useStreamBuffer";
 import { posthogAnalytics } from "@/lib/analytics/posthog.service";
-import { ChatHistoryTurn, ChatSession, ChatSources, GlobalChatMessage, GlobalChatState, StreamHandle } from "@/types";
+import { ChatHistoryTurn, ChatSession, ChatSources, Clarification, ClarificationAnswer, GlobalChatMessage, GlobalChatState, MeetingScope, StreamHandle } from "@/types";
 
 interface UseGlobalChatArgs {
     isOpen: boolean;
@@ -26,6 +26,10 @@ export function useGlobalChat({ isOpen, onClose, initialQuery = "" }: UseGlobalC
     // `session_created` frame on the first message; loadSession() sets it
     // directly when resuming from the sidebar.
     const [sessionId, setSessionId] = useState<string | null>(null);
+    // Meetings this conversation is currently narrowed to (null = unpinned).
+    // Server-owned: every global turn that has a pin re-sends it, and a release
+    // arrives as an empty meeting_ids, so this never drifts from the backend.
+    const [meetingScope, setMeetingScope] = useState<MeetingScope | null>(null);
 
     // ── Session sidebar state ────────────────────────────────────────────────
     const [sessions, setSessions] = useState<ChatSession[]>([]);
@@ -98,7 +102,11 @@ export function useGlobalChat({ isOpen, onClose, initialQuery = "" }: UseGlobalC
     }, [isOpen]);
 
     // ── Submit question using global RAG ─────────────────────────────────────
-    const submitQuestion = useCallback(async (question: string) => {
+    const submitQuestion = useCallback(async (
+        question: string,
+        clarificationAnswer?: ClarificationAnswer,
+        clearScope?: boolean,
+    ) => {
         if (!question.trim() || chatState === "waiting_for_llm" || chatState === "streaming_response") return;
 
         posthogAnalytics.trackGlobalChatQuery();
@@ -108,7 +116,10 @@ export function useGlobalChat({ isOpen, onClose, initialQuery = "" }: UseGlobalC
             role: "user",
             content: question,
         };
-        setMessages((prev) => [...prev, userMessage]);
+        setMessages((prev) => [
+            ...prev.map((m) => (m.clarification && !m.clarificationResolved ? { ...m, clarificationResolved: true } : m)),
+            userMessage,
+        ]);
         setChatState("waiting_for_llm");
         setErrorMessage(null);
         setStatusText(null);
@@ -194,6 +205,21 @@ export function useGlobalChat({ isOpen, onClose, initialQuery = "" }: UseGlobalC
                 streamBuffer.reset();
                 activeStreamRef.current = null;
             },
+            // The backend needs the user to disambiguate and has ended the
+            // turn — no answer follows. The question text already arrived as
+            // tokens, so only the chips are attached here.
+            onClarification: (clarification) => {
+                setMessages((prev) =>
+                    prev.map((msg) => (msg.id === assistantMessageId ? { ...msg, clarification } : msg)),
+                );
+            },
+            // The backend is the source of truth for the pin: it re-sends the
+            // active scope on every turn that has one, and sends an empty
+            // meeting_ids when it releases (explicit phrase, or the user moved
+            // on to a different company).
+            onMeetingScope: (scope) => {
+                setMeetingScope(scope.meeting_ids.length ? scope : null);
+            },
             onError: (error) => {
                 console.error("[GlobalChat] Stream error:", error);
                 setMessages((prev) => prev.filter((msg) => msg.id !== assistantMessageId));
@@ -203,14 +229,39 @@ export function useGlobalChat({ isOpen, onClose, initialQuery = "" }: UseGlobalC
                 streamBuffer.reset();
                 activeStreamRef.current = null;
             },
-        });
+        }, clarificationAnswer, clearScope);
         // eslint-disable-next-line react-hooks/exhaustive-deps
     }, [chatState, sessionId, refreshSessions]);
+
+    // ── Answer a clarifying question by tapping one of its chips ────────────
+    // Sends the chosen label as the query (so the transcript reads naturally)
+    // plus the option id. The id is what actually scopes the search: a typed
+    // reply naming the person still matches everyone sharing that first name.
+    const pickClarification = useCallback(
+        (clarification: Clarification, optionIds: string[], labels: string[]) => {
+            if (!optionIds.length) return;
+            submitQuestion(labels.join(', '), {
+                clarification_id: clarification.clarification_id,
+                option_ids: optionIds,
+            });
+        },
+        [submitQuestion],
+    );
+
+    // ✕ on the scope chip — widen back to every meeting. Cleared optimistically
+    // so the chip disappears on click; the backend confirms by not re-sending a
+    // scope on this turn.
+    const clearMeetingScope = useCallback(() => {
+        if (!meetingScope) return;
+        setMeetingScope(null);
+        submitQuestion('Search all my meetings again.', undefined, true);
+    }, [meetingScope, submitQuestion]);
 
     // ── Start a fresh chat — clears the active session + transcript ─────────
     const startNewChat = useCallback(() => {
         activeStreamRef.current?.abort();
         setSessionId(null);
+        setMeetingScope(null);
         setMessages([]);
         setChatState("idle");
         setErrorMessage(null);
@@ -220,6 +271,9 @@ export function useGlobalChat({ isOpen, onClose, initialQuery = "" }: UseGlobalC
     // ── Resume a chat picked from the sidebar ────────────────────────────────
     const loadSession = useCallback(async (id: string) => {
         activeStreamRef.current?.abort();
+        // The pin belongs to the session being left, not the one being opened.
+        // The next turn in the reopened session re-sends its own scope.
+        setMeetingScope(null);
         setChatState("idle");
         setErrorMessage(null);
         setStatusText(null);
@@ -230,6 +284,12 @@ export function useGlobalChat({ isOpen, onClose, initialQuery = "" }: UseGlobalC
                     id: `${id}-${i}`,
                     role: turn.role,
                     content: turn.content,
+                    clarification: turn.clarification,
+                    // A clarification is spent the moment the user says
+                    // anything after it — whether they answered or moved on.
+                    clarificationResolved:
+                        turn.clarification !== undefined
+                        && history.slice(i + 1).some((t) => t.role === "user"),
                     // Only attach sources when the turn actually has them — a plain
                     // empty {meetings:[],assets:[]} would fail `sources &&` checks
                     // being truthy while still being empty, and SourcesDisplay
@@ -328,6 +388,7 @@ export function useGlobalChat({ isOpen, onClose, initialQuery = "" }: UseGlobalC
         setMessages([]);
         setErrorMessage(null);
         setSessionId(null);
+        setMeetingScope(null);
     }, []);
 
     const isBusy = chatState === "waiting_for_llm" || chatState === "streaming_response";
@@ -343,6 +404,7 @@ export function useGlobalChat({ isOpen, onClose, initialQuery = "" }: UseGlobalC
         query,
         isBusy,
         sessionId,
+        meetingScope,
         // setters
         setQuery,
         // refs
@@ -351,6 +413,8 @@ export function useGlobalChat({ isOpen, onClose, initialQuery = "" }: UseGlobalC
         inputRef,
         // handlers
         submitQuestion,
+        pickClarification,
+        clearMeetingScope,
         handleInputKeyDown,
         handleSendClick,
         resetOnExit,

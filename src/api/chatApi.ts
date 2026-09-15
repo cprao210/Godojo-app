@@ -6,7 +6,7 @@
 // getAuthHeaders().
 
 import { getAuthHeaders, API_BASE, ApiError, apiFetch } from "@/lib/apiClient";
-import { ChatHistoryTurn, ChatSession, ChatSources, ChatStreamHandlers, CalendarEvent, LiveTranscriptSegment, RagAnswer, StreamHandle } from "@/types";
+import { ChatHistoryTurn, ChatSession, ChatSources, ChatStreamHandlers, CalendarEvent, Clarification, ClarificationAnswer, LiveTranscriptSegment, MeetingScope, RagAnswer, StreamHandle } from "@/types";
 
 /** Groups a backend source list into the `{meetings, assets}` shape
  * ChatSources/SourcesDisplay expect. Shared by the live `source_ids` stream
@@ -107,6 +107,11 @@ function streamSSE(path: string, body: unknown, handlers: ChatStreamHandlers): S
         onToken: (chunk) => { hasStreamedContent = true; handlers.onToken(chunk); },
         onRagAnswer: (answer) => { hasStreamedContent = true; handlers.onRagAnswer?.(answer); },
         onSources: (sources) => { hasStreamedContent = true; handlers.onSources?.(sources); },
+        // A clarification IS content — it's the turn's entire output. Without
+        // this, a stream that drops between the clarification and `done` would
+        // look empty, get retried, and ask the user the same question again
+        // (and make the backend persist a second pending row).
+        onClarification: (c) => { hasStreamedContent = true; handlers.onClarification?.(c); },
     };
 
     (async () => {
@@ -249,6 +254,25 @@ function dispatchFrame(frame: string, handlers: ChatStreamHandlers, onDoneFrame?
             handlers.onReset?.();
             break;
         }
+        case "clarification": {
+            // The backend needs the user to pick between candidates and has
+            // ended the turn. `question` already arrived as token frames and is
+            // in the bubble — consumers must render the chips ONLY, or the
+            // question shows twice.
+            const parsed = JSON.parse(data) as Clarification;
+            handlers.onClarification?.(parsed);
+            break;
+        }
+        case "meeting_scope": {
+            // Which meetings this conversation is currently narrowed to. An
+            // empty meeting_ids means the pin was released — clear the chip.
+            const parsed = JSON.parse(data) as MeetingScope;
+            handlers.onMeetingScope?.({
+                meeting_ids: parsed.meeting_ids ?? [],
+                labels: parsed.labels ?? [],
+            });
+            break;
+        }
         case "error": {
             const parsed = JSON.parse(data) as { error?: string };
             handlers.onError(parsed.error ?? "Something went wrong.");
@@ -302,8 +326,25 @@ export const chatApi = {
         sessionId: string | null,
         history: ChatHistoryTurn[],
         handlers: ChatStreamHandlers,
+        clarificationAnswer?: ClarificationAnswer,
+        clearMeetingScope?: boolean,
     ): StreamHandle =>
-        streamSSE("/chat/rag/query/global", { query, session_id: sessionId, history }, handlers),
+        streamSSE(
+            "/chat/rag/query/global",
+            {
+                query,
+                session_id: sessionId,
+                history,
+                // Both omitted entirely on an ordinary turn — the backend reads a
+                // missing clarification_response as "not answering a
+                // clarification" (what also happens when the user ignores the
+                // question), and a missing clear_meeting_scope as "leave any pin
+                // alone". Keeps the ordinary body byte-identical to before.
+                ...(clarificationAnswer ? { clarification_response: clarificationAnswer } : {}),
+                ...(clearMeetingScope ? { clear_meeting_scope: true } : {}),
+            },
+            handlers,
+        ),
 
     /** Post-meeting chat — MeetingChatOverlay. Same session_id/history contract as queryGlobal. */
     queryMeeting: (
