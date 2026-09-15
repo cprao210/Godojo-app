@@ -5109,6 +5109,20 @@ async function initializeApp() {
       // work (app opens at login) while the toggle looked disabled.
       sm.set('openAtLogin', true);
       console.log('[Main] Applied production default: openAtLogin=true');
+    } else if (typeof sm.get('openAtLogin') !== 'boolean') {
+      // Upgrade backfill: installs that ran the build which wrote the marker
+      // but not the record. The OS registration was applied back then, yet
+      // get-open-at-login had no persisted value to trust, fell back to the
+      // misreporting OS getter, and the toggle showed OFF while auto-launch
+      // kept working. Re-assert once; after this the record exists, and any
+      // later user toggle persists through set-open-at-login untouched.
+      app.setLoginItemSettings({
+        openAtLogin: true,
+        openAsHidden: false,
+        path: app.getPath('exe'),
+      });
+      sm.set('openAtLogin', true);
+      console.log('[Main] Backfilled openAtLogin=true for upgraded install');
     }
   }
 

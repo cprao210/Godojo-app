@@ -25,7 +25,9 @@ export function useGeneralSettings({ isOpen }: UseGeneralSettingsArgs) {
     const [isUndetectable, setIsUndetectable] = useState(false);
     const [isMousePassthrough, setIsMousePassthrough] = useState(false);
     const [disguiseMode, setDisguiseModeState] = useState<DisguiseMode>('none');
-    const [openOnLogin, setOpenOnLoginState] = useState(false);
+    // Defaults ON in main (production login-item default + persisted record) —
+    // mirror that here so the row doesn't flash 'off' before the real value loads.
+    const [openOnLogin, setOpenOnLoginState] = useState(true);
     const [themeMode, setThemeModeState] = useState<ThemeMode>('system');
     const [verboseLogging, setVerboseLoggingState] = useState(false);
     // Defaults ON in main (AppSettings.autoStartMeetings) — mirror that here so
