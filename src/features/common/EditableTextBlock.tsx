@@ -40,9 +40,7 @@ const EditableTextBlock: React.FC<EditableTextBlockProps> = ({
             `}
             data-placeholder={placeholder}
             spellCheck={false} // Clean look
-        >
-            {initialValue}
-        </Tag>
+        />
     );
 };
 
