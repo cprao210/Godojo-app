@@ -17,7 +17,7 @@ import { MeetingPersistence } from './MeetingPersistence';
 export type { TranscriptSegment, SuggestionTrigger, ContextItem } from './SessionTracker';
 export type { IntelligenceMode, IntelligenceModeEvents } from './IntelligenceEngine';
 
-export const GEMINI_FLASH_MODEL = "gemini-3.1-flash-lite-preview";
+export const GEMINI_FLASH_MODEL = "gemini-3.1-flash-lite";
 
 /**
  * IntelligenceManager - Facade for the intelligence layer.

@@ -15,6 +15,7 @@ import { reconcileBantMeddicWithLiveAnalysis } from './summaryReconciliation';
 import { hasMultipleClientSpeakers, resolveSpeakerDisplayName, buildSpeakerRoster, formatSpeakerRosterBlock, transcriptTurnLabel, SpeakerNameMapLike } from './utils/speakerLabels';
 import { parseUploadTranscript } from './utils/uploadTranscriptParser';
 import { buildUploadAnalysisPrompt, normalizeUploadAnalysis } from './utils/uploadAnalysis';
+import { requestBackendChunking } from './utils/backendRagChunking';
 
 const crypto = require('crypto');
 
@@ -804,6 +805,16 @@ export class MeetingPersistence {
             // scorecard, and title have all actually finished generating AND
             // been persisted — not just "processing kicked off".
             AppState.getInstance()?.notifyMeetingSummaryReady?.(title);
+
+            // Kick backend RAG ingest now that the meeting + transcript are
+            // committed (chat/Ask-Dojo read only from backend meeting_chunks).
+            // Fire-and-forget: the util owns retry/backoff and a durable queue,
+            // because the transcript rows reach the backend via the async
+            // mirror — the first attempt can legitimately find "No transcript
+            // yet". Never let this throw into the meeting-save catch below.
+            void requestBackendChunking(meetingId, tenantId ?? null).catch(
+                (e) => console.error('[MeetingPersistence] backend chunk trigger failed:', e),
+            );
 
         } catch (error) {
             console.error('[MeetingPersistence] Failed to save meeting:', error);

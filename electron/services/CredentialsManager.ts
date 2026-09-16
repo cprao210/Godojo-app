@@ -576,7 +576,7 @@ export class CredentialsManager {
         return this.credentials.aiResponseLanguage || 'English';
     }
     public getDefaultModel(): string {
-        return this.credentials.defaultModel || 'gemini-3.1-flash-lite-preview';
+        return this.credentials.defaultModel || 'gemini-3.1-flash-lite';
     }
 
     public getAllCredentials(): StoredCredentials {
@@ -1211,7 +1211,7 @@ export class CredentialsManager {
      * and sttProvider undefined until something happened to save them.
      */
     private applyDefaults(): void {
-        if (!this.credentials.defaultModel) this.credentials.defaultModel = 'gemini-3.1-flash-lite-preview';
+        if (!this.credentials.defaultModel) this.credentials.defaultModel = 'gemini-3.1-flash-lite';
         if (!this.credentials.sttProvider) this.credentials.sttProvider = 'deepgram';
     }
 

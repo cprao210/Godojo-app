@@ -293,13 +293,9 @@ describe('meetingsApi.end', () => {
     });
 });
 
-describe('meetingsApi.chunk', () => {
-    beforeEach(() => mockedApiFetch.mockClear());
-
-    it('POSTs to the chunking sub-route', async () => {
-        await meetingsApi.chunk('m1');
-        expect(mockedApiFetch.mock.calls[0][0]).toBe('/meetings/m1/chunking');
-        expect((mockedApiFetch.mock.calls[0][1] as RequestInit).method).toBe('POST');
+describe('meetingsApi — RAG chunking moved out of the renderer', () => {
+    it('exposes no chunk method (the POST now runs from the Electron pipeline, see electron/utils/backendRagChunking)', () => {
+        expect((meetingsApi as any).chunk).toBeUndefined();
     });
 });
 

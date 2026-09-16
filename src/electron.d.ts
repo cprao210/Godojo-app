@@ -147,7 +147,7 @@ export interface ElectronAPI {
   getAvailableOllamaModels: () => Promise<string[]>
   switchToOllama: (model?: string, url?: string) => Promise<{ success: boolean; error?: string }>
   switchToGemini: (apiKey?: string, modelId?: string) => Promise<{ success: boolean; error?: string }>
-  testLlmConnection: (provider: 'gemini' | 'groq' | 'openai' | 'claude', apiKey?: string) => Promise<{ success: boolean; error?: string }>
+  testLlmConnection: (provider: 'gemini' | 'groq' | 'openai' | 'claude', apiKey?: string, modelId?: string) => Promise<{ success: boolean; error?: string }>
   selectServiceAccount: () => Promise<{ success: boolean; path?: string; cancelled?: boolean; error?: string }>
   getDefaultModel: () => Promise<{ model: string }>
   setModel: (modelId: string) => Promise<{ success: boolean; error?: string }>
@@ -159,6 +159,9 @@ export interface ElectronAPI {
   onOllamaPullComplete: (callback: () => void) => () => void
   fetchProviderModels: (provider: 'gemini' | 'groq' | 'openai' | 'claude', apiKey: string) => Promise<{ success: boolean; models?: { id: string, label: string }[]; error?: string }>
   setProviderPreferredModel: (provider: 'gemini' | 'groq' | 'openai' | 'claude', modelId: string) => Promise<void>
+  /** Live model-catalog snapshot: current ids per provider (live /models
+   *  cache when fresh, seed fallback otherwise) + the resolved auto model. */
+  getModelCatalog: () => Promise<{ providers: Record<string, { ids: string[]; source: 'live' | 'seed'; fetchedAt: number | null; auto: string }> }>
   getGroqFastTextMode: () => Promise<{ enabled: boolean }>
   setGroqFastTextMode: (enabled: boolean) => Promise<{ success: boolean; error?: string }>
   onGroqFastTextChanged: (callback: (enabled: boolean) => void) => () => void

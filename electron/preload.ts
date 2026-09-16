@@ -735,7 +735,7 @@ contextBridge.exposeInMainWorld("electronAPI", {
   getAvailableOllamaModels: () => ipcRenderer.invoke("get-available-ollama-models"),
   switchToOllama: (model?: string, url?: string) => ipcRenderer.invoke("switch-to-ollama", model, url),
   switchToGemini: (apiKey?: string, modelId?: string) => ipcRenderer.invoke("switch-to-gemini", apiKey, modelId),
-  testLlmConnection: (provider: 'gemini' | 'groq' | 'openai' | 'claude', apiKey: string) => ipcRenderer.invoke("test-llm-connection", provider, apiKey),
+  testLlmConnection: (provider: 'gemini' | 'groq' | 'openai' | 'claude', apiKey?: string, modelId?: string) => ipcRenderer.invoke("test-llm-connection", provider, apiKey, modelId),
   selectServiceAccount: () => ipcRenderer.invoke("select-service-account"),
 
   // API Key Management
@@ -1501,6 +1501,8 @@ contextBridge.exposeInMainWorld("electronAPI", {
   // Dynamic Model Discovery
   fetchProviderModels: (provider: 'gemini' | 'groq' | 'openai' | 'claude', apiKey: string) => ipcRenderer.invoke('fetch-provider-models', provider, apiKey),
   setProviderPreferredModel: (provider: 'gemini' | 'groq' | 'openai' | 'claude', modelId: string) => ipcRenderer.invoke('set-provider-preferred-model', provider, modelId),
+  // Live model-catalog snapshot (live /models cache > seeds) for dropdowns
+  getModelCatalog: () => ipcRenderer.invoke('model-catalog:get'),
 
   // License Management
   licenseActivate: (key: string) => ipcRenderer.invoke('license:activate', key),

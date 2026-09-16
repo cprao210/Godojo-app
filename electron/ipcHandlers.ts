@@ -1323,12 +1323,25 @@ export function initializeIpcHandlers(appState: AppState): void {
 
       const { fetchProviderModels } = require('./utils/modelFetcher');
       const models = await fetchProviderModels(provider, key);
+      // Piggyback: every successful manual fetch also refreshes the app-wide
+      // live-catalog cache used for auto-resolution and retirement healing.
+      try {
+        const { ModelCatalog } = require('./services/ModelCatalog');
+        ModelCatalog.getInstance().updateCache(provider, (models || []).map((m: any) => m.id).filter(Boolean));
+      } catch { /* cache update is best-effort */ }
       return { success: true, models };
     } catch (error: any) {
       console.error(`[IPC] Failed to fetch ${provider} models:`, error);
       const msg = error?.response?.data?.error?.message || error.message || 'Failed to fetch models';
       return { success: false, error: msg };
     }
+  });
+
+  // Snapshot of every provider's current model list (live cache > seeds),
+  // consumed by the renderer's model dropdowns so they stop being hardcoded.
+  safeHandle("model-catalog:get", async () => {
+    const { ModelCatalog } = require('./services/ModelCatalog');
+    return { providers: ModelCatalog.getInstance().snapshot() };
   });
 
   safeHandle("set-provider-preferred-model", async (_, provider: 'gemini' | 'groq' | 'openai' | 'claude', modelId: string) => {
@@ -1755,8 +1768,8 @@ export function initializeIpcHandlers(appState: AppState): void {
     }
   });
 
-  safeHandle("test-llm-connection", async (_, provider: 'gemini' | 'groq' | 'openai' | 'claude', apiKey?: string) => {
-    console.log(`[IPC] Received test-llm-connection request for provider: ${provider}`);
+  safeHandle("test-llm-connection", async (_, provider: 'gemini' | 'groq' | 'openai' | 'claude', apiKey?: string, modelId?: string) => {
+    console.log(`[IPC] Received test-llm-connection request for provider: ${provider}${modelId ? ` (model: ${modelId})` : ''}`);
     try {
       if (!apiKey || !apiKey.trim()) {
         const { CredentialsManager } = require('./services/CredentialsManager');
@@ -1772,45 +1785,70 @@ export function initializeIpcHandlers(appState: AppState): void {
       }
 
       const axios = require('axios');
-      let response;
+      const { ModelCatalog } = require('./services/ModelCatalog');
+      const catalog = ModelCatalog.getInstance();
+      // Test the model the user PICKED in the card's dropdown (healed through
+      // the catalog in case it was retired since it was stored). With no
+      // explicit pick, fall back to the provider's current capable model —
+      // a hardcoded test model broke wholesale every time a provider retired
+      // it (Groq Aug-2026, Gemini May-2026).
+      const testModel = modelId
+        ? catalog.healSync(provider, modelId).id
+        : catalog.resolve(provider, 'capable');
 
-      if (provider === 'gemini') {
-        const url = `https://generativelanguage.googleapis.com/v1beta/models/gemini-3.1-flash-lite-preview:generateContent`;
-        response = await axios.post(url, {
-          contents: [{ parts: [{ text: "Hello" }] }]
-        }, {
-          headers: { 'x-goog-api-key': apiKey },
-          timeout: 15000
-        });
-      } else if (provider === 'groq') {
-        response = await axios.post('https://api.groq.com/openai/v1/chat/completions', {
-          model: "llama-3.3-70b-versatile",
-          messages: [{ role: "user", content: "Hello" }]
-        }, {
-          headers: { Authorization: `Bearer ${apiKey}` },
-          timeout: 15000
-        });
-      } else if (provider === 'openai') {
-        response = await axios.post('https://api.openai.com/v1/chat/completions', {
-          model: "gpt-4o-mini",
-          messages: [{ role: "user", content: "Hello" }]
-        }, {
-          headers: { Authorization: `Bearer ${apiKey}` },
-          timeout: 15000
-        });
-      } else if (provider === 'claude') {
-        response = await axios.post('https://api.anthropic.com/v1/messages', {
-          model: "claude-sonnet-4-6",
-          max_tokens: 10,
-          messages: [{ role: "user", content: "Hello" }]
-        }, {
-          headers: {
-            'x-api-key': apiKey,
-            'anthropic-version': '2023-06-01',
-            'content-type': 'application/json'
-          },
-          timeout: 15000
-        });
+      const attempt = async (model: string) => {
+        if (provider === 'gemini') {
+          const url = `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent`;
+          return axios.post(url, {
+            contents: [{ parts: [{ text: "Hello" }] }]
+          }, {
+            headers: { 'x-goog-api-key': apiKey },
+            timeout: 15000
+          });
+        } else if (provider === 'groq') {
+          return axios.post('https://api.groq.com/openai/v1/chat/completions', {
+            model,
+            messages: [{ role: "user", content: "Hello" }]
+          }, {
+            headers: { Authorization: `Bearer ${apiKey}` },
+            timeout: 15000
+          });
+        } else if (provider === 'openai') {
+          return axios.post('https://api.openai.com/v1/chat/completions', {
+            model,
+            messages: [{ role: "user", content: "Hello" }]
+          }, {
+            headers: { Authorization: `Bearer ${apiKey}` },
+            timeout: 15000
+          });
+        } else if (provider === 'claude') {
+          return axios.post('https://api.anthropic.com/v1/messages', {
+            model,
+            max_tokens: 10,
+            messages: [{ role: "user", content: "Hello" }]
+          }, {
+            headers: {
+              'x-api-key': apiKey,
+              'anthropic-version': '2023-06-01',
+              'content-type': 'application/json'
+            },
+            timeout: 15000
+          });
+        }
+      };
+
+      let response;
+      try {
+        response = await attempt(testModel);
+      } catch (err: any) {
+        // Self-heal: if the tested model looks retired, force-refresh this
+        // provider's catalog with the key being tested and retry once with
+        // the current model. Genuine overload/key errors propagate as-is.
+        const text = err?.response?.data?.error?.message || err?.message || '';
+        const migrated = await catalog.migrateOnFailure(provider, testModel, text).catch((): string | null => null);
+        if (!migrated || migrated === testModel) throw err;
+        console.log(`[IPC] test-llm-connection: ${testModel} retired — retesting with ${migrated}`);
+        response = await attempt(migrated);
       }
 
       if (response && (response.status === 200 || response.status === 201)) {
@@ -1922,7 +1960,7 @@ export function initializeIpcHandlers(appState: AppState): void {
       return { model: cm.getDefaultModel() };
     } catch (error: any) {
       console.error("Error getting default model:", error);
-      return { model: 'gemini-3.1-flash-lite-preview' };
+      return { model: 'gemini-3.1-flash-lite' };
     }
   });
 

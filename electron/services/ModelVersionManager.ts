@@ -83,22 +83,27 @@ interface PersistedState {
 
 // ─── Constants ──────────────────────────────────────────────────────────
 
+// Baselines come from the shared catalog seeds (single source of truth) —
+// see utils/modelCatalogShared.ts. These pin the "known good" tier default
+// per family; live discovery (below) can promote newer versions.
+import { MODEL_CATALOG } from '../../utils/modelCatalogShared';
+
 /** Hardcoded baseline models for vision Tier 1 (initial pinned stable) */
 const BASELINE_MODELS: Record<ModelFamily, string> = {
-  [ModelFamily.OPENAI]: 'gpt-5.4',
-  [ModelFamily.GEMINI_FLASH]: 'gemini-3.1-flash-lite-preview',
-  [ModelFamily.GEMINI_PRO]: 'gemini-3.1-pro-preview',
-  [ModelFamily.CLAUDE]: 'claude-sonnet-4-6',
-  [ModelFamily.GROQ_LLAMA]: 'meta-llama/llama-4-scout-17b-16e-instruct',
+  [ModelFamily.OPENAI]: MODEL_CATALOG.openai.seeds.capable[0],
+  [ModelFamily.GEMINI_FLASH]: MODEL_CATALOG.gemini.seeds.fast[0],
+  [ModelFamily.GEMINI_PRO]: MODEL_CATALOG.gemini.seeds.capable[0],
+  [ModelFamily.CLAUDE]: MODEL_CATALOG.claude.seeds.capable[0],
+  [ModelFamily.GROQ_LLAMA]: MODEL_CATALOG.groq.seeds.vision[0],
 };
 
 /** Hardcoded baseline models for text Tier 1 */
 const TEXT_BASELINE_MODELS: Record<TextModelFamily, string> = {
-  [TextModelFamily.OPENAI]: 'gpt-5.4',
-  [TextModelFamily.GEMINI_FLASH]: 'gemini-3.1-flash-lite-preview',
-  [TextModelFamily.GEMINI_PRO]: 'gemini-3.1-pro-preview',
-  [TextModelFamily.CLAUDE]: 'claude-sonnet-4-6',
-  [TextModelFamily.GROQ]: 'llama-3.3-70b-versatile',
+  [TextModelFamily.OPENAI]: MODEL_CATALOG.openai.seeds.capable[0],
+  [TextModelFamily.GEMINI_FLASH]: MODEL_CATALOG.gemini.seeds.fast[0],
+  [TextModelFamily.GEMINI_PRO]: MODEL_CATALOG.gemini.seeds.capable[0],
+  [TextModelFamily.CLAUDE]: MODEL_CATALOG.claude.seeds.capable[0],
+  [TextModelFamily.GROQ]: MODEL_CATALOG.groq.seeds.capable[0],
 };
 
 /** Vision-capable model ordering for screenshot analysis */
@@ -271,8 +276,9 @@ export function classifyModel(modelId: string): ModelFamily | null {
     return ModelFamily.CLAUDE;
   }
 
-  // Groq Llama Scout (vision-capable)
-  if (lower.includes('llama') && lower.includes('scout')) {
+  // Groq vision family — Llama-4 Scout left the catalog in the Aug-2026
+  // change; Groq's vision-capable models are the Qwen VL family since.
+  if ((lower.includes('llama') && lower.includes('scout')) || lower.startsWith('qwen/')) {
     return ModelFamily.GROQ_LLAMA;
   }
 
@@ -306,8 +312,12 @@ export function classifyTextModel(modelId: string): TextModelFamily | null {
     return TextModelFamily.CLAUDE;
   }
 
-  // Groq text models — broader: llama, mixtral, gemma (NOT scout-only like vision)
-  if (lower.includes('llama') || lower.includes('mixtral') || lower.includes('gemma')) {
+  // Groq text models — broader: llama, mixtral, gemma (NOT scout-only like
+  // vision), plus the post-Aug-2026 catalog naming: openai/gpt-oss-* (Groq's
+  // current Llama replacement) and groq/compound. Note 'openai/gpt-oss' never
+  // hits the OpenAI branch above — provider ids there have no 'openai/' prefix.
+  if (lower.includes('llama') || lower.includes('mixtral') || lower.includes('gemma')
+    || lower.startsWith('openai/gpt-oss') || lower.startsWith('groq/')) {
     return TextModelFamily.GROQ;
   }
 

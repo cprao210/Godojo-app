@@ -120,7 +120,7 @@ export const ProviderCard: React.FC<ProviderCardProps> = ({
             {/* Action Row: Test Connection + Conditional Dropdown + Fetch Models */}
             <div className="flex items-center justify-between mb-3 w-full">
                 <button
-                    onClick={onTestConnection}
+                    onClick={() => onTestConnection(selectedModel || preferredModel || undefined)}
                     disabled={(!apiKey.trim() && !hasStoredKey) || testStatus === 'testing'}
                     className={`px-3 py-1.5 rounded-md text-xs font-medium transition-colors border border-border-subtle flex items-center gap-2 shrink-0 ${testStatus === 'success' ? 'bg-green-500/10 text-green-500 border-green-500/20' :
                         testStatus === 'error' ? 'bg-red-500/10 text-red-500 border-red-500/20' :

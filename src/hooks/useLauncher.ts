@@ -377,44 +377,17 @@ export function useLauncher({ onStartMeeting, ollamaPullStatus = 'idle', onPageC
         setLocalProfile(loadUserProfile());
     }, [authUser?.email]);
 
-    // Meeting ids already sent to the backend chunking endpoint (or seen as
-    // already-processed on first load — see the effect below). Prevents
-    // re-firing chunk() on every subsequent poll tick once a meeting is done.
-    const chunkedMeetingIdsRef = React.useRef<Set<string>>(new Set());
-    const hasSeededChunkedRef = React.useRef(false);
+    // Backend RAG chunking is now triggered from the Electron processing
+    // pipeline itself (electron/MeetingPersistence.ts → requestBackendChunking),
+    // with immediate retries + a durable SQLite queue. It used to be this
+    // renderer "watch isProcessed flip" effect, which only chunked meetings
+    // that completed while the Launcher was open, seeded all other history as
+    // handled without chunking, and permanently swallowed the first failure —
+    // leaving a large fraction of meetings invisible to chat/RAG.
+
     // Dedupes trackCalendarEventsFetched() across fetchEvents()'s 60s poll —
     // see fetchEvents below.
     const lastTrackedEventsSignatureRef = React.useRef<string>('');
-
-    // Fire /meetings/:id/chunking exactly once, the moment a meeting's
-    // transcript + summary processing actually finishes (isProcessed: true).
-    // This is strictly later than endMeeting() resolving — isProcessed only
-    // flips once MeetingPersistence.processAndSaveMeeting has fully written
-    // the real record, so there's no "row not synced yet" race here.
-    useEffect(() => {
-        if (meetings.length === 0) return;
-
-        // On first load, treat every already-processed meeting as already
-        // handled — this effect is for newly-completed meetings going
-        // forward, not for retroactively chunking existing history.
-        if (!hasSeededChunkedRef.current) {
-            meetings.forEach(m => {
-                if (m.isProcessed) chunkedMeetingIdsRef.current.add(m.id);
-            });
-            hasSeededChunkedRef.current = true;
-            return;
-        }
-
-        meetings.forEach(m => {
-            if (!m.isProcessed) return;
-            if (chunkedMeetingIdsRef.current.has(m.id)) return;
-
-            chunkedMeetingIdsRef.current.add(m.id); // mark immediately — avoid double-fire on the next poll tick
-            meetingsApi.chunk(m.id).catch(err =>
-                console.error(`[Launcher] Failed to chunk meeting ${m.id} for RAG:`, err)
-            );
-        });
-    }, [meetings]);
 
     const effectiveName = localProfile.displayName || authUser?.displayName || authUser?.email?.split('@')[0] || '';
 

@@ -890,6 +890,26 @@ export class DatabaseManager {
             catch (e) { /* Column already exists */ }
             this.db.pragma('user_version = 22');
         }
+
+        // v22 → v23: meeting_chunk_queue — durable retry queue for the backend
+        // RAG ingest call (POST /meetings/:id/chunking). Chat reads only from
+        // the backend's meeting_chunks, but the old trigger was a renderer
+        // transition-watch effect with no retry that missed everything not
+        // completing live in the Launcher. Failures now park here and drain on
+        // a timer — see electron/utils/backendRagChunking.ts.
+        if (version < 23) {
+            console.log('[DatabaseManager] Applying migration v22 → v23: meeting_chunk_queue');
+            this.db.exec(`
+                CREATE TABLE IF NOT EXISTS meeting_chunk_queue (
+                    meeting_id TEXT PRIMARY KEY,
+                    tenant_id  TEXT,
+                    attempts   INTEGER NOT NULL DEFAULT 0,
+                    last_error TEXT,
+                    updated_at INTEGER NOT NULL
+                );
+            `);
+            this.db.pragma('user_version = 23');
+        }
     }
 
     // ============================================
@@ -939,6 +959,80 @@ export class DatabaseManager {
             }
         } catch (error) {
             console.error(`[DatabaseManager] Failed to delete app_state for key: ${key}`, error);
+        }
+    }
+
+    // ============================================
+    // Meeting RAG Chunk Queue (device-local, never mirrored)
+    // ============================================
+    // Holds meetings whose backend /chunking POST failed transiently (network,
+    // 5xx, transcript-mirror lag). electron/utils/backendRagChunking.ts drains
+    // it on a timer + at startup. Intentionally NOT in the Supabase mirror:
+    // it's this device's work queue, not user data, and the `attempts` counter
+    // must not propagate.
+
+    /** Insert or refresh a pending chunk attempt. Idempotent on meeting_id. */
+    public upsertChunkAttempt(meetingId: string, tenantId: string | null): void {
+        if (!this.db) return;
+        try {
+            this.db.prepare(`
+                INSERT INTO meeting_chunk_queue (meeting_id, tenant_id, attempts, updated_at)
+                VALUES (?, ?, 0, ?)
+                ON CONFLICT(meeting_id) DO UPDATE SET
+                    tenant_id = excluded.tenant_id,
+                    updated_at = excluded.updated_at
+            `).run(meetingId, tenantId ?? null, Date.now());
+        } catch (error) {
+            console.error('[DatabaseManager] Failed to upsert chunk attempt:', error);
+        }
+    }
+
+    /** Record one failed drain attempt. Returns nothing; caller uses list/get. */
+    public bumpChunkAttempt(meetingId: string, errorMessage: string): void {
+        if (!this.db) return;
+        try {
+            this.db.prepare(`
+                UPDATE meeting_chunk_queue
+                SET attempts = attempts + 1, last_error = ?, updated_at = ?
+                WHERE meeting_id = ?
+            `).run((errorMessage || '').slice(0, 500), Date.now(), meetingId);
+        } catch (error) {
+            console.error('[DatabaseManager] Failed to bump chunk attempt:', error);
+        }
+    }
+
+    public getChunkAttempts(meetingId: string): number {
+        if (!this.db) return 0;
+        try {
+            const row = this.db.prepare('SELECT attempts FROM meeting_chunk_queue WHERE meeting_id = ?')
+                .get(meetingId) as { attempts: number } | undefined;
+            return row?.attempts ?? 0;
+        } catch (error) {
+            console.error('[DatabaseManager] Failed to read chunk attempts:', error);
+            return 0;
+        }
+    }
+
+    /** Oldest-first so a long outage still eventually reaches every meeting. */
+    public listChunkQueue(): Array<{ meeting_id: string; tenant_id: string | null; attempts: number }> {
+        if (!this.db) return [];
+        try {
+            return this.db.prepare(`
+                SELECT meeting_id, tenant_id, attempts FROM meeting_chunk_queue
+                ORDER BY updated_at ASC
+            `).all() as Array<{ meeting_id: string; tenant_id: string | null; attempts: number }>;
+        } catch (error) {
+            console.error('[DatabaseManager] Failed to list chunk queue:', error);
+            return [];
+        }
+    }
+
+    public removeChunkQueueItem(meetingId: string): void {
+        if (!this.db) return;
+        try {
+            this.db.prepare('DELETE FROM meeting_chunk_queue WHERE meeting_id = ?').run(meetingId);
+        } catch (error) {
+            console.error('[DatabaseManager] Failed to remove chunk queue item:', error);
         }
     }
 

@@ -761,13 +761,6 @@ export interface AiInteractionsResponse {
   items: AiInteractionItem[];
 }
 
-export interface ChunkMeetingResponse {
-  meeting_id: string;
-  duration_ms: number;
-  ingested: boolean;
-  is_processed: number;
-}
-
 // --- src/features/meetings/components/FollowUpEmailModal.tsx ---
 export interface FollowUpEmailMeeting {
   id: string;
@@ -2033,7 +2026,10 @@ export interface ProviderCardProps {
   onKeyChange: (key: string) => void;
   onSaveKey: () => Promise<void>;
   onRemoveKey: () => void;
-  onTestConnection: () => void;
+  /** Receives the model currently picked in the card's dropdown (or the
+   *  stored preferred one) so Test Connection tests THAT model instead of
+   *  an internally-resolved default. */
+  onTestConnection: (modelId?: string) => void;
   testStatus: 'idle' | 'testing' | 'success' | 'error';
   testError?: string;
   savingStatus: boolean;

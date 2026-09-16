@@ -2,7 +2,7 @@
 // (see meetingMapping.ts); writes return the raw backend response (mutations
 // invalidate + refetch, so the shape isn't relied on).
 
-import { AiInteractionsResponse, ChunkMeetingResponse, EndMeetingResponse, Meeting, MeetingStateResponse } from "@/types";
+import { AiInteractionsResponse, EndMeetingResponse, Meeting, MeetingStateResponse } from "@/types";
 import { MeetingType, PauseMeetingResponse, ResumeMeetingResponse, StartMeetingRequest, StartMeetingResponse } from "@/types";
 import { SubmitTranscriptResponse, TranscriptSegmentInput } from "@/types";
 import { apiFetch } from "@/lib/apiClient";
@@ -148,11 +148,12 @@ export const meetingsApi = {
       body: JSON.stringify({ meeting_id: meetingId, meeting_types: meetingTypes }),
     }),
 
-  // Chunks + ingests the meeting transcript for RAG (chat/rag/query/meeting and
-  // the global chat both depend on this having run). Call once, right after
-  // `end` — the backend can't chunk a meeting still marked active.
-  chunk: (meetingId: string): Promise<ChunkMeetingResponse> =>
-    apiFetch(`/meetings/${meetingId}/chunking`, { method: "POST" }),
+  // NOTE: RAG chunking is NOT called from the renderer anymore. It is triggered
+  // by the Electron processing pipeline itself (electron/MeetingPersistence.ts →
+  // electron/utils/backendRagChunking.ts) once a meeting is saved, so chat/RAG
+  // no longer depends on the Launcher happening to be open when processing
+  // finishes. The `POST /meetings/:id/chunking` endpoint is still the backend
+  // contract; the call simply moved to main, where it can retry durably.
 
   // NOTE: transcript upload has NO HTTP endpoint here by design. It runs on the
   // Electron IPC path (window.electronAPI.uploadTranscript → 'upload-transcript'

@@ -1,7 +1,8 @@
 import React, { useState, useEffect, useRef, useCallback } from 'react';
 import ReactDOM from 'react-dom';
 import { ChevronDown, Check, Cloud, Terminal, Monitor, Server } from 'lucide-react';
-import { STANDARD_CLOUD_MODELS, prettifyModelId } from '@/../utils/modelUtils';
+import { STANDARD_CLOUD_MODELS, AUTO_MODEL_OPTIONS, prettifyModelId } from '@/../utils/modelUtils';
+import { displayNameFor, isAutoId, autoDisplayName } from '@/../utils/modelCatalogShared';
 import { ModelOptionProps, ModelSelectorCustomProvider, ModelSelectorProps, PortalDropdownProps } from '@/types';
 
 const PortalDropdown: React.FC<PortalDropdownProps> = ({ anchorRef, onClose, children }) => {
@@ -191,12 +192,32 @@ export const ModelSelector: React.FC<ModelSelectorProps> = ({ currentModel, onSe
 
                 // @ts-ignore
                 const creds = await window.electronAPI?.getStoredCredentials?.();
+                // Live model catalog (provider /models cache refreshed by the
+                // main process) — falls back to the shared seed lists.
+                let catalog: Record<string, { ids: string[]; source: string; auto: string }> | undefined;
+                try {
+                    const snap = await window.electronAPI?.getModelCatalog?.();
+                    catalog = snap?.providers as any;
+                } catch { /* seeds below */ }
+
                 const cModels: { id: string; name: string; desc: string; provider: string }[] = [];
                 for (const [prov, cfg] of Object.entries(STANDARD_CLOUD_MODELS)) {
                     if (!cfg.hasKeyCheck(creds)) continue;
-                    cfg.ids.forEach((id, i) => cModels.push({ id, name: cfg.names[i], desc: cfg.descs[i], provider: prov }));
+                    // "Auto" resolves to the provider's current model at call
+                    // time — the deprecation-proof default choice.
+                    const auto = AUTO_MODEL_OPTIONS[prov];
+                    if (auto) cModels.push({ id: auto.id, name: auto.name, desc: auto.desc, provider: prov });
+
+                    const liveIds = catalog?.[prov]?.ids ?? [];
+                    const ids = (liveIds.length > 0 ? liveIds : cfg.ids).slice(0, 8);
+                    ids.forEach((id) => cModels.push({
+                        id,
+                        name: displayNameFor(id),
+                        desc: liveIds.length > 0 ? 'Current catalog' : (cfg.descs[cfg.ids.indexOf(id)] ?? 'Cloud'),
+                        provider: prov,
+                    }));
                     const pm = creds?.[cfg.pmKey];
-                    if (pm && !cfg.ids.includes(pm)) {
+                    if (pm && !ids.includes(pm)) {
                         cModels.push({ id: pm, name: prettifyModelId(pm), desc: `${prov.charAt(0).toUpperCase() + prov.slice(1)} • Preferred`, provider: prov });
                     }
                 }
@@ -215,19 +236,13 @@ export const ModelSelector: React.FC<ModelSelectorProps> = ({ currentModel, onSe
 
     const getDisplayName = (model: string) => {
         if (model.startsWith('ollama-')) return model.replace('ollama-', '');
+        if (isAutoId(model)) return autoDisplayName(model) ?? model;
         const cloud = cloudModels.find(m => m.id === model);
         if (cloud) return cloud.name;
         const custom = customProviders.find(p => p.id === model || p.name === model);
         if (custom) return custom.name;
-        // Built-in display names
-        const names: Record<string, string> = {
-            'gemini-3.1-flash-lite-preview': 'Gemini 3.1 Flash',
-            'gemini-3.1-pro-preview': 'Gemini 3.1 Pro',
-            'llama-3.3-70b-versatile': 'Groq Llama 3.3',
-            'gpt-5.4': 'GPT 5.4',
-            'claude-sonnet-4-6': 'Claude Sonnet 4.6',
-        };
-        return names[model] ?? model;
+        // Shared catalog naming (seeds + auto), plain id as last resort.
+        return displayNameFor(model);
     };
 
     return (

@@ -5,7 +5,7 @@
 // useModelSelectorWindow.
 
 import { useCallback, useEffect, useMemo, useState } from "react";
-import { STANDARD_CLOUD_MODELS, prettifyModelId } from "@/../utils/modelUtils";
+import { STANDARD_CLOUD_MODELS, AUTO_MODEL_OPTIONS, prettifyModelId } from "@/../utils/modelUtils";
 import { validateCurl } from "@/lib/curl-validator";
 import { AIProviderCustomProvider } from "@/types";
 import { settingsToast } from "@/lib/settingsToastBus";
@@ -150,7 +150,7 @@ function useStandardProviders() {
         }
     }, [setApiKeyValue, loadStandardProviders]);
 
-    const handleTestConnection = useCallback(async (provider: StandardProviderId) => {
+    const handleTestConnection = useCallback(async (provider: StandardProviderId, modelId?: string) => {
         const key = apiKeys[provider];
         // Allow testing if a key is typed OR one is already stored.
         if (!key.trim() && !hasStoredKey[provider]) return;
@@ -160,7 +160,7 @@ function useStandardProviders() {
 
         try {
             // @ts-ignore
-            const result = await window.electronAPI.testLlmConnection(provider, key);
+            const result = await window.electronAPI.testLlmConnection(provider, key, modelId);
             if (result.success) {
                 setTestStatus((prev) => ({ ...prev, [provider]: "success" }));
                 setTimeout(() => setTestStatus((prev) => ({ ...prev, [provider]: "idle" })), 3000);
@@ -391,7 +391,7 @@ function useOllamaProviders() {
 // Default model + Fast Response Mode
 // ============================================================
 function useDefaultModelSettings(hasGroqKey: boolean) {
-    const [defaultModel, setDefaultModel] = useState<string>("gemini-3.1-flash-lite-preview");
+    const [defaultModel, setDefaultModel] = useState<string>("gemini-3.1-flash-lite");
     const [fastResponseMode, setFastResponseMode] = useState(false);
 
     const loadDefaultModelSettings = useCallback(async () => {
@@ -486,6 +486,10 @@ export function useAIProvidersSettings() {
 
         for (const [prov, cfg] of Object.entries(STANDARD_CLOUD_MODELS)) {
             if (!standard.hasStoredKey[prov]) continue;
+            // "Auto" first: resolves to the provider's current model at call
+            // time — the set-and-forget choice that survives deprecations.
+            const auto = AUTO_MODEL_OPTIONS[prov];
+            if (auto) opts.push({ id: auto.id, name: auto.name });
             cfg.ids.forEach((id, i) => opts.push({ id, name: cfg.names[i] }));
             const pm = standard.preferredModels[prov];
             if (pm && !cfg.ids.includes(pm)) {

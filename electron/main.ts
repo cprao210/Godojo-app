@@ -5132,6 +5132,19 @@ async function initializeApp() {
   const { CredentialsManager } = require('./services/CredentialsManager');
   CredentialsManager.getInstance().init();
 
+  // 3a0. Refresh the live model catalog for every provider with a stored key
+  // (24h TTL). This is what lets auto model selection and retirement healing
+  // track provider catalog changes (Groq Aug-2026, Gemini May-2026) without
+  // another code change. Fire-and-forget — seeds cover the gap until it lands.
+  try {
+    const { ModelCatalog } = require('./services/ModelCatalog');
+    ModelCatalog.getInstance().refreshAll().catch((e: any) => {
+      console.warn('[Main] Model catalog refresh failed (non-fatal):', e);
+    });
+  } catch (e) {
+    console.warn('[Main] Model catalog wiring failed (non-fatal):', e);
+  }
+
   // 3a. Initialize cloud sync stack: Firebase Auth identity restore + Supabase client.
   //     The renderer's trySilentRestore() owns the actual refresh-token exchange
   //     (it has the Firebase Web SDK + project apiKey). Main-side we just:
@@ -5229,6 +5242,23 @@ async function initializeApp() {
     }
   } catch (e) {
     console.warn('[Main] SupabaseMirrorService init failed (non-fatal):', e);
+  }
+
+  // 3a2. Backend RAG chunk retry queue.
+  // requestBackendChunking handles every meeting the moment it finishes
+  // processing; this drain is the safety net for the ones whose immediate
+  // attempts all failed (offline, backend 5xx, transcript still mirroring).
+  // Drains are cheap when the queue is empty, and a signed-out pass defers
+  // without burning attempts, so the first one is delayed only to keep it off
+  // the critical startup path. Never throws.
+  try {
+    const { drainChunkQueue } = require('./utils/backendRagChunking');
+    const CHUNK_DRAIN_INTERVAL_MS = 10 * 60_000;
+    setTimeout(() => { void drainChunkQueue().catch(() => { }); }, 20_000);
+    setInterval(() => { void drainChunkQueue().catch(() => { }); }, CHUNK_DRAIN_INTERVAL_MS);
+    console.log('[Main] Backend RAG chunk retry queue wired');
+  } catch (e) {
+    console.warn('[Main] chunk retry queue wiring failed (non-fatal):', e);
   }
 
   // 3b. Fetch Fallback Keys from Backend securely (requires AuthToken)

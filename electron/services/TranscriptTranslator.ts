@@ -23,8 +23,12 @@ import Anthropic from '@anthropic-ai/sdk';
 // Fast, cheap models — this runs on every foreign-language utterance in a live
 // call, so latency matters far more than reasoning depth. Translation is the
 // one task where the smallest instruct model is genuinely sufficient.
-const GROQ_TRANSLATE_MODEL = 'llama-3.1-8b-instant';
-const GEMINI_TRANSLATE_MODEL = 'gemini-3.1-flash-lite-preview';
+// Ids come from the shared catalog seeds (utils/modelCatalogShared.ts) — the
+// fast tier tracks provider catalog changes without code edits.
+import { MODEL_CATALOG } from '../../utils/modelCatalogShared';
+
+const GROQ_TRANSLATE_MODEL = MODEL_CATALOG.groq.seeds.fast[0];
+const GEMINI_TRANSLATE_MODEL = MODEL_CATALOG.gemini.seeds.fast[0];
 const OPENAI_TRANSLATE_MODEL = 'gpt-5.4-mini';
 const CLAUDE_TRANSLATE_MODEL = 'claude-haiku-4-5-20251001';
 
