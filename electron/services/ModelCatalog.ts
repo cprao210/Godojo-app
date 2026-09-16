@@ -233,6 +233,29 @@ export class ModelCatalog {
         return !!errorText && RETIREMENT_SUSPECT_RE.test(errorText);
     }
 
+    /** Emit PostHog telemetry for a heal result that's actually being ADOPTED
+     *  as the model to use (setModel, switchToGemini, a connection test, a
+     *  confirmed failure-driven migration, …) — not for filtering/dropdown
+     *  display purposes (see snapshot(), which calls healSync per-id purely
+     *  to drop stale ids from a list and must NOT fire telemetry per call).
+     *  No-op when `healed` isn't actually a migration. Best-effort: never
+     *  throws, so telemetry can't take down a model switch. */
+    recordMigration(provider: CatalogProvider, healed: MigrationResult): void {
+        if (!healed.migratedFrom) return;
+        console.warn(
+            `[ModelCatalog] ${provider} model "${healed.migratedFrom}" retired — migrating to "${healed.id}"`,
+        );
+        try {
+            const { posthogMain } = require('./PostHogMainService');
+            posthogMain.capture('model_auto_migrated', {
+                provider,
+                from: healed.migratedFrom,
+                to: healed.id,
+                tier: healed.tier,
+            });
+        } catch { /* telemetry is best-effort */ }
+    }
+
     /** Failure-driven migration: force-refresh the catalog, and only if the
      *  refreshed list confirms the model is gone, migrate + emit telemetry.
      *  Returns the new id, or null when the model is still live (genuine
@@ -248,18 +271,7 @@ export class ModelCatalog {
         const healed = this.healSync(provider, requested);
         if (!healed.migratedFrom) return null;
 
-        console.warn(
-            `[ModelCatalog] ${provider} model "${healed.migratedFrom}" retired — migrating to "${healed.id}"`,
-        );
-        try {
-            const { posthogMain } = require('./PostHogMainService');
-            posthogMain.capture('model_auto_migrated', {
-                provider,
-                from: healed.migratedFrom,
-                to: healed.id,
-                tier: healed.tier,
-            });
-        } catch { /* telemetry is best-effort */ }
+        this.recordMigration(provider, healed);
         return healed.id;
     }
 

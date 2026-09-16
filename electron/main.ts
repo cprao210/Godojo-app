@@ -5261,6 +5261,31 @@ async function initializeApp() {
     console.warn('[Main] chunk retry queue wiring failed (non-fatal):', e);
   }
 
+  // 3a3. Weekly scheduled model catalog refresh.
+  // 3a0 above covers app launch, and ModelCatalog.migrateOnFailure force-
+  // refreshes a provider the moment a call fails with a retirement-shaped
+  // error — but a long-running session that's never restarted and never
+  // hits a failing call (the stored model just quietly falls out of a
+  // provider's current lineup without erroring) would otherwise carry a
+  // week-plus-stale catalog. This is the same safety-net timer shape as the
+  // chunk retry queue above: refreshAll() every provider with a stored key
+  // on a fixed weekly interval. Not force=true — refresh()'s own 24h TTL
+  // gate already guarantees a real network call fires on each tick, since a
+  // week always exceeds it; this timer just makes sure that tick happens at
+  // all on an instance nobody restarts.
+  try {
+    const { ModelCatalog } = require('./services/ModelCatalog');
+    const CATALOG_WEEKLY_REFRESH_MS = 7 * 24 * 60 * 60_000;
+    setInterval(() => {
+      void ModelCatalog.getInstance().refreshAll().catch((e: any) => {
+        console.warn('[Main] Weekly model catalog refresh failed (non-fatal):', e);
+      });
+    }, CATALOG_WEEKLY_REFRESH_MS);
+    console.log('[Main] Weekly model catalog refresh scheduled');
+  } catch (e) {
+    console.warn('[Main] Weekly model catalog refresh wiring failed (non-fatal):', e);
+  }
+
   // 3b. Fetch Fallback Keys from Backend securely (requires AuthToken)
   try {
     const { AuthManager } = require('./services/AuthManager');

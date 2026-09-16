@@ -328,8 +328,12 @@ export class LLMHelper {
     // then a live-catalog absence check. See ModelCatalog.healSync.
     const healProvider = detectProvider(targetModelId);
     if (healProvider) {
-      const healed = ModelCatalog.getInstance().healSync(healProvider, targetModelId);
-      if (healed.migratedFrom) targetModelId = healed.id;
+      const catalog = ModelCatalog.getInstance();
+      const healed = catalog.healSync(healProvider, targetModelId);
+      if (healed.migratedFrom) {
+        catalog.recordMigration(healProvider, healed);
+        targetModelId = healed.id;
+      }
     }
 
     if (targetModelId.startsWith('ollama-')) {
@@ -3799,7 +3803,10 @@ export class LLMHelper {
     if (modelId) {
       // Same retirement heal as setModel — callers can pass a stored
       // preferred-model id that predates a provider catalog change.
-      this.geminiModel = ModelCatalog.getInstance().healSync('gemini', modelId).id;
+      const catalog = ModelCatalog.getInstance();
+      const healed = catalog.healSync('gemini', modelId);
+      if (healed.migratedFrom) catalog.recordMigration('gemini', healed);
+      this.geminiModel = healed.id;
     }
 
     if (apiKey) {

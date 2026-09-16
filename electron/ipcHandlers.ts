@@ -1792,9 +1792,14 @@ export function initializeIpcHandlers(appState: AppState): void {
       // explicit pick, fall back to the provider's current capable model —
       // a hardcoded test model broke wholesale every time a provider retired
       // it (Groq Aug-2026, Gemini May-2026).
-      const testModel = modelId
-        ? catalog.healSync(provider, modelId).id
-        : catalog.resolve(provider, 'capable');
+      let testModel: string;
+      if (modelId) {
+        const healed = catalog.healSync(provider, modelId);
+        if (healed.migratedFrom) catalog.recordMigration(provider, healed);
+        testModel = healed.id;
+      } else {
+        testModel = catalog.resolve(provider, 'capable');
+      }
 
       const attempt = async (model: string) => {
         if (provider === 'gemini') {
