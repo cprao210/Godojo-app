@@ -136,6 +136,10 @@ export const intelligenceApi = {
  * what makes an uploaded doc visible + RAG-queryable for the whole team,
  * not just the uploading device. 415 => legacy binary Office file (re-save
  * as .docx/.pptx/.xlsx or PDF); 403 => member (only admin can upload).
+ *
+ * The backend queues indexing and returns 202 immediately; the returned
+ * promise here only resolves once main has polled the job to a terminal
+ * state ("indexed" | "empty") or given up after ~10 minutes ('timeout').
  */
   uploadCompanyAsset: async (params: {
     filePath: string;

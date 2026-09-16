@@ -3240,15 +3240,18 @@ export function initializeIpcHandlers(appState: AppState): void {
     }
   });
 
-  // The backend's /company-assets/upload endpoint is FULLY SYNCHRONOUS:
-  // parse → extract+describe every embedded image (Gemini vision, sequential)
-  // → batch-embed all chunks → Supabase writes, all inside one request. An
-  // image-heavy multi-page PDF can legitimately take minutes; the platform
-  // ceiling is Cloud Run's 900 s. The old 60 s axios cap aborted the request
-  // while the server kept indexing it, so users saw failures for documents
-  // that actually succeeded. This cap sits deliberately under 900 s: anything
-  // still running past 10 minutes is failing server-side, not slow.
-  const COMPANY_ASSET_UPLOAD_TIMEOUT_MS = 10 * 60_000;
+  // The backend's /company-assets/upload endpoint responds immediately with
+  // 202 (queued) and runs the ingest pipeline (extraction -> vision ->
+  // embeddings -> vector upsert) as a background task. The client is
+  // responsible for polling GET /upload/status/{asset_id} until the job
+  // reaches a terminal state ("indexed" | "empty" | "failed") — the old
+  // fully-synchronous request (held open for the whole pipeline, capped by
+  // Cloud Run's 900s ceiling) no longer matches what the server does.
+  // POLL_TIMEOUT_MS is the overall ceiling from upload to terminal state;
+  // anything still unresolved past it is failing server-side, not slow.
+  const COMPANY_ASSET_UPLOAD_POLL_TIMEOUT_MS = 10 * 60_000;
+  const COMPANY_ASSET_UPLOAD_POLL_INTERVAL_MS = 2_000;
+  const COMPANY_ASSET_UPLOAD_IN_FLIGHT_STATES = new Set(["queued", "processing", "unknown"]);
 
   safeHandle("company:uploadAssetToBackend", async (event, payload: {
     filePath: string;
@@ -3304,17 +3307,21 @@ export function initializeIpcHandlers(appState: AppState): void {
     form.append("label", label);
     form.append("asset_type", assetType);
 
-    const headers: Record<string, string> = {
+    const uploadHeaders: Record<string, string> = {
       Authorization: `Bearer ${idToken}`,
       ...form.getHeaders(),
     };
-    if (tenantId) headers["X-Tenant-Id"] = tenantId;
+    if (tenantId) uploadHeaders["X-Tenant-Id"] = tenantId;
+
+    // Plain (non-multipart) headers reused for every status poll.
+    const pollHeaders: Record<string, string> = { Authorization: `Bearer ${idToken}` };
+    if (tenantId) pollHeaders["X-Tenant-Id"] = tenantId;
 
     // Byte-level upload progress streamed to the requesting window; the
-    // renderer shows percent during 'uploading' and an indeterminate
-    // "Indexing on server…" state afterwards (the server-side chunk/embed
-    // work has no client-observable progress — the response IS its completion).
-    const sendProgress = (phase: 'uploading' | 'indexing', percent: number) => {
+    // renderer shows percent during 'uploading', then an indeterminate
+    // "Indexing on server…" state during 'processing' while this handler
+    // polls the job's real status in the background.
+    const sendProgress = (phase: 'uploading' | 'processing', percent: number) => {
       try {
         if (!event.sender.isDestroyed()) {
           event.sender.send('company:upload-progress', { assetId, phase, percent });
@@ -3322,24 +3329,64 @@ export function initializeIpcHandlers(appState: AppState): void {
       } catch { /* window gone — progress is best-effort */ }
     };
 
+    const statusUrl = `${BACKEND_URL}/api/v1/intelligence/company-assets/upload/status/${encodeURIComponent(assetId)}`;
+
     try {
-      const res = await axios.post(
+      // 1. Kick off the job. This resolves as soon as the bytes are received
+      //    and the job is queued (202) — it does NOT wait for indexing.
+      const queuedRes = await axios.post(
         `${BACKEND_URL}/api/v1/intelligence/company-assets/upload`,
         form,
         {
-          headers,
-          timeout: COMPANY_ASSET_UPLOAD_TIMEOUT_MS,
+          headers: uploadHeaders,
+          timeout: COMPANY_ASSET_UPLOAD_POLL_TIMEOUT_MS, // large files can legitimately take a while just to transfer
           maxBodyLength: Infinity,
           maxContentLength: Infinity,
           onUploadProgress: (e: any) => {
             const total = e.total ?? fileBuffer.length;
             const percent = total ? Math.min(100, Math.round((e.loaded / total) * 100)) : 0;
-            if (percent >= 100) sendProgress('indexing', 100);
+            if (percent >= 100) sendProgress('processing', 100);
             else sendProgress('uploading', percent);
           },
         },
       );
-      return res.data; // { status: "indexed", chunks: N } | { status: "empty", chunks: 0 }
+
+      // 2. Poll GET /upload/status/{asset_id} until a terminal state:
+      //    "indexed" | "empty" | "failed". "queued" / "processing" / "unknown"
+      //    all mean keep waiting — "unknown" can happen if the poll lands on a
+      //    different Cloud Run instance than the one running the job.
+      let state: string = queuedRes.data?.state ?? "queued";
+      let latest: any = queuedRes.data;
+      const deadline = Date.now() + COMPANY_ASSET_UPLOAD_POLL_TIMEOUT_MS;
+
+      while (COMPANY_ASSET_UPLOAD_IN_FLIGHT_STATES.has(state)) {
+        if (Date.now() > deadline) {
+          return {
+            status: "error",
+            code: "timeout",
+            statusCode: 504,
+            error: "The server is still indexing this document — large PDFs can take a few minutes. Keep the app open and retry Save shortly; the file may already have finished indexing.",
+          };
+        }
+        sendProgress('processing', 100);
+        await new Promise((resolve) => setTimeout(resolve, COMPANY_ASSET_UPLOAD_POLL_INTERVAL_MS));
+
+        const statusRes = await axios.get(statusUrl, { headers: pollHeaders, timeout: 15_000 });
+        latest = statusRes.data;
+        state = latest?.state ?? "unknown";
+      }
+
+      if (state === "failed") {
+        return {
+          status: "error",
+          statusCode: 500,
+          error: latest?.error || "Indexing failed on the server.",
+        };
+      }
+
+      // Terminal success states: "indexed" | "empty".
+      return { status: state, chunks: latest?.chunks };
+
     } catch (error: any) {
       const isTimeout = error?.code === 'ECONNABORTED' || error?.code === 'ETIMEDOUT'
         || /timeout/i.test(error?.message ?? '');

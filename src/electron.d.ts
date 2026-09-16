@@ -482,7 +482,7 @@ export interface ElectronAPI {
     assetType: string;
     tenantId: string | null;
   }) => Promise<{ status: string; chunks?: number; error?: string; statusCode?: number; code?: string }>;
-  onCompanyUploadProgress: (callback: (p: { assetId: string; phase: 'uploading' | 'indexing'; percent: number }) => void) => () => void;
+  onCompanyUploadProgress: (callback: (p: { assetId: string; phase: 'uploading' | 'processing'; percent: number }) => void) => () => void;
   companyDeleteAsset: (assetId: string) => Promise<{ success: boolean; error?: string }>
   companySyncAsset: (assetId: string) => Promise<{ success: boolean; status?: string; error?: string }>
   companySetPersonaEngine: (enabled: boolean) => Promise<{ success: boolean; error?: string }>

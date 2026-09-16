@@ -469,11 +469,12 @@ export const KnowledgeBaseSection: React.FC<{
     assets: KnowledgeAsset[];
     assetUploading: string | null;
     /** Live backend-commit progress for the Save-time upload, keyed by asset id.
-     *  'uploading' = bytes streaming to the server (percent); 'indexing' = bytes
-     *  sent, server-side parse/vision/embed running (indeterminate — the
-     *  backend's /company-assets/upload is synchronous, so the response IS the
-     *  completion signal). */
-    assetProgress?: Record<string, { phase: 'uploading' | 'indexing'; percent: number }>;
+     *  'uploading' = bytes streaming to the server (percent); 'processing' =
+     *  bytes sent, the backend's async job (parse/vision/embed) is running and
+     *  this handler is polling GET /upload/status/{id} for it — indeterminate
+     *  here since the job has no client-observable percent, just terminal
+     *  state ("indexed" | "empty" | "failed"). */
+    assetProgress?: Record<string, { phase: 'uploading' | 'processing'; percent: number }>;
     onUpload: (type: KnowledgeAsset['type']) => void;
     onDelete: (id: string) => void;
     onDeleteAll: (type: KnowledgeAsset['type']) => void;
@@ -622,13 +623,13 @@ export const KnowledgeBaseSection: React.FC<{
                                                 {progress && (
                                                     <div className="mt-2">
                                                         <p className={`text-[10px] font-medium mb-1 ${isLight ? 'text-slate-500' : 'text-white/45'}`}>
-                                                            {progress.phase === 'indexing'
+                                                            {progress.phase === 'processing'
                                                                 ? 'Bytes sent — indexing on server… (large PDFs can take a few minutes)'
                                                                 : `Uploading to server… ${progress.percent}%`}
                                                         </p>
                                                         <div className={`h-1 overflow-hidden rounded-full ${isLight ? 'bg-slate-200' : 'bg-white/10'}`}>
                                                             <div
-                                                                className={`h-full rounded-full ${progress.phase === 'indexing'
+                                                                className={`h-full rounded-full ${progress.phase === 'processing'
                                                                     ? 'w-full animate-pulse bg-blue-500/60'
                                                                     : 'bg-blue-500 transition-all duration-300'
                                                                     }`}

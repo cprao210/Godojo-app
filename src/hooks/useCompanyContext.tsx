@@ -23,7 +23,7 @@ export const MAX_FILE_SIZE_BYTES = 5 * 1024 * 1024; // 5 MB
 
 /** Per-asset commit progress streamed from main during the Save-time upload. */
 export interface AssetUploadProgress {
-    phase: 'uploading' | 'indexing';
+    phase: 'uploading' | 'processing';
     percent: number;
 }
 
@@ -140,9 +140,10 @@ export const useCompanyContext = ({
 
     // ── Backend commit progress ────────────────────────────────────────────────
     // company:uploadAssetToBackend streams byte-level 'uploading' percents from
-    // the main process, then flips to 'indexing' once the bytes are sent — the
-    // backend's parse → vision → embed pipeline runs synchronously inside the
-    // request, so "indexing" stays indeterminate until the response lands.
+    // the main process, then flips to 'processing' once the bytes are sent —
+    // main now polls the backend's async job status (GET /upload/status/{id})
+    // until it reaches a terminal state, so 'processing' stays indeterminate
+    // here even though it's backed by real polling under the hood.
     const [assetProgress, setAssetProgress] = useState<Record<string, AssetUploadProgress>>({});
 
     useEffect(() => {
