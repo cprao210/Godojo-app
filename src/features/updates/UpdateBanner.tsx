@@ -1,78 +1,79 @@
 import React, { useEffect, useState } from 'react';
 import UpdateModal from './UpdateModal';
-
-// Persisted across restarts: the version we sent the user off to manually
-// install on macOS. Compared against app.getVersion() on next launch so we
-// can surface an explicit success toast — the one thing macOS doesn't give
-// us for free the way quitAndInstall's auto-restart does on Windows/Linux.
-const PENDING_UPDATE_KEY = 'godojo_pending_manual_update_version';
+import { useUpdateStatus } from '@/hooks';
+import { PENDING_MANUAL_UPDATE_KEY, UpdateInfo } from '@/hooks/useUpdateStatus';
+import { ParsedReleaseNotes } from '@/types';
 
 const UpdateBanner: React.FC = () => {
-    const [updateInfo, setUpdateInfo] = useState<any>(null);
-    const [parsedNotes, setParsedNotes] = useState<any>(null);
+    // Shared update state — the SAME useUpdateStatus instance shape the
+    // Settings > Updates tab uses, so the banner and the tab can never drift
+    // (previously this component kept its own duplicate state: it knew about
+    // the macOS manual-install flow while the tab downloaded via
+    // electron-updater, which fails on unsigned mac builds).
+    const {
+        updateInfo,
+        parsedNotes,
+        status,
+        downloadProgress,
+        errorMessage,
+        installUpdate,
+        startInstall,
+    } = useUpdateStatus();
+
+    // Banner-local UI state: whether the modal is on screen, the "just
+    // updated" toast, and the dev-only UI mock (the shared hook is
+    // event-driven, so a fake update can only exist locally here).
     const [isVisible, setIsVisible] = useState(false);
-    const [downloadProgress, setDownloadProgress] = useState(0);
-    const [status, setStatus] = useState<'idle' | 'downloading' | 'ready' | 'error' | 'instructions'>('idle');
-    const [errorMessage, setErrorMessage] = useState<string | null>(null);
-    const [instructionsArch, setInstructionsArch] = useState<'arm64' | 'x64' | null>(null);
     const [justUpdatedVersion, setJustUpdatedVersion] = useState<string | null>(null);
+    const [devMock, setDevMock] = useState<{ updateInfo: UpdateInfo; parsedNotes: ParsedReleaseNotes } | null>(null);
 
     // On launch: if the last thing we did was send the user to manually
     // install a version on macOS, and the running app now matches it, the
     // install succeeded — clear the flag and celebrate once.
     useEffect(() => {
-        const pending = localStorage.getItem(PENDING_UPDATE_KEY);
+        const pending = localStorage.getItem(PENDING_MANUAL_UPDATE_KEY);
         if (!pending) return;
 
+        let toastTimeout: ReturnType<typeof setTimeout> | null = null;
         window.electronAPI.getAppVersion()
             .then((current: string) => {
                 const normalize = (v: string) => v.replace(/^v/, '');
                 if (normalize(current) === normalize(pending)) {
                     setJustUpdatedVersion(current);
-                    setTimeout(() => setJustUpdatedVersion(null), 5000);
+                    toastTimeout = setTimeout(() => setJustUpdatedVersion(null), 5000);
                 }
-                localStorage.removeItem(PENDING_UPDATE_KEY);
+                localStorage.removeItem(PENDING_MANUAL_UPDATE_KEY);
             })
-            .catch(() => localStorage.removeItem(PENDING_UPDATE_KEY));
+            .catch(() => localStorage.removeItem(PENDING_MANUAL_UPDATE_KEY));
+
+        return () => {
+            if (toastTimeout) clearTimeout(toastTimeout);
+        };
     }, []);
 
     useEffect(() => {
         // Listen for update available
-        const unsubAvailable = window.electronAPI.onUpdateAvailable((info: any) => {
-            console.log('[UpdateBanner] Update available:', info);
-            setUpdateInfo(info);
-            setErrorMessage(null);
-            setStatus('idle'); // Reset from any prior error/state before showing update info
-            // If parsed notes are included in the info object (from our backend change)
-            if (info.parsedNotes) {
-                setParsedNotes(info.parsedNotes);
-            }
+        const unsubAvailable = window.electronAPI.onUpdateAvailable(() => {
             setIsVisible(true);
         });
 
-        // Listen for download progress
-        const unsubProgress = window.electronAPI.onDownloadProgress((progressObj) => {
-            // Ensure modal is visible if download starts
+        // Listen for download progress — re-open if the user hid the modal
+        // (same behavior as before; the download is user-initiated so showing
+        // it again is expected). Status/progress live in the shared hook.
+        const unsubProgress = window.electronAPI.onDownloadProgress(() => {
             setIsVisible(true);
-            setStatus('downloading');
-            setDownloadProgress(progressObj.percent);
         });
 
         // Listen for update-downloaded event
-        const unsubDownloaded = window.electronAPI.onUpdateDownloaded((info) => {
-            console.log('[UpdateBanner] Update downloaded:', info);
-            setUpdateInfo(info); // Update info again just in case
-            if (info.parsedNotes) setParsedNotes(info.parsedNotes);
-
-            setStatus('ready');
+        const unsubDownloaded = window.electronAPI.onUpdateDownloaded(() => {
             setIsVisible(true);
         });
 
-        // Listen for update errors
-        const unsubError = window.electronAPI.onUpdateError((err: string) => {
-            console.error('[UpdateBanner] Update error:', err);
-            setStatus('error');
-            setErrorMessage(err);
+        // Listen for update errors. Show them even if the modal was dismissed:
+        // a failed user-initiated download is invisible otherwise, and the
+        // stale error would sit in shared state until the next event resets it.
+        const unsubError = window.electronAPI.onUpdateError(() => {
+            setIsVisible(true);
         });
 
         return () => {
@@ -83,23 +84,25 @@ const UpdateBanner: React.FC = () => {
         };
     }, []);
 
-    // Demo/Test mode: Press Cmd+I to trigger backend test-fetch or Cmd+J for UI mock
+    // Demo/Test mode: Press Cmd/Ctrl+I to trigger backend test-fetch or
+    // Cmd/Ctrl+J for UI mock (dev only; metaKey alone is macOS-only).
     useEffect(() => {
         const handleKeyDown = (e: KeyboardEvent) => {
             if (!import.meta.env.DEV) return;
 
-            if (e.metaKey && !e.shiftKey && e.key.toLowerCase() === 'i') {
+            if ((e.metaKey || e.ctrlKey) && !e.shiftKey && e.key.toLowerCase() === 'i') {
                 e.preventDefault();
-                console.log("[UpdateBanner] Cmd+I pressed: Triggering Test Release Fetch...");
+                console.log("[UpdateBanner] Cmd/Ctrl+I pressed: Triggering Test Release Fetch...");
                 window.electronAPI.testReleaseFetch().catch(console.error);
             }
 
-            if (e.metaKey && !e.shiftKey && e.key.toLowerCase() === 'j') {
+            if ((e.metaKey || e.ctrlKey) && !e.shiftKey && e.key.toLowerCase() === 'j') {
                 e.preventDefault();
-                console.log("[UpdateBanner] Cmd+J pressed: Triggering Instruction UI mock...");
-                setUpdateInfo({ version: '2.0.8' });
-                setParsedNotes({ summary: 'Test Update', fullBody: 'Testing', sections: [{ title: 'Notes', items: ['UI Test'] }] });
-                setStatus('idle');
+                console.log("[UpdateBanner] Cmd/Ctrl+J pressed: Triggering Instruction UI mock...");
+                setDevMock({
+                    updateInfo: { version: '2.0.8' },
+                    parsedNotes: { summary: 'Test Update', fullBody: 'Testing', sections: [{ title: 'Notes', items: ['UI Test'] }] } as ParsedReleaseNotes,
+                });
                 setIsVisible(true);
             }
         };
@@ -107,40 +110,12 @@ const UpdateBanner: React.FC = () => {
         return () => window.removeEventListener('keydown', handleKeyDown);
     }, []);
 
-    const handleInstall = async () => {
-        // macOS: manual browser download + install, until Developer ID
-        // signing + notarization are set up (electron-updater's Squirrel.Mac
-        // requires a real code signature — see package.json mac.identity,
-        // currently null, and scripts/ad-hoc-sign.js). Revisit this once
-        // that's configured; Windows/Linux are unaffected either way.
-        if (window.electronAPI.platform === 'darwin') {
-            try {
-                const arch = await window.electronAPI.getArch();
-                const isArm = arch === 'arm64';
-                const dmgSuffix = isArm ? 'arm64' : 'x64';
-                setInstructionsArch(dmgSuffix);
-                const version = updateInfo?.version ? updateInfo.version.replace('v', '') : '2.0.8';
-                // NOTE: matches package.json publish.owner/repo (cprao210/Godojo-app)
-                // and the default electron-builder dmg artifactName pattern
-                // "${productName}-${version}-${arch}.dmg" for productName "GoDojo.AI".
-                const url = `https://github.com/cprao210/Godojo-app/releases/download/v${version}/GoDojo.AI-${version}-${dmgSuffix}.dmg`;
-                localStorage.setItem(PENDING_UPDATE_KEY, version);
-                window.electronAPI.openExternal(url);
-                setStatus('instructions');
-            } catch (err) {
-                console.error("Failed to get arch", err);
-                setStatus('downloading');
-                window.electronAPI.downloadUpdate();
-            }
-        } else {
-            setStatus('downloading');
-            window.electronAPI.downloadUpdate();
-        }
-    };
-
     const handleDismiss = () => {
         setIsVisible(false);
-        setStatus('idle'); // Reset error/downloading state so next event starts clean
+        // Intentionally does NOT touch shared status: dismissing the banner
+        // must not erase what the hook knows (a 'ready' install, an in-flight
+        // download, an error for the Settings tab badge). The modal is just a
+        // view; the hook re-opens it via the listeners above.
     };
 
     // Same as dismiss today — kept as a distinct handler so "Remind Me Later"
@@ -149,20 +124,29 @@ const UpdateBanner: React.FC = () => {
         handleDismiss();
     };
 
+    // Statuses the modal knows how to render beyond the release-notes view.
+    // The banner only opens itself on real events, so 'instructions'/'error'
+    // arrive here only while the modal is already up (or via the error
+    // listener re-opening it) — never out of nowhere. In dev the UI mock
+    // overrides what's displayed.
+    const modalStatus = status;
+    const modalNotes = (devMock?.parsedNotes ?? parsedNotes) as ParsedReleaseNotes | null;
+    const modalInfo = (devMock?.updateInfo ?? updateInfo) as UpdateInfo | null;
+
     return (
         <>
             {isVisible && (
                 <UpdateModal
                     isOpen={isVisible}
-                    updateInfo={updateInfo}
-                    parsedNotes={parsedNotes}
+                    updateInfo={modalInfo}
+                    parsedNotes={modalNotes}
                     onDismiss={handleDismiss}
-                    onInstall={handleInstall}
+                    onInstall={startInstall}
+                    onInstallUpdate={installUpdate}
                     onRemindLater={handleRemindLater}
                     downloadProgress={downloadProgress}
-                    status={status}
+                    status={modalStatus}
                     errorMessage={errorMessage}
-                    instructionsArch={instructionsArch}
                 />
             )}
 

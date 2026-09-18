@@ -7,7 +7,7 @@
  */
 
 import React from 'react';
-import { Briefcase, CheckCircle2, Lightbulb, ChevronRight, TrendingUp } from 'lucide-react';
+import { Briefcase, CheckCircle2, Lightbulb, ChevronRight, ChevronLeft, TrendingUp } from 'lucide-react';
 import { DimensionGaugeProps, StrengthOrGap, RecentCall } from '@/types';
 import { Skeleton } from './shared';
 
@@ -236,3 +236,60 @@ export const RecentCallsList: React.FC<{ calls: RecentCall[]; isLight: boolean; 
         ))}
     </div>
 );
+
+// ─── Recent calls pagination footer ──────────────────────────────────────────
+// Same page-number-buttons pattern as MembersTable's footer, adapted for a
+// client-side slice (the AE detail endpoint returns the whole recent_calls
+// array in one response, so there's no separate page fetch to trigger here —
+// `onPageChange` just moves which slice of the already-loaded list is shown).
+export const RecentCallsPagination: React.FC<{
+    page: number;
+    totalPages: number;
+    rangeStart: number;
+    rangeEnd: number;
+    total: number;
+    isLight: boolean;
+    onPageChange: (page: number) => void;
+}> = ({ page, totalPages, rangeStart, rangeEnd, total, isLight, onPageChange }) => {
+    if (total === 0) return null;
+
+    return (
+        <div className={`flex items-center justify-between pt-3 mt-1 border-t ${isLight ? 'border-slate-100' : 'border-border-subtle'}`}>
+            <span className="text-xs text-text-tertiary">
+                Showing {rangeStart} to {rangeEnd} of {total} meetings
+            </span>
+            {totalPages > 1 && (
+                <div className="flex items-center gap-1.5">
+                    <button
+                        onClick={() => onPageChange(Math.max(1, page - 1))}
+                        disabled={page <= 1}
+                        className="w-7 h-7 rounded-lg border border-border-subtle flex items-center justify-center text-text-tertiary disabled:opacity-40 hover:text-text-primary transition-colors"
+                        aria-label="Previous page"
+                    >
+                        <ChevronLeft size={14} />
+                    </button>
+                    {Array.from({ length: totalPages }, (_, i) => i + 1).map((n) => (
+                        <button
+                            key={n}
+                            onClick={() => onPageChange(n)}
+                            className={`w-7 h-7 rounded-lg text-xs font-semibold flex items-center justify-center transition-colors ${n === page
+                                ? 'bg-blue-600 text-white'
+                                : 'text-text-tertiary hover:text-text-primary border border-border-subtle'
+                                }`}
+                        >
+                            {n}
+                        </button>
+                    ))}
+                    <button
+                        onClick={() => onPageChange(Math.min(totalPages, page + 1))}
+                        disabled={page >= totalPages}
+                        className="w-7 h-7 rounded-lg border border-border-subtle flex items-center justify-center text-text-tertiary disabled:opacity-40 hover:text-text-primary transition-colors"
+                        aria-label="Next page"
+                    >
+                        <ChevronRight size={14} />
+                    </button>
+                </div>
+            )}
+        </div>
+    );
+};

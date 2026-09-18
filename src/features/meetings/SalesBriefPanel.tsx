@@ -1,6 +1,6 @@
-import React from 'react';
+import React, { useState } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
-import { X, ExternalLink, RefreshCw, Copy, Check, Building2, Users, TrendingUp } from 'lucide-react';
+import { X, ExternalLink, RefreshCw, Copy, Check, Building2, Users, TrendingUp, ChevronDown } from 'lucide-react';
 import { DollarSign, Layers, Rocket, Newspaper, UserCheck, Linkedin, Target, Map } from 'lucide-react';
 import { Star, ChevronRight, AlertCircle, WifiOff, Trophy, Zap, GitBranch, Briefcase } from 'lucide-react';
 import { useResolvedTheme, useCompanyIntel, hasValue, pickValue, isIntelEmpty, openExternalUrl, LOADING_STAGES } from '@/hooks';
@@ -43,6 +43,48 @@ interface NoDataPlaceholderProps {
 const Skeleton: React.FC<SkeletonProps> = ({ w = 'w-full', h = 'h-3', className = '', isLight = false }) => (
     <div className={`${w} ${h} rounded-md animate-pulse ${isLight ? 'bg-slate-200' : 'bg-white/[0.07]'} ${className}`} />
 );
+
+// ─── Company logo (favicon-derived) with graceful fallback to initials ───────
+interface CompanyLogoProps {
+    website: string | null | undefined;
+    fallbackLetter: string;
+    isLight: boolean;
+}
+
+const CompanyLogo: React.FC<CompanyLogoProps> = ({ website, fallbackLetter, isLight }) => {
+    const [imgFailed, setImgFailed] = useState(false);
+
+    const domain = website
+        ? website.replace(/^https?:\/\//, '').split('/')[0].replace(/^www\./, '')
+        : null;
+
+    // Google's favicon service is used as it requires no API key and works
+    // for the vast majority of public company domains. Falls back to the
+    // initials avatar below if the image errors out (404, blocked, etc.)
+    // or if we have no website to derive a domain from.
+    const logoUrl = domain ? `https://www.google.com/s2/favicons?sz=128&domain=${domain}` : null;
+
+    if (logoUrl && !imgFailed) {
+        return (
+            <div className={['flex h-12 w-12 shrink-0 items-center justify-center rounded-xl border overflow-hidden',
+                isLight ? 'bg-white border-slate-200 shadow-sm' : 'bg-white/[0.07] border-white/[0.1]'].join(' ')}>
+                <img
+                    src={logoUrl}
+                    alt=""
+                    className="h-7 w-7 object-contain"
+                    onError={() => setImgFailed(true)}
+                />
+            </div>
+        );
+    }
+
+    return (
+        <div className={['flex h-12 w-12 shrink-0 items-center justify-center rounded-xl text-xl font-bold border',
+            isLight ? 'bg-white border-slate-200 text-slate-700 shadow-sm' : 'bg-white/[0.07] border-white/[0.1] text-white'].join(' ')}>
+            {fallbackLetter}
+        </div>
+    );
+};
 
 // ─── Single field row ─────────────────────────────────────────────────────────
 const Field: React.FC<FieldProps> = ({ icon, label, value, isLight, loading, accent }) => (
@@ -191,6 +233,8 @@ const SalesBriefPanel: React.FC<SalesBriefPanelProps> = ({ eventData, onClose })
     const companyIntelStates = useCompanyIntel(eventData);
     const { intel, loading, error, loadingStage, isCopied } = companyIntelStates;
     const { fromCache, companyName, fetchIntel, copyToClipboard } = companyIntelStates;
+    const { candidates, selectedIndex, selectCandidate } = companyIntelStates;
+    const [pickerOpen, setPickerOpen] = React.useState(false);
 
     const openUrl = openExternalUrl;
     // `isSet` for boolean guards (`isSet(x) && <JSX/>`); `pick` when the
@@ -239,6 +283,7 @@ const SalesBriefPanel: React.FC<SalesBriefPanelProps> = ({ eventData, onClose })
                             </p>
                         </div>
                     </div>
+
                     <div className="flex items-center gap-1.5">
                         {intel && (
                             <>
@@ -263,6 +308,65 @@ const SalesBriefPanel: React.FC<SalesBriefPanelProps> = ({ eventData, onClose })
                                 </button>
                             </>
                         )}
+                        {/* ── Company picker — only when attendees span more than one
+                        company (e.g. a group demo with 3 different domains) ── */}
+                        {candidates.length > 1 && (
+                            <div className={['relative px-5 py-2.5 shrink-0',
+                                isLight ? 'border-slate-200/60' : 'border-white/[0.06]'].join(' ')}>
+                                <button
+                                    onClick={() => setPickerOpen((o) => !o)}
+                                    className={[
+                                        'flex items-center gap-2 w-full px-3 py-1.5 rounded-lg text-[12px] font-medium transition-colors',
+                                        isLight ? 'bg-white border border-slate-200 text-slate-700 hover:bg-slate-50' : 'bg-white/[0.05] border border-white/[0.08] text-slate-200 hover:bg-white/[0.08]',
+                                    ].join(' ')}
+                                >
+                                    <Building2 size={12} className={isLight ? 'text-slate-400' : 'text-slate-500'} />
+                                    <span className="flex-1 text-left truncate">
+                                        {candidates[selectedIndex]?.companyName ?? 'Select company'}
+                                    </span>
+                                    <span className={['text-[10px]', isLight ? 'text-slate-400' : 'text-slate-500'].join(' ')}>
+                                        {selectedIndex + 1} of {candidates.length}
+                                    </span>
+                                    <ChevronDown size={12} className={[
+                                        'transition-transform', pickerOpen ? 'rotate-180' : '',
+                                        isLight ? 'text-slate-400' : 'text-slate-500',
+                                    ].join(' ')} />
+                                </button>
+
+                                <AnimatePresence>
+                                    {pickerOpen && (
+                                        <motion.div
+                                            initial={{ opacity: 0, y: -4 }}
+                                            animate={{ opacity: 1, y: 0 }}
+                                            exit={{ opacity: 0, y: -4 }}
+                                            transition={{ duration: 0.15 }}
+                                            className={[
+                                                'absolute left-5 right-5 mt-1 rounded-lg overflow-hidden z-10',
+                                                isLight ? 'bg-white border border-slate-200 shadow-lg' : 'bg-[#171a23] border border-white/[0.08] shadow-xl',
+                                            ].join(' ')}
+                                        >
+                                            {candidates.map((c, i) => (
+                                                <button
+                                                    key={c.domain}
+                                                    onClick={() => { selectCandidate(i); setPickerOpen(false); }}
+                                                    className={[
+                                                        'flex items-center justify-between gap-3 w-full px-3 py-2 text-[12px] transition-colors',
+                                                        i === selectedIndex
+                                                            ? (isLight ? 'bg-blue-50 text-blue-700 font-medium' : 'bg-blue-500/15 text-blue-300 font-medium')
+                                                            : (isLight ? 'text-slate-600 hover:bg-slate-50' : 'text-slate-300 hover:bg-white/[0.06]'),
+                                                    ].join(' ')}
+                                                >
+                                                    <span className="truncate min-w-0 text-left">{c.companyName}</span>
+                                                    <span className={['text-[10px] shrink-0 whitespace-nowrap', isLight ? 'text-slate-400' : 'text-slate-500'].join(' ')}>
+                                                        {c.domain}
+                                                    </span>
+                                                </button>
+                                            ))}
+                                        </motion.div>
+                                    )}
+                                </AnimatePresence>
+                            </div>
+                        )}
                         <button
                             onClick={onClose}
                             className={['p-1.5 rounded-lg transition-colors',
@@ -272,6 +376,8 @@ const SalesBriefPanel: React.FC<SalesBriefPanelProps> = ({ eventData, onClose })
                         </button>
                     </div>
                 </div>
+
+
 
                 {/* ── Scrollable body ── */}
                 <div className="flex-1 overflow-y-auto custom-scrollbar">
@@ -363,11 +469,12 @@ const SalesBriefPanel: React.FC<SalesBriefPanelProps> = ({ eventData, onClose })
                                 {/* ── Company header card ── */}
                                 <div className={['flex items-center gap-4 px-5 py-4 mx-0 mt-4 mb-2 rounded-xl border',
                                     isLight ? 'bg-slate-50 border-slate-200/70' : 'bg-white/[0.03] border-white/[0.06]'].join(' ')}>
-                                    {/* Logo placeholder */}
-                                    <div className={['flex h-12 w-12 shrink-0 items-center justify-center rounded-xl text-xl font-bold border',
-                                        isLight ? 'bg-white border-slate-200 text-slate-700 shadow-sm' : 'bg-white/[0.07] border-white/[0.1] text-white'].join(' ')}>
-                                        {(pick(intel.companyName) || companyName || '?').charAt(0).toUpperCase()}
-                                    </div>
+                                    {/* Logo (falls back to initials if unavailable) */}
+                                    <CompanyLogo
+                                        website={intel.website}
+                                        fallbackLetter={(pick(intel.companyName) || companyName || '?').charAt(0).toUpperCase()}
+                                        isLight={isLight}
+                                    />
                                     {/* Name + website */}
                                     <div className="flex-1 min-w-0">
                                         <p className="text-[16px] font-bold text-text-primary leading-tight truncate">
@@ -386,20 +493,6 @@ const SalesBriefPanel: React.FC<SalesBriefPanelProps> = ({ eventData, onClose })
                                     </div>
                                     {/* Stat pills */}
                                     <div className="flex items-center gap-5 shrink-0">
-                                        {isSet(intel.companyAge) && (
-                                            <div className="text-center">
-                                                <p className="text-[15px] font-bold text-text-primary">{intel.companyAge}</p>
-                                                <p className={['text-[9px] uppercase tracking-wider font-semibold',
-                                                    isLight ? 'text-slate-400' : 'text-slate-500'].join(' ')}>Years Old</p>
-                                            </div>
-                                        )}
-                                        {isSet(intel.employeeCount) && (
-                                            <div className="text-center">
-                                                <p className="text-[15px] font-bold text-text-primary">{intel.employeeCount}</p>
-                                                <p className={['text-[9px] uppercase tracking-wider font-semibold',
-                                                    isLight ? 'text-slate-400' : 'text-slate-500'].join(' ')}>Employees</p>
-                                            </div>
-                                        )}
                                         {isSet(intel.headquarters) && (
                                             <div className="text-center max-w-[100px]">
                                                 <p className={['text-[11px] font-semibold leading-tight text-center',
@@ -421,6 +514,10 @@ const SalesBriefPanel: React.FC<SalesBriefPanelProps> = ({ eventData, onClose })
                                         <SectionHeader title="Company Profile" isLight={isLight} />
                                         <Field icon={<Layers size={12} />} label="Industry / Category" isLight={isLight}
                                             value={pick(intel.industry) || <span className="opacity-40">—</span>} />
+                                        {isSet(intel.employeeCount) && (
+                                            <Field icon={<Users size={12} />} label="Employees" isLight={isLight}
+                                                value={intel.employeeCount} />
+                                        )}
                                         <Field icon={<DollarSign size={12} />} label="Revenue / Turnover" isLight={isLight}
                                             value={pick(intel.revenue) || <span className="opacity-40">Not available</span>} />
                                         <Field icon={<TrendingUp size={12} />} label="Valuation" isLight={isLight}

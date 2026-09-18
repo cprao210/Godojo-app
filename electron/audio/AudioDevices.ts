@@ -3,7 +3,23 @@ import { loadNativeModule } from './nativeModuleLoader';
 // NativeModule may be null if the Rust binary isn't built yet (new clone without `npm run build:native`).
 // All methods below handle this gracefully by returning empty arrays.
 const NativeModule: any = loadNativeModule();
-const { getInputDevices, getOutputDevices } = NativeModule || {};
+const { getInputDevices, getOutputDevices, getOutputRoute } = NativeModule || {};
+
+/**
+ * Names that identify Apple's built-in microphone / speakers. Deliberately
+ * broad ("internal" catches some Macs), which is why the whole heuristic is
+ * scoped to darwin — "Internal Microphone" is a common external-device name
+ * on Windows.
+ */
+const BUILTIN_PATTERNS = /built.?in|macbook|internal|speaker.*mac|mac.*speaker/i;
+
+/**
+ * Output-device ids that are NOT device selections. The meeting path sends
+ * `outputDeviceId: 'sck'` to force the ScreenCaptureKit capture backend (see
+ * useMeetingSession.ts) — it is a backend selector, and says nothing at all
+ * about which speaker the user is listening through.
+ */
+const NON_DEVICE_OUTPUT_IDS = new Set(['sck']);
 
 export interface AudioDevice {
     id: string;
@@ -38,79 +54,149 @@ export class AudioDevices {
     }
 
     /**
-     * Determines whether the user is operating with ONLY built-in audio
-     * (built-in microphone + built-in speakers), with no external input or
-     * output device selected.
+     * The output route as the native layer resolves it — kind
+     * ("headphones" | "speakers" | "unknown"), transport, and device name.
      *
-     * This is the key signal for deciding whether to enable VAD passthrough
-     * on MicrophoneCapture.  When true, macOS Acoustic Echo Cancellation (AEC)
-     * is active and attenuates the mic signal, so local VAD must be disabled.
+     * `getOutputDevices()` has no `default` entry, so this is the ONLY signal
+     * for which output device is actually in use. Same source
+     * AudioDeviceWatcher._snapshot() reads.
+     */
+    public static getActiveOutputRoute(): { kind: string; transport: string; name: string } | null {
+        if (typeof getOutputRoute !== 'function') return null;
+        try {
+            const r = getOutputRoute();
+            if (!r) return null;
+            return { kind: r.kind ?? '', transport: r.transport ?? '', name: r.name ?? '' };
+        } catch (e) {
+            console.error('[AudioDevices] Failed to read the output route:', e);
+            return null;
+        }
+    }
+
+    /**
+     * Name of the device the OS default input currently resolves to.
      *
-     * Detection heuristics (macOS):
-     *   • Input device ID is null / "default" / missing
-     *   • Input device name contains "Built-in" or "MacBook" (case-insensitive)
-     *   • Output device ID is null / "default" / missing
-     *   • Output device name contains "Built-in" or "MacBook" (case-insensitive)
+     * list_input_devices() synthesizes a `default` entry whose label embeds the
+     * real device — "Default Microphone (MacBook Air Microphone)". That label is
+     * the only default-input signal the native API exposes.
+     */
+    public static getActiveInputName(): string {
+        return AudioDevices.getInputDevices().find(d => d.id === 'default')?.name ?? '';
+    }
+
+    /**
+     * Whether the audio actually IN USE is built-in mic + built-in speakers.
      *
-     * When an explicit external device ID is provided (e.g. from user settings),
-     * we trust that value directly and skip enumeration.
+     * This is the signal for disabling the local VAD gate on MicrophoneCapture:
+     * in that configuration macOS Acoustic Echo Cancellation attenuates the mic,
+     * and the two-stage RMS+VAD gate then reads the quietened speech as silence
+     * and discards it — the user's voice never reaches the transcriber.
      *
-     * @param inputDeviceId  - The requested input device ID (from user settings)
-     * @param outputDeviceId - The requested output device ID (from user settings)
-     * @returns true if the session is built-in-only (VAD should be disabled on mic)
+     * It asks about the ACTIVE devices, not what is plugged in. The previous
+     * implementation returned false whenever ANY non-built-in device merely
+     * existed on the system, or whenever an explicit id was set for either
+     * channel. Both were wrong in the field: a MacBook Air running on its own
+     * mic and speakers, with one unrelated device attached, kept VAD active and
+     * lost ~75% of the user's frames to the RMS gate (mic RMS 29-341 against an
+     * adaptive threshold of 227-268). The explicit-id shortcut had the same
+     * effect on every meeting, because the meeting path passes the non-device
+     * sentinel 'sck' as the output id.
+     *
+     * Fail-safe in every uncertain case: return false and leave VAD active.
+     * Unfiltered audio costs money; discarded audio costs the transcript.
+     *
+     * @param inputDeviceId  - requested input id, or null/'default' for the OS default
+     * @param outputDeviceId - requested output id, or null/'default' for the OS default
+     * @returns true when both active devices are built-in (disable VAD on mic)
      */
     public static isBuiltinOnly(
         inputDeviceId?: string | null,
         outputDeviceId?: string | null
     ): boolean {
-        // This built-in-only heuristic exists to disable the local mic VAD gate in
-        // the macOS built-in-mic/speaker scenario (where the echo pipeline needs raw
-        // audio). The rationale is macOS-specific, and the name patterns below (e.g.
-        // /internal/) can spuriously match real Windows device names ("Internal
-        // Microphone"), wrongly disabling VAD there. Scope the whole heuristic to
-        // macOS: on every other platform the mic VAD stays active (return false).
+        // The rationale above is macOS-specific, and BUILTIN_PATTERNS matches
+        // real external Windows device names ("Internal Microphone"). Every
+        // other platform keeps the mic VAD active.
         if (process.platform !== 'darwin') {
             console.log('[AudioDevices] isBuiltinOnly: non-darwin — VAD remains active on mic');
             return false;
         }
 
-        const BUILTIN_PATTERNS = /built.?in|macbook|internal|speaker.*mac|mac.*speaker/i;
         const isDefaultOrEmpty = (id?: string | null) =>
             !id || id === 'default' || id.trim() === '';
 
-        // If an explicit non-default device ID is set for EITHER channel, at
-        // least one external device is in use — do NOT disable VAD.
-        if (!isDefaultOrEmpty(inputDeviceId)) return false;
-        if (!isDefaultOrEmpty(outputDeviceId)) return false;
-
-        // Both channels are "default".  Check what the default actually resolves to
-        // by inspecting the enumerated device names.
         try {
-            const inputDevices = AudioDevices.getInputDevices();
-            const outputDevices = AudioDevices.getOutputDevices();
+            // ── Active input ────────────────────────────────────────────────
+            let inputName: string;
+            if (isDefaultOrEmpty(inputDeviceId)) {
+                inputName = AudioDevices.getActiveInputName();
+            } else {
+                const dev = AudioDevices.getInputDevices().find(d => d.id === inputDeviceId);
+                // A selected device we cannot resolve is unknown, not built-in.
+                if (!dev) {
+                    console.log(
+                        `[AudioDevices] isBuiltinOnly: input "${inputDeviceId}" did not resolve — VAD remains active`
+                    );
+                    return false;
+                }
+                inputName = dev.name;
+            }
 
-            // If there are any non-built-in input devices in the system, the user
-            // may have an external mic as the system default.  We cannot know for
-            // certain without deeper CoreAudio inspection, so we conservatively
-            // return false (keep VAD active) — better to have VAD gating than to
-            // flood Deepgram with unfiltered audio when an external device exists.
-            const hasExternalInput = inputDevices.some(
-                d => !BUILTIN_PATTERNS.test(d.name) && d.id !== 'default'
-            );
-            const hasExternalOutput = outputDevices.some(
-                d => !BUILTIN_PATTERNS.test(d.name) && d.id !== 'default'
-            );
-
-            if (hasExternalInput || hasExternalOutput) {
-                console.log('[AudioDevices] isBuiltinOnly: external device detected — VAD will remain active');
+            if (!inputName || !BUILTIN_PATTERNS.test(inputName)) {
+                console.log(
+                    `[AudioDevices] isBuiltinOnly: active input "${inputName || 'unknown'}" is not built-in — VAD remains active`
+                );
                 return false;
             }
 
-            // No external devices found at all — definitely built-in only
-            console.log('[AudioDevices] isBuiltinOnly: only built-in devices detected — VAD will be disabled on mic');
+            // ── Active output ───────────────────────────────────────────────
+            const outputIsSelectable =
+                !isDefaultOrEmpty(outputDeviceId) &&
+                !NON_DEVICE_OUTPUT_IDS.has(String(outputDeviceId));
+
+            let outputName: string;
+            if (outputIsSelectable) {
+                const dev = AudioDevices.getOutputDevices().find(d => d.id === outputDeviceId);
+                if (!dev) {
+                    console.log(
+                        `[AudioDevices] isBuiltinOnly: output "${outputDeviceId}" did not resolve — VAD remains active`
+                    );
+                    return false;
+                }
+                outputName = dev.name;
+            } else {
+                const route = AudioDevices.getActiveOutputRoute();
+                if (!route) {
+                    console.log('[AudioDevices] isBuiltinOnly: output route unavailable — VAD remains active');
+                    return false;
+                }
+                // Headphones have no acoustic path back into the mic, so macOS
+                // is not attenuating it and the gate has nothing to fight.
+                if (route.kind === 'headphones') {
+                    console.log('[AudioDevices] isBuiltinOnly: headphones active — VAD remains active');
+                    return false;
+                }
+                // transport is the authoritative signal; the name is a fallback
+                // for backends that do not report one.
+                if (route.transport === 'built-in') {
+                    console.log(
+                        `[AudioDevices] isBuiltinOnly: built-in mic + built-in output ("${route.name}") — VAD will be disabled on mic`
+                    );
+                    return true;
+                }
+                outputName = route.name;
+            }
+
+            if (!outputName || !BUILTIN_PATTERNS.test(outputName)) {
+                console.log(
+                    `[AudioDevices] isBuiltinOnly: active output "${outputName || 'unknown'}" is not built-in — VAD remains active`
+                );
+                return false;
+            }
+
+            console.log('[AudioDevices] isBuiltinOnly: only built-in devices in use — VAD will be disabled on mic');
             return true;
         } catch (e) {
-            console.warn('[AudioDevices] isBuiltinOnly: device enumeration failed, defaulting to false', e);
+            console.warn('[AudioDevices] isBuiltinOnly: device resolution failed, defaulting to false', e);
             // Fail safe: don't disable VAD if we can't determine device state
             return false;
         }

@@ -19,7 +19,8 @@
 import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import { useShortcuts } from "@/hooks";
 import { OVERLAY_OPACITY_DEFAULT } from "@/lib/overlayAppearance";
-import { GodojoInterfaceMessage, GodojoInterfaceProps } from "@/types";
+import { boundRolling } from "@/lib/rollingTranscript";
+import { CalendarEvent, GodojoInterfaceMessage, GodojoInterfaceProps } from "@/types";
 
 export function useGodojoInterface({ overlayOpacity = OVERLAY_OPACITY_DEFAULT }: GodojoInterfaceProps) {
     // `overlayOpacity` is accepted for interface compatibility (App.tsx still
@@ -51,11 +52,57 @@ export function useGodojoInterface({ overlayOpacity = OVERLAY_OPACITY_DEFAULT }:
     // Add near the other useState declarations at the top of the hook
     const [companyIntel, setCompanyIntel] = useState<Record<string, any> | null>(null);
 
-    const speakerNamesRef = useRef<{ user: string; client: string }>({ user: 'Me', client: 'Them' });
+    // Default speaker labels, used until the main process resolves real names
+    // from the calendar invite (e.g. "Nikhil", "Salesforce"). Kept as "You" /
+    // "Other Party" so they match the labels used everywhere else the speaker
+    // is displayed post-call (Transcript tab, Speaking Balance) — these get
+    // persisted as `displayName` on each transcript segment, so a mismatch
+    // here previously showed up as "Me"/"Them" in the saved transcript even
+    // though the rest of the app said "You"/"Other Party".
+    const speakerNamesRef = useRef<{ user: string; client: string }>({ user: 'You', client: 'Other Party' });
     const [speakerNames, setSpeakerNames] = useState<{ user: string; client: string }>({
-        user: 'Me',
-        client: 'Them'
+        user: 'You',
+        client: 'Other Party'
     });
+
+    // Calendar event metadata the current meeting was started with — needed
+    // to forward to /chat/live (FloatingChatPanel) so the live in-call
+    // assistant has the same event context (attendees, organizer, link, etc.)
+    // that gets persisted to meetings.calendar_event_metadata once the call
+    // ends. Overlay is a separate window/renderer from wherever startMeeting()
+    // was originally called, so this can't just be prop-drilled — it has to
+    // come back over IPC.
+    //
+    // IMPORTANT: the overlay window is created once and reused (show/hide)
+    // across every meeting — see WindowHelper — so GodojoInterface itself
+    // only ever mounts once per app session, not once per meeting. A
+    // mount-only fetch (`useEffect(..., [])`) therefore only ever captures
+    // whichever meeting happened to be active (or none) the very first time
+    // this component mounted, and silently goes stale for every meeting
+    // after that — which is exactly why calendar_metadata showed up as `[]`
+    // in the network tab despite the DB row having real data by the end of
+    // the call. Refetching on 'speaker-names-resolved' fixes this: that
+    // event already fires reliably exactly once per meeting start, right
+    // after IntelligenceManager.setMeetingMetadata() has run.
+    const [calendarEventMetadata, setCalendarEventMetadata] = useState<CalendarEvent[] | undefined>(undefined);
+
+    const refreshCalendarEventMetadata = () => {
+        if (!window.electronAPI?.getMeetingMetadata) return;
+        window.electronAPI.getMeetingMetadata()
+            .then((metadata) => {
+                setCalendarEventMetadata(metadata?.calendarEvent ? [metadata.calendarEvent] : undefined);
+            })
+            .catch(() => { /* non-fatal — live chat just proceeds without calendar context */ });
+    };
+
+    useEffect(() => {
+        refreshCalendarEventMetadata(); // covers first load / page refresh mid-meeting
+
+        const unsubscribe = window.electronAPI?.onSpeakerNamesResolved?.(() => {
+            refreshCalendarEventMetadata();
+        });
+        return () => unsubscribe?.();
+    }, []);
 
     // Add alongside the other IPC useEffect listeners
     useEffect(() => {
@@ -110,9 +157,9 @@ export function useGodojoInterface({ overlayOpacity = OVERLAY_OPACITY_DEFAULT }:
         return () => window.removeEventListener('storage', handleStorage);
     }, []);
 
-    // Per-speaker rolling transcript state — keeps "Me" and "Them" text strictly isolated
-    const [rollingTranscriptUser, setRollingTranscriptUser] = useState('');   // "Me" track
-    const [rollingTranscriptClient, setRollingTranscriptClient] = useState(''); // "Them" track
+    // Per-speaker rolling transcript state — keeps "You" and "Other Party" text strictly isolated
+    const [rollingTranscriptUser, setRollingTranscriptUser] = useState('');   // "You" track
+    const [rollingTranscriptClient, setRollingTranscriptClient] = useState(''); // "Other Party" track
     const [isClientSpeaking, setIsClientSpeaking] = useState(false);  // Track if actively speaking
     const [isUserSpeaking, setIsUserSpeaking] = useState(false);      // Track if user is speaking
     // True while the tail of a rolling track is an un-finalized partial.
@@ -226,40 +273,130 @@ export function useGodojoInterface({ overlayOpacity = OVERLAY_OPACITY_DEFAULT }:
         return () => unsub?.();
     }, []);
 
-    // Auto-resize Window
+    // ── Window resize pipeline ────────────────────────────────────────────
+    //
+    // PERFORMANCE-CRITICAL: `updateContentDimensions` ultimately calls
+    // BrowserWindow.setContentSize()/setPosition() in the main process — a
+    // real, synchronous native OS window resize. It is NOT a cheap
+    // GPU-composited operation like a CSS transform.
+    //
+    // The dock's height is animated with a framer-motion spring across
+    // expand/collapse and panel switches (~20-30 frames over ~300-500ms).
+    // Naively wiring a ResizeObserver straight to this IPC call means every
+    // one of those frames fires a native window resize — fine on a
+    // discrete GPU, but a major source of stutter/hangs on integrated-GPU or
+    // otherwise mid-range machines, where resizing a real top-level window
+    // repeatedly in under half a second is comparatively expensive.
+    //
+    // Fix: known, discrete size transitions (the dock's expand/collapse
+    // states) are resized EXPLICITLY and ONCE per transition via
+    // `requestOverlayResize`, called by FloatingDock — immediately when
+    // growing (so the window is already big enough before content animates
+    // into it, avoiding clipping) and once the animation completes when
+    // shrinking (so the window doesn't clip the content mid-shrink). See
+    // FloatingDock.tsx.
+    //
+    // The ResizeObserver below still exists as a generic SAFETY NET for
+    // anything not covered by that explicit path (e.g. an unexpected reflow
+    // from a font finishing loading), but it's debounced to the trailing
+    // edge only — it deliberately does not try to track every intermediate
+    // animation frame, so it can never become the same per-frame-resize
+    // problem it's guarding against.
+    const appliedDimsRef = useRef<{ width: number; height: number } | null>(null);
+    const WIDTH_JITTER_TOLERANCE_PX = 2;
+    const RESIZE_FALLBACK_DEBOUNCE_MS = 220;
+
+    // Sends dimensions to Electron exactly once per meaningfully-different
+    // size. `width` is guarded against sub-pixel jitter: getBoundingClientRect
+    // returns floats, and on displays with fractional OS scaling (common on
+    // laptop panels, rare on external monitors run at 100%) those floats
+    // jitter by a fraction of a px between renders — enough for Math.ceil to
+    // flip between e.g. 429 and 430. WindowHelper.setOverlayDimensions uses
+    // width to re-anchor the window's right edge, so unfiltered jitter here
+    // previously showed up as the dock nudging sideways on every resize.
+    const applyContentDimensions = (rawWidth: number, height: number) => {
+        const applied = appliedDimsRef.current;
+        const width =
+            applied && Math.abs(rawWidth - applied.width) <= WIDTH_JITTER_TOLERANCE_PX
+                ? applied.width
+                : rawWidth;
+
+        if (applied && applied.width === width && applied.height === height) return;
+
+        appliedDimsRef.current = { width, height };
+        window.electronAPI?.updateContentDimensions({ width, height });
+    };
+
+    // Pending trailing-edge measurement from the fallback ResizeObserver below.
+    // Declared above requestOverlayResize so the explicit path can cancel it.
+    const fallbackResizeTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+    // Explicit, single-shot resize for known/discrete size changes (the
+    // dock's own expand/collapse + panel-switch states). Bypasses the
+    // fallback observer's debounce entirely — callers control timing.
+    const requestOverlayResize = (height: number, width?: number) => {
+        // An explicit resize OWNS the current transition. Any fallback
+        // measurement scheduled before it must be cancelled: it would fire
+        // mid-animation with a stale or intermediate height and shrink the
+        // window underneath the animating content (visible clip/jump until
+        // the next observation corrected it). The observer reschedules after
+        // the animation settles, and its settled measurement then dedupes to
+        // a no-op in applyContentDimensions.
+        if (fallbackResizeTimeoutRef.current) {
+            clearTimeout(fallbackResizeTimeoutRef.current);
+            fallbackResizeTimeoutRef.current = null;
+        }
+        const resolvedWidth =
+            width ?? appliedDimsRef.current?.width ?? Math.ceil(contentRef.current?.getBoundingClientRect().width ?? 430);
+        applyContentDimensions(resolvedWidth, Math.ceil(height));
+    };
+
     useLayoutEffect(() => {
         if (!contentRef.current) return;
 
-        const observer = new ResizeObserver((entries) => {
-            for (const entry of entries) {
-                // Use getBoundingClientRect to get the exact rendered size including padding
-                const rect = entry.target.getBoundingClientRect();
+        let isFirstObservation = true;
 
-                // Send exact dimensions to Electron
-                // Removed buffer to ensure tight fit
-                console.log('[useGodojoInterface] ResizeObserver:', Math.ceil(rect.width), Math.ceil(rect.height));
-                window.electronAPI?.updateContentDimensions({
-                    width: Math.ceil(rect.width),
-                    height: Math.ceil(rect.height)
-                });
+        const observer = new ResizeObserver((entries) => {
+            const entry = entries[0];
+            if (!entry) return;
+
+            // Initial mount: size the window right away so there's no
+            // flash-of-wrong-size before the first debounce window elapses.
+            if (isFirstObservation) {
+                isFirstObservation = false;
+                const rect = entry.target.getBoundingClientRect();
+                applyContentDimensions(Math.ceil(rect.width), Math.ceil(rect.height));
+                return;
             }
+
+            // Trailing-edge debounce only — deliberately ignores every
+            // intermediate frame during an animation and only measures once
+            // things settle, so this fallback path can never itself become a
+            // per-frame native-resize source.
+            if (fallbackResizeTimeoutRef.current) clearTimeout(fallbackResizeTimeoutRef.current);
+            fallbackResizeTimeoutRef.current = setTimeout(() => {
+                fallbackResizeTimeoutRef.current = null;
+                if (!contentRef.current) return;
+                const rect = contentRef.current.getBoundingClientRect();
+                applyContentDimensions(Math.ceil(rect.width), Math.ceil(rect.height));
+            }, RESIZE_FALLBACK_DEBOUNCE_MS);
         });
 
         observer.observe(contentRef.current);
-        return () => observer.disconnect();
+        return () => {
+            observer.disconnect();
+            if (fallbackResizeTimeoutRef.current) clearTimeout(fallbackResizeTimeoutRef.current);
+        };
     }, []);
 
-    // Force resize when attachedContext changes (screenshots added/removed)
+    // Force resize when attachedContext changes (screenshots added/removed).
+    // A discrete, non-animated size change — safe to apply immediately.
     useEffect(() => {
         if (!contentRef.current) return;
-        // Let the DOM settle, then measure and push new dimensions
         requestAnimationFrame(() => {
             if (!contentRef.current) return;
             const rect = contentRef.current.getBoundingClientRect();
-            window.electronAPI?.updateContentDimensions({
-                width: Math.ceil(rect.width),
-                height: Math.ceil(rect.height)
-            });
+            applyContentDimensions(Math.ceil(rect.width), Math.ceil(rect.height));
         });
     }, [attachedContext]);
 
@@ -268,10 +405,7 @@ export function useGodojoInterface({ overlayOpacity = OVERLAY_OPACITY_DEFAULT }:
         const timer = setTimeout(() => {
             if (contentRef.current) {
                 const rect = contentRef.current.getBoundingClientRect();
-                window.electronAPI?.updateContentDimensions({
-                    width: Math.ceil(rect.width),
-                    height: Math.ceil(rect.height)
-                });
+                applyContentDimensions(Math.ceil(rect.width), Math.ceil(rect.height));
             }
         }, 600);
         return () => clearTimeout(timer);
@@ -365,12 +499,12 @@ export function useGodojoInterface({ overlayOpacity = OVERLAY_OPACITY_DEFAULT }:
                     speakerNamesRef.current = names;
                     setSpeakerNames(names);
                 } else {
-                    speakerNamesRef.current = { user: 'Me', client: 'Them' };
-                    setSpeakerNames({ user: 'Me', client: 'Them' });
+                    speakerNamesRef.current = { user: 'You', client: 'Other Party' };
+                    setSpeakerNames({ user: 'You', client: 'Other Party' });
                 }
             }).catch(() => {
-                speakerNamesRef.current = { user: 'Me', client: 'Them' };
-                setSpeakerNames({ user: 'Me', client: 'Them' });
+                speakerNamesRef.current = { user: 'You', client: 'Other Party' };
+                setSpeakerNames({ user: 'You', client: 'Other Party' });
             });
         });
         return () => unsubscribe();
@@ -530,12 +664,12 @@ export function useGodojoInterface({ overlayOpacity = OVERLAY_OPACITY_DEFAULT }:
                     const lastSeparator = prev.lastIndexOf('  ·  ');
                     if (hadPendingPartial) {
                         const accumulated = lastSeparator >= 0 ? prev.substring(0, lastSeparator + 5) : '';
-                        return accumulated + speakerMarker + transcript.text;
+                        return boundRolling(accumulated + speakerMarker + transcript.text);
                     }
                     const lastSegment = lastSeparator >= 0 ? prev.substring(lastSeparator + 5) : prev;
                     if (lastSegment.trim() === transcript.text.trim()) return prev; // skip exact duplicate
                     const separator = prev ? '  ·  ' : '';
-                    return prev + separator + speakerMarker + transcript.text;
+                    return boundRolling(prev + separator + speakerMarker + transcript.text);
                 });
 
                 // Guard liveTranscriptRef against exact-text duplicates from rapid final events
@@ -568,10 +702,10 @@ export function useGodojoInterface({ overlayOpacity = OVERLAY_OPACITY_DEFAULT }:
                     if (hadPendingPartial) {
                         const lastSeparator = prev.lastIndexOf('  ·  ');
                         const accumulated = lastSeparator >= 0 ? prev.substring(0, lastSeparator + 5) : '';
-                        return accumulated + transcript.text;
+                        return boundRolling(accumulated + transcript.text);
                     }
                     const separator = prev ? '  ·  ' : '';
-                    return prev + separator + transcript.text;
+                    return boundRolling(prev + separator + transcript.text);
                 });
             }
         }));
@@ -1920,6 +2054,11 @@ Provide only the answer, nothing else.`;
         // refs
         contentRef,
         liveTranscriptRef,
+        // explicit, single-shot overlay window resize (see "Window resize
+        // pipeline" above) — pass down to FloatingDock so it can size the
+        // native window once per state transition instead of every
+        // animation frame
+        requestOverlayResize,
         // meeting / session state
         isMeetingPaused,
         handlePauseMeeting,
@@ -1938,6 +2077,7 @@ Provide only the answer, nothing else.`;
         setCurrentModel,
         // speaker display names
         speakerNames,
+        calendarEventMetadata,
         // keyboard shortcuts (for the dock's shortcut hints)
         shortcuts,
         // theming

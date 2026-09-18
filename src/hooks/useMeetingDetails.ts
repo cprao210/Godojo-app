@@ -14,18 +14,36 @@
  *
  * MeetingDetails.tsx (and its tab components) just render what this returns.
  */
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { useQuery, useMutation, useQueryClient } from 'react-query';
 import { meetingsApi, chatApi } from '@/api';
+import { isMeetingProcessing } from '@/api/meetingMapping';
 import { guardSession } from '@/lib/firebase';
 import type { Meeting, MeetingTranscriptLine, MeetingScorecardResult, LiveAnalysisData } from '@/types';
 import { normalizeBant, normalizeMeddicc, confirmedOnly, BANT_ORDER, MEDDICC_ORDER } from '@/lib/bantMeddic';
+import { deriveProcessingStage, hasGeneratedSummary, PROCESSING_STALL_TIMEOUT_MS } from '@/lib/meetingLifecycle';
 import { classifyLLMError } from '@/lib/utils';
 import { posthogAnalytics } from '@/lib/analytics/posthog.service';
 
 export const formatTime = (ms: number) => {
     const date = new Date(ms);
     return date.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }).toLowerCase();
+};
+
+/**
+ * Transcript row timestamp. Live-call segments carry absolute epoch ms (the
+ * renderer formats those as wall-clock times); uploaded transcripts carry
+ * RELATIVE ms since the call start ("12s", "1:15") — a transcript where any
+ * positive timestamp is far below the epoch floor is the latter. Without this
+ * split, an uploaded "[00:00:12]" rendered as a wall-clock time near midnight.
+ */
+export const formatTranscriptTimestamp = (ms: number, relative: boolean): string => {
+    if (!relative) return formatTime(ms);
+    const totalSec = Math.floor(ms / 1000);
+    if (totalSec < 60) return `${totalSec}s`;
+    const m = Math.floor(totalSec / 60);
+    const s = totalSec % 60;
+    return `${m}:${String(s).padStart(2, '0')}`;
 };
 
 export const cleanMarkdown = (content: string) => {
@@ -89,26 +107,57 @@ function dedupeTranscript<T extends { speaker: string; text: string; timestamp: 
     return result;
 }
 
-function computeTalkTime(transcript: { speaker: string; text: string; timestamp: number }[] | undefined) {
-    if (!transcript || transcript.length === 0) return { user: 0, client: 0, userWords: 0, clientWords: 0 };
-    let userWords = 0, clientWords = 0;
+export interface TalkTimeSpeaker {
+    /** Internal role — drives colour + which name-resolution path is used. */
+    speaker: 'user' | 'client';
+    displayName?: string;
+    speakerIndex?: number;
+    words: number;
+    percent: number;
+}
+
+const INTERNAL_SPEAKERS = new Set(['system', 'ai', 'assistant', 'model']);
+
+/**
+ * Per-SPEAKER talk time, not per-channel. Segments are grouped by their
+ * resolved identity — the original label when present (uploaded transcripts
+ * carry real names: "Alex", "Daniel", "Lara") or role+dial index otherwise —
+ * so multi-party calls and 3+ speaker uploads each get their own row
+ * ("Alex — 213 words · 54%"), and the sales/client split stays driven by the
+ * parser's first-speaker=mic-user rule rather than guesswork.
+ */
+export function computeTalkTime(
+    transcript: { speaker: string; text: string; displayName?: string; speakerIndex?: number }[] | undefined
+): { speakers: TalkTimeSpeaker[]; totalWords: number } {
+    if (!transcript || transcript.length === 0) return { speakers: [], totalWords: 0 };
+    const groups = new Map<string, TalkTimeSpeaker>();
     for (const seg of transcript) {
-        if (!seg.text?.trim()) continue; // Ignore empty/system messages
-        const wordCount = seg.text.trim().split(/\s+/).filter(Boolean).length; // Count words
-        if (seg.speaker === 'user') { userWords += wordCount; }
-        else if (seg.speaker === 'client') { clientWords += wordCount };
+        const raw = (seg.speaker || '').toLowerCase();
+        if (INTERNAL_SPEAKERS.has(raw)) continue; // system/AI turns are not participants
+        if (!seg.text?.trim()) continue;
+        const role: 'user' | 'client' = raw === 'user' ? 'user' : 'client';
+        const key = `${role}::${seg.displayName ?? '∅'}::${seg.speakerIndex ?? '∅'}`;
+        const words = seg.text.trim().split(/\s+/).filter(Boolean).length;
+        const existing = groups.get(key);
+        if (existing) {
+            existing.words += words;
+        } else {
+            groups.set(key, { speaker: role, displayName: seg.displayName, speakerIndex: seg.speakerIndex, words, percent: 0 });
+        }
     }
-    const totalWords = userWords + clientWords;
-    if (totalWords === 0) return { user: 0, client: 0, userWords, clientWords };
-    return {
-        user: Math.round((userWords / totalWords) * 100),
-        client: Math.round((clientWords / totalWords) * 100),
-        userWords,
-        clientWords,
-    };
+    const speakers = [...groups.values()];
+    const totalWords = speakers.reduce((sum, s) => sum + s.words, 0);
+    if (totalWords > 0) {
+        for (const s of speakers) s.percent = Math.round((s.words / totalWords) * 100);
+    }
+    return { speakers, totalWords };
 }
 
 export type MeetingDetailsTab = 'summary' | 'transcript' | 'usage' | 'analysis';
+
+// Initial page size and the "Load more" step for the Ask Dojo history —
+// matches the backend's default page (?limit=50).
+const AI_INTERACTIONS_PAGE_SIZE = 50;
 
 export function useMeetingDetails(initialMeeting: Meeting) {
     const queryClient = useQueryClient();
@@ -123,7 +172,7 @@ export function useMeetingDetails(initialMeeting: Meeting) {
 
     // Same problem as `isLiveMeetingPlaceholder` above, for the other kind of
     // client-only id: useLauncher.ts prepends a `Meeting` with id
-    // `optimistic-${Date.now()}` (post-call processing skeleton) or
+    // `optimistic-live-call` (post-call processing skeleton) or
     // `optimistic-upload-${Date.now()}` (transcript upload) the instant the
     // placeholder is created, well before the backend has a row for it.
     const isOptimisticMeetingId = (id?: string) => !!id && id.startsWith('optimistic-');
@@ -132,19 +181,31 @@ export function useMeetingDetails(initialMeeting: Meeting) {
     // over HTTP (the row may not be in the backend yet); the onMeetingsUpdated effect
     // below pulls it once main signals it's ready.
     const [isProcessing, setIsProcessing] = useState<boolean>(
-        initialMeeting.title === 'Processing...' || initialMeeting.isProcessed === false
+        isMeetingProcessing(initialMeeting)
     );
 
     // Full detail (transcript + usage) loads over HTTP; the list row seeds initialData so
     // the view renders instantly, then reconciles with the backend.
+    const canFetchDetail = !isLiveMeetingPlaceholder && !isOptimisticMeetingId(initialMeeting.id);
     const { data: meetingData = initialMeeting, isLoading: isLoadingMeetingDetail, dataUpdatedAt } = useQuery<Meeting>(
         meetingKey,
         () => meetingsApi.get(initialMeeting.id),
         {
             initialData: initialMeeting,
-            enabled: !isProcessing && !isLiveMeetingPlaceholder && !isOptimisticMeetingId(initialMeeting.id),
+            enabled: !isProcessing && canFetchDetail,
         },
     );
+
+    // Has the detail read actually produced a result for this meeting?
+    //
+    // `isLoadingMeetingDetail` cannot answer that: `initialData` makes it false
+    // on the very first render, and a *disabled* query (during isProcessing) is
+    // `idle`, which is also not "loading". `dataUpdatedAt` is the only honest
+    // signal — react-query stamps it on a completed fetch AND on the
+    // `setQueryData` the unblock effect below performs, which are precisely the
+    // two ways real detail data arrives. Ids with no backend row can never
+    // resolve that way, so they count as resolved and render the list row.
+    const isDetailResolved = !canFetchDetail || dataUpdatedAt > 0;
 
     // /chat/live interaction_ids collected during the live call can't be
     // linked to a meeting until the backend actually has that meeting row —
@@ -155,13 +216,10 @@ export function useMeetingDetails(initialMeeting: Meeting) {
     // actual completed query, which IS the confirmation the backend has
     // synced this meeting.
     useEffect(() => {
-
-        console.log({ isProcessing, dataUpdatedAt, meetingDataId: meetingData.id, initialMeetingId: initialMeeting.id })
         if (isProcessing || dataUpdatedAt === 0 || meetingData.id !== initialMeeting.id) return;
 
         (async () => {
             const pendingIds = await window.electronAPI?.getPendingLiveChatInteractions?.(initialMeeting.id);
-            console.log({ pendingIds })
             if (!pendingIds || pendingIds.length === 0) return;
 
             try {
@@ -193,6 +251,15 @@ export function useMeetingDetails(initialMeeting: Meeting) {
     const { data: localTranscript, isLoading: isLoadingLocalTranscript } = useQuery<MeetingTranscriptLine[] | null>(
         ["meeting-local-transcript", initialMeeting.id],
         async () => {
+            // Read the local SQLite copy first: the placeholder row saved the instant
+            // the call ended already carries the full transcript, while the Supabase
+            // mirror (which window.electronAPI.getMeetingDetails prefers) only gets
+            // the meetings row and its transcript batch when the async outbox drains
+            // — a cloud read in that window returns null or a transcript-less
+            // meeting, which is exactly the state a processing meeting is opened in.
+            const localDetails = await window.electronAPI?.getMeetingDetailsLocal?.(initialMeeting.id);
+            if (localDetails?.transcript?.length) return localDetails.transcript as MeetingTranscriptLine[];
+            // No local row (e.g. meeting created on another device) — cloud copy.
             const details = await window.electronAPI?.getMeetingDetails?.(initialMeeting.id);
             return details?.transcript ?? null;
         },
@@ -250,18 +317,39 @@ export function useMeetingDetails(initialMeeting: Meeting) {
     // meeting_scorecards table. meeting:getScorecard reads Supabase first (other devices'
     // scorecards) and falls back to local SQLite.
     const scorecardKey = ["meeting-scorecard", initialMeeting.id];
-    const { data: localScorecard = null } = useQuery<MeetingScorecardResult | null>(
+    const scorecardEnabled = !!initialMeeting.id && !isOptimisticMeetingId(initialMeeting.id);
+    const {
+        data: localScorecard = null,
+        dataUpdatedAt: scorecardUpdatedAt,
+        isFetching: isFetchingScorecard,
+    } = useQuery<MeetingScorecardResult | null>(
         scorecardKey,
         async () => {
             const res = await window.electronAPI?.meetingGetScorecard?.(initialMeeting.id);
             return res?.success ? (res.data ?? null) : null;
         },
-        { enabled: !isProcessing && !!initialMeeting.id && !isOptimisticMeetingId(initialMeeting.id) },
+        {
+            // Deliberately NOT gated on `!isProcessing` any more. processAndSaveMeeting
+            // persists the scorecard row as soon as scoring finishes, while the summary
+            // is still in its generate → verify loop — so this row appearing while
+            // `is_processed` is still 0 is the one real, observable signal of which half
+            // of the background work is left. Polling for it is what lets the UI say
+            // "Validating summary" honestly instead of animating a fake stage.
+            enabled: scorecardEnabled,
+            refetchInterval: isProcessing ? 2500 : false,
+        },
     );
     // Prefer the dedicated-table scorecard; the summary_json-embedded blob is only the
     // legacy / DB-write-failure fallback (same precedence as DatabaseManager.getMeetingDetails).
     const scorecard: MeetingScorecardResult | null =
         localScorecard ?? meeting.detailedSummary?.scorecard ?? null;
+
+    // Has the scorecard read settled? `!isFetchingScorecard` matters as much as
+    // `scorecardUpdatedAt > 0`: the unblock effect and regenerate both invalidate
+    // this key, and a stale `null` from a poll taken mid-processing would
+    // otherwise count as "resolved" and paint the summary before the real score
+    // arrived a moment later.
+    const isScorecardResolved = !scorecardEnabled || (scorecardUpdatedAt > 0 && !isFetchingScorecard);
 
     // Title / summary edits: HTTP is canonical; the existing IPC write is fired on success
     // as a write-through so local SQLite + RAG stay consistent (and the async mirror can't
@@ -308,19 +396,56 @@ export function useMeetingDetails(initialMeeting: Meeting) {
     // Persisted "Ask Dojo" Q&A history — fetched lazily the first time the
     // user opens this tab (enabled gate), not bundled into the initial
     // meeting payload since most sessions on a meeting never open it.
-    const { data: aiInteractionsData, isLoading: isLoadingAiInteractions } = useQuery(
+    const askDojoEnabled =
+        activeTab === 'usage' &&
+        !!meeting?.id &&
+        !isLiveMeetingPlaceholder &&
+        !isOptimisticMeetingId(meeting?.id) &&
+        !isProcessing;
+    // "Load more" for the Ask Dojo history follows the meetings-list pattern
+    // (useLauncher): the backend has no offset/cursor param, only ?limit=N
+    // returning the N most recent interactions, so paging further just means
+    // asking for a bigger N. The limit lives in a ref, not state, so the
+    // refetch in loadMoreAiInteractions reads the bumped value synchronously
+    // instead of racing the next render's queryFn closure.
+    const aiInteractionsLimitRef = useRef(AI_INTERACTIONS_PAGE_SIZE);
+    // The limit is per-meeting — reset it when the meeting changes so a
+    // different meeting's tab starts from a fresh first page.
+    useEffect(() => {
+        aiInteractionsLimitRef.current = AI_INTERACTIONS_PAGE_SIZE;
+    }, [meeting?.id]);
+    const {
+        data: aiInteractionsData,
+        isLoading: isLoadingAiInteractions,
+        isFetching: isFetchingAiInteractions,
+        dataUpdatedAt: aiInteractionsUpdatedAt,
+        error: aiInteractionsError,
+    } = useQuery(
         ['ai-interactions', meeting?.id],
-        () => meetingsApi.getAiInteractions(meeting!.id),
+        () => meetingsApi.getAiInteractions(meeting!.id, aiInteractionsLimitRef.current),
         {
-            enabled:
-                activeTab === 'usage' &&
-                !!meeting?.id &&
-                !isLiveMeetingPlaceholder &&
-                !isOptimisticMeetingId(meeting?.id) &&
-                !isProcessing,
+            enabled: askDojoEnabled,
             staleTime: 30_000,
         }
     );
+    // A full page (exactly `limit` rows) is the only signal available that
+    // there might be more beyond it — the response carries no total count or
+    // cursor. Once a page comes back short, there's nothing further to load.
+    const hasMoreAiInteractions = (aiInteractionsData?.items?.length ?? 0) >= aiInteractionsLimitRef.current;
+    const isLoadingMoreAiInteractions = isFetchingAiInteractions && aiInteractionsLimitRef.current > AI_INTERACTIONS_PAGE_SIZE;
+    const loadMoreAiInteractions = () => {
+        aiInteractionsLimitRef.current += AI_INTERACTIONS_PAGE_SIZE;
+        void queryClient.refetchQueries(['ai-interactions', meeting?.id]);
+    };
+
+    // The tab's own loading flag. `isLoadingAiInteractions` alone is not enough:
+    // on the very first render after the tab is clicked the query hasn't been
+    // enabled yet, so its status is still `idle` — isLoading false, data
+    // undefined — which the tab rendered as "No questions asked yet" before any
+    // read had happened. An empty state must only ever follow a real answer.
+    const isLoadingAskDojo = askDojoEnabled
+        ? isLoadingAiInteractions || (aiInteractionsUpdatedAt === 0 && !aiInteractionsError)
+        : isProcessing;
     const [query, setQuery] = useState('');
     const [isCopied, setIsCopied] = useState(false);
     const [isRegenerating, setIsRegenerating] = useState(false);
@@ -331,8 +456,76 @@ export function useMeetingDetails(initialMeeting: Meeting) {
     const [chatMessages, setChatMessages] = useState<import('@/types').MeetingChatMessage[]>([]);
     const [isTalktimeOpen, setIsTalktimeOpen] = useState(false);
 
+    // ─── What is this meeting actually doing, and what may be painted yet? ────
+    //
+    // Every flag below answers that from persisted state only. The rule the tabs
+    // enforce with them: a section renders when ALL of the data it shows has
+    // landed, never as each piece trickles in. That is what stopped the score
+    // appearing seconds before the summary it belongs to.
+
+    // Background processing that hasn't finished in PROCESSING_STALL_TIMEOUT_MS
+    // has failed (main crashed, the provider never answered, the app was killed
+    // mid-run). Measured from the row's own created_at, which MeetingPersistence
+    // stamps when the call ENDS — i.e. when processing began. So reopening a
+    // meeting abandoned hours ago reads as stalled immediately instead of
+    // promising a summary for another five minutes.
+    const [isProcessingStalled, setIsProcessingStalled] = useState(false);
+    useEffect(() => {
+        if (!isProcessing) {
+            setIsProcessingStalled(false);
+            return;
+        }
+        const startedAt = new Date(initialMeeting.date).getTime();
+        const elapsed = Number.isNaN(startedAt) ? 0 : Date.now() - startedAt;
+        if (elapsed >= PROCESSING_STALL_TIMEOUT_MS) {
+            setIsProcessingStalled(true);
+            return;
+        }
+        setIsProcessingStalled(false);
+        const timer = setTimeout(
+            () => setIsProcessingStalled(true),
+            PROCESSING_STALL_TIMEOUT_MS - elapsed,
+        );
+        return () => clearTimeout(timer);
+    }, [isProcessing, initialMeeting.id, initialMeeting.date]);
+
+    const processingStage = useMemo(
+        () =>
+            deriveProcessingStage({
+                isProcessing,
+                hasScorecard: !!scorecard,
+                isDetailResolved: isDetailResolved && isScorecardResolved,
+                isStalled: isProcessingStalled,
+            }),
+        [isProcessing, scorecard, isDetailResolved, isScorecardResolved, isProcessingStalled],
+    );
+
+    // The single gate for the Summary tab AND the score accordion inside it, so
+    // the two can no longer land at different times.
+    //
+    // The scorecard read is always waited on — it's a fast local-first read, and
+    // it is the thing that used to appear seconds ahead of the summary it
+    // belongs to. The *detail* read can be short-circuited when the list row
+    // already carries real summary prose: there is nothing left to wait for, and
+    // holding a skeleton over data we already have would be its own kind of lie.
+    const isSummaryReady =
+        !isProcessing &&
+        !isRegenerating &&
+        isScorecardResolved &&
+        (isDetailResolved || hasGeneratedSummary(meeting.detailedSummary));
+
+    // Call Analysis renders `detailedSummary.liveAnalysis`, which arrives with
+    // the detail read — so before that read settles the tab must show a skeleton,
+    // not "No live analysis captured".
+    const isAnalysisReady =
+        !!(meeting.detailedSummary as any)?.liveAnalysis || (!isProcessing && isDetailResolved);
+
+    // Regenerate is normally disabled while processing owns the row. A stalled
+    // run owns nothing — it's the one case where regenerating is the fix.
+    const canRegenerate = !isRegenerating && (!isProcessing || isProcessingStalled);
+
     const speakerNames = (meeting.detailedSummary as any)?.speakerNames as
-        { user: string; client: string } | undefined;
+        { user: string; client: string; clientDiarized?: string } | undefined;
 
     // Diarization: suffix far-end labels only when 2+ distinct speaker indices
     // were recorded for this meeting — 1:1 calls render exactly as before.
@@ -348,19 +541,95 @@ export function useMeetingDetails(initialMeeting: Meeting) {
         return false;
     }, [meeting.transcript]);
 
+    // Speaking Balance calls getSpeakerDisplayName('user'/'client') with no
+    // per-segment displayName (there's no single segment to derive one from
+    // for an aggregate stat), so without this it fell back straight past
+    // step 1 to speakerNames — which lags/is empty in some meetings even
+    // though individual transcript segments already carry a live-resolved
+    // displayName (e.g. "Nikhilbarot"). That's what produced the mismatch:
+    // transcript bubbles showed the resolved name while Speaking Balance sat
+    // on the generic "You"/"Other Party" fallback. Scanning the transcript
+    // once for the first non-generic displayName per role gives Speaking
+    // Balance the same answer the transcript itself is already showing.
+    const liveDisplayNames = useMemo(() => {
+        let user: string | undefined;
+        let client: string | undefined;
+        for (const seg of meeting.transcript || []) {
+            const raw = (seg as any).displayName as string | undefined;
+            if (!raw || raw === 'Me' || raw === 'Them') continue;
+            // Diarized rows carry a "· Speaker N" suffix; the aggregate stats
+            // need the BASE name only, so strip it before selecting a first
+            // non-generic per-role label. Without this, Speaking Balance would
+            // show "Raksham · Speaker 1" as the whole client-side aggregate.
+            const suffixIdx = raw.indexOf(' · Speaker ');
+            const name = suffixIdx === -1 ? raw : raw.slice(0, suffixIdx);
+            if (seg.speaker === 'user' && !user) user = name;
+            if ((seg.speaker === 'client' || seg.speaker === 'interviewer') && !client) client = name;
+            if (user && client) break;
+        }
+        return { user, client };
+    }, [meeting.transcript]);
+
+    // See formatTranscriptTimestamp — epoch ms is ~1.7e12, so a transcript
+    // whose positive timestamps are all under a few decades is relative.
+    const transcriptTimesAreRelative = useMemo(
+        () => (meeting.transcript || []).some(t => t.timestamp > 0 && t.timestamp < 1e11),
+        [meeting.transcript]
+    );
+
+    // "Morgan (Raksham)" style labels embed the company in parentheses — the
+    // diarized base is the company part alone, matching SessionTracker's
+    // clientDiarized rule for 1-attendee-with-company meetings.
+    const companyFromLabel = (label?: string): string | undefined => {
+        if (!label) return undefined;
+        const m = label.match(/\(([^)]+)\)\s*$/);
+        return m?.[1]?.trim() || undefined;
+    };
+
     const getSpeakerDisplayName = (speaker: string, displayName?: string, speakerIndex?: number): string => {
-        // 1. Live transcription supplies displayName directly — always prefer it.
+        // Normalize legacy "Me"/"Them" stamps so old meetings render the same
+        // "You" / "Other Party" wording as new ones.
+        if (displayName === 'Me') displayName = undefined;
+        if (displayName === 'Them') displayName = undefined;
+        // Diarization first for far-end turns: when 2+ distinct client voices
+        // were recorded, the per-segment displayName is only meaningful if it
+        // already carries the "· Speaker N" suffix. Rows saved before that
+        // stamping existed (or via a source that flattened every client turn
+        // onto the plain name) must still re-derive the label — otherwise the
+        // plain stamp shadows the suffix and the tab loses the attribution the
+        // live call showed. Manual rename sets clientDiarized to the typed
+        // value, so the explicit override still wins here.
+        if (
+            (speaker === 'client' || speaker === 'interviewer') &&
+            hasMultipleClientSpeakers &&
+            speakerIndex !== undefined &&
+            speakerIndex !== null &&
+            !displayName?.includes(' · Speaker ')
+        ) {
+            const diarizedBase =
+                speakerNames?.clientDiarized ||
+                companyFromLabel(displayName) ||
+                'Other Party';
+            return `${diarizedBase} · Speaker ${speakerIndex + 1}`;
+        }
+        // 1. An explicit per-segment displayName (passed by the transcript
+        //    view) wins — it's the ground truth for that exact turn.
         if (displayName) return displayName;
-        // 2. Use resolved calendar names saved in detailedSummary.speakerNames.
+        // 2. No segment displayName was passed in (e.g. Speaking Balance,
+        //    which shows one name per role rather than per turn) — fall back
+        //    to whatever live-resolved name the transcript itself used (base,
+        //    suffix stripped — see liveDisplayNames above), so this never
+        //    disagrees with what's rendered just below it.
+        if (speaker === 'user' && liveDisplayNames.user) return liveDisplayNames.user;
+        if ((speaker === 'client' || speaker === 'interviewer') && liveDisplayNames.client) {
+            return liveDisplayNames.client;
+        }
+        // 3. Use resolved calendar names saved in detailedSummary.speakerNames.
         //    These are set by SessionTracker (e.g. "Nikhilbarot", "Salesforce").
         //    Fall back to "You" / "Other Party" only when no calendar data was resolved.
         if (speaker === 'user') return speakerNames?.user || 'You';
         if (speaker === 'client' || speaker === "interviewer") {
-            const base = speakerNames?.client || 'Other Party';
-            if (hasMultipleClientSpeakers && speakerIndex !== undefined && speakerIndex !== null) {
-                return `${base} · Speaker ${speakerIndex + 1}`;
-            }
-            return base;
+            return speakerNames?.client || 'Other Party';
         }
         if (speaker === 'assistant') return 'Assistant';
         return speaker;
@@ -383,7 +652,7 @@ export function useMeetingDetails(initialMeeting: Meeting) {
         const unblockFromLocal = async () => {
             try {
                 const details = await window.electronAPI?.getMeetingDetails?.(initialMeeting.id);
-                if (details && details.isProcessed !== false && details.title !== 'Processing...') {
+                if (details && !isMeetingProcessing(details)) {
                     queryClient.setQueryData<Meeting>(meetingKey, (prev) => ({ ...(prev ?? initialMeeting), ...details }));
                     setIsProcessing(false);
                     void queryClient.invalidateQueries(scorecardKey);
@@ -731,8 +1000,16 @@ ${formatNextCallPlaybook() || '  None'}
         isLoadingMeetingDetail,
         isLoadingTranscript,
         scorecard,
+        // Lifecycle-derived render gates (see the block above).
+        processingStage,
+        isProcessingStalled,
+        isSummaryReady,
+        isAnalysisReady,
+        isLoadingAskDojo,
+        canRegenerate,
         activeTab, setActiveTab,
         aiInteractionsData, isLoadingAiInteractions,
+        hasMoreAiInteractions, isLoadingMoreAiInteractions, loadMoreAiInteractions,
         query, setQuery,
         isCopied,
         isRegenerating,
@@ -744,6 +1021,7 @@ ${formatNextCallPlaybook() || '  None'}
         isTalktimeOpen, setIsTalktimeOpen,
         talkTime,
         getSpeakerDisplayName,
+        transcriptTimesAreRelative,
         handleSubmitQuestion,
         handleInputKeyDown,
         handleCopy,

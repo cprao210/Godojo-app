@@ -5,6 +5,8 @@ export type LanguageOption = {
     bcp47: string; // For Google, Azure (e.g. 'ru-RU')
     iso639: string; // For OpenAI, Groq (e.g. 'ru')
     group: string; // For UI grouping
+    /** Deepgram-specific language param when it differs from iso639 (e.g. 'multi') */
+    deepgram?: string;
 };
 
 export type EnglishVariant = LanguageOption & {
@@ -62,6 +64,10 @@ export const ENGLISH_VARIANTS: Record<string, EnglishVariant> = {
 
 export const RECOGNITION_LANGUAGES: Record<string, LanguageOption> = {
     ...ENGLISH_VARIANTS,
+    // Deepgram Nova-3 code-switching across 10 languages (en, es, fr, de, hi,
+    // ru, pt, ja, it, nl). Other providers fall back to English via bcp47/iso639.
+    'multilingual': { label: 'Multilingual (Deepgram Nova-3)', code: 'multilingual', bcp47: 'en-US', iso639: 'en', deepgram: 'multi', group: 'Multilingual' },
+    'hindi': { label: 'Hindi', code: 'hindi', bcp47: 'hi-IN', iso639: 'hi', group: 'Hindi' },
     'russian': { label: 'Russian', code: 'russian', bcp47: 'ru-RU', iso639: 'ru', group: 'Russian' },
     'spanish': { label: 'Spanish', code: 'spanish', bcp47: 'es-ES', iso639: 'es', group: 'Spanish' },
     'french': { label: 'French', code: 'french', bcp47: 'fr-FR', iso639: 'fr', group: 'French' },
@@ -76,14 +82,15 @@ export const RECOGNITION_LANGUAGES: Record<string, LanguageOption> = {
 
 export const AI_RESPONSE_LANGUAGES = [
     { label: 'English', code: 'English' },
-    { label: 'Russian', code: 'Russian' },
-    { label: 'Spanish', code: 'Spanish' },
-    { label: 'French', code: 'French' },
-    { label: 'German', code: 'German' },
-    { label: 'Italian', code: 'Italian' },
-    { label: 'Portuguese', code: 'Portuguese' },
-    { label: 'Japanese', code: 'Japanese' },
-    { label: 'Korean', code: 'Korean' },
-    { label: 'Chinese', code: 'Chinese' },
-    { label: 'Turkish', code: 'Turkish' },
+    // { label: 'Hindi', code: 'Hindi' },
+    // { label: 'Russian', code: 'Russian' },
+    // { label: 'Spanish', code: 'Spanish' },
+    // { label: 'French', code: 'French' },
+    // { label: 'German', code: 'German' },
+    // { label: 'Italian', code: 'Italian' },
+    // { label: 'Portuguese', code: 'Portuguese' },
+    // { label: 'Japanese', code: 'Japanese' },
+    // { label: 'Korean', code: 'Korean' },
+    // { label: 'Chinese', code: 'Chinese' },
+    // { label: 'Turkish', code: 'Turkish' },
 ];

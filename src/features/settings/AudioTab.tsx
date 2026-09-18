@@ -1,5 +1,5 @@
 import React from 'react';
-import { Mic, Speaker, Globe, MapPin, Info, Upload, ExternalLink, Trash2, Check, RefreshCw, FlaskConical } from 'lucide-react';
+import { Mic, Speaker, Globe, MapPin, Info, Upload, ExternalLink, Trash2, Check, RefreshCw, FlaskConical, AlertCircle } from 'lucide-react';
 import { useSettingsOverlay } from '@/hooks';
 import { SttKeyProvider } from '@/hooks/useSttProviderSettings';
 import CustomSelect from './CustomSelect';
@@ -22,6 +22,11 @@ const AudioTab: React.FC<{ overlay: SettingsOverlayHook }> = ({ overlay }) => {
     const isKeyProvider = (p: string): p is SttKeyProvider => (KEY_PROVIDERS as string[]).includes(p);
     const currentKeyProvider = isKeyProvider(stt.sttProvider) ? stt.sttProvider : null;
 
+    // 'Saved' is reserved for the user's own key; a provider covered only by the
+    // app's shared default gets 'Default' so the badge isn't misleading.
+    const keyBadge = (provider: SttKeyProvider): string | null =>
+        stt.isUserKey(provider) ? 'Saved' : stt.isSharedDefaultKey(provider) ? 'Default' : stt.hasStoredKey[provider] ? 'Saved' : null;
+
     return (
         <div className="space-y-6 animated fadeIn">
             {/* ── Speech Provider Section ── */}
@@ -38,13 +43,13 @@ const AudioTab: React.FC<{ overlay: SettingsOverlayHook }> = ({ overlay }) => {
                                 onChange={(val) => stt.selectSttProvider(val as any)}
                                 options={[
                                     { id: 'google', label: 'Google Cloud', badge: stt.googleServiceAccountPath ? 'Saved' : null, recommended: true, desc: 'gRPC streaming via Service Account', color: 'blue', icon: <Mic size={14} /> },
-                                    { id: 'groq', label: 'Groq Whisper', badge: stt.hasStoredKey.groq ? 'Saved' : null, recommended: true, desc: 'Ultra-fast REST transcription', color: 'orange', icon: <Mic size={14} /> },
-                                    { id: 'openai', label: 'OpenAI Whisper', badge: stt.hasStoredKey.openai ? 'Saved' : null, desc: 'OpenAI-compatible Whisper API', color: 'green', icon: <Mic size={14} /> },
-                                    { id: 'deepgram', label: 'Deepgram Nova-3', badge: stt.hasStoredKey.deepgram ? 'Saved' : null, recommended: true, desc: 'High-accuracy REST transcription', color: 'purple', icon: <Mic size={14} /> },
-                                    { id: 'elevenlabs', label: 'ElevenLabs Scribe', badge: stt.hasStoredKey.elevenlabs ? 'Saved' : null, desc: 'Scribe v2 Realtime API', color: 'teal', icon: <Mic size={14} /> },
-                                    { id: 'azure', label: 'Azure Speech', badge: stt.hasStoredKey.azure ? 'Saved' : null, desc: 'Microsoft Cognitive Services STT', color: 'cyan', icon: <Mic size={14} /> },
-                                    { id: 'ibmwatson', label: 'IBM Watson', badge: stt.hasStoredKey.ibmwatson ? 'Saved' : null, desc: 'IBM Watson cloud STT service', color: 'indigo', icon: <Mic size={14} /> },
-                                    { id: 'soniox', label: 'Soniox', badge: stt.hasStoredKey.soniox ? 'Saved' : null, recommended: true, desc: '60+ languages, multilingual, domain context', color: 'cyan', icon: <Mic size={14} /> },
+                                    { id: 'groq', label: 'Groq Whisper', badge: keyBadge('groq'), recommended: true, desc: 'Ultra-fast REST transcription', color: 'orange', icon: <Mic size={14} /> },
+                                    { id: 'openai', label: 'OpenAI Whisper', badge: keyBadge('openai'), desc: 'OpenAI-compatible Whisper API', color: 'green', icon: <Mic size={14} /> },
+                                    { id: 'deepgram', label: 'Deepgram Nova-3', badge: keyBadge('deepgram'), recommended: true, desc: 'High-accuracy REST transcription', color: 'purple', icon: <Mic size={14} /> },
+                                    { id: 'elevenlabs', label: 'ElevenLabs Scribe', badge: keyBadge('elevenlabs'), desc: 'Scribe v2 Realtime API', color: 'teal', icon: <Mic size={14} /> },
+                                    { id: 'azure', label: 'Azure Speech', badge: keyBadge('azure'), desc: 'Microsoft Cognitive Services STT', color: 'cyan', icon: <Mic size={14} /> },
+                                    { id: 'ibmwatson', label: 'IBM Watson', badge: keyBadge('ibmwatson'), desc: 'IBM Watson cloud STT service', color: 'indigo', icon: <Mic size={14} /> },
+                                    { id: 'soniox', label: 'Soniox', badge: keyBadge('soniox'), recommended: true, desc: '60+ languages, multilingual, domain context', color: 'cyan', icon: <Mic size={14} /> },
                                 ]}
                             />
                         </div>
@@ -134,7 +139,7 @@ const AudioTab: React.FC<{ overlay: SettingsOverlayHook }> = ({ overlay }) => {
                                     type="password"
                                     value={stt.keyInputs[currentKeyProvider]}
                                     onChange={(e) => stt.setKeyInput(currentKeyProvider, e.target.value)}
-                                    placeholder={stt.hasStoredKey[currentKeyProvider] ? '••••••••••••' : `Enter ${stt.providerLabel(currentKeyProvider)} API key`}
+                                    placeholder={stt.isUserKey(currentKeyProvider) ? '••••••••••••' : `Enter ${stt.providerLabel(currentKeyProvider)} API key`}
                                     className="flex-1 bg-bg-input border border-border-subtle rounded-lg px-3 py-2 text-sm text-text-primary placeholder-text-tertiary focus:outline-none focus:border-accent-primary transition-colors"
                                 />
                                 <button
@@ -144,7 +149,7 @@ const AudioTab: React.FC<{ overlay: SettingsOverlayHook }> = ({ overlay }) => {
                                 >
                                     {stt.sttSaving ? 'Saving...' : stt.sttSaved ? 'Saved!' : 'Save'}
                                 </button>
-                                {stt.hasStoredKey[currentKeyProvider] && (
+                                {stt.isUserKey(currentKeyProvider) && (
                                     <button
                                         onClick={() => stt.removeSttKey(currentKeyProvider)}
                                         className="px-2.5 py-2.5 rounded-lg text-xs font-medium text-text-tertiary hover:text-red-500 hover:bg-red-500/10 transition-all"
@@ -154,6 +159,12 @@ const AudioTab: React.FC<{ overlay: SettingsOverlayHook }> = ({ overlay }) => {
                                     </button>
                                 )}
                             </div>
+
+                            {stt.isSharedDefaultKey(currentKeyProvider) && (
+                                <p className="text-[10px] text-text-tertiary">
+                                    Running on the built-in {stt.providerLabel(currentKeyProvider)} key. Enter your own above to use it instead.
+                                </p>
+                            )}
 
                             {/* Azure Region Input */}
                             {stt.sttProvider === 'azure' && (
@@ -270,6 +281,39 @@ const AudioTab: React.FC<{ overlay: SettingsOverlayHook }> = ({ overlay }) => {
                         <div className="h-1.5 bg-bg-input rounded-full overflow-hidden">
                             <div className="h-full bg-green-500 transition-all duration-100 ease-out" style={{ width: `${audio.micLevel}%` }} />
                         </div>
+                        {audio.micError && (
+                            <div className="flex items-start gap-2 p-3 mt-2 bg-red-500/10 border border-red-500/20 rounded-lg text-red-400 text-xs">
+                                <AlertCircle size={14} className="shrink-0 mt-0.5" />
+                                <span>{audio.micError}</span>
+                            </div>
+                        )}
+                    </div>
+
+                    {/*
+                      System-audio meter. This is the interviewer's side of the call,
+                      captured on macOS via Screen Recording rather than the microphone
+                      permission — so it can be completely dead while the Input Level
+                      meter above bounces along happily. Showing them side by side is
+                      what makes a Screen Recording denial diagnosable before a meeting
+                      instead of after one produced a half-empty transcript.
+                    */}
+                    <div>
+                        <div className="flex justify-between text-xs text-text-secondary mb-2 px-1">
+                            <span>System Audio Level</span>
+                            <span className="text-text-tertiary">Interviewer / meeting audio</span>
+                        </div>
+                        <div className="h-1.5 bg-bg-input rounded-full overflow-hidden">
+                            <div
+                                className={`h-full transition-all duration-100 ease-out ${audio.systemAudioError ? 'bg-red-500/40' : 'bg-green-500'}`}
+                                style={{ width: `${audio.systemAudioError ? 100 : audio.systemAudioLevel}%` }}
+                            />
+                        </div>
+                        {audio.systemAudioError && (
+                            <div className="flex items-start gap-2 p-3 mt-2 bg-red-500/10 border border-red-500/20 rounded-lg text-red-400 text-xs">
+                                <AlertCircle size={14} className="shrink-0 mt-0.5" />
+                                <span>{audio.systemAudioError}</span>
+                            </div>
+                        )}
                     </div>
 
                     <div className="h-px bg-border-subtle my-2" />
@@ -303,11 +347,11 @@ const AudioTab: React.FC<{ overlay: SettingsOverlayHook }> = ({ overlay }) => {
                                 </div>
                                 <div>
                                     <div className="flex items-center gap-2 mb-0.5">
-                                        <h3 className="text-sm font-bold text-text-primary">SCK Backend</h3>
-                                        <span className="px-1.5 py-0.5 rounded text-[10px] font-bold bg-indigo-500/20 text-indigo-400 uppercase tracking-wide">Alternative</span>
+                                        <h3 className="text-sm font-bold text-text-primary">ScreenCaptureKit Backend</h3>
+                                        <span className="px-1.5 py-0.5 rounded text-[10px] font-bold bg-indigo-500/20 text-indigo-400 uppercase tracking-wide">Default</span>
                                     </div>
                                     <p className="text-xs text-text-secondary leading-relaxed max-w-[300px]">
-                                        Use the ScreenCaptureKit backend. An optimized alternative to CoreAudio if you experience any capture issues.
+                                        Captures system audio with ScreenCaptureKit (recommended). Turn off to use the experimental CoreAudio Tap backend, which produces unusable audio on some Macs.
                                     </p>
                                 </div>
                             </div>

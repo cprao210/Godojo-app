@@ -44,6 +44,7 @@ export interface Meeting {
     date: string;
     duration: string;
     durationMs?: number; // raw ms — available when loaded from DB, used for accurate recovery
+    startTime?: number; // raw ms epoch — when recording started
     endTime?: number;       // raw ms epoch — when recording stopped
     totalPausedMs?: number; // raw ms — cumulative pause time subtracted into durationMs
     summary: string;
@@ -131,6 +132,12 @@ export interface Meeting {
         items?: string[];
     }>;
     calendarEventId?: string;
+    /**
+     * Raw calendar event payload (attendees, start/end time, meeting link, etc.)
+     * as received from the calendar provider (Google/Microsoft/Zoom). Stored
+     * verbatim as JSON — kept as an array to match the provider's event feed shape.
+     */
+    calendarEventMetadata?: any[];
     source?: 'manual' | 'calendar';
     meetingTypes?: ('discovery' | 'demo' | 'negotiation')[];
     tenantId?: string | null;
@@ -141,12 +148,34 @@ export class DatabaseManager {
     private db: Database.Database | null = null;
     private dbPath: string;
     private resolvedExtPath: string = '';
+    private currentUid: string | null = null;
+
+    /**
+     * Per-user database file. A separate physical .db per Firebase uid is what
+     * guarantees User A and User B on the same machine never see each other's
+     * meetings/transcripts — the previous single shared natively.db was the root
+     * cause of duplicate transcripts and cross-user data on account switch.
+     */
+    private static resolveDbPath(uid: string | null): string {
+        const userDataPath = app.getPath('userData');
+        // Sanitize: Firebase uids are [A-Za-z0-9] but be defensive so a stray
+        // value can never escape the userData dir or inject path separators.
+        const safe = (uid ?? 'anon').replace(/[^A-Za-z0-9_-]/g, '');
+        return path.join(userDataPath, `natively-${safe || 'anon'}.db`);
+    }
+
 
     private constructor() {
-        const userDataPath = app.getPath('userData');
-        this.dbPath = path.join(userDataPath, 'natively.db');
+        // Start with whatever identity is known at construction time. If no user
+        // is signed in yet (cold start before session restore), open the anon DB;
+        // switchUser() will re-open the correct per-user file the moment auth
+        // resolves. Each user gets a physically separate SQLite file, so meetings
+        // and transcripts can never overlap across accounts on a shared machine.
+        this.currentUid = AuthManager.getInstance().getUid();
+        this.dbPath = DatabaseManager.resolveDbPath(this.currentUid);
         this.init();
     }
+
 
     // Releases the underlying sqlite file handle. Required before deleting
     // or moving the userData directory (e.g. "Reset app data") — on Windows
@@ -154,10 +183,50 @@ export class DatabaseManager {
     // delete would otherwise fail or silently leave the .db file behind.
     public close(): void {
         if (this.db) {
+            try { this.db.pragma('wal_checkpoint(TRUNCATE)'); } catch { /* best-effort */ }
             this.db.close();
             this.db = null;
         }
     }
+
+    /**
+ * Re-point the manager at the given user's database file. Called on sign-in,
+ * session restore, and account switch. No-ops if already on that user's DB.
+ * Closes the current handle first (releases the WAL file cleanly), then
+ * re-inits — which re-runs migrations against the target file (migrations are
+ * per-file, tracked by that file's PRAGMA user_version).
+ */
+    public switchUser(uid: string | null): void {
+        const nextPath = DatabaseManager.resolveDbPath(uid);
+        if (this.db && nextPath === this.dbPath) {
+            // Already on the right file — nothing to do.
+            return;
+        }
+        console.log(`[DatabaseManager] Switching DB user: ${this.currentUid ?? 'anon'} -> ${uid ?? 'anon'}`);
+        try {
+            // Checkpoint + close the current file so the -wal is flushed and the
+            // handle is released before we open a different file.
+            if (this.db) {
+                try { this.db.pragma('wal_checkpoint(TRUNCATE)'); } catch { /* best-effort */ }
+                this.db.close();
+                this.db = null;
+            }
+        } catch (e) {
+            console.warn('[DatabaseManager] Error closing previous DB during switchUser:', e);
+        }
+        this.currentUid = uid;
+        this.dbPath = nextPath;
+        // Reset per-session caches tied to the old file/connection.
+        this.ensuredDims = new Set<number>();
+        this.resolvedExtPath = '';
+        this.init();
+    }
+
+    /** The uid this manager's DB file currently belongs to (null = anon). */
+    public getCurrentUid(): string | null {
+        return this.currentUid;
+    }
+
 
     public static getInstance(): DatabaseManager {
         if (!DatabaseManager.instance) {
@@ -256,6 +325,7 @@ export class DatabaseManager {
                     speaker TEXT,
                     content TEXT,
                     timestamp_ms INTEGER,
+                    display_name TEXT,
                     FOREIGN KEY(meeting_id) REFERENCES meetings(id) ON DELETE CASCADE
                 );
 
@@ -803,6 +873,43 @@ export class DatabaseManager {
             `);
             this.db.pragma('user_version = 20');
         }
+
+        // v20 → v21: transcripts.display_name
+        if (version < 21) {
+            try { this.db.exec(`ALTER TABLE transcripts ADD COLUMN display_name TEXT`); }
+            catch (e) { /* Column already exists */ }
+            this.db.pragma('user_version = 21');
+        }
+
+        // v21 → v22: meetings.calendar_event_metadata
+        // Raw calendar event payload (attendees, start/end time, link, organizer, etc.)
+        // captured at meeting-start time, stored as JSON text — same pattern as summary_json.
+        if (version < 22) {
+            console.log('[DatabaseManager] Applying migration v21 → v22: Add calendar_event_metadata to meetings');
+            try { this.db.exec(`ALTER TABLE meetings ADD COLUMN calendar_event_metadata TEXT`); }
+            catch (e) { /* Column already exists */ }
+            this.db.pragma('user_version = 22');
+        }
+
+        // v22 → v23: meeting_chunk_queue — durable retry queue for the backend
+        // RAG ingest call (POST /meetings/:id/chunking). Chat reads only from
+        // the backend's meeting_chunks, but the old trigger was a renderer
+        // transition-watch effect with no retry that missed everything not
+        // completing live in the Launcher. Failures now park here and drain on
+        // a timer — see electron/utils/backendRagChunking.ts.
+        if (version < 23) {
+            console.log('[DatabaseManager] Applying migration v22 → v23: meeting_chunk_queue');
+            this.db.exec(`
+                CREATE TABLE IF NOT EXISTS meeting_chunk_queue (
+                    meeting_id TEXT PRIMARY KEY,
+                    tenant_id  TEXT,
+                    attempts   INTEGER NOT NULL DEFAULT 0,
+                    last_error TEXT,
+                    updated_at INTEGER NOT NULL
+                );
+            `);
+            this.db.pragma('user_version = 23');
+        }
     }
 
     // ============================================
@@ -852,6 +959,80 @@ export class DatabaseManager {
             }
         } catch (error) {
             console.error(`[DatabaseManager] Failed to delete app_state for key: ${key}`, error);
+        }
+    }
+
+    // ============================================
+    // Meeting RAG Chunk Queue (device-local, never mirrored)
+    // ============================================
+    // Holds meetings whose backend /chunking POST failed transiently (network,
+    // 5xx, transcript-mirror lag). electron/utils/backendRagChunking.ts drains
+    // it on a timer + at startup. Intentionally NOT in the Supabase mirror:
+    // it's this device's work queue, not user data, and the `attempts` counter
+    // must not propagate.
+
+    /** Insert or refresh a pending chunk attempt. Idempotent on meeting_id. */
+    public upsertChunkAttempt(meetingId: string, tenantId: string | null): void {
+        if (!this.db) return;
+        try {
+            this.db.prepare(`
+                INSERT INTO meeting_chunk_queue (meeting_id, tenant_id, attempts, updated_at)
+                VALUES (?, ?, 0, ?)
+                ON CONFLICT(meeting_id) DO UPDATE SET
+                    tenant_id = excluded.tenant_id,
+                    updated_at = excluded.updated_at
+            `).run(meetingId, tenantId ?? null, Date.now());
+        } catch (error) {
+            console.error('[DatabaseManager] Failed to upsert chunk attempt:', error);
+        }
+    }
+
+    /** Record one failed drain attempt. Returns nothing; caller uses list/get. */
+    public bumpChunkAttempt(meetingId: string, errorMessage: string): void {
+        if (!this.db) return;
+        try {
+            this.db.prepare(`
+                UPDATE meeting_chunk_queue
+                SET attempts = attempts + 1, last_error = ?, updated_at = ?
+                WHERE meeting_id = ?
+            `).run((errorMessage || '').slice(0, 500), Date.now(), meetingId);
+        } catch (error) {
+            console.error('[DatabaseManager] Failed to bump chunk attempt:', error);
+        }
+    }
+
+    public getChunkAttempts(meetingId: string): number {
+        if (!this.db) return 0;
+        try {
+            const row = this.db.prepare('SELECT attempts FROM meeting_chunk_queue WHERE meeting_id = ?')
+                .get(meetingId) as { attempts: number } | undefined;
+            return row?.attempts ?? 0;
+        } catch (error) {
+            console.error('[DatabaseManager] Failed to read chunk attempts:', error);
+            return 0;
+        }
+    }
+
+    /** Oldest-first so a long outage still eventually reaches every meeting. */
+    public listChunkQueue(): Array<{ meeting_id: string; tenant_id: string | null; attempts: number }> {
+        if (!this.db) return [];
+        try {
+            return this.db.prepare(`
+                SELECT meeting_id, tenant_id, attempts FROM meeting_chunk_queue
+                ORDER BY updated_at ASC
+            `).all() as Array<{ meeting_id: string; tenant_id: string | null; attempts: number }>;
+        } catch (error) {
+            console.error('[DatabaseManager] Failed to list chunk queue:', error);
+            return [];
+        }
+    }
+
+    public removeChunkQueueItem(meetingId: string): void {
+        if (!this.db) return;
+        try {
+            this.db.prepare('DELETE FROM meeting_chunk_queue WHERE meeting_id = ?').run(meetingId);
+        } catch (error) {
+            console.error('[DatabaseManager] Failed to remove chunk queue item:', error);
         }
     }
 
@@ -1470,31 +1651,65 @@ export class DatabaseManager {
      */
     public saveMeeting(meeting: Meeting, startTimeMs: number, endTimeMs: number, totalPausedMs: number = 0) {
 
+        if (!this.db) { console.error('[DatabaseManager] DB not initialized'); return; }
+        if (!this.currentUid) {
+            console.warn('[DatabaseManager] saveMeeting called with no active user DB — refusing to write to anon DB');
+            return;
+        }
+
         if (!this.db) {
             console.error('[DatabaseManager] DB not initialized');
             return;
         }
 
-        const durationMs = Math.max(0, (endTimeMs - startTimeMs) - totalPausedMs);
+        // Resolve the owning uid AND the timing facts ONCE, at the moment the
+        // meeting first exists, and reuse them on every later re-save of the
+        // same id (final save, title/summary update, recovery, regen). Because
+        // this method uses INSERT OR REPLACE, a later caller passing even
+        // slightly different start/end/paused values would otherwise overwrite
+        // the row and recompute a DIFFERENT duration_ms — the exact cause of
+        // the duration drifting (e.g. 01:40 -> 02:15) after an account switch
+        // re-mirrors the row. Pinning timing to the first-written values makes
+        // duration_ms write-once, mirroring how owner_uid is already preserved.
+        const existing = this.db.prepare(
+            'SELECT owner_uid, start_time, end_time, total_paused_ms, created_at FROM meetings WHERE id = ?'
+        ).get(meeting.id) as {
+            owner_uid: string | null;
+            start_time: number | null;
+            end_time: number | null;
+            total_paused_ms: number | null;
+            created_at: string | null;
+        } | undefined;
 
-        // Resolve the owning uid ONCE, here, at the moment the meeting first
-        // exists — and reuse it for every later mirror write (title update,
-        // summary update, etc.), instead of letting each of those calls
-        // re-resolve "the current signed-in user" independently. See v19→v20
-        // migration comment for why that mismatch causes duplicate Supabase rows.
-        // INSERT OR REPLACE would otherwise clobber an already-set owner_uid on
-        // a re-save of the same id with NULL, so preserve it if present.
-        const existingOwner = this.db.prepare('SELECT owner_uid FROM meetings WHERE id = ?').get(meeting.id) as { owner_uid: string | null } | undefined;
-        const ownerUid = existingOwner?.owner_uid ?? SupabaseClientManager.getCurrentUserId();
+        const ownerUid = existing?.owner_uid ?? SupabaseClientManager.getCurrentUserId();
+
+        // First save wins for timing. Fall back to the passed-in args only when
+        // no row exists yet (the very first save for this id).
+        const startTimeFinal = existing?.start_time ?? startTimeMs;
+        const endTimeFinal = existing?.end_time ?? endTimeMs;
+        const totalPausedFinal = existing?.total_paused_ms ?? totalPausedMs;
+        const durationMs = Math.max(0, (endTimeFinal - startTimeFinal) - totalPausedFinal);
+        // created_at is write-once for the same reason: the list sorts and labels
+        // rows by it, and every re-save passes `new Date().toISOString()`. Without
+        // this, a meeting's timestamp jumped from "when the call ended" to "when
+        // background processing finished" — visibly re-labelling the row (and
+        // re-sorting the list under the user) the instant it stopped processing.
+        const createdAtFinal = existing?.created_at ?? meeting.date;
 
         const insertMeeting = this.db.prepare(`
-            INSERT OR REPLACE INTO meetings (id, title, start_time, end_time, total_paused_ms, duration_ms, summary_json, created_at, calendar_event_id, tenant_id, source, is_processed, owner_uid)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            INSERT OR REPLACE INTO meetings (id, title, start_time, end_time, total_paused_ms, duration_ms, summary_json, created_at, calendar_event_id, tenant_id, source, is_processed, owner_uid, calendar_event_metadata)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         `);
 
+        // Same object/string split as summaryObj/summaryJson below: keep the object
+        // form for the Supabase jsonb column, stringify separately for local SQLite.
+        const calendarEventMetadataJson = meeting.calendarEventMetadata
+            ? JSON.stringify(meeting.calendarEventMetadata)
+            : null;
+
         const insertTranscript = this.db.prepare(`
-            INSERT INTO transcripts (meeting_id, speaker, content, timestamp_ms, speaker_index)
-            VALUES (?, ?, ?, ?, ?)
+            INSERT INTO transcripts (meeting_id, speaker, content, timestamp_ms, speaker_index, display_name)
+            VALUES (?, ?, ?, ?, ?, ?)
         `);
 
         const insertInteraction = this.db.prepare(`
@@ -1523,17 +1738,18 @@ export class DatabaseManager {
             insertMeeting.run(
                 meeting.id,
                 meeting.title,
-                startTimeMs,
-                endTimeMs,
-                totalPausedMs,
+                startTimeFinal,      // ← was startTimeMs
+                endTimeFinal,        // ← was endTimeMs
+                totalPausedFinal,    // ← was totalPausedMs
                 durationMs,
                 summaryJson,
-                meeting.date, // Using the ISO string as created_at for sorting simply
+                createdAtFinal, // ISO string, write-once (see above) — used as the list's sort key
                 meeting.calendarEventId || null,
                 meeting.tenantId || null,
                 meeting.source || 'manual',
                 meeting.isProcessed ? 1 : 0,
-                ownerUid
+                ownerUid,
+                calendarEventMetadataJson
             );
 
             // 2. Insert Transcript
@@ -1546,23 +1762,35 @@ export class DatabaseManager {
                 // meeting first so re-saves replace rather than duplicate.
                 this.db.prepare('DELETE FROM transcripts WHERE meeting_id = ?').run(meeting.id);
                 for (const segment of meeting.transcript) {
+                    const displayName = segment.displayName
+                        || (segment.speaker === 'user' ? 'You'
+                            : (segment.speaker === 'client' || segment.speaker === 'interviewer') ? 'Other Party'
+                                : null);
                     const info = insertTranscript.run(
                         meeting.id,
                         segment.speaker,
                         segment.text,
                         segment.timestamp,
-                        segment.speakerIndex ?? null
+                        segment.speakerIndex ?? null,
+                        displayName
                     );
-                    // NOTE: speaker_index is deliberately EXCLUDED from the mirror
-                    // payload until the Supabase transcripts table gains the column —
-                    // an unknown column fails the whole cloud upsert. TODO(supabase):
-                    // migrate cloud schema, then add speaker_index here.
+                    // speaker_index IS included in the mirror: the Supabase
+                    // transcripts table now has the column (backend manages it),
+                    // and without it the cloud copy loses diarization — the
+                    // transcript tab reads local SQLite fine but every
+                    // Supabase-first read path (get-meeting-details, other
+                    // devices, the FastAPI backend) gets NULL speaker_index and
+                    // renders far-end turns without the "· Speaker N" labels.
+                    // display_name is likewise a real cloud column (see
+                    // SupabaseMirrorService's CREATE TABLE).
                     transcriptMirror.push({
                         id: Number(info.lastInsertRowid),
                         meeting_id: meeting.id,
                         speaker: segment.speaker,
                         content: segment.text,
-                        timestamp_ms: segment.timestamp
+                        timestamp_ms: segment.timestamp,
+                        speaker_index: segment.speakerIndex ?? null,
+                        display_name: displayName
                     });
                 }
             }
@@ -1617,17 +1845,31 @@ export class DatabaseManager {
                 mirror.upsertRow('meetings', {
                     id: meeting.id,
                     title: meeting.title,
-                    start_time: startTimeMs,
-                    end_time: endTimeMs,
-                    total_paused_ms: totalPausedMs,
+                    start_time: startTimeFinal,      // ← was startTimeMs
+                    end_time: endTimeFinal,          // ← was endTimeMs
+                    total_paused_ms: totalPausedFinal, // ← was totalPausedMs
                     duration_ms: durationMs,
                     summary_json: summaryObj,
-                    created_at: meeting.date,
+                    created_at: createdAtFinal, // keep cloud in step with the pinned local value
                     calendar_event_id: meeting.calendarEventId || null,
                     tenant_id: meeting.tenantId || null,
                     source: meeting.source || 'manual',
-                    is_processed: meeting.isProcessed ? 1 : 0
+                    is_processed: meeting.isProcessed ? 1 : 0,
+                    calendar_event_metadata: meeting.calendarEventMetadata || null
                 }, ownerUid);
+                // The local transaction above did DELETE-then-reinsert for this
+                // meeting's transcripts, and each reinsert gets a FRESH autoincrement
+                // rowid. saveMeeting() runs more than once per meeting (the synchronous
+                // "Processing..." placeholder save, then the final save in
+                // processAndSaveMeeting — plus recovery re-processing). The cloud only
+                // ever received upserts of the new rowids and never deleted the prior
+                // save's rows, so every re-save appended another full copy of the
+                // transcript to Supabase. (The UI reads local SQLite, which the DELETE
+                // keeps clean — that's why duplicates showed only in the cloud.)
+                // Mirror the DELETE first so the cloud replaces this meeting's
+                // transcripts instead of accumulating duplicates. expectEmpty: the
+                // first save clears nothing (no rows exist yet) — that's normal, not RLS.
+                mirror.deleteRow('transcripts', 'meeting_id', meeting.id, { expectEmpty: true, ownerUid });
                 if (transcriptMirror.length > 0) mirror.upsertRows('transcripts', transcriptMirror, ownerUid);
                 if (interactionMirror.length > 0) mirror.upsertRows('ai_interactions', interactionMirror, ownerUid);
             } catch (mirrorErr) {
@@ -1675,7 +1917,7 @@ export class DatabaseManager {
                         // placeholder write, long enough for a session/account switch
                         // to have happened in between.
                         const ownerRow = this.db.prepare('SELECT owner_uid FROM meetings WHERE id = ?').get(id) as { owner_uid: string | null } | undefined;
-                        SupabaseMirrorService.getInstance().upsertRow('meetings', { id, summary_json: jsonStr }, ownerRow?.owner_uid ?? null);
+                        SupabaseMirrorService.getInstance().updateRow('meetings', { id }, { summary_json: jsonStr }, ownerRow?.owner_uid ?? null);
                     } catch (e) {
                         console.warn(`[DatabaseManager] Mirror enqueue failed for updateMeeting ${id}:`, e);
                     }
@@ -1700,7 +1942,7 @@ export class DatabaseManager {
                     // Same reasoning as updateMeeting(): pin to the meeting's own
                     // owner_uid rather than "whoever is signed in now".
                     const ownerRow = this.db.prepare('SELECT owner_uid FROM meetings WHERE id = ?').get(id) as { owner_uid: string | null } | undefined;
-                    SupabaseMirrorService.getInstance().upsertRow('meetings', { id, title }, ownerRow?.owner_uid ?? null);
+                    SupabaseMirrorService.getInstance().updateRow('meetings', { id }, { title }, ownerRow?.owner_uid ?? null);
                 } catch (e) {
                     console.warn(`[DatabaseManager] Mirror enqueue failed for title update ${id}:`, e);
                 }
@@ -1749,7 +1991,7 @@ export class DatabaseManager {
             const info = stmt.run(jsonStr, id);
             if (info.changes > 0) {
                 try {
-                    SupabaseMirrorService.getInstance().upsertRow('meetings', { id, summary_json: jsonStr }, row.owner_uid ?? null);
+                    SupabaseMirrorService.getInstance().updateRow('meetings', { id }, { summary_json: jsonStr }, row.owner_uid ?? null);
                 } catch (e) {
                     console.warn(`[DatabaseManager] Mirror enqueue failed for summary update ${id}:`, e);
                 }
@@ -1791,6 +2033,7 @@ export class DatabaseManager {
                 summary: summaryData.legacySummary || '',
                 detailedSummary: summaryData.detailedSummary,
                 calendarEventId: row.calendar_event_id,
+                calendarEventMetadata: row.calendar_event_metadata ? JSON.parse(row.calendar_event_metadata) : undefined,
                 source: row.source as any,
                 isProcessed: row.is_processed === 1 || row.is_processed === true,
                 // We don't load full transcript/usage for list view to keep it light
@@ -1838,7 +2081,8 @@ export class DatabaseManager {
             speaker: row.speaker,
             text: row.content,
             timestamp: row.timestamp_ms,
-            speakerIndex: row.speaker_index ?? undefined
+            speakerIndex: row.speaker_index ?? undefined,
+            displayName: row.display_name ?? undefined
         }));
 
         const usage = usageRows.map(row => {
@@ -1874,6 +2118,7 @@ export class DatabaseManager {
             summary: summaryData.legacySummary || '',
             detailedSummary: summaryData.detailedSummary,
             calendarEventId: meetingRow.calendar_event_id,
+            calendarEventMetadata: meetingRow.calendar_event_metadata ? JSON.parse(meetingRow.calendar_event_metadata) : undefined,
             source: meetingRow.source,
             transcript: transcript,
             usage: usage
@@ -1915,8 +2160,6 @@ export class DatabaseManager {
         const rows = stmt.all() as any[];
 
         return rows.map(row => {
-            // Reconstruct minimal meeting object for processing
-            // We mainly need ID to fetch transcripts later
             const summaryData = JSON.parse(row.summary_json || '{}');
             return {
                 id: row.id,
@@ -1924,15 +2167,22 @@ export class DatabaseManager {
                 date: row.created_at,
                 duration: formatDuration(row.duration_ms),
                 durationMs: row.duration_ms,
+                // NEW: carry the raw timing facts so recovery can re-save
+                // WITHOUT recomputing duration from created_at.
+                startTime: row.start_time,
+                endTime: row.end_time,
+                totalPausedMs: row.total_paused_ms ?? 0,
                 summary: summaryData.legacySummary || '',
                 detailedSummary: summaryData.detailedSummary,
                 calendarEventId: row.calendar_event_id,
+                calendarEventMetadata: row.calendar_event_metadata ? JSON.parse(row.calendar_event_metadata) : undefined,
                 source: row.source,
                 isProcessed: false,
-                transcript: [] as any[], // Fetched separately via getMeetingDetails or manually if needed
+                transcript: [] as any[],
                 usage: [] as any[]
             };
         });
+
     }
 
     public clearAllData(): boolean {
@@ -2414,4 +2664,23 @@ export class DatabaseManager {
         // this.saveMeeting(demoMeeting, today.getTime(), today.getTime() + durationMs, 0);
         // console.log('[DatabaseManager] Seeded demo meeting.');
     }
+
+    /**
+     * Delete ONLY this user's physical DB files: natively-<uid>.db plus its
+     * -wal / -shm sidecars. Closes the handle first (Windows lock). Does NOT
+     * touch any other user's natively-*.db file.
+     */
+    public deleteCurrentUserDatabaseFiles(): void {
+        const base = this.dbPath; // natively-<uid>.db for the active user
+        this.close();             // release WAL + handle before unlink
+        for (const p of [base, `${base}-wal`, `${base}-shm`]) {
+            try {
+                if (fs.existsSync(p)) fs.unlinkSync(p);
+            } catch (e) {
+                console.warn('[DatabaseManager] Failed to delete DB file:', p, e);
+            }
+        }
+        console.log(`[DatabaseManager] Current user DB files deleted: ${base}`);
+    }
+
 }

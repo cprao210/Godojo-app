@@ -1,7 +1,8 @@
+use std::sync::atomic::Ordering;
 use std::sync::Arc;
 use crate::apm_shim::{
     config::{Config, EchoCanceller},
-    Processor, Stats,
+    Processor,
 };
 
 const SAMPLE_RATE_HZ: u32 = 16_000;
@@ -82,12 +83,11 @@ impl ApmRender {
 pub struct ApmCapture {
     proc: Arc<Processor>,
     buf: Vec<f32>,
-    frame_count: u32,
 }
 
 impl ApmCapture {
     pub fn new(proc: Arc<Processor>) -> Self {
-        Self { proc, buf: Vec::new(), frame_count: 0 }
+        Self { proc, buf: Vec::new() }
     }
 
     /// Process 16 kHz i16 mono mic samples through AEC3.
@@ -100,19 +100,24 @@ impl ApmCapture {
         while self.buf.len() >= FRAME_SAMPLES {
             let mut frame = vec![self.buf.drain(..FRAME_SAMPLES).collect::<Vec<f32>>()];
             let _ = self.proc.process_capture_frame(&mut frame);
-            self.frame_count += 1;
 
-            // Log ERLE every 50 frames (~500ms) so we can verify AEC3 is converging.
-            // ERLE > 20dB = good cancellation. ERLE ~0dB = AEC3 not working.
-            if self.frame_count.is_multiple_of(50) {
-                let stats: Stats = self.proc.get_stats();
-                println!(
-                    "[WebRtcAec] frame={} ERLE={:.1}dB delay={}ms",
-                    self.frame_count,
-                    stats.echo_return_loss_enhancement.unwrap_or(0.0),
-                    stats.delay_ms.map(|d| d as i64).unwrap_or(-1),
-                );
-            }
+            // Publish the frame count instead of logging it.
+            //
+            // This used to be a `println!` of frame/ERLE/delay every 50 frames —
+            // two lines a second, ~7,200 an hour, for the entire life of a mic
+            // capture. Every field it printed is already in
+            // getAudioPipelineStats() (`erle_db`, `erle_ema`, `delay_ms`,
+            // `converged`), which main polls every 5 s and de-duplicates against
+            // the previous snapshot, so the log was pure duplication — and it
+            // took the APM's stats lock twice a second on the real-time mic DSP
+            // thread to produce it.
+            //
+            // The one thing it carried that the snapshot did not was "is the
+            // capture path actually running", so that becomes a counter:
+            // `capture_frames` climbing at ~100/s is the same evidence, at zero
+            // ongoing cost. fetch_add rather than a store because a settings
+            // audio-test can run a second ApmCapture alongside a meeting.
+            crate::echo_control::APM_CAPTURE_FRAMES.fetch_add(1, Ordering::Relaxed);
 
             out.extend(
                 frame[0].iter().map(|&f| (f * 32768.0).clamp(-32768.0, 32767.0) as i16),

@@ -10,24 +10,63 @@ import { getFirebaseAuth } from "@/lib/firebase";
 import { UserProfileData } from "@/types";
 import { settingsToast } from "@/lib/settingsToastBus";
 
-const PROFILE_KEY = "gd_user_profile";
+/**
+ * The cached profile holds displayName / email / phone / role / organization /
+ * location / website / bio / photoDataUrl, and BOTH the header
+ * (UserProfileButton) and the Launcher prefer it over Firebase's own user
+ * object. On a single shared key that means after switching accounts the app
+ * keeps rendering the previous user's name and photo — not for a frame, but
+ * until that user opens Settings > Profile and saves. So: one key per uid.
+ */
+const PROFILE_KEY_PREFIX = "gd_user_profile";
+const LEGACY_PROFILE_KEY = "gd_user_profile";
+
+function profileKey(): string {
+    const uid = getFirebaseAuth().currentUser?.uid;
+    // No uid resolved yet (shouldn't happen — the auth gate mounts these
+    // consumers only once authUser exists) — keep the old behavior.
+    return uid ? `${PROFILE_KEY_PREFIX}_${uid}` : LEGACY_PROFILE_KEY;
+}
+
 const SAVE_ANIMATION_MS = 400;
 const SAVED_BADGE_MS = 2000;
 const MAX_PHOTO_BYTES = 5 * 1024 * 1024; // 5 MB
 
 /** Reads the cached profile from localStorage, seeding it from the current Firebase user if none is saved yet. */
 export function loadUserProfile(): UserProfileData {
+    const auth = getFirebaseAuth();
+    const firebaseUser = auth.currentUser;
+    const uid = firebaseUser?.uid ?? "";
+    const key = profileKey();
+
     try {
-        const raw = localStorage.getItem(PROFILE_KEY);
+        const raw = localStorage.getItem(key);
         if (raw) return JSON.parse(raw);
     } catch {
         /* ignore corrupt cache */
     }
 
+    // One-time migration off the old shared key — but only adopt it if it
+    // genuinely belongs to this user. On a machine that has had two accounts the
+    // shared blob is whoever saved last, and handing it to the wrong user is the
+    // exact leak this split exists to fix.
+    if (uid && key !== LEGACY_PROFILE_KEY) {
+        try {
+            const legacyRaw = localStorage.getItem(LEGACY_PROFILE_KEY);
+            if (legacyRaw) {
+                const legacy = JSON.parse(legacyRaw) as UserProfileData;
+                if (legacy?.email && firebaseUser?.email && legacy.email === firebaseUser.email) {
+                    localStorage.setItem(key, legacyRaw);
+                    localStorage.removeItem(LEGACY_PROFILE_KEY);
+                    return legacy;
+                }
+            }
+        } catch {
+            /* ignore corrupt legacy cache */
+        }
+    }
+
     // No saved profile yet — seed from Firebase auth user.
-    const auth = getFirebaseAuth();
-    const firebaseUser = auth.currentUser;
-    const uid = firebaseUser?.uid ?? "";
     const savedPhone = uid ? (localStorage.getItem(`natively_signup_phone_${uid}`) ?? "") : "";
 
     return {
@@ -45,9 +84,10 @@ export function loadUserProfile(): UserProfileData {
 
 /** Persists the profile to localStorage and broadcasts a storage event so other open windows/components pick up the change. */
 export function saveUserProfile(data: UserProfileData): void {
-    localStorage.setItem(PROFILE_KEY, JSON.stringify(data));
+    const key = profileKey();
+    localStorage.setItem(key, JSON.stringify(data));
     window.dispatchEvent(new StorageEvent("storage", {
-        key: PROFILE_KEY,
+        key,
         newValue: JSON.stringify(data),
     }));
 }

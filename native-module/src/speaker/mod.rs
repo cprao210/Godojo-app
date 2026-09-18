@@ -24,12 +24,24 @@ pub use windows::SpeakerInput;
 #[cfg(target_os = "windows")]
 pub use windows::SpeakerStream;
 
-#[cfg(not(any(target_os = "macos", target_os = "windows")))]
+#[cfg(target_os = "linux")]
+pub mod linux;
+// Also used by output_route.rs to classify the active sink.
+#[cfg(target_os = "linux")]
+pub mod pulse;
+#[cfg(target_os = "linux")]
+pub use linux::list_output_devices;
+#[cfg(target_os = "linux")]
+pub use linux::SpeakerInput;
+#[cfg(target_os = "linux")]
+pub use linux::SpeakerStream;
+
+#[cfg(not(any(target_os = "macos", target_os = "windows", target_os = "linux")))]
 pub mod fallback {
     use anyhow::Result;
 
     // A zero-sized consumer that satisfies the trait bounds lib.rs needs at
-    // compile time. On Linux this code path is never reached at runtime because
+    // compile time. This code path is never reached at runtime because
     // SpeakerInput::new() always returns Err, so the thread exits before
     // take_consumer() / try_pop() are ever called.
     pub struct DummyConsumer;
@@ -73,9 +85,9 @@ pub mod fallback {
         Ok(Vec::new())
     }
 }
-#[cfg(not(any(target_os = "macos", target_os = "windows")))]
+#[cfg(not(any(target_os = "macos", target_os = "windows", target_os = "linux")))]
 pub use fallback::list_output_devices;
-#[cfg(not(any(target_os = "macos", target_os = "windows")))]
+#[cfg(not(any(target_os = "macos", target_os = "windows", target_os = "linux")))]
 pub use fallback::SpeakerInput;
-#[cfg(not(any(target_os = "macos", target_os = "windows")))]
+#[cfg(not(any(target_os = "macos", target_os = "windows", target_os = "linux")))]
 pub use fallback::SpeakerStream;

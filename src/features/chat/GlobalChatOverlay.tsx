@@ -1,5 +1,5 @@
 import React from 'react';
-import { X } from 'lucide-react';
+import { X, Info } from 'lucide-react';
 import { motion, AnimatePresence } from 'framer-motion';
 import { IMAGES } from '@/lib/assets';
 import { useGlobalChat, useResolvedTheme } from '@/hooks';
@@ -11,6 +11,8 @@ import EmptyState from './EmptyState';
 import ChatInputBar from './ChatInputBar';
 import ChatSessionSidebar from './ChatSessionSidebar';
 
+const BETTER_RESULTS_HINT = 'For better results please mention meeting names or company names';
+
 // ============================================
 // Main Component
 // ============================================
@@ -21,7 +23,7 @@ const GlobalChatOverlay: React.FC<GlobalChatOverlayProps> = ({ isOpen, onClose, 
 
     const globalChatStates = useGlobalChat({ isOpen, onClose, initialQuery });
     const isLight = useResolvedTheme() === "light";
-    const { messages, chatState, errorMessage, statusText, query, isBusy, setQuery } = globalChatStates;
+    const { messages, chatState, errorMessage, statusText, query, setQuery } = globalChatStates;
     const { messagesEndRef, chatWindowRef, inputRef, submitQuestion, handleInputKeyDown } = globalChatStates;
     const { handleSendClick, resetOnExit, sessionId, sessions, isLoadingSessions } = globalChatStates;
     const { startNewChat, loadSession, deleteSession } = globalChatStates;
@@ -77,7 +79,16 @@ const GlobalChatOverlay: React.FC<GlobalChatOverlayProps> = ({ isOpen, onClose, 
                                         <span className="absolute -bottom-0.5 -right-0.5 w-2.5 h-2.5 rounded-full bg-emerald-400 border-2 border-bg-secondary" />
                                     </div>
                                     <div className="min-w-0">
-                                        <div className="text-[13px] font-semibold text-text-primary leading-tight truncate">Godojo Chat Assistant</div>
+                                        <div className="flex items-center gap-1.5 min-w-0">
+                                            <div className="text-[13px] font-semibold text-text-primary leading-tight truncate">Godojo Chat Assistant</div>
+                                            {/* Informational tooltip: hover the info icon for the "better results" hint */}
+                                            <div className="group/tooltip relative flex items-center shrink-0">
+                                                <Info size={13} className="text-text-tertiary hover:text-text-secondary cursor-help transition-colors" />
+                                                <div className="pointer-events-none absolute top-[calc(100%+8px)] left-1/2 -translate-x-1/2 w-max max-w-[220px] rounded-lg bg-bg-elevated border border-border-subtle px-2.5 py-1.5 text-[11px] leading-snug text-text-secondary text-center opacity-0 scale-95 transition-all duration-150 group-hover/tooltip:opacity-100 group-hover/tooltip:scale-100 shadow-lg z-10">
+                                                    {BETTER_RESULTS_HINT}
+                                                </div>
+                                            </div>
+                                        </div>
                                         <div className="text-[11px] text-text-tertiary leading-tight">
                                             {/* {isBusy ? (statusText ?? 'Typing…') : 'Online · searches all meetings'} */}
                                             Online · searches all meetings
@@ -119,6 +130,13 @@ const GlobalChatOverlay: React.FC<GlobalChatOverlayProps> = ({ isOpen, onClose, 
                                     <div ref={messagesEndRef} />
                                 </div>
                             )}
+
+                            {/* Note: sits at the bottom of the chat screen, just above the input */}
+                            <div className="px-4 pt-2 shrink-0">
+                                <p className="text-[11px] text-text-secondary text-center leading-relaxed">
+                                    Note: {BETTER_RESULTS_HINT}
+                                </p>
+                            </div>
 
                             {/* Input bar */}
                             <ChatInputBar

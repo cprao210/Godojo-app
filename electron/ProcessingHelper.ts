@@ -48,6 +48,98 @@ export class ProcessingHelper {
   }
 
   /**
+   * Push the currently-resolved LLM keys into the live clients.
+   *
+   * The provider clients (GoogleGenAI/Groq/OpenAI/Anthropic) capture their key at
+   * construction, and this helper is built once at boot — before sign-in, so
+   * before any backend fallback key exists. Anything that changes key resolution
+   * (fallback fetch, a Settings save, an account switch) must call this or the
+   * app keeps using whatever was resolvable at startup, which on macOS is often
+   * nothing. Only providers whose key actually changed are rebuilt.
+   *
+   * Returns the providers that were re-pushed.
+   */
+  public syncLlmKeysFromCredentials(
+    trigger: string,
+    options: { reinitializeEngine?: boolean } = {}
+  ): Array<'gemini' | 'groq' | 'openai' | 'claude'> {
+    const { reinitializeEngine = true } = options;
+    const credManager = CredentialsManager.getInstance();
+    const applied = this.llmHelper.getAppliedKeys();
+
+    const resolved = {
+      gemini: credManager.getGeminiApiKey() ?? null,
+      groq: credManager.getGroqApiKey() ?? null,
+      openai: credManager.getOpenaiApiKey() ?? null,
+      claude: credManager.getClaudeApiKey() ?? null,
+    };
+
+    const changed: Array<'gemini' | 'groq' | 'openai' | 'claude'> = [];
+    const targets: Array<{ name: 'gemini' | 'groq' | 'openai' | 'claude'; apply: (key: string) => void }> = [
+      { name: 'gemini', apply: k => this.llmHelper.setApiKey(k) },
+      { name: 'groq', apply: k => this.llmHelper.setGroqApiKey(k) },
+      { name: 'openai', apply: k => this.llmHelper.setOpenaiApiKey(k) },
+      { name: 'claude', apply: k => this.llmHelper.setClaudeApiKey(k) },
+    ];
+
+    for (const target of targets) {
+      const next = resolved[target.name];
+      const current = applied[target.name];
+      if (next && next !== current) {
+        target.apply(next);
+        changed.push(target.name);
+      } else if (!next && current) {
+        // The user removed their key and no default covers this provider.
+        this.llmHelper.clearProviderKey(target.name);
+        changed.push(target.name);
+      }
+    }
+
+    if (changed.length === 0) return changed;
+
+    console.log(`[ProcessingHelper] LLM keys re-synced (${trigger}): ${changed.join(', ')}`);
+
+    if (reinitializeEngine) {
+      // Rebuild the per-mode wrappers so in-flight modes see the new clients.
+      this.appState.getIntelligenceManager().initializeLLMs();
+    }
+
+    // Embeddings hold their own client, keyed on openai/gemini.
+    if (changed.includes('openai') || changed.includes('gemini')) {
+      const ragManager = this.appState.getRAGManager();
+      if (ragManager) {
+        ragManager.initializeEmbeddings({
+          openaiKey: resolved.openai || undefined,
+          geminiKey: resolved.gemini || undefined,
+        });
+        ragManager.retryPendingEmbeddings().catch(console.error);
+      }
+    }
+
+    // Model discovery needs the new keys too.
+    this.llmHelper.initModelVersionManager().catch(err => {
+      console.warn('[ProcessingHelper] ModelVersionManager re-init failed (non-critical):', err.message);
+    });
+
+    try {
+      const { posthogMain } = require('./services/PostHogMainService');
+      const sources = credManager.getKeySources();
+      posthogMain.capture('api_keys_runtime_sync', {
+        trigger,
+        target: 'llm',
+        changedProviders: changed,
+        changedCount: changed.length,
+        geminiSource: sources.gemini,
+        groqSource: sources.groq,
+        openaiSource: sources.openai,
+        claudeSource: sources.claude,
+      });
+    } catch { /* telemetry must never break key loading */ }
+
+    return changed;
+  }
+
+  /**
    * Load stored credentials from CredentialsManager
    * Should be called after app.whenReady() when CredentialsManager is initialized
    */
@@ -55,29 +147,11 @@ export class ProcessingHelper {
     const credManager = CredentialsManager.getInstance();
 
     const geminiKey = credManager.getGeminiApiKey();
-    const groqKey = credManager.getGroqApiKey();
     const openaiKey = credManager.getOpenaiApiKey();
-    const claudeKey = credManager.getClaudeApiKey();
 
-    if (geminiKey) {
-      console.log("[ProcessingHelper] Loading stored Gemini API Key from CredentialsManager");
-      this.llmHelper.setApiKey(geminiKey);
-    }
-
-    if (groqKey) {
-      console.log("[ProcessingHelper] Loading stored Groq API Key from CredentialsManager");
-      this.llmHelper.setGroqApiKey(groqKey);
-    }
-
-    if (openaiKey) {
-      console.log("[ProcessingHelper] Loading stored OpenAI API Key from CredentialsManager");
-      this.llmHelper.setOpenaiApiKey(openaiKey);
-    }
-
-    if (claudeKey) {
-      console.log("[ProcessingHelper] Loading stored Claude API Key from CredentialsManager");
-      this.llmHelper.setClaudeApiKey(claudeKey);
-    }
+    // Pushes every resolved key into the live clients (skips the engine re-init
+    // below, since initializeLLMs() runs unconditionally on this path).
+    this.syncLlmKeysFromCredentials('startup', { reinitializeEngine: false });
 
     // CRITICAL: Re-initialize IntelligenceManager now that keys are loaded
     // This fixes the issue where buttons don't work in production because of late key loading
@@ -132,6 +206,9 @@ export class ProcessingHelper {
     if (aiResponseLanguage) {
       this.llmHelper.setAiResponseLanguage(aiResponseLanguage);
     }
+
+    // One event describing which tier every key came from at boot.
+    credManager.trackKeySourceSnapshot('startup');
   }
 
   public async processScreenshots(): Promise<void> {

@@ -33,8 +33,8 @@ export class RateLimiter {
         this.refillRatePerSecond = refillRatePerSecond;
         this.lastRefillTime = Date.now();
 
-        // Refill tokens periodically
-        this.refillTimer = setInterval(() => this.refill(), 1000);
+        // Refill timer is started lazily, only while a caller is actually
+        // waiting on it — see ensureRefillTimer()/refill().
     }
 
     /**
@@ -48,10 +48,23 @@ export class RateLimiter {
             return;
         }
 
-        // Wait for a token to become available
+        // Wait for a token to become available. acquire() already recomputes
+        // tokens from elapsed wall-clock time on every call, so the periodic
+        // timer's only job is waking up callers already parked here — only
+        // run it while that's actually true, instead of ticking forever.
+        this.ensureRefillTimer();
         return new Promise<void>((resolve) => {
             this.waitQueue.push(resolve);
         });
+    }
+
+    /**
+     * Start the 1s refill tick if it isn't already running.
+     */
+    private ensureRefillTimer(): void {
+        if (!this.refillTimer) {
+            this.refillTimer = setInterval(() => this.refill(), 1000);
+        }
     }
 
     /**
@@ -124,6 +137,12 @@ export class RateLimiter {
                 const resolve = this.waitQueue.shift()!;
                 resolve();
             }
+        }
+
+        // Nothing left to wake up — stop ticking until acquire() needs us again.
+        if (this.waitQueue.length === 0 && this.refillTimer) {
+            clearInterval(this.refillTimer);
+            this.refillTimer = null;
         }
     }
 

@@ -54,7 +54,7 @@ export class EmbeddingPipeline {
             return this.initPromise ?? Promise.resolve();
         }
         this._lastConfig = { ...config };
-        console.log('[EmbeddingPipeline] Initializing with config:', config);
+        // console.log('[EmbeddingPipeline] Initializing with config:', config);
         this.initPromise = this._doInitialize(config);
         return this.initPromise;
     }
@@ -207,7 +207,7 @@ export class EmbeddingPipeline {
         });
 
         queueAll();
-        
+
         // NOTE: Provider metadata is written on the first successful embedding
         // for this meeting (inside embedChunk), not here — to avoid marking a
         // meeting as embedded if the queue crashes before any work is done.

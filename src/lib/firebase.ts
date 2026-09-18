@@ -24,8 +24,10 @@ import {
     deleteUser,
     Auth,
     User,
-    getAdditionalUserInfo
+    getAdditionalUserInfo,
+    signInWithCustomToken
 } from 'firebase/auth';
+import { apiFetch } from './apiClient';
 
 // =====================================================================
 // CONFIG
@@ -125,6 +127,35 @@ export function getAuthErrorMessage(err: unknown): string {
 }
 
 /**
+ * Decode the (unverified) payload of a Firebase ID token to read the
+ * `email` / `name` / `picture` claims directly.
+ *
+ * We don't need signature verification here — the token was just minted by
+ * Google's own `securetoken.googleapis.com` endpoint a moment ago, and the
+ * only consumer is our own upsert of *display* metadata. This avoids relying
+ * on the Firebase Web SDK's local `auth.currentUser` cache, which may not be
+ * hydrated yet at the exact moment `trySilentRestore` runs — that race is
+ * what causes email/displayName to come through as null on a fresh profile
+ * restore (e.g. the first time this uid is mirrored into a database that
+ * doesn't have it yet).
+ */
+function decodeIdTokenClaims(idToken: string): { email: string | null; name: string | null; picture: string | null } {
+    try {
+        const payload = idToken.split('.')[1];
+        const json = atob(payload.replace(/-/g, '+').replace(/_/g, '/'));
+        const claims = JSON.parse(json);
+        return {
+            email: claims.email ?? null,
+            name: claims.name ?? null,
+            picture: claims.picture ?? null,
+        };
+    } catch (e) {
+        console.warn('[firebase] Failed to decode ID token claims:', e);
+        return { email: null, name: null, picture: null };
+    }
+}
+
+/**
  * Subscribe to ID-token refreshes and forward each new token to main.
  * Idempotent — only one listener is ever attached.
  */
@@ -170,8 +201,22 @@ export async function signInWithGoogle(): Promise<{ user: User; isNewUser: boole
     provider.addScope('profile');
     provider.addScope('email');
 
+    // signInWithPopup()'s own "user closed the popup" detection polls the
+    // child window's `.closed` property, which is unreliable for popups
+    // Electron creates via setWindowOpenHandler — in practice this can hang
+    // forever instead of throwing 'auth/popup-closed-by-user' if the user
+    // closes the window before finishing. WindowHelper.ts forwards the
+    // popup's real 'closed' event over IPC as a backstop; race it against
+    // the SDK call so the caller's `finally` always runs promptly either way.
+    let unsubscribePopupClosed: (() => void) | undefined;
+    const popupClosedSignal = new Promise<never>((_, reject) => {
+        unsubscribePopupClosed = window.electronAPI?.onGoogleSignInPopupClosed?.(() => {
+            reject(Object.assign(new Error('Sign-in cancelled — the window was closed.'), { code: 'auth/popup-closed-by-user' }));
+        });
+    });
+
     try {
-        const result = await signInWithPopup(auth, provider);
+        const result = await Promise.race([signInWithPopup(auth, provider), popupClosedSignal]);
         // getAdditionalUserInfo tells us whether this popup created a brand
         // new Firebase account or signed into an existing one — used to
         // split 'user_registered' vs 'user_signed_in' analytics for Google,
@@ -189,6 +234,8 @@ export async function signInWithGoogle(): Promise<{ user: User; isNewUser: boole
             throw new Error('Sign-in popup was blocked. Please try again.');
         }
         throw err;
+    } finally {
+        unsubscribePopupClosed?.();
     }
 }
 
@@ -313,16 +360,21 @@ export async function trySilentRestore(): Promise<boolean> {
 
         const auth = getFirebaseAuth();
 
-        // Wait briefly for Firebase SDK to pick up the restored session
+        // The Firebase SDK's local persistence (auth.currentUser) may not be
+        // hydrated yet at this point — that's an async load and this can run
+        // before it resolves. Decode the freshly-minted ID token's own claims
+        // as the primary source of truth, and only fall back to
+        // auth.currentUser to fill in anything the token claims don't carry.
+        const claims = decodeIdTokenClaims(data.id_token);
         const currentUser = auth.currentUser;
 
         await window.electronAPI?.authSetIdToken?.({
             idToken: data.id_token,
             refreshToken: data.refresh_token,
             uid: data.user_id,
-            email: currentUser?.email ?? null,
-            displayName: currentUser?.displayName ?? null,
-            photoURL: currentUser?.photoURL ?? null,
+            email: claims.email ?? currentUser?.email ?? null,
+            displayName: claims.name ?? currentUser?.displayName ?? null,
+            photoURL: claims.picture ?? currentUser?.photoURL ?? null,
             expiresAt: Date.now() + parseInt(data.expires_in, 10) * 1000,
         });
         return true;
@@ -349,6 +401,34 @@ export async function reloadAndCheckVerified(user: User): Promise<boolean> {
 }
 
 /**
+ * Attempts to force-refresh the ID token with an exponential backoff retry policy.
+ * Only retries on network-related errors (e.g., waking from sleep with no Wi-Fi yet).
+ * Fatal errors (auth/user-disabled, auth/user-token-expired) throw immediately.
+ */
+async function getIdTokenWithRetry(user: User, maxRetries = 3): Promise<string> {
+    let attempt = 0;
+    while (attempt < maxRetries) {
+        try {
+            return await user.getIdToken(true);
+        } catch (e: any) {
+            const code = e?.code || '';
+            // Only retry on network issues or timeouts
+            if (code === 'auth/network-request-failed' || code === 'auth/internal-error' || code === 'auth/timeout') {
+                attempt++;
+                if (attempt >= maxRetries) throw e;
+                const delayMs = Math.min(1000 * Math.pow(2, attempt), 8000); // 2s, 4s, 8s...
+                console.warn(`[firebase] Token refresh failed due to network (${code}). Retrying in ${delayMs}ms (Attempt ${attempt}/${maxRetries})...`);
+                await new Promise(r => setTimeout(r, delayMs));
+            } else {
+                // Fatal error (user disabled, token revoked, etc) - do not retry
+                throw e;
+            }
+        }
+    }
+    throw new Error('Max retries exceeded');
+}
+
+/**
  * Force-refreshes the current user's ID token against Firebase servers.
  * Returns false if the account has been deleted, disabled, or session revoked.
  * This is the only reliable way to detect a server-side deletion since the
@@ -359,10 +439,19 @@ export async function verifySessionIsActive(): Promise<boolean> {
     const user = auth.currentUser;
     if (!user) return false;
     try {
-        await user.getIdToken(/* forceRefresh */ true);
+        await getIdTokenWithRetry(user);
         return true;
     } catch (e: any) {
-        console.warn('[firebase] verifySessionIsActive failed:', e?.code ?? e);
+        const code = e?.code || '';
+        // If it's *still* just a network failure after all retries, don't permanently
+        // assume the account is deleted. Let them proceed with the cached token rather 
+        // than hard-blocking the meeting start just because of bad hotel Wi-Fi.
+        if (code === 'auth/network-request-failed') {
+            console.warn('[firebase] verifySessionIsActive: Network is down, skipping hard session invalidation.');
+            return true;
+        }
+
+        console.warn('[firebase] verifySessionIsActive failed (fatal):', e?.code ?? e);
         return false;
     }
 }
@@ -381,13 +470,20 @@ export function installSessionGuard(onInvalidSession: (errorCode?: string) => vo
     const unsub = onIdTokenChanged(auth, async (user) => {
         if (!user) return; // null during init or after sign-out — not an error
         try {
-            await user.getIdToken(/* forceRefresh */ true);
+            await getIdTokenWithRetry(user);
         } catch (e: any) {
+            const code = e?.code || '';
+            // Do NOT log the user out just because their Wi-Fi dropped during a background refresh
+            if (code === 'auth/network-request-failed' || code === 'auth/internal-error') {
+                console.warn('[firebase] Session guard: network down during refresh, ignoring.');
+                return;
+            }
+
             // Firebase throws here when the account is disabled, deleted, or
-            // the session is revoked. Treat any token refresh failure as
+            // the session is revoked. Treat any fatal token refresh failure as
             // an invalid session and force the user back to sign-in.
-            console.warn('[firebase] Session guard: token refresh failed, signing out.', e?.code ?? e);
-            onInvalidSession(e?.code);
+            console.warn('[firebase] Session guard: token refresh failed fatally, signing out.', code ?? e);
+            onInvalidSession(code);
         }
     });
     return unsub;
@@ -425,11 +521,61 @@ export async function guardSession(): Promise<{ valid: boolean; message?: string
     const user = auth.currentUser;
     if (!user) return { valid: false, message: 'You are not signed in.' };
     try {
-        await user.getIdToken(/* forceRefresh */ true);
+        await getIdTokenWithRetry(user);
         return { valid: true };
     } catch (e: any) {
-        console.warn('[firebase] guardSession: token refresh failed, signing out.', e?.code ?? e);
+        const code = e?.code || '';
+        // Same here: do not nuke the user's session if it's just a network timeout
+        if (code === 'auth/network-request-failed') {
+            console.warn('[firebase] guardSession: Network is down, passing optimistically.');
+            return { valid: true };
+        }
+
+        console.warn('[firebase] guardSession: token refresh failed, signing out.', code ?? e);
         await fbSignOut(auth).catch(() => { });
         return { valid: false, message: getAuthErrorMessage(e) || 'Session expired. Please sign in again.' };
+    }
+}
+
+export async function switchToAccount(uid: string): Promise<boolean> {
+    try {
+        const { custom_token } = await apiFetch<{ custom_token: string }>('/auth/switch-token', {
+            method: 'POST',
+            body: JSON.stringify({ uid }),
+        });
+        if (!custom_token) return false;
+        const auth = getFirebaseAuth();
+        const cred = await signInWithCustomToken(auth, custom_token);
+
+        // Do NOT rely on installIdTokenBridge's onIdTokenChanged to forward this.
+        // That callback is fire-and-forget, so signInWithCustomToken resolving
+        // says nothing about whether main has switched credentials + DB yet. If
+        // the caller reloads before it lands, setFirebaseIdentity() never runs,
+        // identityStore.lastUid stays on the PREVIOUS account, and the reloaded
+        // window silently restores that account instead of this one.
+        // Push it ourselves and await the reply: AuthManager.setSession() —
+        // including CredentialsManager.switchUser + DatabaseManager.switchUser
+        // (better-sqlite3, synchronous) — completes before the IPC returns, so
+        // this is a real handshake, not a hope. Idempotent: when the bridge's
+        // own callback fires it carries the same uid, so setSession takes the
+        // no-op "refreshed" path.
+        const result = await cred.user.getIdTokenResult(false);
+        const res = await window.electronAPI?.authSetIdToken?.({
+            idToken: result.token,
+            refreshToken: cred.user.refreshToken,
+            uid: cred.user.uid,
+            email: cred.user.email,
+            displayName: cred.user.displayName,
+            photoURL: cred.user.photoURL,
+            expiresAt: new Date(result.expirationTime).getTime(),
+        });
+        if (res && res.success === false) {
+            console.error('[firebase] switchToAccount: main rejected the session:', res.error);
+            return false;
+        }
+        return true;
+    } catch (e) {
+        console.warn('[firebase] switchToAccount failed:', e);
+        return false;
     }
 }

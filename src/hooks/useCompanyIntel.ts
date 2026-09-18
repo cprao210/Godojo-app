@@ -65,29 +65,65 @@ function companyFromEmail(email: string): string | null {
     return slug.charAt(0).toUpperCase() + slug.slice(1);
 }
 
-/** Best-effort company + domain guess: prefers the first external attendee on
- * a non-generic domain, then falls back to parsing the meeting title. */
-function deriveCompany(eventData: EventLike): { companyName: string | null; domain: string | undefined } {
+export interface CompanyCandidate {
+    companyName: string;
+    domain: string;
+}
+
+/**
+ * Every distinct external company found among attendees, plus a best-effort
+ * single fallback (title parsing) when there's no usable attendee data.
+ *
+ * "External" is determined by each attendee's own `self` flag — set by
+ * Google/Zoom to mark which attendee IS the signed-in GoDojo user — NOT by
+ * comparing against the calendar event's `organizer` field. `organizer`
+ * reflects whoever created the calendar invite, which is very often the
+ * *client* for inbound-booked meetings (they send the invite, the rep just
+ * accepts it) — using it as "our side" silently flipped internal/external
+ * and could research the rep's own company instead of the prospect's.
+ * `self` doesn't have that failure mode: it's set per-attendee by the
+ * calendar provider itself, independent of who organized the event.
+ */
+function deriveCompanyCandidates(eventData: EventLike): {
+    candidates: CompanyCandidate[];
+    titleFallback: { companyName: string | null; domain: undefined };
+} {
     const attendees = eventData.attendees ?? [];
-    const orgDomain = eventData.organizer?.split("@")[1]?.toLowerCase() ?? "";
+    // Prefer the `self` flag (set by the calendar provider itself). Only
+    // fall back to organizer-domain comparison if nothing in the attendee
+    // list has `self` set at all (e.g. older cached events synced before
+    // this field existed) — better than nothing, but self is authoritative
+    // whenever it's present.
+    const hasSelfFlag = attendees.some((a) => a.self);
+    const selfDomain = hasSelfFlag
+        ? attendees.find((a) => a.self)?.email?.split("@")[1]?.toLowerCase() ?? ""
+        : eventData.organizer?.split("@")[1]?.toLowerCase() ?? "";
 
     const externalAttendees = attendees.filter((a) => {
+        if (hasSelfFlag) return !a.self;
         const d = a.email?.split("@")[1]?.toLowerCase() ?? "";
-        return d && d !== orgDomain;
+        return d && d !== selfDomain;
     });
 
+    const candidates: CompanyCandidate[] = [];
+    const seenDomains = new Set<string>();
     for (const attendee of externalAttendees) {
-        // Guaranteed defined here — the filter above already excludes any
-        // attendee without a usable email (d would be "" and fail the check).
-        const email = attendee.email!;
+        const email = attendee.email;
+        if (!email) continue;
+        const domain = email.split("@")[1];
+        if (!domain || seenDomains.has(domain.toLowerCase())) continue;
         const name = companyFromEmail(email);
-        if (name) return { companyName: name, domain: email.split("@")[1] };
+        if (name) {
+            seenDomains.add(domain.toLowerCase());
+            candidates.push({ companyName: name, domain });
+        }
     }
 
     const titleMatch = eventData.title?.match(/(?:with|@|–|-)\s+([A-Z][a-zA-Z0-9\s]+)/);
-    if (titleMatch) return { companyName: titleMatch[1].trim(), domain: undefined };
-
-    return { companyName: null, domain: undefined };
+    return {
+        candidates,
+        titleFallback: { companyName: titleMatch ? titleMatch[1].trim() : null, domain: undefined },
+    };
 }
 
 /** Formats fetched intel as a shareable plain-text summary. */
@@ -169,7 +205,20 @@ export function useCompanyIntel(eventData: EventLike) {
     const [isCopied, setIsCopied] = useState(false);
     const [fromCache, setFromCache] = useState(false);
 
-    const { companyName, domain } = useMemo(() => deriveCompany(eventData), [eventData]);
+    const { candidates, titleFallback } = useMemo(() => deriveCompanyCandidates(eventData), [eventData]);
+
+    // Which candidate is currently selected (index into `candidates`), when
+    // there's more than one distinct external company on the invite — e.g.
+    // a group demo with attendees from three different companies. Defaults
+    // to the first candidate; the panel renders a picker when candidates.length > 1.
+    const [selectedIndex, setSelectedIndex] = useState(0);
+
+    // Reset selection whenever the underlying event changes (new meeting selected).
+    useEffect(() => { setSelectedIndex(0); }, [eventData]);
+
+    const selected = candidates[selectedIndex];
+    const companyName = selected?.companyName ?? titleFallback.companyName;
+    const domain = selected?.domain ?? titleFallback.domain;
 
     // Cycle the "still working" messages while a fetch is in flight.
     useEffect(() => {
@@ -231,7 +280,7 @@ export function useCompanyIntel(eventData: EventLike) {
 
     useEffect(() => {
         fetchIntel();
-    }, [fetchIntel]);
+    }, [fetchIntel, selectedIndex]);
 
     const copyToClipboard = useCallback(() => {
         if (!intel) return;
@@ -254,6 +303,12 @@ export function useCompanyIntel(eventData: EventLike) {
         fromCache,
         companyName,
         domain,
+        /** All distinct external companies found among attendees — length 1
+         * in the common case, >1 when attendees span multiple companies. */
+        candidates,
+        selectedIndex,
+        /** Switch which candidate is active; triggers a fresh fetch for it. */
+        selectCandidate: setSelectedIndex,
         /** Pass `true` to force a fresh lookup (bypasses the backend cache). */
         fetchIntel,
         copyToClipboard,

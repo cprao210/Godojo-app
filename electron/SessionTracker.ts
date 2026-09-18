@@ -15,6 +15,15 @@ export interface TranscriptSegment {
     /** 'chat' segments come from the assistant chat panel — exclude from saved transcript */
     source?: 'stt' | 'chat' | 'manual';
     /**
+     * Resolved display label for this segment's speaker (e.g. "Raksham" —
+     * the company-domain-derived label from speakerNameMap, not just the
+     * raw 'client'/'user' role). Stamped in at save time by
+     * MeetingPersistence, NOT set when the segment is first created live —
+     * DatabaseManager.saveMeeting() reads this field when persisting each
+     * transcript row, falling back to a hardcoded generic label if absent.
+     */
+    displayName?: string;
+    /**
      * Diarization speaker index within the client stream (Deepgram, finals
      * only). Distinguishes multiple far-end participants; undefined when
      * diarization is off or unavailable.
@@ -62,11 +71,14 @@ export class SessionTracker {
         source?: 'manual' | 'calendar';
         attendees?: Array<{ email: string; name?: string; organizer?: boolean; self?: boolean }>;
         organizer?: string;
+        /** Full raw calendar event payload, carried through verbatim to persistence. */
+        calendarEvent?: any;
     } | null = null;
 
-    private speakerNameMap: { user: string; client: string } = {
+    private speakerNameMap: { user: string; client: string; clientDiarized: string } = {
         user: 'Me',
-        client: 'Them'
+        client: 'Them',
+        clientDiarized: 'Other Party'
     };
 
     // Full Session Tracking (Persisted)
@@ -126,7 +138,7 @@ export class SessionTracker {
         this.currentMeetingMetadata = metadata;
 
         // Reset to defaults first so a re-used session never bleeds names from a previous meeting.
-        this.speakerNameMap = { user: 'Me', client: 'Them' };
+        this.speakerNameMap = { user: 'Me', client: 'Them', clientDiarized: 'Other Party' };
 
         const attendees: any[] = metadata?.attendees || [];
 
@@ -134,7 +146,10 @@ export class SessionTracker {
             // No attendee list — try to extract the opposite party's name from the meeting title.
             if (metadata?.title) {
                 const fromTitle = this.extractNameFromTitle(metadata.title);
-                if (fromTitle) this.speakerNameMap.client = fromTitle;
+                if (fromTitle) {
+                    this.speakerNameMap.client = fromTitle;
+                    this.speakerNameMap.clientDiarized = fromTitle;
+                }
             }
             console.log('[SessionTracker] Speaker name map resolved (no attendees):', this.speakerNameMap);
             return;
@@ -167,7 +182,8 @@ export class SessionTracker {
         };
 
         // Extract a display name from an attendee: prefer displayName, fall back to name,
-        // then derive from email local-part. Used only when domain is personal (no company label).
+        // then derive from email local-part. Used both for personal-domain attendees
+        // (name only) and combined with company for professional-domain attendees.
         const resolveName = (attendee: any): string | null => {
             if (attendee.displayName && attendee.displayName.trim()) {
                 return attendee.displayName.trim();
@@ -177,7 +193,14 @@ export class SessionTracker {
             }
             if (attendee.email) {
                 const prefix = attendee.email.split('@')[0];
-                const parts = prefix.split(/[._\-+]/).filter(Boolean);
+                const parts = prefix
+                    .split(/[._\-+]/)
+                    // Strip trailing digits from each part — email local-parts often
+                    // carry a numeric suffix (rahulgandhi123, vijay007) that isn't part
+                    // of the actual name. "rahulgandhi123" -> "rahulgandhi" -> "Rahulgandhi".
+                    .map((p: string) => p.replace(/\d+$/, ''))
+                    .filter(Boolean);
+                if (parts.length === 0) return null;
                 return parts.map((p: string) =>
                     p.charAt(0).toUpperCase() + p.slice(1).toLowerCase()
                 ).join(' ');
@@ -196,44 +219,53 @@ export class SessionTracker {
         // The remaining non-self attendees are the remote participants (system audio = 'client').
         const others = attendees.filter(a => !a.self);
 
-        if (others.length >= 1) {
-            // Apply company-domain labeling rules for ALL cases (1 or more opposite attendees).
-            // BUG FIX: previously this logic only ran for others.length > 1, so a single
-            // professional-domain attendee (e.g. peter@salesforce.com) incorrectly fell through
-            // to resolveName() and showed "Peter" instead of "Salesforce".
-            const companyLabels: string[] = [];
-            let hasPersonalDomain = false;
-
-            for (const attendee of others) {
-                if (!attendee.email) continue;
-                const company = companyFromEmail(attendee.email);
-                if (company) {
-                    if (!companyLabels.includes(company)) companyLabels.push(company);
-                } else {
-                    hasPersonalDomain = true;
-                }
-            }
-
-            if (companyLabels.length > 0 && !hasPersonalDomain) {
-                // All professional domains → e.g. "Salesforce" or "Instagram, Facebook"
-                this.speakerNameMap.client = companyLabels.join(', ');
-            } else if (companyLabels.length > 0 && hasPersonalDomain) {
-                // Mix of professional and personal → e.g. "Salesforce + Other Party"
-                this.speakerNameMap.client = companyLabels.join(', ') + ' + Other Party';
+        if (others.length === 1) {
+            // Single opposite-party attendee: full company/personal-domain
+            // resolution — e.g. "Salesforce", "Rahul (Raksham)", or a plain
+            // personal name for a personal-domain email.
+            const attendee = others[0];
+            const company = attendee.email ? companyFromEmail(attendee.email) : null;
+            if (company) {
+                // Combine person + company (e.g. "Rahul (Raksham)") instead of
+                // just the company name alone. Without the person's name here,
+                // an LLM query like "what are Rahul's pain points?" has no way
+                // to resolve "Rahul" against a transcript that only ever shows
+                // "Raksham" as the speaker label — it has to guess/hallucinate.
+                // Embedding the name directly in displayName means every
+                // downstream consumer (transcript tab, DB, LLM prompt context)
+                // gets it for free with no separate lookup.
+                const personName = resolveName(attendee);
+                this.speakerNameMap.client = personName ? `${personName} (${company})` : company;
+                this.speakerNameMap.clientDiarized = company;
             } else {
-                // All personal/unknown domains → use display name (single attendee) or generic fallback.
-                if (others.length === 1) {
-                    const name = resolveName(others[0]);
-                    if (name) this.speakerNameMap.client = name;
-                } else {
-                    this.speakerNameMap.client = 'Other Party';
-                }
+                const name = resolveName(attendee);
+                if (name) this.speakerNameMap.client = name;
+                this.speakerNameMap.clientDiarized = 'Other Party';
             }
+        } else if (others.length > 1) {
+            // 2+ opposite-party attendees all share the same 'client' audio
+            // channel (system audio isn't diarized per-attendee), so there's
+            // no reliable way to attribute a given turn to one of them. This
+            // used to build a label out of every attendee — e.g. "Salesforce,
+            // Instagram" or "Salesforce + Other Party" — which reads as if
+            // those are separate identified speakers when they're really one
+            // undifferentiated channel. One flat, honest label for the whole
+            // channel avoids that: it never claims more precision than the
+            // audio actually gives us, and it renders sanely at any attendee
+            // count instead of growing an ever-longer joined string. "Other
+            // Party" also matches the existing all-personal-domain and
+            // mixed-domain fallbacks it's replacing, so this doesn't
+            // introduce a new term into the UI.
+            this.speakerNameMap.client = 'Other Party';
+            this.speakerNameMap.clientDiarized = 'Other Party';
         } else {
             // No non-self attendees at all — try meeting title as last resort.
             if (metadata?.title) {
                 const fromTitle = this.extractNameFromTitle(metadata.title);
-                if (fromTitle) this.speakerNameMap.client = fromTitle;
+                if (fromTitle) {
+                    this.speakerNameMap.client = fromTitle;
+                    this.speakerNameMap.clientDiarized = fromTitle;
+                }
             }
         }
         console.log('[SessionTracker] Speaker name map resolved:', this.speakerNameMap);
@@ -257,7 +289,7 @@ export class SessionTracker {
     }
 
     // Expose for IPC / display layer:
-    public getSpeakerNameMap(): { user: string; client: string } {
+    public getSpeakerNameMap(): { user: string; client: string; clientDiarized: string } {
         return { ...this.speakerNameMap };
     }
 
@@ -267,6 +299,7 @@ export class SessionTracker {
         }
         if (names.client && names.client.trim()) {
             this.speakerNameMap.client = names.client.trim();
+            this.speakerNameMap.clientDiarized = names.client.trim();
         }
         console.log('[SessionTracker] Speaker names updated manually:', this.speakerNameMap);
     }
@@ -753,7 +786,7 @@ export class SessionTracker {
         this.codingQuestionSource = null;
         this.codingQuestionSetAt = null;
         this.recentClientBuffer = [];
-        this.speakerNameMap = { user: 'Me', client: 'Them' };
+        this.speakerNameMap = { user: 'Me', client: 'Them', clientDiarized: 'Other Party' };
 
     }
 

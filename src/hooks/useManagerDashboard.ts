@@ -4,7 +4,7 @@
 // the component so the component only owns rendering — same split as
 // useCalendarConnections / useGlobalChat.
 
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { getFirebaseAuth } from "@/lib/firebase";
 import { tenantsApi, dashboardApi } from "@/api";
 import { ApiError } from "@/lib/apiClient";
@@ -119,30 +119,70 @@ export function useManagerDashboard({ isOpen }: UseManagerDashboardArgs) {
     const [period, setPeriod] = useState<DashboardPeriod>("last_week");
     const [dashboard, setDashboard] = useState<DashboardResponse | null>(null);
     const [isLoadingDashboard, setIsLoadingDashboard] = useState(false);
+    const [isRefreshingDashboard, setIsRefreshingDashboard] = useState(false);
     const [dashboardError, setDashboardError] = useState<string | null>(null);
     const [isPeriodMenuOpen, setIsPeriodMenuOpen] = useState(false);
 
+    // In-memory cache, keyed by `${tenantId}:${period}`. Avoids re-hitting
+    // GET /dashboard every time the overlay is closed/reopened or the user
+    // flips back to a period they've already viewed this session. Cleared
+    // implicitly on full app reload — intentionally not persisted.
+    const dashboardCacheRef = useRef<Map<string, DashboardResponse>>(new Map());
+    // Bumped on every new request; a completed request only applies its
+    // result if it's still the most recent one in flight (replaces the old
+    // per-effect `cancelled` flag now that fetches are also triggered
+    // imperatively by the refresh button, not just by the effect).
+    const requestIdRef = useRef(0);
+
+    const fetchDashboard = useCallback(
+        (tenantId: string, forPeriod: DashboardPeriod, options: { force?: boolean } = {}) => {
+            const cacheKey = `${tenantId}:${forPeriod}`;
+
+            if (!options.force) {
+                const cached = dashboardCacheRef.current.get(cacheKey);
+                if (cached) {
+                    setDashboard(cached);
+                    setDashboardError(null);
+                    return Promise.resolve();
+                }
+            }
+
+            const thisRequestId = ++requestIdRef.current;
+            if (options.force) setIsRefreshingDashboard(true);
+            else setIsLoadingDashboard(true);
+            setDashboardError(null);
+
+            return dashboardApi
+                .get(tenantId, forPeriod)
+                .then((data) => {
+                    if (requestIdRef.current !== thisRequestId) return;
+                    dashboardCacheRef.current.set(cacheKey, data);
+                    setDashboard(data);
+                })
+                .catch((err: unknown) => {
+                    if (requestIdRef.current !== thisRequestId) return;
+                    setDashboardError(err instanceof ApiError ? err.message : "Failed to load dashboard data.");
+                })
+                .finally(() => {
+                    if (requestIdRef.current !== thisRequestId) return;
+                    if (options.force) setIsRefreshingDashboard(false);
+                    else setIsLoadingDashboard(false);
+                });
+        },
+        [],
+    );
+
     useEffect(() => {
         if (!isOpen || !tenant || !isAdmin) return;
-        let cancelled = false;
-        setIsLoadingDashboard(true);
-        setDashboardError(null);
-        dashboardApi
-            .get(tenant.id, period)
-            .then((data) => {
-                if (!cancelled) setDashboard(data);
-            })
-            .catch((err: unknown) => {
-                if (cancelled) return;
-                setDashboardError(err instanceof ApiError ? err.message : "Failed to load dashboard data.");
-            })
-            .finally(() => {
-                if (!cancelled) setIsLoadingDashboard(false);
-            });
-        return () => {
-            cancelled = true;
-        };
-    }, [isOpen, tenant, isAdmin, period]);
+        fetchDashboard(tenant.id, period);
+    }, [isOpen, tenant, isAdmin, period, fetchDashboard]);
+
+    // Manual "Refresh" button — bypasses and repopulates the cache for the
+    // current tenant/period.
+    const refreshDashboard = useCallback(() => {
+        if (!tenant || !isAdmin) return;
+        fetchDashboard(tenant.id, period, { force: true });
+    }, [tenant, isAdmin, period, fetchDashboard]);
 
     // ── Map API shapes → the presentational props components already expect ──
     const activeReps = dashboard?.active_members_count ?? 0;
@@ -201,6 +241,8 @@ export function useManagerDashboard({ isOpen }: UseManagerDashboardArgs) {
         setIsPeriodMenuOpen,
         // dashboard data
         isLoadingDashboard,
+        isRefreshingDashboard,
+        refreshDashboard,
         dashboardError,
         activeReps,
         totalCalls,

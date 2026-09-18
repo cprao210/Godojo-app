@@ -1,4 +1,4 @@
-import { app, BrowserWindow, Tray, Menu, nativeImage, ipcMain, shell, systemPreferences, screen } from "electron"
+import { app, BrowserWindow, Tray, Menu, nativeImage, ipcMain, shell, systemPreferences, screen, desktopCapturer, powerMonitor } from "electron"
 import path from "path"
 import fs from "fs"
 import { autoUpdater } from "electron-updater"
@@ -44,6 +44,25 @@ import { posthogMain } from './services/PostHogMainService';
 // unhandledRejection handlers below can fire.
 posthogMain.init();
 
+import {
+  confirmScreenCaptureWorks,
+  formatPermissionMessage,
+  getMacScreenCaptureStatus,
+  isDevTccBypassEnabled,
+  peakToPeak,
+  resolveMacScreenCaptureCapability as resolveMacScreenCaptureCapabilityRaw,
+  SILENCE_PEAK_TO_PEAK_THRESHOLD,
+  STUCK_WATCHDOG_MS,
+  ZEROFILL_OBSERVATION_MS,
+  type MacScreenCaptureCapability,
+} from './utils/macPermissions';
+
+// FINAL_ANALYSIS_MAX_WAIT_MS now lives in MeetingPersistence.ts, next to the
+// deferred finalize phase that enforces the deadline (the renderer keeps its
+// copy in src/lib/meetingLifecycle.ts). The wait used to run here in endMeeting
+// ahead of stopMeeting(); it moved so a just-ended call's transcript is
+// persisted synchronously and never waits on analysis latency.
+
 // One-time, masked diagnostic so a "keys not falling back to env" report can
 // be triaged directly from a shipped build's logs (Console.app on mac,
 // %APPDATA% logs on Windows) AND from PostHog, instead of guessing blind or
@@ -58,7 +77,8 @@ posthogMain.init();
     `DEEPGRAM_API_KEY=${mask(process.env.DEEPGRAM_API_KEY)} ` +
     `GEMINI_API_KEY=${mask(process.env.GEMINI_API_KEY)} ` +
     `GROQ_API_KEY=${mask(process.env.GROQ_API_KEY)} ` +
-    `TAVILY_API_KEY=${mask(process.env.TAVILY_API_KEY)}`
+    `TAVILY_API_KEY=${mask(process.env.TAVILY_API_KEY)} ` +
+    `API_ENCRYPTION_KEY=${mask(process.env.API_ENCRYPTION_KEY)}`
   );
   posthogMain.capture('env_fallback_keys_status', {
     platform: process.platform,
@@ -69,6 +89,10 @@ posthogMain.init();
     geminiEnvPresent: keyPresent(process.env.GEMINI_API_KEY),
     groqEnvPresent: keyPresent(process.env.GROQ_API_KEY),
     tavilyEnvPresent: keyPresent(process.env.TAVILY_API_KEY),
+    // Without this, every backend fallback key fails to decrypt and the app
+    // silently falls through to the bundled .env keys.
+    apiEncryptionKeyPresent: keyPresent(process.env.API_ENCRYPTION_KEY),
+    backendUrlPresent: keyPresent(process.env.VITE_API_BASE_URL),
   });
 }
 
@@ -136,11 +160,13 @@ app.on('open-url', (event, url) => {
 
 process.on('uncaughtException', (err) => {
   logToFile('[CRITICAL] Uncaught Exception: ' + (err.stack || err.message || err));
+  flushLogsSync();
   posthogMain.captureException(err, 'uncaughtException');
 });
 
 process.on('unhandledRejection', (reason, promise) => {
   logToFile('[CRITICAL] Unhandled Rejection at: ' + promise + ' reason: ' + (reason instanceof Error ? reason.stack : reason));
+  flushLogsSync();
   posthogMain.captureException(reason, 'unhandledRejection', { promise: String(promise) });
 });
 
@@ -166,29 +192,112 @@ const originalError = console.error;
 /** Maximum log file size before rotation (10 MB). */
 const LOG_MAX_BYTES = 10 * 1024 * 1024;
 
+// Logging is off the main-thread hot path: logToFile() only enqueues, and a
+// short interval drains the queue to disk. It used to fs.statSync +
+// fs.appendFileSync synchronously on every single console.* call (1000+
+// call sites), which blocked the Electron main thread on the same event
+// loop used for IPC and native audio-pipeline callbacks — worse on Windows,
+// where Defender's real-time scanning adds real latency to small sync
+// writes. flushLogsSync() is reserved for crash/exit paths that can't wait
+// for the next interval tick.
+let _pendingLines: string[] = [];
+let _flushInFlight = false;
+const FLUSH_INTERVAL_MS = 300;
+const MAX_BUFFERED_LINES = 5000;
+
 function logToFile(msg: string) {
   try {
-    const logFile = getLogFile();
-    // If the app isn't ready yet (path not available), skip silently.
-    if (!logFile) return;
-
-    // P2-1: rotate the log file when it exceeds LOG_MAX_BYTES so that long-running
-    // sessions (or meetings with dense transcripts) don't fill the user's disk.
-    // The previous log is kept as .log.1 for one-generation rollover.
-    try {
-      const stat = fs.statSync(logFile);
-      if (stat.size >= LOG_MAX_BYTES) {
-        const rotated = logFile + '.1';
-        if (fs.existsSync(rotated)) fs.unlinkSync(rotated);
-        fs.renameSync(logFile, rotated);
-      }
-    } catch {
-      // statSync throws if the file doesn't exist yet — that's fine
+    _pendingLines.push(new Date().toISOString() + ' ' + msg + '\n');
+    if (_pendingLines.length > MAX_BUFFERED_LINES) {
+      // Disk writes are stuck/failing — bound memory instead of growing forever.
+      const dropped = _pendingLines.length - MAX_BUFFERED_LINES;
+      _pendingLines = _pendingLines.slice(dropped);
+      _pendingLines.unshift(`[LOG BUFFER OVERFLOW — ${dropped} lines dropped]\n`);
     }
-    fs.appendFileSync(logFile, new Date().toISOString() + ' ' + msg + '\n');
-  } catch (e) {
+  } catch {
     // Ignore logging errors
   }
+}
+
+// P2-1: rotate the log file when it exceeds LOG_MAX_BYTES so that long-running
+// sessions (or meetings with dense transcripts) don't fill the user's disk.
+// The previous log is kept as .log.1 for one-generation rollover.
+function rotateLogIfNeeded(logFile: string) {
+  try {
+    const stat = fs.statSync(logFile);
+    if (stat.size >= LOG_MAX_BYTES) {
+      const rotated = logFile + '.1';
+      if (fs.existsSync(rotated)) fs.unlinkSync(rotated);
+      fs.renameSync(logFile, rotated);
+    }
+  } catch {
+    // statSync throws if the file doesn't exist yet — that's fine
+  }
+}
+
+/** Synchronous, blocking flush — only for crash/exit paths where we can't wait for the next interval tick. */
+function flushLogsSync() {
+  if (_pendingLines.length === 0) return;
+  try {
+    const logFile = getLogFile();
+    if (!logFile) return;
+    const batch = _pendingLines.join('');
+    _pendingLines = [];
+    rotateLogIfNeeded(logFile);
+    fs.appendFileSync(logFile, batch);
+  } catch {
+    // Ignore logging errors
+  }
+}
+
+async function flushLogsAsync(): Promise<void> {
+  if (_flushInFlight || _pendingLines.length === 0) return;
+  _flushInFlight = true;
+  const batch = _pendingLines.join('');
+  _pendingLines = [];
+  try {
+    const logFile = getLogFile();
+    if (!logFile) {
+      _pendingLines.unshift(batch); // app not ready yet — retry next tick
+      return;
+    }
+    rotateLogIfNeeded(logFile);
+    await fs.promises.appendFile(logFile, batch);
+  } catch {
+    // Write failed (e.g. disk full) — re-queue so it's retried, bounded by MAX_BUFFERED_LINES.
+    _pendingLines.unshift(batch);
+  } finally {
+    _flushInFlight = false;
+  }
+}
+setInterval(() => { flushLogsAsync().catch(() => { }); }, FLUSH_INTERVAL_MS);
+process.on('exit', flushLogsSync);
+
+// ─── Screen Recording (system audio) permission state ──────────────────────
+//
+// The most recent screen-capture warning, latched so a renderer that mounts
+// AFTER the warning was emitted can still display it. Without this, the startup
+// denial check (which runs ~800ms after createWindow, before the overlay window
+// exists) would emit into the void — the user would learn nothing until they
+// tried to start a meeting.
+let latestSystemAudioPermissionWarning: string | null = null;
+
+export function getLatestSystemAudioPermissionWarning(): string | null {
+  return latestSystemAudioPermissionWarning;
+}
+
+/**
+ * Resolve screen-capture capability and keep the replay latch in sync.
+ *
+ * Always prefer this over the raw helper so every resolution path updates the
+ * latch — including the ones that CLEAR it, so a resolved permission stops
+ * being replayed to newly mounted renderers.
+ */
+async function resolveMacScreenCaptureCapability(context: string): Promise<MacScreenCaptureCapability> {
+  return resolveMacScreenCaptureCapabilityRaw(context, {
+    onWarning: (message) => { latestSystemAudioPermissionWarning = message; },
+    onClear: () => { latestSystemAudioPermissionWarning = null; },
+  });
 }
 
 async function ensureMacMicrophoneAccess(context: string): Promise<boolean> {
@@ -242,6 +351,7 @@ import { WindowHelper, initRendererUrl } from "./WindowHelper"
 import { SettingsWindowHelper } from "./SettingsWindowHelper"
 import { ModelSelectorWindowHelper } from "./ModelSelectorWindowHelper"
 import { CropperWindowHelper } from "./CropperWindowHelper"
+import { MeetingPopupWindowHelper } from "./MeetingPopupWindowHelper"
 import { ScreenshotHelper } from "./ScreenshotHelper"
 import { KeybindManager } from "./services/KeybindManager"
 import { ProcessingHelper } from "./ProcessingHelper"
@@ -249,8 +359,17 @@ import { ProcessingHelper } from "./ProcessingHelper"
 import { IntelligenceManager } from "./IntelligenceManager"
 import { SystemAudioCapture } from "./audio/SystemAudioCapture"
 import { MicrophoneCapture } from "./audio/MicrophoneCapture"
+import { AudioDeviceWatcher, isSameSnapshot, type DeviceSnapshot, type DevicesChangedEvent } from "./audio/AudioDeviceWatcher"
 import { loadNativeModule } from "./audio/nativeModuleLoader"
+import { monitorEventLoopDelay, type IntervalHistogram } from "perf_hooks"
+import {
+  createLevelGateState,
+  quantizeLevel,
+  shouldSendLevel,
+  type LevelGateState,
+} from "./audio/audioLevelGate"
 import { TranscriptEchoFilter, type AecTelemetry } from "./audio/TranscriptEchoFilter"
+import { TranscriptTranslator } from "./services/TranscriptTranslator"
 import type { SttWord } from "./audio/sttWordUtils"
 import { GoogleSTT } from "./audio/GoogleSTT"
 import { RestSTT } from "./audio/RestSTT"
@@ -261,6 +380,7 @@ import { OpenAIStreamingSTT } from "./audio/OpenAIStreamingSTT"
 import { ThemeManager } from "./ThemeManager"
 import { RAGManager } from "./rag/RAGManager"
 import { DatabaseManager } from "./db/DatabaseManager"
+import { routeLiveAnalysisWrite } from "./liveAnalysisRouting"
 import { warmupIntentClassifier } from "./llm"
 import { AudioDevices } from "./audio/AudioDevices";
 
@@ -309,6 +429,7 @@ export class AppState {
   public settingsWindowHelper: SettingsWindowHelper
   public modelSelectorWindowHelper: ModelSelectorWindowHelper
   public cropperWindowHelper: CropperWindowHelper
+  public meetingPopupWindowHelper: MeetingPopupWindowHelper
   private screenshotHelper: ScreenshotHelper
   public processingHelper: ProcessingHelper
 
@@ -317,7 +438,6 @@ export class AppState {
   private ragManager: RAGManager | null = null
   private knowledgeOrchestrator: any = null
   private tray: Tray | null = null
-  private updateAvailable: boolean = false
   private disguiseMode: 'terminal' | 'settings' | 'activity' | 'none' = 'none'
   private _currentLiveAnalysis: LiveAnalysisData | null = null;
   private _companyIntel: Record<string, any> | null = null;
@@ -326,11 +446,27 @@ export class AppState {
   // after the late-arriving result is saved.
   private _pendingLiveAnalysisMeetingId: string | null = null;
   private _liveAnalysisInFlight: boolean = false;
+  // Resolved (and cleared) the moment setLiveAnalysisInFlight(false, ...) runs.
+  // Lets stopMeeting() wait for a final analysis that's already running in the
+  // renderer, instead of the renderer having to block its own UI on it — see
+  // waitForLiveAnalysisToSettle() below.
+  private _liveAnalysisSettledWaiters: Array<() => void> = [];
+  // Monotonic id for "which call are we on", bumped once per startMeeting.
+  // Live analysis is computed asynchronously in the renderer and can resolve
+  // after its meeting ended — every renderer write carries the generation it
+  // was computed for so main can route it to the right meeting (or drop it)
+  // instead of letting it land in whichever call happens to be live. See
+  // electron/liveAnalysisRouting.ts.
+  private _meetingGeneration: number = 0;
+  private _pendingLiveAnalysisGeneration: number | null = null;
   private speakerNameMap: { user: string, client: string };
 
   // View management
   private view: "queue" | "solutions" = "queue"
-  private isUndetectable: boolean = false
+  // Overwritten unconditionally in the constructor below (which reads the
+  // persisted setting with an app.isPackaged-based default) — this field
+  // default only matters for the brief window before the constructor runs.
+  private isUndetectable: boolean = app.isPackaged ? true : false
 
   private problemInfo: {
     problem_statement: string
@@ -373,7 +509,16 @@ export class AppState {
   constructor() {
     // 1. Load boot-critical settings first (used by WindowHelpers)
     const settingsManager = SettingsManager.getInstance();
-    this.isUndetectable = settingsManager.get('isUndetectable') ?? false;
+    // Ghost mode (undetectable / hidden from screen-share capture) is ON by
+    // default in PRODUCTION ONLY, for any user who hasn't explicitly set a
+    // preference yet. Dev builds default OFF so ghost mode doesn't hide
+    // windows from screen-share/dock during local development unless a dev
+    // opts in. Gated on app.isPackaged (this codebase's established
+    // prod-vs-dev signal, not NODE_ENV — see the isDevTccBypassEnabled note
+    // near app.isPackaged usage elsewhere in this file).
+    // Once the user has ever toggled it, SettingsManager persists their
+    // explicit choice and that value wins regardless of this default.
+    this.isUndetectable = settingsManager.get('isUndetectable') ?? app.isPackaged;
     this.disguiseMode = settingsManager.get('disguiseMode') ?? 'none';
     this._verboseLogging = settingsManager.get('verboseLogging') ?? false;
     setVerboseLoggingFlag(this._verboseLogging);
@@ -384,6 +529,14 @@ export class AppState {
     this.settingsWindowHelper = new SettingsWindowHelper()
     this.modelSelectorWindowHelper = new ModelSelectorWindowHelper()
     this.cropperWindowHelper = new CropperWindowHelper()
+    this.meetingPopupWindowHelper = new MeetingPopupWindowHelper()
+    // The popup refuses to auto-start while a meeting is already running, but
+    // it must not import AppState to find that out (require cycle).
+    this.meetingPopupWindowHelper.setMeetingActiveProvider(() => this.isMeetingActive)
+    this.meetingPopupWindowHelper.on('auto-start-due', (event: any) => {
+      console.log('[Main] Reminder countdown elapsed — auto-starting meeting', event?.title)
+      void this.startMeetingFromCalendarEvent(event)
+    })
 
     // 3. Initialize other helpers
     this.screenshotHelper = new ScreenshotHelper(this.view)
@@ -393,6 +546,7 @@ export class AppState {
     this.settingsWindowHelper.setContentProtection(this.isUndetectable);
     this.modelSelectorWindowHelper.setContentProtection(this.isUndetectable);
     this.cropperWindowHelper.setContentProtection(this.isUndetectable);
+    this.meetingPopupWindowHelper.setContentProtection(this.isUndetectable);
 
     if (process.platform === 'win32' || process.platform === 'darwin') {
       this.cropperWindowHelper.preload();
@@ -565,6 +719,496 @@ export class AppState {
     });
   }
 
+  private sendToWindow(win: BrowserWindow | null | undefined, channel: string, ...args: any[]): boolean {
+    if (!win || win.isDestroyed()) return false;
+    try {
+      win.webContents.send(channel, ...args);
+      return true;
+    } catch {
+      return false;
+    }
+  }
+
+  /**
+   * Send to the two windows that can show meeting-time audio state: the
+   * launcher (which owns the permanent AudioStatusTray) and the meeting overlay.
+   *
+   * The launcher matters as much as the overlay here — the overlay is created
+   * with `show: false` and only appears once a meeting starts, so a permission
+   * warning emitted at startup would otherwise reach nothing the user can see.
+   */
+  private sendToMeetingSurfaces(channel: string, ...args: any[]): void {
+    const sent = new Set<number>();
+    const sendOnce = (win: BrowserWindow | null | undefined) => {
+      if (!win || sent.has(win.id)) return;
+      if (this.sendToWindow(win, channel, ...args)) sent.add(win.id);
+    };
+    const helper = this.getWindowHelper();
+    sendOnce(helper.getLauncherWindow());
+    sendOnce(helper.getOverlayWindow());
+  }
+
+  // Public so the startup permission check in initializeApp can emit banners
+  // symmetrically with the in-class call sites.
+  public sendSystemAudioPermissionDenied(message: string): void {
+    this.sendToMeetingSurfaces('system-audio-permission-denied', message);
+  }
+
+  /**
+   * Tell the UI a previously reported system-audio problem has resolved.
+   *
+   * Without this, a warning raised during a quiet stretch would sit on screen
+   * over a meeting that is transcribing perfectly — the banner has no way to
+   * know audio came back, and waiting for the user to refocus the window is not
+   * good enough during a live call.
+   */
+  public sendSystemAudioRecovered(channel: 'system' | 'mic' = 'system'): void {
+    if (channel === 'system') this._systemBannerShown = false;
+    this.sendToMeetingSurfaces('system-audio-recovered', channel);
+  }
+
+  public sendAudioCaptureFailed(payload: {
+    channel: 'system' | 'mic';
+    message: string;
+    attempt: number;
+    maxAttempts: number;
+    terminal?: boolean;
+    stuck?: boolean;
+  }): void {
+    if (payload.channel === 'system') this._systemBannerShown = true;
+    this.sendToMeetingSurfaces('audio-capture-failed', payload);
+  }
+
+  /**
+   * Whether a system-audio warning is currently on screen.
+   *
+   * Several detectors can diagnose the same silent channel; the most specific
+   * message should win rather than the last one to fire. Tracked here because
+   * both the raise and the retract funnel through the two methods above.
+   */
+  private _systemBannerShown = false;
+
+  // ── Live wave-indicator level feed ────────────────────────────────────────
+  //
+  // Cheap RMS-over-PCM meter (same math as the Settings → Audio device test)
+  // computed on every raw chunk from the LIVE meeting captures (mic + system
+  // audio), not the separate one-off "audio test" path. Purpose is purely
+  // visual: let the dock's wave animation confirm "yes, this channel is
+  // actually receiving samples right now" — independent of STT/VAD, which can
+  // lag behind or stay silent on a provider hiccup while audio is still
+  // capturing fine.
+  //
+  // Sampled per-channel at ~20fps: 'data' chunks can arrive much faster than
+  // any UI needs to redraw, and this fires on every meeting window.
+  //
+  // Sampling and sending are separate concerns. This timestamp paces the RMS
+  // computation; the gate below decides whether the result is worth an IPC
+  // message. Keeping them apart means a suppressed duplicate does not delay the
+  // next sample, and the heartbeat deadline is measured from real sends only.
+  private _lastAudioLevelSampledAt: Record<'mic' | 'system', number> = { mic: 0, system: 0 };
+  private static readonly AUDIO_LEVEL_THROTTLE_MS = 50;
+  // Per-channel dedupe state. No reset needed between meetings: lastSentAt from a
+  // previous meeting is always far enough in the past that the heartbeat fires on
+  // the first sample of the next one.
+  private readonly _audioLevelGate: Record<'mic' | 'system', LevelGateState> = {
+    mic: createLevelGateState(),
+    system: createLevelGateState(),
+  };
+
+  private computeAudioRmsLevel(chunk: Buffer): number {
+    let sum = 0;
+    const step = 10;
+    const len = chunk.length;
+    for (let i = 0; i < len; i += 2 * step) {
+      const val = chunk.readInt16LE(i);
+      sum += val * val;
+    }
+    const count = len / (2 * step);
+    if (count <= 0) return 0;
+    const rms = Math.sqrt(sum / count);
+    return Math.min(rms / 10000, 1.0);
+  }
+
+  private sendAudioLevel(channel: 'mic' | 'system', chunk: Buffer): void {
+    const now = Date.now();
+    if (now - this._lastAudioLevelSampledAt[channel] < AppState.AUDIO_LEVEL_THROTTLE_MS) return;
+    this._lastAudioLevelSampledAt[channel] = now;
+    // Quantize to the renderer's own grid, then only send what it does not
+    // already have. See audioLevelGate.ts for why the heartbeat is mandatory.
+    const level = quantizeLevel(this.computeAudioRmsLevel(chunk));
+    const gate = this._audioLevelGate[channel];
+    if (!shouldSendLevel(gate, level, now)) return;
+    gate.lastSent = level;
+    gate.lastSentAt = now;
+    this.sendToMeetingSurfaces('audio-level', { channel, level });
+  }
+
+  /**
+   * Resolve screen-capture capability and, when it is denied, tell the UI.
+   *
+   * Returns `true` when system audio may be captured. Every system-audio entry
+   * point funnels through here so a denial produces exactly one behaviour:
+   * don't construct the capture, and surface why.
+   */
+  private async ensureSystemAudioCapability(context: string): Promise<boolean> {
+    const capability = await resolveMacScreenCaptureCapability(context);
+    if (!capability.effectiveDenied) return true;
+
+    const message = capability.message ?? formatPermissionMessage('screen-recording-denied');
+    console.warn(`[Main] System audio unavailable during ${context}: ${message}`);
+    this.sendSystemAudioPermissionDenied(message);
+    return false;
+  }
+
+  /**
+   * Wire a SystemAudioCapture to STT and to the two silent-capture detectors.
+   *
+   * Single home for this wiring so the pipeline-setup and reconfigure paths
+   * cannot drift — previously each had its own copy, and the reconfigure copy
+   * silently swallowed permission errors instead of surfacing them.
+   *
+   * Two distinct failure modes are watched, because they look nothing alike:
+   *   - NO chunks at all → capture never started (route mismatch, SCK failure).
+   *   - Chunks arriving, every sample silent → macOS is zero-filling us, which
+   *     is what TCC does when the Screen Recording grant doesn't apply to this
+   *     binary. Nothing errors; the pipeline looks perfectly healthy.
+   */
+  private wireSystemCapture(capture: SystemAudioCapture, label: string = ''): void {
+    const prefix = label ? `[Main] ${label} ` : '[Main] ';
+    let chunkCount = 0;
+
+    // ── Detector 1: no chunks at all ────────────────────────────────────────
+    let stuckTimer: NodeJS.Timeout | null = null;
+    const disarmStuckWatchdog = () => {
+      if (stuckTimer) { clearTimeout(stuckTimer); stuckTimer = null; }
+    };
+    // Exposed synchronously on the instance so endMeeting() can cancel the
+    // watchdog BEFORE stop() — relying on the 'stop' event alone lets a short
+    // meeting that produced no chunks fire a false banner seconds after the
+    // user already stopped recording.
+    (capture as any).__disarmStuckWatchdog = disarmStuckWatchdog;
+
+    const armStuckWatchdog = () => {
+      disarmStuckWatchdog();
+      stuckTimer = setTimeout(() => {
+        if (this.systemAudioCapture !== capture) return; // replaced
+        if (chunkCount > 0) return;                      // producing fine
+        if (!this.isMeetingActive) return;               // meeting ended
+
+        console.warn(`${prefix}SystemAudioCapture produced 0 chunks in ${STUCK_WATCHDOG_MS / 1000}s — silent capture (route mismatch or permission revoked).`);
+        this.sendAudioCaptureFailed({
+          channel: 'system',
+          message: formatPermissionMessage('system-audio-stuck'),
+          attempt: 0,
+          maxAttempts: 3,
+          terminal: false,
+          stuck: true,
+        });
+      }, STUCK_WATCHDOG_MS);
+    };
+
+    capture.on('start', armStuckWatchdog);
+    capture.on('stop', disarmStuckWatchdog);
+
+    // ── Detector 2: chunks flowing, all silent ──────────────────────────────
+    //
+    // Silence is NOT by itself evidence of a permission problem. The native
+    // module synthesises bit-exact zero keepalives while the render side is idle
+    // (FrameAction::SendSilence), so a meeting where nobody has spoken yet looks
+    // byte-identical to TCC zero-filling us. Blaming permissions on amplitude
+    // alone therefore fires on every quiet meeting opening.
+    //
+    // So: measure a ROLLING run of silence (reset by any real audio), and when it
+    // gets long enough, actively confirm whether capture still works before
+    // saying anything. The confirmation is the only signal that discriminates —
+    // an orphaned grant still reports 'granted' but cannot actually capture.
+    let silenceRunStartedAt = 0;   // 0 = not currently in a silent run
+    let sawRealAudio = false;
+    let zerofillReported = false;  // a banner is currently showing
+    let confirmInFlight = false;
+    let nextConfirmAllowedAt = 0;  // rate-limits the probe during long quiet spells
+    const CONFIRM_COOLDOWN_MS = 60000;
+
+    // Every handler identity-checks against the current capture, exactly like the
+    // mic wiring: destroy() drops the listeners synchronously, but the guard also
+    // covers a stale instance that outlives a rebuild for any other reason. Two
+    // captures writing one STT connection interleaves two copies of the far end.
+    capture.on('data', (chunk: Buffer) => {
+      if (this.systemAudioCapture !== capture) return;
+      chunkCount++;
+      if (chunkCount === 1) disarmStuckWatchdog();
+
+      this.sendAudioLevel('system', chunk);
+
+      // Keepalives are bit-exact zeros, so this timestamp — not the chunk rate —
+      // is what distinguishes "bound to the endpoint the meeting plays through"
+      // from "bound to a live endpoint nothing plays to". Read by
+      // _farEndSilenceTick(), and needed on every platform.
+      const isSilent = peakToPeak(chunk) <= SILENCE_PEAK_TO_PEAK_THRESHOLD;
+      if (!isSilent) this._lastRealSystemAudioAt = Date.now();
+
+      // macOS-only: WASAPI loopback on Windows does not zero-fill on permission
+      // change, so the detector has no diagnostic value there and its suggested
+      // fix (System Settings → Screen Recording) does not exist.
+      // The dev bypass means "treat screen capture as granted", so it must
+      // suppress this too, or dev runs contradict themselves.
+      if (process.platform === 'darwin' && !isDevTccBypassEnabled()) {
+        if (!isSilent) {
+          silenceRunStartedAt = 0;
+          if (!sawRealAudio) {
+            sawRealAudio = true;
+            console.log(`${prefix}System audio confirmed live (real samples received).`);
+          }
+          // Audio came back after we complained. Retract rather than leaving a
+          // stale "every sample is silent" banner over a working meeting.
+          if (zerofillReported) {
+            zerofillReported = false;
+            console.log(`${prefix}System audio recovered — clearing the silent-capture warning.`);
+            this.sendSystemAudioRecovered();
+          }
+        } else {
+          if (silenceRunStartedAt === 0) silenceRunStartedAt = Date.now();
+          const now = Date.now();
+          const silentFor = now - silenceRunStartedAt;
+
+          if (!zerofillReported && !confirmInFlight
+            && silentFor >= ZEROFILL_OBSERVATION_MS && now >= nextConfirmAllowedAt) {
+            confirmInFlight = true;
+            void (async () => {
+              try {
+                const works = await confirmScreenCaptureWorks('system audio silence check');
+                if (this.systemAudioCapture !== capture) return; // replaced mid-check
+                if (works) {
+                  // Capture is fine — the room is just quiet. Say nothing, and
+                  // back off so a long silence does not re-probe every 12s.
+                  silenceRunStartedAt = 0;
+                  nextConfirmAllowedAt = Date.now() + CONFIRM_COOLDOWN_MS;
+                } else {
+                  zerofillReported = true;
+                  console.warn(`${prefix}System audio silent for ${Math.round(silentFor / 1000)}s AND screen capture could not be confirmed — Screen Recording grant likely does not apply to this build.`);
+                  this.sendAudioCaptureFailed({
+                    channel: 'system',
+                    message: formatPermissionMessage('mac-screen-recording-revoked-rebuild'),
+                    attempt: 0,
+                    maxAttempts: 3,
+                    terminal: false,
+                    stuck: true,
+                  });
+                }
+              } finally {
+                confirmInFlight = false;
+              }
+            })();
+          }
+        }
+      }
+
+      this.googleSTT?.write(chunk);
+    });
+
+    capture.on('speech_ended', () => {
+      if (this.systemAudioCapture !== capture) return;
+      this.googleSTT?.notifySpeechEnded?.();
+    });
+
+    // Retries are now indefinite, so an error is a transient event, not a verdict.
+    // Throttle the banner: a device that needs the slow-backoff tier would
+    // otherwise raise one every 30s for the rest of the meeting.
+    let lastErrorWarnedAt = 0;
+    capture.on('error', (err: Error) => {
+      console.error(`${prefix}SystemAudioCapture Error:`, err);
+      if (this.systemAudioCapture !== capture) return;
+      const now = Date.now();
+      if (now - lastErrorWarnedAt < 30000) return;
+      lastErrorWarnedAt = now;
+      // Surface SCK/CoreAudio permission failures so the user knows to grant
+      // Screen Recording access. Previously the reconfigure path only logged
+      // this, which made a post-device-change denial invisible.
+      this.broadcast('meeting-audio-warning', err.message || 'System audio capture failed');
+    });
+
+    capture.on('sample-rate-detected', (rate: number) => {
+      if (this.systemAudioCapture !== capture) return;
+      console.log(`${prefix}System audio true rate detected: ${rate}Hz — resyncing STT`);
+      this.googleSTT?.setSampleRate(rate);
+    });
+
+    // The capture dropped out of its fast-retry tier. It keeps retrying in the
+    // background (indefinitely, unless `permanent`), so this is a warning the
+    // user can act on — not the end of the channel. `permanent` is only set when
+    // the platform has no system-audio backend at all.
+    capture.on('capture-failed', (payload: { attempts: number; maxAttempts: number; permanent?: boolean; message?: string }) => {
+      if (this.systemAudioCapture !== capture || !this.isMeetingActive) return;
+      console.error(`${prefix}System audio capture unhealthy after ${payload.attempts} attempts (permanent=${!!payload.permanent}).`);
+      void (async () => {
+        const capability = await resolveMacScreenCaptureCapability('system audio recovery');
+        if (this.systemAudioCapture !== capture) return; // replaced while probing
+        this.sendAudioCaptureFailed({
+          channel: 'system',
+          message: capability.effectiveDenied
+            ? (capability.message ?? formatPermissionMessage('screen-recording-denied'))
+            : (payload.permanent
+              ? (payload.message ?? 'System audio capture is not supported on this platform.')
+              : formatPermissionMessage('system-audio-stuck')),
+          attempt: payload.attempts,
+          maxAttempts: payload.maxAttempts,
+          terminal: payload.permanent === true,
+          stuck: true,
+        });
+      })();
+    });
+
+    // Chunks came back on their own — retract the banner instead of leaving a
+    // stale failure over a meeting that is transcribing again.
+    capture.on('capture-recovered', () => {
+      if (this.systemAudioCapture !== capture) return;
+      console.log(`${prefix}System audio capture recovered.`);
+      zerofillReported = false;
+      silenceRunStartedAt = 0;
+      this.sendSystemAudioRecovered();
+    });
+  }
+
+  /**
+   * Wire a MicrophoneCapture to the user STT, mirroring wireSystemCapture.
+   *
+   * Single home for this wiring: the pipeline-setup path and the reconfigure
+   * path each carried their own copy, and neither reported a capture failure to
+   * the UI — a microphone that died mid-meeting produced one console line and
+   * nothing else, so the user only learned about it from the missing transcript.
+   *
+   * Every handler identity-checks against the current capture. A rebuild (device
+   * hot-swap) briefly leaves the old instance alive with in-flight native
+   * callbacks; letting those reach googleSTT_User would interleave two versions
+   * of the user's speech on one connection.
+   */
+  private wireMicrophoneCapture(capture: MicrophoneCapture, label: string = ''): void {
+    const prefix = label ? `[Main] ${label} ` : '[Main] ';
+
+    // ── Detector: no chunks at all ──────────────────────────────────────────
+    //
+    // Mirrors wireSystemCapture's Detector 1. Previously mic capture only
+    // raised a banner from the native module's own 'capture-failed' retry
+    // event — which never fires for the macOS case this exists to catch: TCC
+    // reports the microphone grant as 'granted' (so nothing errors, nothing
+    // retries) but the grant is orphaned by a code-signature change after an
+    // app update, exactly like the documented Screen Recording case, and the
+    // capture just never produces a chunk. System audio already detects this;
+    // mic silently had no equivalent, which is why the in-meeting "Audio
+    // capture issue" banner only ever appeared for the system-audio channel.
+    let chunkCount = 0;
+    let stuckTimer: NodeJS.Timeout | null = null;
+    const disarmStuckWatchdog = () => {
+      if (stuckTimer) { clearTimeout(stuckTimer); stuckTimer = null; }
+    };
+    // Exposed the same way system audio does, so endMeeting()/pause can cancel
+    // this deterministically before stop() instead of racing the timer.
+    (capture as any).__disarmStuckWatchdog = disarmStuckWatchdog;
+
+    const armStuckWatchdog = () => {
+      disarmStuckWatchdog();
+      stuckTimer = setTimeout(() => {
+        if (this.microphoneCapture !== capture) return; // replaced
+        if (chunkCount > 0) return;                      // producing fine
+        if (!this.isMeetingActive) return;               // meeting ended
+
+        console.warn(`${prefix}MicrophoneCapture produced 0 chunks in ${STUCK_WATCHDOG_MS / 1000}s — silent capture (permission revoked or device gone).`);
+        this.sendAudioCaptureFailed({
+          channel: 'mic',
+          message: formatPermissionMessage('mic-capture-stuck'),
+          attempt: 0,
+          maxAttempts: 3,
+          terminal: false,
+          stuck: true,
+        });
+      }, STUCK_WATCHDOG_MS);
+    };
+
+    capture.on('start', armStuckWatchdog);
+    capture.on('stop', disarmStuckWatchdog);
+
+    capture.on('data', (chunk: Buffer) => {
+      if (this.microphoneCapture !== capture) return;
+      chunkCount++;
+      if (chunkCount === 1) disarmStuckWatchdog();
+      this.sendAudioLevel('mic', chunk);
+      // Local speech is the evidence that a meeting is actually in progress,
+      // which is what makes a silent far end suspicious rather than just quiet.
+      if (peakToPeak(chunk) > SILENCE_PEAK_TO_PEAK_THRESHOLD) this._lastRealMicAudioAt = Date.now();
+      this.googleSTT_User?.write(chunk);
+    });
+
+    capture.on('speech_ended', () => {
+      if (this.microphoneCapture !== capture) return;
+      this.googleSTT_User?.notifySpeechEnded?.();
+    });
+
+    // Retries are indefinite now, so an error is an event, not a verdict.
+    // Throttled: a device stuck in the slow-retry tier would otherwise raise one
+    // warning every 30s for the rest of the meeting.
+    let lastErrorWarnedAt = 0;
+    capture.on('error', (err: Error) => {
+      console.error(`${prefix}MicrophoneCapture Error:`, err);
+      if (this.microphoneCapture !== capture || !this.isMeetingActive) return;
+      const now = Date.now();
+      if (now - lastErrorWarnedAt < 30000) return;
+      lastErrorWarnedAt = now;
+      this.broadcast('meeting-audio-warning', err.message || 'Microphone capture failed');
+    });
+
+    capture.on('sample-rate-detected', (rate: number) => {
+      if (this.microphoneCapture !== capture) return;
+      console.log(`${prefix}Mic true rate detected: ${rate}Hz — resyncing User STT`);
+      this.googleSTT_User?.setSampleRate(rate);
+    });
+    // The capture left its fast-retry tier. It keeps retrying in the background,
+    // so this is a banner the user can act on (reconnect the headset, pick a
+    // different input) — not the end of the channel.
+    capture.on('capture-failed', (payload: { attempts: number; maxAttempts: number; permanent?: boolean; message?: string }) => {
+      if (this.microphoneCapture !== capture || !this.isMeetingActive) return;
+      console.error(`${prefix}Microphone capture unhealthy after ${payload.attempts} attempts (permanent=${!!payload.permanent}).`);
+      this.sendAudioCaptureFailed({
+        channel: 'mic',
+        message: payload.message ?? formatPermissionMessage('mic-capture-stuck'),
+        attempt: payload.attempts,
+        maxAttempts: payload.maxAttempts,
+        terminal: payload.permanent === true,
+        stuck: true,
+      });
+    });
+
+    // Retract on recovery. The channel argument is what lets the renderer clear
+    // a mic banner specifically — it used to hardcode the system channel, so a
+    // mic warning could never be taken back down.
+    capture.on('capture-recovered', () => {
+      if (this.microphoneCapture !== capture) return;
+      console.log(`${prefix}Microphone capture recovered.`);
+      this.sendSystemAudioRecovered('mic');
+    });
+  }
+
+  /**
+   * Cancel the current capture's stuck watchdog synchronously.
+   *
+   * Must be called before any deliberate stop() — pause, end, provider swap.
+   * The watchdog's own 'stop' listener is not enough: a pause keeps
+   * isMeetingActive true, so pausing within the watchdog window would otherwise
+   * report "no audio detected" about a capture the user intentionally stopped.
+   */
+  private disarmSystemCaptureWatchdog(): void {
+    (this.systemAudioCapture as any)?.__disarmStuckWatchdog?.();
+  }
+
+  /**
+   * Mirrors disarmSystemCaptureWatchdog for the mic-side stuck watchdog added
+   * in wireMicrophoneCapture. Same reason it must run before any deliberate
+   * stop(): otherwise pausing/ending within the watchdog window reports "no
+   * audio detected" about a capture the user intentionally stopped.
+   */
+  private disarmMicCaptureWatchdog(): void {
+    (this.microphoneCapture as any)?.__disarmStuckWatchdog?.();
+  }
+
   public getIsMeetingActive(): boolean {
     return this.isMeetingActive;
   }
@@ -601,8 +1245,28 @@ export class AppState {
   private async bootstrapOllamaEmbeddings() {
     this._ollamaBootstrapPromise = (async () => {
       try {
+        const { CredentialsManager } = require('./services/CredentialsManager');
+        const cm = CredentialsManager.getInstance();
+        const hasCloudKey = !!(cm.getOpenaiApiKey() || process.env.OPENAI_API_KEY
+          || cm.getGeminiApiKey() || process.env.GOOGLE_API_KEY);
+        if (hasCloudKey) {
+          // Cloud always wins in EmbeddingProviderResolver's priority order, so
+          // Ollama would never actually get selected — don't spawn/poll/pull it.
+          return;
+        }
+
         const { OllamaBootstrap } = require('./rag/OllamaBootstrap');
         const bootstrap = new OllamaBootstrap();
+
+        const priorStatus = DatabaseManager.getInstance().getAppState('ollama_pull_status');
+        const alreadyRunning = await bootstrap.isOllamaRunning(); // cheap HTTP probe, no spawn
+        if (priorStatus !== 'complete' && priorStatus !== 'in_progress' && !alreadyRunning) {
+          // No cloud key, never successfully used Ollama embeddings before, and
+          // Ollama isn't already running — RAGManager already works via the
+          // bundled LocalEmbeddingProvider fallback, so don't eagerly spawn
+          // `ollama serve` on every launch for this (likely most-common) group.
+          return;
+        }
 
         // Fire and forget — don't await this before showing the window
         const result = await bootstrap.bootstrap('nomic-embed-text', (status: string, percent: number) => {
@@ -736,6 +1400,37 @@ export class AppState {
     }
   }
 
+  /**
+   * Re-bind everything that captured a raw SQLite handle (or db path) at
+   * construction time to whatever DatabaseManager points at NOW.
+   *
+   * Called on every uid change (AuthManager 'user-switched'), for two reasons:
+   *  - account switch: RAGManager/VectorStore/KnowledgeDatabaseManager keep the
+   *    closed handle for the previous user's file, and the vector worker keeps
+   *    its OWN read-only connection to that path.
+   *  - cold start: AppState is constructed before any renderer exists, so
+   *    AuthManager.getUid() is still null and DatabaseManager has resolved to
+   *    natively-anon.db. Until this runs, RAG and knowledge index into the anon
+   *    file for the entire session even for a normally signed-in user.
+   *
+   * Re-running initializeRAGManager() also re-hydrates the orchestrator from
+   * the new user's company context, which is otherwise only ever hydrated by
+   * company:saveContext (boot hydration always sees uid=null).
+   */
+  public async rebindUserScopedServices(): Promise<void> {
+    try {
+      // Terminate the vector-search worker first: it holds an open read-only
+      // handle to the OLD db file, which on Windows keeps that file locked.
+      await this.ragManager?.destroy();
+    } catch (e) {
+      console.warn('[AppState] rebindUserScopedServices: RAGManager.destroy() failed (continuing):', e);
+    }
+    this.ragManager = null;
+    this.knowledgeOrchestrator = null;
+    this.initializeRAGManager();
+    console.log('[AppState] User-scoped services re-bound to', DatabaseManager.getInstance().getDbPath());
+  }
+
   // Pure computation — does NOT set _builtinOnlyMode.
   // Use this in contexts that should not affect the meeting-mode flag (e.g. audio test).
   private _isBuiltinOnly(inputDeviceId?: string, outputDeviceId?: string): boolean {
@@ -784,7 +1479,6 @@ export class AppState {
 
     autoUpdater.on("update-available", async (info) => {
       console.log("[AutoUpdater] Update available:", info.version)
-      this.updateAvailable = true
 
       // Fetch structured release notes
       const releaseManager = ReleaseNotesManager.getInstance();
@@ -827,81 +1521,64 @@ export class AppState {
     // Gate on app.isPackaged rather than process.env.NODE_ENV: NODE_ENV isn't
     // guaranteed to be set (or set correctly) in a packaged build, whereas
     // isPackaged is Electron's own reliable dev-vs-production signal.
-    setTimeout(() => {
-      if (!app.isPackaged) {
-        console.log("[AutoUpdater] Development build: skipping auto check entirely");
-      } else {
-        autoUpdater.checkForUpdatesAndNotify().catch(err => {
-          if (this.isNoReleaseAvailableError(err)) {
-            console.log("[AutoUpdater] No published release found on GitHub — treating as up to date");
-            this.broadcast("update-not-available", { version: app.getVersion() });
-            return;
-          }
-          console.error("[AutoUpdater] Failed to check for updates:", err);
-        });
-      }
-    }, 10000);
+    //
+    // The check is RESILIENT, not one-shot: a machine that is offline (or
+    // behind a captive portal) at the 10s mark used to never check again
+    // until the user manually clicked "Check for Updates". Now a failed
+    // check is retried with backoff (5min → 10min → 20min → … capped), and
+    // successful checks re-run every UPDATE_CHECK_INTERVAL_MS so long-running
+    // sessions still hear about new releases.
+    this.scheduleAutoUpdateCheck(10_000);
   }
 
-  private async checkForUpdatesManual(): Promise<void> {
+  /** Interval between auto-checks once one has completed successfully. */
+  private static readonly UPDATE_CHECK_INTERVAL_MS = 6 * 60 * 60 * 1000; // 6h
+  /** First retry delay after a failed auto-check; doubles per consecutive failure. */
+  private static readonly UPDATE_CHECK_RETRY_BASE_MS = 5 * 60 * 1000; // 5min
+
+  private autoCheckTimer: NodeJS.Timeout | null = null;
+  private autoCheckFailures = 0;
+
+  private scheduleAutoUpdateCheck(delayMs: number): void {
+    if (this.autoCheckTimer) clearTimeout(this.autoCheckTimer);
+    this.autoCheckTimer = setTimeout(() => {
+      this.runAutoUpdateCheck().catch((err) => {
+        console.error('[AutoUpdater] Unexpected auto-check failure:', err);
+      });
+    }, delayMs);
+    // Never hold the app open just to run an update check.
+    this.autoCheckTimer.unref?.();
+  }
+
+  private async runAutoUpdateCheck(): Promise<void> {
+    if (!app.isPackaged) return;
+
     try {
-      console.log('[AutoUpdater] Checking for updates manually via GitHub API...');
-      const releaseManager = ReleaseNotesManager.getInstance();
-      // Fetch latest release
-      const notes = await releaseManager.fetchReleaseNotes('latest');
-
-      if (notes) {
-        const currentVersion = app.getVersion();
-        const latestVersionTag = notes.version; // e.g., "v1.2.0" or "1.2.0"
-        const latestVersion = latestVersionTag.replace(/^v/, '');
-
-        console.log(`[AutoUpdater] Manual Check: Current=${currentVersion}, Latest=${latestVersion}`);
-
-        if (this.isVersionNewer(currentVersion, latestVersion)) {
-          console.log('[AutoUpdater] Manual Check: New version found!');
-          this.updateAvailable = true;
-
-          // Mock an info object compatible with electron-updater
-          const info = {
-            version: latestVersion,
-            files: [] as any[],
-            path: '',
-            sha512: '',
-            releaseName: notes.summary,
-            releaseNotes: notes.fullBody
-          };
-
-          // Notify renderer
-          this.broadcast("update-available", {
-            ...info,
-            parsedNotes: notes
-          });
-        } else {
-          console.log('[AutoUpdater] Manual Check: App is up to date.');
-          this.broadcast("update-not-available", { version: currentVersion });
-        }
+      await autoUpdater.checkForUpdatesAndNotify();
+      // Completed (available or up to date) — resume the steady cadence.
+      this.autoCheckFailures = 0;
+      this.scheduleAutoUpdateCheck(AppState.UPDATE_CHECK_INTERVAL_MS);
+    } catch (err: any) {
+      if (this.isNoReleaseAvailableError(err)) {
+        console.log('[AutoUpdater] No published release found on GitHub — treating as up to date');
+        this.broadcast('update-not-available', { version: app.getVersion() });
+        this.autoCheckFailures = 0;
+        this.scheduleAutoUpdateCheck(AppState.UPDATE_CHECK_INTERVAL_MS);
+        return;
       }
-    } catch (err) {
-      console.error('[AutoUpdater] Manual update check failed:', err);
+      // A transient failure (offline, DNS, rate limit). Unlike a MANUAL check
+      // (which broadcasts update-error so the user sees why their click did
+      // nothing), a background check failing is nobody's business — retry
+      // quietly with backoff instead of nagging with error popups.
+      this.autoCheckFailures++;
+      const backoff = Math.min(
+        AppState.UPDATE_CHECK_RETRY_BASE_MS * Math.pow(2, this.autoCheckFailures - 1),
+        AppState.UPDATE_CHECK_INTERVAL_MS,
+      );
+      console.error(`[AutoUpdater] Auto check failed (attempt ${this.autoCheckFailures}), retrying in ${Math.round(backoff / 60000)}min:`, err?.message ?? err);
+      this.scheduleAutoUpdateCheck(backoff);
     }
   }
-
-  private isVersionNewer(current: string, latest: string): boolean {
-    // EC-01 fix: strip pre-release suffixes (e.g. "2.1.0-beta.1" → "2.1.0")
-    // before splitting so Number() never returns NaN on comparison.
-    const stripPre = (v: string) => v.replace(/-.*$/, '');
-    const c = stripPre(current).split('.').map(Number);
-    const l = stripPre(latest).split('.').map(Number);
-
-    for (let i = 0; i < 3; i++) {
-      const cv = c[i] || 0;
-      const lv = l[i] || 0;
-      if (lv > cv) return true;
-      if (lv < cv) return false;
-    }
-    return false;
-  }
-
 
   public async quitAndInstallUpdate(): Promise<void> {
     console.log('[AutoUpdater] quitAndInstall called - applying update...')
@@ -924,18 +1601,31 @@ export class AppState {
           setTimeout(() => app.quit(), 1000)
           return
         }
+
+        // Nothing was actually downloaded (e.g. the click raced the download,
+        // or the state was stale). Falling through to quitAndInstall used to
+        // end in app.exit(0): the app closes with NO update installed and NO
+        // feedback. Refuse and let the renderer show an error instead.
+        console.error('[AutoUpdater] macOS install refused: no downloaded update file')
+        this.broadcast('update-error', 'No downloaded update was found. Please download the update again.')
+        return
       } catch (err) {
         console.error('[AutoUpdater] Failed to open update directory:', err)
+        this.broadcast('update-error', 'Could not open the downloaded update. Please try again.')
+        return
       }
     }
 
-    // Fallback to standard quitAndInstall (works on Windows/Linux or if signed)
+    // Fallback to standard quitAndInstall (works on Windows/Linux or if signed).
+    // If it throws, the app is still running — broadcast the error and leave the
+    // user with a working app and a visible failure message. The old behavior
+    // (app.exit(0) here) killed the process with NO install and NO feedback.
     setImmediate(() => {
       try {
         autoUpdater.quitAndInstall(false, true)
       } catch (err) {
         console.error('[AutoUpdater] quitAndInstall failed:', err)
-        app.exit(0)
+        this.broadcast('update-error', 'Could not restart to install the update. Please try again.')
       }
     })
   }
@@ -969,17 +1659,35 @@ export class AppState {
   }
 
   private isNoReleaseAvailableError(err: any): boolean {
+    // A genuine "no releases published yet" surfaces either as HTTP 404 from
+    // the feed request (electron-updater sets statusCode) or as one of its
+    // known "cannot find latest.yml" messages. Bare message substring checks
+    // for '404' / 'not found' used to match ANY error text containing them —
+    // e.g. a proxy's HTML 404 page or a DNS failure — and reported "up to
+    // date" for what was really a network problem.
+    if (err?.statusCode === 404 || err?.status === 404) return true;
     const msg = (err?.message || err?.toString() || '').toLowerCase()
     return (
-      msg.includes('404') ||
       msg.includes('cannot find latest') ||
-      msg.includes('no published versions') ||
-      msg.includes('not found')
+      msg.includes('no published versions')
     )
   }
 
   public downloadUpdate(): void {
     console.log('[AutoUpdater] Starting download...')
+    // deb (Linux) and portable (Windows) installs can't be self-updated by
+    // electron-updater — only AppImage/NSIS can. A "Download Update" click
+    // there used to spin forever at 0%: the feed's latest.yml lists no
+    // installable file for those package types, so nothing ever downloads
+    // and no error ever fires. Tell the user up front instead.
+    if (process.platform === 'linux' && !process.env.APPIMAGE) {
+      this.broadcast('update-error', "Updates aren't supported for the .deb install. Please download the new version from the releases page.")
+      return
+    }
+    if (process.platform === 'win32' && process.env.PORTABLE_EXECUTABLE_DIR) {
+      this.broadcast('update-error', "The portable version can't update itself. Please download the installer from the releases page.")
+      return
+    }
     try {
       // Errors during download are surfaced via autoUpdater.on("error") which
       // already broadcasts "update-error". Do not broadcast here to avoid duplicates.
@@ -994,10 +1702,47 @@ export class AppState {
   // New Property for System Audio & Microphone
   private systemAudioCapture: SystemAudioCapture | null = null;
   private microphoneCapture: MicrophoneCapture | null = null;
+  // Devices the live pipeline was built with. `undefined` means "follow the OS
+  // default", which is the case that has to react to a default-device change —
+  // an explicitly chosen device must NOT be dragged along when the OS default
+  // moves. Recorded here because the capture objects are rebuilt from these.
+  private _activeInputDeviceId: string | undefined;
+  private _activeOutputDeviceId: string | undefined;
+  // Polls for plug/unplug and default-device changes while a meeting runs.
+  private deviceWatcher: AudioDeviceWatcher | null = null;
+  // Serialises hot-swaps: the watcher can emit route + list changes for a single
+  // plug event, and two overlapping rebuilds would orphan a capture.
+  private _hotSwapInFlight = false;
+  // One plug event legitimately produces both a default-route change and a
+  // device-list change in the same watcher diff. Acting on both would restart
+  // the same channel twice, so the second is suppressed. Tracked per channel —
+  // a mic swap must never suppress a system-audio swap.
+  private readonly _hotSwapCooldownMs = 2000;
+  private _lastSysSwapAt = 0;
+  private _lastMicSwapAt = 0;
+  // Device graph as it was when the meeting was paused, so resume can tell
+  // "nothing moved" from "the headset is gone" — the watcher is off while paused.
+  private _pausedDeviceSnapshot: DeviceSnapshot | null = null;
   private audioTestCapture: MicrophoneCapture | null = null; // For audio settings test
   private _audioTestStarting = false;               // P2-12: in-flight guard against concurrent calls
+  private audioTestSystemCapture: SystemAudioCapture | null = null; // system-audio probe, parallel to the mic test
+  // Bumped on every start AND stop of the audio test. The system-audio probe
+  // awaits a permission resolution that can take seconds; if the user closes the
+  // Audio tab during that await, stopAudioTest fires but the subsequent
+  // construct-and-start would orphan a capture with no shutdown path. Snapshot
+  // this before awaiting and bail if it changed.
+  private _audioTestEpoch = 0;
   private googleSTT: STTProvider | null = null; // Client
   private googleSTT_User: STTProvider | null = null; // User
+  // Fingerprint of the credentials the live STT providers were built with. STT
+  // instances cache their key/model/region at construction and are only created
+  // once (`if (!this.googleSTT)`), so a key saved from Settings — or resolved
+  // later from the backend fallback — never reached the pipeline. Compare against
+  // this to decide whether a rebuild is actually needed. Never holds a key value.
+  private _sttConfigFingerprint: string | null = null;
+  // A rebuild tears down both capture paths, so it is deferred when a meeting is
+  // running and flushed at endMeeting().
+  private _sttResyncPending: string | null = null;
   // Echo-pipeline telemetry poll (ERLE, gate state, mute ratio) — meeting-scoped.
   private _pipelineStatsTimer: NodeJS.Timeout | null = null;
 
@@ -1005,14 +1750,61 @@ export class AppState {
   // AEC alignment seed lookup when getOutputRoute() is unavailable pre-start.
   private _lastStatsRouteName: string | null = null;
 
+  // Fingerprint of the last pipeline-stats line that was logged.
+  //
+  // The poll fires every 5 s for the whole meeting and used to print the full
+  // ~1.2 KB stats JSON every time, so a quiet 40-minute call emitted ~480 near
+  // identical lines — noise that buries the transitions actually worth reading
+  // (gate convergence, a route change, the pipeline going quiet) and makes the
+  // shipped log file roll over sooner. Only the fields that describe the
+  // pipeline's *state* go into this fingerprint; the monotonic counters
+  // (frames_total, render_frames, last_render_frame_age_ms) are deliberately
+  // excluded, because they change on every tick and would defeat the compare.
+  //
+  // Verbose logging still gets every raw line — that is what it is for.
+  private _lastStatsFingerprint: string | null = null;
+
+  /**
+   * State fields worth a log line. Anything not listed here is either a
+   * monotonic counter or a value that jitters continuously (erle_ema, delay_ms,
+   * the residual-echo likelihoods), neither of which marks a transition.
+   */
+  private static readonly STATS_FINGERPRINT_KEYS = [
+    'gate_state',
+    'converged',
+    'mode',
+    'route_name',
+    'route_transport',
+    'render_backend',
+    'render_pipeline_alive',
+    'speaker_active',
+    'headphones',
+    'align_frozen',
+    'active_mic_captures',
+  ] as const;
+
+  private _statsFingerprint(statsJson: string): string | null {
+    try {
+      const stats = JSON.parse(statsJson);
+      return AppState.STATS_FINGERPRINT_KEYS.map((k) => `${k}=${stats?.[k]}`).join('|');
+    } catch {
+      return null; // unparseable — fall back to logging it
+    }
+  }
+
   private _startPipelineStatsPolling(): void {
     if (this._pipelineStatsTimer) return;
     const native = loadNativeModule();
     if (!native?.getAudioPipelineStats) return; // stale .node binary — no stats surface
+    this._lastStatsFingerprint = null; // first tick of a meeting always logs
     this._pipelineStatsTimer = setInterval(() => {
       try {
         const stats = native.getAudioPipelineStats!();
-        console.log(`[AudioPipeline] ${stats} filter=${JSON.stringify(this._echoFilter.getStats())}`);
+        const fingerprint = this._statsFingerprint(stats);
+        if (this._verboseLogging || fingerprint === null || fingerprint !== this._lastStatsFingerprint) {
+          console.log(`[AudioPipeline] ${stats} filter=${JSON.stringify(this._echoFilter.getStats())}`);
+        }
+        this._lastStatsFingerprint = fingerprint;
         this._maybePersistEchoAlignSeed(stats);
       } catch (e) {
         console.warn('[AudioPipeline] stats poll failed:', e);
@@ -1075,6 +1867,46 @@ export class AppState {
     if (this._pipelineStatsTimer) {
       clearInterval(this._pipelineStatsTimer);
       this._pipelineStatsTimer = null;
+    }
+  }
+
+  // ── Main-thread responsiveness measurement ────────────────────────────────
+  //
+  // "The app gets stuck during calls" is unactionable until it is a number.
+  // monitorEventLoopDelay samples how late the loop is servicing its own timers,
+  // which is precisely the quantity a blocking native call (device enumeration,
+  // a synchronous file write) or a long JS turn inflates — and it costs nothing
+  // while running, because libuv records the interval in C and only builds the
+  // histogram when it is read.
+  //
+  // Meeting-scoped and verbose-gated: one line per meeting, no new setting, no
+  // new IPC. Whether the device-list probes need staggering is a question this
+  // answers rather than one we guess at.
+  private _loopDelay: IntervalHistogram | null = null;
+
+  private _startLoopDelayMonitor(): void {
+    if (!this._verboseLogging || this._loopDelay) return;
+    try {
+      this._loopDelay = monitorEventLoopDelay({ resolution: 20 });
+      this._loopDelay.enable();
+    } catch {
+      this._loopDelay = null; // never let instrumentation break a meeting
+    }
+  }
+
+  private _stopLoopDelayMonitor(): void {
+    const h = this._loopDelay;
+    if (!h) return;
+    this._loopDelay = null;
+    try {
+      h.disable();
+      const ms = (ns: number): string => (ns / 1e6).toFixed(1);
+      console.log(
+        `[Main][debug] Event-loop delay over meeting: mean=${ms(h.mean)}ms ` +
+        `p50=${ms(h.percentile(50))}ms p99=${ms(h.percentile(99))}ms max=${ms(h.max)}ms`
+      );
+    } catch {
+      // A histogram read must never be the reason endMeeting fails.
     }
   }
 
@@ -1143,10 +1975,139 @@ export class AppState {
   // so 1:1 calls render exactly as before diarization existed.
   private _clientSpeakerIndicesSeen: Set<number> = new Set();
 
+  // Set when transcript translation is enabled AND an LLM key exists; null
+  // otherwise, which makes the translation branch in the STT handler inert.
+  private _transcriptTranslator: TranscriptTranslator | null = null;
+
+  /**
+   * Build the translator for this meeting, or null when translation is off or
+   * no LLM key is configured. Called at STT setup so a settings change applies
+   * to the next meeting without a restart.
+   */
+  private _initTranscriptTranslator(): void {
+    const creds = CredentialsManager.getInstance();
+    if (!creds.getTranslateTranscriptsToEnglish()) {
+      this._transcriptTranslator = null;
+      console.log('[Main] Transcript translation disabled');
+      return;
+    }
+
+    const translator = new TranscriptTranslator({
+      getGroqApiKey: () => creds.getGroqApiKey(),
+      getGeminiApiKey: () => creds.getGeminiApiKey(),
+      getOpenaiApiKey: () => creds.getOpenaiApiKey(),
+      getClaudeApiKey: () => creds.getClaudeApiKey(),
+    });
+
+    if (!translator.isAvailable()) {
+      this._transcriptTranslator = null;
+      console.warn('[Main] Transcript translation on, but no LLM API key configured — transcripts stay in the spoken language');
+      return;
+    }
+
+    this._transcriptTranslator = translator;
+    console.log('[Main] Transcript translation enabled (non-Latin finals → English)');
+  }
+
+  /**
+   * Everything the live STT providers were constructed from, as one comparable
+   * string. Keys are reduced to a short digest so a rotated key changes the
+   * fingerprint while the value itself is never stored or logged.
+   */
+  private computeSttFingerprint(): string {
+    const { CredentialsManager } = require('./services/CredentialsManager');
+    const crypto = require('crypto');
+    const cm = CredentialsManager.getInstance();
+    const provider = cm.getSttProvider();
+
+    let key: string | undefined;
+    switch (provider) {
+      case 'deepgram': key = cm.getDeepgramApiKey() || process.env.DEEPGRAM_API_KEY; break;
+      case 'soniox': key = cm.getSonioxApiKey(); break;
+      case 'elevenlabs': key = cm.getElevenLabsApiKey(); break;
+      case 'openai': key = cm.getOpenAiSttApiKey(); break;
+      case 'groq': key = cm.getGroqSttApiKey(); break;
+      case 'azure': key = cm.getAzureApiKey(); break;
+      case 'ibmwatson': key = cm.getIbmWatsonApiKey(); break;
+      default: key = undefined; break; // google STT uses a service account, not a key
+    }
+    const keyDigest = key ? crypto.createHash('sha256').update(key).digest('hex').slice(0, 12) : 'none';
+    const extras = [
+      provider === 'groq' ? cm.getGroqSttModel() : '',
+      provider === 'azure' ? cm.getAzureRegion() : '',
+      provider === 'ibmwatson' ? cm.getIbmWatsonRegion() : '',
+      cm.getDiarizeClientEnabled() ? 'diarize' : '',
+    ].filter(Boolean).join('|');
+
+    return `${provider}|${keyDigest}|${cm.getSttLanguage()}|${extras}`;
+  }
+
+  /** ApiKeyProvider that backs each STT provider, for source telemetry. */
+  private static readonly STT_KEY_PROVIDER: Record<string, string | undefined> = {
+    deepgram: 'deepgram', soniox: 'soniox', elevenlabs: 'elevenlabs',
+    openai: 'openai_stt', groq: 'groq_stt', azure: 'azure', ibmwatson: 'ibmwatson',
+  };
+
+  /**
+   * Rebuild the STT providers when the credentials behind them change. No-op when
+   * nothing changed, and deferred to endMeeting() while a meeting is running,
+   * since reconfigureSttProvider() tears down both capture paths.
+   */
+  public async syncSttCredentials(trigger: string): Promise<boolean> {
+    // Nothing built yet — whatever is current will be picked up on first use.
+    if (this._sttConfigFingerprint === null) return false;
+
+    const next = this.computeSttFingerprint();
+    if (next === this._sttConfigFingerprint) return false;
+
+    try {
+      const { posthogMain } = require('./services/PostHogMainService');
+      const { CredentialsManager } = require('./services/CredentialsManager');
+      const cm = CredentialsManager.getInstance();
+      const sttProvider = cm.getSttProvider();
+      const keyProvider = AppState.STT_KEY_PROVIDER[sttProvider];
+      posthogMain.capture('api_keys_runtime_sync', {
+        trigger,
+        target: 'stt',
+        sttProvider,
+        sttKeySource: keyProvider ? cm.getKeySource(keyProvider) : 'none',
+        deferred: this.isMeetingActive,
+      });
+    } catch { /* telemetry must never break the pipeline */ }
+
+    if (this.isMeetingActive) {
+      this._sttResyncPending = trigger;
+      console.log(`[Main] STT credentials changed (${trigger}) — rebuild deferred until the meeting ends`);
+      return false;
+    }
+
+    this._sttResyncPending = null;
+    console.log(`[Main] STT credentials changed (${trigger}) — rebuilding STT providers`);
+    await this.reconfigureSttProvider();
+    return true;
+  }
+
+  /** Apply an STT credential change that arrived mid-meeting. */
+  private async _flushPendingSttResync(): Promise<void> {
+    const trigger = this._sttResyncPending;
+    if (!trigger) return;
+    this._sttResyncPending = null;
+    if (this.computeSttFingerprint() === this._sttConfigFingerprint) return;
+    console.log(`[Main] Applying deferred STT credential change (${trigger})`);
+    try {
+      await this.reconfigureSttProvider();
+    } catch (e) {
+      console.warn('[Main] Deferred STT resync failed:', e);
+    }
+  }
+
   private createSTTProvider(speaker: 'client' | 'user'): STTProvider {
     const { CredentialsManager } = require('./services/CredentialsManager');
     const sttProvider = CredentialsManager.getInstance().getSttProvider();
     const sttLanguage = CredentialsManager.getInstance().getSttLanguage();
+    // Record what this instance is being built from, so a later credential
+    // change is detectable instead of silently ignored.
+    this._sttConfigFingerprint = this.computeSttFingerprint();
 
     let stt: STTProvider;
 
@@ -1277,8 +2238,7 @@ export class AppState {
               final: false,
               retract: true
             };
-            helper.getLauncherWindow()?.webContents.send('native-audio-transcript', retraction);
-            helper.getOverlayWindow()?.webContents.send('native-audio-transcript', retraction);
+            this.sendToMeetingSurfaces('native-audio-transcript', retraction);
             this._userPartialPending = false;
             this._echoFilter.noteRetractionEmitted();
           }
@@ -1309,62 +2269,40 @@ export class AppState {
         this._clientSpeakerIndicesSeen.add(segment.speakerIndex);
       }
 
-      this.intelligenceManager.handleTranscript({
-        speaker: speaker,
-        text: segment.text,
-        timestamp: Date.now(),
-        final: segment.isFinal,
-        confidence: segment.confidence,
-        speakerIndex: segment.speakerIndex
-      });
-
-      // Feed final transcript to JIT RAG indexer
-      if (segment.isFinal && this.ragManager) {
-        this.ragManager.feedLiveTranscript([{
-          speaker: speaker,
-          text: segment.text,
-          timestamp: Date.now()
-        }]);
-      }
-
-      const helper = this.getWindowHelper();
-      // Resolve real display name at emit-time so the renderer always gets
-      // a human-readable label, even before a speaker-names-resolved event fires.
-      const speakerNameMap = this.intelligenceManager.getSpeakerNameMap();
-      let displayName = speaker === 'user'
-        ? (speakerNameMap.user || 'Me')
-        : (speakerNameMap.client || 'Them');
-      if (
-        speaker === 'client' &&
-        segment.speakerIndex !== undefined &&
-        this._clientSpeakerIndicesSeen.size >= 2
-      ) {
-        displayName = `${displayName} · Speaker ${segment.speakerIndex + 1}`;
-      }
-      const payload = {
-        speaker: speaker,          // internal role — kept for renderer routing logic
-        displayName: displayName,  // resolved human name for UI display
-        text: segment.text,
-        timestamp: Date.now(),
-        final: segment.isFinal,
-        confidence: segment.confidence,
-        speakerIndex: segment.speakerIndex
-        // NOTE: segment.words stays main-process internal (echo filter input) —
-        // deliberately NOT serialized into the 10+/sec IPC stream.
-      };
-      helper.getLauncherWindow()?.webContents.send('native-audio-transcript', payload);
-      helper.getOverlayWindow()?.webContents.send('native-audio-transcript', payload);
-
       // Track whether the renderer's latest user event is an un-finalized
       // partial — an echo-dropped final must then retract it explicitly.
+      // Keyed on ARRIVAL rather than dispatch: a final that is off being
+      // translated has already superseded its own partial, and an interim
+      // landing during that wait re-raises the flag for the newer partial it
+      // puts on screen.
       if (speaker === 'user') {
         this._userPartialPending = !segment.isFinal;
       }
 
-      // Feed final recruiter (system audio) transcripts to negotiation tracker
-      if (segment.isFinal && speaker === 'client') {
-        this.knowledgeOrchestrator?.feedInterviewerUtterance?.(segment.text);
+      // Everything above this point runs on the ORIGINAL recognized text: the
+      // echo filter compares mic audio against far-end audio, and both sides
+      // are in the spoken language, so translating first would break the match.
+      //
+      // Everything below is what a human reads or the AI reasons over, so it
+      // gets the English rendering when transcript translation is on. Finals go
+      // through a per-speaker queue to stay in spoken order; interims skip
+      // translation entirely and dispatch synchronously.
+      const dispatch = (text: string) => this._dispatchTranscript(speaker, { ...segment, text });
+
+      if (segment.isFinal && this._transcriptTranslator && segment.text.trim()) {
+        const original = segment.text;
+        this._transcriptTranslator.enqueue(speaker, async () => {
+          const text = await this._transcriptTranslator!.translate(original);
+          if (text !== original) {
+            console.log(`[Main] Translated (${speaker}): "${original}" → "${text}"`);
+          }
+          if (!this.isMeetingActive || this.isMeetingPaused) return;
+          dispatch(text);
+        });
+        return;
       }
+
+      dispatch(segment.text);
     });
 
     stt.on('error', (err: Error) => {
@@ -1374,59 +2312,134 @@ export class AppState {
     return stt;
   }
 
-  private setupSystemAudioPipeline(inputDeviceId?: string, outputDeviceId?: string): void {
+  /**
+   * Fan a transcript segment out to the intelligence layer, the RAG indexer and
+   * the renderer windows. Split out of the STT handler so a final can be
+   * dispatched later than it arrived, once its translation resolves.
+   */
+  private _dispatchTranscript(
+    speaker: 'client' | 'user',
+    segment: { text: string; isFinal: boolean; confidence: number; speakerIndex?: number },
+  ): void {
+    this.intelligenceManager.handleTranscript({
+      speaker: speaker,
+      text: segment.text,
+      timestamp: Date.now(),
+      final: segment.isFinal,
+      confidence: segment.confidence,
+      speakerIndex: segment.speakerIndex
+    });
+
+    // Feed final transcript to JIT RAG indexer
+    if (segment.isFinal && this.ragManager) {
+      this.ragManager.feedLiveTranscript([{
+        speaker: speaker,
+        text: segment.text,
+        timestamp: Date.now()
+      }]);
+    }
+
+    const helper = this.getWindowHelper();
+    // Resolve real display name at emit-time so the renderer always gets
+    // a human-readable label, even before a speaker-names-resolved event fires.
+    const speakerNameMap = this.intelligenceManager.getSpeakerNameMap();
+    let displayName = speaker === 'user'
+      ? (speakerNameMap.user || 'Me')
+      : (speakerNameMap.client || 'Them');
+    if (
+      speaker === 'client' &&
+      segment.speakerIndex !== undefined &&
+      this._clientSpeakerIndicesSeen.size >= 2
+    ) {
+      // Diarization has now told us there's more than one distinct voice on
+      // the client side, so the resolved name (calendar attendee / company)
+      // can't be attributed to any single index with confidence — showing
+      // e.g. "Shahjad (Indosales) · Speaker 1" implies a certainty we don't
+      // have and mislabels whoever isn't actually Shahjad. Fall back to a
+      // plain, generic per-index label instead.
+      displayName = `${speakerNameMap.clientDiarized || 'Other Party'} · Speaker ${segment.speakerIndex + 1}`;
+    }
+    const payload = {
+      speaker: speaker,          // internal role — kept for renderer routing logic
+      displayName: displayName,  // resolved human name for UI display
+      text: segment.text,
+      timestamp: Date.now(),
+      final: segment.isFinal,
+      confidence: segment.confidence,
+      speakerIndex: segment.speakerIndex
+      // NOTE: segment.words stays main-process internal (echo filter input) —
+      // deliberately NOT serialized into the 10+/sec IPC stream.
+    };
+    helper.getLauncherWindow()?.webContents.send('native-audio-transcript', payload);
+    helper.getOverlayWindow()?.webContents.send('native-audio-transcript', payload);
+
+    // Feed final recruiter (system audio) transcripts to negotiation tracker
+    if (segment.isFinal && speaker === 'client') {
+      this.knowledgeOrchestrator?.feedInterviewerUtterance?.(segment.text);
+    }
+  }
+
+  private async setupSystemAudioPipeline(inputDeviceId?: string, outputDeviceId?: string): Promise<void> {
     // REMOVED EARLY RETURN: if (this.systemAudioCapture && this.microphoneCapture) return; // Already initialized
+
+    // Screen Recording gates system audio on macOS. Resolve it BEFORE touching
+    // SystemAudioCapture: the native module retries CoreAudio → SCK on every
+    // VAD-lockout restart, and each SCK attempt re-raises the TCC dialog, so a
+    // denied user would be prompted every couple of seconds for the whole
+    // meeting. Not constructing the capture at all is what stops that.
+    const systemAudioAllowed = await this.ensureSystemAudioCapability('system audio pipeline setup');
+
+    if (!systemAudioAllowed && this.systemAudioCapture) {
+      // The grant can be revoked between meetings while a capture object from
+      // the previous session is still around. Tear it down rather than let it
+      // keep feeding zero-filled audio into STT.
+      console.warn('[Main] Screen Recording unavailable — tearing down the existing system audio capture.');
+      const stale = this.systemAudioCapture;
+      this.systemAudioCapture = null;
+      try { stale.destroy(); } catch { /* already stopped */ }
+    }
 
     try {
       // 1. Initialize Captures if missing.
       // If they already exist (e.g. from reconfigureAudio) they are already
       // wired to write to this.googleSTT / googleSTT_User.
+      //
+      // The device arguments used to be accepted and then ignored — both
+      // captures were constructed with `undefined`. Every current caller passes
+      // nothing (reconfigureAudio owns explicit device selection), but a caller
+      // that did pass an id silently got the OS default instead.
+      if (inputDeviceId !== undefined) this._activeInputDeviceId = inputDeviceId || undefined;
+      if (outputDeviceId !== undefined) this._activeOutputDeviceId = outputDeviceId || undefined;
 
-      if (!this.systemAudioCapture) {
-        this.systemAudioCapture = new SystemAudioCapture(undefined, { echoMode: this._echoMode() });
-        // Wire Capture -> STT
-        this.systemAudioCapture.on('data', (chunk: Buffer) => {
-          this.googleSTT?.write(chunk);
-        });
-        this.systemAudioCapture.on('speech_ended', () => {
-          this.googleSTT?.notifySpeechEnded?.();
-        });
-        this.systemAudioCapture.on('error', (err: Error) => {
-          console.error('[Main] SystemAudioCapture Error:', err);
-          // Surface SCK permission failures (macOS) to the user so they know to grant
-          // Screen Recording access in System Settings > Privacy & Security.
-          this.broadcast('meeting-audio-warning', err.message || 'System audio capture failed');
-        });
-        // Re-sync STT sample rate when the native hardware rate is discovered post-start
-        this.systemAudioCapture.on('sample-rate-detected', (rate: number) => {
-          console.log(`[Main] System audio true rate detected: ${rate}Hz — resyncing STT`);
-          this.googleSTT?.setSampleRate(rate);
-        });
+      if (systemAudioAllowed && !this.systemAudioCapture) {
+        this.systemAudioCapture = new SystemAudioCapture(
+          this._activeOutputDeviceId,
+          { echoMode: this._echoMode() },
+        );
+        this.wireSystemCapture(this.systemAudioCapture, 'pipeline');
       }
 
       if (!this.microphoneCapture) {
-        const disableMicVad = this._shouldDisableMicVad(inputDeviceId, outputDeviceId);
-        this.microphoneCapture = new MicrophoneCapture(undefined, {
+        const disableMicVad = this._shouldDisableMicVad(this._activeInputDeviceId, this._activeOutputDeviceId);
+        const micOptions = {
           vadDisabled: disableMicVad,
           echoMode: this._echoMode(),
-          echoAlignSeedMs: this._lookupEchoAlignSeed()
-        });
-        this.microphoneCapture.on('data', (chunk: Buffer) => {
-          this.googleSTT_User?.write(chunk);
-        });
-        this.microphoneCapture.on('speech_ended', () => {
-          this.googleSTT_User?.notifySpeechEnded?.();
-        });
-        this.microphoneCapture.on('error', (err: Error) => {
-          console.error('[Main] MicrophoneCapture Error:', err);
-        });
-        this.microphoneCapture.on('sample-rate-detected', (rate: number) => {
-          console.log(`[Main] Mic true rate detected: ${rate}Hz — resyncing User STT`);
-          this.googleSTT_User?.setSampleRate(rate);
-        });
+          echoAlignSeedMs: this._lookupEchoAlignSeed(),
+        };
+        try {
+          this.microphoneCapture = new MicrophoneCapture(this._activeInputDeviceId, micOptions);
+        } catch (micErr) {
+          // The constructor throws when the requested device cannot be opened.
+          // Fall back to the OS default rather than losing the mic channel (and
+          // with it the rest of this try block, including STT construction).
+          console.warn('[Main] MicrophoneCapture failed on the requested device — falling back to default.', micErr);
+          this.microphoneCapture = new MicrophoneCapture(undefined, micOptions);
+        }
+        this.wireMicrophoneCapture(this.microphoneCapture, 'pipeline');
       }
 
       // 2. Initialize STT Services if missing
+      this._initTranscriptTranslator();
       if (!this.googleSTT) {
         this.googleSTT = this.createSTTProvider('client');
       }
@@ -1454,95 +2467,476 @@ export class AppState {
     }
   }
 
-  private async reconfigureAudio(inputDeviceId?: string, outputDeviceId?: string): Promise<void> {
+  /**
+   * Rebuild both captures for a new device selection.
+   *
+   * `autoStart` defaults to false because the one long-standing caller
+   * (startMeeting) starts STT first and then the captures itself — the
+   * documented order that keeps DeepgramStreamingSTT.write() from dropping
+   * chunks while isActive is still false. Mid-meeting callers (device hot-swap)
+   * pass true, because for them nothing else will ever call start() and the old
+   * behaviour left the meeting permanently silent after a reconfigure.
+   */
+  private async reconfigureAudio(
+    inputDeviceId?: string,
+    outputDeviceId?: string,
+    options?: { autoStart?: boolean },
+  ): Promise<void> {
     console.log(`[Main] Reconfiguring Audio: Input=${inputDeviceId}, Output=${outputDeviceId}`);
+    const autoStart = options?.autoStart === true;
+
+    // Remember the selection: the hot-swap path rebuilds from these, and
+    // "undefined" (follow the OS default) is the case that must react to a
+    // default-device change.
+    this._activeInputDeviceId = inputDeviceId || undefined;
+    this._activeOutputDeviceId = outputDeviceId || undefined;
 
     // Determine VAD mode once upfront for this device combination.
     const disableMicVad = this._shouldDisableMicVad(inputDeviceId, outputDeviceId);
 
     // ── 1. System Audio (Output Capture) ──────────────────────────────────────
+    // destroy(), not stop(): stop() left the orphan's listeners attached, so its
+    // in-flight native callbacks kept writing into the same STT connection as the
+    // replacement capture — two interleaved copies of the far-end audio.
     if (this.systemAudioCapture) {
-      this.systemAudioCapture.stop();
+      const stale = this.systemAudioCapture;
       this.systemAudioCapture = null;
+      this.disarmSystemCaptureWatchdog();
+      try { stale.destroy(); } catch (err) { console.warn('[Main] Error destroying previous SystemAudioCapture:', err); }
     }
 
-    const wireSystemAudio = (capture: typeof this.systemAudioCapture) => {
-      if (!capture) return;
-      capture.on('data', (chunk: Buffer) => {
-        this.googleSTT?.write(chunk);
-      });
-      capture.on('speech_ended', () => {
-        this.googleSTT?.notifySpeechEnded?.();
-      });
-      capture.on('error', (err: Error) => {
-        console.error('[Main] SystemAudioCapture Error:', err);
-      });
-      capture.on('sample-rate-detected', (rate: number) => {
-        console.log(`[Main] System audio true rate detected: ${rate}Hz — resyncing STT`);
-        this.googleSTT?.setSampleRate(rate);
-      });
-    };
+    // A device change is one of the moments a revoked grant tends to surface,
+    // so re-resolve rather than trusting the check from meeting start.
+    const systemAudioAllowed = await this.ensureSystemAudioCapability('audio reconfigure');
 
-    try {
-      console.log('[Main] Initializing SystemAudioCapture...');
-      this.systemAudioCapture = new SystemAudioCapture(outputDeviceId || undefined, { echoMode: this._echoMode() });
-      wireSystemAudio(this.systemAudioCapture);
-      console.log('[Main] SystemAudioCapture initialized.');
-    } catch (err) {
-      console.warn('[Main] Failed to initialize SystemAudioCapture with preferred device. Falling back to default.', err);
+    if (!systemAudioAllowed) {
+      console.warn('[Main] Skipping SystemAudioCapture init — Screen Recording unavailable. Meeting continues mic-only.');
+    } else {
       try {
-        this.systemAudioCapture = new SystemAudioCapture(undefined, { echoMode: this._echoMode() });
-        wireSystemAudio(this.systemAudioCapture);
-        console.log('[Main] SystemAudioCapture (Default) initialized.');
-      } catch (err2) {
-        console.error('[Main] Failed to initialize SystemAudioCapture (Default):', err2);
+        console.log('[Main] Initializing SystemAudioCapture...');
+        this.systemAudioCapture = new SystemAudioCapture(outputDeviceId || undefined, { echoMode: this._echoMode() });
+        this.wireSystemCapture(this.systemAudioCapture, 'reconfigure');
+        console.log('[Main] SystemAudioCapture initialized.');
+      } catch (err) {
+        console.warn('[Main] Failed to initialize SystemAudioCapture with preferred device. Falling back to default.', err);
+        try {
+          this.systemAudioCapture = new SystemAudioCapture(undefined, { echoMode: this._echoMode() });
+          this.wireSystemCapture(this.systemAudioCapture, 'reconfigure-default');
+          this._activeOutputDeviceId = undefined; // we are on the default now
+          console.log('[Main] SystemAudioCapture (Default) initialized.');
+        } catch (err2) {
+          console.error('[Main] Failed to initialize SystemAudioCapture (Default):', err2);
+          // Previously this only logged, so a permission failure after a device
+          // change never reached the UI.
+          this.broadcast('meeting-audio-warning',
+            (err2 as Error)?.message || formatPermissionMessage('screen-recording-denied'));
+        }
       }
     }
 
     // ── 2. Microphone (Input Capture) ─────────────────────────────────────────
     if (this.microphoneCapture) {
-      this.microphoneCapture.stop();
+      const stale = this.microphoneCapture;
       this.microphoneCapture = null;
+      try { stale.destroy(); } catch (err) { console.warn('[Main] Error destroying previous MicrophoneCapture:', err); }
     }
 
-    const wireMicrophone = (capture: typeof this.microphoneCapture) => {
-      if (!capture) return;
-      capture.on('data', (chunk: Buffer) => {
-        this.googleSTT_User?.write(chunk);
-      });
-      capture.on('speech_ended', () => {
-        this.googleSTT_User?.notifySpeechEnded?.();
-      });
-      capture.on('error', (err: Error) => {
-        console.error('[Main] MicrophoneCapture Error:', err);
-      });
-      capture.on('sample-rate-detected', (rate: number) => {
-        console.log(`[Main] Mic true rate detected: ${rate}Hz — resyncing User STT`);
-        this.googleSTT_User?.setSampleRate(rate);
-      });
-    };
-
     const echoAlignSeedMs = this._lookupEchoAlignSeed();
+    const micOptions = { vadDisabled: disableMicVad, echoMode: this._echoMode(), echoAlignSeedMs };
     try {
       console.log('[Main] Initializing MicrophoneCapture...');
-      this.microphoneCapture = new MicrophoneCapture(
-        inputDeviceId || undefined,
-        { vadDisabled: disableMicVad, echoMode: this._echoMode(), echoAlignSeedMs }
-      );
-      wireMicrophone(this.microphoneCapture);
+      this.microphoneCapture = new MicrophoneCapture(inputDeviceId || undefined, micOptions);
+      this.wireMicrophoneCapture(this.microphoneCapture, 'reconfigure');
       console.log('[Main] MicrophoneCapture initialized.');
     } catch (err) {
       console.warn('[Main] Failed to initialize MicrophoneCapture with preferred device. Falling back to default.', err);
       try {
-        this.microphoneCapture = new MicrophoneCapture(
-          undefined,
-          { vadDisabled: disableMicVad, echoMode: this._echoMode(), echoAlignSeedMs }  // preserve VAD mode even on fallback
-        );
-        wireMicrophone(this.microphoneCapture);
+        // preserve VAD mode even on fallback
+        this.microphoneCapture = new MicrophoneCapture(undefined, micOptions);
+        this.wireMicrophoneCapture(this.microphoneCapture, 'reconfigure-default');
+        this._activeInputDeviceId = undefined; // we are on the default now
         console.log('[Main] MicrophoneCapture (Default) initialized.');
       } catch (err2) {
         console.error('[Main] Failed to initialize MicrophoneCapture (Default):', err2);
       }
+    }
+
+    // ── 3. Resume capture when the meeting is already running ─────────────────
+    if (autoStart && this.isMeetingActive && !this.isMeetingPaused) {
+      this.systemAudioCapture?.start();
+      this.microphoneCapture?.start();
+    }
+
+    // The rebuild itself perturbs the device graph (a tap/aggregate device
+    // appears, CPAL grabs an endpoint). Re-baseline so that does not come back
+    // as another change to react to.
+    this.deviceWatcher?.resync();
+  }
+
+  // ── Device hot-swap ────────────────────────────────────────────────────────
+  //
+  // Nothing in the app noticed a headset arriving mid-meeting. The WASAPI
+  // loopback client and the CoreAudio aggregate/tap bind their endpoint at
+  // construction, and CPAL resolves the input device at construction, so all
+  // three keep pulling from whatever existed when the meeting started — which is
+  // why plugging in a headset killed capture until the user paused and resumed.
+  // AudioDeviceWatcher polls the native enumeration APIs and these handlers
+  // rebind the affected channel in place. The native DSP always emits 16kHz mono
+  // whatever the endpoint is, so the STT sockets stay open and the rolling
+  // transcript is continuous across a swap.
+  private _startDeviceWatcher(): void {
+    // Both mid-meeting audio supervisors share these four lifecycle points
+    // (start / end / pause / resume), so they are armed and disarmed together.
+    this._startFarEndSilenceWatch();
+    if (!this.deviceWatcher) {
+      const watcher = new AudioDeviceWatcher();
+      if (!watcher.isSupported()) {
+        console.warn('[Main] Native module unavailable — audio device hot-swap disabled.');
+        return;
+      }
+      watcher.on('output-default-changed', (evt: { from: string; to: string }) => {
+        this._onOutputRouteChanged(evt);
+      });
+      watcher.on('input-default-changed', (evt: { from: string; to: string }) => {
+        this._onInputDefaultChanged(evt);
+      });
+      watcher.on('devices-changed', (evt: DevicesChangedEvent) => {
+        this._onDevicesChanged(evt);
+      });
+      this.deviceWatcher = watcher;
+    }
+    this.deviceWatcher.start();
+  }
+
+  private _stopDeviceWatcher(): void {
+    this.deviceWatcher?.stop();
+    this._stopFarEndSilenceWatch();
+  }
+
+  /**
+   * Remember the device graph as capture goes down for a pause.
+   *
+   * The watcher is stopped while paused, and both captures cache their native
+   * monitor across stop()/start() (FIX-8), so a headset unplugged during a pause
+   * would otherwise be invisible: resume() reopens the cached monitor against
+   * the endpoint that was default when it was built.
+   */
+  private _snapshotDevicesForPause(): void {
+    this._pausedDeviceSnapshot = this.deviceWatcher?.snapshot() ?? null;
+  }
+
+  /**
+   * Re-resolve endpoints on resume if the device graph moved while paused.
+   *
+   * Must run BEFORE the captures are restarted — it only marks the bindings
+   * stale, so the very next open rebuilds the native object instead of paying a
+   * second open (a macOS CoreAudio/SCK re-init costs 5-7s) once a stall is
+   * detected. Channels pinned to an explicit device are left alone; the user's
+   * choice outlives a pause.
+   */
+  private _reconcileDevicesAfterPause(): void {
+    const before = this._pausedDeviceSnapshot;
+    this._pausedDeviceSnapshot = null;
+    const after = this.deviceWatcher?.snapshot() ?? null;
+    // No native module, or no baseline (watcher never ran) — nothing to compare.
+    if (!before || !after || isSameSnapshot(before, after)) return;
+
+    console.log(`[Main] Device graph changed during pause — route "${before.outputRoute}" → "${after.outputRoute}", input "${before.defaultInput}" → "${after.defaultInput}"`);
+
+    if (!this._activeOutputDeviceId && this.systemAudioCapture) {
+      this.systemAudioCapture.invalidateDeviceBinding();
+    }
+    // A VAD-mode flip cannot be absorbed by a reopen (native ctor argument), so
+    // that case rebuilds instead. _isCapturing() is still false here, so the
+    // rebuild leaves the capture stopped and resume's own start() brings it up.
+    if (this._micVadModeMismatch()) {
+      this._rebuildMicrophoneCapture('device change during pause');
+    } else if (!this._activeInputDeviceId) {
+      this.microphoneCapture?.invalidateDeviceBinding();
+    }
+  }
+
+  /** Capturing right now — meeting running and not paused. */
+  private _isCapturing(): boolean {
+    return this.isMeetingActive && !this.isMeetingPaused;
+  }
+
+  /**
+   * Does the current mic capture's VAD mode still match the device layout?
+   *
+   * vadDisabled is a native constructor argument, so a change here cannot be
+   * applied by reopening — the capture has to be rebuilt. It flips when the user
+   * plugs in or removes headphones: with built-in speakers + built-in mic macOS
+   * runs AEC over our own system-audio capture and guts the user's voice, which
+   * is exactly what the local VAD bypass compensates for.
+   */
+  private _micVadModeMismatch(): boolean {
+    try {
+      return this._isBuiltinOnly(this._activeInputDeviceId, this._activeOutputDeviceId) !== this._builtinOnlyMode;
+    } catch {
+      return false; // enumeration hiccup — never rebuild on a guess
+    }
+  }
+
+  /** Rebind the system-audio endpoint. Cheap: no STT reconnect, ~150ms gap. */
+  private _swapSystemAudio(reason: string): void {
+    if (!this.systemAudioCapture) return;
+    const now = Date.now();
+    if (now - this._lastSysSwapAt < this._hotSwapCooldownMs) return;
+    this._lastSysSwapAt = now;
+    this.systemAudioCapture.restart(reason, true);
+    this.deviceWatcher?.resync();
+  }
+
+  /**
+   * Rebind the microphone — or fully rebuild it when the VAD mode has to change,
+   * which is the only difference the native constructor cannot absorb.
+   */
+  private _swapMicrophone(reason: string): void {
+    const now = Date.now();
+    if (now - this._lastMicSwapAt < this._hotSwapCooldownMs) return;
+    this._lastMicSwapAt = now;
+    if (this._micVadModeMismatch()) {
+      this._rebuildMicrophoneCapture(reason);
+      return;
+    }
+    if (!this.microphoneCapture) return;
+    this.microphoneCapture.restart(reason, true);
+    this.deviceWatcher?.resync();
+  }
+
+  private _onOutputRouteChanged(evt: { from: string; to: string }): void {
+    if (!this._isCapturing()) return;
+    console.log(`[Main] Default output route changed: "${evt.from}" → "${evt.to}"`);
+
+    // Only follow the default when we were asked to follow it — an explicitly
+    // selected capture target stays where the user put it.
+    if (!this._activeOutputDeviceId) {
+      this._swapSystemAudio(`default output changed to ${evt.to}`);
+    }
+
+    // Headphones in/out flips macOS AEC on the built-in mic. Also re-seeds the
+    // per-route AEC alignment, since the rebuild re-reads it.
+    if (this._micVadModeMismatch()) {
+      this._swapMicrophone(`output route changed to ${evt.to}`);
+    }
+  }
+
+  private _onInputDefaultChanged(evt: { from: string; to: string }): void {
+    if (!this._isCapturing()) return;
+    console.log(`[Main] Default input changed: "${evt.from}" → "${evt.to}"`);
+    // Bound to `default` means CPAL resolved a concrete device at construction:
+    // the stream is still on the old hardware until the native object is rebuilt.
+    if (!this._activeInputDeviceId || this._micVadModeMismatch()) {
+      this._swapMicrophone(`default input changed to ${evt.to}`);
+    }
+  }
+
+  private _onDevicesChanged(evt: DevicesChangedEvent): void {
+    if (!this._isCapturing()) return;
+
+    // A stale .node exposes no getOutputRoute(), so on those builds a plug/unplug
+    // is ONLY visible as a list change and has to be treated as a possible
+    // default-endpoint change. When the route is known, output-default-changed
+    // has already fired if the default actually moved, and a list change on its
+    // own just means some other endpoint appeared.
+    if (evt.outputsChanged && !evt.outputRouteKnown && !this._activeOutputDeviceId) {
+      this._swapSystemAudio('output device list changed (route not observable)');
+    }
+
+    if (evt.inputsChanged) {
+      // Following the default → always rebind. Explicitly selected → only when
+      // the mic has actually gone quiet, which is the headset-unplugged case;
+      // restarting a healthy explicit device on every unrelated plug event would
+      // cost a needless gap and reset the echo canceller.
+      if (!this._activeInputDeviceId || !this._micIsDelivering()) {
+        this._swapMicrophone('input device list changed');
+      }
+    }
+  }
+
+  /** Chunks arriving recently. Keepalives make silence indistinguishable from
+   *  speech here, so "no chunks" is unambiguous evidence the stream is gone. */
+  private _micIsDelivering(): boolean {
+    const health = this.microphoneCapture?.getHealth();
+    if (!health) return false;
+    if (!health.recording) return false;
+    return health.msSinceLastChunk !== null && health.msSinceLastChunk < 1500;
+  }
+
+  // ── Far-end silence detector ────────────────────────────────────────────────
+  //
+  // The last blind spot in the chain. Every other watchdog keys off chunk flow,
+  // and a loopback client bound to a live-but-idle endpoint keeps producing
+  // chunks forever (WASAPI hands us silence, the native layer synthesizes
+  // keepalives). So the worst failure — capture healthy, wired to the wrong
+  // endpoint — is invisible to all of them: no error, no stall, no zero-fill,
+  // just a transcript missing every word the client said.
+  //
+  // Windows makes this more than theoretical: `getOutputRoute()` and the native
+  // endpoint follow both read the eConsole default, while a meeting app may play
+  // to the eCommunications device. Nothing in the device graph looks wrong.
+  //
+  // Cross-checking the two channels is what breaks the tie: if the mic is
+  // carrying real speech and the system channel has been bit-silent throughout,
+  // the far end is not simply quiet. One speculative rebind, then an advisory —
+  // the rebind on every platform, the advisory on macOS only (see stage 2 for
+  // why a muted prospect is indistinguishable from a misrouted endpoint here).
+  private _lastRealSystemAudioAt = 0;
+  private _lastRealMicAudioAt = 0;
+  private _farEndTimer: NodeJS.Timeout | null = null;
+  private _farEndWatchStartedAt = 0;
+  private _farEndSwapAt = 0;
+  private _farEndWarned = false;
+  // Long enough that a genuinely quiet stretch of a real call does not trip it
+  // (a monologue of 45s with zero far-end sound — no "mm-hm", no keyboard, no
+  // room noise — is already unusual), short enough to save most of a meeting.
+  private static readonly FAR_END_SILENCE_MS = 45000;
+  private static readonly FAR_END_TICK_MS = 5000;
+
+  private _startFarEndSilenceWatch(): void {
+    // Reset on every arm: a pause is a legitimate gap in both channels, so the
+    // run must be judged from the resume, not from before the pause.
+    this._lastRealSystemAudioAt = 0;
+    this._lastRealMicAudioAt = 0;
+    this._farEndWatchStartedAt = Date.now();
+    this._farEndSwapAt = 0;
+    this._farEndWarned = false;
+    if (this._farEndTimer) return;
+    this._farEndTimer = setInterval(() => this._farEndSilenceTick(), AppState.FAR_END_TICK_MS);
+    this._farEndTimer.unref?.();
+  }
+
+  private _stopFarEndSilenceWatch(): void {
+    if (this._farEndTimer) { clearInterval(this._farEndTimer); this._farEndTimer = null; }
+  }
+
+  private _farEndSilenceTick(): void {
+    if (!this._isCapturing() || !this.systemAudioCapture) return;
+
+    const health = this.systemAudioCapture.getHealth();
+    // A channel that is not delivering at all belongs to the stall supervisor,
+    // which acts in seconds. Only judge a channel that is demonstrably alive.
+    if (!health.recording || health.msSinceLastChunk === null || health.msSinceLastChunk > 3000) return;
+
+    const now = Date.now();
+    if (!this._lastRealMicAudioAt || now - this._lastRealMicAudioAt > AppState.FAR_END_SILENCE_MS) return;
+
+    // Never-carried-audio is timed from when the watch was armed, so a channel
+    // that was wrong from the very first second still trips.
+    const silentFor = now - (this._lastRealSystemAudioAt || this._farEndWatchStartedAt);
+    if (silentFor < AppState.FAR_END_SILENCE_MS) {
+      // The far end is being heard — end the run, and take back the advisory
+      // rather than leaving it over a meeting that is transcribing both sides.
+      this._farEndSwapAt = 0;
+      if (this._farEndWarned) {
+        this._farEndWarned = false;
+        console.log('[Main] Far-end audio is flowing again — clearing the silent-system-audio advisory.');
+        this.sendSystemAudioRecovered();
+      }
+      return;
+    }
+
+    // Stage 1: one speculative rebind per run. Only meaningful while following
+    // the default output — an explicit selection re-resolves to itself — but the
+    // advisory below applies either way.
+    if (this._farEndSwapAt === 0) {
+      this._farEndSwapAt = now;
+      if (!this._activeOutputDeviceId) {
+        console.warn(`[Main] System audio has carried no real samples for ${Math.round(silentFor / 1000)}s while the mic is active — rebinding the output endpoint speculatively.`);
+        this._swapSystemAudio('far-end silence (endpoint may have moved)');
+      }
+      return;
+    }
+
+    // Stage 2: the rebind did not bring the far end back, so this is not
+    // something the app can fix by itself — the audio is on an endpoint we are
+    // not capturing. Say so once; a more specific warning already on screen
+    // (macOS zero-fill, retry exhaustion) is left alone.
+    if (this._farEndWarned || now - this._farEndSwapAt < AppState.FAR_END_SILENCE_MS) return;
+    this._farEndWarned = true;
+    if (this._systemBannerShown) return;
+
+    // The advisory is macOS-only; the detection above is not.
+    //
+    // On a sales call the rep routinely talks for minutes while the prospect
+    // listens on mute, and a muted far end means the loopback capture carries
+    // bit-exact silence — so this condition is satisfied by a perfectly healthy
+    // Windows meeting, and the banner was firing mid-call on exactly the most
+    // common call shape. It is also unactionable there: SystemAudioPermissionBanner
+    // renders its "Open Settings" / "Repair Permissions" buttons on macOS only,
+    // so on Windows it is a warning with no fix attached.
+    //
+    // Stage 1's speculative rebind still runs on every platform, so the Windows
+    // eConsole/eCommunications mismatch this watch was built for is still
+    // repaired silently — only the advisory is withheld. The log line stays so
+    // the detection remains visible in a support bundle.
+    const advise = process.platform === 'darwin';
+    console.warn(`[Main] System audio still silent ${Math.round((now - this._farEndSwapAt) / 1000)}s after a rebind while the mic is active — ${advise ? 'surfacing an advisory' : 'advisory withheld (non-macOS: a muted far end looks identical)'}.`);
+    if (!advise) return;
+    this.sendAudioCaptureFailed({
+      channel: 'system',
+      message: formatPermissionMessage('system-audio-stuck'),
+      attempt: 0,
+      maxAttempts: 3,
+      terminal: false,
+      stuck: true,
+    });
+  }
+
+  /**
+   * Tear down and rebuild the mic capture, preserving the meeting.
+   *
+   * Needed when a native constructor argument has to change (vadDisabled, the
+   * per-route AEC alignment seed). destroy() runs before the replacement is
+   * constructed so the process-wide, refcounted echo-control registration
+   * unwinds in order.
+   */
+  private _rebuildMicrophoneCapture(reason: string): void {
+    if (this._hotSwapInFlight) {
+      console.log(`[Main] Mic rebuild (${reason}) skipped — a hot-swap is already in flight.`);
+      return;
+    }
+    this._hotSwapInFlight = true;
+    try {
+      const wasCapturing = this._isCapturing();
+      const disableMicVad = this._shouldDisableMicVad(this._activeInputDeviceId, this._activeOutputDeviceId);
+      const micOptions = {
+        vadDisabled: disableMicVad,
+        echoMode: this._echoMode(),
+        echoAlignSeedMs: this._lookupEchoAlignSeed(),
+      };
+
+      const stale = this.microphoneCapture;
+      this.microphoneCapture = null;
+      try { stale?.destroy(); } catch (err) { console.warn('[Main] Error destroying previous MicrophoneCapture:', err); }
+
+      // Assign before wiring: every handler identity-checks against
+      // this.microphoneCapture so an orphan can never reach the STT.
+      const build = (deviceId: string | undefined, label: string) => {
+        const capture = new MicrophoneCapture(deviceId, micOptions);
+        this.microphoneCapture = capture;
+        this.wireMicrophoneCapture(capture, label);
+      };
+
+      try {
+        build(this._activeInputDeviceId, reason);
+      } catch (err) {
+        console.warn(`[Main] Mic rebuild (${reason}) failed on the requested device — falling back to default.`, err);
+        try {
+          build(undefined, `${reason}-default`);
+          this._activeInputDeviceId = undefined; // we are on the default now
+        } catch (err2) {
+          console.error(`[Main] Mic rebuild (${reason}) failed on the default device too:`, err2);
+          return;
+        }
+      }
+
+      if (wasCapturing) this.microphoneCapture?.start();
+      console.log(`[Main] Microphone capture rebuilt (${reason}, vadDisabled=${disableMicVad}).`);
+    } finally {
+      this._hotSwapInFlight = false;
+      this.deviceWatcher?.resync();
     }
   }
 
@@ -1557,6 +2951,8 @@ export class AppState {
     // before we null-out the STT instances. Without this, buffered 'data' events
     // still in-flight call this.googleSTT?.write() while googleSTT is already null.
     if (this.isMeetingActive) {
+      this.disarmSystemCaptureWatchdog();
+      this.disarmMicCaptureWatchdog();
       this.systemAudioCapture?.stop();
       this.microphoneCapture?.stop();
     }
@@ -1574,7 +2970,7 @@ export class AppState {
     }
 
     // Reinitialize the pipeline (will pick up the new provider from CredentialsManager)
-    this.setupSystemAudioPipeline();
+    await this.setupSystemAudioPipeline();
 
     // Restart STT first, then audio — same order as startMeeting to ensure
     // write() calls are not dropped while isActive=false.
@@ -1589,52 +2985,61 @@ export class AppState {
   }
 
 
-  public async startAudioTest(deviceId?: string): Promise<void> {
+  /**
+   * `outputDeviceId` selects the system-audio probe's backend exactly as a
+   * meeting would (`'sck'` sentinel or a device id; undefined = platform
+   * default), so the Settings meter reflects the backend meetings run on.
+   */
+  public async startAudioTest(deviceId?: string, outputDeviceId?: string): Promise<void> {
     // P2-12: guard against two concurrent calls both passing the async permission check
     // before either has created a capture — the second call would orphan the first capture.
     if (this._audioTestStarting) return;
     this._audioTestStarting = true;
     try {
-      await this._startAudioTestImpl(deviceId);
+      await this._startAudioTestImpl(deviceId, outputDeviceId);
     } finally {
       this._audioTestStarting = false;
     }
   }
 
-  private async _startAudioTestImpl(deviceId?: string): Promise<void> {
-    console.log(`[Main] Starting Audio Test on device: ${deviceId || 'default'}`);
-    this.stopAudioTest(); // Stop any existing test
+  private async _startAudioTestImpl(deviceId?: string, outputDeviceId?: string): Promise<void> {
+    console.log(`[Main] Starting Audio Test on device: ${deviceId || 'default'} (system audio: ${outputDeviceId || 'default'})`);
+    this.stopAudioTest(); // Stop any existing test (also bumps _audioTestEpoch)
+    const startEpoch = ++this._audioTestEpoch;
+    const isCurrentTest = () => this._audioTestEpoch === startEpoch;
 
     if (!(await ensureMacMicrophoneAccess('audio test'))) {
-      throw new Error('Microphone access denied. Please allow microphone access in System Settings and try again.');
+      throw new Error(formatPermissionMessage('mic-denied'));
     }
+
+    const broadcastTargets = (): BrowserWindow[] =>
+      [
+        this.settingsWindowHelper.getSettingsWindow(),
+        this.getWindowHelper().getLauncherWindow(),
+        this.getWindowHelper().getOverlayWindow(),
+      ].filter((win): win is BrowserWindow => !!win && !win.isDestroyed());
+
+    const computeRmsLevel = (chunk: Buffer): number => {
+      let sum = 0;
+      const step = 10;
+      const len = chunk.length;
+      for (let i = 0; i < len; i += 2 * step) {
+        const val = chunk.readInt16LE(i);
+        sum += val * val;
+      }
+      const count = len / (2 * step);
+      if (count <= 0) return 0;
+      const rms = Math.sqrt(sum / count);
+      return Math.min(rms / 10000, 1.0);
+    };
 
     const attachAudioTestListeners = (capture: MicrophoneCapture) => {
       capture.on('data', (chunk: Buffer) => {
-        const targets = [
-          this.settingsWindowHelper.getSettingsWindow(),
-          this.getWindowHelper().getLauncherWindow(),
-          this.getWindowHelper().getOverlayWindow(),
-        ].filter((win): win is BrowserWindow => !!win && !win.isDestroyed());
-
+        const targets = broadcastTargets();
         if (targets.length === 0) return;
-
-        let sum = 0;
-        const step = 10;
-        const len = chunk.length;
-
-        for (let i = 0; i < len; i += 2 * step) {
-          const val = chunk.readInt16LE(i);
-          sum += val * val;
-        }
-
-        const count = len / (2 * step);
-        if (count > 0) {
-          const rms = Math.sqrt(sum / count);
-          const level = Math.min(rms / 10000, 1.0);
-          for (const target of targets) {
-            target.webContents.send('audio-test-level', level);
-          }
+        const level = computeRmsLevel(chunk);
+        for (const target of targets) {
+          target.webContents.send('audio-test-level', level);
         }
       });
 
@@ -1643,8 +3048,29 @@ export class AppState {
       });
     };
 
+    // System-audio probe, wired alongside the mic test so Settings → Audio can
+    // verify the interviewer-audio path BEFORE a meeting starts. Runs
+    // independently: a screen-recording denial reports itself and leaves the
+    // mic meter working.
+    const attachSystemTestListeners = (capture: SystemAudioCapture) => {
+      capture.on('data', (chunk: Buffer) => {
+        const targets = broadcastTargets();
+        if (targets.length === 0) return;
+        const level = computeRmsLevel(chunk);
+        for (const target of targets) {
+          target.webContents.send('audio-test-system-level', level);
+        }
+      });
+      capture.on('error', (err: Error) => {
+        console.error('[Main] AudioTest System Error:', err);
+        for (const target of broadcastTargets()) {
+          target.webContents.send('audio-test-system-error', err.message || String(err));
+        }
+      });
+    };
+
     try {
-      const testVadDisabled = this._isBuiltinOnly(deviceId, undefined);
+      const testVadDisabled = this._isBuiltinOnly(deviceId, outputDeviceId);
       // Pass the route-keyed alignment seed here too: the native seed contract
       // is per-construction (omitted = clear), so an unseeded audio-test
       // constructor would wipe the pending seed of a concurrent meeting.
@@ -1674,13 +3100,52 @@ export class AppState {
         throw fallbackErr;
       }
     }
+
+    // Independent system-audio probe — a failure here must NOT abort the mic
+    // test, so it gets its own try/catch and reports through
+    // 'audio-test-system-error' rather than throwing.
+    try {
+      const capability = await resolveMacScreenCaptureCapability('settings audio test');
+      if (!isCurrentTest()) {
+        console.log('[Main] Audio test was stopped during the permission probe — skipping system capture.');
+        return;
+      }
+
+      if (capability.effectiveDenied) {
+        const message = capability.message ?? formatPermissionMessage('screen-recording-denied');
+        for (const target of broadcastTargets()) {
+          target.webContents.send('audio-test-system-error', message);
+        }
+      } else {
+        this.audioTestSystemCapture = new SystemAudioCapture(outputDeviceId || undefined, { echoMode: this._echoMode() });
+        attachSystemTestListeners(this.audioTestSystemCapture);
+        this.audioTestSystemCapture.start();
+        // Re-check: stopAudioTest may have fired while we were constructing.
+        if (!isCurrentTest()) {
+          try { this.audioTestSystemCapture?.stop(); } catch { /* ignore */ }
+          this.audioTestSystemCapture = null;
+        }
+      }
+    } catch (sysErr: any) {
+      console.warn('[Main] Failed to start the system-audio probe:', sysErr);
+      for (const target of broadcastTargets()) {
+        target.webContents.send('audio-test-system-error', sysErr?.message || 'System audio probe failed to start.');
+      }
+    }
   }
 
   public stopAudioTest(): void {
+    // Invalidate any in-flight _startAudioTestImpl that is mid-await.
+    this._audioTestEpoch++;
     if (this.audioTestCapture) {
       console.log('[Main] Stopping Audio Test');
       this.audioTestCapture.stop();
       this.audioTestCapture = null;
+    }
+    if (this.audioTestSystemCapture) {
+      console.log('[Main] Stopping Audio Test (system probe)');
+      try { this.audioTestSystemCapture.stop(); } catch { /* ignore */ }
+      this.audioTestSystemCapture = null;
     }
   }
 
@@ -1692,6 +3157,59 @@ export class AppState {
     }
   }
 
+
+  /**
+   * Bring the app up and start a meeting from a calendar event.
+   *
+   * Shared by the calendar reminder path and the floating reminder popup's
+   * "Take Notes" button so both produce identical meeting metadata — the full
+   * raw event is passed through as `calendarEvent`, which is what downstream
+   * persistence writes to meetings.calendar_event_metadata. startMeeting() is
+   * idempotent while a meeting is active, so racing a manual start is safe.
+   */
+  public async startMeetingFromCalendarEvent(event: any): Promise<void> {
+    try {
+      // MUST come before startMeeting(). Two reasons:
+      //
+      //  1. This path runs with no user interaction, so the windows may not
+      //     exist at all — on macOS, closing the main window destroys BOTH of
+      //     them (see WindowHelper's launcher 'closed' handler) while the app
+      //     keeps running. switchToOverlay() would then show nothing.
+      //  2. startMeeting() emits `session-reset`, the floating dock's only
+      //     "a call started" signal, as a fire-and-forget send. Recreating the
+      //     overlay afterwards would guarantee it missed that message and sat
+      //     there with live analysis never armed.
+      await this.windowHelper.ensureWindowsReady();
+
+      await this.startMeeting({
+        title: event.title,
+        calendarEventId: event.id,
+        source: 'calendar',
+        attendees: event.attendees || [],
+        organizer: event.organizer || '',
+        calendarEvent: event,
+      });
+
+      // startMeeting() only boots the session — it does NOT show the floating
+      // dock. The renderer's own start flow follows it with
+      // setWindowMode("overlay", …) (see useMeetingSession.handleStartMeetingRaw),
+      // and this path has to do the same or the meeting records with no visible
+      // interface. Note this deliberately replaces the old
+      // centerAndShowWindow() call: that switches to the LAUNCHER whenever the
+      // app isn't already in overlay mode, so it both failed to show the dock
+      // and flashed the launcher on the way.
+      //
+      // freshMeetingStart=true skips WindowHelper's stale-bounds/216px floor so
+      // the dock opens straight at its collapsed height without the
+      // expand→collapse flicker.
+      this.windowHelper.setWindowMode('overlay', undefined, true);
+    } catch (err) {
+      console.error('[Main] Failed to start meeting from calendar event:', err);
+      // Surface the app so the user sees the failure (e.g. a mic-permission
+      // error broadcast by startMeeting) instead of nothing happening at all.
+      this.centerAndShowWindow();
+    }
+  }
 
   public async startMeeting(metadata?: any): Promise<void> {
     console.log('[Main] Starting Meeting...', metadata);
@@ -1711,13 +3229,33 @@ export class AppState {
     }
 
     if (!(await ensureMacMicrophoneAccess('meeting start'))) {
-      const message = 'Microphone access denied. Please allow microphone access in System Settings.';
+      const message = formatPermissionMessage('mic-denied');
       this.broadcast('meeting-audio-error', message);
       throw new Error(message);
     }
 
+    // Screen Recording is checked here too, but it is deliberately NOT fatal:
+    // a meeting with only the user's microphone is still worth having, so we
+    // warn and continue mic-only rather than refusing to start. We also do not
+    // re-prompt or auto-open System Settings — that hijacks focus on every
+    // single meeting start, and the grant cannot be re-requested once denied.
+    await this.ensureSystemAudioCapability('meeting start');
+
     this.isMeetingActive = true;
-    this._pendingLiveAnalysisMeetingId = null;
+    // New call ⇒ new generation. Everything asynchronous from the previous
+    // meeting is now identifiable as stale (see routeLiveAnalysisWrite).
+    this._meetingGeneration += 1;
+    // Wipe the live-analysis slot unconditionally. stopMeeting() clears it too,
+    // but only on paths where it actually read one — a call shorter than a
+    // second returns early, and an analysis that resolved between stop and
+    // start writes into the slot afterwards. Without this line that leftover
+    // is exactly what the new meeting's summary generation reads.
+    this._currentLiveAnalysis = null;
+    this._companyIntel = null;
+    // NOTE: _pendingLiveAnalysisMeetingId is deliberately NOT cleared here.
+    // It belongs to the *previous* meeting, whose late analysis result can
+    // still legitimately arrive and must be written to that meeting's row.
+    // Generation tagging is what keeps it from reaching this one.
     this._liveAnalysisInFlight = false;
     this._clientSpeakerIndicesSeen.clear();
     this._echoFilter.reset();
@@ -1748,9 +3286,11 @@ export class AppState {
       this.broadcast('speaker-names-resolved', resolvedNames);
     }, 100);
 
-    // Emit session reset to clear UI state immediately
-    this.getWindowHelper().getOverlayWindow()?.webContents.send('session-reset');
-    this.getWindowHelper().getLauncherWindow()?.webContents.send('session-reset');
+    // Emit session reset to clear UI state immediately. The generation rides
+    // along so the renderer can stamp every async result it produces from here
+    // on — that stamp is what lets main reject a result belonging to the call
+    // that just ended.
+    this.sendToMeetingSurfaces('session-reset', { meetingGeneration: this._meetingGeneration });
 
     // ★ ASYNC AUDIO INIT: Return INSTANTLY so the IPC response goes back
     // to the renderer immediately, allowing the UI to switch to overlay
@@ -1772,7 +3312,7 @@ export class AppState {
         }
 
         // LAZY INIT: Ensure pipeline is ready (if not reconfigured above)
-        this.setupSystemAudioPipeline();
+        await this.setupSystemAudioPipeline();
 
         // Loopback-input guard (warn only): a virtual/loopback device as the
         // mic feeds far-end playback straight back as "user" speech — no echo
@@ -1857,6 +3397,12 @@ export class AppState {
         }
         // Field telemetry for the echo pipeline (ERLE, gate state, mute ratio).
         this._startPipelineStatsPolling();
+        // Objective answer to "is the main process blocking during calls".
+        this._startLoopDelayMonitor();
+        // Only now: the baseline snapshot must reflect the device graph AFTER our
+        // own captures have grabbed their endpoints, or the tap/aggregate device
+        // appearing would read as a user device change and trigger a hot-swap.
+        this._startDeviceWatcher();
         console.log('[Main] Audio pipeline started successfully.');
 
       } catch (err) {
@@ -1886,33 +3432,39 @@ export class AppState {
 
     // Stop audio captures synchronously — these are fire-and-forget internally
     this._stopPipelineStatsPolling();
+    this._stopLoopDelayMonitor();
+    this._stopDeviceWatcher();
+    this.disarmSystemCaptureWatchdog();
+    this.disarmMicCaptureWatchdog();
     this.systemAudioCapture?.stop();
     this.googleSTT?.stop();
     this.microphoneCapture?.stop();
     this.googleSTT_User?.stop();
 
-    // Save session state and reset context — MeetingPersistence.stopMeeting() is
-    // already fire-and-forget internally (processAndSaveMeeting runs in background).
-    // Capture the meetingId NOW so the background IIFE uses a deterministic ID
-    // rather than getRecentMeetings(1) which could return a different meeting if the
-    // user starts a new session before background processing finishes.
+    // Save session state and reset context — MeetingPersistence.stopMeeting()
+    // persists the placeholder row (with the full transcript) synchronously and
+    // defers only summary generation to a background phase that first waits for
+    // any in-flight analysis to settle, so a just-ended call is queryable the
+    // moment endMeeting() returns. Capture the meetingId NOW so the background
+    // phase uses a deterministic ID rather than getRecentMeetings(1) which
+    // could return a different meeting if the user starts a new session before
+    // background processing finishes.
     const meetingId = await this.intelligenceManager.stopMeeting(meetingTypes, tenantId);
     // Tell the overlay window EXACTLY which meeting this call became — don't
     // make it infer this from getRecentMeetings()[0]. That list is sorted by
-    // `date`, and MeetingPersistence rewrites `date` to "now" a SECOND time
-    // when a meeting's background processing finishes (which can complete
-    // well after a later call has already ended) — so an older meeting can
-    // briefly outrank the current one in "most recent" order. This broadcast
-    // is the one authoritative, race-free source for "which meeting did the
-    // call I just ended turn into".
+    // `created_at`, and while that's now pinned write-once (DatabaseManager
+    // .saveMeeting) so a finishing meeting can no longer jump the order,
+    // "most recent row" is still a guess. This broadcast is the one
+    // authoritative, race-free source for "which meeting did the call I just
+    // ended turn into".
     if (meetingId) {
       this.broadcast('live-call-ended', { meetingId });
     }
-    // If an analysis call is currently in-flight, record the meetingId so
-    // setCurrentLiveAnalysis() can patch the DB when the result arrives.
-    if (this._liveAnalysisInFlight) {
-      this._pendingLiveAnalysisMeetingId = meetingId;
-    }
+    // Pending-live-analysis bookkeeping moved into MeetingPersistence's
+    // deferred finalize phase — it must run after the analysis-settle wait to
+    // preserve the original routing window (a result landing mid-wait routes
+    // 'drop' exactly as it did when the wait sat here). See
+    // recordPendingLiveAnalysis().
 
     // Revert to Default Model — synchronous, no blocking I/O
     try {
@@ -1928,6 +3480,10 @@ export class AppState {
     } catch (e) {
       console.error('[Main] Failed to revert model:', e);
     }
+
+    // An STT key/provider change saved mid-meeting was deferred so it could not
+    // interrupt the capture. The meeting is over — apply it now.
+    void this._flushPendingSttResync();
 
     // ─── Background post-processing ──────────────────────────────────────────
     // These are the previously blocking operations that caused the stop-button
@@ -2135,6 +3691,19 @@ export class AppState {
     // 1. Stop audio capture — drop incoming audio chunks on the floor.
     //    We call stop() (not destroy) so we can restart without re-initializing
     //    the capture objects. The STT streams stay alive but receive no new data.
+    //    The device watcher stops too: a swap while paused would restart a capture
+    //    the user deliberately stopped, and resume() re-baselines anyway. Snapshot
+    //    first — that is what lets resume() notice a device change made while off.
+    //    The stats poll stops for the same reason: with both captures stopped it
+    //    reports a frozen snapshot, so every 5 s it was paying a native FFI call
+    //    and a JSON parse to re-describe a pipeline that is not running. Nothing
+    //    is lost — the align-seed persist it feeds only acts on `converged`, which
+    //    cannot become true with no audio flowing.
+    this._snapshotDevicesForPause();
+    this._stopDeviceWatcher();
+    this._stopPipelineStatsPolling();
+    this.disarmSystemCaptureWatchdog();
+    this.disarmMicCaptureWatchdog();
     this.systemAudioCapture?.stop();
     this.microphoneCapture?.stop();
 
@@ -2195,6 +3764,25 @@ export class AppState {
       // Chunks that arrive before the WebSocket handshake completes go into the STT
       // ring buffer which is flushed on 'open', still assigned to the correct instance.
 
+      // 0. A pause can be long, and Screen Recording can be revoked during it.
+      //    Re-resolve before restarting the capture so we surface the denial
+      //    instead of restarting into silent, zero-filled audio.
+      const systemAudioAllowed = await this.ensureSystemAudioCapability('resume meeting');
+      if (!systemAudioAllowed && this.systemAudioCapture) {
+        // destroy(), not stop(): stop() leaves the listeners attached, so a
+        // late native callback would keep writing into googleSTT while the
+        // channel is supposed to be gone.
+        const stale = this.systemAudioCapture;
+        this.systemAudioCapture = null;
+        try { stale.destroy(); } catch { /* already stopped */ }
+      }
+
+      // 0b. Devices can also move during a pause (headset unplugged, output
+      //     switched to a monitor). The watcher was off, and both captures cache
+      //     their native monitor, so mark the affected bindings stale now and the
+      //     restart below re-resolves them in a single open.
+      this._reconcileDevicesAfterPause();
+
       // 1. Re-sync rates in case the device changed while paused.
       const resumeSysRate = this.systemAudioCapture?.getOutputSampleRate() || 16000;
       const resumeMicRate = this.microphoneCapture?.getOutputSampleRate() || 16000;
@@ -2206,8 +3794,15 @@ export class AppState {
       this.googleSTT_User?.start();
 
       // 2. NOW start audio — data events go to already-active STT instances.
+      //    systemAudioCapture is null when the grant is gone; mic-only resume.
       this.systemAudioCapture?.start();
       this.microphoneCapture?.start();
+
+      // 2b. Re-arm device hot-swap. After the captures, so the baseline snapshot
+      //     reflects the graph including our own tap/loopback endpoints.
+      this._startDeviceWatcher();
+      // 2c. Echo telemetry resumes with the pipeline it describes.
+      this._startPipelineStatsPolling();
 
       // 3. Resume live RAG indexing using the SAME session key 'live-meeting-current'
       //    so all new transcript segments are appended to the existing session,
@@ -2248,32 +3843,174 @@ export class AppState {
     return this._currentLiveAnalysis;
   }
 
-  // Renderer calls this at the start/end of every runAnalysis() call.
-  public setLiveAnalysisInFlight(inFlight: boolean): void {
-    this._liveAnalysisInFlight = inFlight;
+  /**
+   * Native cross-screen toast fired once a meeting's summary has finished
+   * generating and been saved (title, structured summary, scorecard, etc. —
+   * see MeetingPersistence.processAndSaveMeeting). Uses the same
+   * showNotificationOnActiveDisplay() helper as the pause/resume toasts, so
+   * it's visible no matter which app screen the user is currently on (or
+   * even if they've switched to another app entirely) — summary generation
+   * runs in the background well after the call itself has ended, so the
+   * user is very often not looking at the meeting/launcher screen when it
+   * finishes.
+   */
+  public notifyMeetingSummaryReady(meetingTitle?: string): void {
+    this.showNotificationOnActiveDisplay(
+      'Summary Ready',
+      meetingTitle ? `"${meetingTitle}" has been summarized.` : 'Your meeting summary is ready to view.',
+    );
   }
 
-  public setCurrentLiveAnalysis(data: LiveAnalysisData | null): void {
-    this._currentLiveAnalysis = data;
+  /**
+   * Native toast for a calendar (Google/Zoom) connection attempt finishing —
+   * success or failure. Same showNotificationOnActiveDisplay() pipeline as
+   * pause/resume/summary-ready, so it's visible regardless of which app
+   * screen the user is on. This matters especially on failure: the OAuth
+   * flow happens in the system browser, outside the app window, so the user
+   * may well have switched away from — or back to a different part of — the
+   * app by the time the loopback callback (or timeout) actually resolves.
+   */
+  public notifyCalendarConnectionResult(providerLabel: string, success: boolean, errorMessage?: string): void {
+    if (success) {
+      this.showNotificationOnActiveDisplay(
+        'Calendar Connected',
+        `${providerLabel} was connected successfully.`,
+      );
+    } else {
+      this.showNotificationOnActiveDisplay(
+        'Calendar Connection Failed',
+        errorMessage || `We couldn't connect ${providerLabel}. Please try again.`,
+      );
+    }
+  }
 
-    // If endMeeting() already ran and left a pending meetingId, this is a late-arriving
-    // analysis result. Patch it directly into the saved meeting record in the DB.
-    if (data && this._pendingLiveAnalysisMeetingId && !this.isMeetingActive) {
-      const meetingId = this._pendingLiveAnalysisMeetingId;
+  /**
+   * Generic renderer-triggered native toast — same display-aware, cross-screen
+   * pipeline as pause/resume/summary-ready. Exposed over the
+   * 'show-app-notification' IPC channel so renderer-side watchers (e.g. the
+   * invite-accepted notifier, which fires when a teammate joins after the
+   * admin invited them) can surface background notifications no matter which
+   * app or screen the admin is on.
+   */
+  public showAppNotification(title: string, message: string): void {
+    this.showNotificationOnActiveDisplay(title, message);
+  }
+
+  /**
+   * Generation of the call that is live right now. The renderer reads this once
+   * on mount (it also arrives with every `session-reset`) and stamps it onto
+   * every live-analysis write so results can be attributed to the right call.
+   */
+  public getMeetingGeneration(): number {
+    return this._meetingGeneration;
+  }
+
+  // Renderer calls this at the start/end of every runAnalysis() call.
+  public setLiveAnalysisInFlight(inFlight: boolean, generation?: number | null): void {
+    // A run started in the previous meeting clears this flag in its `finally`
+    // block. If that lands after the next call started, an untagged write would
+    // tell main "nothing is in flight" for a meeting that is mid-analysis, and
+    // endMeeting would then skip recording the pending id.
+    if (generation != null && generation !== this._meetingGeneration) {
+      return;
+    }
+    this._liveAnalysisInFlight = inFlight;
+    if (!inFlight) {
+      const waiters = this._liveAnalysisSettledWaiters;
+      this._liveAnalysisSettledWaiters = [];
+      waiters.forEach((resolve) => resolve());
+    }
+  }
+
+  /**
+   * Wait for the current runAnalysis() call (if any) to finish writing into
+   * _currentLiveAnalysis, up to maxWaitMs.
+   *
+   * Lets the End Call button return instantly — see FloatingDock.handleEndCallClick
+   * — while stopMeeting() itself still gets the guarantee it needs: the summary
+   * snapshot in MeetingPersistence.stopMeeting() is taken by value, so a result
+   * that lands after that point can only patch the saved row (routeLiveAnalysisWrite),
+   * never the generated summary text. Bounded by the same deadline the renderer
+   * used to enforce on itself (FINAL_ANALYSIS_MAX_WAIT_MS in meetingLifecycle.ts) —
+   * a hung provider must not delay the save indefinitely, it just falls back to
+   * the existing patch-on-arrival path.
+   */
+  public async waitForLiveAnalysisToSettle(maxWaitMs: number): Promise<void> {
+    if (!this._liveAnalysisInFlight) return;
+    await new Promise<void>((resolve) => {
+      const timer = setTimeout(() => {
+        this._liveAnalysisSettledWaiters = this._liveAnalysisSettledWaiters.filter((w) => w !== onSettled);
+        resolve();
+      }, maxWaitMs);
+      const onSettled = () => { clearTimeout(timer); resolve(); };
+      this._liveAnalysisSettledWaiters.push(onSettled);
+    });
+  }
+
+  /**
+   * Moved from endMeeting (it used to run right after stopMeeting() returned —
+   * which, now that stopMeeting() defers its own analysis-settle wait, would
+   * have recorded the pending target BEFORE the wait and changed which results
+   * route to the patch path). Called by MeetingPersistence's deferred finalize
+   * phase right after waitForLiveAnalysisToSettle(), preserving the original
+   * order: wait → record.
+   *
+   * If an analysis call is currently in-flight, record the meetingId so
+   * setCurrentLiveAnalysis() can patch the DB when the result arrives. The
+   * generation is recorded with it: by the time that result shows up the user
+   * may already be in the next call, and matching on the generation is the
+   * only way to tell "A's late result" from "B's current result".
+   */
+  public recordPendingLiveAnalysis(meetingId: string | null): void {
+    if (this._liveAnalysisInFlight && meetingId) {
+      this._pendingLiveAnalysisMeetingId = meetingId;
+      this._pendingLiveAnalysisGeneration = this._meetingGeneration;
+    } else {
+      // Nothing in flight — make sure a previous call's pending slot can't be
+      // mistaken for this one's.
       this._pendingLiveAnalysisMeetingId = null;
-      try {
-        const db = DatabaseManager.getInstance();
-        const meeting = db.getMeetingDetails(meetingId);
-        if (meeting) {
-          const existing = meeting.detailedSummary || { actionItems: [], keyPoints: [] };
-          db.updateMeeting(meetingId, {
-            detailedSummary: { ...existing, liveAnalysis: data }
-          });
-          console.log(`[AppState] Late-arriving live analysis patched into meeting ${meetingId}`);
-        }
-      } catch (err) {
-        console.error('[AppState] Failed to patch late live analysis:', err);
+      this._pendingLiveAnalysisGeneration = null;
+    }
+  }
+
+  public setCurrentLiveAnalysis(data: LiveAnalysisData | null, generation?: number | null): void {
+    const route = routeLiveAnalysisWrite({
+      writeGeneration: generation ?? null,
+      currentGeneration: this._meetingGeneration,
+      pendingGeneration: this._pendingLiveAnalysisGeneration,
+      pendingMeetingId: this._pendingLiveAnalysisMeetingId,
+      isMeetingActive: this.isMeetingActive,
+      isClear: data === null,
+    });
+
+    if (route.action === 'store') {
+      this._currentLiveAnalysis = data;
+      return;
+    }
+
+    if (route.action === 'drop') {
+      console.warn(`[AppState] Discarded live analysis write — ${route.reason}`);
+      return;
+    }
+
+    // Late-arriving result for a meeting that already ended: its transcript
+    // snapshot is gone, so the saved row is the only place left to put it.
+    // Deliberately does NOT touch _currentLiveAnalysis — that slot belongs to
+    // whatever call is live now.
+    this._pendingLiveAnalysisMeetingId = null;
+    this._pendingLiveAnalysisGeneration = null;
+    try {
+      const db = DatabaseManager.getInstance();
+      const meeting = db.getMeetingDetails(route.meetingId);
+      if (meeting) {
+        const existing = meeting.detailedSummary || { actionItems: [], keyPoints: [] };
+        db.updateMeeting(route.meetingId, {
+          detailedSummary: { ...existing, liveAnalysis: data ?? undefined }
+        });
+        console.log(`[AppState] Late-arriving live analysis patched into meeting ${route.meetingId}`);
       }
+    } catch (err) {
+      console.error('[AppState] Failed to patch late live analysis:', err);
     }
   }
 
@@ -2966,6 +4703,7 @@ export class AppState {
     this.settingsWindowHelper.setContentProtection(state)
     this.modelSelectorWindowHelper.setContentProtection(state)
     this.cropperWindowHelper.setContentProtection(state)
+    this.meetingPopupWindowHelper.setContentProtection(state)
 
     // Persist state via SettingsManager
     SettingsManager.getInstance().set('isUndetectable', state);
@@ -3342,9 +5080,49 @@ async function initializeApp() {
   // constructed yet, so we cannot call appState.getUndetectable().
   if (process.platform === 'darwin') {
     // SettingsManager is already statically imported — no require() needed.
-    const isUndetectableOnStartup = SettingsManager.getInstance().get('isUndetectable') ?? false;
+    // Same default as the AppState constructor below — ghost mode ON by
+    // default in PRODUCTION ONLY (pre-emptive dock hide on macOS must match
+    // that env-based default, or the dock icon would flash visible/hidden
+    // incorrectly for a first-run user before AppState corrects it).
+    const isUndetectableOnStartup = SettingsManager.getInstance().get('isUndetectable') ?? app.isPackaged;
     if (isUndetectableOnStartup) {
       app.dock.hide();
+    }
+  }
+
+  // 2b. Default "Open GoDojo when you log in" to ON, production builds only.
+  // Applied exactly once — SettingsManager persists a marker so a user who
+  // later flips this off in Settings is never overridden on a later launch.
+  // Gated on app.isPackaged (this codebase's established prod-vs-dev signal,
+  // not NODE_ENV) so dev builds never register themselves as a login item.
+  if (app.isPackaged) {
+    const sm = SettingsManager.getInstance();
+    if (!sm.get('openAtLoginDefaultApplied')) {
+      app.setLoginItemSettings({
+        openAtLogin: true,
+        openAsHidden: false,
+        path: app.getPath('exe'),
+      });
+      sm.set('openAtLoginDefaultApplied', true);
+      // Record the registration the Settings toggle reads back — the OS
+      // getter misreports false in packaged builds, which made this default
+      // work (app opens at login) while the toggle looked disabled.
+      sm.set('openAtLogin', true);
+      console.log('[Main] Applied production default: openAtLogin=true');
+    } else if (typeof sm.get('openAtLogin') !== 'boolean') {
+      // Upgrade backfill: installs that ran the build which wrote the marker
+      // but not the record. The OS registration was applied back then, yet
+      // get-open-at-login had no persisted value to trust, fell back to the
+      // misreporting OS getter, and the toggle showed OFF while auto-launch
+      // kept working. Re-assert once; after this the record exists, and any
+      // later user toggle persists through set-open-at-login untouched.
+      app.setLoginItemSettings({
+        openAtLogin: true,
+        openAsHidden: false,
+        path: app.getPath('exe'),
+      });
+      sm.set('openAtLogin', true);
+      console.log('[Main] Backfilled openAtLogin=true for upgraded install');
     }
   }
 
@@ -3353,6 +5131,19 @@ async function initializeApp() {
   // This fixes the issue where keys (especially in production) aren't loaded in time for RAG/LLM
   const { CredentialsManager } = require('./services/CredentialsManager');
   CredentialsManager.getInstance().init();
+
+  // 3a0. Refresh the live model catalog for every provider with a stored key
+  // (24h TTL). This is what lets auto model selection and retirement healing
+  // track provider catalog changes (Groq Aug-2026, Gemini May-2026) without
+  // another code change. Fire-and-forget — seeds cover the gap until it lands.
+  try {
+    const { ModelCatalog } = require('./services/ModelCatalog');
+    ModelCatalog.getInstance().refreshAll().catch((e: any) => {
+      console.warn('[Main] Model catalog refresh failed (non-fatal):', e);
+    });
+  } catch (e) {
+    console.warn('[Main] Model catalog wiring failed (non-fatal):', e);
+  }
 
   // 3a. Initialize cloud sync stack: Firebase Auth identity restore + Supabase client.
   //     The renderer's trySilentRestore() owns the actual refresh-token exchange
@@ -3453,6 +5244,87 @@ async function initializeApp() {
     console.warn('[Main] SupabaseMirrorService init failed (non-fatal):', e);
   }
 
+  // 3a2. Backend RAG chunk retry queue.
+  // requestBackendChunking handles every meeting the moment it finishes
+  // processing; this drain is the safety net for the ones whose immediate
+  // attempts all failed (offline, backend 5xx, transcript still mirroring).
+  // Drains are cheap when the queue is empty, and a signed-out pass defers
+  // without burning attempts, so the first one is delayed only to keep it off
+  // the critical startup path. Never throws.
+  try {
+    const { drainChunkQueue } = require('./utils/backendRagChunking');
+    const CHUNK_DRAIN_INTERVAL_MS = 10 * 60_000;
+    setTimeout(() => { void drainChunkQueue().catch(() => { }); }, 20_000);
+    setInterval(() => { void drainChunkQueue().catch(() => { }); }, CHUNK_DRAIN_INTERVAL_MS);
+    console.log('[Main] Backend RAG chunk retry queue wired');
+  } catch (e) {
+    console.warn('[Main] chunk retry queue wiring failed (non-fatal):', e);
+  }
+
+  // 3a3. Weekly scheduled model catalog refresh.
+  // 3a0 above covers app launch, and ModelCatalog.migrateOnFailure force-
+  // refreshes a provider the moment a call fails with a retirement-shaped
+  // error — but a long-running session that's never restarted and never
+  // hits a failing call (the stored model just quietly falls out of a
+  // provider's current lineup without erroring) would otherwise carry a
+  // week-plus-stale catalog. This is the same safety-net timer shape as the
+  // chunk retry queue above: refreshAll() every provider with a stored key
+  // on a fixed weekly interval. Not force=true — refresh()'s own 24h TTL
+  // gate already guarantees a real network call fires on each tick, since a
+  // week always exceeds it; this timer just makes sure that tick happens at
+  // all on an instance nobody restarts.
+  try {
+    const { ModelCatalog } = require('./services/ModelCatalog');
+    const CATALOG_WEEKLY_REFRESH_MS = 7 * 24 * 60 * 60_000;
+    setInterval(() => {
+      void ModelCatalog.getInstance().refreshAll().catch((e: any) => {
+        console.warn('[Main] Weekly model catalog refresh failed (non-fatal):', e);
+      });
+    }, CATALOG_WEEKLY_REFRESH_MS);
+    console.log('[Main] Weekly model catalog refresh scheduled');
+  } catch (e) {
+    console.warn('[Main] Weekly model catalog refresh wiring failed (non-fatal):', e);
+  }
+
+  // 3b. Fetch Fallback Keys from Backend securely (requires AuthToken)
+  try {
+    const { AuthManager } = require('./services/AuthManager');
+    const auth = AuthManager.getInstance();
+
+    const fetchFallback = async () => {
+      try {
+        const token = auth.getIdToken();
+        if (token) {
+          const { CredentialsManager } = require('./services/CredentialsManager');
+          await CredentialsManager.getInstance().fetchFallbackKeys(token);
+          // Push the newly-resolved keys into the live clients. reinitializeLLMs()
+          // alone was not enough: it rebuilds the per-mode wrappers around the same
+          // LLMHelper, which still holds the clients constructed at boot — i.e.
+          // before sign-in, so before any fallback key existed. That is why the
+          // backend defaults appeared to be "unreliable": they were fetched and
+          // decrypted correctly but never reached a provider client.
+          appState?.processingHelper.syncLlmKeysFromCredentials('backend_fallback_fetched');
+          void appState?.syncSttCredentials('backend_fallback_fetched');
+        }
+      } catch (e) {
+        console.warn('[Main] Failed to fetch fallback keys:', e);
+      }
+    };
+
+    if (auth.isSignedIn()) {
+      fetchFallback();
+    } else {
+      auth.once('signed-in', fetchFallback);
+    }
+
+    auth.on('auth-changed', (snap: any) => {
+      if (snap.signedIn) fetchFallback();
+      else CredentialsManager.getInstance().clearFallbackKeys();
+    });
+  } catch (e) {
+    console.warn('[Main] Fallback keys wiring failed:', e);
+  }
+
   // 4. Initialize State
   const appState = AppState.getInstance()
 
@@ -3465,8 +5337,13 @@ async function initializeApp() {
   // Apply the full disguise payload (names, dock icon, AUMID) early
   appState.applyInitialDisguise();
 
-  // Start the Ollama lifecycle manager
-  OllamaManager.getInstance().init().catch(console.error);
+  // Start the Ollama lifecycle manager — only if the user's persisted default
+  // chat model is actually an Ollama model. Most users never select one, so
+  // this avoids spawning + polling for `ollama serve` on every launch for
+  // people who don't have it installed.
+  if (appState.processingHelper.getLLMHelper().isUsingOllama()) {
+    OllamaManager.getInstance().init().catch(console.error);
+  }
 
   // NOTE: CredentialsManager.init() and loadStoredCredentials() are already called
   // above before this block — do NOT call them again here to avoid double key-load.
@@ -3509,34 +5386,162 @@ async function initializeApp() {
     appState.showTray();
   }
   // Stealth mode: dock is already hidden, tray stays hidden, no action needed here.
+
+  // ─── One-time macOS Screen Recording permission prompt ────────────────────
+  //
+  // This must run AFTER createWindow() because macOS anchors the TCC sheet to
+  // the frontmost application window on Ventura+. Without a visible window the
+  // sheet can appear behind other apps. The 800ms delay lets the launcher's
+  // ready-to-show animation finish so the window is fully composited first.
+  //
+  // TCC caches the answer permanently, so the not-determined branch runs exactly
+  // once per unique binary; every later launch reads 'granted' or 'denied'.
+  if (process.platform === 'darwin') {
+    setTimeout(async () => {
+      try {
+        if (isDevTccBypassEnabled()) {
+          console.log('[Init] Dev TCC bypass enabled — skipping the startup screen-recording check.');
+          return;
+        }
+
+        const screenStatus = getMacScreenCaptureStatus();
+        console.log(`[Init] Screen recording permission at startup: ${screenStatus}`);
+
+        if (screenStatus === 'not-determined') {
+          // Trigger the one-time sheet with a minimal capture call.
+          console.log('[Init] Screen recording not-determined — raising the one-time TCC dialog.');
+          try {
+            await desktopCapturer.getSources({ types: ['screen'], thumbnailSize: { width: 1, height: 1 } });
+          } catch (e) {
+            // Some Electron builds throw while the decision is pending. The
+            // sheet has still been raised, which is all we wanted.
+            console.log('[Init] getSources threw while TCC was pending (expected):', (e as Error).message);
+          }
+          // Deliberately do NOT re-read the status here — the dialog is still
+          // open, so any value we read would be stale. The gate at meeting
+          // start reads it when it actually matters.
+        } else if (screenStatus === 'denied') {
+          // Returning user who previously denied. Tell them now, at launch,
+          // rather than letting them discover it mid-meeting.
+          const capability = await resolveMacScreenCaptureCapability('startup permission check');
+          if (capability.effectiveDenied) {
+            console.warn('[Init] Screen recording was previously denied — notifying the UI.');
+            appState.sendSystemAudioPermissionDenied(
+              capability.message ?? formatPermissionMessage('screen-recording-denied'),
+            );
+          }
+        } else {
+          console.log(`[Init] Screen recording already resolved: ${screenStatus}`);
+        }
+
+        // Same treatment for the microphone, so a denied mic is visible before
+        // the user tries to start a meeting.
+        try {
+          const micStatus = systemPreferences.getMediaAccessStatus('microphone');
+          console.log(`[Init] Microphone permission at startup: ${micStatus}`);
+          if (micStatus === 'denied' || micStatus === 'restricted') {
+            appState.sendAudioCaptureFailed({
+              channel: 'mic',
+              message: micStatus === 'restricted'
+                ? 'Microphone access is restricted by device policy. Contact your administrator to enable microphone access for GoDojo AI.'
+                : formatPermissionMessage('mic-denied'),
+              attempt: 0,
+              maxAttempts: 0,
+              terminal: true,
+              stuck: false,
+            });
+          }
+          // 'not-determined' resolves at first meeting start via
+          // ensureMacMicrophoneAccess, which can actually prompt.
+        } catch (micErr) {
+          console.warn('[Init] Startup microphone permission check failed:', micErr);
+        }
+      } catch (e) {
+        console.warn('[Init] Startup permission check failed:', e);
+      }
+    }, 800);
+  }
+
+  // Re-validate after sleep: a grant can be revoked while the machine is
+  // suspended, and an in-progress meeting would otherwise resume into silent
+  // zero-filled audio with no explanation.
+  if (process.platform === 'darwin') {
+    powerMonitor.on('resume', () => {
+      void (async () => {
+        try {
+          const capability = await resolveMacScreenCaptureCapability('power resume');
+          if (capability.effectiveDenied) {
+            appState.sendSystemAudioPermissionDenied(
+              capability.message ?? formatPermissionMessage('screen-recording-denied'),
+            );
+          }
+        } catch (e) {
+          console.warn('[Main] Post-resume permission check failed:', e);
+        }
+      })();
+    });
+  }
+
   // Register global shortcuts using KeybindManager
   KeybindManager.getInstance().registerGlobalShortcuts()
 
   // Pre-create settings window in background for faster first open
   appState.settingsWindowHelper.preloadWindow()
 
+  // Calendar reminders (Google + Zoom)
+  //
+  // Both managers schedule their own reminders and emit the same three events,
+  // so this wires them identically. Presentation lives here rather than in the
+  // managers: a reminder is shown in the custom floating popup window, and only
+  // falls back to a native OS notification if that window can't be shown — so a
+  // reminder is never silently lost.
+  const wireCalendarReminders = (mgr: any, label: string) => {
+    mgr.on('reminder-prewarm', (event: any) => {
+      // Create the popup window ~30s early so the show below is instant. The
+      // window is destroyed again on dismiss, so nothing stays resident.
+      appState.meetingPopupWindowHelper.prewarm(event);
+    });
+
+    mgr.on('reminder-due', (event: any) => {
+      const shown = appState.meetingPopupWindowHelper.showReminder(event);
+      if (shown) return;
+
+      console.warn(`[Main] ${label}: floating reminder unavailable — falling back to a native notification`);
+      // Electron's Notification, not the DOM one that `Notification` resolves
+      // to in this file's scope — same local require the managers used.
+      const { Notification: ElectronNotification } = require('electron');
+      const notif = new ElectronNotification({
+        title: 'Meeting starting soon',
+        body: `"${event.title}" starts in 2 minutes. Start GoDojo AI?`,
+        actions: [
+          { type: 'button', text: 'Start Meeting' },
+          { type: 'button', text: 'Dismiss' },
+        ],
+        sound: true,
+      });
+      notif.on('action', (_e: any, index: number) => {
+        if (index === 0) appState.startMeetingFromCalendarEvent(event);
+      });
+      notif.on('click', () => appState.centerAndShowWindow());
+      notif.show();
+    });
+
+    mgr.on('start-meeting-requested', (event: any) => {
+      console.log(`[Main] Start meeting requested from ${label}`, event);
+      appState.startMeetingFromCalendarEvent(event);
+    });
+
+    mgr.on('open-requested', () => {
+      appState.centerAndShowWindow();
+    });
+  };
+
   // Initialize CalendarManager
   try {
     const { CalendarManager } = require('./services/CalendarManager');
     const calMgr = CalendarManager.getInstance();
     calMgr.init();
-
-    calMgr.on('start-meeting-requested', (event: any) => {
-      console.log('[Main] Start meeting requested from calendar notification', event);
-      appState.centerAndShowWindow();
-      appState.startMeeting({
-        title: event.title,
-        calendarEventId: event.id,
-        source: 'calendar',
-        attendees: event.attendees || [],
-        organizer: event.organizer || '',
-      });
-    });
-
-    calMgr.on('open-requested', () => {
-      appState.centerAndShowWindow();
-    });
-
+    wireCalendarReminders(calMgr, 'CalendarManager');
     console.log('[Main] CalendarManager initialized');
   } catch (e) {
     console.error('[Main] Failed to initialize CalendarManager:', e);
@@ -3547,6 +5552,8 @@ async function initializeApp() {
     const { ZoomCalendarManager } = require('./services/ZoomCalendarManager');
     const zoomCal = ZoomCalendarManager.getInstance();
     zoomCal.init();
+    // Previously unwired: Zoom reminders could not start a meeting at all.
+    wireCalendarReminders(zoomCal, 'ZoomCalendarManager');
     console.log('[Main] ZoomCalendarManager initialized');
   } catch (e) {
     console.error('[Main] Failed to initialize ZoomCalendarManager:', e);
@@ -3563,6 +5570,9 @@ async function initializeApp() {
   // reach window.onerror in the crashed renderer — the process is gone
   // before it could report anything. This is the only place these surface.
   app.on('render-process-gone', (_event, webContents, details) => {
+    // Ignore routine OS kills (like computer going to sleep or app quitting)
+    if (details.reason === 'killed') return;
+
     console.error('[Main] Renderer process gone:', details.reason, webContents.getURL());
     posthogMain.captureException(
       new Error(`Renderer process gone: ${details.reason}`),
@@ -3572,6 +5582,8 @@ async function initializeApp() {
   });
 
   app.on('child-process-gone', (_event, details) => {
+    // Ignore routine OS kills (like computer going to sleep or app quitting)
+    if (details.reason === 'killed') return;
     console.error('[Main] Child process gone:', details.type, details.reason);
     posthogMain.captureException(
       new Error(`Child process gone: ${details.type} — ${details.reason}`),
@@ -3610,6 +5622,8 @@ async function initializeApp() {
 
   // Scrub API keys from memory on quit to minimize exposure window
   app.on("before-quit", (event) => {
+
+    try { DatabaseManager.getInstance().close(); } catch { /* best-effort */ }
     console.log("App is quitting, cleaning up resources...");
     appState.setQuitting(true);
 
@@ -3634,6 +5648,10 @@ async function initializeApp() {
     } catch (e) {
       console.error('[Main] Failed to scrub credentials on quit:', e);
     }
+
+    // Ensure anything logged during quit cleanup actually lands on disk —
+    // the async interval flush may not get another tick before exit.
+    flushLogsSync();
   })
 
 

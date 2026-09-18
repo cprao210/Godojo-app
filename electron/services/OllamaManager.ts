@@ -90,6 +90,27 @@ export class OllamaManager {
     }
 
     /**
+     * Checks-then-spawns-then-polls, reusing the tracked spawn/kill lifecycle
+     * above. Single entry point for callers (e.g. OllamaBootstrap) that just
+     * need a yes/no answer, so there's exactly one code path in the app that
+     * ever spawns 'ollama serve'.
+     */
+    public async ensureRunning(timeoutMs = 5000): Promise<boolean> {
+        if (await this.checkIsRunning()) return true;
+
+        if (!this.ollamaProcess) {
+            this.startOllama();
+        }
+
+        const deadline = Date.now() + timeoutMs;
+        while (Date.now() < deadline) {
+            await new Promise(resolve => setTimeout(resolve, 500));
+            if (await this.checkIsRunning()) return true;
+        }
+        return false;
+    }
+
+    /**
      * Polls every 5 seconds for up to 2 minutes.
      */
     private pollUntilReady(): void {

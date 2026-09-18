@@ -17,7 +17,7 @@ import { MeetingPersistence } from './MeetingPersistence';
 export type { TranscriptSegment, SuggestionTrigger, ContextItem } from './SessionTracker';
 export type { IntelligenceMode, IntelligenceModeEvents } from './IntelligenceEngine';
 
-export const GEMINI_FLASH_MODEL = "gemini-3.1-flash-lite-preview";
+export const GEMINI_FLASH_MODEL = "gemini-3.1-flash-lite";
 
 /**
  * IntelligenceManager - Facade for the intelligence layer.
@@ -89,7 +89,7 @@ export class IntelligenceManager extends EventEmitter {
     // Context Management (delegates to session)
     // ============================================
 
-    public getSpeakerNameMap(): { user: string; client: string } {
+    public getSpeakerNameMap(): { user: string; client: string; clientDiarized: string } {
         return this.session.getSpeakerNameMap();
     }
 
@@ -107,6 +107,13 @@ export class IntelligenceManager extends EventEmitter {
     setMeetingMetadata(metadata: any): void {
         this.session.setMeetingMetadata(metadata);
         this.emit('speaker-names-resolved', this.session.getSpeakerNameMap());
+    }
+
+    /** Passthrough so the renderer can fetch the metadata (title, calendar
+     * event details, attendees, etc.) the current meeting was started with —
+     * e.g. to forward it to /chat/live alongside the transcript. */
+    getMeetingMetadata(): any {
+        return this.session.getMeetingMetadata();
     }
 
     addTranscript(segment: import('./SessionTracker').TranscriptSegment, skipRefinementCheck: boolean = false): void {
@@ -269,8 +276,8 @@ export class IntelligenceManager extends EventEmitter {
         return this.persistence.regenerateSummary(meetingId);
     }
 
-    async uploadTranscript(rawText: string, title?: string, meetingTypes?: ('discovery' | 'demo' | 'negotiation')[]): Promise<string | null> {
-        return this.persistence.uploadTranscript(rawText, title, meetingTypes);
+    async uploadTranscript(rawText: string, title?: string, meetingTypes?: ('discovery' | 'demo' | 'negotiation')[], tenantId?: string | null): Promise<string | null> {
+        return this.persistence.uploadTranscript(rawText, title, meetingTypes, tenantId);
     }
 
     async recoverUnprocessedMeetings(): Promise<void> {

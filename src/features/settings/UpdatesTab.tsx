@@ -1,6 +1,7 @@
 import React from 'react';
 import { RefreshCw, CheckCircle2, Download, AlertCircle, Sparkles, ExternalLink } from 'lucide-react';
 import { UseUpdateStatusResult } from '@/hooks';
+import { releasesPageUrl } from '@/../utils/updateFeed';
 
 interface UpdatesTabProps {
     isLight: boolean;
@@ -37,7 +38,7 @@ const UpdatesTab: React.FC<UpdatesTabProps> = ({ updateStatus: shared }) => {
         errorMessage,
         lastCheckedAt,
         checkForUpdates,
-        downloadUpdate,
+        startInstall,
         installUpdate,
     } = shared;
 
@@ -52,6 +53,7 @@ const UpdatesTab: React.FC<UpdatesTabProps> = ({ updateStatus: shared }) => {
         if (status === 'checking') return <StatusPill tone="neutral"><RefreshCw size={12} className="animate-spin" /> Checking…</StatusPill>;
         if (status === 'downloading') return <StatusPill tone="accent"><Download size={12} /> Downloading… {Math.round(downloadProgress)}%</StatusPill>;
         if (status === 'ready') return <StatusPill tone="good"><CheckCircle2 size={12} /> Ready to install</StatusPill>;
+        if (status === 'instructions') return <StatusPill tone="accent"><Download size={12} /> Download started in your browser</StatusPill>;
         if (isUpdateAvailable) return <StatusPill tone="accent"><Sparkles size={12} /> Update available</StatusPill>;
         return <StatusPill tone="good"><CheckCircle2 size={12} /> Up to date</StatusPill>;
     };
@@ -79,10 +81,25 @@ const UpdatesTab: React.FC<UpdatesTabProps> = ({ updateStatus: shared }) => {
                 </button>
             );
         }
+        if (status === 'instructions') {
+            // macOS manual-install flow in progress (unsigned build): the DMG
+            // was opened in the browser. Offer to re-open the browser page
+            // rather than re-downloading via electron-updater, which can't
+            // self-install an unsigned mac build.
+            return (
+                <button
+                    onClick={() => window.electronAPI?.openExternal?.(releasesPageUrl())}
+                    className="whitespace-nowrap px-4 py-2 bg-text-primary hover:bg-white/90 text-bg-main text-xs font-bold rounded-lg transition-all shadow hover:shadow-lg hover:-translate-y-0.5 active:translate-y-0 flex items-center gap-2"
+                >
+                    <ExternalLink size={14} />
+                    Open Releases Page
+                </button>
+            );
+        }
         if (isUpdateAvailable) {
             return (
                 <button
-                    onClick={() => downloadUpdate()}
+                    onClick={() => startInstall()}
                     className="whitespace-nowrap px-4 py-2 bg-text-primary hover:bg-white/90 text-bg-main text-xs font-bold rounded-lg transition-all shadow hover:shadow-lg hover:-translate-y-0.5 active:translate-y-0 flex items-center gap-2"
                 >
                     <Download size={14} />
@@ -140,6 +157,41 @@ const UpdatesTab: React.FC<UpdatesTabProps> = ({ updateStatus: shared }) => {
                         <h5 className="text-sm font-medium text-text-primary">Couldn't check for updates</h5>
                         <p className="text-xs text-text-secondary mt-1 leading-relaxed">{errorMessage}</p>
                     </div>
+                </div>
+            )}
+
+            {/* macOS manual-install steps — the mac build is unsigned, so after the
+                DMG opens in the browser the user finishes the install by hand.
+                Mirrors UpdateModal's instructions view. */}
+            {status === 'instructions' && (
+                <div className="bg-bg-item-surface rounded-xl border border-border-subtle p-5 space-y-3">
+                    <div>
+                        <h5 className="text-sm font-medium text-text-primary">Finish installing manually</h5>
+                        <p className="text-xs text-text-secondary mt-1 leading-relaxed">
+                            The download has started in your browser. On macOS, updates are installed by hand:
+                        </p>
+                    </div>
+                    <div className="flex items-center justify-between gap-3">
+                        <p className="text-xs text-text-secondary">1. Open the downloaded DMG and drag GoDojo AI into Applications.</p>
+                        <button
+                            onClick={() => window.electronAPI?.openKnownFolder?.('downloads')}
+                            className="shrink-0 text-[11px] font-medium text-blue-400 hover:text-blue-300 underline underline-offset-2"
+                        >
+                            Open Downloads
+                        </button>
+                    </div>
+                    <div className="flex items-center justify-between gap-3">
+                        <p className="text-xs text-text-secondary">2. If macOS calls the app "damaged", clear quarantine:</p>
+                        <button
+                            onClick={() => window.electronAPI?.openKnownFolder?.('applications')}
+                            className="shrink-0 text-[11px] font-medium text-blue-400 hover:text-blue-300 underline underline-offset-2"
+                        >
+                            Open Applications
+                        </button>
+                    </div>
+                    <code className="block text-[11px] font-mono text-blue-400 bg-bg-input border border-border-subtle rounded-lg px-3 py-2 select-all">
+                        xattr -cr "/Applications/GoDojo AI.app"
+                    </code>
                 </div>
             )}
 

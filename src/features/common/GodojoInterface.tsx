@@ -14,10 +14,27 @@ import { GodojoInterfaceProps } from '@/types';
 const GodojoInterface: React.FC<GodojoInterfaceProps> = ({ onEndMeeting, overlayOpacity }) => {
 
     const godojoInterfaceState = useGodojoInterface({ onEndMeeting, overlayOpacity });
-    const { contentRef, liveTranscriptRef, isMeetingPaused, handlePauseMeeting } = godojoInterfaceState;
+    const { contentRef, liveTranscriptRef, isMeetingPaused, handlePauseMeeting, requestOverlayResize } = godojoInterfaceState;
     const { isUndetectable, setIsUndetectable, rollingTranscriptUser, rollingTranscriptClient } = godojoInterfaceState;
     const { isClientSpeaking, isUserSpeaking, showTranscript, setShowTranscript } = godojoInterfaceState;
     const { currentModel, setCurrentModel, speakerNames, shortcuts, overlayPanelClass, companyIntel } = godojoInterfaceState;
+    const { calendarEventMetadata } = godojoInterfaceState;
+
+    // This component re-renders on every rolling-transcript update (10+/s during
+    // a call), so these two handlers must not be inline arrows: a fresh identity
+    // each time would invalidate the memo on the dock buttons that receive them.
+    // `isUndetectable` in the deps is not churn — it changes only when the user
+    // toggles ghost mode, which re-renders that button anyway (isActive flips).
+    const handleToggleGhost = React.useCallback(() => {
+        const next = !isUndetectable;
+        setIsUndetectable(next);
+        window.electronAPI?.setUndetectable(next);
+    }, [isUndetectable, setIsUndetectable]);
+
+    const handleToggleTranscript = React.useCallback((v: boolean) => {
+        setShowTranscript(v);
+        localStorage.setItem('natively_interviewer_transcript', String(v));
+    }, [setShowTranscript]);
 
     return (
         <motion.div
@@ -33,27 +50,22 @@ const GodojoInterface: React.FC<GodojoInterfaceProps> = ({ onEndMeeting, overlay
                 onPauseResume={handlePauseMeeting}
                 onEndCall={onEndMeeting ?? (() => { })}
                 isUndetectable={isUndetectable}
-                onToggleGhost={() => {
-                    const next = !isUndetectable;
-                    setIsUndetectable(next);
-                    window.electronAPI?.setUndetectable(next);
-                }}
+                onToggleGhost={handleToggleGhost}
                 transcriptRef={liveTranscriptRef}
                 rollingTranscriptUser={rollingTranscriptUser}
                 rollingTranscriptClient={rollingTranscriptClient}
                 isClientSpeaking={isClientSpeaking}
                 isUserSpeaking={isUserSpeaking}
                 showTranscript={showTranscript}
-                onToggleTranscript={(v) => {
-                    setShowTranscript(v);
-                    localStorage.setItem('natively_interviewer_transcript', String(v));
-                }}
+                onToggleTranscript={handleToggleTranscript}
                 currentModel={currentModel}
                 onSelectModel={setCurrentModel}
                 speakerNames={speakerNames}
                 shortcuts={shortcuts}
                 overlayPanelClass={overlayPanelClass}
                 companyIntel={companyIntel}
+                calendarEventMetadata={calendarEventMetadata}
+                onRequestOverlayResize={requestOverlayResize}
             />
         </motion.div>
     );

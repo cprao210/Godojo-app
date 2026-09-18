@@ -94,6 +94,13 @@
       "icon": "assets/natively.icns",
       "identity": null,
       "hardenedRuntime": true,
+      "entitlements": "assets/entitlements.mac.plist",
+      "entitlementsInherit": "assets/entitlements.mac.plist",
+      "extendInfo": {
+        "NSScreenCaptureUsageDescription": "GoDojo AI needs Screen Recording permission to capture system audio for meeting transcription.",
+        "NSMicrophoneUsageDescription": "GoDojo AI needs microphone access to transcribe your voice during meetings.",
+        "NSAudioCaptureUsageDescription": "GoDojo AI needs system audio access to transcribe meeting audio."
+      },
       "artifactName": "GoDojo.AI-${version}-${arch}.${ext}"
     },
     "win": {
@@ -134,6 +141,24 @@
       ],
       "icon": "assets/icons/png/",
       "category": "Office"
+    },
+    "appImage": {
+      "artifactName": "GoDojo.AI-${version}.${ext}"
+    },
+    "deb": {
+      "depends": [
+        "libgtk-3-0",
+        "libnotify4",
+        "libnss3",
+        "libxss1",
+        "libxtst6",
+        "xdg-utils",
+        "libatspi2.0-0",
+        "libuuid1",
+        "libsecret-1-0",
+        "libasound2 | libasound2t64",
+        "libpulse0"
+      ]
     },
     "nsis": {
       "oneClick": false,

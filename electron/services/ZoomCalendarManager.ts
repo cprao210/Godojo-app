@@ -1,4 +1,4 @@
-import { app, safeStorage, shell } from 'electron';
+import { app, safeStorage, shell, BrowserWindow, screen } from 'electron';
 import axios from 'axios';
 import http from 'http';
 import url from 'url';
@@ -10,9 +10,19 @@ import { CalendarEvent } from './CalendarManager';
 const CLIENT_ID = process.env.ZOOM_CLIENT_ID || '';
 const CLIENT_SECRET = process.env.ZOOM_CLIENT_SECRET || '';
 const REDIRECT_URI = 'http://localhost:11113/auth/callback';
-const TOKEN_PATH = path.join(app.getPath('userData'), 'zoom_calendar_tokens.enc');
+
+// Same fix as CalendarManager.tokenPathForUid: this was a single shared file,
+// so whichever app-user last connected Zoom stayed "connected" for every
+// account signed in afterwards.
+function tokenPathForUid(uid: string | null): string {
+    const safe = (uid ?? 'anon').replace(/[^A-Za-z0-9_-]/g, '') || 'anon';
+    return path.join(app.getPath('userData'), `zoom_calendar_tokens-${safe}.enc`);
+}
 
 const REGISTRANT_CACHE_TTL = 5 * 60 * 1000;
+
+/** Pre-warm lead for the floating reminder popup — see CalendarManager. */
+const PREWARM_LEAD_MS = 30 * 1000;
 
 interface RegistrantCacheEntry {
     attendees: Array<{ email: string; name?: string }>;
@@ -29,6 +39,8 @@ export class ZoomCalendarManager extends EventEmitter {
 
     private registrantCache: Map<string, RegistrantCacheEntry> = new Map();
     private currentUserEmail: string | null = null;
+    private currentUid: string | null = null;
+    private tokenPath: string = tokenPathForUid(null);
 
     private constructor() { super(); }
 
@@ -39,6 +51,31 @@ export class ZoomCalendarManager extends EventEmitter {
         return ZoomCalendarManager.instance;
     }
 
+    /** See CalendarManager.switchUser — wired to the same 'user-switched' event. */
+    public switchUser(uid: string | null): void {
+        const nextPath = tokenPathForUid(uid);
+        if (nextPath === this.tokenPath) return;
+
+        console.log(`[ZoomCalendarManager] Switching calendar scope: ${this.currentUid ?? 'anon'} -> ${uid ?? 'anon'}`);
+
+        this.reminderTimeouts.forEach(t => clearTimeout(t));
+        this.reminderTimeouts = [];
+        this.registrantCache.clear(); // keyed by meetingId, but the meetings belong to the old account
+
+        this.accessToken = null;
+        this.refreshToken = null;
+        this.expiryDate = null;
+        this.isConnected = false;
+        this.currentUserEmail = null;
+
+        this.currentUid = uid;
+        this.tokenPath = nextPath;
+        this.loadTokens();
+
+        this.emit('connection-changed', this.isConnected);
+        this.emit('events-updated');
+    }
+
     public init() { this.loadTokens(); }
 
     // =========================================================================
@@ -47,6 +84,30 @@ export class ZoomCalendarManager extends EventEmitter {
 
     public async startAuthFlow(): Promise<void> {
         return new Promise((resolve, reject) => {
+            // Kept as a backstop for cases the window-close listener below
+            // can't catch (consent page hangs, network stalls) — but the
+            // primary "user bailed" signal is now the auth window's 'closed'
+            // event, which fires immediately instead of waiting up to 3
+            // minutes. Mirrors CalendarManager.startAuthFlow().
+            const AUTH_TIMEOUT_MS = 3 * 60 * 1000; // 3 minutes
+            let settled = false;
+            let authWindow: BrowserWindow | null = null;
+
+            const finish = (fn: () => void) => {
+                if (settled) return;
+                settled = true;
+                clearTimeout(timeoutTimer);
+                try { server.close(); } catch { /* already closed */ }
+                if (authWindow && !authWindow.isDestroyed()) {
+                    try { authWindow.close(); } catch { /* already closing */ }
+                }
+                fn();
+            };
+
+            const timeoutTimer = setTimeout(() => {
+                finish(() => reject(new Error('AUTH_TIMEOUT')));
+            }, AUTH_TIMEOUT_MS);
+
             const server = http.createServer(async (req, res) => {
                 try {
                     if (req.url?.startsWith('/auth/callback')) {
@@ -56,30 +117,79 @@ export class ZoomCalendarManager extends EventEmitter {
 
                         if (error) {
                             res.end('Authentication failed. You can close this window.');
-                            server.close();
-                            reject(new Error(error));
+                            finish(() => reject(new Error(error)));
                             return;
                         }
 
                         if (code) {
                             res.end('Zoom connected! You can close this window.');
-                            server.close();
-                            await this.exchangeCodeForToken(code);
-                            resolve();
+                            try { server.close(); } catch { /* already closing */ }
+                            try {
+                                await this.exchangeCodeForToken(code);
+                                finish(() => resolve());
+                            } catch (exchangeErr) {
+                                finish(() => reject(exchangeErr));
+                            }
                         }
                     }
                 } catch (err) {
                     res.end('Authentication error.');
-                    server.close();
-                    reject(err);
+                    finish(() => reject(err));
                 }
             });
 
             server.listen(11113, () => {
-                shell.openExternal(this.getAuthUrl());
+                // Electron-controlled window instead of the system browser —
+                // lets us detect a manual close and reject immediately
+                // rather than waiting on AUTH_TIMEOUT_MS.
+                const popupWidth = 520;
+                const popupHeight = 680;
+                let popupX: number | undefined;
+                let popupY: number | undefined;
+
+                try {
+                    const activeWindow = BrowserWindow.getFocusedWindow()
+                        ?? BrowserWindow.getAllWindows().find(w => !w.isDestroyed() && w.isVisible());
+                    if (activeWindow) {
+                        const bounds = activeWindow.getBounds();
+                        const centerX = bounds.x + Math.floor(bounds.width / 2);
+                        const centerY = bounds.y + Math.floor(bounds.height / 2);
+                        const { workArea } = screen.getDisplayNearestPoint({ x: centerX, y: centerY });
+                        popupX = workArea.x + Math.floor((workArea.width - popupWidth) / 2);
+                        popupY = workArea.y + Math.floor((workArea.height - popupHeight) / 2);
+                    }
+                } catch (e) {
+                    console.warn('[ZoomCalendarManager] Could not determine current display for auth popup:', e);
+                }
+
+                authWindow = new BrowserWindow({
+                    width: popupWidth,
+                    height: popupHeight,
+                    ...(popupX !== undefined && popupY !== undefined ? { x: popupX, y: popupY } : {}),
+                    title: 'Connect Zoom Calendar',
+                    webPreferences: { nodeIntegration: false, contextIsolation: true },
+                    // See CalendarManager.startAuthFlow for why this is needed:
+                    // the main overlay window runs at a high always-on-top
+                    // level, which otherwise puts this popup behind it.
+                    alwaysOnTop: true,
+                });
+                if (process.platform === 'darwin') {
+                    authWindow.setAlwaysOnTop(true, 'floating');
+                } else {
+                    authWindow.setAlwaysOnTop(true, 'screen-saver');
+                }
+                authWindow.loadURL(this.getAuthUrl());
+                authWindow.once('ready-to-show', () => {
+                    authWindow?.show();
+                    authWindow?.focus();
+                });
+                authWindow.on('closed', () => {
+                    authWindow = null;
+                    finish(() => reject(new Error('AUTH_CANCELLED')));
+                });
             });
 
-            server.on('error', reject);
+            server.on('error', (err) => finish(() => reject(err)));
         });
     }
 
@@ -88,7 +198,7 @@ export class ZoomCalendarManager extends EventEmitter {
         this.refreshToken = null;
         this.expiryDate = null;
         this.isConnected = false;
-        if (fs.existsSync(TOKEN_PATH)) fs.unlinkSync(TOKEN_PATH);
+        if (fs.existsSync(this.tokenPath)) fs.unlinkSync(this.tokenPath);
         this.emit('connection-changed', false);
     }
 
@@ -191,15 +301,15 @@ export class ZoomCalendarManager extends EventEmitter {
             expiryDate: this.expiryDate,
         });
         const encrypted = safeStorage.encryptString(data);
-        const tmp = TOKEN_PATH + '.tmp';
+        const tmp = this.tokenPath + '.tmp';
         fs.writeFileSync(tmp, encrypted);
-        fs.renameSync(tmp, TOKEN_PATH);
+        fs.renameSync(tmp, this.tokenPath);
     }
 
     private loadTokens() {
-        if (!fs.existsSync(TOKEN_PATH) || !safeStorage.isEncryptionAvailable()) return;
+        if (!fs.existsSync(this.tokenPath) || !safeStorage.isEncryptionAvailable()) return;
         try {
-            const encrypted = fs.readFileSync(TOKEN_PATH);
+            const encrypted = fs.readFileSync(this.tokenPath);
             const data = JSON.parse(safeStorage.decryptString(encrypted));
             this.accessToken = data.accessToken;
             this.refreshToken = data.refreshToken;
@@ -379,7 +489,18 @@ export class ZoomCalendarManager extends EventEmitter {
             const startTime = new Date(event.startTime).getTime();
             const reminderTime = startTime - 2 * 60 * 1000;
             if (reminderTime > now && reminderTime - now < 24 * 60 * 60 * 1000) {
-                const timeout = setTimeout(() => this.showNotification(event), reminderTime - now);
+                const delay = reminderTime - now;
+
+                // Pre-warm the floating popup shortly before the reminder so it
+                // appears instantly — mirrors CalendarManager.scheduleReminders.
+                const prewarmDelay = delay - PREWARM_LEAD_MS;
+                if (prewarmDelay > 0) {
+                    this.reminderTimeouts.push(setTimeout(() => {
+                        this.emit('reminder-prewarm', event);
+                    }, prewarmDelay));
+                }
+
+                const timeout = setTimeout(() => this.showReminder(event), delay);
                 this.reminderTimeouts.push(timeout);
             }
         });
@@ -438,14 +559,12 @@ export class ZoomCalendarManager extends EventEmitter {
         }
     }
 
-    private showNotification(event: CalendarEvent) {
-        const { Notification } = require('electron');
-        const notif = new Notification({
-            title: 'Zoom Meeting starting soon',
-            body: `"${event.title}" starts in 2 minutes.`,
-            sound: true,
-        });
-        notif.on('click', () => this.emit('open-requested'));
-        notif.show();
+    /**
+     * Announce that a Zoom meeting is about to start. Emits `reminder-due` so
+     * main.ts can present it through the shared floating popup (with the
+     * native notification as a fallback) — see CalendarManager.showReminder.
+     */
+    private showReminder(event: CalendarEvent) {
+        this.emit('reminder-due', event);
     }
 }

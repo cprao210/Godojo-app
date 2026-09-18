@@ -45,7 +45,7 @@ export function useLanguageSettings() {
                         config.iso639 === systemLocale ||
                         config.alternates?.includes(systemLocale),
                     );
-                    currentLangKey = match ? match[0] : 'english-us';
+                    currentLangKey = match ? match[0] : 'multilingual';
                     window.electronAPI?.setRecognitionLanguage?.(currentLangKey); // persist the auto-detected default
                 }
 

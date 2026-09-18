@@ -1,5 +1,5 @@
 import React, { useState } from 'react';
-import { Ghost, PointerOff, Power, Terminal, MessageSquare, Palette, Monitor, Sun, Moon, Globe, ChevronDown, Eye, Layout, Settings, Activity, RotateCcw, Skull } from 'lucide-react';
+import { CalendarClock, Ghost, PointerOff, Power, Terminal, MessageSquare, Palette, Monitor, Sun, Moon, Globe, ChevronDown, Eye, Layout, Settings, Activity, Skull, Database, Flame, HardDrive, Trash2 } from 'lucide-react';
 import { OVERLAY_OPACITY_MIN } from '@/lib/overlayAppearance';
 import { useSettingsOverlay } from '@/hooks';
 import { getFirebaseAuth } from '@/lib/firebase';
@@ -23,6 +23,58 @@ const THEME_OPTIONS = [
     { mode: 'dark', label: 'Dark', icon: <Moon size={14} /> },
 ] as const;
 
+type ToggleSwitchProps = {
+    /** Current on/off state. */
+    checked: boolean;
+    /** Called when the user clicks the toggle. */
+    onChange: () => void;
+    /** Track background class used when `checked` is true. Defaults to the app's primary accent. */
+    activeTrackClass?: string;
+    /** Accessible name — always pass a real label, since the toggle has no visible text of its own. */
+    ariaLabel: string;
+    disabled?: boolean;
+};
+
+// Shared toggle switch used everywhere in this tab (Ghost Mode, Mouse
+// Passthrough, Open at Login, Auto-start meetings, Verbose logging,
+// Meeting Transcript).
+//
+// Deliberately NOT built with `absolute` + `translate-x-5`: that approach
+// positions the knob with hand-computed pixel offsets that only line up
+// correctly if the track's box model (padding/border) is *identical* in
+// both the on and off state. It previously wasn't — the off state carried
+// an extra `border` that the on state didn't — so the knob sat a hair off
+// from where the translate math assumed, and only the off state showed it.
+//
+// Here the knob is a normal (non-absolute) flex child. Its position comes
+// from `justify-start` / `justify-end` on the track, so the browser lays
+// it out correctly every time — there's no pixel offset to keep in sync,
+// and the track keeps an equal-width border in both states so the content
+// box never changes size between on and off.
+const ToggleSwitch: React.FC<ToggleSwitchProps> = ({
+    checked,
+    onChange,
+    activeTrackClass = 'bg-accent-primary',
+    ariaLabel,
+    disabled = false,
+}) => (
+    <button
+        type="button"
+        role="switch"
+        aria-checked={checked}
+        aria-label={ariaLabel}
+        disabled={disabled}
+        onClick={onChange}
+        className={`w-11 h-6 shrink-0 rounded-full border p-0.5 flex items-center transition-colors duration-200 ${disabled ? 'opacity-50 cursor-not-allowed' : 'cursor-pointer'
+            } ${checked
+                ? `${activeTrackClass} border-transparent justify-end`
+                : 'bg-bg-toggle-switch border-border-muted justify-start'
+            }`}
+    >
+        <span className="m-0.5 w-4 h-4 rounded-full bg-white shadow-sm block" />
+    </button>
+);
+
 // The "General" tab: Ghost Mode + Mouse Passthrough hero toggles, the
 // settings list (open-at-login, verbose logging, transcript, theme, AI
 // response language), the interface-opacity slider + live MockupDock
@@ -35,82 +87,97 @@ const GeneralTab: React.FC<{ overlay: SettingsOverlayHook }> = ({ overlay }) => 
 
     const cardCls = isLight ? 'bg-white border-slate-200/80' : 'bg-bg-item-surface border-border-subtle';
 
-    // "Reset app data" — confirmation itself happens via a native dialog in
-    // the main process (see electron/ipcHandlers.ts: 'reset-app-data'), so
-    // this is just a loading/error state while that's in flight. On success
-    // the app relaunches itself, so there's no "done" state to render here.
-    const [isResetting, setIsResetting] = useState(false);
-    const [resetError, setResetError] = useState<string | null>(null);
-
-    const handleResetAppData = async () => {
-        posthogAnalytics.trackResetAppDataClicked();
-        setResetError(null);
-        setIsResetting(true);
-        try {
-            const result = await window.electronAPI.resetAppData();
-            if (!result.success && !result.cancelled) {
-                setResetError(result.error || 'Reset failed. Please try again.');
-            }
-            // On success the main process calls app.relaunch()/app.exit()
-            // itself — nothing further to do here.
-        } catch (e: any) {
-            setResetError(e?.message || 'Reset failed. Please try again.');
-        } finally {
-            setIsResetting(false);
-        }
-    };
-
     // DEV-ONLY: "Delete My Account" — self-service full wipe of the signed-in
-    // user's data (Supabase rows across every user-scoped table, then the
-    // Firebase Auth user, then local app data). See ipcHandlers.ts
+    // user's data, OR any one of its three parts individually — Supabase
+    // rows, the Firebase Auth account, or this device's local data — via a
+    // dropdown. Backend scope selection matches
+    // app/api/v1/auth.py's DangerousDeleteKey ('supabase-delete' /
+    // 'firebase-delete' / 'full-delete'); 'local' never calls the backend
+    // at all. See ipcHandlers.ts
     // 'dev:delete-current-user-account' for why this can only ever target
     // the currently signed-in user, never an arbitrary account.
     const [isDeletingAccount, setIsDeletingAccount] = useState(false);
     const [deleteAccountError, setDeleteAccountError] = useState<string | null>(null);
+    const [isDeleteDropdownOpen, setIsDeleteDropdownOpen] = useState(false);
+    const deleteDropdownRef = React.useRef<HTMLDivElement>(null);
 
-    const handleDeleteCurrentUserAccount = async () => {
+    React.useEffect(() => {
+        if (!isDeleteDropdownOpen) return;
+        const onClickOutside = (e: MouseEvent) => {
+            if (deleteDropdownRef.current && !deleteDropdownRef.current.contains(e.target as Node)) {
+                setIsDeleteDropdownOpen(false);
+            }
+        };
+        document.addEventListener('mousedown', onClickOutside);
+        return () => document.removeEventListener('mousedown', onClickOutside);
+    }, [isDeleteDropdownOpen]);
+
+    type DeleteScope = 'supabase-delete' | 'firebase-delete' | 'local' | 'full-delete';
+
+    const DELETE_SCOPE_OPTIONS: { scope: DeleteScope; label: string; icon: React.ReactNode }[] = [
+        { scope: 'supabase-delete', label: 'Supabase Record', icon: <Database size={13} /> },
+        { scope: 'firebase-delete', label: 'Firebase Record', icon: <Flame size={13} /> },
+        { scope: 'local', label: 'Local Record', icon: <HardDrive size={13} /> },
+        { scope: 'full-delete', label: 'Delete All', icon: <Trash2 size={13} /> },
+    ];
+
+    // Calls the dangerous-delete backend route for a given scope. Not used
+    // for 'local', which never touches the backend.
+    const callDangerousDelete = async (uid: string, key: 'supabase-delete' | 'firebase-delete' | 'full-delete') => {
+        const encrypted_key = await encryptDangerousKey();
+        const res = await fetch(`${API_BASE}/auth/dangerous/delete-user`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ uid, encrypted_key, key }),
+        });
+        const body = await res.json().catch(() => ({}));
+        if (!res.ok) {
+            // Backend's error envelope is {"error":{"code","message"}} —
+            // for a bad/missing key this is literally "Key required to
+            // do this operation" (see dangerous_key.py's _GENERIC_DENIAL).
+            throw new Error(body?.error?.message || `Delete failed (${res.status}).`);
+        }
+        if (body?.failed_tables?.length) {
+            console.warn('[settings] account deletion: some Supabase tables failed to clear:', body.failed_tables);
+        }
+    };
+
+    const handleDeleteScope = async (scope: DeleteScope) => {
+        setIsDeleteDropdownOpen(false);
         setDeleteAccountError(null);
-        const { confirmed } = await window.electronAPI.confirmDeleteAccount();
+        const { confirmed } = await window.electronAPI.confirmDeleteAccount(scope);
         if (!confirmed) return;
         setIsDeletingAccount(true);
         try {
-            const uid = getFirebaseAuth().currentUser?.uid;
-            if (!uid) {
-                setDeleteAccountError('No signed-in user found locally — cannot determine which account to delete.');
-                return;
+            // 'local' never needs a uid — it doesn't call the backend at all.
+            if (scope !== 'local') {
+                const uid = getFirebaseAuth().currentUser?.uid;
+                if (!uid) {
+                    setDeleteAccountError('No signed-in user found locally — cannot determine which account to delete.');
+                    return;
+                }
+
+                // Token-free by design: this hits the backend directly with a
+                // DANGEROUS_KEY proof instead of a Firebase ID token. See
+                // src/lib/dangerousKey.ts and the backend's
+                // app/core/dangerous_key.py for the shared-secret scheme.
+                await callDangerousDelete(uid, scope === 'full-delete' ? 'full-delete' : scope);
             }
 
-            // Token-free by design: this hits the backend directly with a
-            // DANGEROUS_KEY proof instead of a Firebase ID token. See
-            // src/lib/dangerousKey.ts and the backend's
-            // app/core/dangerous_key.py for the shared-secret scheme.
-            const encrypted_key = await encryptDangerousKey();
-            const res = await fetch(`${API_BASE}/auth/dangerous/delete-user`, {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ uid, encrypted_key }),
-            });
-            const body = await res.json().catch(() => ({}));
-            if (!res.ok) {
-                // Backend's error envelope is {"error":{"code","message"}} —
-                // for a bad/missing key this is literally "Key required to
-                // do this operation" (see dangerous_key.py's _GENERIC_DENIAL).
-                setDeleteAccountError(body?.error?.message || `Delete failed (${res.status}).`);
-                return;
-            }
-            if (body?.failed_tables?.length) {
-                console.warn('[settings] account deletion: some Supabase tables failed to clear:', body.failed_tables);
-            }
-
-            // Server-side rows + the Firebase Auth user are gone at this
-            // point — now clear this device: natively.db, cached session,
-            // credentials.enc. This relaunches the app on success, so
-            // there's no further state to set here.
-            const wipeResult = await window.electronAPI.wipeLocalAccountData();
-            if (!wipeResult.success) {
-                setDeleteAccountError(
-                    wipeResult.error || 'Account deleted, but clearing local data failed. Please use "Reset App Data" below.'
-                );
+            // Local wipe only for 'local' and 'full-delete' — and it must run
+            // LAST, never first: wipeLocalUserDataAndRelaunch (main process)
+            // calls app.exit() once it finishes, so anything after it would
+            // never run, and running it before the backend calls above would
+            // destroy the local session/credentials those calls still need.
+            if (scope === 'local' || scope === 'full-delete') {
+                const wipeResult = await window.electronAPI.wipeLocalAccountData(scope);
+                if (!wipeResult.success) {
+                    setDeleteAccountError(
+                        wipeResult.error || (scope === 'full-delete'
+                            ? 'Account deleted on the server, but clearing local data failed.'
+                            : 'Clearing local data failed. Please try again.')
+                    );
+                }
             }
 
         } catch (e: any) {
@@ -125,7 +192,7 @@ const GeneralTab: React.FC<{ overlay: SettingsOverlayHook }> = ({ overlay }) => 
             <div className="space-y-3.5">
                 {/* Ghost Mode (Undetectable) */}
                 <div className={`${cardCls} rounded-xl p-5 border flex items-center justify-between transition-all ${general.isUndetectable ? 'shadow-lg shadow-blue-500/10' : ''}`}>
-                    <div className="flex flex-col gap-1">
+                    <div className="flex flex-col gap-1 flex-1 min-w-0">
                         <div className="flex items-center gap-2">
                             {general.isUndetectable ? (
                                 <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className="text-text-primary">
@@ -142,17 +209,16 @@ const GeneralTab: React.FC<{ overlay: SettingsOverlayHook }> = ({ overlay }) => 
                             GoDojo is currently {general.isUndetectable ? 'undetectable' : 'detectable'} by screen-sharing.
                         </p>
                     </div>
-                    <div
-                        onClick={general.toggleUndetectable}
-                        className={`w-11 h-6 rounded-full relative transition-colors cursor-pointer ${general.isUndetectable ? 'bg-accent-primary' : 'bg-bg-toggle-switch border border-border-muted'}`}
-                    >
-                        <div className={`absolute top-1 left-1 w-4 h-4 rounded-full bg-white transition-transform ${general.isUndetectable ? 'translate-x-5' : 'translate-x-0'}`} />
-                    </div>
+                    <ToggleSwitch
+                        checked={general.isUndetectable}
+                        onChange={general.toggleUndetectable}
+                        ariaLabel="Toggle Ghost Mode"
+                    />
                 </div>
 
                 {/* Mouse Passthrough */}
                 <div className={`${cardCls} rounded-xl p-5 border flex items-center justify-between transition-all ${general.isMousePassthrough ? 'shadow-lg shadow-sky-500/10' : ''}`}>
-                    <div className="flex flex-col gap-1">
+                    <div className="flex flex-col gap-1 flex-1 min-w-0">
                         <div className="flex items-center gap-2">
                             <PointerOff size={18} className={general.isMousePassthrough ? 'text-sky-400' : 'text-text-primary'} />
                             <h3 className="text-lg font-bold text-text-primary">Mouse Passthrough</h3>
@@ -161,12 +227,12 @@ const GeneralTab: React.FC<{ overlay: SettingsOverlayHook }> = ({ overlay }) => 
                             Overlay stays visible but lets all mouse clicks pass through to the app beneath.
                         </p>
                     </div>
-                    <div
-                        onClick={general.toggleMousePassthrough}
-                        className={`w-11 h-6 rounded-full relative transition-colors cursor-pointer ${general.isMousePassthrough ? 'bg-sky-500' : 'bg-bg-toggle-switch border border-border-muted'}`}
-                    >
-                        <div className={`absolute top-1 left-1 w-4 h-4 rounded-full bg-white transition-transform ${general.isMousePassthrough ? 'translate-x-5' : 'translate-x-0'}`} />
-                    </div>
+                    <ToggleSwitch
+                        checked={general.isMousePassthrough}
+                        onChange={general.toggleMousePassthrough}
+                        activeTrackClass="bg-sky-500"
+                        ariaLabel="Toggle Mouse Passthrough"
+                    />
                 </div>
 
                 <div>
@@ -177,8 +243,8 @@ const GeneralTab: React.FC<{ overlay: SettingsOverlayHook }> = ({ overlay }) => 
                         <div className="space-y-0">
                             {/* Open at Login */}
                             <div className="flex items-center justify-between px-4 py-3">
-                                <div className="flex items-center gap-4">
-                                    <div className="w-10 h-10 bg-bg-item-surface rounded-lg border border-border-subtle flex items-center justify-center text-text-tertiary">
+                                <div className="flex items-center gap-4 flex-1 min-w-0">
+                                    <div className="w-10 h-10 shrink-0 bg-bg-item-surface rounded-lg border border-border-subtle flex items-center justify-center text-text-tertiary">
                                         <Power size={20} />
                                     </div>
                                     <div>
@@ -186,18 +252,35 @@ const GeneralTab: React.FC<{ overlay: SettingsOverlayHook }> = ({ overlay }) => 
                                         <p className="text-xs text-text-secondary mt-0.5">GoDojo will open automatically when you log in to your computer</p>
                                     </div>
                                 </div>
-                                <div
-                                    onClick={general.toggleOpenOnLogin}
-                                    className={`w-11 h-6 rounded-full relative transition-colors cursor-pointer ${general.openOnLogin ? 'bg-accent-primary' : 'bg-bg-toggle-switch border border-border-muted'}`}
-                                >
-                                    <div className={`absolute top-1 left-1 w-4 h-4 rounded-full bg-white transition-transform ${general.openOnLogin ? 'translate-x-5' : 'translate-x-0'}`} />
+                                <ToggleSwitch
+                                    checked={general.openOnLogin}
+                                    onChange={general.toggleOpenOnLogin}
+                                    ariaLabel="Toggle open GoDojo at login"
+                                />
+                            </div>
+
+                            {/* Auto-start meetings from the calendar reminder */}
+                            <div className="flex items-center justify-between px-4 py-3">
+                                <div className="flex items-center gap-4 flex-1 min-w-0">
+                                    <div className={`w-10 h-10 shrink-0 bg-bg-item-surface rounded-lg border flex items-center justify-center transition-colors ${general.autoStartMeetings ? 'border-blue-500 text-accent-primary' : 'border-border-subtle text-text-tertiary'}`}>
+                                        <CalendarClock size={20} />
+                                    </div>
+                                    <div>
+                                        <h3 className="text-sm font-bold text-text-primary">Start meetings automatically</h3>
+                                        <p className="text-xs text-text-secondary mt-0.5">When a calendar meeting is about to begin, the reminder counts down and GoDojo starts <br />recording on its own. Close the reminder to cancel.</p>
+                                    </div>
                                 </div>
+                                <ToggleSwitch
+                                    checked={general.autoStartMeetings}
+                                    onChange={general.toggleAutoStartMeetings}
+                                    ariaLabel="Toggle auto-start meetings"
+                                />
                             </div>
 
                             {/* Verbose debug logging */}
                             <div className="flex items-center justify-between px-4 py-3">
-                                <div className="flex items-center gap-4">
-                                    <div className={`w-10 h-10 bg-bg-item-surface rounded-lg border flex items-center justify-center transition-colors ${general.verboseLogging ? 'border-amber-500/40 text-amber-400' : 'border-border-subtle text-text-tertiary'}`}>
+                                <div className="flex items-center gap-4 flex-1 min-w-0">
+                                    <div className={`w-10 h-10 shrink-0 bg-bg-item-surface rounded-lg border flex items-center justify-center transition-colors ${general.verboseLogging ? 'border-amber-500/40 text-amber-400' : 'border-border-subtle text-text-tertiary'}`}>
                                         <Terminal size={20} />
                                     </div>
                                     <div>
@@ -205,18 +288,18 @@ const GeneralTab: React.FC<{ overlay: SettingsOverlayHook }> = ({ overlay }) => 
                                         <p className="text-xs text-text-secondary mt-0.5">Print detailed audio, STT, and pipeline diagnostics to the terminal</p>
                                     </div>
                                 </div>
-                                <div
-                                    onClick={general.toggleVerboseLogging}
-                                    className={`w-11 h-6 rounded-full relative transition-colors cursor-pointer ${general.verboseLogging ? 'bg-amber-500' : 'bg-bg-toggle-switch border border-border-muted'}`}
-                                >
-                                    <div className={`absolute top-1 left-1 w-4 h-4 rounded-full bg-white transition-transform ${general.verboseLogging ? 'translate-x-5' : 'translate-x-0'}`} />
-                                </div>
+                                <ToggleSwitch
+                                    checked={general.verboseLogging}
+                                    onChange={general.toggleVerboseLogging}
+                                    activeTrackClass="bg-amber-500"
+                                    ariaLabel="Toggle verbose debug logging"
+                                />
                             </div>
 
                             {/* Meeting Transcript */}
                             <div className="flex items-center justify-between px-4 py-3">
-                                <div className="flex items-center gap-4">
-                                    <div className="w-10 h-10 bg-bg-item-surface rounded-lg border border-border-subtle flex items-center justify-center text-text-tertiary">
+                                <div className="flex items-center gap-4 flex-1 min-w-0">
+                                    <div className="w-10 h-10 shrink-0 bg-bg-item-surface rounded-lg border border-border-subtle flex items-center justify-center text-text-tertiary">
                                         <MessageSquare size={20} />
                                     </div>
                                     <div>
@@ -224,18 +307,17 @@ const GeneralTab: React.FC<{ overlay: SettingsOverlayHook }> = ({ overlay }) => 
                                         <p className="text-xs text-text-secondary mt-0.5">Show real-time transcription of all meeting participants</p>
                                     </div>
                                 </div>
-                                <div
-                                    onClick={toggleTranscript}
-                                    className={`w-11 h-6 rounded-full relative transition-colors cursor-pointer ${showTranscript ? 'bg-accent-primary' : 'bg-bg-toggle-switch border border-border-muted'}`}
-                                >
-                                    <div className={`absolute top-1 left-1 w-4 h-4 rounded-full bg-white transition-transform ${showTranscript ? 'translate-x-5' : 'translate-x-0'}`} />
-                                </div>
+                                <ToggleSwitch
+                                    checked={showTranscript}
+                                    onChange={toggleTranscript}
+                                    ariaLabel="Toggle meeting transcript"
+                                />
                             </div>
 
                             {/* Theme */}
                             <div className="flex items-center justify-between px-4 py-3">
-                                <div className="flex items-center gap-4">
-                                    <div className="w-10 h-10 bg-bg-item-surface rounded-lg border border-border-subtle flex items-center justify-center text-text-tertiary">
+                                <div className="flex items-center gap-4 flex-1 min-w-0">
+                                    <div className="w-10 h-10 shrink-0 bg-bg-item-surface rounded-lg border border-border-subtle flex items-center justify-center text-text-tertiary">
                                         <Palette size={20} />
                                     </div>
                                     <div>
@@ -282,8 +364,8 @@ const GeneralTab: React.FC<{ overlay: SettingsOverlayHook }> = ({ overlay }) => 
 
                             {/* AI Response Language */}
                             <div className="flex items-center justify-between px-4 py-3">
-                                <div className="flex items-center gap-4">
-                                    <div className="w-10 h-10 bg-bg-item-surface rounded-lg border border-border-subtle flex items-center justify-center text-text-tertiary">
+                                <div className="flex items-center gap-4 flex-1 min-w-0">
+                                    <div className="w-10 h-10 shrink-0 bg-bg-item-surface rounded-lg border border-border-subtle flex items-center justify-center text-text-tertiary">
                                         <Globe size={20} />
                                     </div>
                                     <div>
@@ -404,37 +486,13 @@ const GeneralTab: React.FC<{ overlay: SettingsOverlayHook }> = ({ overlay }) => 
                 </div>
             </div>
 
-            {/* Danger Zone */}
-            <div className={`rounded-xl p-5 border border-red-500/30 ${isLight ? 'bg-red-50/60' : 'bg-red-950/20'}`}>
-                <div className="flex items-center justify-between gap-4">
-                    <div className="flex flex-col gap-1">
-                        <h3 className="text-sm font-bold text-red-500">Reset App Data</h3>
-                        <p className="text-xs text-text-secondary max-w-md">
-                            Permanently deletes your local credentials, settings, and offline data on this
-                            device, and signs you out. This can't be undone. The app restarts automatically.
-                        </p>
-                        {resetError && (
-                            <p className="text-xs text-red-500 mt-1">{resetError}</p>
-                        )}
-                    </div>
-                    <button
-                        onClick={handleResetAppData}
-                        disabled={isResetting}
-                        className="shrink-0 flex items-center gap-2 px-3.5 py-2 rounded-lg text-xs font-medium border border-red-500/40 text-red-500 hover:bg-red-500/10 disabled:opacity-50 disabled:cursor-not-allowed transition-all"
-                    >
-                        <RotateCcw size={13} className={isResetting ? 'animate-spin' : ''} />
-                        {isResetting ? 'Resetting…' : 'Reset App Data'}
-                    </button>
-                </div>
-            </div>
-
             {/* DEV-ONLY Danger Zone: full account deletion (Supabase + Firebase Auth) */}
             {import.meta.env.DEV && (
                 <div className={`rounded-xl p-5 border border-red-500/30 ${isLight ? 'bg-red-50/60' : 'bg-red-950/20'}`}>
                     <div className="flex items-center justify-between gap-4">
                         <div className="flex flex-col gap-1">
                             <div className="flex items-center gap-2">
-                                <h3 className="text-sm font-bold text-red-500">Delete My Account (Dev Only)</h3>
+                                <h3 className="text-sm font-bold text-red-500">Delete My Account</h3>
                                 <span className="text-[10px] font-bold uppercase tracking-wide px-1.5 py-0.5 rounded bg-red-500/20 text-red-500">Dev</span>
                             </div>
                             <p className="text-xs text-text-secondary max-w-md">
@@ -447,14 +505,35 @@ const GeneralTab: React.FC<{ overlay: SettingsOverlayHook }> = ({ overlay }) => 
                                 <p className="text-xs text-red-500 mt-1">{deleteAccountError}</p>
                             )}
                         </div>
-                        <button
-                            onClick={handleDeleteCurrentUserAccount}
-                            disabled={isDeletingAccount}
-                            className="shrink-0 flex items-center gap-2 px-3.5 py-2 rounded-lg text-xs font-medium border border-red-500/40 text-red-500 hover:bg-red-500/10 disabled:opacity-50 disabled:cursor-not-allowed transition-all"
-                        >
-                            <Skull size={13} className={isDeletingAccount ? 'animate-pulse' : ''} />
-                            {isDeletingAccount ? 'Deleting…' : 'Delete My Account'}
-                        </button>
+                        <div className="relative shrink-0" ref={deleteDropdownRef}>
+                            <button
+                                onClick={() => setIsDeleteDropdownOpen((o) => !o)}
+                                disabled={isDeletingAccount}
+                                className="flex items-center gap-2 px-3.5 py-2 rounded-lg text-xs font-medium border border-red-500/40 text-red-500 hover:bg-red-500/10 disabled:opacity-50 disabled:cursor-not-allowed transition-all"
+                            >
+                                <Skull size={13} className={isDeletingAccount ? 'animate-pulse' : ''} />
+                                {isDeletingAccount ? 'Deleting…' : 'Delete My Account'}
+                                <ChevronDown size={12} className={`transition-transform ${isDeleteDropdownOpen ? 'rotate-180' : ''}`} />
+                            </button>
+
+                            {isDeleteDropdownOpen && (
+                                <div className={`absolute right-0 top-full mt-1.5 w-48 rounded-lg border shadow-lg overflow-hidden z-10 ${isLight ? 'bg-white border-slate-200' : 'bg-bg-elevated border-border-subtle'}`}>
+                                    {DELETE_SCOPE_OPTIONS.map((opt) => (
+                                        <button
+                                            key={opt.scope}
+                                            onClick={() => handleDeleteScope(opt.scope)}
+                                            className={`w-full flex items-center gap-2 px-3 py-2 text-xs font-medium text-left transition-colors ${opt.scope === 'full-delete'
+                                                ? 'text-red-500 hover:bg-red-500/10'
+                                                : (isLight ? 'text-slate-600 hover:bg-slate-50' : 'text-text-secondary hover:bg-bg-item-surface')
+                                                }`}
+                                        >
+                                            {opt.icon}
+                                            {opt.label}
+                                        </button>
+                                    ))}
+                                </div>
+                            )}
+                        </div>
                     </div>
                 </div>
             )}

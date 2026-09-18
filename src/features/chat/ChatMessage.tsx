@@ -3,9 +3,6 @@ import { Copy, Check, Sparkles } from 'lucide-react';
 import { motion } from 'framer-motion';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
-import remarkMath from 'remark-math';
-import rehypeKatex from 'rehype-katex';
-import 'katex/dist/katex.min.css';
 import { chatMarkdownComponents } from './markdownComponents';
 import SourcesDisplay from './SourcesDisplay';
 import { ChatSources } from '@/types';
@@ -21,7 +18,7 @@ export const UserMessage: React.FC<{ content: string }> = ({ content }) => (
         transition={{ duration: 0.15 }}
         className="flex justify-end mb-4"
     >
-        <div className="bg-gradient-to-br from-blue-500 to-blue-600 text-white px-4 py-2.5 rounded-2xl rounded-tr-md max-w-[80%] text-[13.5px] leading-relaxed shadow-sm">
+        <div className="bg-gradient-to-br from-blue-500 to-blue-600 text-white px-4 py-2.5 rounded-2xl rounded-tr-md max-w-[80%] min-w-0 text-[13.5px] leading-relaxed shadow-sm break-words">
             {content}
         </div>
     </motion.div>
@@ -65,11 +62,16 @@ export const AssistantMessage: React.FC<AssistantMessageProps> = ({ content, isS
                 <Sparkles size={11} className="text-white" />
             </div>
             <div className="flex flex-col items-start min-w-0 max-w-[85%]">
-                <div className="bg-bg-item-surface text-text-primary text-[13.5px] leading-relaxed px-4 py-2.5 rounded-2xl rounded-tl-md">
-                    <div className="markdown-content">
+                <div className="bg-bg-item-surface text-text-primary text-[13.5px] leading-relaxed px-4 py-2.5 rounded-2xl rounded-tl-md min-w-0 max-w-full">
+                    <div className="markdown-content min-w-0 max-w-full overflow-x-hidden">
                         <ReactMarkdown
-                            remarkPlugins={[remarkGfm, remarkMath]}
-                            rehypePlugins={[rehypeKatex]}
+                            // No math plugin here on purpose: sales answers are
+                            // dense with currency ("$204,000 and $173,400"),
+                            // which remark-math/KaTeX happily parses as an
+                            // inline $…$ equation — the mixed-font artifact in
+                            // pricing answers. All other markdown surfaces in
+                            // the app render plain GFM; stay consistent.
+                            remarkPlugins={[remarkGfm]}
                             components={chatMarkdownComponents}
                         >
                             {content}

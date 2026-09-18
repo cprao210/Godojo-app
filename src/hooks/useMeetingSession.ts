@@ -1,7 +1,9 @@
-import { useEffect, useRef } from "react";
+import { useEffect, useRef, useState } from "react";
 import { verifySessionIsActive, signOut as fbSignOut } from "../lib/firebase";
 import { TranscriptSegmentInput, MeetingSessionControls } from "@/types";
 import { posthogAnalytics } from "@/lib/analytics/posthog.service";
+import { isMac } from "@/../utils/platformUtils";
+import { resolveSystemAudioBackend, SCK_BACKEND_PREF_KEY } from "@/lib/systemAudioBackend";
 
 /**
  * Owns the Electron IPC meeting lifecycle (start/end + window-mode switching)
@@ -29,6 +31,9 @@ export function useMeetingSession(
     // the renderer-side half of the same fix.
     const isStartingRef = useRef(false);
 
+    const [showPermissionTray, setShowPermissionTray] = useState(false);
+    const [pendingEvent, setPendingEvent] = useState<any>(null);
+
     // Buffer transcript turns while a backend meeting session is active.
     useEffect(() => {
         const cleanup = window.electronAPI?.onNativeAudioTranscript?.((t) => {
@@ -44,7 +49,7 @@ export function useMeetingSession(
         return () => cleanup?.();
     }, []);
 
-    const handleStartMeeting = async (calendarEvent?: any) => {
+    const handleStartMeetingRaw = async (calendarEvent?: any) => {
 
         if (isStartingRef.current) {
             console.warn("[useMeetingSession] startMeeting already in flight — ignoring duplicate call.");
@@ -66,17 +71,19 @@ export function useMeetingSession(
 
             localStorage.setItem("natively_last_meeting_start", Date.now().toString());
             const inputDeviceId = localStorage.getItem("preferredInputDeviceId");
-            let outputDeviceId = localStorage.getItem("preferredOutputDeviceId");
-            const useExperimentalSck = localStorage.getItem("useExperimentalSckBackend") === "true";
-
-            // Override output device ID to force SCK if experimental mode is enabled.
-            // Default to CoreAudio unless experimental is enabled.
-            if (useExperimentalSck) {
-                console.log("[useMeetingSession] Using ScreenCaptureKit backend (Experimental).");
-                outputDeviceId = "sck";
-            } else {
-                console.log("[useMeetingSession] Using CoreAudio backend (Default).");
-            }
+            // One resolver shared with the Settings toggle, so what the toggle
+            // shows is what the meeting runs (see src/lib/systemAudioBackend.ts).
+            const backend = resolveSystemAudioBackend({
+                savedPreference: localStorage.getItem(SCK_BACKEND_PREF_KEY),
+                isMac,
+                preferredOutputDeviceId: localStorage.getItem("preferredOutputDeviceId"),
+            });
+            const outputDeviceId = backend.outputDeviceId;
+            console.log(
+                backend.useSck
+                    ? "[useMeetingSession] System audio backend: ScreenCaptureKit (default)."
+                    : `[useMeetingSession] System audio backend: platform default (CoreAudio tap on macOS), output=${outputDeviceId || "default"}.`,
+            );
 
             // Merge calendar event data if provided.
             const meetingMetadata = {
@@ -87,12 +94,21 @@ export function useMeetingSession(
                     source: "calendar",
                     attendees: calendarEvent.attendees || [],
                     organizer: calendarEvent.organizer || "",
+                    // Full raw calendar event, carried through verbatim so the backend
+                    // can persist it to meetings.calendar_event_metadata (mirrors the
+                    // main-process calendar-notification path in main.ts). Without this,
+                    // calendarEventId was saved but calendar_event_metadata stayed empty
+                    // because the full event never reached the backend.
+                    calendarEvent,
                 }),
             };
 
             const result = await window.electronAPI.startMeeting(meetingMetadata);
             if (result.success) {
-                await window.electronAPI.setWindowMode("overlay");
+                // freshMeetingStart=true: skip WindowHelper's stale-bounds/216px
+                // floor and size the window directly to the collapsed dock
+                // height, avoiding the expand→collapse flicker on every start.
+                await window.electronAPI.setWindowMode("overlay", undefined, true);
             } else {
                 console.error("Failed to start meeting:", result.error);
                 posthogAnalytics.trackMeetingStartFailed(result.error || "unknown");
@@ -143,5 +159,43 @@ export function useMeetingSession(
         }
     };
 
-    return { handleStartMeeting, handleEndMeeting };
+    const handleStartMeeting = async (calendarEvent?: any) => {
+        if (isStartingRef.current) return;
+
+        // Optional-chained and wrapped: an unguarded reject here escaped the
+        // click handler as an unhandled rejection, leaving the button dead with
+        // no feedback. A permission check failing must never be worse than
+        // proceeding, so on error we fall through and let the main-process gates
+        // (which re-check anyway) make the call.
+        try {
+            const perms = await window.electronAPI?.checkPermissions?.();
+            // screenCapture is included because the tray's "all granted" state
+            // requires it — checking only microphone/systemAudio meant the tray
+            // could never be satisfied and the user got stuck behind it.
+            if (perms && (!perms.microphone || !perms.systemAudio || !perms.screenCapture)) {
+                setPendingEvent(calendarEvent);
+                setShowPermissionTray(true);
+                return;
+            }
+        } catch (err) {
+            console.warn('[useMeetingSession] Permission pre-check failed; continuing to start:', err);
+        }
+
+        await handleStartMeetingRaw(calendarEvent);
+    };
+
+    const proceedWithMeeting = () => {
+        if (!showPermissionTray) return; // Prevent proceeding if not explicitly triggered
+        setShowPermissionTray(false);
+        handleStartMeetingRaw(pendingEvent);
+        setPendingEvent(null);
+    };
+
+    return {
+        handleStartMeeting,
+        handleEndMeeting,
+        showPermissionTray,
+        setShowPermissionTray,
+        proceedWithMeeting
+    };
 }

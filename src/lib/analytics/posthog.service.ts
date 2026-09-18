@@ -418,7 +418,7 @@ class PostHogService {
 
     // --- Core Event Sender ---
 
-    private trackEvent(eventName: string, properties?: Record<string, any>): void {
+    public trackEvent(eventName: string, properties?: Record<string, any>): void {
         if (import.meta.env.DEV) {
             console.log(`[PostHog] ${eventName}`, properties);
         }

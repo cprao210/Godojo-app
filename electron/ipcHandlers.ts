@@ -1,7 +1,13 @@
 // ipcHandlers.ts
 
 import { app, ipcMain, shell, dialog, desktopCapturer, systemPreferences, BrowserWindow, screen, session } from "electron"
-import { AppState } from "./main"
+import { AppState, getLatestSystemAudioPermissionWarning } from "./main"
+import {
+  getMacMicrophoneStatus,
+  getMacScreenCaptureStatus,
+  MAC_SETTINGS_PANES,
+  type MacSettingsPane,
+} from './utils/macPermissions';
 import { GEMINI_FLASH_MODEL } from "./IntelligenceManager"
 import { DatabaseManager } from "./db/DatabaseManager"; // Import Database Manager
 import { SupabaseReadService } from "./db/SupabaseReadService";
@@ -35,6 +41,40 @@ export function initializeIpcHandlers(appState: AppState): void {
     ipcMain.handle(channel, listener);
   };
 
+  // Reports whether the GPU is actually accelerating rendering/compositing
+  // on this machine. `app.getGPUFeatureStatus()` reflects Chromium's real
+  // decision — including its GPU blocklist, which covers a lot of
+  // older/weaker integrated GPUs — not just "does a GPU exist". When
+  // rasterization or gpu_compositing have fallen back to software, expensive
+  // effects like backdrop-filter blur get far more costly (CPU-bound instead
+  // of GPU-composited), which is the main driver of lag/hangs reported on
+  // mid-range machines. The renderer uses this once at startup to decide
+  // whether to default Performance Mode on. See usePerformanceMode.ts.
+  safeHandle('get-gpu-performance-status', async () => {
+    try {
+      // Electron types GPUFeatureStatus as a fixed set of known keys, not an
+      // index signature — cast through `unknown` first since we only need
+      // generic string lookups here (some keys/values vary by Chromium
+      // version, which the fixed type doesn't fully capture anyway).
+      const status = app.getGPUFeatureStatus() as unknown as Record<string, string>;
+      const isSoftwareFallback = (feature?: string) =>
+        !!feature && /software|disabled|unavailable/i.test(feature);
+      const isLowPowerGpu =
+        isSoftwareFallback(status.gpu_compositing) ||
+        isSoftwareFallback(status.rasterization) ||
+        isSoftwareFallback(status['2d_canvas']);
+
+      console.log("[ipcHandler] isLowPowerGpu", isLowPowerGpu);
+      return { isLowPowerGpu, raw: status };
+    } catch (err) {
+      // If we can't determine GPU status, don't assume the worst — default
+      // to the current (full-fidelity) behavior rather than silently
+      // degrading visuals for everyone on a query failure.
+      console.warn('[ipcHandlers] get-gpu-performance-status failed:', err);
+      return { isLowPowerGpu: false, raw: null };
+    }
+  });
+
   // Relays renderer-side errors (currently: ErrorBoundary.componentDidCatch,
   // see src/features/common/ErrorBoundary.tsx) into main-process error
   // tracking. The renderer already reports these to PostHog directly via
@@ -64,32 +104,43 @@ export function initializeIpcHandlers(appState: AppState): void {
   });
 
   // --- NEW Test Helper ---
+  // Dev/diagnostics only (triggered by the UpdateBanner's Cmd/Ctrl+I shortcut).
+  // Deliberately shipped unguarded in the IPC surface but gated here: a stray
+  // production invocation would force a GitHub API fetch and fake an
+  // "update-available" modal out of the latest release's notes.
   safeHandle("test-release-fetch", async () => {
-    try {
-      console.log("[IPC] Manual Test Fetch triggered (forcing refresh)...");
-      const { ReleaseNotesManager } = require('./update/ReleaseNotesManager');
-      const notes = await ReleaseNotesManager.getInstance().fetchReleaseNotes('latest', true);
+    if (!app.isPackaged) {
+      try {
+        console.log("[IPC] Manual Test Fetch triggered (forcing refresh)...");
+        const { ReleaseNotesManager } = require('./update/ReleaseNotesManager');
+        const notes = await ReleaseNotesManager.getInstance().fetchReleaseNotes('latest', true);
 
-      if (notes) {
-        console.log("[IPC] Notes fetched for:", notes.version);
-        const info = {
-          version: notes.version || 'latest',
-          files: [] as any[],
-          path: '',
-          sha512: '',
-          releaseName: notes.summary,
-          releaseNotes: notes.fullBody,
-          parsedNotes: notes
-        };
-        // Send to renderer
-        appState.getMainWindow()?.webContents.send("update-available", info);
-        return { success: true };
+        if (notes) {
+          console.log("[IPC] Notes fetched for:", notes.version);
+          const info = {
+            version: notes.version || 'latest',
+            files: [] as any[],
+            path: '',
+            sha512: '',
+            releaseName: notes.summary,
+            releaseNotes: notes.fullBody,
+            parsedNotes: notes
+          };
+          // Broadcast like every other update event — the dev shortcut can be
+          // hit from any window, and getMainWindow() only covers the
+          // launcher/overlay split.
+          BrowserWindow.getAllWindows().forEach(win => {
+            if (!win.isDestroyed()) win.webContents.send("update-available", info);
+          });
+          return { success: true };
+        }
+        return { success: false, error: "No notes returned" };
+      } catch (err: any) {
+        console.error("[IPC] test-release-fetch failed:", err);
+        return { success: false, error: err.message };
       }
-      return { success: false, error: "No notes returned" };
-    } catch (err: any) {
-      console.error("[IPC] test-release-fetch failed:", err);
-      return { success: false, error: err.message };
     }
+    return { success: false, error: 'test-release-fetch is dev-only' };
   });
 
   safeHandle("license:activate", async (event, key: string) => {
@@ -184,7 +235,13 @@ export function initializeIpcHandlers(appState: AppState): void {
       const overlayWin = appState.getWindowHelper().getOverlayWindow()
       const launcherWin = appState.getWindowHelper().getLauncherWindow()
 
-      if (settingsWin && !settingsWin.isDestroyed() && settingsWin.webContents.id === senderWebContents.id) {
+      if (appState.meetingPopupWindowHelper.ownsWebContentsId(senderWebContents.id)) {
+        // The reminder card sizes itself to its content (title wrapping,
+        // attendee count, streamed blurb), so it reports its measured height.
+        // One popup window per connected display can report this — the
+        // helper applies whichever height it gets to every copy of the card.
+        appState.meetingPopupWindowHelper.setWindowDimensions(width, height)
+      } else if (settingsWin && !settingsWin.isDestroyed() && settingsWin.webContents.id === senderWebContents.id) {
         appState.settingsWindowHelper.setWindowDimensions(settingsWin, width, height)
       } else if (
         overlayWin && !overlayWin.isDestroyed() && overlayWin.webContents.id === senderWebContents.id
@@ -201,8 +258,23 @@ export function initializeIpcHandlers(appState: AppState): void {
     }
   )
 
-  safeHandle("set-window-mode", async (event, mode: 'launcher' | 'overlay', inactive?: boolean) => {
-    appState.getWindowHelper().setWindowMode(mode, inactive);
+  /**
+   * Overlay renderer handshake, mirroring `meeting-popup:ready`.
+   *
+   * `session-reset` — the floating dock's only "a call started" signal — is a
+   * fire-and-forget send that is silently dropped if the renderer has not yet
+   * subscribed. did-finish-load isn't enough: the page can be loaded before
+   * React runs its listener. The overlay announces itself here instead, so a
+   * meeting started with no user interaction (the calendar reminder popup) can
+   * wait for a renderer that is genuinely listening.
+   */
+  safeHandle("overlay:ready", async () => {
+    appState.getWindowHelper().markOverlayRendererReady();
+    return { success: true };
+  });
+
+  safeHandle("set-window-mode", async (event, mode: 'launcher' | 'overlay', inactive?: boolean, freshMeetingStart?: boolean) => {
+    appState.getWindowHelper().setWindowMode(mode, inactive, freshMeetingStart);
     return { success: true };
   })
 
@@ -293,6 +365,14 @@ export function initializeIpcHandlers(appState: AppState): void {
 
   safeHandle("get-meeting-active", async () => {
     return appState.getIsMeetingActive();
+  })
+
+  // Lets the overlay renderer (a separate window/context from wherever
+  // startMeeting() was called) fetch the calendar event metadata the current
+  // meeting was started with — e.g. to forward it to /chat/live alongside
+  // the live transcript. Returns null outside an active meeting.
+  safeHandle("get-meeting-metadata", async () => {
+    return appState.getIntelligenceManager().getMeetingMetadata() ?? null;
   })
 
   safeHandle("reset-queues", async () => {
@@ -575,15 +655,22 @@ export function initializeIpcHandlers(appState: AppState): void {
     }
   });
 
-  safeHandle("update-live-analysis", async (event, data: LiveAnalysisData) => {
-    console.log('[IPC] Received live analysis:', Object.keys(data));
-    appState.setCurrentLiveAnalysis(data);
+  // `generation` identifies the call this result was computed for. The renderer
+  // stamps it so a run that resolves after its meeting ended can be routed to
+  // that meeting's row rather than into the call that is live now.
+  safeHandle("update-live-analysis", async (event, data: LiveAnalysisData, generation?: number | null) => {
+    console.log('[IPC] Received live analysis:', Object.keys(data), `gen=${generation ?? 'untagged'}`);
+    appState.setCurrentLiveAnalysis(data, generation ?? null);
     return { success: true };
   });
 
-  safeHandle("set-live-analysis-in-flight", async (event, inFlight: boolean) => {
-    appState.setLiveAnalysisInFlight(inFlight);
+  safeHandle("set-live-analysis-in-flight", async (event, inFlight: boolean, generation?: number | null) => {
+    appState.setLiveAnalysisInFlight(inFlight, generation ?? null);
     return { success: true };
+  });
+
+  safeHandle("get-meeting-generation", async () => {
+    return { success: true, data: appState.getMeetingGeneration() };
   });
 
   safeHandle("quit-app", () => {
@@ -597,7 +684,33 @@ export function initializeIpcHandlers(appState: AppState): void {
     return { success: true };
   });
 
+  // Same, but for EVERY window — the account-switch reload. hard-refresh only
+  // reloads the sender, which leaves the overlay/settings/model-selector
+  // renderers running with the previous account's React state and their own
+  // Firebase auth listeners; those can still push a stale token back into
+  // AuthManager after the switch has completed. Kept as a separate channel so
+  // the Launcher's manual refresh button (which uses hard-refresh) can't
+  // accidentally reload a live meeting overlay.
+  safeHandle("reload-all-windows", () => {
+    BrowserWindow.getAllWindows().forEach(win => {
+      if (!win.isDestroyed()) win.webContents.reloadIgnoringCache();
+    });
+    return { success: true };
+  });
+
   safeHandle("quit-and-install-update", async () => {
+    // Production-only, like its siblings check-for-updates / download-update:
+    // in dev there is no downloaded update and the fallback path used to
+    // app.exit(0), silently killing a dev session from a stray click.
+    if (!app.isPackaged) {
+      return { success: false, error: 'Updates are disabled in development builds' }
+    }
+    // Never tear down a live call to apply an update. The renderer refuses
+    // too (useUpdateStatus.installUpdate); this is the backstop for any
+    // other caller.
+    if (appState.getIsMeetingActive()) {
+      return { success: false, error: 'End the current meeting before restarting to install the update.' }
+    }
     try {
       console.log('[IPC] Quit and install update requested')
       await appState.quitAndInstallUpdate()
@@ -757,12 +870,43 @@ export function initializeIpcHandlers(appState: AppState): void {
       openAsHidden: false,
       path: app.getPath('exe') // Explicitly point to executable for production reliability
     });
+    // Remember what we registered. The OS getter below is unreliable in
+    // packaged builds, so the persisted value is what the Settings toggle
+    // actually reflects.
+    const { SettingsManager } = require('./services/SettingsManager');
+    SettingsManager.getInstance().set('openAtLogin', openAtLogin);
     return { success: true };
   });
 
   safeHandle("get-open-at-login", async () => {
-    const settings = app.getLoginItemSettings();
-    return settings.openAtLogin;
+    // Trust our own registration record first. app.getLoginItemSettings()
+    // routinely misreports false for packaged apps (macOS registers the login
+    // item asynchronously via SMAppService and matches on bundle identity;
+    // Windows compares the Startup shortcut's target against the `path`
+    // option) — the functional behavior was correct while the toggle showed
+    // OFF. Fall back to the OS only for installs that predate this record,
+    // querying with the SAME path the setter used so the comparison is
+    // symmetric.
+    const { SettingsManager } = require('./services/SettingsManager');
+    const persisted = SettingsManager.getInstance().get('openAtLogin');
+    if (typeof persisted === 'boolean') return persisted;
+    try {
+      return app.getLoginItemSettings({ path: app.getPath('exe') }).openAtLogin;
+    } catch {
+      return false;
+    }
+  });
+
+  // Generic native toast for renderer-side watchers (invite-accepted, etc.) —
+  // routes to AppState.showAppNotification (same cross-screen pipeline as the
+  // meeting pause/resume/summary toasts). Copy is supplied by the renderer;
+  // main just renders it.
+  safeHandle("show-app-notification", async (_, { title, message }: { title: string; message: string }) => {
+    const safeTitle = String(title ?? '').slice(0, 80);
+    const safeMessage = String(message ?? '').slice(0, 200);
+    if (!safeTitle) return { success: false, error: 'title required' };
+    appState.showAppNotification(safeTitle, safeMessage);
+    return { success: true };
   });
 
   safeHandle("get-verbose-logging", async () => {
@@ -869,20 +1013,24 @@ export function initializeIpcHandlers(appState: AppState): void {
     }
   });
 
-  // Dedicated API key setters (for Settings UI Save buttons)
+  // Dedicated API key setters (for Settings UI Save buttons).
+  //
+  // These used to push the raw `apiKey` argument straight into LLMHelper, which
+  // meant removing a key ("" from the UI) built a client around an empty string
+  // instead of falling back to the shared default, and an untrimmed paste was
+  // used verbatim. They now save through CredentialsManager and re-sync from the
+  // *resolved* value, so "user key wins, default is the fallback" is decided in
+  // exactly one place.
   safeHandle("set-gemini-api-key", async (_, apiKey: string) => {
     try {
       const { CredentialsManager } = require('./services/CredentialsManager');
       CredentialsManager.getInstance().setGeminiApiKey(apiKey);
 
-      // Also update the LLMHelper immediately
-      const llmHelper = appState.processingHelper.getLLMHelper();
-      llmHelper.setApiKey(apiKey);
-
       // CQ-06 fix: cancel any in-flight LLM stream before swapping LLM clients.
       // Use resetEngine() (NOT reset()) so session transcript is preserved mid-meeting.
       // initializeLLMs() now also calls engine.reset() internally for double-safety.
       appState.getIntelligenceManager().resetEngine();
+      appState.processingHelper.syncLlmKeysFromCredentials('user_save_gemini');
       // Re-init IntelligenceManager
       appState.getIntelligenceManager().initializeLLMs();
 
@@ -898,14 +1046,12 @@ export function initializeIpcHandlers(appState: AppState): void {
       const { CredentialsManager } = require('./services/CredentialsManager');
       CredentialsManager.getInstance().setGroqApiKey(apiKey);
 
-      // Also update the LLMHelper immediately
-      const llmHelper = appState.processingHelper.getLLMHelper();
-      llmHelper.setGroqApiKey(apiKey);
-
       // CQ-06 fix: cancel in-flight stream before re-init (engine only, not session)
       appState.getIntelligenceManager().resetEngine();
-      // Re-init IntelligenceManager
+      appState.processingHelper.syncLlmKeysFromCredentials('user_save_groq');
       appState.getIntelligenceManager().initializeLLMs();
+      // Groq also backs the Groq STT provider.
+      void appState.syncSttCredentials('user_save_groq');
 
       return { success: true };
     } catch (error: any) {
@@ -919,14 +1065,12 @@ export function initializeIpcHandlers(appState: AppState): void {
       const { CredentialsManager } = require('./services/CredentialsManager');
       CredentialsManager.getInstance().setOpenaiApiKey(apiKey);
 
-      // Also update the LLMHelper immediately
-      const llmHelper = appState.processingHelper.getLLMHelper();
-      llmHelper.setOpenaiApiKey(apiKey);
-
       // CQ-06 fix: cancel in-flight stream before re-init (engine only, not session)
       appState.getIntelligenceManager().resetEngine();
-      // Re-init IntelligenceManager
+      appState.processingHelper.syncLlmKeysFromCredentials('user_save_openai');
       appState.getIntelligenceManager().initializeLLMs();
+      // OpenAI also backs the OpenAI STT provider.
+      void appState.syncSttCredentials('user_save_openai');
 
       return { success: true };
     } catch (error: any) {
@@ -940,13 +1084,9 @@ export function initializeIpcHandlers(appState: AppState): void {
       const { CredentialsManager } = require('./services/CredentialsManager');
       CredentialsManager.getInstance().setClaudeApiKey(apiKey);
 
-      // Also update the LLMHelper immediately
-      const llmHelper = appState.processingHelper.getLLMHelper();
-      llmHelper.setClaudeApiKey(apiKey);
-
       // CQ-06 fix: cancel in-flight stream before re-init (engine only, not session)
       appState.getIntelligenceManager().resetEngine();
-      // Re-init IntelligenceManager
+      appState.processingHelper.syncLlmKeysFromCredentials('user_save_claude');
       appState.getIntelligenceManager().initializeLLMs();
 
       return { success: true };
@@ -1105,29 +1245,38 @@ export function initializeIpcHandlers(appState: AppState): void {
   safeHandle("get-stored-credentials", async () => {
     try {
       const { CredentialsManager } = require('./services/CredentialsManager');
-      const creds = CredentialsManager.getInstance().getAllCredentials();
-
-      // Return masked versions for security (just indicate if set)
-      const hasKey = (key?: string) => !!(key && key.trim().length > 0);
+      const cm = CredentialsManager.getInstance();
+      const creds = cm.getAllCredentials();
+      // `keySources` says which tier each key comes from: 'user' | 'backend_fallback'
+      // | 'env_bundled' | 'none'. The hasXKey booleans stay "usable from any tier"
+      // (that is what gates the model pickers), but they now include the backend
+      // fallback keys too — previously a user signed in with only backend defaults
+      // was told they had no Gemini/Groq key at all.
+      const sources = cm.getKeySources();
+      const usable = (provider: string) => sources[provider] !== 'none';
 
       return {
-        hasGeminiKey: hasKey(creds.geminiApiKey || process.env.GEMINI_API_KEY),
-        hasGroqKey: hasKey(creds.groqApiKey || process.env.GROQ_API_KEY),
-        hasOpenaiKey: hasKey(creds.openaiApiKey),
-        hasClaudeKey: hasKey(creds.claudeApiKey),
+        hasGeminiKey: usable('gemini'),
+        hasGroqKey: usable('groq'),
+        hasOpenaiKey: usable('openai'),
+        hasClaudeKey: usable('claude'),
         googleServiceAccountPath: creds.googleServiceAccountPath || null,
         sttProvider: creds.sttProvider || 'deepgram',
         groqSttModel: creds.groqSttModel || 'whisper-large-v3-turbo',
-        hasSttGroqKey: hasKey(creds.groqSttApiKey),
-        hasSttOpenaiKey: hasKey(creds.openAiSttApiKey),
-        hasDeepgramKey: hasKey(creds.deepgramApiKey || process.env.DEEPGRAM_API_KEY),
-        hasElevenLabsKey: hasKey(creds.elevenLabsApiKey),
-        hasAzureKey: hasKey(creds.azureApiKey),
+        hasSttGroqKey: usable('groq_stt'),
+        hasSttOpenaiKey: usable('openai_stt'),
+        hasDeepgramKey: usable('deepgram'),
+        hasElevenLabsKey: usable('elevenlabs'),
+        hasAzureKey: usable('azure'),
         azureRegion: creds.azureRegion || 'eastus',
-        hasIbmWatsonKey: hasKey(creds.ibmWatsonApiKey),
+        hasIbmWatsonKey: usable('ibmwatson'),
         ibmWatsonRegion: creds.ibmWatsonRegion || 'us-south',
-        hasSonioxKey: hasKey(creds.sonioxApiKey),
-        hasTavilyKey: hasKey(creds.tavilyApiKey || process.env.TAVILY_API_KEY),
+        hasSonioxKey: usable('soniox'),
+        hasTavilyKey: usable('tavily'),
+        keySources: sources,
+        // 'failed' means the stored file could not be decrypted, so the UI can ask
+        // for re-entry instead of silently showing empty fields.
+        credentialStoreState: cm.getStoreHealth().loadState,
         // Dynamic Model Discovery - preferred models
         geminiPreferredModel: creds.geminiPreferredModel || undefined,
         groqPreferredModel: creds.groqPreferredModel || undefined,
@@ -1135,7 +1284,19 @@ export function initializeIpcHandlers(appState: AppState): void {
         claudePreferredModel: creds.claudePreferredModel || undefined,
       };
     } catch (error: any) {
-      return { hasGeminiKey: process.env.GEMINI_API_KEY !== null, hasGroqKey: process.env.GROQ_API_KEY !== null, hasOpenaiKey: false, hasClaudeKey: false, googleServiceAccountPath: null, sttProvider: 'deepgram', groqSttModel: 'whisper-large-v3-turbo', hasSttGroqKey: false, hasSttOpenaiKey: false, hasDeepgramKey: process.env.DEEPGRAM_API_KEY !== null, hasElevenLabsKey: false, hasAzureKey: false, azureRegion: 'southeastasia', hasIbmWatsonKey: false, ibmWatsonRegion: 'us-south', hasSonioxKey: false, hasTavilyKey: process.env.TAVILY_API_KEY !== null };
+      // The old fallback used `process.env.X !== null`, which is true even when
+      // the variable is unset — the UI was told every key existed.
+      const envHas = (v?: string) => !!v && v.trim().length > 0;
+      return {
+        hasGeminiKey: envHas(process.env.GEMINI_API_KEY), hasGroqKey: envHas(process.env.GROQ_API_KEY),
+        hasOpenaiKey: false, hasClaudeKey: false, googleServiceAccountPath: null,
+        sttProvider: 'deepgram', groqSttModel: 'whisper-large-v3-turbo',
+        hasSttGroqKey: false, hasSttOpenaiKey: false,
+        hasDeepgramKey: envHas(process.env.DEEPGRAM_API_KEY), hasElevenLabsKey: false,
+        hasAzureKey: false, azureRegion: 'southeastasia', hasIbmWatsonKey: false,
+        ibmWatsonRegion: 'us-south', hasSonioxKey: false,
+        hasTavilyKey: envHas(process.env.TAVILY_API_KEY),
+      };
     }
   });
 
@@ -1162,12 +1323,25 @@ export function initializeIpcHandlers(appState: AppState): void {
 
       const { fetchProviderModels } = require('./utils/modelFetcher');
       const models = await fetchProviderModels(provider, key);
+      // Piggyback: every successful manual fetch also refreshes the app-wide
+      // live-catalog cache used for auto-resolution and retirement healing.
+      try {
+        const { ModelCatalog } = require('./services/ModelCatalog');
+        ModelCatalog.getInstance().updateCache(provider, (models || []).map((m: any) => m.id).filter(Boolean));
+      } catch { /* cache update is best-effort */ }
       return { success: true, models };
     } catch (error: any) {
       console.error(`[IPC] Failed to fetch ${provider} models:`, error);
       const msg = error?.response?.data?.error?.message || error.message || 'Failed to fetch models';
       return { success: false, error: msg };
     }
+  });
+
+  // Snapshot of every provider's current model list (live cache > seeds),
+  // consumed by the renderer's model dropdowns so they stop being hardcoded.
+  safeHandle("model-catalog:get", async () => {
+    const { ModelCatalog } = require('./services/ModelCatalog');
+    return { providers: ModelCatalog.getInstance().snapshot() };
   });
 
   safeHandle("set-provider-preferred-model", async (_, provider: 'gemini' | 'groq' | 'openai' | 'claude', modelId: string) => {
@@ -1230,6 +1404,29 @@ export function initializeIpcHandlers(appState: AppState): void {
     }
   });
 
+  // Render non-English transcript finals into English before display/storage.
+  safeHandle("set-translate-transcripts", async (_, enabled: boolean) => {
+    try {
+      const { CredentialsManager } = require('./services/CredentialsManager');
+      CredentialsManager.getInstance().setTranslateTranscriptsToEnglish(!!enabled);
+      // Rebuild STT so the running meeting picks the change up immediately.
+      await appState.reconfigureSttProvider();
+      return { success: true };
+    } catch (error: any) {
+      console.error("Error setting transcript translation:", error);
+      return { success: false, error: error.message };
+    }
+  });
+
+  safeHandle("get-translate-transcripts", async () => {
+    try {
+      const { CredentialsManager } = require('./services/CredentialsManager');
+      return CredentialsManager.getInstance().getTranslateTranscriptsToEnglish();
+    } catch {
+      return true;
+    }
+  });
+
   // Echo pipeline mode for the native audio gate ('legacy' | 'phase1' | 'full_duplex').
   safeHandle("set-echo-pipeline-mode", async (_, mode: string) => {
     try {
@@ -1275,10 +1472,17 @@ export function initializeIpcHandlers(appState: AppState): void {
     }
   });
 
+  // STT key setters. Each one now re-syncs the live STT providers: the providers
+  // are constructed once (`if (!this.googleSTT)`) and cache their key, so saving
+  // a key here used to have no effect until the app was restarted — the reason a
+  // freshly-entered Deepgram key looked like it was "not accepted".
+  // syncSttCredentials() no-ops when nothing actually changed, and defers the
+  // rebuild to the end of the meeting when one is in progress.
   safeHandle("set-groq-stt-api-key", async (_, apiKey: string) => {
     try {
       const { CredentialsManager } = require('./services/CredentialsManager');
       CredentialsManager.getInstance().setGroqSttApiKey(apiKey);
+      await appState.syncSttCredentials('user_save_groq_stt');
       return { success: true };
     } catch (error: any) {
       console.error("Error saving Groq STT API key:", error);
@@ -1290,6 +1494,7 @@ export function initializeIpcHandlers(appState: AppState): void {
     try {
       const { CredentialsManager } = require('./services/CredentialsManager');
       CredentialsManager.getInstance().setOpenAiSttApiKey(apiKey);
+      await appState.syncSttCredentials('user_save_openai_stt');
       return { success: true };
     } catch (error: any) {
       console.error("Error saving OpenAI STT API key:", error);
@@ -1301,6 +1506,7 @@ export function initializeIpcHandlers(appState: AppState): void {
     try {
       const { CredentialsManager } = require('./services/CredentialsManager');
       CredentialsManager.getInstance().setDeepgramApiKey(apiKey);
+      await appState.syncSttCredentials('user_save_deepgram');
       return { success: true };
     } catch (error: any) {
       console.error("Error saving Deepgram API key:", error);
@@ -1327,6 +1533,7 @@ export function initializeIpcHandlers(appState: AppState): void {
     try {
       const { CredentialsManager } = require('./services/CredentialsManager');
       CredentialsManager.getInstance().setElevenLabsApiKey(apiKey);
+      await appState.syncSttCredentials('user_save_elevenlabs');
       return { success: true };
     } catch (error: any) {
       console.error("Error saving ElevenLabs API key:", error);
@@ -1338,6 +1545,7 @@ export function initializeIpcHandlers(appState: AppState): void {
     try {
       const { CredentialsManager } = require('./services/CredentialsManager');
       CredentialsManager.getInstance().setAzureApiKey(apiKey);
+      await appState.syncSttCredentials('user_save_azure');
       return { success: true };
     } catch (error: any) {
       console.error("Error saving Azure API key:", error);
@@ -1364,6 +1572,7 @@ export function initializeIpcHandlers(appState: AppState): void {
     try {
       const { CredentialsManager } = require('./services/CredentialsManager');
       CredentialsManager.getInstance().setIbmWatsonApiKey(apiKey);
+      await appState.syncSttCredentials('user_save_ibmwatson');
       return { success: true };
     } catch (error: any) {
       console.error("Error saving IBM Watson API key:", error);
@@ -1375,6 +1584,7 @@ export function initializeIpcHandlers(appState: AppState): void {
     try {
       const { CredentialsManager } = require('./services/CredentialsManager');
       CredentialsManager.getInstance().setSonioxApiKey(apiKey);
+      await appState.syncSttCredentials('user_save_soniox');
       return { success: true };
     } catch (error: any) {
       console.error("Error saving Soniox API key:", error);
@@ -1558,8 +1768,8 @@ export function initializeIpcHandlers(appState: AppState): void {
     }
   });
 
-  safeHandle("test-llm-connection", async (_, provider: 'gemini' | 'groq' | 'openai' | 'claude', apiKey?: string) => {
-    console.log(`[IPC] Received test-llm-connection request for provider: ${provider}`);
+  safeHandle("test-llm-connection", async (_, provider: 'gemini' | 'groq' | 'openai' | 'claude', apiKey?: string, modelId?: string) => {
+    console.log(`[IPC] Received test-llm-connection request for provider: ${provider}${modelId ? ` (model: ${modelId})` : ''}`);
     try {
       if (!apiKey || !apiKey.trim()) {
         const { CredentialsManager } = require('./services/CredentialsManager');
@@ -1575,45 +1785,75 @@ export function initializeIpcHandlers(appState: AppState): void {
       }
 
       const axios = require('axios');
-      let response;
+      const { ModelCatalog } = require('./services/ModelCatalog');
+      const catalog = ModelCatalog.getInstance();
+      // Test the model the user PICKED in the card's dropdown (healed through
+      // the catalog in case it was retired since it was stored). With no
+      // explicit pick, fall back to the provider's current capable model —
+      // a hardcoded test model broke wholesale every time a provider retired
+      // it (Groq Aug-2026, Gemini May-2026).
+      let testModel: string;
+      if (modelId) {
+        const healed = catalog.healSync(provider, modelId);
+        if (healed.migratedFrom) catalog.recordMigration(provider, healed);
+        testModel = healed.id;
+      } else {
+        testModel = catalog.resolve(provider, 'capable');
+      }
 
-      if (provider === 'gemini') {
-        const url = `https://generativelanguage.googleapis.com/v1beta/models/gemini-3.1-flash-lite-preview:generateContent`;
-        response = await axios.post(url, {
-          contents: [{ parts: [{ text: "Hello" }] }]
-        }, {
-          headers: { 'x-goog-api-key': apiKey },
-          timeout: 15000
-        });
-      } else if (provider === 'groq') {
-        response = await axios.post('https://api.groq.com/openai/v1/chat/completions', {
-          model: "llama-3.3-70b-versatile",
-          messages: [{ role: "user", content: "Hello" }]
-        }, {
-          headers: { Authorization: `Bearer ${apiKey}` },
-          timeout: 15000
-        });
-      } else if (provider === 'openai') {
-        response = await axios.post('https://api.openai.com/v1/chat/completions', {
-          model: "gpt-4o-mini",
-          messages: [{ role: "user", content: "Hello" }]
-        }, {
-          headers: { Authorization: `Bearer ${apiKey}` },
-          timeout: 15000
-        });
-      } else if (provider === 'claude') {
-        response = await axios.post('https://api.anthropic.com/v1/messages', {
-          model: "claude-sonnet-4-6",
-          max_tokens: 10,
-          messages: [{ role: "user", content: "Hello" }]
-        }, {
-          headers: {
-            'x-api-key': apiKey,
-            'anthropic-version': '2023-06-01',
-            'content-type': 'application/json'
-          },
-          timeout: 15000
-        });
+      const attempt = async (model: string) => {
+        if (provider === 'gemini') {
+          const url = `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent`;
+          return axios.post(url, {
+            contents: [{ parts: [{ text: "Hello" }] }]
+          }, {
+            headers: { 'x-goog-api-key': apiKey },
+            timeout: 15000
+          });
+        } else if (provider === 'groq') {
+          return axios.post('https://api.groq.com/openai/v1/chat/completions', {
+            model,
+            messages: [{ role: "user", content: "Hello" }]
+          }, {
+            headers: { Authorization: `Bearer ${apiKey}` },
+            timeout: 15000
+          });
+        } else if (provider === 'openai') {
+          return axios.post('https://api.openai.com/v1/chat/completions', {
+            model,
+            messages: [{ role: "user", content: "Hello" }]
+          }, {
+            headers: { Authorization: `Bearer ${apiKey}` },
+            timeout: 15000
+          });
+        } else if (provider === 'claude') {
+          return axios.post('https://api.anthropic.com/v1/messages', {
+            model,
+            max_tokens: 10,
+            messages: [{ role: "user", content: "Hello" }]
+          }, {
+            headers: {
+              'x-api-key': apiKey,
+              'anthropic-version': '2023-06-01',
+              'content-type': 'application/json'
+            },
+            timeout: 15000
+          });
+        }
+      };
+
+      let response;
+      try {
+        response = await attempt(testModel);
+      } catch (err: any) {
+        // Self-heal: if the tested model looks retired, force-refresh this
+        // provider's catalog with the key being tested and retry once with
+        // the current model. Genuine overload/key errors propagate as-is.
+        const text = err?.response?.data?.error?.message || err?.message || '';
+        const migrated = await catalog.migrateOnFailure(provider, testModel, text).catch((): string | null => null);
+        if (!migrated || migrated === testModel) throw err;
+        console.log(`[IPC] test-llm-connection: ${testModel} retired — retesting with ${migrated}`);
+        response = await attempt(migrated);
       }
 
       if (response && (response.status === 200 || response.status === 201)) {
@@ -1725,7 +1965,7 @@ export function initializeIpcHandlers(appState: AppState): void {
       return { model: cm.getDefaultModel() };
     } catch (error: any) {
       console.error("Error getting default model:", error);
-      return { model: 'gemini-3.1-flash-lite-preview' };
+      return { model: 'gemini-3.1-flash-lite' };
     }
   });
 
@@ -1760,8 +2000,8 @@ export function initializeIpcHandlers(appState: AppState): void {
     return AudioDevices.getOutputDevices();
   });
 
-  safeHandle("start-audio-test", async (event, deviceId?: string) => {
-    await appState.startAudioTest(deviceId);
+  safeHandle("start-audio-test", async (event, deviceId?: string, outputDeviceId?: string) => {
+    await appState.startAudioTest(deviceId, outputDeviceId);
     return { success: true };
   });
 
@@ -1881,6 +2121,33 @@ export function initializeIpcHandlers(appState: AppState): void {
     return DatabaseManager.getInstance().getRecentMeetings(50);
   });
 
+  // Deliberately local-only — no SupabaseReadService preference. The renderer
+  // uses this right after a call ends: MeetingPersistence.stopMeeting writes the
+  // placeholder row to SQLite synchronously, whereas the cloud copy only exists
+  // once the mirror queue drains. Reading Supabase there (as get-recent-meetings
+  // does whenever a cloud session exists) reintroduces exactly the lag the
+  // local-first read is meant to hide, which is why this is a separate channel
+  // instead of a flag on the one above.
+  safeHandle("get-recent-meetings-local", async () => {
+    return DatabaseManager.getInstance().getRecentMeetings(50);
+  });
+
+  // Deliberately local-only — no SupabaseReadService preference, same rationale
+  // as get-recent-meetings-local above. MeetingPersistence.stopMeeting writes the
+  // placeholder row WITH the full transcript to SQLite synchronously the moment a
+  // call ends, while the Supabase copy only gets the meetings row and its
+  // transcript batch when the async mirror queue drains (separate outbox items).
+  // During that window the cloud-preferring get-meeting-details read returns null
+  // (row not mirrored yet) or a transcript-less meeting — which is exactly the
+  // state a processing meeting is opened in, so the Transcript tab showed "No
+  // transcript recorded" even though the transcript was already in SQLite. The
+  // renderer's transcript fallback uses this channel to read the local copy
+  // immediately and fall back to get-meeting-details only for meetings this
+  // device has no row for (created on another device).
+  safeHandle("get-meeting-details-local", async (_, id: string) => {
+    return DatabaseManager.getInstance().getMeetingDetails(id);
+  });
+
   // Add this handler
   safeHandle("get-display-name", async (_, role: 'user' | 'client' | 'assistant') => {
     const intelligenceManager = appState.getIntelligenceManager();
@@ -1956,9 +2223,9 @@ export function initializeIpcHandlers(appState: AppState): void {
     return { success: true };
   });
 
-  safeHandle("upload-transcript", async (_, { text, title, meetingTypes }: { text: string; title?: string; meetingTypes?: ('discovery' | 'demo' | 'negotiation')[] }) => {
+  safeHandle("upload-transcript", async (_, { text, title, meetingTypes, tenantId }: { text: string; title?: string; meetingTypes?: ('discovery' | 'demo' | 'negotiation')[]; tenantId?: string | null }) => {
     try {
-      const meetingId = await appState.getIntelligenceManager().uploadTranscript(text, title, meetingTypes);
+      const meetingId = await appState.getIntelligenceManager().uploadTranscript(text, title, meetingTypes, tenantId);
       if (meetingId) return { success: true, meetingId };
       return { success: false, error: 'Transcript too short or could not be parsed' };
     } catch (e) {
@@ -2124,6 +2391,26 @@ export function initializeIpcHandlers(appState: AppState): void {
     }
   });
 
+  // Auto-start meetings from the calendar reminder countdown.
+  // Defaults to ON — see AppSettings.autoStartMeetings.
+  safeHandle("get-auto-start-meetings", () => {
+    const { SettingsManager } = require('./services/SettingsManager');
+    return SettingsManager.getInstance().get('autoStartMeetings') ?? true;
+  });
+
+  safeHandle("set-auto-start-meetings", (_, enabled: boolean) => {
+    const { SettingsManager } = require('./services/SettingsManager');
+    SettingsManager.getInstance().set('autoStartMeetings', enabled);
+
+    BrowserWindow.getAllWindows().forEach(win => {
+      if (!win.isDestroyed()) {
+        win.webContents.send('auto-start-meetings-changed', enabled);
+      }
+    });
+
+    return { success: true };
+  });
+
   // Dynamic Action Button Mode (Recap vs Brainstorm)
   safeHandle("get-action-button-mode", () => {
     const { SettingsManager } = require('./services/SettingsManager');
@@ -2267,13 +2554,36 @@ export function initializeIpcHandlers(appState: AppState): void {
   // Calendar Integration Handlers
   // ==========================================
 
+  // Maps raw OAuth/loopback error messages (from CalendarManager /
+  // ZoomCalendarManager .startAuthFlow()) to a short, user-friendly toast
+  // body. Falls back to a generic message for anything unrecognized rather
+  // than surfacing a raw error string.
+  const calendarAuthErrorMessage = (error: any): string => {
+    const raw = String(error?.message ?? error ?? '');
+    if (raw === 'AUTH_TIMEOUT') {
+      return "We didn't detect a completed sign-in in time. Please try connecting again.";
+    }
+    if (/access_denied/i.test(raw)) {
+      return 'The connection was cancelled before access was granted.';
+    }
+    if (/EADDRINUSE/i.test(raw)) {
+      return 'A connection attempt is already in progress. Please wait a moment and try again.';
+    }
+    if (/network|ENOTFOUND|ETIMEDOUT|ECONNREFUSED/i.test(raw)) {
+      return 'A network error occurred while connecting. Please check your connection and try again.';
+    }
+    return "We couldn't complete the connection. Please try again.";
+  };
+
   safeHandle("calendar-connect", async () => {
     try {
       const { CalendarManager } = require('./services/CalendarManager');
       await CalendarManager.getInstance().startAuthFlow();
+      appState.notifyCalendarConnectionResult?.('Google Calendar', true);
       return { success: true };
     } catch (error: any) {
       console.error("Calendar auth error:", error);
+      appState.notifyCalendarConnectionResult?.('Google Calendar', false, calendarAuthErrorMessage(error));
       return { success: false, error: error.message };
     }
   });
@@ -2311,6 +2621,69 @@ export function initializeIpcHandlers(appState: AppState): void {
   });
 
   // ==========================================
+  // Meeting Reminder Popup (floating card)
+  // ==========================================
+
+  /**
+   * Renderer handshake. The popup asks for its event once React has mounted
+   * and its listener is live, rather than main pushing on did-finish-load —
+   * which can fire first and drop the payload.
+   */
+  safeHandle("meeting-popup:ready", async () => {
+    const helper = appState.meetingPopupWindowHelper;
+    // autoStartAt rides along so a renderer that mounts after the countdown was
+    // armed still draws it (the push below can only reach a live listener).
+    return { event: helper.getPendingEvent(), autoStartAt: helper.getAutoStartAt() };
+  });
+
+  safeHandle("meeting-popup:take-notes", async () => {
+    const event = appState.meetingPopupWindowHelper.getPendingEvent();
+    // Dismiss first so the card is gone before the overlay comes forward.
+    appState.meetingPopupWindowHelper.dismiss();
+    if (!event) return { success: false, error: 'No meeting event to start' };
+    // Awaited so the meeting is actually running (and the dock shown) before
+    // the popup's click handler resolves.
+    await appState.startMeetingFromCalendarEvent(event);
+    return { success: true };
+  });
+
+  safeHandle("meeting-popup:join", async () => {
+    const event = appState.meetingPopupWindowHelper.getPendingEvent();
+    const link = event?.link;
+    if (!link) return { success: false, error: 'No meeting link on this event' };
+    await shell.openExternal(link);
+    return { success: true };
+  });
+
+  safeHandle("meeting-popup:dismiss", async () => {
+    appState.meetingPopupWindowHelper.dismiss();
+    return { success: true };
+  });
+
+  /**
+   * Dev-only: show the card with a synthetic event so the popup can be
+   * iterated on without waiting for a real meeting to be 2 minutes away.
+   */
+  safeHandle("meeting-popup:debug-show", async (_, overrides?: any) => {
+    if (process.env.NODE_ENV !== 'development') {
+      return { success: false, error: 'debug-show is development-only' };
+    }
+    const start = new Date(Date.now() + 2 * 60 * 1000).toISOString();
+    appState.meetingPopupWindowHelper.showReminder({
+      id: `debug-${Date.now()}`,
+      title: 'godojo<>lyzr.ai',
+      startTime: start,
+      endTime: new Date(Date.now() + 32 * 60 * 1000).toISOString(),
+      link: 'https://meet.google.com/abc-defg-hij',
+      source: 'google',
+      attendees: [{ email: 'cp@lyzr.ai', name: 'Cp' }],
+      organizer: 'cp@lyzr.ai',
+      ...overrides,
+    });
+    return { success: true };
+  });
+
+  // ==========================================
   // Zoom Calendar Integration Handlers
   // ==========================================
 
@@ -2318,9 +2691,11 @@ export function initializeIpcHandlers(appState: AppState): void {
     try {
       const { ZoomCalendarManager } = require('./services/ZoomCalendarManager');
       await ZoomCalendarManager.getInstance().startAuthFlow();
+      appState.notifyCalendarConnectionResult?.('Zoom Calendar', true);
       return { success: true };
     } catch (error) {
       console.error("Zoom Calendar auth error:", error);
+      appState.notifyCalendarConnectionResult?.('Zoom Calendar', false, calendarAuthErrorMessage(error));
       return { success: false, error: String(error) };
     }
   });
@@ -2671,11 +3046,13 @@ export function initializeIpcHandlers(appState: AppState): void {
           console.warn('[IPC] company:getContext: Supabase read failed, falling back to local cache:', supabaseErr);
         }
       }
-      // Fall back to local DB (source of truth for pre-migration/offline data)
-      const dbCtx = DatabaseManager.getInstance().getCompanyContext();
-      if (dbCtx) return dbCtx;
-      const { SettingsManager } = require('./services/SettingsManager');
-      return SettingsManager.getInstance().get('companyContext') ?? null;
+      // Fall back to local DB (source of truth for pre-migration/offline data).
+      // Deliberately NOT falling back to SettingsManager's 'companyContext':
+      // settings.json lives in userData root, so it is machine-global rather
+      // than per-uid. That fallback served whichever account saved last to
+      // every other account on the machine — a brand-new account would open
+      // Company Context and find the previous user's company already there.
+      return DatabaseManager.getInstance().getCompanyContext() ?? null;
     } catch (error: any) {
       return null;
     }
@@ -2705,46 +3082,17 @@ export function initializeIpcHandlers(appState: AppState): void {
           const fileBuffer = Buffer.from(asset.fileData, 'base64');
           db.saveAssetFile(asset.id, asset.fileName, asset.mimeType, fileBuffer);
 
-          // Chunk + embed synchronously (awaited) so the caller (handleSave) can
-          // be certain the asset is actually indexed before it returns success.
+          // The backend commit now happens exclusively via company:uploadAssetToBackend
+          // in handleSave's pre-save loop — ONE POST per asset. This block used to
+          // re-upload every fileData-carrying asset to /company-assets/upload as
+          // well, and because that endpoint parses + vision-describes + embeds fully
+          // synchronously, every document got indexed TWICE per Save.
           //
-          // All supported types (pdf/doc/docx/ppt/pptx/csv/xlsx) now go through
-          // the backend's /company-assets/upload endpoint: docx/pptx/xlsx/csv get
-          // precise native text extraction there, PDFs/legacy doc/ppt fall back
-          // to Document AI. This replaces the old split where non-PDF types were
-          // extracted+embedded locally — one code path, one source of truth for
-          // "is this asset actually indexed".
-          try {
-            const token = getAuthToken();
-            if (!token) {
-              db.upsertCompanyAsset({ id: asset.id, type: asset.type, label: asset.label, status: 'error' });
-              console.error(`[IPC] company:saveContext — no auth token available for asset ${asset.id}`);
-            } else {
-              const form = new FormData();
-              form.append('file', new Blob([fileBuffer], { type: asset.mimeType }), asset.fileName);
-              form.append('asset_id', asset.id);
-              form.append('label', asset.label);
-              form.append('asset_type', asset.type);
-
-              const resp = await fetch(`${BACKEND_URL}/api/v1/intelligence/company-assets/upload`, {
-                method: 'POST',
-                headers: { Authorization: `Bearer ${token}` },
-                body: form,
-              });
-
-              const result = await resp.json();
-              console.log(`[IPC] company:saveContext — upload result for ${asset.id}:`, result);
-              db.upsertCompanyAsset({
-                id: asset.id, type: asset.type, label: asset.label,
-                status: result.status === 'indexed' ? 'mapped' : 'error',
-              });
-            }
-          } catch (uploadErr: any) {
-            console.error(`[IPC] company:saveContext — upload failed for asset ${asset.id}:`, uploadErr.message);
-            db.upsertCompanyAsset({ id: asset.id, type: asset.type, label: asset.label, status: 'error' });
-          }
-
-
+          // Assets reaching this branch still have fileData, i.e. they were staged
+          // but not committed in this session; the unconditional upsert above leaves
+          // them 'processing' locally. Committed assets arrive here with fileData
+          // stripped (handleSave clears it) and fall through to the 'mapped' else
+          // branch.
         } else {
           // Existing asset already in DB — just keep its current status
           // Re-upsert with 'mapped' since it was already processed before
@@ -2766,9 +3114,11 @@ export function initializeIpcHandlers(appState: AppState): void {
       }
       (data.competitors ?? []).forEach((c: any, i: number) => db.upsertCompanyCompetitor(c, i));
 
-      // 5. Mirror to SettingsManager (unchanged)
-      const { SettingsManager } = require('./services/SettingsManager');
-      SettingsManager.getInstance().set('companyContext', data);
+      // 5. Mirror to SettingsManager — REMOVED. settings.json is machine-global
+      //    (userData root, not per-uid), so this wrote one account's company
+      //    profile where every other account on the machine could read it.
+      //    Both former readers (company:getContext fallback,
+      //    company:getCompleteness) now go through the per-uid SQLite tables.
 
       // 6. Synchronize the updated context into the KnowledgeOrchestrator.
       //    We re-read from DB so the orchestrator always sees the canonical persisted state
@@ -2815,7 +3165,9 @@ export function initializeIpcHandlers(appState: AppState): void {
       const result: any = await dialog.showOpenDialog(win!, {
         properties: ['openFile', 'multiSelections'],
         filters: [
-          { name: 'Documents', extensions: ['pdf', 'doc', 'docx', 'ppt', 'pptx', 'csv', 'xlsx'] }
+          { name: 'All Supported', extensions: ['pdf', 'doc', 'docx', 'ppt', 'pptx', 'csv', 'xlsx', 'png', 'jpg', 'jpeg', 'gif', 'webp'] },
+          { name: 'Documents', extensions: ['pdf', 'doc', 'docx', 'ppt', 'pptx', 'csv', 'xlsx'] },
+          { name: 'Images', extensions: ['png', 'jpg', 'jpeg', 'gif', 'webp'] },
         ]
       });
       if (result.canceled || result.filePaths.length === 0) {
@@ -2857,6 +3209,11 @@ export function initializeIpcHandlers(appState: AppState): void {
         pptx: 'application/vnd.openxmlformats-officedocument.presentationml.presentation',
         csv: 'text/csv',
         xlsx: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+        png: 'image/png',
+        jpg: 'image/jpeg',
+        jpeg: 'image/jpeg',
+        gif: 'image/gif',
+        webp: 'image/webp',
       };
       const mimeType = MIME_MAP[ext] ?? 'application/octet-stream';
 
@@ -2888,6 +3245,173 @@ export function initializeIpcHandlers(appState: AppState): void {
     }
   });
 
+  // The backend's /company-assets/upload endpoint responds immediately with
+  // 202 (queued) and runs the ingest pipeline (extraction -> vision ->
+  // embeddings -> vector upsert) as a background task. The client is
+  // responsible for polling GET /upload/status/{asset_id} until the job
+  // reaches a terminal state ("indexed" | "empty" | "failed") — the old
+  // fully-synchronous request (held open for the whole pipeline, capped by
+  // Cloud Run's 900s ceiling) no longer matches what the server does.
+  // POLL_TIMEOUT_MS is the overall ceiling from upload to terminal state;
+  // anything still unresolved past it is failing server-side, not slow.
+  const COMPANY_ASSET_UPLOAD_POLL_TIMEOUT_MS = 10 * 60_000;
+  const COMPANY_ASSET_UPLOAD_POLL_INTERVAL_MS = 2_000;
+  const COMPANY_ASSET_UPLOAD_IN_FLIGHT_STATES = new Set(["queued", "processing", "unknown"]);
+
+  safeHandle("company:uploadAssetToBackend", async (event, payload: {
+    filePath: string;
+    assetId: string;
+    label: string;
+    assetType: string;
+    tenantId: string | null;
+  }) => {
+    const { filePath, assetId, label, assetType } = payload;
+
+    // Read the real file bytes from disk in main — the renderer can't do this
+    // reliably (no fs), which is why the earlier renderer-side approach sent an
+    // empty/`"undefined"` body that Document AI rejected as a corrupt PDF.
+    const fileBuffer = await fs.promises.readFile(filePath);
+    const fileName = path.basename(filePath);
+
+    // Map extension -> MIME so the backend routes to the right extractor and
+    // Document AI never receives application/octet-stream.
+    const ext = path.extname(fileName).toLowerCase();
+    const extToMime: Record<string, string> = {
+      ".pdf": "application/pdf",
+      ".docx": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+      ".pptx": "application/vnd.openxmlformats-officedocument.presentationml.presentation",
+      ".xlsx": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+      ".csv": "text/csv",
+      ".txt": "text/plain",
+      ".md": "text/markdown",
+      ".json": "application/json",
+      ".xml": "application/xml",
+      ".png": "image/png",
+      ".jpg": "image/jpeg",
+      ".jpeg": "image/jpeg",
+      ".gif": "image/gif",
+      ".webp": "image/webp",
+    };
+    const mimeType = extToMime[ext] ?? "application/octet-stream";
+
+    // Prefer the tenant the renderer resolved; fall back to main's TenantContext.
+    const tenantId = payload.tenantId ?? tenantContext.get?.() ?? null;
+
+    const idToken = getAuthToken();
+    if (!idToken) {
+      return { status: "error", error: "Not signed in", statusCode: 401 };
+    }
+
+    // Use form-data (already a dependency — see the STT test handler above) with
+    // axios, matching the existing multipart pattern in this file.
+    const axios = require("axios");
+    const FormData = require("form-data");
+    const form = new FormData();
+    form.append("file", fileBuffer, { filename: fileName, contentType: mimeType });
+    form.append("asset_id", assetId);
+    form.append("label", label);
+    form.append("asset_type", assetType);
+
+    const uploadHeaders: Record<string, string> = {
+      Authorization: `Bearer ${idToken}`,
+      ...form.getHeaders(),
+    };
+    if (tenantId) uploadHeaders["X-Tenant-Id"] = tenantId;
+
+    // Plain (non-multipart) headers reused for every status poll.
+    const pollHeaders: Record<string, string> = { Authorization: `Bearer ${idToken}` };
+    if (tenantId) pollHeaders["X-Tenant-Id"] = tenantId;
+
+    // Byte-level upload progress streamed to the requesting window; the
+    // renderer shows percent during 'uploading', then an indeterminate
+    // "Indexing on server…" state during 'processing' while this handler
+    // polls the job's real status in the background.
+    const sendProgress = (phase: 'uploading' | 'processing', percent: number) => {
+      try {
+        if (!event.sender.isDestroyed()) {
+          event.sender.send('company:upload-progress', { assetId, phase, percent });
+        }
+      } catch { /* window gone — progress is best-effort */ }
+    };
+
+    const statusUrl = `${BACKEND_URL}/api/v1/intelligence/company-assets/upload/status/${encodeURIComponent(assetId)}`;
+
+    try {
+      // 1. Kick off the job. This resolves as soon as the bytes are received
+      //    and the job is queued (202) — it does NOT wait for indexing.
+      const queuedRes = await axios.post(
+        `${BACKEND_URL}/api/v1/intelligence/company-assets/upload`,
+        form,
+        {
+          headers: uploadHeaders,
+          timeout: COMPANY_ASSET_UPLOAD_POLL_TIMEOUT_MS, // large files can legitimately take a while just to transfer
+          maxBodyLength: Infinity,
+          maxContentLength: Infinity,
+          onUploadProgress: (e: any) => {
+            const total = e.total ?? fileBuffer.length;
+            const percent = total ? Math.min(100, Math.round((e.loaded / total) * 100)) : 0;
+            if (percent >= 100) sendProgress('processing', 100);
+            else sendProgress('uploading', percent);
+          },
+        },
+      );
+
+      // 2. Poll GET /upload/status/{asset_id} until a terminal state:
+      //    "indexed" | "empty" | "failed". "queued" / "processing" / "unknown"
+      //    all mean keep waiting — "unknown" can happen if the poll lands on a
+      //    different Cloud Run instance than the one running the job.
+      let state: string = queuedRes.data?.state ?? "queued";
+      let latest: any = queuedRes.data;
+      const deadline = Date.now() + COMPANY_ASSET_UPLOAD_POLL_TIMEOUT_MS;
+
+      while (COMPANY_ASSET_UPLOAD_IN_FLIGHT_STATES.has(state)) {
+        if (Date.now() > deadline) {
+          return {
+            status: "error",
+            code: "timeout",
+            statusCode: 504,
+            error: "The server is still indexing this document — large PDFs can take a few minutes. Keep the app open and retry Save shortly; the file may already have finished indexing.",
+          };
+        }
+        sendProgress('processing', 100);
+        await new Promise((resolve) => setTimeout(resolve, COMPANY_ASSET_UPLOAD_POLL_INTERVAL_MS));
+
+        const statusRes = await axios.get(statusUrl, { headers: pollHeaders, timeout: 15_000 });
+        latest = statusRes.data;
+        state = latest?.state ?? "unknown";
+      }
+
+      if (state === "failed") {
+        return {
+          status: "error",
+          statusCode: 500,
+          error: latest?.error || "Indexing failed on the server.",
+        };
+      }
+
+      // Terminal success states: "indexed" | "empty".
+      return { status: state, chunks: latest?.chunks };
+
+    } catch (error: any) {
+      const isTimeout = error?.code === 'ECONNABORTED' || error?.code === 'ETIMEDOUT'
+        || /timeout/i.test(error?.message ?? '');
+      if (isTimeout) {
+        return {
+          status: "error",
+          code: "timeout",
+          statusCode: 504,
+          error: "The server is still indexing this document — large PDFs can take a few minutes. Keep the app open and retry Save shortly; the file may already have finished indexing.",
+        };
+      }
+      const statusCode = error?.response?.status ?? 500;
+      const body = error?.response?.data;
+      const message =
+        body?.error?.message || body?.detail || error.message || "Upload failed";
+      // Return a structured error (don't throw) so the renderer gets code + message.
+      return { status: "error", error: message, statusCode };
+    }
+  });
+
   safeHandle('company:deleteAsset', async (_, assetId: string) => {
     try {
       // Purge backend (Supabase vectors + cached chat answers) first — if this
@@ -2896,9 +3420,19 @@ export function initializeIpcHandlers(appState: AppState): void {
       const token = getAuthToken();
       if (token) {
         try {
+          // Same X-Tenant-Id requirement as the upload call above — otherwise
+          // this would try to delete from the admin's personal scope and 404
+          // against the shared tenant-scoped row the asset actually lives in.
+          const currentTenantId = tenantContext.get();
           const resp = await fetch(
             `${BACKEND_URL}/api/v1/intelligence/company-assets/${encodeURIComponent(assetId)}`,
-            { method: 'DELETE', headers: { Authorization: `Bearer ${token}` } }
+            {
+              method: 'DELETE',
+              headers: {
+                Authorization: `Bearer ${token}`,
+                ...(currentTenantId ? { 'X-Tenant-Id': currentTenantId } : {}),
+              },
+            }
           );
           if (!resp.ok && resp.status !== 404) {
             // 404 is fine — asset was never uploaded to backend (e.g. local-only
@@ -2934,9 +3468,12 @@ export function initializeIpcHandlers(appState: AppState): void {
 
   safeHandle('company:getCompleteness', async () => {
     try {
-      const { SettingsManager } = require('./services/SettingsManager');
-      const sm = SettingsManager.getInstance();
-      const ctx = sm.get('companyContext');
+      // Per-uid SQLite, not SettingsManager: settings.json is machine-global,
+      // so reading 'companyContext' here reported whichever account saved last
+      // to every account on the machine — a fresh account would open the
+      // Company Context tab and see someone else's completeness score.
+      // DatabaseManager.getCompanyContext() is scoped by user_id (migration v17).
+      const ctx: any = DatabaseManager.getInstance().getCompanyContext();
       if (!ctx) return 0;
       const checks = [
         !!(ctx.identity?.name && ctx.identity?.industry),
@@ -3072,8 +3609,8 @@ export function initializeIpcHandlers(appState: AppState): void {
       let enrichedContext = contextString;
       if (prospectBlock) enrichedContext = `${prospectBlock}\n\n${enrichedContext}`;
       if (ownCompanyBlock) enrichedContext = `${ownCompanyBlock}\n\n${enrichedContext}`;
-      const geminiPrompt = `${FOLLOWUP_EMAIL_PROMPT}\n\nMEETING DETAILS:\n${enrichedContext}`;
-      const groqPrompt = `${GROQ_FOLLOWUP_EMAIL_PROMPT}\n\nMEETING DETAILS:\n${enrichedContext}`;
+      const geminiPrompt = `${llmHelper.applyLanguageInstruction(FOLLOWUP_EMAIL_PROMPT)}\n\nMEETING DETAILS:\n${enrichedContext}`;
+      const groqPrompt = `${llmHelper.applyLanguageInstruction(GROQ_FOLLOWUP_EMAIL_PROMPT)}\n\nMEETING DETAILS:\n${enrichedContext}`;
 
       console.log("=> generate follow-up email (geminiPrompt): ", geminiPrompt);
       console.log("=> generate follow-up email (groqPrompt): ", groqPrompt);
@@ -3683,6 +4220,74 @@ export function initializeIpcHandlers(appState: AppState): void {
 
   safeHandle('tenant:get-current', async () => tenantContext.get());
 
+  // ==========================================
+  // Per-user main-process state reset on account switch
+  // ==========================================
+  // Fires from AuthManager.setSession/clearSession the instant the uid changes,
+  // BEFORE 'auth-changed'. Anything in the main process that is scoped to one
+  // user and outlives a renderer reload must be reset here — otherwise the
+  // reloaded UI is served the previous account's values.
+  try {
+    const { AuthManager } = require('./services/AuthManager');
+    AuthManager.getInstance().on('user-switched', (e: { previousUid: string | null; uid: string | null }) => {
+      console.log(`[ipc] user-switched: ${e.previousUid ?? 'anon'} -> ${e.uid ?? 'anon'} — resetting per-user main state`);
+
+      // 1. Tenant. useTenant seeds itself from tenant:get-current on mount, so
+      //    leaving the old value here makes the reloaded renderer start on the
+      //    PREVIOUS account's tenant until tenantsApi.listMine() resolves — and
+      //    tenantContext stamps every main-process PostHog event meanwhile.
+      currentTenantId = null;
+      tenantContext.set(null);
+      BrowserWindow.getAllWindows().forEach(win => {
+        if (!win.isDestroyed()) win.webContents.send('tenant:state-changed', null);
+      });
+
+      // 2. Supabase mirror. Its handle was just closed by switchUser(), so every
+      //    outbox persist/delete is now silently failing, and the in-memory queue
+      //    still holds the previous user's rows — which would be pushed under the
+      //    new user's token and rejected by RLS until MAX_RETRY drops them.
+      try {
+        const { SupabaseMirrorService } = require('./db/SupabaseMirrorService');
+        SupabaseMirrorService.getInstance().rebind(DatabaseManager.getInstance().getDb());
+      } catch (err) {
+        console.warn('[ipc] user-switched: mirror rebind failed:', err);
+      }
+
+      // 3. RAG + Knowledge hold the old handle too, and the vector worker holds
+      //    its own read-only connection to the old file path.
+      void appState.rebindUserScopedServices();
+
+      // 4. Credentials. CredentialsManager has already re-pointed at the new
+      //    user's file, but the live LLM/STT clients still hold the PREVIOUS
+      //    account's keys — they cache them at construction. Without this the new
+      //    user's requests are billed to the old user's key, and a key the new
+      //    user has saved appears to be ignored.
+      try {
+        appState.processingHelper.syncLlmKeysFromCredentials('user_switched');
+        void appState.syncSttCredentials('user_switched');
+        const { CredentialsManager } = require('./services/CredentialsManager');
+        CredentialsManager.getInstance().trackKeySourceSnapshot('user_switched');
+      } catch (err) {
+        console.warn('[ipc] user-switched: credential re-sync failed:', err);
+      }
+
+      // 5. Calendar (Google + Zoom). Both managers are main-process
+      //    singletons holding one global token file/in-memory token, so
+      //    without this the reloaded UI kept showing whichever account's
+      //    calendar was connected first, for every user on this machine.
+      try {
+        const { CalendarManager } = require('./services/CalendarManager');
+        CalendarManager.getInstance().switchUser(e.uid);
+        const { ZoomCalendarManager } = require('./services/ZoomCalendarManager');
+        ZoomCalendarManager.getInstance().switchUser(e.uid);
+      } catch (err) {
+        console.warn('[ipc] user-switched: calendar re-scope failed:', err);
+      }
+    });
+  } catch (e) {
+    console.warn('[ipc] user-switched wiring failed:', e);
+  }
+
   safeHandle('auth:set-id-token', async (_, session: {
     idToken: string;
     refreshToken: string;
@@ -3713,6 +4318,157 @@ export function initializeIpcHandlers(appState: AppState): void {
     } catch (error: any) {
       return { success: false, error: error?.message ?? String(error) };
     }
+  });
+
+  safeHandle('auth:list-accounts', async () => {
+    const { AuthManager } = require('./services/AuthManager');
+    return AuthManager.getInstance().listAccounts();
+  });
+
+  // Return the refresh token for the requested account so the renderer can
+  // exchange it for a fresh ID token (same path as trySilentRestore).
+  safeHandle('auth:get-refresh-token-for-uid', async (_, uid: string) => {
+    const { AuthManager } = require('./services/AuthManager');
+    const rt = AuthManager.getInstance().getRefreshTokenForUid(uid);
+    return { refreshToken: rt, uid };
+  });
+
+  safeHandle('auth:remove-account', async (_, uid: string) => {
+    const { CredentialsManager } = require('./services/CredentialsManager');
+    CredentialsManager.getInstance().removeFirebaseAccount(uid);
+    return { success: true };
+  });
+
+
+  // ==========================================
+  // Permissions (Mac/Windows)
+  // ==========================================
+  safeHandle("check-permissions", async () => {
+    const isMac = process.platform === 'darwin';
+
+    // Windows/Linux have no screen-capture gate (WASAPI loopback is ungated) and
+    // handle the microphone at first use, so report both as available there.
+    if (!isMac) {
+      return {
+        microphone: true,
+        systemAudio: true,
+        screenCapture: true,
+        microphoneStatus: 'granted',
+        screenStatus: 'granted',
+        platform: process.platform,
+      };
+    }
+
+    // Routed through the shared helper rather than systemPreferences directly so
+    // the dev bypass applies consistently — otherwise the tray would report
+    // "denied" while the audio pipeline believed it was granted.
+    const screenStatus = getMacScreenCaptureStatus();
+    const microphoneStatus = getMacMicrophoneStatus();
+    const screenPerm = screenStatus === 'granted';
+
+    return {
+      // Booleans kept for the existing callers (AudioStatusTray, meeting gate).
+      microphone: microphoneStatus === 'granted',
+      systemAudio: screenPerm,
+      screenCapture: screenPerm,
+      // Full tri-state, so the UI can tell "never asked" from "actively denied"
+      // and word its prompt accordingly.
+      microphoneStatus,
+      screenStatus,
+      platform: process.platform,
+    };
+  });
+
+  safeHandle("request-permission", async (_, type: 'microphone' | 'screen') => {
+    if (process.platform !== 'darwin') return true;
+
+    if (type === 'microphone') {
+      return await systemPreferences.askForMediaAccess('microphone');
+    } else if (type === 'screen') {
+      // There is no askForMediaAccess('screen'). macOS only raises the sheet
+      // when a protected API is called, and once denied it cannot be
+      // re-prompted at all — the user has to toggle it in System Settings.
+      shell.openExternal(MAC_SETTINGS_PANES.screen);
+      return false; // Requires a restart after granting.
+    }
+    return false;
+  });
+
+  // `pane` selects which Privacy pane to open. It previously always opened
+  // Microphone, so the System Audio row's "Settings" link sent users to the
+  // wrong place entirely.
+  safeHandle("open-permission-settings", async (_, pane: MacSettingsPane = 'microphone') => {
+    const target: MacSettingsPane = pane === 'screen' ? 'screen' : 'microphone';
+    if (process.platform === 'darwin') {
+      shell.openExternal(MAC_SETTINGS_PANES[target]);
+    } else {
+      // Windows has no screen-capture pane; microphone is the only mapping.
+      shell.openExternal('ms-settings:privacy-microphone');
+    }
+  });
+
+  // Replays the most recent screen-capture warning. The startup denial check
+  // runs ~800ms after window creation, which can be before a renderer has
+  // subscribed — without a replay the user would never see that warning.
+  safeHandle("get-system-audio-permission-warning", async () => {
+    return getLatestSystemAudioPermissionWarning();
+  });
+
+  // In-app TCC repair.
+  //
+  // macOS binds a TCC grant to the binary's cdhash. This build is ad-hoc signed
+  // (mac.identity is null + scripts/ad-hoc-sign.js), so the cdhash changes on
+  // every rebuild and the grant is orphaned — System Settings still shows the
+  // app as allowed while capture is silently zero-filled. Resetting the entries
+  // lets macOS prompt cleanly again, which is the only user-accessible fix short
+  // of Developer ID signing.
+  safeHandle("repair-tcc-permissions", async () => {
+    if (process.platform !== 'darwin') {
+      return { ok: false, message: 'Permission repair is only available on macOS.' };
+    }
+
+    // In dev, TCC entries land against the Electron binary's own bundle id, not
+    // ours — resetting our appId there would be a no-op.
+    const bundleId = app.isPackaged ? 'com.electron.meeting-notes' : 'com.github.Electron';
+
+    const { execFile } = require('node:child_process');
+    const { promisify } = require('node:util');
+    const execFileAsync = promisify(execFile);
+
+    // Capitalisation matters: tccutil rejects lowercase service names with
+    // "Invalid Service Name".
+    const services = ['Microphone', 'ScreenCapture'];
+    const results: Array<{ service: string; ok: boolean; output: string }> = [];
+
+    for (const service of services) {
+      try {
+        // Absolute path, not the bare name: tccutil is a SIP-protected stock
+        // binary, and resolving via inherited PATH could be redirected.
+        const { stdout, stderr } = await execFileAsync(
+          '/usr/bin/tccutil', ['reset', service, bundleId], { timeout: 5000 },
+        );
+        results.push({ service, ok: true, output: (stdout || stderr || '').toString().trim() });
+        console.log(`[IPC] tccutil reset ${service} ${bundleId}: OK`);
+      } catch (err: any) {
+        const msg = (err?.stderr?.toString?.() || err?.message || String(err)).trim();
+        results.push({ service, ok: false, output: msg });
+        console.warn(`[IPC] tccutil reset ${service} ${bundleId} failed: ${msg}`);
+      }
+    }
+
+    const anyOk = results.some((r) => r.ok);
+    return {
+      ok: anyOk,
+      bundleId,
+      results,
+      promptRelaunch: anyOk,
+      message: anyOk
+        ? 'Permissions reset. Quit GoDojo AI completely (Cmd+Q) and reopen — macOS will ask for Microphone and Screen Recording again. Approve both to restore audio capture.'
+        : `Permission reset failed for ${bundleId}. ${results
+          .filter((r) => !r.ok)
+          .map((r) => `${r.service}: ${r.output}`)
+          .join('; ')}`,
+    };
   });
 
   safeHandle('auth:get-state', async () => {
@@ -3836,8 +4592,8 @@ export function initializeIpcHandlers(appState: AppState): void {
     }
   });
 
-  // Shared by 'reset-app-data' and 'dev:wipe-local-account-data': deletes
-  // this install's entire userData directory itself — credentials.enc,
+  // Used by 'dev:wipe-local-account-data': deletes this install's entire
+  // userData directory itself — credentials.enc,
   // settings.json, natively.db (+ its -wal/-shm files and Supabase mirror
   // queue), cached auth session, the persist:google-auth partition, and
   // the godojo-ai/godojo-ai-dev folder that contains them (depending on
@@ -3848,6 +4604,20 @@ export function initializeIpcHandlers(appState: AppState): void {
   // calling this — it does not prompt itself.
   async function wipeLocalUserDataAndRelaunch(logPrefix: string): Promise<{ success: boolean; error?: string }> {
     try {
+      // Release the RAG vector-search worker's read-only connection to
+      // natively.db FIRST. That worker (electron/rag/vectorSearchWorker.ts)
+      // opens its OWN sqlite handle, separate from DatabaseManager's — and on
+      // Windows an open handle keeps natively.db (+ its -wal/-shm) locked. If
+      // it isn't released, the rmSync below deletes files up to natively.db,
+      // then throws EPERM and leaves the godojo-ai/godojo-ai-dev folder
+      // half-wiped (exactly the "files in use" you can only remove after
+      // quitting the app).
+      try {
+        await appState.getRAGManager()?.destroy();
+      } catch (e) {
+        console.warn(`[ipc] ${logPrefix}: RAGManager.destroy() failed (continuing):`, e);
+      }
+
       // Release the sqlite file handle before touching userData — on
       // Windows the delete below fails (or leaves natively.db behind)
       // if it's still open.
@@ -3900,7 +4670,7 @@ export function initializeIpcHandlers(appState: AppState): void {
       let deleted = false;
       for (let attempt = 1; attempt <= 5; attempt++) {
         try {
-          fs.rmSync(userDataPath, { recursive: true, force: true });
+          fs.rmSync(userDataPath, { recursive: true, force: true, maxRetries: 5, retryDelay: 150 });
           deleted = true;
           break;
         } catch (e) {
@@ -3921,54 +4691,121 @@ export function initializeIpcHandlers(appState: AppState): void {
     }
   }
 
-  // "Reset app data" (Settings > General > Danger Zone). Native confirm
-  // dialog lives here (not the renderer) so this can't be triggered by a
-  // spoofed IPC call alone — it always requires an OS-level dialog click.
-  safeHandle('reset-app-data', async (event) => {
-    const win = BrowserWindow.fromWebContents(event.sender) ?? undefined;
-    const messageBoxOptions: Electron.MessageBoxOptions = {
-      type: 'warning',
-      buttons: ['Cancel', 'Reset App Data'],
-      defaultId: 0,
-      cancelId: 0,
-      title: 'Reset App Data',
-      message: 'Reset all local app data?',
-      detail:
-        'This permanently deletes your local credentials, settings, and offline data on this device, and signs you out. This cannot be undone.\n\nThe app will restart automatically.',
-    };
-    const { response }: Electron.MessageBoxReturnValue = win
-      ? await dialog.showMessageBox(win, messageBoxOptions)
-      : await dialog.showMessageBox(messageBoxOptions);
-    if (response !== 1) {
-      return { success: false, cancelled: true };
+  // User-scoped local wipe: removes ONLY the signed-in user's local footprint,
+  // leaving every other account on this machine intact. Used by both
+  // "Local Record" and the local half of "Delete All".
+  async function wipeCurrentUserLocalDataAndRelaunch(logPrefix: string): Promise<{ success: boolean; error?: string }> {
+    try {
+      const { AuthManager } = require('./services/AuthManager');
+      const { CredentialsManager } = require('./services/CredentialsManager');
+
+      // The uid that owns the data we're about to delete. Capture BEFORE we
+      // tear anything down. If it's null we must refuse — a null/anon wipe
+      // has no owner to scope to and could target shared/anon state.
+      const uid = AuthManager.getInstance().getUid();
+      if (!uid) {
+        return { success: false, error: 'No signed-in user — refusing an unscoped local wipe.' };
+      }
+
+      // 1. Release the RAG worker's own read-only sqlite handle (Windows lock).
+      try { await appState.getRAGManager()?.destroy(); } catch (e) {
+        console.warn(`[ipc] ${logPrefix}: RAGManager.destroy() failed (continuing):`, e);
+      }
+
+      // 2. Delete ONLY this user's DB files (natively-<uid>.db + -wal/-shm).
+      try { DatabaseManager.getInstance().deleteCurrentUserDatabaseFiles(); } catch (e) {
+        console.warn(`[ipc] ${logPrefix}: DB file delete failed (continuing):`, e);
+      }
+
+      // 3. Delete ONLY this user's credentials file (credentials-<uid>.enc).
+      try { CredentialsManager.getInstance().deleteCurrentUserCredentialsFile(); } catch (e) {
+        console.warn(`[ipc] ${logPrefix}: credentials delete failed (continuing):`, e);
+      }
+
+      // 4. Remove ONLY this account from the machine-level identity store,
+      //    keeping every other account's refresh token intact.
+      try { CredentialsManager.getInstance().removeFirebaseAccount(uid); } catch (e) {
+        console.warn(`[ipc] ${logPrefix}: removeFirebaseAccount failed (continuing):`, e);
+      }
+
+      // 5. Clear THIS user's in-memory session so the relaunch starts clean.
+      try { AuthManager.getInstance().clearSession(); } catch (e) {
+        console.warn(`[ipc] ${logPrefix}: clearSession failed (continuing):`, e);
+      }
+
+      // NOTE: We deliberately do NOT clearStorageData()/clearCache() on the
+      // default or google-auth sessions here — those Chromium partitions are
+      // shared across all accounts on this device, so clearing them would sign
+      // out / disrupt the OTHER accounts. Per-account Firebase state lives in
+      // the refresh token we just removed from identity.enc.
+
+      app.relaunch();
+      app.exit(0);
+      return { success: true };
+    } catch (error: any) {
+      console.error(`[ipc] ${logPrefix} failed:`, error);
+      return { success: false, error: error?.message ?? String(error) };
     }
-    return wipeLocalUserDataAndRelaunch('reset-app-data');
-  });
+  }
 
   // DEV-ONLY: local-data half of "Delete My Account" (Settings > General >
   // Danger Zone). The renderer calls this *after* the Supabase rows +
   // Firebase Auth user have already been deleted server-side, so unlike
-  // 'reset-app-data' this does NOT show its own confirm dialog — the
+  // a full reset this does NOT show its own confirm dialog — the
   // account deletion the user just confirmed is already irreversible by
   // the time this runs, and a second native prompt here would just leave
   // local data behind (stale natively.db, cached session) if they misread
-  // it as a fresh, cancellable action. Reuses the exact same wipe path as
-  // 'reset-app-data' so local state ends up identically clean.
-  safeHandle('dev:wipe-local-account-data', async () => {
-    return wipeLocalUserDataAndRelaunch('dev:wipe-local-account-data');
+  // it as a fresh, cancellable action.
+  safeHandle('dev:wipe-local-account-data', async (_event, scope?: 'local' | 'full-delete') => {
+    // Both "Local Record" and the local half of "Delete All" must affect ONLY
+    // the current user now. The old full-userData wipe is retained solely for
+    // "Reset app data" (a different, intentionally global action).
+    return wipeCurrentUserLocalDataAndRelaunch(`dev:wipe-local-account-data(${scope ?? 'local'})`);
   });
 
-  safeHandle('confirm-delete-account', async (event) => {
-    const win = BrowserWindow.fromWebContents(event.sender) ?? undefined;
-    const messageBoxOptions: Electron.MessageBoxOptions = {
-      type: 'warning',
-      buttons: ['Cancel', 'Delete My Account'],
-      defaultId: 0,
-      cancelId: 0,
+
+  // `scope` mirrors the backend's DangerousDeleteKey values, plus 'local'
+  // for the local-only wipe (which never touches the backend at all).
+  // Wording is scope-specific so "delete only my Supabase rows" doesn't
+  // show a dialog claiming this device's local data is also being cleared.
+  const DELETE_SCOPE_COPY: Record<'supabase-delete' | 'firebase-delete' | 'local' | 'full-delete', { title: string; message: string; detail: string }> = {
+    'supabase-delete': {
+      title: 'Delete Supabase Record',
+      message: 'Permanently delete your Supabase data?',
+      detail:
+        'This permanently deletes your rows from every Supabase table (and linked tables) on the server. Your Firebase account and this device\'s local data are NOT affected. This cannot be undone.',
+    },
+    'firebase-delete': {
+      title: 'Delete Firebase Record',
+      message: 'Permanently delete your Firebase account?',
+      detail:
+        'This permanently deletes your Firebase Authentication account. Your Supabase rows and this device\'s local data are NOT affected. This cannot be undone.',
+    },
+    'local': {
+      title: 'Delete Local Record',
+      message: 'Clear all local app data on this device?',
+      detail:
+        'This clears everything stored on this device (credentials, cached session, local database) and signs you out. Your Supabase and Firebase records are NOT affected. This cannot be undone.\n\nThe app will restart automatically.',
+    },
+    'full-delete': {
       title: 'Delete My Account',
       message: 'Permanently delete your account?',
       detail:
         'This permanently deletes your account and all associated data from our servers, then clears everything stored on this device. This cannot be undone.\n\nThe app will restart automatically.',
+    },
+  };
+
+  safeHandle('confirm-delete-account', async (event, scope: 'supabase-delete' | 'firebase-delete' | 'local' | 'full-delete' = 'full-delete') => {
+    const win = BrowserWindow.fromWebContents(event.sender) ?? undefined;
+    const copy = DELETE_SCOPE_COPY[scope] ?? DELETE_SCOPE_COPY['full-delete'];
+    const messageBoxOptions: Electron.MessageBoxOptions = {
+      type: 'warning',
+      buttons: ['Cancel', copy.title],
+      defaultId: 0,
+      cancelId: 0,
+      title: copy.title,
+      message: copy.message,
+      detail: copy.detail
     };
     const { response } = win
       ? await dialog.showMessageBox(win, messageBoxOptions)

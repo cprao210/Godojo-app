@@ -239,10 +239,100 @@ fn current_output_route_impl() -> OutputRouteInfo {
 }
 
 // ============================================================================
+// Linux — PulseAudio/PipeWire active port + device.form_factor proplist
+// ============================================================================
+
+#[cfg(target_os = "linux")]
+thread_local! {
+    // The echo-control route watcher calls this every 2s on a dedicated thread.
+    // Reusing the connection avoids a connect/disconnect handshake per poll.
+    // PulseProbe is !Send, so a thread-local is the natural home for it.
+    static ROUTE_PROBE: std::cell::RefCell<Option<crate::speaker::pulse::PulseProbe>> =
+        std::cell::RefCell::new(None);
+}
+
+#[cfg(target_os = "linux")]
+fn current_output_route_impl() -> OutputRouteInfo {
+    let sink = ROUTE_PROBE.with(|cell| {
+        let mut slot = cell.borrow_mut();
+        if !slot.as_ref().is_some_and(|p| p.is_ready()) {
+            *slot = crate::speaker::pulse::PulseProbe::new().ok();
+        }
+        slot.as_mut().and_then(|p| p.default_sink())
+    });
+
+    let Some(sink) = sink else {
+        return OutputRouteInfo::unknown();
+    };
+
+    let label = if sink.description.is_empty() {
+        sink.name
+    } else {
+        sink.description
+    };
+    let port = sink.active_port.to_lowercase();
+    let form = sink.form_factor.to_lowercase();
+    let bus = sink.bus.to_lowercase();
+
+    let transport = if bus == "bluetooth" {
+        "bluetooth"
+    } else if bus == "usb" {
+        "usb"
+    } else if port.contains("hdmi") || port.contains("displayport") {
+        "hdmi"
+    } else if port.contains("iec958") || port.contains("spdif") {
+        "spdif"
+    } else if bus == "pci" || bus == "isa" || bus == "platform" {
+        "builtin"
+    } else {
+        "unknown"
+    };
+
+    // 1. ALSA/UCM and BlueZ port names are the sharpest signal available, and
+    //    they flip the instant a jack is plugged in ("analog-output-speaker" →
+    //    "analog-output-headphones") without the sink itself changing.
+    let by_port = if port.contains("headphone") || port.contains("headset") {
+        Some(RouteKind::Headphones)
+    } else if port.contains("speaker")
+        || port.contains("lineout")
+        || port.contains("line-out")
+        || port.contains("hdmi")
+        || port.contains("displayport")
+        || port.contains("iec958")
+        || port.contains("spdif")
+    {
+        Some(RouteKind::Speakers)
+    } else {
+        None
+    };
+
+    // 2. device.form_factor, set by udev for PCI/USB and by BlueZ from the
+    //    Bluetooth class of device. "hands-free" and "hifi" are deliberately
+    //    absent: a car kit or a BT hi-fi receiver is a speaker, so those fall
+    //    through to name matching and, failing that, to Unknown (= gate stays
+    //    on, which is the fail-safe answer).
+    let by_form = match form.as_str() {
+        "headphone" | "headset" => Some(RouteKind::Headphones),
+        "speaker" | "internal" | "tv" | "car" | "portable" => Some(RouteKind::Speakers),
+        _ => None,
+    };
+
+    let kind = by_port
+        .or(by_form)
+        .unwrap_or_else(|| classify_by_name(&label, RouteKind::Unknown));
+
+    OutputRouteInfo {
+        kind,
+        transport: transport.to_string(),
+        name: label,
+    }
+}
+
+// ============================================================================
 // Other platforms — no system audio capture exists, gate never engages
 // ============================================================================
 
-#[cfg(not(any(target_os = "macos", target_os = "windows")))]
+#[cfg(not(any(target_os = "macos", target_os = "windows", target_os = "linux")))]
 fn current_output_route_impl() -> OutputRouteInfo {
     OutputRouteInfo::unknown()
 }

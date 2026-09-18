@@ -33,12 +33,21 @@ interface OllamaResponse {
   done: boolean
 }
 
-// Model constant for Gemini 3 Flash
-const GEMINI_FLASH_MODEL = "gemini-3.1-flash-lite-preview"
-const GEMINI_PRO_MODEL = "gemini-3.1-pro-preview"
-const GROQ_MODEL = "llama-3.3-70b-versatile"
-const OPENAI_MODEL = "gpt-5.4"
-const CLAUDE_MODEL = "claude-sonnet-4-6"
+// Model constants come from the shared catalog seeds (single source of truth:
+// utils/modelCatalogShared.ts). These literals are OFFLINE FALLBACKS only —
+// at runtime, auto ids ("auto:groq"), stored-preference healing and
+// failure-driven migration all route through electron/services/ModelCatalog,
+// which prefers the provider's live /models catalog over these seeds.
+import { MODEL_CATALOG, isAutoId, detectProvider } from '../utils/modelCatalogShared';
+import type { CatalogProvider } from '../utils/modelCatalogShared';
+import { ModelCatalog } from './services/ModelCatalog';
+
+const GEMINI_FLASH_MODEL = MODEL_CATALOG.gemini.seeds.fast[0]
+const GEMINI_PRO_MODEL = MODEL_CATALOG.gemini.seeds.capable[0]
+const GROQ_MODEL = MODEL_CATALOG.groq.seeds.capable[0]
+const GROQ_VISION_MODEL = MODEL_CATALOG.groq.seeds.vision[0]
+const OPENAI_MODEL = MODEL_CATALOG.openai.seeds.capable[0]
+const CLAUDE_MODEL = MODEL_CATALOG.claude.seeds.capable[0]
 
 // MAX_OUTPUT_TOKENS: ceiling for vision/image-analysis and open-ended generic generation.
 // Do NOT use this for mode-specific calls — use MODE_TOKEN_LIMITS instead.
@@ -145,6 +154,10 @@ export class LLMHelper {
   }
 
   public setGroqApiKey(apiKey: string) {
+    // NOTE: this.groqApiKey used to be assigned only in the constructor, so a key
+    // set at runtime never reached initModelVersionManager() — model discovery ran
+    // with a stale/null Groq key.
+    this.groqApiKey = apiKey;
     this.groqClient = new Groq({ apiKey });
     console.log("[LLMHelper] Groq API Key updated.");
   }
@@ -164,6 +177,38 @@ export class LLMHelper {
   public setNativelyKey(key: string | null): void {
     this.nativelyKey = key || null;
     console.log(`[LLMHelper] Natively key ${key ? 'set' : 'cleared'}`);
+  }
+
+  /**
+   * The keys currently baked into the live provider clients. Callers compare
+   * these against CredentialsManager to rebuild only the clients whose key
+   * actually changed — the clients cache their key at construction, so a key
+   * that arrives after boot (backend fallback, a Settings save, an account
+   * switch) is otherwise never picked up.
+   */
+  public getAppliedKeys(): { gemini: string | null; groq: string | null; openai: string | null; claude: string | null } {
+    return {
+      gemini: this.apiKey ?? null,
+      groq: this.groqApiKey ?? null,
+      openai: this.openaiApiKey ?? null,
+      claude: this.claudeApiKey ?? null,
+    };
+  }
+
+  /**
+   * Drop a provider's client when no key resolves for it any more — the user
+   * removed their own key and there is no shared default to fall back to.
+   * Callers used to push `""` here, which built a client that failed on every
+   * request instead of reporting the provider as unavailable.
+   */
+  public clearProviderKey(provider: 'gemini' | 'groq' | 'openai' | 'claude'): void {
+    switch (provider) {
+      case 'gemini': this.apiKey = null; this.client = null; break;
+      case 'groq': this.groqApiKey = null; this.groqClient = null; break;
+      case 'openai': this.openaiApiKey = null; this.openaiClient = null; break;
+      case 'claude': this.claudeApiKey = null; this.claudeClient = null; break;
+    }
+    console.log(`[LLMHelper] ${provider} client cleared — no key available from any source`);
   }
 
   private hasNatively(): boolean {
@@ -232,11 +277,37 @@ export class LLMHelper {
   }
 
   private isGroqModel(modelId: string): boolean {
-    return modelId.startsWith("llama-") || modelId.startsWith("mixtral-") || modelId.startsWith("gemma-") || modelId.startsWith("meta-llama/") || modelId.startsWith("qwen/") || modelId.startsWith("qwen-");
+    // 'openai/gpt-oss' is Groq's current text catalog naming (NOT the OpenAI
+    // provider — those ids have no 'openai/' prefix); 'groq/' covers the
+    // compound agentic models.
+    return modelId.startsWith("llama-") || modelId.startsWith("mixtral-") || modelId.startsWith("gemma-") || modelId.startsWith("meta-llama/") || modelId.startsWith("qwen/") || modelId.startsWith("qwen-") || modelId.startsWith("openai/gpt-oss") || modelId.startsWith("groq/");
   }
 
   private isGeminiModel(modelId: string): boolean {
     return modelId.startsWith("gemini-") || modelId.startsWith("models/");
+  }
+
+  /** Retirement self-heal around one provider call: run exec(modelId); if the
+   *  error looks like a retired model ("does not exist", "high demand" on a
+   *  model missing from the refreshed catalog, …), force-refresh that
+   *  provider's catalog and retry ONCE with the migration target. Genuine
+   *  overload (model still live) re-throws the original error untouched. */
+  private async healAndRetry<T>(provider: CatalogProvider, modelId: string, exec: (mid: string) => Promise<T>): Promise<T> {
+    try {
+      return await exec(modelId);
+    } catch (err: any) {
+      const text = err?.response?.data?.error?.message || err?.error?.message || err?.message || String(err);
+      let migrated: string | null = null;
+      try {
+        migrated = await ModelCatalog.getInstance().migrateOnFailure(provider, modelId, text);
+      } catch {
+        migrated = null; // healing must never mask the original failure
+      }
+      if (!migrated || migrated === modelId) throw err;
+      console.warn(`[LLMHelper] model "${modelId}" retired mid-call — retrying with "${migrated}"`);
+      if (this.currentModelId === modelId) this.currentModelId = migrated;
+      return await exec(migrated);
+    }
   }
   // ---------------------------
 
@@ -249,6 +320,21 @@ export class LLMHelper {
     if (modelId === 'gemini-pro') targetModelId = GEMINI_PRO_MODEL;
     if (modelId === 'claude') targetModelId = CLAUDE_MODEL;
     if (modelId === 'llama') targetModelId = GROQ_MODEL;
+    // Auto ids ("auto:groq", "auto:gemini:fast", …) resolve to the provider's
+    // CURRENT model from the live catalog — provider deprecations never
+    // require a code change again.
+    if (isAutoId(targetModelId)) targetModelId = ModelCatalog.getInstance().resolveAuto(targetModelId);
+    // Heal ids retired since they were stored: the known-retired map first,
+    // then a live-catalog absence check. See ModelCatalog.healSync.
+    const healProvider = detectProvider(targetModelId);
+    if (healProvider) {
+      const catalog = ModelCatalog.getInstance();
+      const healed = catalog.healSync(healProvider, targetModelId);
+      if (healed.migratedFrom) {
+        catalog.recordMigration(healProvider, healed);
+        targetModelId = healed.id;
+      }
+    }
 
     if (targetModelId.startsWith('ollama-')) {
       this.useOllama = true;
@@ -388,14 +474,15 @@ export class LLMHelper {
 
     await this.rateLimiters.gemini.acquire();
     // console.log(`[LLMHelper] Calling ${GEMINI_FLASH_MODEL}...`)
-    const response = await this.client.models.generateContent({
-      model: GEMINI_PRO_MODEL,
-      contents: contents,
-      config: {
-        maxOutputTokens: MAX_OUTPUT_TOKENS,
-        temperature: 0.3,      // Lower = faster, more focused
-      }
-    })
+    const response = await this.healAndRetry('gemini', GEMINI_PRO_MODEL, (mid) =>
+      this.client.models.generateContent({
+        model: mid,
+        contents: contents,
+        config: {
+          maxOutputTokens: MAX_OUTPUT_TOKENS,
+          temperature: 0.3,      // Lower = faster, more focused
+        }
+      }))
     return response.text || ""
   }
 
@@ -408,14 +495,15 @@ export class LLMHelper {
 
     await this.rateLimiters.gemini.acquire();
     // console.log(`[LLMHelper] Calling ${GEMINI_FLASH_MODEL}...`)
-    const response = await this.client.models.generateContent({
-      model: GEMINI_FLASH_MODEL,
-      contents: contents,
-      config: {
-        maxOutputTokens: MAX_OUTPUT_TOKENS,
-        temperature: 0.3,      // Lower = faster, more focused
-      }
-    })
+    const response = await this.healAndRetry('gemini', GEMINI_FLASH_MODEL, (mid) =>
+      this.client.models.generateContent({
+        model: mid,
+        contents: contents,
+        config: {
+          maxOutputTokens: MAX_OUTPUT_TOKENS,
+          temperature: 0.3,      // Lower = faster, more focused
+        }
+      }))
     return response.text || ""
   }
 
@@ -806,6 +894,15 @@ export class LLMHelper {
     console.log(`[LLMHelper] AI Response Language set to: ${language}`);
   }
 
+  /**
+   * Public entry point for call sites (e.g. ipcHandlers) that build their own
+   * full prompt string outside chat()/chatWithGemini() and so can't rely on
+   * those methods' automatic injection.
+   */
+  public applyLanguageInstruction(systemPrompt: string): string {
+    return this.injectLanguageInstruction(systemPrompt);
+  }
+
   public setSttLanguage(language: string) {
     this.sttLanguage = language;
     console.log(`[LLMHelper] STT Language set to: ${language}`);
@@ -835,8 +932,9 @@ export class LLMHelper {
     // switch from English to Hindi mid-conversation and the AI follows).
     if (!this.aiResponseLanguage || this.aiResponseLanguage === 'auto') {
       const autoHeader = `[LANGUAGE INSTRUCTION — HIGHEST PRIORITY]
-        Detect the language of the user's most recent message and ALWAYS respond in that exact same language.
-        If the user writes in Hindi, respond in Hindi. If in Spanish, respond in Spanish. If in English, respond in English.
+        Detect the language of the user's most recent message and ALWAYS respond in that exact same language,
+        with ONE exception: if the message (or transcript) is in Hindi, ALWAYS respond in English instead.
+        If in Spanish, respond in Spanish. If in English, respond in English. If in Hindi, respond in English.
         If the language is ambiguous, default to English.
         You may mix scripts naturally (e.g. code stays in English even when the explanation is in another language).
         [END LANGUAGE INSTRUCTION]\n\n`;
@@ -1058,7 +1156,7 @@ export class LLMHelper {
         }
         if (this.groqClient) {
           providers.push({
-            name: `Groq (meta-llama/llama-4-scout-17b-16e-instruct)`,
+            name: `Groq (${GROQ_VISION_MODEL})`,
             execute: () => this.generateWithGroqMultimodal(userContent, imagePaths!, openaiSystemPrompt)
           });
         }
@@ -1386,14 +1484,16 @@ export class LLMHelper {
     await this.rateLimiters.groq.acquire();
 
     try {
-      // Non-streaming Groq call
-      const response = await this.groqClient.chat.completions.create({
-        model: modelId,
-        messages: [{ role: "user", content: fullMessage }],
-        temperature: 0.4,
-        max_tokens: 8192,
-        stream: false
-      });
+      // Non-streaming Groq call (self-heals to the current model if this one
+      // was retired mid-call)
+      const response = await this.healAndRetry('groq', modelId, (mid) =>
+        this.groqClient.chat.completions.create({
+          model: mid,
+          messages: [{ role: "user", content: fullMessage }],
+          temperature: 0.4,
+          max_tokens: 8192,
+          stream: false
+        }));
       this.rateLimiters.groq.markSuccess();
       return response.choices[0]?.message?.content || "";
     } catch (error: any) {
@@ -1866,15 +1966,16 @@ export class LLMHelper {
     }
     messages.push({ role: "user", content: contentParts });
 
-    const response = await this.groqClient.chat.completions.create({
-      model: "meta-llama/llama-4-scout-17b-16e-instruct",
-      messages,
-      temperature: 1,
-      max_completion_tokens: 28672,
-      top_p: 1,
-      stream: false,
-      stop: null
-    });
+    const response = await this.healAndRetry('groq', GROQ_VISION_MODEL, (mid) =>
+      this.groqClient.chat.completions.create({
+        model: mid,
+        messages,
+        temperature: 1,
+        max_completion_tokens: 28672,
+        top_p: 1,
+        stream: false,
+        stop: null
+      }));
 
     return response.choices[0]?.message?.content || "";
   }
@@ -2108,7 +2209,7 @@ export class LLMHelper {
    * and Gemini-only for multimodal (images)
    * 
    * TEXT-ONLY FALLBACK CHAIN:
-   * 1. Groq (llama-3.3-70b-versatile) - Primary
+   * 1. Groq (openai/gpt-oss-120b) - Primary
    * 2. Gemini Flash - 1st fallback
    * 3. Gemini Flash + Pro parallel - 2nd fallback
    * 4. Gemini Flash retries (max 3) - Last resort
@@ -2188,7 +2289,7 @@ export class LLMHelper {
         providers.push({ name: `Gemini Pro (${textGeminiPro})`, execute: () => this.streamWithGeminiModel(combinedMessages.gemini, textGeminiPro, imagePaths) });
       }
       if (this.groqClient) {
-        providers.push({ name: `Groq (meta-llama/llama-4-scout-17b-16e-instruct)`, execute: () => this.streamWithGroqMultimodal(userContent, imagePaths!, openaiSystemPrompt) });
+        providers.push({ name: `Groq (${GROQ_VISION_MODEL})`, execute: () => this.streamWithGroqMultimodal(userContent, imagePaths!, openaiSystemPrompt) });
       }
     } else {
       // TEXT-ONLY PROVIDER ORDER: [Natively] → Groq → OpenAI → Claude → Gemini Flash → Gemini Pro
@@ -2373,7 +2474,7 @@ export class LLMHelper {
 
     // GROQ FAST TEXT OVERRIDE (Text-Only)
     // Two paths: local Groq key → call Groq directly; Natively API only → send fast_mode:true
-    // to the server so it routes to its internal Groq pool (llama-3.3-70b-versatile).
+    // to the server so it routes to its internal Groq pool (openai/gpt-oss-120b).
     if (this.groqFastTextMode && !isMultimodal) {
       if (this.groqClient) {
         console.log(`[LLMHelper] ⚡️ Groq Fast Text Mode Active (Streaming). Routing to local Groq...`);
@@ -2639,13 +2740,15 @@ export class LLMHelper {
   private async * streamWithGroq(fullMessage: string, modelId: string = GROQ_MODEL): AsyncGenerator<string, void, unknown> {
     if (!this.groqClient) throw new Error("Groq client not initialized");
 
-    const stream = await this.groqClient.chat.completions.create({
-      model: modelId,
-      messages: [{ role: "user", content: fullMessage }],
-      stream: true,
-      temperature: 0.4,
-      max_tokens: 8192,
-    });
+    // Heal at stream creation — mid-stream errors are surfaced as-is.
+    const stream = await this.healAndRetry('groq', modelId, (mid) =>
+      this.groqClient.chat.completions.create({
+        model: mid,
+        messages: [{ role: "user", content: fullMessage }],
+        stream: true,
+        temperature: 0.4,
+        max_tokens: 8192,
+      }));
 
     for await (const chunk of stream) {
       const content = chunk.choices[0]?.delta?.content;
@@ -2676,15 +2779,16 @@ export class LLMHelper {
     }
     messages.push({ role: "user", content: contentParts });
 
-    const stream = await this.groqClient.chat.completions.create({
-      model: "meta-llama/llama-4-scout-17b-16e-instruct",
-      messages,
-      stream: true,
-      max_tokens: 8192,
-      temperature: 1,
-      top_p: 1,
-      stop: null
-    });
+    const stream = await this.healAndRetry('groq', GROQ_VISION_MODEL, (mid) =>
+      this.groqClient.chat.completions.create({
+        model: mid,
+        messages,
+        stream: true,
+        max_tokens: 8192,
+        temperature: 1,
+        top_p: 1,
+        stop: null
+      }));
 
     for await (const chunk of stream) {
       const content = chunk.choices[0]?.delta?.content;
@@ -2850,14 +2954,15 @@ export class LLMHelper {
       }
     }
 
-    const streamResult = await this.client.models.generateContentStream({
-      model: model,
-      contents: contents,
-      config: {
-        maxOutputTokens: MAX_OUTPUT_TOKENS,
-        temperature: 0.4,
-      }
-    });
+    const streamResult = await this.healAndRetry('gemini', model, (mid) =>
+      this.client.models.generateContentStream({
+        model: mid,
+        contents: contents,
+        config: {
+          maxOutputTokens: MAX_OUTPUT_TOKENS,
+          temperature: 0.4,
+        }
+      }));
 
     // @ts-ignore
     const stream = streamResult.stream || streamResult;
@@ -3516,12 +3621,17 @@ export class LLMHelper {
    * open-source models and isn't an acceptable fallback for this flow.
    */
   public async generateMeetingSummary(
-    systemPrompt: string,
+    systemPromptRaw: string,
     context: string,
-    groqSystemPrompt?: string,
+    groqSystemPromptRaw?: string,
     task: 'summary' | 'followup_email' | 'meeting_score' | 'title' = 'summary',
   ): Promise<string> {
     console.log(`[LLMHelper] generateMeetingSummary called. Context length: ${context.length}`);
+
+    // Summaries/titles are generated from the full transcript, which may be in
+    // Hindi — apply the same language gate every other LLM call site honours.
+    const systemPrompt = this.injectLanguageInstruction(systemPromptRaw);
+    const groqSystemPrompt = groqSystemPromptRaw ? this.injectLanguageInstruction(groqSystemPromptRaw) : groqSystemPromptRaw;
 
     // Tracks the most recent real provider error across all attempts below so
     // the final throw (if every fallback fails) carries actual provider text
@@ -3691,7 +3801,12 @@ export class LLMHelper {
 
   public async switchToGemini(apiKey?: string, modelId?: string): Promise<void> {
     if (modelId) {
-      this.geminiModel = modelId;
+      // Same retirement heal as setModel — callers can pass a stored
+      // preferred-model id that predates a provider catalog change.
+      const catalog = ModelCatalog.getInstance();
+      const healed = catalog.healSync('gemini', modelId);
+      if (healed.migratedFrom) catalog.recordMigration('gemini', healed);
+      this.geminiModel = healed.id;
     }
 
     if (apiKey) {

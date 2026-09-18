@@ -154,6 +154,15 @@ export function useMeetingChat({ isOpen, onClose, onMessagesChange, messages, me
             onRetry: (attempt, max) => setStatusText(`Reconnecting… (${attempt}/${max})`),
             onSessionCreated: (id) => setSessionId(id),
             onSources: (s) => { sources = s; },
+            // Backend discarded a partial answer and is starting over — clear
+            // the buffer and the rendered text so the retry replaces it.
+            onReset: () => {
+                streamBuffer.reset();
+                setStatusText('Rewriting…');
+                onMessagesChange(prev => prev.map(msg =>
+                    msg.id === assistantMessageId ? { ...msg, content: '' } : msg
+                ));
+            },
             onToken: (chunk) => {
                 setChatState('streaming_response');
                 setStatusText(null);

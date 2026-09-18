@@ -5,107 +5,53 @@
 import { SessionTracker, TranscriptSegment } from './SessionTracker';
 import { LLMHelper } from './LLMHelper';
 import { DatabaseManager, Meeting, formatDuration } from './db/DatabaseManager';
-import { GROQ_TITLE_PROMPT, GROQ_SUMMARY_JSON_PROMPT } from './llm';
+import { GROQ_TITLE_PROMPT, GROQ_SUMMARY_JSON_PROMPT, verifySummaryAgainstTranscript, buildCorrectionAddendum } from './llm';
 import { LiveAnalysisData, MeetingScorecardResult } from '../src/types';
 import { AppState } from './main';
 import { buildCompanyContextBlock } from '../electron/utils/salesBriefUtils';
 import { buildScorecardPrompt } from './llm/ScoreCardLLM';
-import { BANT_ORDER, MEDDICC_ORDER } from '../src/lib/bantMeddic';
+import { reconcileScorecardWithLiveAnalysis } from './scorecardReconciliation';
+import { reconcileBantMeddicWithLiveAnalysis } from './summaryReconciliation';
+import { hasMultipleClientSpeakers, resolveSpeakerDisplayName, buildSpeakerRoster, formatSpeakerRosterBlock, transcriptTurnLabel, SpeakerNameMapLike } from './utils/speakerLabels';
+import { parseUploadTranscript } from './utils/uploadTranscriptParser';
+import { buildUploadAnalysisPrompt, normalizeUploadAnalysis } from './utils/uploadAnalysis';
+import { requestBackendChunking } from './utils/backendRagChunking';
 
 const crypto = require('crypto');
 
-// ── BANT/MEDDIC reconciliation ──────────────────────────────────────────────
-// buildSummaryPrompt() TELLS the LLM live analysis is authoritative and to
-// "copy these values directly" — but that's a prompt instruction, not a
-// guarantee. The LLM can paraphrase evidence, misapply the status mapping,
-// or re-derive a field from the transcript instead of trusting the supplied
-// value, especially on a fallback-tier provider. This function makes that
-// guarantee real: it overwrites summaryData.bant/meddicc in code, directly
-// from liveAnalysisData, so the Summary tab and the Call Analysis tab can
-// never disagree on BANT/MEDDIC status or evidence.
+// Bounded wait for an in-flight final live-analysis run before background
+// summary generation kicks off (see the deferred phase in stopMeeting below).
+// Must match FINAL_ANALYSIS_MAX_WAIT_MS in src/lib/meetingLifecycle.ts — that
+// file is the renderer's copy of the same deadline (it used to be the only
+// place this was enforced, blocking the End Call button; main enforces it here
+// now so the UI never has to wait on it).
+const FINAL_ANALYSIS_MAX_WAIT_MS = 10_000;
 
-// salesCoachReview.whatIDidRight's BANT/MEDDICC-labelled items are reconciled
-// the same way (see buildConfirmedWhatIDidRight below): the LLM was previously
-// free to cherry-pick up to 6 "wins" from the transcript on its own judgment,
-// which routinely disagreed with the Confirmed set shown in Call Analysis.
-// Those items are now derived deterministically from the same
-// liveAnalysis-backed bant/meddicc objects below, so "Sales Self-Analysis"
-// can never show a different confirmed count than the live Call Analysis tab.
-// Only fields that legitimately require transcript reasoning (overview,
-// dealStatus, whatICouldHaveDoneBetter, whatIMissedCompletely,
-// nextCallPlaybook, keyPoints, actionItems) are left for the LLM.
-
-const toComponentName = (camelKey: string): string => camelKey.charAt(0).toUpperCase() + camelKey.slice(1);
-
-function buildConfirmedWhatIDidRight(
-    bant: Record<string, { status: string; detail: string }>,
-    meddicc: Record<string, { status: string; detail: string }>,
-): string[] {
-    const meddiccItems = MEDDICC_ORDER
-        .filter((key) => meddicc[key]?.status === 'Clear')
-        .map((key) => `MEDDICC ${toComponentName(key)}: ${meddicc[key].detail}`);
-
-    const bantItems = BANT_ORDER
-        .filter((key) => bant[key]?.status === 'Clear')
-        .map((key) => `BANT ${toComponentName(key)}: ${bant[key].detail}`);
-
-    return [...meddiccItems, ...bantItems];
-}
-const STATUS_MAP: Record<string, string> = {
-    confirmed: 'Clear',
-    partial: 'Partial',
-    missing: 'Missing',
-    '': 'Missing',
+/** The LLM half of scorecard generation, before grounding and persistence.
+ *  Carries the criteria snapshot along so finalizeScorecard() can store the
+ *  exact criteria the score was produced against. */
+type ScorecardDraft = {
+    scorecardResult: MeetingScorecardResult | null;
+    customScoringCriteria: import('../src/types').ScoringCriteriaSettings | null;
 };
 
-function reconcileBantMeddicWithLiveAnalysis(
-    summaryData: any,
-    liveAnalysis: LiveAnalysisData | null | undefined,
-): any {
+// ── Summary grounding verification ──────────────────────────────────────────
+// After generating the structured summary JSON, we cross-check it against the
+// transcript with a second LLM call and get back a 0-100 grounding confidence
+// score plus specific unsupported/fabricated fields. If confidence is below
+// SUMMARY_CONFIDENCE_THRESHOLD, we regenerate with those specific issues fed
+// back into the prompt, up to SUMMARY_MAX_ATTEMPTS total tries. This is
+// bounded rather than "retry until perfect" — an unbounded loop risks
+// runaway latency/cost if the transcript is genuinely ambiguous and no
+// attempt will ever clear the bar. We keep the highest-confidence attempt
+// seen across all tries as the final result, so a capped-out run still
+// returns the best available summary instead of discarding everything.
+const SUMMARY_CONFIDENCE_THRESHOLD = 75;
+const SUMMARY_MAX_ATTEMPTS = 3;
 
-    if (!liveAnalysis) return summaryData; // nothing to reconcile against — leave LLM output as-is
-
-    const field = (f: { status: string; evidence: string } | undefined) => ({
-        status: STATUS_MAP[f?.status ?? ''] ?? 'Missing',
-        detail: f?.evidence || '',
-    });
-
-    const reconciledBant = {
-        budget: field(liveAnalysis.bant?.budget),
-        authority: field(liveAnalysis.bant?.authority),
-        need: field(liveAnalysis.bant?.need),
-        timeline: field(liveAnalysis.bant?.timeline),
-    };
-
-    const reconciledMeddicc = {
-        metrics: field(liveAnalysis.meddic?.metrics),
-        economicBuyer: field(liveAnalysis.meddic?.economic_buyer),
-        decisionCriteria: field(liveAnalysis.meddic?.decision_criteria),
-        decisionProcess: field(liveAnalysis.meddic?.decision_process),
-        identifyPain: field(liveAnalysis.meddic?.identify_pain),
-        champion: field(liveAnalysis.meddic?.champion),
-        competition: field(liveAnalysis.meddic?.competition),
-        // gaps is genuinely a summarization task (which of the 7 fields
-        // are weak) — keep the LLM's own list rather than recomputing it
-        // here, but fall back to deriving it from the reconciled statuses
-        // above if the LLM omitted it.
-        gaps: summaryData?.meddicc?.gaps?.length
-            ? summaryData.meddicc.gaps
-            : (['metrics', 'economic_buyer', 'decision_criteria', 'decision_process', 'identify_pain', 'champion', 'competition'] as const)
-                .filter((k) => (liveAnalysis.meddic as any)?.[k]?.status !== 'confirmed')
-                .map((k) => k),
-    };
-
-    return {
-        ...summaryData,
-        bant: reconciledBant,
-        meddicc: reconciledMeddicc,
-        salesCoachReview: {
-            ...summaryData?.salesCoachReview,
-            whatIDidRight: buildConfirmedWhatIDidRight(reconciledBant, reconciledMeddicc),
-        },
-    };
-}
+// BANT/MEDDIC + Sales Self-Analysis reconciliation lives in
+// ./summaryReconciliation (pure, unit-tested); see reconcileBantMeddicWithLiveAnalysis
+// usage below for why it must run against the FINAL live analysis on every path.
 
 const buildSummaryPrompt = (liveAnalysis?: LiveAnalysisData | null, companyIntel?: Record<string, any> | null): string => {
 
@@ -364,19 +310,39 @@ export class MeetingPersistence {
         const endTimeMs = Date.now();
         const totalPausedMs = this.session.getTotalPausedMs();
         const durationMs = Math.max(0, (endTimeMs - startTimeMs) - totalPausedMs);
+        const appState = AppState.getInstance();
         if (durationMs < 1000) {
             console.log("Meeting too short, ignoring.");
+            // Still hand back the live-analysis slot. Nothing will be saved for
+            // this call, so anything left in it can only ever be read by the
+            // NEXT meeting's summary generation.
+            appState?.clearCurrentLiveAnalysis?.();
+            // endMeeting used to clear any stale pending-live-analysis target on
+            // this path too (its else-branch ran for a null meetingId) — keep
+            // that now that the bookkeeping lives in the deferred phase below,
+            // which never runs for a meeting that wasn't saved.
+            appState?.recordPendingLiveAnalysis?.(null);
             this.session.reset();
             return null;
         }
 
-        const appState = AppState.getInstance();
+        // Take the analysis by value and clear the slot unconditionally — the
+        // call is over, so from here on the slot belongs to whatever comes
+        // next. Clearing only when a result happened to be present left a
+        // non-null companyIntel behind on the empty-analysis path.
+        //
+        // Read in this synchronous phase, NOT after the analysis-settle wait in
+        // the deferred phase below: endMeeting has already flipped
+        // isMeetingActive to false, so liveAnalysisRouting drops any result
+        // landing from here on ('no meeting is active and nothing is pending')
+        // — the slot content at this instant is exactly what the old post-wait
+        // read saw, just without holding the transcript save hostage to get it.
         const liveAnalysisData = appState?.getCurrentLiveAnalysis?.() || null;
         console.log('[MeetingPersistence] Retrieved liveAnalysisData:', !!liveAnalysisData);
         if (liveAnalysisData) {
             console.log('[MeetingPersistence] Live analysis keys:', Object.keys(liveAnalysisData));
-            appState?.clearCurrentLiveAnalysis?.();
         }
+        appState?.clearCurrentLiveAnalysis?.();
 
         const snapshot = {
             transcript: [...this.session.getFullTranscript()],
@@ -397,27 +363,41 @@ export class MeetingPersistence {
         this.session.reset();
 
         const meetingId = crypto.randomUUID();
-        this.processAndSaveMeeting(
-            snapshot,
-            meetingId,
-            metadataSnapshot,
-            liveAnalysisData,
-            speakerNamesSnapshot,
-            undefined,      // companyIntel — not captured at stop time for live calls
-            meetingTypes,    // ← rep's live selection, was previously dropped (always undefined)
-            tenantId || null
-        ).catch(err => {
-            console.error('[MeetingPersistence] Background processing failed:', err);
-        });
 
-        // 4. Initial Save (Placeholder)
+        // 3. Initial Save (Placeholder) — MUST come before processAndSaveMeeting.
+        // That call isn't awaited, but an async function still runs synchronously
+        // up to its first `await` (transcript labelling, prompt building, ...),
+        // which blocks main's event loop. Invoking it first therefore delayed the
+        // placeholder INSERT, the meetings-updated broadcast, and every IPC queued
+        // behind them (live-call-ended, set-window-mode) by however long that
+        // prefix took — proportional to transcript length, which is exactly why
+        // the Recent Meetings card "sometimes" appeared late. Same order the
+        // upload path (uploadTranscript) already uses.
+        //
+        // Same displayName stamping as the final save in processAndSaveMeeting
+        // — without it, this placeholder briefly persists with generic
+        // "Other Party" labels until the background save replaces it. The
+        // diarization-aware helper is what keeps the post-call labels identical
+        // to the ones broadcast during the call ("Raksham · Speaker 1"), instead
+        // of flattening every far-end turn onto the plain client name.
+        const placeholderMultiClientSpeakers = hasMultipleClientSpeakers(snapshot.transcript);
+        const placeholderTranscript = snapshot.transcript.map(segment => ({
+            ...segment,
+            displayName: segment.displayName
+                ?? resolveSpeakerDisplayName(segment.speaker, segment.speakerIndex, speakerNamesSnapshot, placeholderMultiClientSpeakers),
+        }))
+
         const placeholder: Meeting = {
             id: meetingId,
-            title: "Processing...",
+            // A calendar-sourced call already knows its real title — use it so the
+            // card reads as "<event title> · preparing summary" instead of the
+            // generic placeholder. The renderer keys "is processing" off
+            // isProcessed, not off this string (see isMeetingProcessing).
+            title: metadataSnapshot?.title || "Processing...",
             date: new Date().toISOString(),
             duration: formatDuration(durationMs),
             durationMs: durationMs,
-            summary: "Generating summary...",
+            summary: "",
             detailedSummary: { actionItems: [], keyPoints: [] },
             // Real transcript, not empty — it's already captured in `snapshot`
             // above and there's no reason to make the Transcript tab wait on
@@ -425,7 +405,7 @@ export class MeetingPersistence {
             // now clears-and-reinserts transcript rows on every call, so the
             // later final save in processAndSaveMeeting() safely replaces this
             // rather than duplicating it.
-            transcript: snapshot.transcript,
+            transcript: placeholderTranscript,
             usage: [],
             tenantId: tenantId || null,
             isProcessed: false
@@ -440,6 +420,38 @@ export class MeetingPersistence {
             console.error("Failed to save placeholder", e);
         }
 
+        // 4. Background processing (title/summary/scorecard + final save) —
+        // deferred behind the analysis-settle wait. This wait used to sit in
+        // AppState.endMeeting IN FRONT of this entire method, which held the
+        // placeholder save (and with it the transcript's availability in
+        // SQLite, the Recent Meetings card data, and the live-call-ended
+        // broadcast) hostage behind up to FINAL_ANALYSIS_MAX_WAIT_MS of LLM
+        // latency. The wait only guards which live-analysis snapshot the
+        // SUMMARY is generated from — the transcript persisted above is
+        // complete the moment captures stop, so it must never wait on it.
+        // The pending-live-analysis bookkeeping moved here too: it must run
+        // after the wait to keep the original routing window (a result landing
+        // mid-wait routes 'drop' exactly as it did when the wait sat in
+        // endMeeting).
+        void (async () => {
+            try {
+                await appState?.waitForLiveAnalysisToSettle?.(FINAL_ANALYSIS_MAX_WAIT_MS);
+                appState?.recordPendingLiveAnalysis?.(meetingId);
+                await this.processAndSaveMeeting(
+                    snapshot,
+                    meetingId,
+                    metadataSnapshot,
+                    liveAnalysisData,
+                    speakerNamesSnapshot,
+                    undefined,      // companyIntel — not captured at stop time for live calls
+                    meetingTypes,    // ← rep's live selection, was previously dropped (always undefined)
+                    tenantId || null
+                );
+            } catch (err) {
+                console.error('[MeetingPersistence] Background processing failed:', err);
+            }
+        })();
+
         return meetingId;
     }
 
@@ -449,24 +461,31 @@ export class MeetingPersistence {
     private async processAndSaveMeeting(
         data: { transcript: TranscriptSegment[], usage: any[], startTime: number, endTime?: number, totalPausedMs?: number, durationMs: number, context: string },
         meetingId: string,
-        metadata?: { title?: string; calendarEventId?: string; source?: 'manual' | 'calendar' } | null,
+        metadata?: { title?: string; calendarEventId?: string; source?: 'manual' | 'calendar'; calendarEvent?: any } | null,
         liveAnalysisData?: LiveAnalysisData | null,
-        speakerNames?: { user: string; client: string },
+        speakerNames?: { user: string; client: string; clientDiarized?: string },
         companyIntel?: Record<string, any> | null,
         hintMeetingTypes?: ('discovery' | 'demo' | 'negotiation')[],
         tenantId?: string | null
     ): Promise<void> {
         let title = "Untitled Session";
-        let summaryData: { actionItems: string[], keyPoints: string[], liveAnalysis?: LiveAnalysisData, speakerNames?: { user: string, client: string } } = { actionItems: [], keyPoints: [] };
+        let summaryData: { actionItems: string[], keyPoints: string[], liveAnalysis?: LiveAnalysisData, speakerNames?: { user: string, client: string, clientDiarized?: string } } = { actionItems: [], keyPoints: [] };
 
         // Use passed-in metadata snapshot (NOT this.session.getMeetingMetadata() which is already cleared)
         let calendarEventId: string | undefined;
         let source: 'manual' | 'calendar' = 'manual';
+        // Raw calendar event, wrapped in an array to match the provider's event-feed
+        // shape (see CalendarManager.CalendarEvent) — persisted verbatim, untouched.
+        let calendarEventMetadata: any[] | undefined;
 
         if (metadata) {
             if (metadata.title) title = metadata.title;
             if (metadata.calendarEventId) calendarEventId = metadata.calendarEventId;
             if (metadata.source) source = metadata.source;
+            // Guard on the full event object (not calendarEventId) — otherwise a
+            // metadata payload that carries the id but not the raw event would
+            // wrap [undefined] and persist "[null]" into calendar_event_metadata.
+            if (metadata.calendarEvent) calendarEventMetadata = [metadata.calendarEvent];
         }
 
         // Build full transcript text directly from the transcript array so the
@@ -483,21 +502,58 @@ export class MeetingPersistence {
                 .map(t => (t as any).speakerIndex as number)
         );
         const multiClientSpeakers = clientIndices.size >= 2;
-        const fullTranscriptText = data.transcript
-            .filter(t => !['system', 'ai', 'assistant', 'model'].includes(t.speaker?.toLowerCase()))
-            .map(t => {
-                let role = t.speaker === 'user'
-                    ? (speakerNames?.user || 'REP')
-                    : (speakerNames?.client || 'PROSPECT');
-                const idx = (t as any).speakerIndex;
-                if (t.speaker !== 'user' && multiClientSpeakers && idx !== undefined) {
-                    role = `${role} (Speaker ${idx + 1})`;
-                }
-                return `${role}: ${t.text}`;
-            })
+        const humanSegments = data.transcript
+            .filter(t => !['system', 'ai', 'assistant', 'model'].includes(t.speaker?.toLowerCase()));
+
+        // Speaker identity map: uploads carry the original labels as
+        // displayName (and the parser's first-speaker=mic-user role rule), so
+        // every LLM round-trip over this transcript (title, summary,
+        // verification, call analysis, scorecard) gets the same roster
+        // preamble + per-turn labels — participants are named, and the model
+        // knows which name is the rep vs the prospect side.
+        const speakerRoster = buildSpeakerRoster(humanSegments, speakerNames, multiClientSpeakers);
+        const rosterBlock = humanSegments.some(t => !!t.displayName)
+            ? formatSpeakerRosterBlock(speakerRoster)
+            : '';
+        const fullTranscriptText = humanSegments
+            .map(t => `${transcriptTurnLabel(t, speakerNames, multiClientSpeakers)}: ${t.text}`)
             .join('\n');
 
-        console.log("data.transcript: -> ", data.transcript);
+        // NOTE: do NOT log the transcript here. This whole prologue runs
+        // synchronously on main's event loop (the caller doesn't await), so
+        // serialising every segment to the console blocked IPC — including the
+        // launcher's meetings refresh and the window switch — for as long as it
+        // took, scaling with call length. It also wrote raw meeting content into
+        // the app logs. Log a size instead if you need a breadcrumb.
+        console.log(`[MeetingPersistence] Processing ${data.transcript.length} transcript segments for ${meetingId}`);
+
+        // Scorecard generation needs the transcript and the rep's meeting-type
+        // hints — never the title or the summary. Running it *after* them meant
+        // the final save, the "Summary Ready" toast, and the card leaving its
+        // processing state all waited on a second full LLM round-trip that could
+        // have been in flight the whole time. Start it here and collect it below;
+        // that's the bulk of the gap the user saw between the summary actually
+        // being ready and being told about it.
+        //
+        // Only the LLM half runs here. Grounding it against live analysis and
+        // writing it out happen in finalizeScorecard() below, because on the
+        // upload/recovery path `liveAnalysisData` doesn't exist yet at this point
+        // — it's generated further down. Splitting the two keeps the round-trip
+        // overlapped while guaranteeing the scorecard is reconciled against the
+        // FINAL live analysis on every path.
+        //
+        // generateScorecardDraft never rejects (every failure path returns a
+        // draft object) — the .catch is belt-and-braces so a future throw before
+        // its first await can't surface as an unhandled rejection while we're
+        // off awaiting the summary.
+        const scorecardDraft: Promise<ScorecardDraft> =
+            data.transcript.length > 2
+                ? this.generateScorecardDraft(rosterBlock + fullTranscriptText, hintMeetingTypes ?? null, liveAnalysisData ?? null)
+                    .catch((err): ScorecardDraft => {
+                        console.warn('[MeetingPersistence] Scorecard generation threw (non-fatal):', err);
+                        return { scorecardResult: null, customScoringCriteria: null };
+                    })
+                : Promise.resolve({ scorecardResult: null, customScoringCriteria: null });
 
         try {
             // Generate Title (only if not set by calendar)
@@ -506,11 +562,9 @@ export class MeetingPersistence {
                 const groqTitlePrompt = GROQ_TITLE_PROMPT;
 
                 // Use first 5000 chars of full transcript for title (enough context, saves tokens)
-                const titleContext = data.transcript
-                    .filter(t => !['system', 'ai', 'assistant', 'model'].includes(t.speaker?.toLowerCase()))
-                    .map(t => `${t.speaker === 'user' ? (speakerNames?.user || 'REP') : (speakerNames?.client || 'PROSPECT')}: ${t.text}`)
-                    .join('\n')
-                    .substring(0, 5000);
+                const titleContext = (rosterBlock + humanSegments
+                    .map(t => `${transcriptTurnLabel(t, speakerNames, multiClientSpeakers)}: ${t.text}`)
+                    .join('\n')).substring(0, 5000);
 
                 const generatedTitle = await this.llmHelper.generateMeetingSummary(titlePrompt, titleContext, groqTitlePrompt, 'title');
                 if (generatedTitle) title = generatedTitle.replace(/[\"*]/g, '').trim();
@@ -531,23 +585,76 @@ export class MeetingPersistence {
                     ? GROQ_SUMMARY_JSON_PROMPT + '\n\n' + liveAnalysisGroqBlock
                     : GROQ_SUMMARY_JSON_PROMPT;
 
-                const generatedSummary = await this.llmHelper.generateMeetingSummary(buildSummaryPrompt(liveAnalysisData, companyIntel), fullTranscriptText, groqSummaryPrompt, 'summary');
+                const baseSummaryPrompt = buildSummaryPrompt(liveAnalysisData, companyIntel);
 
-                if (generatedSummary) {
+                // Generate -> verify -> (if low confidence) regenerate with the
+                // specific flagged issues fed back in, up to SUMMARY_MAX_ATTEMPTS.
+                let correctionAddendum = '';
+                let bestParsedSummary: any = null;
+                let bestConfidence = -1;
+
+                for (let attempt = 1; attempt <= SUMMARY_MAX_ATTEMPTS; attempt++) {
+                    const generatedSummary = await this.llmHelper.generateMeetingSummary(
+                        baseSummaryPrompt + correctionAddendum,
+                        rosterBlock + fullTranscriptText,
+                        groqSummaryPrompt + correctionAddendum,
+                        'summary'
+                    );
+                    if (!generatedSummary) break;
+
                     const jsonMatch = generatedSummary.match(/```json\n([\s\S]*?)\n```/) || [null, generatedSummary];
                     const jsonStr = (jsonMatch[1] || generatedSummary).trim();
+
+                    let parsedSummary: any;
                     try {
                         // Parse the LLM's structured summary FIRST — this carries
                         // overview/keyPoints/actionItems/dealStatus/salesCoachReview/
                         // nextCallPlaybook. Losing this step means the summary tab
                         // renders empty even though bant/meddicc still get filled in
                         // below from live analysis.
-                        const parsedSummary = JSON.parse(jsonStr);
-                        // Guarantee BANT/MEDDIC in the summary matches live
-                        // analysis exactly — see reconcileBantMeddicWithLiveAnalysis
-                        // for why the prompt instruction alone isn't enough.
-                        summaryData = reconcileBantMeddicWithLiveAnalysis({ ...summaryData, ...parsedSummary }, liveAnalysisData);
-                    } catch (e) { console.error("Failed to parse summary JSON", e); }
+                        parsedSummary = JSON.parse(jsonStr);
+                    } catch (e) {
+                        console.error(`[MeetingPersistence] Failed to parse summary JSON (attempt ${attempt}/${SUMMARY_MAX_ATTEMPTS})`, e);
+                        continue; // unparseable output — try again rather than verifying garbage
+                    }
+
+                    let confidence = 0;
+                    try {
+                        const verification = await verifySummaryAgainstTranscript(this.llmHelper, rosterBlock + fullTranscriptText, jsonStr);
+                        confidence = verification.confidence;
+                        console.log(`[MeetingPersistence] Summary attempt ${attempt}/${SUMMARY_MAX_ATTEMPTS} grounding confidence: ${confidence} (${verification.issues.length} issue(s))`);
+
+                        if (confidence > bestConfidence) {
+                            bestConfidence = confidence;
+                            bestParsedSummary = parsedSummary;
+                        }
+
+                        if (confidence >= SUMMARY_CONFIDENCE_THRESHOLD) {
+                            break; // grounded well enough — stop here
+                        }
+
+                        correctionAddendum = buildCorrectionAddendum(verification.issues);
+                    } catch (e) {
+                        // Verifier itself threw unexpectedly (shouldn't normally happen —
+                        // verifySummaryAgainstTranscript fails open internally). Accept
+                        // this attempt as-is rather than losing the summary entirely.
+                        console.warn('[MeetingPersistence] Summary verification threw, accepting ungraded:', e);
+                        if (bestParsedSummary === null) {
+                            bestParsedSummary = parsedSummary;
+                            bestConfidence = 0;
+                        }
+                        break;
+                    }
+                }
+
+                if (bestParsedSummary) {
+                    if (bestConfidence >= 0 && bestConfidence < SUMMARY_CONFIDENCE_THRESHOLD) {
+                        console.warn(`[MeetingPersistence] Accepting summary below confidence threshold after ${SUMMARY_MAX_ATTEMPTS} attempts (best score: ${bestConfidence})`);
+                    }
+                    // Guarantee BANT/MEDDIC in the summary matches live
+                    // analysis exactly — see reconcileBantMeddicWithLiveAnalysis
+                    // for why the prompt instruction alone isn't enough.
+                    summaryData = reconcileBantMeddicWithLiveAnalysis({ ...summaryData, ...bestParsedSummary }, liveAnalysisData);
                 }
             } else {
                 console.log("Transcript too short for summary generation.");
@@ -556,63 +663,39 @@ export class MeetingPersistence {
             console.error("Error generating meeting metadata", e);
         }
 
-        // Generate call analysis for uploaded transcripts (no live analysis available)
+        // Generate call analysis for uploaded transcripts (no live analysis available).
+        // The prompt + post-processing live in ./utils/uploadAnalysis, which mirrors
+        // the FastAPI backend's live-analysis behaviour exactly (objection category
+        // taxonomy, dealOptimizer gated on the negotiation meeting-type hint,
+        // NO QUOTE = NO STATUS, ask-this only for non-confirmed fields, catalogue-
+        // valid signal types, stableId stamps) — without uploads ever calling the
+        // backend. The live path keeps using the real endpoints untouched.
         if (!liveAnalysisData && data.transcript.length > 2) {
             try {
+                const isNegotiation = (hintMeetingTypes ?? []).includes('negotiation');
+                const analysisPrompt = buildUploadAnalysisPrompt(isNegotiation);
 
-                const analysisPrompt = `Analyze this sales call transcript and return ONLY a valid JSON object with NO markdown, no backticks, no explanation. Use exactly this structure:
-                {
-                  "bant": {
-                    "budget":    { "emoji": "✅|⚠️|❌", "status": "confirmed|partial|missing", "evidence": "direct quote or empty string", "suggested_question": "string" },
-                    "authority": { "emoji": "✅|⚠️|❌", "status": "confirmed|partial|missing", "evidence": "direct quote or empty string", "suggested_question": "string" },
-                    "need":      { "emoji": "✅|⚠️|❌", "status": "confirmed|partial|missing", "evidence": "direct quote or empty string", "suggested_question": "string" },
-                    "timeline":  { "emoji": "✅|⚠️|❌", "status": "confirmed|partial|missing", "evidence": "direct quote or empty string", "suggested_question": "string" }
-                  },
-                  "meddic": {
-                    "metrics":           { "emoji": "✅|⚠️|❌", "status": "confirmed|partial|missing", "evidence": "direct quote or empty string", "suggested_question": "string" },
-                    "economic_buyer":    { "emoji": "✅|⚠️|❌", "status": "confirmed|partial|missing", "evidence": "direct quote or empty string", "suggested_question": "string" },
-                    "decision_criteria": { "emoji": "✅|⚠️|❌", "status": "confirmed|partial|missing", "evidence": "direct quote or empty string", "suggested_question": "string" },
-                    "decision_process":  { "emoji": "✅|⚠️|❌", "status": "confirmed|partial|missing", "evidence": "direct quote or empty string", "suggested_question": "string" },
-                    "identify_pain":     { "emoji": "✅|⚠️|❌", "status": "confirmed|partial|missing", "evidence": "direct quote or empty string", "suggested_question": "string" },
-                    "champion":          { "emoji": "✅|⚠️|❌", "status": "confirmed|partial|missing", "evidence": "direct quote or empty string", "suggested_question": "string" },
-                    "competition":       { "emoji": "✅|⚠️|❌", "status": "confirmed|partial|missing", "evidence": "direct quote or empty string", "suggested_question": "string" }
-                  },
-                  "objections": [
-                    {
-                      "type": "customer_question",
-                      "quote": "exact quote from transcript",
-                      "owner": "customer",
-                      "status": "open|deferred",
-                      "suggested_answer": "AI suggested rebuttal"
-                    }
-                  ],
-                  "signals": [
-                    {
-                      "quote": "exact quote from transcript",
-                      "signal_type": ["buying_signal|risk|frustration|objection|positive"],
-                      "ask_now": "suggested follow-up question or action",
-                      "intensity": "high|medium|low",
-                      "category": "positive|negative|neutral"
-                    }
-                  ]
-                }
-                Rules:
-                - emoji must be "✅" for confirmed, "⚠️" for partial, "❌" for missing
-                - signal_type is always an ARRAY of strings even if only one value
-                - Return raw JSON only, no markdown fences`;
-
-                const transcriptText = data.transcript
-                    .filter(t => !['system', 'ai', 'assistant', 'model'].includes(t.speaker?.toLowerCase()))
-                    .map(t => `${t.speaker === 'user' ? (speakerNames?.user || 'REP') : (speakerNames?.client || 'PROSPECT')}: ${t.text}`)
-                    .join('\n')
-                    .substring(0, 12000);
+                const transcriptText = (rosterBlock + humanSegments
+                    .map(t => `${transcriptTurnLabel(t, speakerNames, multiClientSpeakers)}: ${t.text}`)
+                    .join('\n')).substring(0, 12000);
 
                 const analysisRaw = await this.llmHelper.generateMeetingSummary(analysisPrompt, transcriptText, analysisPrompt);
                 if (analysisRaw) {
                     const jsonMatch = analysisRaw.match(/```json\n([\s\S]*?)\n```/) || [null, analysisRaw];
                     const jsonStr = (jsonMatch[1] || analysisRaw).trim();
                     try {
-                        liveAnalysisData = JSON.parse(jsonStr);
+                        liveAnalysisData = normalizeUploadAnalysis(JSON.parse(jsonStr), isNegotiation);
+                        // Call Analysis exists only now on the upload/recovery
+                        // path — the reconciliation inside the summary step above
+                        // ran while liveAnalysisData was still null (its no-op
+                        // early-return) and was never re-applied. Re-run it here
+                        // so the summary's BANT/MEDDIC — and, via
+                        // buildConfirmedWhatIDidRight, the Sales Self-Analysis
+                        // "What I did right" list — can never disagree with the
+                        // call analysis. This is the same guarantee
+                        // finalizeScorecard() gives the scorecard: the analysis
+                        // is the single source of truth for every surface.
+                        summaryData = reconcileBantMeddicWithLiveAnalysis(summaryData, liveAnalysisData);
                     } catch (e) {
                         console.warn('[MeetingPersistence] Failed to parse call analysis JSON:', e);
                     }
@@ -629,21 +712,19 @@ export class MeetingPersistence {
                 detailedSummary = { ...summaryData, liveAnalysis: liveAnalysisData };
             }
 
-            // ── Generate Meeting Scorecard ─────────────────────────────────────────────────
-            let scorecardResult: MeetingScorecardResult | null = null;
+            // ── Collect Meeting Scorecard ──────────────────────────────────────────────────
+            // The LLM half was started back before the title/summary calls (see
+            // scorecardDraft above) so its latency overlaps theirs instead of
+            // stacking on top. Only the grounding + write happen here, now that
+            // `liveAnalysisData` is final on every path (the upload/recovery path
+            // generates it just above). When the transcript was too short to
+            // score, the draft is the null outcome and this is a no-op.
+            const { scorecardResult, persisted: scorecardPersisted } =
+                this.finalizeScorecard(meetingId, await scorecardDraft, liveAnalysisData);
 
-            if (data.transcript.length > 2) {
-
-                const outcome = await this.generateAndPersistScorecard(
-                    meetingId,
-                    fullTranscriptText,
-                    hintMeetingTypes ?? null
-                );
-                scorecardResult = outcome.scorecardResult;
-                if (scorecardResult && !outcome.persisted) {
-                    // DB write failed — fall back to embedding it in summary_json so the UI still gets data
-                    detailedSummary = { ...detailedSummary, scorecard: scorecardResult } as any;
-                }
+            if (scorecardResult && !scorecardPersisted) {
+                // DB write failed — fall back to embedding it in summary_json so the UI still gets data
+                detailedSummary = { ...detailedSummary, scorecard: scorecardResult } as any;
             }
 
             // Use the speaker names snapshot captured BEFORE session.reset() was called.
@@ -659,17 +740,40 @@ export class MeetingPersistence {
                 };
             }
 
+            // Stamp the resolved (company-domain-aware) speaker labels onto
+            // each transcript segment before saving. Without this, every
+            // segment only carries the raw role ('user'/'client'), and
+            // DatabaseManager.saveMeeting() falls back to a hardcoded
+            // generic label for any 'client'/'interviewer' segment — which
+            // is why the persisted transcript view showed "Other Party"
+            // even when Speaking Balance (which reads resolvedSpeakerNames
+            // directly, not per-segment displayName) correctly showed the
+            // real company name. When diarization found 2+ far-end voices,
+            // the same helper appends "· Speaker N" off clientDiarized so the
+            // saved labels match what _dispatchTranscript broadcast live.
+            const transcriptWithDisplayNames = data.transcript.map(segment => ({
+                ...segment,
+                displayName: segment.displayName
+                    ?? resolveSpeakerDisplayName(segment.speaker, segment.speakerIndex, resolvedSpeakerNames, multiClientSpeakers),
+            }));
+
             const meetingData: Meeting = {
                 id: meetingId,
                 title: title,
+                // Only used when no row exists yet (recovery re-processing): for the
+                // normal flow saveMeeting() keeps the placeholder's created_at, so
+                // the card doesn't re-timestamp itself to "processing finished".
                 date: new Date().toISOString(),
-                duration: formatDuration(data.durationMs),
+                // Uploads without source timestamps keep an unknown duration
+                // rather than a fabricated one (live calls are always > 1s).
+                duration: data.durationMs > 0 ? formatDuration(data.durationMs) : '—',
                 durationMs: data.durationMs,
                 summary: "See detailed summary",
                 detailedSummary: detailedSummary,
-                transcript: data.transcript,
+                transcript: transcriptWithDisplayNames,
                 usage: data.usage,
                 calendarEventId: calendarEventId,
+                calendarEventMetadata: calendarEventMetadata,
                 source: source,
                 isProcessed: true,
                 tenantId: tenantId || null
@@ -679,7 +783,12 @@ export class MeetingPersistence {
 
             // Metadata was already snapshotted before session.reset() — nothing to clear here.
 
-            // Notify Frontend to refresh list
+            // Notify Frontend to refresh list FIRST, then toast. The toast builds a
+            // real BrowserWindow with inline HTML on the active display, and that
+            // construction runs on main's event loop — doing it before these sends
+            // delayed the card leaving its processing state by exactly as long as
+            // the window took to come up. The user sees both either way; this way
+            // the list is already correct when the toast lands on top of it.
             const wins = require('electron').BrowserWindow.getAllWindows();
             wins.forEach((w: any) => w.webContents.send('meetings-updated'));
             // Separate, analytics-specific signal from 'meetings-updated' above —
@@ -688,6 +797,24 @@ export class MeetingPersistence {
             // proxy for counting completed meetings. This one fires exactly once
             // per successfully saved meeting.
             wins.forEach((w: any) => w.webContents.send('meeting-completed'));
+
+            // Toast the user that their summary is ready — same native,
+            // display-aware toast used for pause/resume, so it's visible
+            // regardless of which screen (or app) the user is currently on.
+            // Fires here specifically because this is the point the summary,
+            // scorecard, and title have all actually finished generating AND
+            // been persisted — not just "processing kicked off".
+            AppState.getInstance()?.notifyMeetingSummaryReady?.(title);
+
+            // Kick backend RAG ingest now that the meeting + transcript are
+            // committed (chat/Ask-Dojo read only from backend meeting_chunks).
+            // Fire-and-forget: the util owns retry/backoff and a durable queue,
+            // because the transcript rows reach the backend via the async
+            // mirror — the first attempt can legitimately find "No transcript
+            // yet". Never let this throw into the meeting-save catch below.
+            void requestBackendChunking(meetingId, tenantId ?? null).catch(
+                (e) => console.error('[MeetingPersistence] backend chunk trigger failed:', e),
+            );
 
         } catch (error) {
             console.error('[MeetingPersistence] Failed to save meeting:', error);
@@ -698,9 +825,13 @@ export class MeetingPersistence {
      * Generates a meeting scorecard via the LLM and persists it to `meeting_scorecards`
      * (mirroring to Supabase). Single source of truth for: loading scoring criteria,
      * building the prompt, stripping ```json fences, parsing, normalizing
-     * `categoryBreakdown`, saving, and mirroring — used by both the initial
-     * post-meeting scorecard generation and manual regeneration so the two paths
-     * can't drift.
+     * `categoryBreakdown`, grounding against live analysis, saving, and mirroring —
+     * used by both the initial post-meeting scorecard generation and manual
+     * regeneration so the two paths can't drift.
+     *
+     * Split into generateScorecardDraft() (the LLM round-trip, safe to start early
+     * and overlap with the title/summary calls) and finalizeScorecard() (grounding +
+     * write, which must wait until the final live analysis exists).
      *
      * Returns `scorecardResult: null` if generation/parsing failed (non-fatal —
      * callers should treat this as "no scorecard produced this run").
@@ -711,8 +842,27 @@ export class MeetingPersistence {
     private async generateAndPersistScorecard(
         meetingId: string,
         transcriptText: string,
-        hintTypes: ('discovery' | 'demo' | 'negotiation')[] | null
+        hintTypes: ('discovery' | 'demo' | 'negotiation')[] | null,
+        liveAnalysis: LiveAnalysisData | null
     ): Promise<{ scorecardResult: MeetingScorecardResult | null; persisted: boolean }> {
+        const draft = await this.generateScorecardDraft(transcriptText, hintTypes ?? null, liveAnalysis);
+        return this.finalizeScorecard(meetingId, draft, liveAnalysis);
+    }
+
+    /**
+     * The LLM half of scorecard generation: load criteria, build the prompt, call
+     * the model, parse. No DB access, no reconciliation — so it can be kicked off
+     * early and awaited later. Never rejects.
+     *
+     * `liveAnalysis` is optional here and only used to ground the prompt; the
+     * live path has it up front, the upload/recovery path doesn't. Either way
+     * finalizeScorecard() applies the deterministic grounding afterwards.
+     */
+    private async generateScorecardDraft(
+        transcriptText: string,
+        hintTypes: ('discovery' | 'demo' | 'negotiation')[] | null,
+        liveAnalysis: LiveAnalysisData | null = null
+    ): Promise<ScorecardDraft> {
         let customScoringCriteria: import('../src/types').ScoringCriteriaSettings | null = null;
         try {
             customScoringCriteria = DatabaseManager.getInstance().getScoringCriteria();
@@ -722,7 +872,7 @@ export class MeetingPersistence {
 
         let scorecardResult: MeetingScorecardResult | null = null;
         try {
-            const scorecardPrompt = buildScorecardPrompt(customScoringCriteria, hintTypes ?? null);
+            const scorecardPrompt = buildScorecardPrompt(customScoringCriteria, hintTypes ?? null, liveAnalysis);
             const scorecardRaw = await this.llmHelper.generateMeetingSummary(
                 scorecardPrompt,
                 transcriptText,
@@ -737,19 +887,50 @@ export class MeetingPersistence {
                     overallWeightedScore: parsed.overallWeightedScore ?? 0,
                     scorecards: Object.values(parsed.scorecards ?? {}).map((sc: any) => ({
                         ...sc,
+                        // Keep the config key when the model returned the breakdown as an
+                        // object (it always does) — reconcileScorecardWithLiveAnalysis
+                        // matches on key first, so a renamed custom label still grounds.
                         categoryBreakdown: Array.isArray(sc.categoryBreakdown)
                             ? sc.categoryBreakdown
-                            : Object.values(sc.categoryBreakdown ?? {}),
+                            : Object.entries(sc.categoryBreakdown ?? {}).map(([key, cat]: [string, any]) => ({ key, ...cat })),
                     })),
                 } as MeetingScorecardResult;
             }
         } catch (e) {
             console.warn('[MeetingPersistence] Scorecard generation failed (non-fatal):', e);
-            return { scorecardResult: null, persisted: false };
+            return { scorecardResult: null, customScoringCriteria };
         }
+
+        return { scorecardResult, customScoringCriteria };
+    }
+
+    /**
+     * Grounds a scorecard draft against live analysis, merges it with any
+     * previously-saved scorecard, and writes it to `meeting_scorecards` (+ the
+     * Supabase mirror). Synchronous: the SQLite write is sync and the mirror is
+     * fire-and-forget.
+     */
+    private finalizeScorecard(
+        meetingId: string,
+        draft: ScorecardDraft,
+        liveAnalysis: LiveAnalysisData | null
+    ): { scorecardResult: MeetingScorecardResult | null; persisted: boolean } {
+        const { customScoringCriteria } = draft;
+        let scorecardResult = draft.scorecardResult;
 
         if (!scorecardResult) {
             return { scorecardResult: null, persisted: false };
+        }
+
+        // Call Analysis is the single source of truth for MEDDIC / BANT /
+        // objections / signals. The prompt was already grounded with it, but a
+        // prompt instruction is not a guarantee (same reasoning as
+        // reconcileBantMeddicWithLiveAnalysis above), so re-derive those
+        // categories deterministically. Unrecognised categories are untouched.
+        try {
+            scorecardResult = reconcileScorecardWithLiveAnalysis(scorecardResult, liveAnalysis);
+        } catch (reconcileErr) {
+            console.warn('[MeetingPersistence] Scorecard reconciliation failed (non-fatal):', reconcileErr);
         }
 
         // Merge with any previously-saved scorecard so that a regenerate run
@@ -811,17 +992,24 @@ export class MeetingPersistence {
      * Re-scores a meeting using the latest scoring criteria from the DB.
      * Saves the result to `meeting_scorecards` (and mirrors to Supabase) so the
      * next `getMeetingDetails` call returns fresh scorecard data.
+     *
+     * `liveAnalysis` must be the meeting's stored live analysis
+     * (`detailedSummary.liveAnalysis`) — passing null would re-score the
+     * frameworks from the transcript alone and reintroduce the drift between the
+     * Meeting Score and the Call Analysis tab.
      */
 
     private async regenerateScorecard(
         meetingId: string,
         transcriptContext: string,
-        detectedMeetingTypes: ('discovery' | 'demo' | 'negotiation')[] | null
+        detectedMeetingTypes: ('discovery' | 'demo' | 'negotiation')[] | null,
+        liveAnalysis: LiveAnalysisData | null
     ): Promise<void> {
         const { scorecardResult } = await this.generateAndPersistScorecard(
             meetingId,
             transcriptContext,
-            detectedMeetingTypes ?? null
+            detectedMeetingTypes ?? null,
+            liveAnalysis
         );
 
         if (scorecardResult) {
@@ -843,10 +1031,20 @@ export class MeetingPersistence {
                 return false;
             }
 
-            // Build the same context string as original processing
-            const fullRegenerateContext = meeting.transcript
-                .filter(t => !['system', 'ai', 'assistant', 'model'].includes(t.speaker?.toLowerCase()))
-                .map(t => `${t.speaker === 'user' ? 'SALES PERSON (Me)' : 'PROSPECT (Client)'}: ${t.text}`)
+            // Build the same context string as original processing — using the
+            // shared speaker-identity layer: persisted rows carry displayNames
+            // (original labels for uploads, resolved/diarized names for live
+            // calls), so regenerating never falls back to generic
+            // "SALES PERSON"/"PROSPECT" wording.
+            const regenSpeakerNames = (meeting.detailedSummary as any)?.speakerNames as SpeakerNameMapLike | undefined;
+            const regenMultiClients = hasMultipleClientSpeakers(meeting.transcript);
+            const regenSegments = meeting.transcript
+                .filter(t => !['system', 'ai', 'assistant', 'model'].includes(t.speaker?.toLowerCase()));
+            const regenRosterBlock = regenSegments.some(t => !!t.displayName)
+                ? formatSpeakerRosterBlock(buildSpeakerRoster(regenSegments, regenSpeakerNames, regenMultiClients))
+                : '';
+            const fullRegenerateContext = regenRosterBlock + regenSegments
+                .map(t => `${transcriptTurnLabel(t, regenSpeakerNames, regenMultiClients)}: ${t.text}`)
                 .join('\n');
 
             // Re-use live analysis from detailedSummary if present so the regen is also grounded
@@ -874,9 +1072,12 @@ export class MeetingPersistence {
 
             // Re-score using the latest criteria so any criteria changes made before
             // clicking "regenerate" are reflected in the scorecard shown in the UI.
+            // Note if re-enabling: pass `existingLiveAnalysis` through so the
+            // re-score stays grounded in the same Call Analysis the summary above
+            // was just reconciled against.
             // const existingTypes = (meeting.detailedSummary as any)?.scorecard?.detectedTypes ?? null;
             // try {
-            //     await this.regenerateScorecard(meetingId, fullRegenerateContext, existingTypes);
+            //     await this.regenerateScorecard(meetingId, fullRegenerateContext, existingTypes, existingLiveAnalysis ?? null);
             // } catch (scorecardErr) {
             //     // Non-fatal: text summary was already saved; log and continue.
             //     console.warn('[MeetingPersistence] Scorecard regeneration failed (non-fatal):', scorecardErr);
@@ -899,54 +1100,25 @@ export class MeetingPersistence {
     }
 
     /**
-     * DEV ONLY: Upload a raw transcript text and process it as a real meeting
+     * Parse a raw transcript text and process it as a real meeting — same
+     * lifecycle as a live call: placeholder save + shared processAndSaveMeeting
+     * pipeline (summary, call analysis via the no-live-analysis branch,
+     * scorecard, events, toast, Supabase mirror). `tenantId` must be threaded
+     * through so the row is owned by the current account like live meetings.
      */
     public async uploadTranscript(
         rawText: string,
         title?: string,
-        meetingTypes?: ('discovery' | 'demo' | 'negotiation')[]
+        meetingTypes?: ('discovery' | 'demo' | 'negotiation')[],
+        tenantId?: string | null
     ): Promise<string | null> {
         try {
-            // Parse lines like "[00:00:12] REP: text" or "REP: text" or plain text
-            const transcript: TranscriptSegment[] = [];
-            const lines = rawText.split('\n').filter(l => l.trim());
-
-            // Helper to parse "[HH:MM:SS]" or "[MM:SS]" into milliseconds
-            const parseTimestamp = (raw: string): number | null => {
-                const parts = raw.replace(/[\[\]]/g, '').split(':').map(Number);
-                if (parts.some(isNaN)) return null;
-                if (parts.length === 3) return ((parts[0] * 3600) + (parts[1] * 60) + parts[2]) * 1000;
-                if (parts.length === 2) return ((parts[0] * 60) + parts[1]) * 1000;
-                return null;
-            };
-
-            let lastParsedTs = 0;
-            lines.forEach((line, i) => {
-                const withTimestamp = line.match(/^(\[[\d:]+\])\s*(REP|PROSPECT|CLIENT|ME|THEM|USER|SPEAKER\s*\d*|[A-Z][A-Z\s]{0,15}):\s*(.+)/i);
-                const withoutTimestamp = line.match(/^(REP|PROSPECT|CLIENT|ME|THEM|USER|SPEAKER\s*\d*|[A-Z][A-Z\s]{0,15}):\s*(.+)/i);
-
-                if (withTimestamp) {
-                    const tsRaw = withTimestamp[1];
-                    const speakerRaw = withTimestamp[2].trim().toUpperCase();
-                    const text = withTimestamp[3].trim();
-                    const parsedTs = parseTimestamp(tsRaw);
-                    const timestamp = parsedTs !== null ? parsedTs : lastParsedTs + 5000;
-                    lastParsedTs = timestamp;
-                    const speaker = ['REP', 'ME', 'USER', 'SALES', 'SELLER'].includes(speakerRaw) ? 'user' : 'client';
-                    transcript.push({ speaker, text, timestamp, final: true });
-                } else if (withoutTimestamp) {
-                    const speakerRaw = withoutTimestamp[1].trim().toUpperCase();
-                    const text = withoutTimestamp[2].trim();
-                    const timestamp = lastParsedTs + 5000;
-                    lastParsedTs = timestamp;
-                    const speaker = ['REP', 'ME', 'USER', 'SALES', 'SELLER'].includes(speakerRaw) ? 'user' : 'client';
-                    transcript.push({ speaker, text, timestamp, final: true });
-                } else if (line.trim()) {
-                    const timestamp = lastParsedTs + 5000;
-                    lastParsedTs = timestamp;
-                    transcript.push({ speaker: 'client', text: line.trim(), timestamp, final: true });
-                }
-            });
+            // Parse "[HH:MM:SS] SALES PERSON: text", "[MM:SS] ...", plain
+            // "Alex: text", and multi-line messages via the shared parser —
+            // original speaker labels survive as displayName, timestamps are
+            // never invented, and duration is null when the source had none.
+            const { segments, durationMs: parsedDurationMs } = parseUploadTranscript(rawText);
+            const transcript = segments as TranscriptSegment[];
 
             if (transcript.length < 2) {
                 console.warn('[MeetingPersistence] Upload: transcript too short');
@@ -955,32 +1127,30 @@ export class MeetingPersistence {
 
             const meetingId = crypto.randomUUID();
             const now = Date.now();
-            // Use actual first→last segment timestamps for real duration.
-            // Fall back to now - 60s minimum if timestamps are missing/zero.
-            const firstTs = transcript[0]?.timestamp ?? 0;
-            const lastTs = transcript[transcript.length - 1]?.timestamp ?? 0;
-            // Use real parsed timestamps if available (lastTs > 0 means timestamps were found)
-            // Otherwise estimate from line count: avg 15 seconds per exchange
-            const durationMs = lastTs > 0
-                ? lastTs - firstTs
-                : Math.max(transcript.length * 15_000, 60_000);
+            // Real timestamp span when the transcript carried them; otherwise
+            // duration stays UNKNOWN (0 / '—') rather than estimated from a
+            // line count — a fabricated length would contradict the source.
+            const durationMs = parsedDurationMs ?? 0;
             const startTimeMs = now - durationMs;
-            const context = transcript.map(t => `${t.speaker === 'user' ? 'Me' : 'Them'}: ${t.text}`).join('\n');
+            const context = transcript.map(t => `${t.displayName ?? (t.speaker === 'user' ? 'Me' : 'Them')}: ${t.text}`).join('\n');
 
             // Save placeholder immediately so it appears in the list
             const placeholder: Meeting = {
                 id: meetingId,
-                title: 'Processing...',
+                // The user usually typed a title on the upload form — keep it; the
+                // row renders as processing off isProcessed, not off this string.
+                title: title || 'Processing...',
                 date: new Date().toISOString(),
-                duration: formatDuration(durationMs),
+                duration: durationMs > 0 ? formatDuration(durationMs) : '—',
                 durationMs: durationMs,
-                summary: 'Generating summary...',
+                summary: '',
                 detailedSummary: { actionItems: [], keyPoints: [] },
                 // Same reasoning as the live-meeting placeholder — the full
                 // transcript is already parsed and sitting in memory at this
                 // point, no reason to withhold it until background processing.
                 transcript,
                 usage: [],
+                tenantId: tenantId || null,
                 isProcessed: false,
             };
 
@@ -997,7 +1167,8 @@ export class MeetingPersistence {
                 null,           // liveAnalysisData — not available for uploads
                 undefined,      // speakerNames
                 null,           // companyIntel
-                meetingTypes    // ← pass through
+                meetingTypes,   // ← scorecard type hints from the upload modal
+                tenantId || null
             ).catch(err => console.error('[MeetingPersistence] Upload processing failed:', err));
 
             return meetingId;
@@ -1035,37 +1206,32 @@ export class MeetingPersistence {
                     return `[${label}]: ${t.text}`;
                 }).join('\n') || "";
 
-                const parts = (details.duration || '0:00').split(':');
-                // Use the raw durationMs if available (always present when loaded from DB).
-                // Fallback: re-parse the formatted string only for very old DB rows that might
-                // lack duration_ms. Handles both mm:ss and hh:mm:ss safely.
-                let durationMs: number;
-                if (details.durationMs != null && details.durationMs > 0) {
-                    durationMs = details.durationMs;
-                } else if (parts.length === 3) {
-                    // hh:mm:ss
-                    durationMs = ((parseInt(parts[0]) || 0) * 3600 + (parseInt(parts[1]) || 0) * 60 + (parseInt(parts[2]) || 0)) * 1000;
-                } else {
-                    // mm:ss
-                    durationMs = ((parseInt(parts[0]) || 0) * 60 + (parseInt(parts[1]) || 0)) * 1000;
-                }
-                const startTime = new Date(details.date).getTime();
+                // Reuse the raw timing facts stored at save time. NEVER re-derive
+                // from created_at — created_at is the processing timestamp, not the
+                // real meeting start, so recomputing duration_ms from it makes the
+                // duration drift on every recovery (the bug seen after account switch).
+                const startTime = m.startTime ?? new Date(details.date).getTime();
+                const durationMs = m.durationMs ?? details.durationMs ?? 0;
+                const endTime = m.endTime ?? (startTime + durationMs);
+                const totalPausedMs = m.totalPausedMs ?? 0;
 
                 const snapshot = {
                     transcript: details.transcript as TranscriptSegment[],
                     usage: details.usage,
-                    startTime: startTime,
-                    durationMs: durationMs,
-                    context: context
+                    startTime,
+                    endTime,          // NEW
+                    totalPausedMs,    // NEW
+                    durationMs,
+                    context,
                 };
 
                 await this.processAndSaveMeeting(snapshot, m.id);
                 console.log(`[MeetingPersistence] Recovered meeting ${m.id}`);
-
             } catch (e) {
                 console.error(`[MeetingPersistence] Failed to recover meeting ${m.id}`, e);
             }
         }
+
     }
 
 

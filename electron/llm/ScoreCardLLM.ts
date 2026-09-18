@@ -2,7 +2,7 @@
 // Generates the LLM prompt for multi-type meeting scorecard analysis.
 // Called from MeetingPersistence.ts after transcript is available.
 
-import { MeetingType, CategoryConfig, ScoringCriteriaSettings } from '../../src/types';
+import { MeetingType, CategoryConfig, ScoringCriteriaSettings, LiveAnalysisData } from '../../src/types';
 import { resolveEffectiveScorecardConfig } from "../../src/lib/utils"
 
 function buildCategoryBlock(cat: CategoryConfig): string {
@@ -35,9 +35,74 @@ function buildScorecardBlock(type: MeetingType, customSettings: ScoringCriteriaS
   }`;
 }
 
+// ── Live-analysis grounding ───────────────────────────────────────────────────
+// The Call Analysis tab is the single source of truth for MEDDIC, BANT,
+// objections and signals. Feeding it to the scorecard prompt stops the model
+// from forming a second, contradictory opinion of the same frameworks. The
+// deterministic backstop lives in electron/scorecardReconciliation.ts — this
+// block exists so the *narrative* fields (reasoning, coaching) are grounded
+// too, not just the numbers the backstop overwrites.
+const CAP = 180;
+const clip = (s: string | undefined): string => {
+    const t = (s ?? '').replace(/\s+/g, ' ').trim();
+    return t.length > CAP ? `${t.slice(0, CAP)}…` : t;
+};
+
+function buildGroundingBlock(live: LiveAnalysisData | null): string {
+    if (!live) return '';
+
+    const fieldLines = (
+        entries: [string, { status?: string; evidence?: string } | undefined][]
+    ) => entries
+        .map(([label, f]) => `          - ${label}: ${f?.status || 'missing'}${clip(f?.evidence) ? ` — "${clip(f?.evidence)}"` : ''}`)
+        .join('\n');
+
+    const bant = fieldLines([
+        ['Budget', live.bant?.budget], ['Authority', live.bant?.authority],
+        ['Need', live.bant?.need], ['Timeline', live.bant?.timeline],
+    ]);
+    const meddic = fieldLines([
+        ['Metrics', live.meddic?.metrics], ['Economic Buyer', live.meddic?.economic_buyer],
+        ['Decision Criteria', live.meddic?.decision_criteria], ['Decision Process', live.meddic?.decision_process],
+        ['Identify Pain', live.meddic?.identify_pain], ['Champion', live.meddic?.champion],
+        ['Competition', live.meddic?.competition],
+    ]);
+
+    const objections = (live.objections ?? []).slice(0, 12);
+    const objectionLines = objections.length
+        ? objections.map(o => `          - [${o.resolved ? 'resolved' : o.status === 'deferred' ? 'deferred' : 'open'}] "${clip(o.quote)}"`).join('\n')
+        : '          - NONE: no objections were raised on this call.';
+
+    const signals = (live.signals ?? []).slice(0, 12);
+    const signalLines = signals.length
+        ? signals.map(s => `          - [${s.category || 'neutral'}] "${clip(s.quote)}"`).join('\n')
+        : '          - NONE: no buying/risk signals were captured on this call.';
+
+    return `
+        CALL ANALYSIS (AUTHORITATIVE — captured live during the call):
+        This is the assessment the user already sees in the Call Analysis tab. It
+        overrides your own reading of the transcript. Do NOT re-qualify these
+        frameworks yourself and do NOT contradict a status below.
+        BANT:
+${bant}
+        MEDDIC:
+${meddic}
+        OBJECTIONS TRACKED:
+${objectionLines}
+        SIGNALS CAPTURED:
+${signalLines}
+        Scoring these: confirmed = full marks for that component, partial = half,
+        missing = zero. Objection handling scores off the list above only —
+        "NONE" means zero, not a pass. Buying-intent scores off the positive
+        signals above only. Quote the evidence above rather than hunting for
+        your own.
+`;
+}
+
 export function buildScorecardPrompt(
     customSettings: ScoringCriteriaSettings | null = null,
-    hintMeetingTypes: ('discovery' | 'demo' | 'negotiation')[] | null = null
+    hintMeetingTypes: ('discovery' | 'demo' | 'negotiation')[] | null = null,
+    liveAnalysis: LiveAnalysisData | null = null
 ): string {
     const allBlocks = (['discovery', 'demo', 'negotiation'] as MeetingType[])
         .map(t => buildScorecardBlock(t, customSettings))
@@ -82,11 +147,12 @@ export function buildScorecardPrompt(
         A category's score must reflect how many of its checkpoints were actually confirmed by the client, not how many the rep attempted to cover. Do not average toward the middle by default — most real calls should score low on categories where the client gave no real information.
 
         ${categoryDocs}
-
+${buildGroundingBlock(liveAnalysis)}
         RULES:
         - Only score meeting types you detected (or were pre-selected)
         - Use direct transcript quotes as evidence wherever possible
-        - Never fabricate evidence — if not in transcript, score 0 for that checkpoint
+        - Never fabricate evidence — if not in transcript, score 0 for that checkpoint${liveAnalysis ? `
+        - The CALL ANALYSIS block above is authoritative for MEDDIC, BANT, objections and signals. Score those categories from it, reuse its evidence, and never assert something it marks "missing" was covered (or vice versa)` : ''}
         - Before assigning any score above 0 for a checkpoint, you must be able to cite a CLIENT quote (not just a REP question) that substantively satisfies it. If the only relevant line is the rep asking or a client deflection/non-answer, score that checkpoint 0.
         - overallScore = weighted average of category scores (score/maxScore * weight), summed
         - Keep coaching recommendations specific and actionable (not generic)

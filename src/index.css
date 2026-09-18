@@ -473,6 +473,24 @@ html[data-window='overlay'] #root {
   overflow: visible !important;
 }
 
+/* Meeting reminder popup: same idea as the overlay, but only vertically —
+   the card is a fixed-width notification, so width stays 100% and the window
+   width is pinned in MeetingPopupWindowHelper. Without this, the base
+   `#root { height: 100%; overflow: hidden }` rule above clips the card to the
+   window's current height and the measured content height never grows. */
+html[data-window='meeting-popup'],
+html[data-window='meeting-popup'] body,
+html[data-window='meeting-popup'] #root {
+  height: fit-content !important;
+  /* Stays `hidden`, unlike the overlay rule above: `overflow: visible` on the
+     root element computes to `auto`, so whenever the card is momentarily
+     taller than the window a scrollbar appears, narrows the viewport by 19px
+     and corrupts the height the card reports back — the window then locks in
+     at the wrong size. `fit-content` already hugs the card, so there is
+     nothing for `hidden` to clip. */
+  overflow: hidden !important;
+}
+
 /* Allow selection in specific areas */
 .selectable {
   user-select: text;
@@ -643,4 +661,16 @@ a {
 .disable-transitions,
 .disable-transitions * {
   transition: none !important;
+}
+
+/* Applied by FloatingPanelWrapper once a dock panel has finished fading out and
+   flipped to visibility:hidden. The placeholder animations in the Intelligence
+   panel are infinite and run for minutes (skeleton) or up to the whole
+   auto-refresh interval (countdown), and the dock starts collapsed — so without
+   this they burn frames for UI that is not on screen. A hidden panel has nothing
+   to show, so this is invisible to the user; the animations resume from where
+   they paused when the panel is revealed. */
+.dock-panel-hidden,
+.dock-panel-hidden * {
+  animation-play-state: paused !important;
 }

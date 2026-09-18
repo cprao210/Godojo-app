@@ -21,7 +21,7 @@
 import React from 'react';
 import { useEffect } from 'react';
 import { AnimatePresence, motion } from 'framer-motion';
-import { Users, Phone, Target, Calendar, ChevronDown, Trophy, AlertTriangle, X, FileIcon, FileText } from 'lucide-react';
+import { Users, Phone, Target, Calendar, ChevronDown, Trophy, AlertTriangle, X, FileIcon, FileText, RefreshCw } from 'lucide-react';
 import { useResolvedTheme, useManagerDashboard, PERIOD_OPTIONS } from '@/hooks';
 import { posthogAnalytics } from '@/lib/analytics/posthog.service';
 import AeDetailView from './AEDetailView';
@@ -43,7 +43,7 @@ export const ManagerDashboard: React.FC<ManagerDashboardProps> = ({ isOpen }) =>
     const managerDashboardStates = useManagerDashboard({ isOpen });
 
     const { tenant, isLoadingTenant, tenantError, isAdmin, hasTenant, period, setPeriod, periodLabel } = managerDashboardStates;
-    const { isPeriodMenuOpen, setIsPeriodMenuOpen, isLoadingDashboard, dashboardError, activeReps, totalCalls } = managerDashboardStates;
+    const { isPeriodMenuOpen, setIsPeriodMenuOpen, isLoadingDashboard, isRefreshingDashboard, refreshDashboard, dashboardError, activeReps, totalCalls } = managerDashboardStates;
     const { teamAvgScore, teamScoreTrend, objections, topPerformers, needsCoaching, allAeRows, selectedAe, setSelectedAe } = managerDashboardStates;
     const { openAeFromRep, openAeFromRow, selectedObjection, setSelectedObjection } = managerDashboardStates;
 
@@ -61,7 +61,10 @@ export const ManagerDashboard: React.FC<ManagerDashboardProps> = ({ isOpen }) =>
                         animate={{ opacity: 1 }}
                         exit={{ opacity: 0 }}
                         transition={{ duration: 0.2 }}
-                        className={`fixed inset-0 z-50 my-4 overflow-y-auto ${isLight ? 'bg-[#F8FAFC]' : 'bg-bg-main'}`}
+                        // mt-4 keeps the existing top margin; mb-12 (= the audio status
+                        // footer's h-12) keeps scrolled content clear of that footer,
+                        // which now renders at the App root at z-[200] — above this z-50 panel.
+                        className={`fixed inset-0 z-50 mt-4 mb-12 overflow-y-auto ${isLight ? 'bg-[#F8FAFC]' : 'bg-bg-main'}`}
                     >
                         <div className="max-w-6xl mx-auto px-10 py-10">
                             {/* Header */}
@@ -99,6 +102,15 @@ export const ManagerDashboard: React.FC<ManagerDashboardProps> = ({ isOpen }) =>
                                             ))}
                                         </div>
                                     )}
+                                    <button
+                                        onClick={refreshDashboard}
+                                        disabled={isRefreshingDashboard || isLoadingDashboard}
+                                        title="Refresh dashboard data"
+                                        aria-label="Refresh dashboard data"
+                                        className={`inline-flex items-center justify-center p-2 rounded-lg text-sm font-medium border transition-colors disabled:opacity-50 disabled:cursor-not-allowed ${pillBtnCls}`}
+                                    >
+                                        <RefreshCw size={14} className={isRefreshingDashboard ? 'animate-spin' : ''} />
+                                    </button>
                                 </div>
                             </div>
 

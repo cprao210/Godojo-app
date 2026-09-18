@@ -7,6 +7,11 @@ pub struct Resampler {
     resampler: FftFixedIn<f32>,
     input_buffer: Vec<Vec<f32>>,
     output_buffer: Vec<Vec<f32>>,
+    /// Consecutive `process_into_buffer` failures. A resampler that starts
+    /// failing usually keeps failing, and this runs once per 1024-sample chunk
+    /// on the DSP thread — logging every one turned a config problem into
+    /// thousands of identical lines a minute. Log the first, then every 500th.
+    process_errors: u64,
 }
 
 impl Resampler {
@@ -30,6 +35,7 @@ impl Resampler {
             resampler,
             input_buffer: vec![Vec::new()],
             output_buffer: vec![Vec::new()],
+            process_errors: 0,
         })
     }
 
@@ -67,7 +73,13 @@ impl Resampler {
                     }
                 }
                 Err(e) => {
-                    println!("[Resampler] Process error: {}", e);
+                    self.process_errors += 1;
+                    if self.process_errors == 1 || self.process_errors.is_multiple_of(500) {
+                        eprintln!(
+                            "[Resampler] Process error (#{}): {}",
+                            self.process_errors, e
+                        );
+                    }
                 }
             }
         }

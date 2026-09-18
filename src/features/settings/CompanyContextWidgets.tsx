@@ -468,12 +468,27 @@ export const ValuePropositionSection: React.FC<{
 export const KnowledgeBaseSection: React.FC<{
     assets: KnowledgeAsset[];
     assetUploading: string | null;
+    /** Live backend-commit progress for the Save-time upload, keyed by asset id.
+     *  'uploading' = bytes streaming to the server (percent); 'processing' =
+     *  bytes sent, the backend's async job (parse/vision/embed) is running and
+     *  this handler is polling GET /upload/status/{id} for it — indeterminate
+     *  here since the job has no client-observable percent, just terminal
+     *  state ("indexed" | "empty" | "failed"). */
+    assetProgress?: Record<string, { phase: 'uploading' | 'processing'; percent: number }>;
     onUpload: (type: KnowledgeAsset['type']) => void;
     onDelete: (id: string) => void;
     onDeleteAll: (type: KnowledgeAsset['type']) => void;
     onSync: (id: string) => void;
     isLight: boolean;
-}> = ({ assets, assetUploading, onUpload, onDelete, onDeleteAll, onSync, isLight }) => {
+    /**
+     * When true, no Upload/Delete-all/Delete/Reprocess button is rendered at
+     * all — not just disabled. Used for read-only team members: they can see
+     * what the admin has uploaded, but there's nothing clickable anywhere in
+     * this section. Defaults to false so every existing (admin/solo) caller
+     * is unaffected.
+     */
+    readOnly?: boolean;
+}> = ({ assets, assetUploading, assetProgress = {}, onUpload, onDelete, onDeleteAll, onSync, isLight, readOnly = false }) => {
     const assetTypes: KnowledgeAsset['type'][] = ['sales_deck', 'product_specs', 'case_studies'];
 
     return (
@@ -513,39 +528,45 @@ export const KnowledgeBaseSection: React.FC<{
                                                 ? 'Processing…'
                                                 : hasAssets
                                                     ? `${assetsForType.length} file${assetsForType.length > 1 ? 's' : ''} uploaded`
-                                                    : 'Upload to enable AI-powered context injection'}
+                                                    : readOnly
+                                                        ? 'No files uploaded yet'
+                                                        : 'Upload to enable AI-powered context injection'}
                                         </p>
                                     </div>
                                 </div>
 
-                                <div className="flex items-center gap-1.5 shrink-0">
-                                    {hasAssets && (
+                                {/* No button of any kind renders here for a read-only member —
+                                    not even a disabled one. */}
+                                {!readOnly && (
+                                    <div className="flex items-center gap-1.5 shrink-0">
+                                        {hasAssets && (
+                                            <button
+                                                onClick={() => onDeleteAll(type)}
+                                                disabled={!!assetUploading}
+                                                title={`Remove all ${cfg.label} files`}
+                                                className="w-7 h-7 rounded-lg flex items-center justify-center text-text-tertiary hover:text-red-400 hover:bg-red-500/10 transition-all border border-border-subtle disabled:opacity-50"
+                                            >
+                                                <Trash2 size={13} />
+                                            </button>
+                                        )}
                                         <button
-                                            onClick={() => onDeleteAll(type)}
+                                            onClick={() => onUpload(type)}
                                             disabled={!!assetUploading}
-                                            title={`Remove all ${cfg.label} files`}
-                                            className="w-7 h-7 rounded-lg flex items-center justify-center text-text-tertiary hover:text-red-400 hover:bg-red-500/10 transition-all border border-border-subtle disabled:opacity-50"
+                                            className={`px-3 py-1.5 rounded-full text-xs font-medium transition-all disabled:opacity-50 disabled:cursor-wait disabled:hover:brightness-100 whitespace-nowrap ${hasAssets
+                                                ? 'hover:brightness-110'
+                                                : 'bg-blue-600 text-white hover:bg-blue-500'
+                                                }`}
+                                            style={hasAssets
+                                                ? { background: cfg.accentBg, color: cfg.accent, border: `1px solid ${cfg.accentBorder}` }
+                                                : undefined
+                                            }
                                         >
-                                            <Trash2 size={13} />
+                                            <span className="flex items-center gap-1">
+                                                <Plus size={11} /> Upload
+                                            </span>
                                         </button>
-                                    )}
-                                    <button
-                                        onClick={() => onUpload(type)}
-                                        disabled={!!assetUploading}
-                                        className={`px-3 py-1.5 rounded-full text-xs font-medium transition-all disabled:opacity-50 disabled:cursor-wait disabled:hover:brightness-100 whitespace-nowrap ${hasAssets
-                                            ? 'hover:brightness-110'
-                                            : 'bg-blue-600 text-white hover:bg-blue-500'
-                                            }`}
-                                        style={hasAssets
-                                            ? { background: cfg.accentBg, color: cfg.accent, border: `1px solid ${cfg.accentBorder}` }
-                                            : undefined
-                                        }
-                                    >
-                                        <span className="flex items-center gap-1">
-                                            <Plus size={11} /> Upload
-                                        </span>
-                                    </button>
-                                </div>
+                                    </div>
+                                )}
                             </div>
 
                             {hasAssets && (
@@ -553,43 +574,72 @@ export const KnowledgeBaseSection: React.FC<{
                                     {assetsForType.map(asset => {
                                         const isUploading = assetUploading === asset.id;
                                         const badge = STATUS_BADGE[asset.status];
+                                        // Only surface the bar for a row that isn't already showing the
+                                        // staging spinner — the commit loop sets progress for one asset
+                                        // at a time during Save.
+                                        const progress = isUploading ? undefined : assetProgress[asset.id];
                                         return (
                                             <div
                                                 key={asset.id}
-                                                className="flex items-center justify-between gap-3 rounded-lg px-3 py-2 border"
+                                                className="rounded-lg px-3 py-2 border"
                                                 style={{
                                                     background: isLight ? '#fff' : 'var(--bg-item-surface)',
                                                     borderColor: isLight ? 'rgba(0,0,0,0.08)' : 'var(--border-subtle)',
                                                 }}
                                             >
-                                                <div className="flex items-center gap-2 min-w-0">
-                                                    {isUploading
-                                                        ? <RefreshCw size={12} className="animate-spin text-text-tertiary shrink-0" />
-                                                        : <FileText size={12} className="text-text-tertiary shrink-0" />}
-                                                    <span className="text-xs text-text-primary truncate">{asset.label}</span>
-                                                    {badge && (
-                                                        <span className={`text-[9px] font-bold px-1.5 py-0.5 rounded border shrink-0 ${badge.className}`}>
-                                                            {badge.label}
-                                                        </span>
+                                                <div className="flex items-center justify-between gap-3">
+                                                    <div className="flex items-center gap-2 min-w-0">
+                                                        {(isUploading || progress)
+                                                            ? <RefreshCw size={12} className="animate-spin text-text-tertiary shrink-0" />
+                                                            : <FileText size={12} className="text-text-tertiary shrink-0" />}
+                                                        <span className="text-xs text-text-primary truncate">{asset.label}</span>
+                                                        {badge && (
+                                                            <span className={`text-[9px] font-bold px-1.5 py-0.5 rounded border shrink-0 ${badge.className}`}>
+                                                                {badge.label}
+                                                            </span>
+                                                        )}
+                                                    </div>
+                                                    {/* Same rule as above: nothing clickable at all when readOnly. */}
+                                                    {!readOnly && (
+                                                        <div className="flex items-center gap-1 shrink-0">
+                                                            <button
+                                                                onClick={() => onSync(asset.id)}
+                                                                disabled={!!assetUploading || isUploading || !!progress}
+                                                                title="Re-process file"
+                                                                className="w-6 h-6 rounded-md flex items-center justify-center text-text-tertiary hover:text-text-primary hover:bg-bg-input transition-all disabled:opacity-50"
+                                                            >
+                                                                <RefreshCw size={11} />
+                                                            </button>
+                                                            <button
+                                                                onClick={() => onDelete(asset.id)}
+                                                                title="Remove file"
+                                                                className="w-6 h-6 rounded-md flex items-center justify-center text-text-tertiary hover:text-red-400 hover:bg-red-500/10 transition-all"
+                                                            >
+                                                                <Trash2 size={11} />
+                                                            </button>
+                                                        </div>
                                                     )}
                                                 </div>
-                                                <div className="flex items-center gap-1 shrink-0">
-                                                    <button
-                                                        onClick={() => onSync(asset.id)}
-                                                        disabled={!!assetUploading}
-                                                        title="Re-process file"
-                                                        className="w-6 h-6 rounded-md flex items-center justify-center text-text-tertiary hover:text-text-primary hover:bg-bg-input transition-all disabled:opacity-50"
-                                                    >
-                                                        <RefreshCw size={11} />
-                                                    </button>
-                                                    <button
-                                                        onClick={() => onDelete(asset.id)}
-                                                        title="Remove file"
-                                                        className="w-6 h-6 rounded-md flex items-center justify-center text-text-tertiary hover:text-red-400 hover:bg-red-500/10 transition-all"
-                                                    >
-                                                        <Trash2 size={11} />
-                                                    </button>
-                                                </div>
+                                                {progress && (
+                                                    <div className="mt-2">
+                                                        <p className={`text-[10px] font-medium mb-1 ${isLight ? 'text-slate-500' : 'text-white/45'}`}>
+                                                            {progress.phase === 'processing'
+                                                                ? 'Bytes sent — indexing on server… (large PDFs can take a few minutes)'
+                                                                : `Uploading to server… ${progress.percent}%`}
+                                                        </p>
+                                                        <div className={`h-1 overflow-hidden rounded-full ${isLight ? 'bg-slate-200' : 'bg-white/10'}`}>
+                                                            <div
+                                                                className={`h-full rounded-full ${progress.phase === 'processing'
+                                                                    ? 'w-full animate-pulse bg-blue-500/60'
+                                                                    : 'bg-blue-500 transition-all duration-300'
+                                                                    }`}
+                                                                style={progress.phase === 'uploading'
+                                                                    ? { width: `${Math.max(progress.percent, 4)}%` }
+                                                                    : undefined}
+                                                            />
+                                                        </div>
+                                                    </div>
+                                                )}
                                             </div>
                                         );
                                     })}
@@ -835,4 +885,4 @@ export const SaveBar: React.FC<{
             </div>
         </div>
     );
-};
+};  

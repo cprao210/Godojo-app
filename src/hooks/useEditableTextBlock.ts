@@ -4,7 +4,7 @@
 // rendering — same split as useCalendarConnections / useTopSearchPill /
 // useModelSelectorWindow.
 
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
 
 const SAVE_DEBOUNCE_MS = 600;
 const DOUBLE_ENTER_THRESHOLD_MS = 500;
@@ -26,6 +26,21 @@ export function useEditableTextBlock({ initialValue, onSave, multiline, autoFocu
     const contentRef = useRef<HTMLElement>(null);
     const saveTimeoutRef = useRef<NodeJS.Timeout | null>(null);
     const lastEnterTimeRef = useRef<number>(0);
+
+    // The element no longer renders `initialValue` as a React child (that caused
+    // the DOM text node to be reconciled — and the caret reset — whenever
+    // `initialValue` changed while the user was still typing, e.g. right after
+    // the debounced save round-trips through an optimistic cache update).
+    // Instead, seed the contentEditable's text exactly once on mount, before
+    // paint, and let the DOM own it from then on while editing.
+    useLayoutEffect(() => {
+        if (contentRef.current) {
+            contentRef.current.innerText = initialValue;
+        }
+        // Intentionally run only on mount — see effect below for keeping in
+        // sync with later external changes.
+        // eslint-disable-next-line react-hooks/exhaustive-deps
+    }, []);
 
     // Keep the DOM/local value in sync with external changes while not editing.
     useEffect(() => {

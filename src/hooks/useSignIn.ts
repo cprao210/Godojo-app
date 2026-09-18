@@ -15,6 +15,7 @@ import {
     getAuthErrorMessage,
 } from "@/lib/firebase";
 import { posthogAnalytics } from "@/lib/analytics/posthog.service";
+import { authToast } from "@/lib/authToastBus";
 import { FieldValuesType } from "@/types";
 
 export type AuthMode = "sign-in" | "sign-up" | "reset";
@@ -25,8 +26,8 @@ const EMPTY_USER_DATA = { email: "", password: "", displayName: "", phoneNumber:
 function fieldsForMode(mode: AuthMode): FieldValuesType[] {
     if (mode === "sign-up") {
         return [
-            { icon: User, type: "text", name: "displayName", placeholder: "Full name" },
-            { icon: Mail, type: "email", name: "email", placeholder: "you@example.com" },
+            { icon: User, type: "text", name: "displayName", placeholder: "Full name", required: true },
+            { icon: Mail, type: "email", name: "email", placeholder: "you@example.com", required: true },
             { icon: Phone, type: "tel", name: "phoneNumber", placeholder: "Phone number (optional)" },
         ];
     }
@@ -70,14 +71,18 @@ export function useSignIn() {
             const { isNewUser } = await signInWithGoogle();
             if (isNewUser) {
                 posthogAnalytics.trackUserRegistered('google');
+                authToast.success('Account created — welcome to GoDojo!');
             } else {
                 posthogAnalytics.trackUserSignedIn('google');
+                authToast.success('Signed in successfully.');
             }
         } catch (e: any) {
             const msg: string = e?.message ?? "";
             // User-cancelled popups aren't real errors — don't surface them.
             if (!msg.toLowerCase().includes("cancelled") && !msg.toLowerCase().includes("closed")) {
-                setError(getAuthErrorMessage(e) || "Google sign-in failed. Please try again.");
+                const message = getAuthErrorMessage(e) || "Google sign-in failed. Please try again.";
+                setError(message);
+                authToast.error(message);
             }
         } finally {
             setGoogleBusy(false);
@@ -96,21 +101,33 @@ export function useSignIn() {
             const { email, password, displayName, phoneNumber } = userData;
 
             if (mode === "sign-up") {
+                if (!displayName.trim()) {
+                    throw new Error("Please enter your full name.");
+                }
                 await signUpWithEmailExtended({ email, password, displayName, phoneNumber });
                 posthogAnalytics.trackUserRegistered('email');
+                authToast.success('Account created — check your inbox to verify your email.');
                 // Do not call onSignedIn. Firebase fires onAuthStateChanged which
                 // subscribeAuthState in App.tsx intercepts. If emailVerified=false
                 // it shows EmailVerification; if true it opens the app.
             } else if (mode === "sign-in") {
                 await signInWithEmail(email, password);
                 posthogAnalytics.trackUserSignedIn('email');
+                authToast.success('Signed in successfully.');
             } else if (mode === "reset") {
                 await resetPassword(email);
                 setInfo("Password reset email sent.");
+                authToast.success('Password reset email sent.');
                 setMode("sign-in");
             }
         } catch (err: any) {
-            setError(getAuthErrorMessage(err) || "Authentication failed. Please try again.");
+            const message = getAuthErrorMessage(err) || (
+                mode === "reset" ? "Couldn't send reset email. Please try again."
+                    : mode === "sign-up" ? "Couldn't create your account. Please try again."
+                        : "Authentication failed. Please try again."
+            );
+            setError(message);
+            authToast.error(message);
         } finally {
             setBusy(false);
             setUserData(EMPTY_USER_DATA);

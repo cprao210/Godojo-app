@@ -54,6 +54,21 @@ export class RAGManager {
     }
 
     /**
+     * Release resources held by the RAG pipeline before the app shuts down or
+     * wipes its data directory. Critically, this terminates the vector-search
+     * worker, which holds its OWN read-only connection to natively.db — on
+     * Windows that open handle keeps the DB file locked, so failing to release
+     * it here makes a userData wipe delete only part of the folder.
+     */
+    async destroy(): Promise<void> {
+        try {
+            await this.vectorStore.destroy();
+        } catch (e) {
+            console.warn('[RAGManager] destroy: vectorStore.destroy() failed:', e);
+        }
+    }
+
+    /**
      * Set LLM helper for generating responses
      */
     setLLMHelper(llmHelper: LLMHelper): void {

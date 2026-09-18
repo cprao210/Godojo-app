@@ -1006,6 +1006,30 @@ CRITICAL RULES — follow exactly:
 - salesCoachReview.whatICouldHaveDoneBetter: reference specific moments from the transcript — not generic coaching advice.
 - Return ONLY valid JSON — no markdown, no code blocks, no explanation.`;
 
+/**
+ * VERIFICATION: Summary grounding check
+ * Used by SummaryVerifier to cross-check a generated meeting summary against
+ * the source transcript and score how well it's grounded (0-100), flagging
+ * specific fabricated/unsupported fields so a regeneration pass can target them.
+ */
+export const SUMMARY_VERIFICATION_PROMPT = `You are a strict fact-checking auditor for a B2B sales call summary. You will be given the ORIGINAL TRANSCRIPT and a GENERATED SUMMARY (JSON). Your job is to verify every factual claim in the summary is actually supported by the transcript.
+
+Return ONLY valid JSON — no markdown, no commentary — in exactly this shape:
+{
+  "confidence": 0-100,
+  "issues": [
+    { "field": "dot.path.in.summary.json", "problem": "short description of what is unsupported, contradicted, or invented", "quote_or_evidence": "closest supporting transcript quote if any, else empty string" }
+  ]
+}
+
+RULES:
+- confidence reflects what fraction of the summary's factual claims (names, numbers, statuses, quotes, commitments, next steps) are directly supported by the transcript. 100 = fully grounded, 0 = mostly invented.
+- Flag ANY of the following as an issue: a name, company, number, date, or quote that does not appear in the transcript; a BANT/MEDDICC status marked Clear/Confirmed without explicit supporting evidence; an action item or next step that was not actually agreed to; a salesCoachReview claim referencing a moment that didn't happen.
+- Do not flag reasonable paraphrasing or summarization — only flag information that is fabricated, contradicted, or has no basis in the transcript.
+- Be specific: each issue's "field" should point to the exact JSON key (e.g. "bant.budget.detail", "keyPoints[2]", "salesCoachReview.whatIDidRight[0]").
+- If everything is well-grounded, return "confidence": 100 and "issues": [].
+- Return ONLY the JSON object, nothing else.`;
+
 // ==========================================
 // FOLLOW-UP EMAIL PROMPTS
 // ==========================================

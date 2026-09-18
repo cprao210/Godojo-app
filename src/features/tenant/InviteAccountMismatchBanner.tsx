@@ -2,6 +2,7 @@ import React from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
 import { UserX, X } from 'lucide-react';
 import { InviteAccountMismatchBannerProps } from '@/types';
+import { isMac } from '@/../utils/platformUtils';
 
 /**
  * Shown right after we've force-signed-out a mismatched account for an
@@ -18,7 +19,7 @@ export const InviteAccountMismatchBanner: React.FC<InviteAccountMismatchBannerPr
                 initial={{ opacity: 0, y: -12 }}
                 animate={{ opacity: 1, y: 0 }}
                 exit={{ opacity: 0, y: -12 }}
-                className="fixed top-4 left-1/2 -translate-x-1/2 z-[80] w-full max-w-md px-4"
+                className={`fixed ${isMac ? "top-16" : "top-12"} left-1/2 -translate-x-1/2 z-[80] w-full max-w-md px-4`}
             >
                 <div className="rounded-xl border border-amber-500/30 bg-[#1a1408] shadow-xl px-4 py-3 flex items-start gap-3">
                     <div className="w-8 h-8 rounded-full bg-amber-500/15 flex items-center justify-center shrink-0 mt-0.5">

@@ -12,7 +12,7 @@ import AudioTab from './AudioTab';
 import CalendarTab from './CalendarTab';
 import { SettingsSaveToast } from './SettingsSaveToast';
 
-import { useEffect } from 'react';
+import { useEffect, useState } from 'react';
 import { isMac } from '@/../utils/platformUtils';
 import { posthogAnalytics } from '@/lib/analytics/posthog.service';
 
@@ -53,9 +53,18 @@ const SettingsOverlay: React.FC<SettingsOverlayProps> = ({
     initialTab = 'general',
     deepLinkInviteToken = null,
     onDeepLinkTokenConsumed,
+    tenantId = null,
+    isAdmin = false,
 }) => {
     const overlay = useSettingsOverlay({ isOpen, onClose, initialTab });
     const { isLight, activeTab, setActiveTab, navigateToCompanyContext, opacity, tavily } = overlay;
+
+    // Team company context is admin-owned: a solo user (no tenantId) always
+    // edits their own context. Once on a team, only the admin may write —
+    // members see the same (admin's) data read-only. This mirrors the
+    // backend's own 403-on-write-for-members rule; it's UI-side enforcement
+    // for a clean experience, not the source of truth for permissions.
+    const isCompanyContextReadOnly = !!tenantId && !isAdmin;
 
     // Single owned instance for the whole overlay's lifetime — both the nav
     // badge below and the Updates tab content read from this same object, so
@@ -65,6 +74,19 @@ const SettingsOverlay: React.FC<SettingsOverlayProps> = ({
     const showUpdateBadge = (isUpdateAvailable || updateStatusValue === 'ready') && activeTab !== 'updates';
 
     const visibleNavItems = NAV_ITEMS.filter(item => !item.productionOnly || isPackaged);
+
+    // Company Context is mounted on FIRST visit and then stays mounted (hidden
+    // while inactive). Its draft, staged uploads and the live upload-progress
+    // bars all live in the tab's own state — unmounting it on every tab
+    // switch is what made an in-progress upload's UI vanish when the user
+    // hopped to General and back. Hidden via CSS instead of a conditional
+    // mount, so a Save running in the background keeps its state and its
+    // rows keep animating when the user returns. The visited flag keeps users
+    // who never open the tab from paying its mount-time backend fetches.
+    const [companyContextVisited, setCompanyContextVisited] = useState(false);
+    useEffect(() => {
+        if (activeTab === 'company-context') setCompanyContextVisited(true);
+    }, [activeTab]);
 
     // Fires once per genuine open. Reads `activeTab` here (not the raw
     // `initialTab` prop) because useSettingsOverlay can redirect on open —
@@ -89,7 +111,10 @@ const SettingsOverlay: React.FC<SettingsOverlayProps> = ({
                     exit={{ opacity: 0 }}
                     transition={{ duration: 0.2 }}
                     id="settings-backdrop"
-                    className={`fixed top-6 inset-0 z-50 transition-colors duration-150 ${opacity.isPreviewingOpacity ? 'bg-transparent backdrop-blur-none' : isLight ? 'bg-[#F8FAFC]' : 'bg-bg-main'}`}
+                    // top-6 leaves the header visible above; bottom-12 (= the audio
+                    // status footer's h-12) does the same for the footer, which now
+                    // renders at the App root at z-[200] — above this z-50 overlay.
+                    className={`fixed top-6 bottom-12 inset-x-0 z-50 transition-colors duration-150 ${opacity.isPreviewingOpacity ? 'bg-transparent backdrop-blur-none' : isLight ? 'bg-[#F8FAFC]' : 'bg-bg-main'}`}
                 >
                     <motion.div
                         id="settings-panel-wrapper"
@@ -151,6 +176,7 @@ const SettingsOverlay: React.FC<SettingsOverlayProps> = ({
                                         <AIProvidersSettings
                                             tavilyApiKey={tavily.tavilyApiKey}
                                             hasStoredTavilyKey={tavily.hasStoredTavilyKey}
+                                            tavilyKeySource={tavily.tavilyKeySource}
                                             handleRemoveTavilyKey={tavily.removeTavilyKey}
                                             handleAddTavilyKey={(e) => tavily.handleTavilyKeyInput(e.target.value)}
                                             handleSaveTavilyKey={tavily.saveTavilyKey}
@@ -165,22 +191,28 @@ const SettingsOverlay: React.FC<SettingsOverlayProps> = ({
 
                                     {activeTab === 'calendar' && <CalendarTab overlay={overlay} />}
 
-                                    {activeTab === 'company-context' && (
-                                        <CompanyContextTab
-                                            companyContext={overlay.companyContext.companyContext}
-                                            setCompanyContext={overlay.companyContext.setCompanyContext}
-                                            companyLoading={overlay.companyContext.companyLoading}
-                                            setCompanyLoading={overlay.companyContext.setCompanyLoading}
-                                            companySaving={overlay.companyContext.companySaving}
-                                            setCompanySaving={overlay.companyContext.setCompanySaving}
-                                            companyError={overlay.companyContext.companyError}
-                                            setCompanyError={overlay.companyContext.setCompanyError}
-                                            assetUploading={overlay.companyContext.assetUploading}
-                                            setAssetUploading={overlay.companyContext.setAssetUploading}
-                                            isPremium={overlay.profile.isPremium}
-                                            setIsPremiumModalOpen={overlay.profile.setIsPremiumModalOpen}
-                                            isLight={isLight}
-                                        />
+                                    {companyContextVisited && (
+                                        // NOT a conditional mount — see companyContextVisited above.
+                                        // Hidden while another tab is active so the tab's state
+                                        // (upload progress included) survives tab switches.
+                                        <div className={activeTab === 'company-context' ? '' : 'hidden'}>
+                                            <CompanyContextTab
+                                                companyContext={overlay.companyContext.companyContext}
+                                                setCompanyContext={overlay.companyContext.setCompanyContext}
+                                                companyLoading={overlay.companyContext.companyLoading}
+                                                setCompanyLoading={overlay.companyContext.setCompanyLoading}
+                                                companySaving={overlay.companyContext.companySaving}
+                                                setCompanySaving={overlay.companyContext.setCompanySaving}
+                                                companyError={overlay.companyContext.companyError}
+                                                setCompanyError={overlay.companyContext.setCompanyError}
+                                                assetUploading={overlay.companyContext.assetUploading}
+                                                setAssetUploading={overlay.companyContext.setAssetUploading}
+                                                isPremium={overlay.profile.isPremium}
+                                                setIsPremiumModalOpen={overlay.profile.setIsPremiumModalOpen}
+                                                isLight={isLight}
+                                                readOnly={isCompanyContextReadOnly}
+                                            />
+                                        </div>
                                     )}
 
                                     {activeTab === 'scoring-criteria' && <ScoringCriteriaTab />}

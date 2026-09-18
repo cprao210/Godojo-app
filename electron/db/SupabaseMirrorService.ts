@@ -26,7 +26,7 @@ const RETRY_BASE_MS = 1_500;
 
 interface OutboxItem {
     id: number;
-    op: 'upsert' | 'delete' | 'deleteVector' | 'upsertVector' | 'upsertBatch';
+    op: 'upsert' | 'delete' | 'deleteVector' | 'upsertVector' | 'upsertBatch' | 'update';
     table: string;
     payload: any;
     retries: number;
@@ -104,6 +104,32 @@ export class SupabaseMirrorService {
     }
 
     /**
+     * Re-point the outbox at a different user's SQLite file, after
+     * DatabaseManager.switchUser() has closed the old handle.
+     *
+     * The in-memory queue is dropped rather than migrated: _enqueue persists
+     * every item to the PREVIOUS user's supabase_mirror_outbox row synchronously,
+     * so nothing is lost — those rows replay from _loadOutboxFromDb the next time
+     * that account is active. Carrying them over instead would push account A's
+     * rows under account B's token, where RLS rejects them.
+     */
+    rebind(db: Database.Database | null): void {
+        this.db = db;
+        // A drain may be mid-flight on its network await; it re-checks
+        // outbox.length on the next loop turn and exits, and its trailing
+        // _deleteOutboxItem is owner-scoped (below) so it cannot touch a row in
+        // the newly-opened user's table.
+        this.outbox = [];
+        this.enabled = !!db;
+        this.lastError = null;
+        // this.counter is deliberately NOT reset: it must stay above the max id
+        // in every file seen this session, or a freshly enqueued id could
+        // collide with a row already in the new outbox table and be silently
+        // dropped by INSERT OR IGNORE.
+        if (db) this._loadOutboxFromDb();
+    }
+
+    /**
      * Confirms the current Firebase session is actually valid — not just
      * "we received a token object" — before writing a users row to Supabase.
      *
@@ -155,6 +181,19 @@ export class SupabaseMirrorService {
     private _upsertCurrentUserRow(): void {
         const snap = AuthManager.getInstance().snapshot();
         if (!snap.uid) return;
+
+        // Guard against creating a brand-new users row with a NULL email —
+        // this happens if AuthManager's session was populated before the
+        // Firebase profile data was fully available (e.g. trySilentRestore
+        // racing the SDK's local cache hydration). It's safe to skip: the
+        // renderer's onIdTokenChanged bridge will fire again once the real
+        // profile is available and re-trigger this via the 'auth-changed'
+        // event, so we lose nothing by waiting rather than writing a
+        // half-populated row.
+        if (!snap.email) {
+            console.warn('[SupabaseMirrorService] Skipping users upsert — no email on session yet for uid=', snap.uid);
+            return;
+        }
 
         const payload: Record<string, any> = {
             firebase_uid: snap.uid,
@@ -282,10 +321,25 @@ export class SupabaseMirrorService {
         }
     }
 
-    /** Mirror a row deletion (by primary key value). */
-    deleteRow(table: string, pkColumn: string, pkValue: any): void {
+    /**
+     * Mirror a row deletion by column match (`pkColumn = pkValue`). Not limited
+     * to the primary key — e.g. deleteRow('transcripts', 'meeting_id', id)
+     * clears every transcript row for a meeting, mirroring the local
+     * DELETE-then-reinsert in saveMeeting().
+     *
+     * opts.expectEmpty: pass true when matching zero rows is a NORMAL outcome
+     *   (e.g. clearing a meeting's transcripts on its very first save, before any
+     *   exist) so the "0 rows — likely an RLS problem" diagnostic stays silent.
+     * opts.ownerUid: scope the delete to a specific owner (use the same uid the
+     *   paired upsert was enqueued with) instead of resolving the current user
+     *   at send time.
+     */
+    deleteRow(table: string, pkColumn: string, pkValue: any, opts?: { expectEmpty?: boolean; ownerUid?: string | null }): void {
         if (!this.enabled) return;
-        this._enqueue({ op: 'delete', table, payload: { pkColumn, pkValue }, retries: 0 });
+        this._enqueue(
+            { op: 'delete', table, payload: { pkColumn, pkValue, expectEmpty: opts?.expectEmpty === true }, retries: 0 },
+            opts?.ownerUid,
+        );
     }
 
     /** Upsert a vector row into a per-dimension table. dim = 768|1536|3072. */
@@ -333,6 +387,14 @@ export class SupabaseMirrorService {
         if (!this.enabled || rows.length === 0) return;
         this._enqueue({ op: 'upsertBatch', table, payload: rows, retries: 0 }, ownerUid);
     }
+
+    /** Mirror a partial column update WITHOUT insert semantics — never creates a
+      * row, so it can't materialize one with NULL/default columns it didn't send. */
+    updateRow(table: string, pkMatch: Record<string, any>, changes: Record<string, any>, ownerUid?: string | null): void {
+        if (!this.enabled) return;
+        this._enqueue({ op: 'update', table, payload: { pkMatch, changes }, retries: 0 }, ownerUid);
+    }
+
 
     // ============================================
     // Private queue / drain machinery
@@ -417,7 +479,7 @@ export class SupabaseMirrorService {
                 if (success) {
                     const idx = this.outbox.indexOf(item);
                     if (idx !== -1) this.outbox.splice(idx, 1);
-                    this._deleteOutboxItem(item.id);
+                    this._deleteOutboxItem(item.id, item.ownerUid);
                     this.lastSyncAt = Date.now();
                     this.lastError = null;
                 } else {
@@ -443,7 +505,7 @@ export class SupabaseMirrorService {
                         this.lastError = `Dropped ${item.op} on ${item.table} after ${MAX_RETRY} retries`;
                         const idx = this.outbox.indexOf(item);
                         if (idx !== -1) this.outbox.splice(idx, 1);
-                        this._deleteOutboxItem(item.id);
+                        this._deleteOutboxItem(item.id, item.ownerUid);
                     } else {
                         const delay = RETRY_BASE_MS * Math.pow(2, item.retries - 1);
                         await new Promise(r => setTimeout(r, delay));
@@ -516,7 +578,7 @@ export class SupabaseMirrorService {
                 if (error) throw error;
 
             } else if (item.op === 'delete') {
-                const { pkColumn, pkValue } = item.payload;
+                const { pkColumn, pkValue, expectEmpty } = item.payload;
                 // Scope the delete to the current user so a stale local id
                 // can never reach another tenant's row (RLS would block it
                 // anyway, but belt-and-braces).
@@ -531,7 +593,7 @@ export class SupabaseMirrorService {
                 // it just looks like the row is stuck forever on the client.
                 const { data, error } = await q.eq(pkColumn, pkValue).select('*');
                 if (error) throw error;
-                if (!data || data.length === 0) {
+                if ((!data || data.length === 0) && !expectEmpty) {
                     console.warn(
                         `[SupabaseMirrorService] delete on ${item.table} (${pkColumn}=${pkValue}, user_id=${userId}) ` +
                         `matched 0 rows. If the row is visible in the Supabase dashboard, this is almost ` +
@@ -564,7 +626,15 @@ export class SupabaseMirrorService {
                     .eq('user_id', userId)
                     .eq(pkCol, id);
                 if (error) throw error;
+            } else if (item.op === 'update') {
+                const { pkMatch, changes } = item.payload;
+                let q: any = client.from(item.table).update(changes);
+                if (needsUserId) q = q.eq('user_id', userId);
+                for (const [col, val] of Object.entries(pkMatch)) q = q.eq(col, val);
+                const { error } = await q;
+                if (error) throw error;
             }
+
             return true;
         } catch (err: any) {
             const msg = err?.message || String(err);
@@ -612,10 +682,13 @@ export class SupabaseMirrorService {
         } catch (_) { }
     }
 
-    private _deleteOutboxItem(id: number): void {
+    private _deleteOutboxItem(id: number, ownerUid: string | null = null): void {
         if (!this.db) return;
         try {
-            this.db.prepare('DELETE FROM supabase_mirror_outbox WHERE id = ?').run(id);
+            // Scoped by owner_uid so a delete already in flight when the account
+            // switched can't remove a same-id row from the newly-active user's
+            // outbox — ids are per-file, so they overlap across accounts.
+            this.db.prepare('DELETE FROM supabase_mirror_outbox WHERE id = ? AND owner_uid IS ?').run(id, ownerUid);
         } catch (_) { }
     }
 
@@ -712,6 +785,7 @@ CREATE TABLE IF NOT EXISTS meetings (
     is_processed         INTEGER DEFAULT 1,
     embedding_provider   TEXT,
     embedding_dimensions INTEGER,
+    calendar_event_metadata JSONB,
     PRIMARY KEY (user_id, id)
 );
 CREATE INDEX IF NOT EXISTS idx_meetings_user ON meetings(user_id, created_at DESC);
@@ -719,19 +793,26 @@ CREATE INDEX IF NOT EXISTS idx_meetings_tenant ON meetings(tenant_id);
 
 -- If this table already exists in your Supabase project, run instead:
 -- ALTER TABLE meetings ADD COLUMN IF NOT EXISTS tenant_id TEXT;
+-- ALTER TABLE meetings ADD COLUMN IF NOT EXISTS calendar_event_metadata JSONB;
 -- CREATE INDEX IF NOT EXISTS idx_meetings_tenant ON meetings(tenant_id);
 
 CREATE TABLE IF NOT EXISTS transcripts (
-    user_id      TEXT NOT NULL REFERENCES users(firebase_uid) ON DELETE CASCADE,
-    id           BIGINT NOT NULL,
-    meeting_id   TEXT NOT NULL,
-    speaker      TEXT,
-    content      TEXT,
-    timestamp_ms BIGINT,
+    user_id       TEXT NOT NULL REFERENCES users(firebase_uid) ON DELETE CASCADE,
+    id            BIGINT NOT NULL,
+    meeting_id    TEXT NOT NULL,
+    speaker       TEXT,
+    content       TEXT,
+    timestamp_ms  BIGINT,
+    speaker_index INTEGER,
+    display_name  TEXT,
     PRIMARY KEY (user_id, id),
     FOREIGN KEY (user_id, meeting_id) REFERENCES meetings(user_id, id) ON DELETE CASCADE
 );
 CREATE INDEX IF NOT EXISTS idx_transcripts_user_meeting ON transcripts(user_id, meeting_id);
+
+-- If this table already exists in your Supabase project, run instead:
+-- ALTER TABLE transcripts ADD COLUMN IF NOT EXISTS speaker_index INTEGER;
+-- ALTER TABLE transcripts ADD COLUMN IF NOT EXISTS display_name TEXT;
 
 CREATE TABLE IF NOT EXISTS ai_interactions (
     user_id       TEXT NOT NULL REFERENCES users(firebase_uid) ON DELETE CASCADE,

@@ -8,10 +8,25 @@
 // takes a callback rather than owning Tavily state itself.
 
 import { useEffect, useRef, useState } from 'react';
+import type { ApiKeyProviderName, ApiKeySourceName } from '@/electron';
 
 export type SttProvider = 'google' | 'groq' | 'openai' | 'deepgram' | 'elevenlabs' | 'azure' | 'ibmwatson' | 'soniox';
 export type SttKeyProvider = Exclude<SttProvider, 'google'>;
 export type ConnectionTestStatus = 'idle' | 'testing' | 'success' | 'error';
+
+/**
+ * STT providers use their own credential slots for Groq and OpenAI, separate
+ * from the LLM keys of the same name — mirrors STT_KEY_PROVIDER in main.ts.
+ */
+const STT_CREDENTIAL_PROVIDER: Record<SttKeyProvider, ApiKeyProviderName> = {
+    groq: 'groq_stt',
+    openai: 'openai_stt',
+    deepgram: 'deepgram',
+    elevenlabs: 'elevenlabs',
+    azure: 'azure',
+    ibmwatson: 'ibmwatson',
+    soniox: 'soniox',
+};
 
 const PROVIDER_LABELS: Record<SttKeyProvider, string> = {
     groq: 'Groq',
@@ -35,8 +50,8 @@ export const STT_PROVIDER_KEY_URLS: Partial<Record<SttProvider, string>> = {
 
 interface UseSttProviderSettingsArgs {
     isOpen: boolean;
-    /** Lets useTavilySettings pick up its "has a key" flag from the same credentials payload. */
-    onTavilyKeyLoaded?: (hasKey: boolean) => void;
+    /** Lets useTavilySettings pick up its "has a key" flag + tier from the same credentials payload. */
+    onTavilyKeyLoaded?: (hasKey: boolean, source?: ApiKeySourceName) => void;
 }
 
 export function useSttProviderSettings({ isOpen, onTavilyKeyLoaded }: UseSttProviderSettingsArgs) {
@@ -60,6 +75,11 @@ export function useSttProviderSettings({ isOpen, onTavilyKeyLoaded }: UseSttProv
     const [hasStoredAzureKey, setHasStoredAzureKey] = useState(false);
     const [hasStoredIbmWatsonKey, setHasStoredIbmWatsonKey] = useState(false);
     const [hasStoredSonioxKey, setHasStoredSonioxKey] = useState(false);
+
+    // Which tier each STT key came from. hasStoredKey stays "usable from any
+    // tier" (it gates the provider picker and Remove), while this distinguishes
+    // the user's own key from the shared Deepgram/Groq default.
+    const [sttKeySources, setSttKeySources] = useState<Partial<Record<SttKeyProvider, ApiKeySourceName>>>({});
 
     const [googleServiceAccountPath, setGoogleServiceAccountPath] = useState<string | null>(null);
 
@@ -101,7 +121,14 @@ export function useSttProviderSettings({ isOpen, onTavilyKeyLoaded }: UseSttProv
                     if (creds.azureRegion) setSttAzureRegion(creds.azureRegion);
                     setHasStoredIbmWatsonKey(creds.hasIbmWatsonKey);
                     setHasStoredSonioxKey(creds.hasSonioxKey || false);
-                    onTavilyKeyLoaded?.(creds.hasTavilyKey || false);
+                    if (creds.keySources) {
+                        const sources: Partial<Record<SttKeyProvider, ApiKeySourceName>> = {};
+                        for (const [sttId, credId] of Object.entries(STT_CREDENTIAL_PROVIDER)) {
+                            sources[sttId as SttKeyProvider] = creds.keySources[credId];
+                        }
+                        setSttKeySources(sources);
+                    }
+                    onTavilyKeyLoaded?.(creds.hasTavilyKey || false, creds.keySources?.tavily);
                 }
                 const diarize = await window.electronAPI?.getDiarizeClientEnabled?.();
                 setDiarizeClientEnabled(!!diarize);
@@ -196,6 +223,7 @@ export function useSttProviderSettings({ isOpen, onTavilyKeyLoaded }: UseSttProv
 
             await KEY_SETTERS[provider].setKey(key.trim());
             KEY_SETTERS[provider].setHasKey(true);
+            setSttKeySources((prev) => ({ ...prev, [provider]: 'user' }));
 
             setSttSaved(true);
             setTimeout(() => setSttSaved(false), 2000);
@@ -216,6 +244,14 @@ export function useSttProviderSettings({ isOpen, onTavilyKeyLoaded }: UseSttProv
             await KEY_SETTERS[provider].setKey('');
             KEY_SETTERS[provider].setLocal('');
             KEY_SETTERS[provider].setHasKey(false);
+            // Removing a user key often reveals a shared default underneath, so
+            // re-read the tier rather than assuming the provider is now unusable.
+            const creds = await window.electronAPI?.getStoredCredentials?.();
+            const source = creds?.keySources?.[STT_CREDENTIAL_PROVIDER[provider]];
+            if (source) {
+                setSttKeySources((prev) => ({ ...prev, [provider]: source }));
+                KEY_SETTERS[provider].setHasKey(source !== 'none');
+            }
         } catch (e) {
             console.error(`[useSttProviderSettings] Failed to remove ${provider} STT key:`, e);
         }
@@ -279,6 +315,13 @@ export function useSttProviderSettings({ isOpen, onTavilyKeyLoaded }: UseSttProv
         keyInputs: { groq: sttGroqKey, openai: sttOpenaiKey, deepgram: sttDeepgramKey, elevenlabs: sttElevenLabsKey, azure: sttAzureKey, ibmwatson: sttIbmKey, soniox: sttSonioxKey },
         setKeyInput: (provider: SttKeyProvider, value: string) => KEY_SETTERS[provider].setLocal(value),
         hasStoredKey: { groq: hasStoredSttGroqKey, openai: hasStoredSttOpenaiKey, deepgram: hasStoredDeepgramKey, elevenlabs: hasStoredElevenLabsKey, azure: hasStoredAzureKey, ibmwatson: hasStoredIbmWatsonKey, soniox: hasStoredSonioxKey },
+        /** Per-provider credential tier; 'user' means the key is the user's own. */
+        keySources: sttKeySources,
+        /** True when the usable key for `provider` is a shared default, not the user's. */
+        isSharedDefaultKey: (provider: SttKeyProvider) =>
+            sttKeySources[provider] === 'backend_fallback' || sttKeySources[provider] === 'env_bundled',
+        /** True when the user has saved their own key for `provider`. */
+        isUserKey: (provider: SttKeyProvider) => sttKeySources[provider] === 'user',
         sttAzureRegion,
         setSttAzureRegion,
         providerLabel: (provider: SttKeyProvider) => PROVIDER_LABELS[provider],

@@ -2,7 +2,13 @@ import React, { useEffect, useState } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
 import { DockButtonProps } from '@/types';
 
-export const DockButton: React.FC<DockButtonProps> = ({ icon, tooltip, isActive, activeColor = '#3b82f6', dangerColor = false, showActiveDot = false, frozen = false, onClick, zIndex }) => {
+// Memoized: six of these sit in the dock during a live call, each with a
+// framer-motion button (whileHover/whileTap) and, when active, a `layoutId` glow
+// that makes framer-motion measure on every commit. Reconciling all six on an
+// unrelated parent update was forced layout for nothing. All props are stable by
+// construction now — the icons are module constants and the handlers are
+// useCallback'd in FloatingDock.
+export const DockButton: React.FC<DockButtonProps> = React.memo(({ icon, tooltip, isActive, activeColor = '#3b82f6', dangerColor = false, showActiveDot = false, frozen = false, onClick, zIndex, isPerformanceMode = false }) => {
 
     const [showTooltip, setShowTooltip] = useState(false);
     const tooltipTimerRef = React.useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -51,7 +57,8 @@ export const DockButton: React.FC<DockButtonProps> = ({ icon, tooltip, isActive,
                         animate={{ opacity: 1, y: 0 }}
                         exit={{ opacity: 0, y: 2 }}
                         transition={{ duration: 0.14, ease: 'easeOut' }}
-                        className="absolute bottom-[calc(100%+10px)] -translate-x-1/2 pointer-events-none z-50 whitespace-nowrap"
+                        // className="absolute bottom-[calc(100%+10px)] -translate-x-1/2 pointer-events-none z-50 whitespace-nowrap"
+                        className="absolute top-5 left-[calc(100%-10px)] -translate-x-1/2 pointer-events-none z-50 whitespace-nowrap"
                     >
                         <div
                             className="px-2.5 py-1.5 rounded-lg text-[11px] font-semibold tracking-wide text-white"
@@ -59,7 +66,7 @@ export const DockButton: React.FC<DockButtonProps> = ({ icon, tooltip, isActive,
                                 background: 'rgba(10,14,26,0.95)',
                                 border: '1px solid rgba(255,255,255,0.1)',
                                 boxShadow: '0 4px 16px rgba(0,0,0,0.5)',
-                                backdropFilter: 'blur(12px)',
+                                backdropFilter: isPerformanceMode ? 'none' : 'blur(12px)',
                             }}
                         >
                             {tooltip}
@@ -127,4 +134,6 @@ export const DockButton: React.FC<DockButtonProps> = ({ icon, tooltip, isActive,
             </motion.button>
         </div>
     );
-};
+});
+
+DockButton.displayName = 'DockButton';

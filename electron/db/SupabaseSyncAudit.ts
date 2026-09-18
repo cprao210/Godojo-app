@@ -28,7 +28,6 @@ const PAGE = 1000;
 // column is added to the cloud schema.
 const LOCAL_ONLY_COLUMNS: Record<string, string[]> = {
     meetings: ['meeting_types'],
-    transcripts: ['speaker_index'],
 };
 
 export interface SyncAuditResult {

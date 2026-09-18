@@ -3,13 +3,16 @@ import { motion, AnimatePresence } from 'framer-motion';
 import { Radio, RefreshCw, Clock, ChevronDown } from 'lucide-react';
 import { LiveAnalysisContent } from '@/features/live-analysis';
 import { LiveAnalysisData, MeetingType, FloatingIntelligencePanelProps } from '@/types';
+import { resolveIntelligenceView } from '@/lib/intelligenceView';
+import { getDockSurfaceStyle } from '../dockSurfaceStyle';
 
 const AUTO_REFRESH_OPTIONS = [
+    { label: '1-min', value: 1 },
     { label: '2-min', value: 2 },
+    { label: '3-min', value: 3 },
     { label: '5-min', value: 5 },
     { label: '10-min', value: 10 },
     { label: '15-min', value: 15 },
-    { label: '20-min', value: 20 },
 ];
 
 interface FilmRollTranscriptProps {
@@ -39,7 +42,7 @@ const FilmRollTranscript: React.FC<FilmRollTranscriptProps> = ({ text, speakerLa
 
             {/* Speaker label — fixed, never scrolls */}
             <span className={`text-[11px] font-medium shrink-0 ${speakerColor}`}>
-                {speakerLabel === 'Them' ? "Client" : speakerLabel}:
+                {speakerLabel === "Them" ? "Other Party" : speakerLabel}:
             </span>
 
             {/* Scrolling film strip */}
@@ -51,13 +54,12 @@ const FilmRollTranscript: React.FC<FilmRollTranscriptProps> = ({ text, speakerLa
                     WebkitMaskImage: 'linear-gradient(to right, transparent 0%, black 8%, black 100%)',
                 }}
             >
-                <motion.p
+                <p
                     className="text-[11px] text-white/40 leading-relaxed whitespace-nowrap"
-                    animate={{ x: 0 }}
                     style={{ display: 'inline-block' }}
                 >
                     {text}
-                </motion.p>
+                </p>
             </div>
 
             {/* LIVE badge */}
@@ -72,6 +74,11 @@ const FilmRollTranscript: React.FC<FilmRollTranscriptProps> = ({ text, speakerLa
 };
 
 // ─── AI Skeleton Loader ──────────────────────────────────────────────────────
+// The sweep is a CSS keyframe, not a framer-motion loop. This component is
+// instanced 27 times in the skeleton below, which the panel holds for MINUTES at
+// the start of every call — as JS animations that was 27 values re-stepped on the
+// main thread every frame, for UI the user often cannot even see (the dock starts
+// collapsed). Identical sweep, no main-thread cost.
 const Shimmer: React.FC<{ className?: string; style?: React.CSSProperties }> = ({ className = '', style }) => (
     <div
         className={`rounded-lg overflow-hidden relative ${className}`}
@@ -80,13 +87,11 @@ const Shimmer: React.FC<{ className?: string; style?: React.CSSProperties }> = (
             ...style,
         }}
     >
-        <motion.div
-            className="absolute inset-0"
+        <div
+            className="absolute inset-0 animate-shimmer-sweep"
             style={{
                 background: 'linear-gradient(90deg, transparent 0%, rgba(59,130,246,0.08) 50%, transparent 100%)',
             }}
-            animate={{ x: ['-100%', '100%'] }}
-            transition={{ duration: 1.6, repeat: Infinity, ease: 'linear' }}
         />
     </div>
 );
@@ -97,22 +102,22 @@ const IntelligenceSkeleton: React.FC = () => (
         <div className="flex items-center gap-3 px-1">
             <div className="flex gap-1 items-end h-4">
                 {[0.4, 0.7, 1, 0.6, 0.85, 0.5, 0.9].map((h, i) => (
-                    <motion.div
+                    <div
                         key={i}
-                        className="w-0.5 rounded-full bg-blue-400/60"
-                        style={{ height: `${h * 100}%` }}
-                        animate={{ scaleY: [1, h * 0.4 + 0.2, 1] }}
-                        transition={{ duration: 0.8, repeat: Infinity, delay: i * 0.1, ease: 'easeInOut' }}
+                        className="w-0.5 rounded-full bg-blue-400/60 animate-bar-pulse-fast"
+                        // --bar-peak / animationDelay carry the exact per-bar
+                        // amplitude and stagger framer-motion was applying.
+                        style={{
+                            height: `${h * 100}%`,
+                            '--bar-peak': h * 0.4 + 0.2,
+                            animationDelay: `${i * 0.1}s`,
+                        } as React.CSSProperties}
                     />
                 ))}
             </div>
-            <motion.span
-                className="text-[11px] font-semibold text-blue-400/80 tracking-wide"
-                animate={{ opacity: [0.5, 1, 0.5] }}
-                transition={{ duration: 1.8, repeat: Infinity }}
-            >
+            <span className="text-[11px] font-semibold text-blue-400/80 tracking-wide animate-soft-pulse">
                 Analysing live call...
-            </motion.span>
+            </span>
         </div>
 
         {/* BANT block */}
@@ -343,15 +348,21 @@ const CountdownPlaceholder: React.FC<{ openedAt: number; intervalMins: number; i
                 </p>
             </div>
 
-            {/* Waveform — stills when paused */}
+            {/* Waveform — stills when paused. CSS keyframes rather than seven
+                framer-motion loops: this placeholder is on screen for the whole
+                auto-refresh interval, up to 20 minutes. Omitting the class is the
+                exact equivalent of the old `repeat: isPaused ? 0 : Infinity`. */}
             <div className="flex gap-1 items-end h-5">
                 {[0.3, 0.6, 0.4, 0.8, 0.35, 0.65, 0.45].map((h, i) => (
-                    <motion.div
+                    <div
                         key={i}
-                        className="w-0.5 rounded-full"
-                        style={{ height: `${h * 100}%`, background: isPaused ? 'rgba(245,158,11,0.25)' : 'rgba(59,130,246,0.30)' }}
-                        animate={isPaused ? { scaleY: 1 } : { scaleY: [1, h * 0.4 + 0.15, 1] }}
-                        transition={{ duration: 1.8, repeat: isPaused ? 0 : Infinity, delay: i * 0.15, ease: 'easeInOut' }}
+                        className={`w-0.5 rounded-full ${isPaused ? '' : 'animate-bar-pulse-slow'}`}
+                        style={{
+                            height: `${h * 100}%`,
+                            background: isPaused ? 'rgba(245,158,11,0.25)' : 'rgba(59,130,246,0.30)',
+                            '--bar-peak': h * 0.4 + 0.15,
+                            animationDelay: `${i * 0.15}s`,
+                        } as React.CSSProperties}
                     />
                 ))}
             </div>
@@ -413,7 +424,13 @@ const MeetingTypeSelector: React.FC<{ selected: MeetingType[]; onChange: (types:
     );
 };
 
-export const FloatingIntelligencePanel: React.FC<FloatingIntelligencePanelProps> = ({
+// Memoized: this panel is mounted for the whole call (analysis starts on meeting
+// start, and its countdown/refresh state must survive panel switches), so every
+// FloatingDock render used to reconcile it plus the ~1000-line
+// LiveAnalysisContent below it. Its props are all stable by construction from
+// FloatingDock — state values, state setters, and ref-backed callbacks — so what
+// gets through now is only what changes what it shows.
+export const FloatingIntelligencePanel: React.FC<FloatingIntelligencePanelProps> = React.memo(({
     isMeetingPaused,
     analysisData,
     analysisError,
@@ -430,17 +447,22 @@ export const FloatingIntelligencePanel: React.FC<FloatingIntelligencePanelProps>
     speakerNames,
     panelFirstOpenedAt,
     noAnalysisCaptured,
+    isCountdownActive = false,
     isOpen,
     meetingTypes,
     onMeetingTypesChange,
+    isPerformanceMode = false,
 }) => {
     const [showRefreshPicker, setShowRefreshPicker] = useState(false);
     const refreshPickerRef = useRef<HTMLDivElement>(null);
-    const [activeTab, setActiveTab] = useState<'meddicc' | 'bant' | 'signals' | 'objections' | 'deal_optimizer'>('meddicc');
+    // Objections lead: they arrive in ~1.5s from the dedicated objection-handler route,
+    // they're the one output the rep needs while the prospect is still talking, and
+    // everything else on this panel is a slower-cadence read.
+    const [activeTab, setActiveTab] = useState<'meddicc' | 'bant' | 'signals' | 'objections' | 'deal_optimizer'>('objections');
 
     // Reset to default tab whenever the panel is opened
     useEffect(() => {
-        if (isOpen) setActiveTab('meddicc');
+        if (isOpen) setActiveTab('objections');
     }, [isOpen]);
 
     // If Negotiation is unchecked while on deal_optimizer tab, jump back to meddicc
@@ -450,12 +472,34 @@ export const FloatingIntelligencePanel: React.FC<FloatingIntelligencePanelProps>
         }
     }, [meetingTypes, activeTab]);
 
-    // Treat an all-missing analysis the same as no data (show WaitingPlaceholder)
-    const isAllMissing = (data: LiveAnalysisData) =>
-        Object.values(data.bant).every(f => f.status === 'missing') &&
-        Object.values(data.meddic).every(f => f.status === 'missing');
+    // Show the panel as soon as ANY section has something to say — not just BANT/MEDDIC.
+    // The previous all-missing check nulled displayData whenever every BANT and MEDDIC
+    // field was still 'missing', which is exactly the state in the first seconds of a
+    // call: objections now land in ~1.5s from their own endpoint, long before the slow
+    // extract has confirmed a single BANT field, and would otherwise have been fetched
+    // and then hidden behind the WaitingPlaceholder.
+    const hasContent = (data: LiveAnalysisData) =>
+        data.objections.length > 0 ||
+        data.signals.length > 0 ||
+        (data.dealOptimizer?.length ?? 0) > 0 ||
+        Object.values(data.bant).some(f => f.status !== 'missing') ||
+        Object.values(data.meddic).some(f => f.status !== 'missing');
 
-    const displayData = analysisData && !isAllMissing(analysisData) ? analysisData : null;
+    const displayData = analysisData && hasContent(analysisData) ? analysisData : null;
+
+    // Which of the six mutually-exclusive views this render shows. The rule lives
+    // in src/lib/intelligenceView.ts so it can be unit-tested — in particular the
+    // guarantee that the countdown ring is never re-entered once its cycle fired.
+    const view = resolveIntelligenceView({
+        hasDisplayData: displayData !== null,
+        isLoading,
+        isRefreshRun: !!isRefreshRun,
+        hasError: !!analysisError,
+        noAnalysisCaptured: !!noAnalysisCaptured,
+        isCountdownActive,
+        panelFirstOpenedAt,
+        autoRefreshInterval,
+    });
 
     // Close dropdown when clicking outside
     useEffect(() => {
@@ -483,9 +527,7 @@ export const FloatingIntelligencePanel: React.FC<FloatingIntelligencePanelProps>
             style={{
                 width: 420,
                 height: 550,
-                background: 'rgba(14, 18, 30, 0.93)',
-                backdropFilter: 'blur(28px) saturate(180%)',
-                WebkitBackdropFilter: 'blur(28px) saturate(180%)',
+                ...getDockSurfaceStyle({ opacity: 0.93, rgb: '14, 18, 30', blurPx: 28, isPerformanceMode }),
                 border: '1px solid rgba(255,255,255,0.08)',
             }}
         >
@@ -522,7 +564,7 @@ export const FloatingIntelligencePanel: React.FC<FloatingIntelligencePanelProps>
                                     initial={{ opacity: 0, y: 6, scale: 0.96 }}
                                     animate={{ opacity: 1, y: 0, scale: 1 }}
                                     exit={{ opacity: 0, y: 4, scale: 0.97 }}
-                                    className="absolute -right-2.5 rounded-xl overflow-hidden z-20"
+                                    className="absolute top-1 -right-2.5 rounded-xl overflow-hidden z-20"
                                     style={{
                                         bottom: 'calc(100% - 230px)',
                                         background: 'rgba(18,22,34,0.98)',
@@ -644,12 +686,17 @@ export const FloatingIntelligencePanel: React.FC<FloatingIntelligencePanelProps>
             />
 
             {/* Tab bar — shown whenever there is live data, including while a
-                background refresh of that data is in flight. Only hide it
-                for the initial/no-data loading state (matches the content
-                area's isLoading && !isRefreshRun check below), otherwise a
-                refresh would unmount the tabs even though displayData is
-                still valid. */}
-            {displayData && (!isLoading || isRefreshRun) && (
+                background refresh of that data is in flight, so a refresh never
+                unmounts the tabs while displayData is still valid.
+
+                Gated on displayData alone: the content area below renders
+                LiveAnalysisContent for ANY non-null displayData, and falls back to
+                the skeleton/placeholders only when it's null, so those two are the
+                same condition. The old `(!isLoading || isRefreshRun)` term is what
+                made objections-before-first-analysis render content with no tab bar
+                above it — the initial live-analysis call holds isLoading true for
+                minutes, long after the fast objection route has answered. */}
+            {displayData && (
                 <div
                     className="shrink-0 overflow-x-auto"
                     style={{ borderBottom: '1px solid rgba(255,255,255,0.06)', scrollbarWidth: 'none' }}
@@ -657,6 +704,17 @@ export const FloatingIntelligencePanel: React.FC<FloatingIntelligencePanelProps>
                     <div className="flex items-center gap-0.5 px-3 pt-2.5 pb-0 w-max min-w-full">
                         {(
                             [
+                                {
+                                    // First tab: the fast, act-on-it-now output.
+                                    // Badge counts OPEN objections only — resolved ones
+                                    // move to a collapsed group and shouldn't inflate it.
+                                    key: 'objections' as const,
+                                    label: 'Objections',
+                                    badge: (() => {
+                                        const open = displayData.objections.filter(o => !o.resolved).length;
+                                        return open > 0 ? `${open}` : null;
+                                    })(),
+                                },
                                 {
                                     key: 'meddicc' as const,
                                     label: 'MEDDICC',
@@ -671,11 +729,6 @@ export const FloatingIntelligencePanel: React.FC<FloatingIntelligencePanelProps>
                                     key: 'signals' as const,
                                     label: 'Signals',
                                     badge: displayData.signals.length > 0 ? `${displayData.signals.length}` : null,
-                                },
-                                {
-                                    key: 'objections' as const,
-                                    label: 'Objections',
-                                    badge: displayData.objections.length > 0 ? `${displayData.objections.length}` : null,
                                 },
                                 ...(meetingTypes.includes('negotiation') ? [{
                                     key: 'deal_optimizer' as const,
@@ -719,18 +772,9 @@ export const FloatingIntelligencePanel: React.FC<FloatingIntelligencePanelProps>
 
             {/* Content */}
             <div className="overflow-y-auto flex-1" style={{ scrollbarWidth: 'thin', scrollbarColor: 'rgba(255,255,255,0.1) transparent' }}>
-                {isLoading && !isRefreshRun && displayData === null ? (
-                    // displayData === null added: isRefreshRun is meant to keep existing
-                    // content visible during a forced re-run (e.g. checking "Negotiation"
-                    // calls runAnalysis(true) immediately so Deal Alert populates without
-                    // waiting for the next auto-refresh tick), but it's a second piece of
-                    // state that has to land in the same render as isLoading to work. If
-                    // there's already data to show, never drop back to the skeleton (or,
-                    // by falling through, the countdown placeholder) regardless of that
-                    // timing — the existing tabs/content should stay up the whole time a
-                    // background refresh is in flight.
+                {view === 'skeleton' ? (
                     <IntelligenceSkeleton />
-                ) : analysisError && displayData === null ? (
+                ) : view === 'error' ? (
                     <div className="flex flex-col items-center justify-center h-full px-6 py-10 gap-4">
                         <div
                             className="w-12 h-12 rounded-xl flex items-center justify-center"
@@ -750,17 +794,15 @@ export const FloatingIntelligencePanel: React.FC<FloatingIntelligencePanelProps>
                             <RefreshCw size={12} /> Retry
                         </button>
                     </div>
-                ) : displayData === null ? (
-                    noAnalysisCaptured ? (
-                        <NoAnalysisCapturedPlaceholder />
-                    ) : panelFirstOpenedAt && autoRefreshInterval ? (
-                        <CountdownPlaceholder openedAt={panelFirstOpenedAt} intervalMins={autoRefreshInterval} isPaused={isMeetingPaused} />
-                    ) : (
-                        <WaitingPlaceholder />
-                    )
+                ) : view === 'no-analysis-captured' ? (
+                    <NoAnalysisCapturedPlaceholder />
+                ) : view === 'countdown' ? (
+                    <CountdownPlaceholder openedAt={panelFirstOpenedAt!} intervalMins={autoRefreshInterval!} isPaused={isMeetingPaused} />
+                ) : view === 'waiting' ? (
+                    <WaitingPlaceholder />
                 ) : (
                     <LiveAnalysisContent
-                        analysisData={displayData}
+                        analysisData={displayData!}
                         hideBar="Missing Details"
                         activeTab={activeTab as 'meddicc' | 'bant' | 'signals' | 'objections' | 'deal_optimizer'}
                     />
@@ -768,4 +810,6 @@ export const FloatingIntelligencePanel: React.FC<FloatingIntelligencePanelProps>
             </div>
         </div>
     );
-};
+});
+
+FloatingIntelligencePanel.displayName = 'FloatingIntelligencePanel';

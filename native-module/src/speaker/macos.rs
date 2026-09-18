@@ -1,3 +1,4 @@
+use crate::native_log;
 use super::core_audio;
 use super::sck;
 use anyhow::Result;
@@ -20,20 +21,20 @@ impl SpeakerInput {
 
         if !force_sck {
             // Try CoreAudio Tap first (Default)
-            println!("[SpeakerInput] Initializing CoreAudio Tap backend...");
+            native_log!("[SpeakerInput] Initializing CoreAudio Tap backend...");
             match core_audio::SpeakerInput::new(device_id.clone()) {
                 Ok(input) => {
-                    println!("[SpeakerInput] CoreAudio Tap backend initialized.");
+                    native_log!("[SpeakerInput] CoreAudio Tap backend initialized.");
                     return Ok(Self {
                         backend: BackendInput::CoreAudio(input),
                     });
                 }
                 Err(e) => {
-                    println!("[SpeakerInput] CoreAudio Tap initialization failed: {}. Falling back to ScreenCaptureKit.", e);
+                    native_log!("[SpeakerInput] CoreAudio Tap initialization failed: {}. Falling back to ScreenCaptureKit.", e);
                 }
             }
         } else {
-            println!("[SpeakerInput] SCK backend explicitly requested.");
+            native_log!("[SpeakerInput] SCK backend explicitly requested.");
         }
 
         // Fallback to ScreenCaptureKit

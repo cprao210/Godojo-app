@@ -3,9 +3,9 @@
 //! `webrtc-audio-processing` (bundled C++ AEC3) only builds on macOS/Linux —
 //! see the target-specific dependency in Cargo.toml. Windows doesn't need
 //! AEC at all (no speaker-bleed-into-mic scenario there), so this module
-//! re-exports the real types on macOS and provides no-op stand-ins with an
-//! identical API on Windows, so `lib.rs` / `echo_control.rs` / `webrtc_aec.rs`
-//! don't need any `#[cfg]` branching at their call sites.
+//! re-exports the real types on macOS and Linux and provides no-op stand-ins
+//! with an identical API on Windows, so `lib.rs` / `echo_control.rs` /
+//! `webrtc_aec.rs` don't need any `#[cfg]` branching at their call sites.
 
 #[cfg(not(target_os = "windows"))]
 pub use webrtc_audio_processing::{config, Processor, Stats};

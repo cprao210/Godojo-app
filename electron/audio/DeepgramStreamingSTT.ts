@@ -34,6 +34,11 @@ const KEEPALIVE_INTERVAL_MS = 5000;
 // the exponential-backoff counter. Shorter-lived connections keep escalating the
 // delay so a flapping server / repeated 429 backs off instead of hammering at 1s.
 const STABLE_CONNECTION_MS = 30000;
+// Hard deadline on a single connect attempt. `isConnecting` is normally cleared
+// by 'open' / 'close' / 'error', but if the WS handshake hangs without firing any
+// of them the flag latches true forever and connect() no-ops at its guard — the
+// STT then never recovers for the rest of the meeting, silently. This bounds that.
+const CONNECT_TIMEOUT_MS = 15000;
 
 export interface DeepgramSttOptions {
     /**
@@ -63,6 +68,7 @@ export class DeepgramStreamingSTT extends EventEmitter {
     // reconnect at the 1s floor forever, defeating exponential backoff.
     private _openedAt = 0;
     private reconnectTimer: NodeJS.Timeout | null = null;
+    private connectTimeoutTimer: NodeJS.Timeout | null = null;
     private keepAliveTimer: NodeJS.Timeout | null = null;
     private buffer: Buffer[] = [];
     private isConnecting = false;
@@ -112,7 +118,7 @@ export class DeepgramStreamingSTT extends EventEmitter {
     public setRecognitionLanguage(key: string): void {
         const config = RECOGNITION_LANGUAGES[key];
         if (config) {
-            this.languageCode = config.iso639;
+            this.languageCode = config.deepgram ?? config.iso639;
             console.log(`[DeepgramStreaming:${this.role}] Language set to ${this.languageCode}`);
             if (this.isActive) {
                 const savedBuffer = [...this.buffer];
@@ -208,6 +214,19 @@ export class DeepgramStreamingSTT extends EventEmitter {
         this.isConnecting = true;
         const generation = ++this._connectGeneration;  // capture current generation
 
+        // A single close/error pair must produce exactly ONE reconnect. The 'error'
+        // handler calls _closeSocket(), but the WS has usually fired 'close' already
+        // — so 'close' ran once naturally and once synthetically, each scheduling a
+        // reconnect. The second scheduleReconnect() overwrote reconnectTimer and
+        // LEAKED the first timer, which then fired one backoff later and tore down
+        // the socket the first timer had just established (observed in the field as
+        // `Reconnecting in 2000ms (attempt 2)` + `Reconnecting in 4000ms (attempt 3)`
+        // logged in the same millisecond, followed 4s later by `Stale socket closed
+        // (gen 3 vs 4)`). This per-socket latch makes 'close' idempotent.
+        let closeHandled = false;
+
+        this._armConnectDeadline(generation);
+
         // Defensively tear down any prior socket before opening a new one. Without
         // this, the previous socket's internal ReconnectingWebSocket (maxRetries:
         // Infinity) keeps retrying in the background forever — a zombie connection
@@ -238,7 +257,8 @@ export class DeepgramStreamingSTT extends EventEmitter {
             interim_results: "true",
             utterance_end_ms: "1500",
             vad_events: "true",
-            endpointing: "500",
+            // Deepgram recommends endpointing=100 for multilingual code-switching
+            endpointing: this.languageCode === 'multi' ? "100" : "500",
         };
         if (this.diarize) {
             queryParams.diarize = "true";
@@ -254,6 +274,9 @@ export class DeepgramStreamingSTT extends EventEmitter {
                 if (generation !== this._connectGeneration) {
                     console.log(`[DeepgramStreaming:${this.role}] Discarding stale socket (gen ${generation} vs ${this._connectGeneration})`);
                     try { socket.close(); } catch { /* ignore */ }
+                    // Do NOT clear isConnecting here: a newer connect() owns that flag
+                    // now and clearing it would let a third connect() race in. The
+                    // newer generation's own handlers/deadline manage it.
                     return;
                 }
 
@@ -272,8 +295,10 @@ export class DeepgramStreamingSTT extends EventEmitter {
                     // rate resync triggered _reconnectWithNewConfig).
                     if (generation !== this._connectGeneration) return;
                     this.isConnecting = false;
+                    this._clearConnectDeadline();
                     // Do NOT reset reconnectAttempts here — only reset once the
-                    // connection proves stable (see 'close' handler). Record when it
+                    // connection proves stable (see 'close' handler) or once it has
+                    // actually delivered a transcript (see 'message'). Record when it
                     // opened so 'close' can measure how long it survived.
                     this._openedAt = Date.now();
                     console.log(`[DeepgramStreaming:${this.role}] Connected`);
@@ -329,6 +354,15 @@ export class DeepgramStreamingSTT extends EventEmitter {
                     const alternative = data?.channel?.alternatives?.[0];
                     const transcript = alternative?.transcript;
                     if (!transcript || transcript.trim() === '') return;
+
+                    // A socket that has delivered a real transcript is working, whatever
+                    // its uptime. Reset the backoff here as well as on the 30s stability
+                    // rule: without this, a reconnect chain that had escalated to the
+                    // 30s cap keeps paying 30s per subsequent blip even though the
+                    // connection is demonstrably healthy — up to 30s of missing
+                    // transcript each time. A socket that opens but never produces a
+                    // transcript still escalates, so genuine server flap is unaffected.
+                    this.reconnectAttempts = 0;
 
                     const isWindowFinal: boolean = data.is_final === true;
 
@@ -418,7 +452,17 @@ export class DeepgramStreamingSTT extends EventEmitter {
                     // (maxRetries: Infinity) stops its own retry loop. Our backoff
                     // becomes the single source of truth for reconnection; the 'close'
                     // handler below schedules it.
-                    this._closeSocket();
+                    //
+                    // Only force the close while the socket is still CONNECTING (0) or
+                    // OPEN (1). Once it is CLOSING/CLOSED the 'close' event is already
+                    // in flight or delivered, and forcing another one only produced the
+                    // duplicate close that leaked reconnect timers. (closeHandled below
+                    // makes that harmless either way — this just avoids the pointless
+                    // synthetic event.)
+                    const rs = this._socketReadyState();
+                    if (rs === 0 || rs === 1) {
+                        this._closeSocket();
+                    }
                 });
 
                 // ---- close ----
@@ -433,7 +477,11 @@ export class DeepgramStreamingSTT extends EventEmitter {
                         console.log(`[DeepgramStreaming:${this.role}] Stale socket closed (gen ${generation} vs ${this._connectGeneration}) — no reconnect`);
                         return;
                     }
+                    // Exactly one reconnect per socket death (see closeHandled above).
+                    if (closeHandled) return;
+                    closeHandled = true;
                     this.isConnecting = false;
+                    this._clearConnectDeadline();
                     this.clearKeepAlive();
                     console.log(`[DeepgramStreaming:${this.role}] Connection closed`);
                     // Reset backoff only if this connection was open long enough to be
@@ -453,7 +501,10 @@ export class DeepgramStreamingSTT extends EventEmitter {
 
             }).catch((err: any) => {
                 console.error(`[DeepgramStreaming:${this.role}] Failed to create connection:`, err?.message ?? err);
+                // A newer generation owns isConnecting/the deadline now — leave them be.
+                if (generation !== this._connectGeneration) return;
                 this.isConnecting = false;
+                this._clearConnectDeadline();
                 this.socket = null;
                 this.emit('error', new Error(`Deepgram connect failed: ${err?.message ?? err}`));
                 if (this.shouldReconnect) {
@@ -492,11 +543,44 @@ export class DeepgramStreamingSTT extends EventEmitter {
     }
 
     private _isSocketOpen(): boolean {
-        if (!this.socket) return false;
+        return this._socketReadyState() === 1; // 1 = OPEN
+    }
+
+    /** WS readyState: 0 CONNECTING, 1 OPEN, 2 CLOSING, 3 CLOSED, -1 unknown/absent. */
+    private _socketReadyState(): number {
+        if (!this.socket) return -1;
         try {
-            return this.socket.readyState === 1; // 1 = OPEN
+            const rs = this.socket.readyState;
+            return typeof rs === 'number' ? rs : -1;
         } catch {
-            return false;
+            return -1;
+        }
+    }
+
+    /**
+     * Bound a single connect attempt. If the handshake neither opens nor errors
+     * nor closes within CONNECT_TIMEOUT_MS, isConnecting would latch true and
+     * connect() would no-op forever at its guard — the STT dying silently for the
+     * rest of the meeting. Generation-checked so a superseded attempt's deadline
+     * cannot disturb the current one.
+     */
+    private _armConnectDeadline(generation: number): void {
+        this._clearConnectDeadline();
+        this.connectTimeoutTimer = setTimeout(() => {
+            this.connectTimeoutTimer = null;
+            if (generation !== this._connectGeneration) return;
+            if (!this.isConnecting) return; // already resolved by open/close/error
+            console.warn(`[DeepgramStreaming:${this.role}] Connect attempt timed out after ${CONNECT_TIMEOUT_MS}ms — forcing retry`);
+            this.isConnecting = false;
+            this._closeSocket();
+            if (this.shouldReconnect) this.scheduleReconnect();
+        }, CONNECT_TIMEOUT_MS);
+    }
+
+    private _clearConnectDeadline(): void {
+        if (this.connectTimeoutTimer) {
+            clearTimeout(this.connectTimeoutTimer);
+            this.connectTimeoutTimer = null;
         }
     }
 
@@ -529,6 +613,13 @@ export class DeepgramStreamingSTT extends EventEmitter {
 
     private scheduleReconnect(): void {
         if (!this.shouldReconnect) return;
+        // Never leak a previously armed timer. A leaked timer fires one backoff
+        // after the reconnect that already succeeded and tears that healthy socket
+        // down (its connect() bumps the generation), producing an endless flap.
+        if (this.reconnectTimer) {
+            clearTimeout(this.reconnectTimer);
+            this.reconnectTimer = null;
+        }
         const backoffDelay = Math.min(
             RECONNECT_BASE_DELAY_MS * Math.pow(2, this.reconnectAttempts),
             RECONNECT_MAX_DELAY_MS
@@ -569,6 +660,7 @@ export class DeepgramStreamingSTT extends EventEmitter {
 
     private clearTimers(): void {
         this.clearKeepAlive();
+        this._clearConnectDeadline();
         if (this.reconnectTimer) {
             clearTimeout(this.reconnectTimer);
             this.reconnectTimer = null;

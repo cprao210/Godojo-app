@@ -81,6 +81,95 @@ export interface FirebaseAuthState {
 export interface MeetingSessionControls {
   handleStartMeeting: (calendarEvent?: any) => Promise<void>;
   handleEndMeeting: (meetingTypes?: ("discovery" | "demo" | "negotiation")[]) => Promise<void>;
+  showPermissionTray: boolean;
+  setShowPermissionTray: React.Dispatch<React.SetStateAction<boolean>>;
+  proceedWithMeeting: () => void;
+}
+
+// --- src/hooks/useSystemAudioPermission.ts ---
+
+/** Whether each capture permission is usable right now. */
+export interface AudioPermissionState {
+  microphone: boolean;
+  systemAudio: boolean;
+  screenCapture: boolean;
+}
+
+/**
+ * An audio problem worth showing the user.
+ *
+ * `kind` decides the copy and which System Settings pane the action button
+ * targets: a screen-recording denial points at the OS Privacy pane, while a
+ * generic capture failure is cross-platform. Conflating them is how a Windows
+ * user ends up reading macOS instructions with a button that hands the Windows
+ * shell a URI scheme it cannot resolve.
+ */
+export interface SystemAudioWarning {
+  kind: 'screen-recording-permission' | 'audio-capture-failure';
+  message: string;
+  channel?: 'system' | 'mic';
+}
+
+// --- src/features/common/AudioStatusTray.tsx ---
+export interface AudioStatusTrayProps {
+  /** Force the panel open — set when a meeting start was blocked. */
+  isVisible?: boolean;
+  onClose?: () => void;
+  onAllGranted?: () => void;
+}
+
+export interface PermissionRowProps {
+  icon: React.ReactNode;
+  title: string;
+  isGranted: boolean;
+  onRequest: () => void;
+  onOpenSettings: () => void;
+}
+
+/**
+ * One channel (microphone / system audio) in the tray panel: permission state,
+ * the device it resolves to, and a live level meter.
+ */
+export interface AudioChannelCardProps extends PermissionRowProps {
+  /**
+   * macOS tri-state, so "never asked" can be worded differently from "denied".
+   * Windows and Linux report 'granted' for both channels — they have no
+   * screen-capture gate and handle the mic at first use.
+   */
+  status?: 'granted' | 'denied' | 'not-determined' | 'restricted';
+  /** Already-shaped 0–1 meter position. */
+  level: number;
+  /** Samples are arriving on this channel right now. */
+  isLive: boolean;
+  /** A user-initiated probe is running (no meeting). */
+  isTesting: boolean;
+  /** Resolved device label; null when the device list is unavailable. */
+  deviceName?: string | null;
+  /** The saved device preference has disappeared since it was set. */
+  deviceMissing?: boolean;
+  /** Per-channel failure text, e.g. the system-audio probe's error. */
+  errorText?: string | null;
+  /** Colour family for the meter, matching the dock's two-channel palette. */
+  tone: 'mic' | 'system';
+  /** Theme is passed down rather than re-resolved per row. */
+  isLight: boolean;
+}
+
+/** Compact level meter shared by the collapsed tray bar and the panel cards. */
+export interface AudioLevelMeterProps {
+  /** Already-shaped 0–1 level. */
+  level: number;
+  isLive: boolean;
+  tone: 'mic' | 'system';
+  isLight: boolean;
+  /** Renders the 4-bar variant for the 48px tray bar instead of a wide bar. */
+  compact?: boolean;
+  className?: string;
+}
+
+// --- src/features/common/SystemAudioPermissionBanner.tsx ---
+export interface SystemAudioPermissionBannerProps {
+  className?: string;
 }
 
 // --- src/hooks/useResolvedTheme.ts ---
@@ -243,6 +332,14 @@ export interface ChatStreamHandlers {
    * answer have started rendering — a partial answer is never retried,
    * since re-sending would duplicate or garble what's already shown. */
   onRetry?: (attempt: number, maxAttempts: number) => void;
+  /** Fired when the backend discards what it has already streamed and starts
+   * the answer again — an upstream drop mid-sentence, or a refusal it caught
+   * and is retrying. Clear this message's accumulated text: the replacement
+   * arrives as fresh `token` frames right after. Distinct from `onRetry`,
+   * which fires only BEFORE anything has rendered and needs no clearing.
+   * Without this, a mid-call failure leaves half a sentence with the retry
+   * appended to it. */
+  onReset?: () => void;
   /** Fired once per response, after the final token, with the backend's
    * interaction_id for this turn. Only emitted on `/chat/live` — collect
    * these across the call and POST them to `chatApi.linkMeetingInteractions`
@@ -258,6 +355,12 @@ export type ChatRole = "user" | "assistant";
 export interface ChatHistoryTurn {
   role: ChatRole;
   content: string;
+  // Raw shape from GET /chat/sessions/:id/messages — a flat list, unlike the
+  // grouped { meetings, assets } shape ChatSources/SourcesDisplay expect (that
+  // grouping only happens for the live `source_ids` stream frame, in
+  // chatApi.ts). Only present on assistant turns that answered from RAG
+  // context, and can be missing/empty even then — never assume it's there.
+  sources?: { id: string; title: string; type: string }[];
 }
 
 export interface ChatSession {
@@ -467,6 +570,17 @@ export interface Objection {
   suggested_answer?: string;
   /** Stable content-derived id stamped at merge time. Never changes after first assignment. */
   id?: string;
+  /** Semantic category id from the backend objection classifier (e.g. "pricing_too_high"). */
+  category?: string;
+  /** Human-readable form of `category`, safe to render directly. */
+  category_label?: string;
+  /** Classifier cosine similarity, 0–1. */
+  confidence?: number;
+  /** Classifier confidence fell below the review threshold. */
+  needs_review?: boolean;
+  /** Client-only: the objection-handler endpoint echoed this quote in `resolved`.
+   *  Never sent as input — the client is the owner of this flag. */
+  resolved?: boolean;
 }
 
 export interface Signal {
@@ -525,6 +639,17 @@ export interface LiveAnalysisData {
   objections: Objection[];
   signals: Signal[];
   dealOptimizer?: DealOptimizerAlert[];
+  /**
+   * Set by the backend when it ran out of budget and mirrored the previous
+   * analysis back instead of producing a new one (HTTP 200, not an error — see
+   * `live_analysis_total_budget_s` in godojo-apis). It means "nothing new here",
+   * so the transcript cursor must NOT advance past this window:
+   * `shouldAdvanceCursor` in src/lib/meetingLifecycle.ts owns that rule.
+   *
+   * Never present on a successful response, and never persisted — the backend
+   * ignores it if it rides back inside `previous_analysis`.
+   */
+  degraded?: boolean;
 }
 
 // --- src/features/meetings/api/meetingsApi.ts ---
@@ -597,6 +722,28 @@ export interface AiInteractionMetadata {
   [key: string]: unknown;
 }
 
+// Raw shape from GET /meetings/:id/ai-interactions — a flat, mixed list, NOT
+// the grouped { meetings, assets } shape ChatSources/SourcesDisplay expect
+// (same distinction already called out on ChatHistoryTurn.sources). Two
+// observed shapes, distinguished by presence of `id`:
+//   - doc/asset sources:    { id, type: "doc", title }
+//   - meeting/live sources: { title, meeting_id }  — meeting_id is often the
+//     literal string "live" (not a real, openable meeting id), and these
+//     commonly repeat once per retrieved transcript chunk.
+// Only the doc-shaped ones are useful to show — see assetSourcesFor below.
+export interface AiInteractionDocSource {
+  id: string;
+  type: string;
+  title: string;
+}
+
+export interface AiInteractionMeetingSource {
+  title: string;
+  meeting_id: string;
+}
+
+export type AiInteractionSource = AiInteractionDocSource | AiInteractionMeetingSource;
+
 export interface AiInteractionItem {
   id: number;
   type: string;
@@ -604,18 +751,14 @@ export interface AiInteractionItem {
   user_query: string;
   ai_response: string;
   metadata_json: AiInteractionMetadata;
+  // Optional — plenty of interactions (e.g. the "couldn't find that" case)
+  // have no useful sources, or none at all. Never assume present.
+  sources?: AiInteractionSource[];
 }
 
 export interface AiInteractionsResponse {
   meeting_id: string;
   items: AiInteractionItem[];
-}
-
-export interface ChunkMeetingResponse {
-  meeting_id: string;
-  duration_ms: number;
-  ingested: boolean;
-  is_processed: number;
 }
 
 // --- src/features/meetings/components/FollowUpEmailModal.tsx ---
@@ -651,6 +794,7 @@ export interface FollowUpEmailMeeting {
     timestamp: number;
   }>;
   calendarEventId?: string;
+  calendarEventMetadata?: any[];
 }
 
 // --- src/features/meetings/components/MeetingChatOverlay.tsx ---
@@ -690,6 +834,11 @@ export interface CalendarEvent {
   link?: string;
   organizer?: string;
   attendees?: any[];
+  /** Which calendar this came from — Google and Zoom are synced separately. */
+  source?: 'google' | 'microsoft' | 'zoom';
+  /** Free-text location from the calendar entry, when the organizer set one. */
+  location?: string;
+  description?: string;
 }
 
 // --- src/features/meetings/components/NextMeetingCard.tsx ---
@@ -720,6 +869,7 @@ export interface MeetingTranscriptLine {
   timestamp: number;
   final?: boolean;
   confidence?: number;
+  speakerIndex?: number;
 }
 
 export interface MeetingUsageEntry {
@@ -803,6 +953,7 @@ export interface Meeting {
   summary: string;
   isProcessed?: boolean;
   calendarEventId?: string;
+  calendarEventMetadata?: any[];
   source?: string;
   detailedSummary?: MeetingDetailedSummary;
   participants?: { email: string | null; name: string | null; oraganizer: boolean; self: boolean }[];
@@ -819,6 +970,8 @@ export type MeetingType = 'discovery' | 'demo' | 'negotiation';
 
 export interface ScoredCategory {
   categoryName: string;
+  key?: string;           // config key this row came from; kept so the score can be
+  // reconciled against live analysis after label edits
   score: number;          // 0–maxScore
   maxScore: number;
   weight: number;         // 0–100 (percentage weight of this category)
@@ -918,6 +1071,8 @@ export interface AIProviderModelOption {
 export interface AIProvidersSettingsTypes {
   tavilyApiKey: string;
   hasStoredTavilyKey: boolean;
+  /** Which tier the usable Tavily key came from; 'user' means the user entered it. */
+  tavilyKeySource?: 'user' | 'backend_fallback' | 'env_bundled' | 'none';
   handleRemoveTavilyKey: () => Promise<void>;
   tavilySaving: boolean;
   tavilyError: string;
@@ -940,6 +1095,24 @@ export interface KnowledgeAsset {
   lastUpdated?: string;
   filePath?: string;
 }
+
+// --- src/api/intelligenceApi.ts ---
+// Shape returned by GET /intelligence/company-assets. Same underlying data as
+// KnowledgeAsset, but tenant-scoped (via X-Tenant-Id, same OptionalTenant
+// resolution as /company-context) and snake_case, straight from the backend —
+// this is what lets a team member see the admin's uploaded docs, since the
+// local Electron/SQLite asset list is per-device and never sees another
+// user's uploads.
+export interface BackendCompanyAsset {
+  id: string;
+  user_id: string;
+  tenant_id: string | null;
+  type: string;
+  label: string;
+  status: string;
+  last_updated: string;
+}
+
 
 export interface TargetPersona {
   id: string;
@@ -967,6 +1140,52 @@ export interface CompanyContextData {
     hasAssets: boolean;
   };
 }
+
+// --- src/api/companyContextApi.ts ---
+// Shapes returned/accepted by the FastAPI /company-context routes. Kept
+// separate from CompanyContextData (the flattened camelCase shape the UI
+// works with) since the backend is snake_case and singleton-vs-list shaped
+// differently — mapping happens at the hook boundary (useCompanyContext).
+export interface BackendCompanyContext {
+  id: number;
+  user_id: string;
+  tenant_id: string | null;
+  name: string | null;
+  website: string | null;
+  industry: string | null;
+  persona_engine_enabled: number;
+  core_value_proposition: string | null;
+  updated_at: string;
+  data_completeness: number;
+}
+
+export type BackendCompanyContextUpdate = Partial<
+  Pick<BackendCompanyContext, "name" | "website" | "industry" | "persona_engine_enabled" | "core_value_proposition">
+>;
+
+export interface BackendPersona {
+  id: string;
+  user_id: string;
+  tenant_id: string | null;
+  role: string;
+  description: string;
+  sort_order: number;
+}
+
+export type BackendPersonaUpdate = Partial<Pick<BackendPersona, "role" | "description" | "sort_order">>;
+
+export interface BackendCompetitor {
+  id: string;
+  user_id: string;
+  tenant_id: string | null;
+  name: string;
+  moat: string;
+  win_rate: number;
+  sort_order: number;
+}
+
+export type BackendCompetitorUpdate = Partial<Pick<BackendCompetitor, "name" | "moat" | "win_rate" | "sort_order">>;
+
 
 // --- src/features/settings/components/ProviderCard.tsx ---
 export interface FetchedModel {
@@ -1186,7 +1405,10 @@ export interface ParsedReleaseNotes {
 }
 
 // --- src/lib/apiClient.ts ---
-export type RetryConfig = InternalAxiosRequestConfig & { _retry?: boolean };
+/** `_startedAt` is stamped by the request interceptor so a failure can report how
+ *  long it waited — the difference between "the backend is down" (fails at once)
+ *  and "the backend never answered" (fails at the 60s ceiling). */
+export type RetryConfig = InternalAxiosRequestConfig & { _retry?: boolean; _startedAt?: number };
 
 // --- src/lib/curl-validator.ts ---
 export interface CurlValidationResult {
@@ -1218,6 +1440,9 @@ export type FieldValuesType = {
   type: "text" | "tel" | "email" | "password";
   name: "email" | "password" | "displayName" | "phoneNumber";
   placeholder: string;
+  /** Optional — only the sign-up fields (name, email) set this; sign-in's
+   * single email field and phoneNumber intentionally leave it unset. */
+  required?: boolean;
 }
 
 // --- src/types/index.tsx ---
@@ -1326,6 +1551,7 @@ export interface LauncherProps {
   onOpenSettings: (tab?: string) => void;
   onCloseSettings?: () => void;
   onOpenManagerDashboard?: () => void;
+  onCloseManagerDashboard?: () => void;
   isManagerDashboardOpen?: boolean;
   isSettingsOpen?: boolean;
   onPageChange?: (isMain: boolean) => void;
@@ -1454,6 +1680,8 @@ export interface DockButtonProps {
   frozen?: boolean;
   onClick: () => void;
   zIndex?: number;
+  /** See usePerformanceMode.ts — drops the tooltip's backdrop-filter blur when true. */
+  isPerformanceMode?: boolean;
 }
 
 // --- src/features/floating-dock/FloatingDock.tsx ---
@@ -1487,6 +1715,18 @@ export interface FloatingDockProps {
   // Company intelligence from pre-call sales brief
   companyIntel?: Record<string, any> | null;
 
+  // Calendar event(s) the current meeting was matched to, forwarded to
+  // FloatingChatPanel so /chat/live has the same event context (attendees,
+  // organizer, link, etc.) that gets persisted to meetings.calendar_event_metadata.
+  calendarEventMetadata?: CalendarEvent[];
+
+  // Explicit, single-shot native overlay-window resize (height, optional
+  // width) for FloatingDock's own discrete size transitions — see the
+  // "Window resize pipeline" note in useGodojoInterface.ts. Optional so
+  // FloatingDock keeps working (via the ResizeObserver fallback) in any
+  // context that doesn't wire this up (e.g. Storybook/tests).
+  onRequestOverlayResize?: (height: number, width?: number) => void;
+
 }
 
 // --- src/features/floating-dock/panels/FloatingChatPanel.tsx ---
@@ -1499,6 +1739,11 @@ export interface Message {
   isStreaming?: boolean;
   intent?: string;
   ragAnswer?: { confidence: number; sourceCount: number };
+  /** Retrieved sources for this turn, from the `source_ids` stream frame.
+   * Only ever has entries when the backend sent at least one source with an
+   * asset_id — SourcesDisplay itself also renders nothing for an empty
+   * ChatSources, so this is safe to always set. */
+  sources?: ChatSources;
   /** Latest backend status label ("Searching meetings…", etc.) while this
    * message is still streaming with no text yet. Cleared once the first
    * token/rag_answer arrives. */
@@ -1523,6 +1768,13 @@ export interface FloatingChatPanelProps {
    * Collected by the parent (useFloatingDock) across the whole call and sent
    * to chatApi.linkMeetingInteractions once the call ends. */
   onInteractionId?: (interactionId: number) => void;
+  /** See usePerformanceMode.ts — drops backdrop-filter blur when true. */
+  isPerformanceMode?: boolean;
+  // Calendar event(s) matched to this meeting — forwarded to /chat/live
+  // (chatApi.queryLive) alongside the transcript/history so the live
+  // assistant has the same event context (attendees, organizer, link) that
+  // gets persisted to meetings.calendar_event_metadata once the call ends.
+  calendarEventMetadata?: CalendarEvent[];
 }
 
 // --- src/features/floating-dock/panels/FloatingIntelligencePanel.tsx ---
@@ -1545,8 +1797,13 @@ export interface FloatingIntelligencePanelProps {
   speakerNames: { user: string; client: string };
   panelFirstOpenedAt: number | null; // timestamp when intelligence panel was first opened
   noAnalysisCaptured?: boolean; // true when the countdown ended without enough transcript to analyse
+  isCountdownActive?: boolean; // true only while the single startup countdown cycle is still armed
+  // AND no analysis result has landed — the countdown must never be
+  // re-entered after the loading skeleton (see useFloatingDock)
   meetingTypes: MeetingType[];
   onMeetingTypesChange: (types: MeetingType[]) => void;
+  /** See usePerformanceMode.ts — drops backdrop-filter blur when true. */
+  isPerformanceMode?: boolean;
 }
 
 // --- src/features/floating-dock/panels/FloatingSettingsPanel.tsx ---
@@ -1573,6 +1830,11 @@ export interface FloatingSettingsPanelProps {
   onSelectModel: (m: string) => void;
   dockOpacity: number;
   onDockOpacityChange: (val: number) => void;
+  /** See usePerformanceMode.ts — drops backdrop-filter blur when true. */
+  isPerformanceMode?: boolean;
+  /** Current user preference ('auto' | 'on' | 'off') for the toggle row below. */
+  performanceModePreference?: 'auto' | 'on' | 'off';
+  onPerformanceModePreferenceChange?: (pref: 'auto' | 'on' | 'off') => void;
 }
 
 // --- src/features/live-analysis/components/LiveAnalysisContent.tsx ---
@@ -1706,6 +1968,14 @@ export interface CompanyContextTabProps {
   isPremium?: boolean;
   setIsPremiumModalOpen?: (v: boolean) => void;
   isLight: boolean;
+  /**
+   * True when the current user is on a team but is NOT that team's admin.
+   * Team company context is admin-owned: members see the same data
+   * (fetched automatically via the X-Tenant-Id header) but can't edit it.
+   * Solo users (no team) are always false here — their own context is
+   * always theirs to edit.
+   */
+  readOnly?: boolean;
 }
 
 export interface MeatballMenuProps {
@@ -1745,11 +2015,21 @@ export interface ProviderCardProps {
   providerName: string;
   apiKey: string;
   preferredModel?: string;
+  /** True when a key is usable from any tier (the user's own or a shared default). */
   hasStoredKey: boolean;
+  /**
+   * Which tier the usable key came from. 'backend_fallback'/'env_bundled' mean a
+   * shared default is in use, so the card offers to override rather than showing
+   * "Saved" and a Remove button for a key the user never entered.
+   */
+  keySource?: 'user' | 'backend_fallback' | 'env_bundled' | 'none';
   onKeyChange: (key: string) => void;
   onSaveKey: () => Promise<void>;
   onRemoveKey: () => void;
-  onTestConnection: () => void;
+  /** Receives the model currently picked in the card's dropdown (or the
+   *  stored preferred one) so Test Connection tests THAT model instead of
+   *  an internally-resolved default. */
+  onTestConnection: (modelId?: string) => void;
   testStatus: 'idle' | 'testing' | 'success' | 'error';
   testError?: string;
   savingStatus: boolean;
@@ -1805,6 +2085,10 @@ export interface SettingsOverlayProps {
   initialTab?: string;
   deepLinkInviteToken?: string | null;
   onDeepLinkTokenConsumed?: () => void;
+  /** Current tenant, if the user is on a team — null/undefined for a solo user. */
+  tenantId?: string | null;
+  /** True only for the tenant's owner/admin. Irrelevant when tenantId is unset. */
+  isAdmin?: boolean;
 }
 
 // --- src/features/settings/components/SettingsPopup.tsx ---
@@ -1912,9 +2196,12 @@ export interface UpdateModalProps {
   onInstall: () => void;
   onRemindLater?: () => void;
   downloadProgress: number;
-  status: 'idle' | 'downloading' | 'ready' | 'error' | 'instructions';
+  status: 'idle' | 'checking' | 'downloading' | 'ready' | 'error' | 'instructions';
   errorMessage?: string | null;
-  instructionsArch?: 'arm64' | 'x64' | null;
+  /** Quit + install a downloaded update. The guarded path (refuses while a
+   *  meeting is active or in dev) — the modal must never call
+   *  restartAndInstall directly. */
+  onInstallUpdate: () => void;
 }
 
 // --- src/pages/EmailVerification.tsx ---

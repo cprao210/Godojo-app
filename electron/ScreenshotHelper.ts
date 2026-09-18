@@ -6,6 +6,51 @@ import { app, desktopCapturer, screen } from "electron"
 import { v4 as uuidv4 } from "uuid"
 import util from "util"
 import sharp from "sharp"
+import { getMacScreenCaptureStatus, isDevTccBypassEnabled } from "./utils/macPermissions"
+
+/**
+ * Fail fast when macOS Screen Recording is not usable, before calling
+ * desktopCapturer.
+ *
+ * Screenshots and system audio are gated by the SAME TCC service, so they must
+ * agree about its state. They previously did not: this file bypassed the check
+ * on every unpackaged build while main.ts required an explicit
+ * NATIVELY_DEV_BYPASS_SCREEN_TCC=1 opt-in, so in dev the two subsystems
+ * disagreed about whether the permission existed. Both now read the same
+ * predicate.
+ *
+ * 'not-determined' is treated as an error rather than a prompt: the startup flow
+ * owns raising the TCC sheet (while a window is focused, so macOS anchors it
+ * correctly). Calling getSources again here would raise a second sheet with no
+ * foreground context, which on recent macOS can appear behind other apps.
+ *
+ * No-op off darwin.
+ */
+function assertScreenRecordingPermission(): void {
+  if (process.platform !== 'darwin') return;
+  if (isDevTccBypassEnabled()) return;
+
+  const status = getMacScreenCaptureStatus();
+  switch (status) {
+    case 'granted':
+      return;
+    case 'denied':
+      throw new Error(
+        'Screen Recording permission is denied. Enable it in System Settings > ' +
+        'Privacy & Security > Screen Recording, then restart GoDojo AI.'
+      );
+    case 'restricted':
+      throw new Error(
+        'Screen Recording is restricted by a device policy (MDM or parental controls). ' +
+        'Contact your administrator to allow screen capture.'
+      );
+    case 'not-determined':
+      throw new Error(
+        'Screen Recording permission has not been granted yet. ' +
+        'Please restart GoDojo AI — you will be prompted to grant access on next launch.'
+      );
+  }
+}
 
 /**
  * Finds the display that best contains the given rectangle.
@@ -81,6 +126,7 @@ async function getDisplaysIntersectingSelection(
   }
   
   try {
+    assertScreenRecordingPermission();
     sources = await desktopCapturer.getSources({
       types: ['screen'],
       thumbnailSize: { width: maxWidth, height: maxHeight }
@@ -399,6 +445,11 @@ export class ScreenshotHelper {
     console.log(`[ScreenshotHelper] Target display bounds: ${JSON.stringify(displayBounds)}, scale: ${scaleFactor}`);
 
     let sources: Electron.DesktopCapturerSource[];
+
+    // Outside the try below on purpose: that catch re-wraps everything as
+    // "Failed to capture screen: …", which would bury the actionable permission
+    // message this throws.
+    assertScreenRecordingPermission();
 
     try {
       console.log('[ScreenshotHelper] Capturing screen with desktopCapturer...');

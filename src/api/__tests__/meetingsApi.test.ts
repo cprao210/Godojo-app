@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 
 vi.mock('@/lib/apiClient', () => ({
     apiFetch: vi.fn().mockResolvedValue({}),
@@ -6,6 +6,7 @@ vi.mock('@/lib/apiClient', () => ({
 
 import { apiFetch } from '@/lib/apiClient';
 import { meetingsApi } from '@/api';
+import { PROCESSING_TITLE } from '@/api/meetingMapping';
 
 const mockedApiFetch = vi.mocked(apiFetch);
 
@@ -35,6 +36,18 @@ describe('meetingsApi.list', () => {
         ]);
     });
 
+    it('appends ?limit=N to the request when a limit is passed (used by "Load more")', async () => {
+        mockedApiFetch.mockResolvedValueOnce([]);
+        await meetingsApi.list({ limit: 30 });
+        expect(mockedApiFetch).toHaveBeenCalledWith('/meetings?limit=30');
+    });
+
+    it('omits the query string entirely when no limit is passed', async () => {
+        mockedApiFetch.mockResolvedValueOnce([]);
+        await meetingsApi.list();
+        expect(mockedApiFetch).toHaveBeenCalledWith('/meetings');
+    });
+
     it('dedupes rows with the same id, keeping the first occurrence', async () => {
         mockedApiFetch.mockResolvedValueOnce([
             { id: 'dup', title: 'First', created_at: '2024-01-01' },
@@ -49,6 +62,94 @@ describe('meetingsApi.list', () => {
 
     it('returns an empty array when apiFetch resolves with a nullish value', async () => {
         mockedApiFetch.mockResolvedValueOnce(null as unknown as any[]);
+        await expect(meetingsApi.list()).resolves.toEqual([]);
+    });
+});
+
+// The other list tests run without a `window`, so the local-SQLite merge inside
+// list() throws ReferenceError and is swallowed by its catch — i.e. they cover
+// the plain backend path. These stub the bridge to cover the merge itself.
+describe('meetingsApi.list local-SQLite merge', () => {
+    const stubLocalRows = (rows: unknown[]) =>
+        vi.stubGlobal('window', {
+            electronAPI: { getRecentMeetingsLocal: vi.fn().mockResolvedValue(rows) },
+        });
+
+    beforeEach(() => mockedApiFetch.mockClear());
+    afterEach(() => vi.unstubAllGlobals());
+
+    it('repairs a stale backend processing row from the local processed row', async () => {
+        // The flip-flop: local SQLite has already finished the meeting while the
+        // Supabase mirror is still serving the "Processing..." placeholder.
+        mockedApiFetch.mockResolvedValueOnce([
+            { id: 'm1', title: PROCESSING_TITLE, created_at: '2024-01-01', is_processed: 0 },
+        ]);
+        stubLocalRows([
+            {
+                id: 'm1',
+                title: 'Discovery call with Acme',
+                date: '2024-01-01',
+                duration: '12:30',
+                summary: 'See detailed summary',
+                isProcessed: true,
+            },
+        ]);
+
+        const result = await meetingsApi.list();
+
+        expect(result).toHaveLength(1);
+        expect(result[0].title).toBe('Discovery call with Acme');
+        expect(result[0].isProcessed).toBe(true);
+    });
+
+    it('does not downgrade a processed backend row to a stale local processing row', async () => {
+        mockedApiFetch.mockResolvedValueOnce([
+            { id: 'm1', title: 'Discovery call with Acme', created_at: '2024-01-01', is_processed: 1 },
+        ]);
+        stubLocalRows([
+            { id: 'm1', title: PROCESSING_TITLE, date: '2024-01-01', duration: '0:00', summary: '', isProcessed: false },
+        ]);
+
+        const [row] = await meetingsApi.list();
+
+        expect(row.title).toBe('Discovery call with Acme');
+        expect(row.isProcessed).toBe(true);
+    });
+
+    it('surfaces a still-processing local row the backend has not listed yet', async () => {
+        mockedApiFetch.mockResolvedValueOnce([
+            { id: 'older', title: 'Older call', created_at: '2024-01-01', is_processed: 1 },
+        ]);
+        stubLocalRows([
+            {
+                id: 'fresh',
+                title: PROCESSING_TITLE,
+                date: new Date().toISOString(),
+                duration: '0:00',
+                summary: '',
+                isProcessed: false,
+            },
+        ]);
+
+        const result = await meetingsApi.list();
+
+        // Newest first — the union is sorted, not blindly prepended.
+        expect(result.map((m) => m.id)).toEqual(['fresh', 'older']);
+    });
+
+    it('does not resurrect a finished local row older than the mirror-lag window', async () => {
+        mockedApiFetch.mockResolvedValueOnce([]);
+        stubLocalRows([
+            {
+                id: 'deleted-elsewhere',
+                title: 'Deleted on another device',
+                date: new Date(Date.now() - 60 * 60 * 1000).toISOString(),
+                duration: '5:00',
+                summary: 'See detailed summary',
+                isProcessed: true,
+            },
+        ]);
+
         await expect(meetingsApi.list()).resolves.toEqual([]);
     });
 });
@@ -80,6 +181,11 @@ describe('meetingsApi.getAiInteractions', () => {
     it('hits the ai-interactions sub-route', async () => {
         await meetingsApi.getAiInteractions('m1');
         expect(mockedApiFetch).toHaveBeenCalledWith('/meetings/m1/ai-interactions');
+    });
+
+    it('appends ?limit=N for load-more paging', async () => {
+        await meetingsApi.getAiInteractions('m1', 100);
+        expect(mockedApiFetch).toHaveBeenCalledWith('/meetings/m1/ai-interactions?limit=100');
     });
 });
 
@@ -187,22 +293,14 @@ describe('meetingsApi.end', () => {
     });
 });
 
-describe('meetingsApi.chunk', () => {
-    beforeEach(() => mockedApiFetch.mockClear());
-
-    it('POSTs to the chunking sub-route', async () => {
-        await meetingsApi.chunk('m1');
-        expect(mockedApiFetch.mock.calls[0][0]).toBe('/meetings/m1/chunking');
-        expect((mockedApiFetch.mock.calls[0][1] as RequestInit).method).toBe('POST');
+describe('meetingsApi — RAG chunking moved out of the renderer', () => {
+    it('exposes no chunk method (the POST now runs from the Electron pipeline, see electron/utils/backendRagChunking)', () => {
+        expect((meetingsApi as any).chunk).toBeUndefined();
     });
 });
 
-describe('meetingsApi.uploadTranscript', () => {
-    beforeEach(() => mockedApiFetch.mockClear());
-
-    it('sends title and transcript in that order', async () => {
-        await meetingsApi.uploadTranscript('My title', 'full transcript text');
-        expect(mockedApiFetch.mock.calls[0][0]).toBe('/meetings/upload-transcript');
-        expect(bodyOfCall()).toEqual({ title: 'My title', transcript: 'full transcript text' });
+describe('meetingsApi — transcript upload is IPC-only', () => {
+    it('exposes no uploadTranscript HTTP method (the lifecycle runs through MeetingPersistence)', () => {
+        expect((meetingsApi as any).uploadTranscript).toBeUndefined();
     });
 });

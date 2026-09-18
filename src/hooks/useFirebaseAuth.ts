@@ -4,6 +4,7 @@ import { subscribeAuthState, signOut as fbSignOut, installSessionGuard } from ".
 import { apiFetch, setInvalidSessionHandler } from "../lib/apiClient";
 import { FirebaseAuthState } from "@/types";
 import { posthogAnalytics } from "@/lib/analytics/posthog.service";
+import { queryClient } from "@/lib/queryClient";
 
 /**
  * Owns every piece of Firebase auth state App.tsx needs:
@@ -40,6 +41,14 @@ export function useFirebaseAuth(
                 setPendingVerificationUser(null);
                 setAuthChecked(true);
                 posthogAnalytics.resetIdentity(); // clear identity on sign-out
+                // The QueryClient is a module-scope singleton, so its cache
+                // (meetings, tenants, /auth/me, …) outlives the signed-out user.
+                // "Add another account" is just onSignOut() → SignIn → a new
+                // user in the SAME renderer with no reload, so without this the
+                // next account is served the previous account's cached rows on
+                // first paint. The Switch Account path reloads the window and
+                // doesn't depend on this; the add-account path does.
+                queryClient.clear();
                 return;
             }
 

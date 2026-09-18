@@ -8,6 +8,7 @@ interface ElectronAPI {
     width: number
     height: number
   }) => Promise<void>
+  getGpuPerformanceStatus: () => Promise<{ isLowPowerGpu: boolean; raw: Record<string, string> | null }>
   getRecognitionLanguages: () => Promise<Record<string, any>>
   getScreenshots: () => Promise<Array<{ path: string; preview: string }>>
   deleteScreenshot: (
@@ -83,12 +84,51 @@ interface ElectronAPI {
   onNativeAudioConnected: (callback: () => void) => () => void
   onNativeAudioDisconnected: (callback: () => void) => () => void
   onMeetingAudioWarning: (callback: (message: string) => void) => () => void
+  onMeetingAudioError: (callback: (message: string) => void) => () => void
+  onSystemAudioPermissionDenied: (callback: (message: string) => void) => () => void
+  onSystemAudioRecovered: (callback: (channel: 'system' | 'mic') => void) => () => void
+  onAudioCaptureFailed: (
+    callback: (payload: {
+      channel: 'system' | 'mic'
+      message: string
+      attempt: number
+      maxAttempts: number
+      terminal?: boolean
+      stuck?: boolean
+    }) => void,
+  ) => () => void
+  /**
+   * Live per-chunk RMS level (0–1) from the meeting's real mic/system-audio
+   * captures — purely for UI feedback (e.g. the dock wave indicator), so
+   * consumers should treat it as fire-and-forget and decay to 0 themselves if
+   * nothing arrives for a while (capture stopped/errored).
+   */
+  onAudioLevel: (callback: (payload: { channel: 'mic' | 'system'; level: number }) => void) => () => void
   onSuggestionGenerated: (callback: (data: { question: string; suggestion: string; confidence: number }) => void) => () => void
   onSuggestionProcessingStart: (callback: () => void) => () => void
   onSuggestionError: (callback: (error: { error: string }) => void) => () => void
   generateSuggestion: (context: string, lastQuestion: string) => Promise<{ suggestion: string }>
   getInputDevices: () => Promise<Array<{ id: string; name: string }>>
   getOutputDevices: () => Promise<Array<{ id: string; name: string }>>
+  getPlatform: () => string
+  checkPermissions: () => Promise<{
+    microphone: boolean
+    systemAudio: boolean
+    screenCapture: boolean
+    microphoneStatus: 'granted' | 'denied' | 'not-determined' | 'restricted'
+    screenStatus: 'granted' | 'denied' | 'not-determined' | 'restricted'
+    platform: string
+  }>
+  requestPermission: (type: 'microphone' | 'screen') => Promise<boolean>
+  openPermissionSettings: (pane?: 'microphone' | 'screen') => Promise<void>
+  getSystemAudioPermissionWarning: () => Promise<string | null>
+  repairTccPermissions: () => Promise<{
+    ok: boolean
+    bundleId?: string
+    results?: Array<{ service: string; ok: boolean; output: string }>
+    promptRelaunch?: boolean
+    message: string
+  }>
   setRecognitionLanguage: (key: string) => Promise<{ success: boolean; error?: string }>
   getAiResponseLanguages: () => Promise<Array<{ label: string; code: string }>>
   setAiResponseLanguage: (language: string) => Promise<{ success: boolean; error?: string }>
@@ -124,12 +164,16 @@ interface ElectronAPI {
   endMeeting: (meetingTypes?: ('discovery' | 'demo' | 'negotiation')[], tenantId?: string | null) => Promise<{ success: boolean; error?: string }>
   finalizeMicSTT: () => Promise<void>
   getRecentMeetings: () => Promise<Array<{ id: string; title: string; date: string; duration: string; summary: string; isProcessed?: boolean }>>
+  /** Local SQLite only (no Supabase preference) — see get-recent-meetings-local. */
+  getRecentMeetingsLocal: () => Promise<Array<{ id: string; title: string; date: string; duration: string; summary: string; isProcessed?: boolean }>>
   getMeetingDetails: (id: string) => Promise<any>
   updateMeetingTitle: (id: string, title: string) => Promise<boolean>
-  updateLiveAnalysis: (data: LiveAnalysisData) => Promise<{ success: boolean }>;
-  setLiveAnalysisInFlight: (inFlight: boolean) => Promise<{ success: boolean }>;
+  updateLiveAnalysis: (data: LiveAnalysisData, generation?: number | null) => Promise<{ success: boolean }>;
+  setLiveAnalysisInFlight: (inFlight: boolean, generation?: number | null) => Promise<{ success: boolean }>;
+  /** Generation of the call that is live right now — see liveAnalysisRouting.ts. */
+  getMeetingGeneration: () => Promise<{ success: boolean; data?: number }>;
   regenerateMeetingSummary: (id: string) => Promise<{ success: boolean; meeting?: any; error?: string }>
-  uploadTranscript: (text: string, title?: string, meetingTypes?: ('discovery' | 'demo' | 'negotiation')[]) => Promise<{ success: boolean; meetingId?: string; error?: string }>
+  uploadTranscript: (text: string, title?: string, meetingTypes?: ('discovery' | 'demo' | 'negotiation')[], tenantId?: string | null) => Promise<{ success: boolean; meetingId?: string; error?: string }>
   updateMeetingSummary: (id: string, updates: { overview?: string, actionItems?: string[], keyPoints?: string[], actionItemsTitle?: string, keyPointsTitle?: string }) => Promise<boolean>
   onMeetingsUpdated: (callback: () => void) => () => void
   getDisplayName: (role: 'user' | 'client' | 'assistant') => Promise<string>;
@@ -181,9 +225,13 @@ interface ElectronAPI {
   openMailto: (params: { to: string; subject: string; body: string }) => Promise<{ success: boolean; error?: string }>
 
   // Audio Test
-  startAudioTest: (deviceId?: string) => Promise<{ success: boolean }>
+  startAudioTest: (deviceId?: string, outputDeviceId?: string) => Promise<{ success: boolean }>
   stopAudioTest: () => Promise<{ success: boolean }>
   onAudioTestLevel: (callback: (level: number) => void) => () => void
+  // System-audio probe, emitted during the same startAudioTest lifecycle as the
+  // mic meter above.
+  onAudioTestSystemLevel: (callback: (level: number) => void) => () => void
+  onAudioTestSystemError: (callback: (errorMessage: string) => void) => () => void
 
   // Database
   flushDatabase: () => Promise<{ success: boolean }>
@@ -233,6 +281,18 @@ interface ElectronAPI {
   getCalendarStatus: () => Promise<{ connected: boolean; email?: string }>
   getUpcomingEvents: () => Promise<Array<{ id: string; title: string; startTime: string; endTime: string; link?: string; source: 'google' }>>
   calendarRefresh: () => Promise<{ success: boolean; error?: string }>
+
+  // Meeting reminder popup (floating card window)
+  meetingPopupReady: () => Promise<{ event: CalendarEvent | null; autoStartAt: number | null }>
+  onMeetingPopupAutoStart: (callback: (data: { autoStartAt: number }) => void) => () => void
+  getAutoStartMeetings: () => Promise<boolean>
+  setAutoStartMeetings: (enabled: boolean) => Promise<{ success: boolean }>
+  onAutoStartMeetingsChanged: (callback: (enabled: boolean) => void) => () => void
+  meetingPopupTakeNotes: () => Promise<{ success: boolean }>
+  meetingPopupJoin: () => Promise<{ success: boolean; error?: string }>
+  meetingPopupDismiss: () => Promise<{ success: boolean }>
+  meetingPopupDebugShow: (overrides?: Partial<CalendarEvent>) => Promise<{ success: boolean; error?: string }>
+  onMeetingPopupEvent: (callback: (event: CalendarEvent) => void) => () => void
 
   // Zoom Calendar
   zoomCalendarConnect: () => Promise<{ success: boolean; error?: string }>
@@ -415,6 +475,7 @@ export const PROCESSING_EVENTS = {
 contextBridge.exposeInMainWorld("electronAPI", {
   updateContentDimensions: (dimensions: { width: number; height: number }) =>
     ipcRenderer.invoke("update-content-dimensions", dimensions),
+  getGpuPerformanceStatus: () => ipcRenderer.invoke("get-gpu-performance-status"),
   getRecognitionLanguages: () => ipcRenderer.invoke("get-recognition-languages"),
   takeScreenshot: () => ipcRenderer.invoke("take-screenshot"),
   takeSelectiveScreenshot: () => ipcRenderer.invoke("take-selective-screenshot"),
@@ -432,17 +493,13 @@ contextBridge.exposeInMainWorld("electronAPI", {
   // Settings > General > Danger Zone. Shows a native confirm dialog in
   // main, then wipes userData and relaunches. Resolves { success: false,
   // cancelled: true } if the user clicks Cancel on the native dialog.
-  resetAppData: (): Promise<{ success: boolean; cancelled?: boolean; error?: string }> =>
-    ipcRenderer.invoke("reset-app-data"),
-
-  confirmDeleteAccount: (): Promise<{ confirmed: boolean }> =>
-    ipcRenderer.invoke("confirm-delete-account"),
+  confirmDeleteAccount: (scope?: 'supabase-delete' | 'firebase-delete' | 'local' | 'full-delete'): Promise<{ confirmed: boolean }> =>
+    ipcRenderer.invoke("confirm-delete-account", scope),
 
   // DEV-ONLY: local half of "Delete My Account". No confirm dialog (the
   // caller has already confirmed and completed the server-side deletion) —
   // wipes natively.db + cached session/credentials and relaunches.
-  wipeLocalAccountData: (): Promise<{ success: boolean; error?: string }> =>
-    ipcRenderer.invoke("dev:wipe-local-account-data"),
+  wipeLocalAccountData: (scope?: 'local' | 'full-delete') => ipcRenderer.invoke('dev:wipe-local-account-data', scope),
 
   // Event listeners
   onScreenshotTaken: (
@@ -577,12 +634,14 @@ contextBridge.exposeInMainWorld("electronAPI", {
   analyzeImageFile: (path: string) => ipcRenderer.invoke("analyze-image-file", path),
   quitApp: () => ipcRenderer.invoke("quit-app"),
   hardRefresh: (): Promise<{ success: boolean }> => ipcRenderer.invoke("hard-refresh"),
+  reloadAllWindows: (): Promise<{ success: boolean }> => ipcRenderer.invoke("reload-all-windows"),
   toggleWindow: () => ipcRenderer.invoke("toggle-window"),
   showWindow: (inactive?: boolean) => ipcRenderer.invoke("show-window", inactive),
   hideWindow: () => ipcRenderer.invoke("hide-window"),
   showOverlay: () => ipcRenderer.invoke("show-overlay"),
   hideOverlay: () => ipcRenderer.invoke("hide-overlay"),
   getMeetingActive: () => ipcRenderer.invoke("get-meeting-active"),
+  getMeetingMetadata: () => ipcRenderer.invoke("get-meeting-metadata"),
   onSpeakerNamesResolved: (callback) => {
     const subscription = (_: any, names: any) => callback(names);
     ipcRenderer.on('speaker-names-resolved', subscription);
@@ -642,6 +701,7 @@ contextBridge.exposeInMainWorld("electronAPI", {
   getOverlayMousePassthrough: () => ipcRenderer.invoke("get-overlay-mouse-passthrough"),
   setOpenAtLogin: (open: boolean) => ipcRenderer.invoke("set-open-at-login", open),
   getOpenAtLogin: () => ipcRenderer.invoke("get-open-at-login"),
+  showAppNotification: (title: string, message: string) => ipcRenderer.invoke("show-app-notification", { title, message }),
   setDisguise: (mode: 'terminal' | 'settings' | 'activity' | 'none') => ipcRenderer.invoke("set-disguise", mode),
   getDisguise: () => ipcRenderer.invoke("get-disguise"),
   onDisguiseChanged: (callback: (mode: 'terminal' | 'settings' | 'activity' | 'none') => void) => {
@@ -675,7 +735,7 @@ contextBridge.exposeInMainWorld("electronAPI", {
   getAvailableOllamaModels: () => ipcRenderer.invoke("get-available-ollama-models"),
   switchToOllama: (model?: string, url?: string) => ipcRenderer.invoke("switch-to-ollama", model, url),
   switchToGemini: (apiKey?: string, modelId?: string) => ipcRenderer.invoke("switch-to-gemini", apiKey, modelId),
-  testLlmConnection: (provider: 'gemini' | 'groq' | 'openai' | 'claude', apiKey: string) => ipcRenderer.invoke("test-llm-connection", provider, apiKey),
+  testLlmConnection: (provider: 'gemini' | 'groq' | 'openai' | 'claude', apiKey?: string, modelId?: string) => ipcRenderer.invoke("test-llm-connection", provider, apiKey, modelId),
   selectServiceAccount: () => ipcRenderer.invoke("select-service-account"),
 
   // API Key Management
@@ -700,6 +760,8 @@ contextBridge.exposeInMainWorld("electronAPI", {
   testSttConnection: (provider: 'groq' | 'openai' | 'deepgram' | 'elevenlabs' | 'azure' | 'ibmwatson' | 'soniox', apiKey: string, region?: string) => ipcRenderer.invoke("test-stt-connection", provider, apiKey, region),
   setDiarizeClientEnabled: (enabled: boolean) => ipcRenderer.invoke("set-diarize-client-enabled", enabled),
   getDiarizeClientEnabled: () => ipcRenderer.invoke("get-diarize-client-enabled"),
+  setTranslateTranscripts: (enabled: boolean) => ipcRenderer.invoke("set-translate-transcripts", enabled),
+  getTranslateTranscripts: () => ipcRenderer.invoke("get-translate-transcripts"),
   getAudioPipelineStats: () => ipcRenderer.invoke("get-audio-pipeline-stats"),
   getOutputRoute: () => ipcRenderer.invoke("get-output-route"),
 
@@ -739,6 +801,52 @@ contextBridge.exposeInMainWorld("electronAPI", {
       ipcRenderer.removeListener("meeting-audio-warning", subscription)
     }
   },
+  // Main broadcasts this from three sites but it was never bridged, so every
+  // one of them was unreachable from the renderer.
+  onMeetingAudioError: (callback: (message: string) => void) => {
+    const subscription = (_: any, message: string) => callback(message)
+    ipcRenderer.on("meeting-audio-error", subscription)
+    return () => {
+      ipcRenderer.removeListener("meeting-audio-error", subscription)
+    }
+  },
+  onSystemAudioPermissionDenied: (callback: (message: string) => void) => {
+    const subscription = (_: any, message: string) => callback(message)
+    ipcRenderer.on("system-audio-permission-denied", subscription)
+    return () => {
+      ipcRenderer.removeListener("system-audio-permission-denied", subscription)
+    }
+  },
+  onSystemAudioRecovered: (callback: (channel: 'system' | 'mic') => void) => {
+    const subscription = (_e: Electron.IpcRendererEvent, channel?: 'system' | 'mic') => callback(channel ?? 'system')
+    ipcRenderer.on("system-audio-recovered", subscription)
+    return () => {
+      ipcRenderer.removeListener("system-audio-recovered", subscription)
+    }
+  },
+  onAudioCaptureFailed: (
+    callback: (payload: {
+      channel: 'system' | 'mic'
+      message: string
+      attempt: number
+      maxAttempts: number
+      terminal?: boolean
+      stuck?: boolean
+    }) => void,
+  ) => {
+    const subscription = (_: any, payload: any) => callback(payload)
+    ipcRenderer.on("audio-capture-failed", subscription)
+    return () => {
+      ipcRenderer.removeListener("audio-capture-failed", subscription)
+    }
+  },
+  onAudioLevel: (callback: (payload: { channel: 'mic' | 'system'; level: number }) => void) => {
+    const subscription = (_: any, payload: any) => callback(payload)
+    ipcRenderer.on("audio-level", subscription)
+    return () => {
+      ipcRenderer.removeListener("audio-level", subscription)
+    }
+  },
   onSuggestionGenerated: (callback: (data: { question: string; suggestion: string; confidence: number }) => void) => {
     const subscription = (_: any, data: any) => callback(data)
     ipcRenderer.on("suggestion-generated", subscription)
@@ -766,6 +874,12 @@ contextBridge.exposeInMainWorld("electronAPI", {
   getNativeAudioStatus: () => ipcRenderer.invoke("native-audio-status"),
   getInputDevices: () => ipcRenderer.invoke("get-input-devices"),
   getOutputDevices: () => ipcRenderer.invoke("get-output-devices"),
+  getPlatform: () => process.platform,
+  checkPermissions: () => ipcRenderer.invoke("check-permissions"),
+  requestPermission: (type: 'microphone' | 'screen') => ipcRenderer.invoke("request-permission", type),
+  openPermissionSettings: (pane?: 'microphone' | 'screen') => ipcRenderer.invoke("open-permission-settings", pane),
+  getSystemAudioPermissionWarning: () => ipcRenderer.invoke("get-system-audio-permission-warning"),
+  repairTccPermissions: () => ipcRenderer.invoke("repair-tcc-permissions"),
   setCompanyIntel: (intel: Record<string, any> | null) =>
     ipcRenderer.invoke('set-company-intel', intel),
   setRecognitionLanguage: (key: string) => ipcRenderer.invoke("set-recognition-language", key),
@@ -804,11 +918,13 @@ contextBridge.exposeInMainWorld("electronAPI", {
   endMeeting: (meetingTypes?: ('discovery' | 'demo' | 'negotiation')[], tenantId?: string | null) => ipcRenderer.invoke("end-meeting", { meetingTypes, tenantId }),
   finalizeMicSTT: () => ipcRenderer.invoke("finalize-mic-stt"),
   getRecentMeetings: () => ipcRenderer.invoke("get-recent-meetings"),
+  getRecentMeetingsLocal: () => ipcRenderer.invoke("get-recent-meetings-local"),
   getMeetingDetails: (id: string) => ipcRenderer.invoke("get-meeting-details", id),
+  getMeetingDetailsLocal: (id: string) => ipcRenderer.invoke("get-meeting-details-local", id),
   updateMeetingTitle: (id: string, title: string) => ipcRenderer.invoke("update-meeting-title", { id, title }),
   updateMeetingSummary: (id: string, updates: any) => ipcRenderer.invoke("update-meeting-summary", { id, updates }),
   regenerateMeetingSummary: (id: string) => ipcRenderer.invoke('regenerate-meeting-summary', { id }),
-  uploadTranscript: (text: string, title?: string, meetingTypes?: ('discovery' | 'demo' | 'negotiation')[]) => ipcRenderer.invoke('upload-transcript', { text, title, meetingTypes }),
+  uploadTranscript: (text: string, title?: string, meetingTypes?: ('discovery' | 'demo' | 'negotiation')[], tenantId?: string | null) => ipcRenderer.invoke('upload-transcript', { text, title, meetingTypes, tenantId }),
   deleteMeeting: (id: string) => ipcRenderer.invoke("delete-meeting", id),
 
   onMeetingsUpdated: (callback: () => void) => {
@@ -819,11 +935,19 @@ contextBridge.exposeInMainWorld("electronAPI", {
     }
   },
 
-  updateLiveAnalysis: (data: LiveAnalysisData) => ipcRenderer.invoke("update-live-analysis", data),
-  setLiveAnalysisInFlight: (inFlight: boolean) => ipcRenderer.invoke("set-live-analysis-in-flight", inFlight),
+  updateLiveAnalysis: (data: LiveAnalysisData, generation?: number | null) =>
+    ipcRenderer.invoke("update-live-analysis", data, generation ?? null),
+  setLiveAnalysisInFlight: (inFlight: boolean, generation?: number | null) =>
+    ipcRenderer.invoke("set-live-analysis-in-flight", inFlight, generation ?? null),
+  getMeetingGeneration: () => ipcRenderer.invoke("get-meeting-generation"),
 
   // Window Mode
-  setWindowMode: (mode: 'launcher' | 'overlay', inactive?: boolean) => ipcRenderer.invoke("set-window-mode", mode, inactive),
+  setWindowMode: (mode: 'launcher' | 'overlay', inactive?: boolean, freshMeetingStart?: boolean) =>
+    ipcRenderer.invoke("set-window-mode", mode, inactive, freshMeetingStart),
+
+  // Announced by the overlay renderer once it has mounted and subscribed, so
+  // main can hold off sending `session-reset` until someone is listening.
+  overlayReady: () => ipcRenderer.invoke("overlay:ready"),
 
   // Intelligence Mode Events
   onIntelligenceAssistUpdate: (callback: (data: { insight: string }) => void) => {
@@ -931,8 +1055,10 @@ contextBridge.exposeInMainWorld("electronAPI", {
       ipcRenderer.removeListener("intelligence-error", subscription)
     }
   },
-  onSessionReset: (callback: () => void) => {
-    const subscription = () => callback()
+  // The payload carries the new meeting generation. Existing callers that take
+  // no argument keep working unchanged.
+  onSessionReset: (callback: (payload?: { meetingGeneration?: number }) => void) => {
+    const subscription = (_event: any, payload?: { meetingGeneration?: number }) => callback(payload)
     ipcRenderer.on("session-reset", subscription)
     return () => {
       ipcRenderer.removeListener("session-reset", subscription)
@@ -1007,13 +1133,27 @@ contextBridge.exposeInMainWorld("electronAPI", {
   openMailto: (params: { to: string; subject: string; body: string }) => ipcRenderer.invoke('open-mailto', params),
 
   // Audio Test
-  startAudioTest: (deviceId?: string) => ipcRenderer.invoke('start-audio-test', deviceId),
+  startAudioTest: (deviceId?: string, outputDeviceId?: string) => ipcRenderer.invoke('start-audio-test', deviceId, outputDeviceId),
   stopAudioTest: () => ipcRenderer.invoke('stop-audio-test'),
   onAudioTestLevel: (callback: (level: number) => void) => {
     const subscription = (_: any, level: number) => callback(level)
     ipcRenderer.on('audio-test-level', subscription)
     return () => {
       ipcRenderer.removeListener('audio-test-level', subscription)
+    }
+  },
+  onAudioTestSystemLevel: (callback: (level: number) => void) => {
+    const subscription = (_: any, level: number) => callback(level)
+    ipcRenderer.on('audio-test-system-level', subscription)
+    return () => {
+      ipcRenderer.removeListener('audio-test-system-level', subscription)
+    }
+  },
+  onAudioTestSystemError: (callback: (errorMessage: string) => void) => {
+    const subscription = (_: any, errorMessage: string) => callback(errorMessage)
+    ipcRenderer.on('audio-test-system-error', subscription)
+    return () => {
+      ipcRenderer.removeListener('audio-test-system-error', subscription)
     }
   },
 
@@ -1087,6 +1227,31 @@ contextBridge.exposeInMainWorld("electronAPI", {
   getCalendarStatus: () => ipcRenderer.invoke('get-calendar-status'),
   getUpcomingEvents: () => ipcRenderer.invoke('get-upcoming-events'),
   calendarRefresh: () => ipcRenderer.invoke('calendar-refresh'),
+
+  // Meeting reminder popup (floating card window)
+  meetingPopupReady: () => ipcRenderer.invoke('meeting-popup:ready'),
+  onMeetingPopupAutoStart: (callback: (data: { autoStartAt: number }) => void) => {
+    const sub = (_event: any, data: { autoStartAt: number }) => callback(data);
+    ipcRenderer.on('meeting-popup:auto-start', sub);
+    return () => { ipcRenderer.removeListener('meeting-popup:auto-start', sub); };
+  },
+  getAutoStartMeetings: () => ipcRenderer.invoke('get-auto-start-meetings'),
+  setAutoStartMeetings: (enabled: boolean) => ipcRenderer.invoke('set-auto-start-meetings', enabled),
+  onAutoStartMeetingsChanged: (callback: (enabled: boolean) => void) => {
+    const sub = (_event: any, enabled: boolean) => callback(enabled);
+    ipcRenderer.on('auto-start-meetings-changed', sub);
+    return () => { ipcRenderer.removeListener('auto-start-meetings-changed', sub); };
+  },
+  meetingPopupTakeNotes: () => ipcRenderer.invoke('meeting-popup:take-notes'),
+  meetingPopupJoin: () => ipcRenderer.invoke('meeting-popup:join'),
+  meetingPopupDismiss: () => ipcRenderer.invoke('meeting-popup:dismiss'),
+  meetingPopupDebugShow: (overrides?: any) => ipcRenderer.invoke('meeting-popup:debug-show', overrides),
+  onMeetingPopupEvent: (callback: (event: CalendarEvent) => void) => {
+    const sub = (_event: any, data: CalendarEvent) => callback(data);
+    ipcRenderer.on('meeting-popup:event', sub);
+    return () => { ipcRenderer.removeListener('meeting-popup:event', sub); };
+  },
+
   streamSalesBrief: (eventData: any) => ipcRenderer.invoke('stream-sales-brief', eventData),
   onSalesBriefStreamToken: (callback: (token: string) => void) => {
     const sub = (_event: any, token: string) => callback(token);
@@ -1305,6 +1470,18 @@ contextBridge.exposeInMainWorld("electronAPI", {
   companyGetContext: () => ipcRenderer.invoke('company:getContext'),
   companySaveContext: (data: any) => ipcRenderer.invoke('company:saveContext', data),
   companyUploadAsset: (type: string, filePath: string) => ipcRenderer.invoke('company:uploadAsset', type, filePath),
+  companyUploadAssetToBackend: (payload: {
+    filePath: string; assetId: string; label: string; assetType: string; tenantId: string | null;
+  }) => ipcRenderer.invoke('company:uploadAssetToBackend', payload),
+  // Upload progress for the backend commit (main → renderer events). Mirrors
+  // onDownloadProgress: returns an unsubscribe function.
+  onCompanyUploadProgress: (callback: (p: { assetId: string; phase: 'uploading' | 'processing'; percent: number }) => void) => {
+    const subscription = (_: any, p: any) => callback(p)
+    ipcRenderer.on("company:upload-progress", subscription)
+    return () => {
+      ipcRenderer.removeListener("company:upload-progress", subscription)
+    }
+  },
   companyDeleteAsset: (assetId: string) => ipcRenderer.invoke('company:deleteAsset', assetId),
   companySyncAsset: (assetId: string) => ipcRenderer.invoke('company:syncAsset', assetId),
   companySetPersonaEngine: (enabled: boolean) => ipcRenderer.invoke('company:setPersonaEngine', enabled),
@@ -1324,6 +1501,8 @@ contextBridge.exposeInMainWorld("electronAPI", {
   // Dynamic Model Discovery
   fetchProviderModels: (provider: 'gemini' | 'groq' | 'openai' | 'claude', apiKey: string) => ipcRenderer.invoke('fetch-provider-models', provider, apiKey),
   setProviderPreferredModel: (provider: 'gemini' | 'groq' | 'openai' | 'claude', modelId: string) => ipcRenderer.invoke('set-provider-preferred-model', provider, modelId),
+  // Live model-catalog snapshot (live /models cache > seeds) for dropdowns
+  getModelCatalog: () => ipcRenderer.invoke('model-catalog:get'),
 
   // License Management
   licenseActivate: (key: string) => ipcRenderer.invoke('license:activate', key),
@@ -1365,11 +1544,22 @@ contextBridge.exposeInMainWorld("electronAPI", {
   authClear: () => ipcRenderer.invoke('auth:clear'),
   authGetState: () => ipcRenderer.invoke('auth:get-state'),
   authGetPersistedRefreshToken: () => ipcRenderer.invoke('auth:get-persisted-refresh-token'),
+  authListAccounts: () => ipcRenderer.invoke('auth:list-accounts'),
+  authGetRefreshTokenForUid: (uid: string) => ipcRenderer.invoke('auth:get-refresh-token-for-uid', uid),
+  authRemoveAccount: (uid: string) => ipcRenderer.invoke('auth:remove-account', uid),
   onAuthStateChanged: (callback: (state: any) => void) => {
     const subscription = (_: Electron.IpcRendererEvent, state: any) => callback(state)
     ipcRenderer.on('auth:state-changed', subscription)
     return () => {
       ipcRenderer.removeListener('auth:state-changed', subscription)
+    }
+  },
+
+  onGoogleSignInPopupClosed: (callback: () => void) => {
+    const subscription = () => callback()
+    ipcRenderer.on('google-signin-popup-closed', subscription)
+    return () => {
+      ipcRenderer.removeListener('google-signin-popup-closed', subscription)
     }
   },
 

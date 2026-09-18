@@ -55,7 +55,10 @@ export interface CaptureOptions {
 
 /**
  * JSON snapshot of the echo pipeline (mode, gate state, ERLE, delay,
- * alignment, mute ratio). Poll from JS for field telemetry / debug panel.
+ * alignment, mute ratio) plus the mic gate's own counters
+ * (`mic_gate_*`: how many frames each stage of the RMS+VAD gate rejected, and
+ * the peak RMS the microphone actually produced). Poll from JS for field
+ * telemetry / debug panel.
  */
 export declare function getAudioPipelineStats(): string
 
@@ -72,13 +75,23 @@ export declare function getInputDevices(): Array<AudioDeviceInfo>
  * treats the level as 0. Bump when the native audio contract changes in a way
  * JS needs to detect at runtime.
  *   0 (implicit, older binaries) — no continuity guarantee.
- *   2 — the capture layer keeps the sample ring continuously fed during silence:
- *       the macOS tap streams silence natively, and the Windows WASAPI loopback
- *       synthesizes silence during render-idle instead of stalling. Lets the JS
- *       capture-stall watchdog relax to a long last-resort window rather than
- *       aggressively restarting capture (which interrupts the STT stream).
+ *   2 — the capture layer keeps the sample ring continuously fed during silence,
+ *       on every platform that has a system-audio backend:
+ *         * macOS — the process tap streams silence natively.
+ *         * Windows — the WASAPI loopback synthesizes silence during render-idle
+ *           instead of stalling.
+ *         * Linux — a sink's monitor source emits silence while the sink is idle,
+ *           and speaker/linux.rs tops the ring up itself if the sink suspends.
+ *       Lets the JS capture-stall watchdog relax to a long last-resort window
+ *       rather than aggressively restarting capture (which interrupts STT).
  */
 export declare function getNativeFeatureLevel(): number
+
+/**
+ * Effective state, including the env override — so JS can report what the
+ * native layer is actually doing rather than what it last asked for.
+ */
+export declare function getNativeVerboseLogging(): boolean
 
 export declare function getOutputDevices(): Array<AudioDeviceInfo>
 
@@ -94,6 +107,21 @@ export interface OutputRouteJs {
   transport: string
   name: string
 }
+
+/**
+ * Registers the JS-side sink for `native_log!`. Safe to call again (e.g. a
+ * dev hot-reload) — replaces whatever was previously registered.
+ */
+export declare function setNativeLogCallback(callback: ((err: Error | null, arg: string) => any)): void
+
+/**
+ * Mirror the JS `verboseLogging` flag into the native module.
+ *
+ * Called from `setVerboseLoggingFlag` (electron/verboseLog.ts) so the two
+ * halves are the same switch. Older .node binaries lack this export, so the JS
+ * side treats it as optional.
+ */
+export declare function setNativeVerboseLogging(enabled: boolean): void
 
 /**
  * Validates a Gumroad license key by calling the Gumroad Licenses API.

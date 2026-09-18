@@ -1,10 +1,48 @@
-import { LiveAnalysisData } from "@/types";
+import { LiveAnalysisData, CalendarEvent } from "@/types";
+
+/** macOS TCC state for a single privacy service. */
+export type PermissionStatus = 'granted' | 'denied' | 'not-determined' | 'restricted'
+
+/**
+ * An audio capture problem the user should know about.
+ *
+ * `stuck` means the capture is producing nothing useful (no chunks, or nothing
+ * but silence) — the signature of a revoked Screen Recording grant, which macOS
+ * reports by zero-filling rather than by erroring. `terminal` means recovery was
+ * attempted and abandoned. Transient failures set neither and should not be
+ * surfaced, since recovery usually succeeds within a second or two.
+ */
+export interface AudioCaptureFailure {
+  channel: 'system' | 'mic'
+  message: string
+  attempt: number
+  maxAttempts: number
+  terminal?: boolean
+  stuck?: boolean
+}
+
+/**
+ * Every credential the app resolves through CredentialsManager. Mirrors
+ * `ApiKeyProvider` in electron/services/CredentialsManager.ts — keep in sync.
+ */
+export type ApiKeyProviderName =
+  | 'gemini' | 'groq' | 'openai' | 'claude'
+  | 'deepgram' | 'tavily'
+  | 'groq_stt' | 'openai_stt' | 'elevenlabs'
+  | 'azure' | 'ibmwatson' | 'soniox'
+
+/**
+ * Which tier the key in use came from: the user's own saved key, the shared
+ * default fetched from the backend, a key bundled in the build's .env, or none.
+ */
+export type ApiKeySourceName = 'user' | 'backend_fallback' | 'env_bundled' | 'none'
 
 export interface ElectronAPI {
   // ===========================================================================
   // Window Management
   // ===========================================================================
   updateContentDimensions: (dimensions: { width: number; height: number }) => Promise<void>
+  getGpuPerformanceStatus: () => Promise<{ isLowPowerGpu: boolean; raw: Record<string, string> | null }>
   onToggleExpand: (callback: () => void) => () => void
   onResetView: (callback: () => void) => () => void
   moveWindowLeft: () => Promise<void>
@@ -19,12 +57,16 @@ export interface ElectronAPI {
   onEnsureExpanded: (callback: () => void) => () => void
   quitApp: () => Promise<void>
   hardRefresh: () => Promise<{ success: boolean }>
+  /** Force-reloads EVERY window (account switch), not just the caller's. */
+  reloadAllWindows: () => Promise<{ success: boolean }>
   toggleWindow: () => Promise<void>
   showWindow: (inactive?: boolean) => Promise<void>
   hideWindow: () => Promise<void>
   showOverlay: () => Promise<void>
   hideOverlay: () => Promise<void>
-  setWindowMode: (mode: 'launcher' | 'overlay', inactive?: boolean) => Promise<void>
+  setWindowMode: (mode: 'launcher' | 'overlay', inactive?: boolean, freshMeetingStart?: boolean) => Promise<void>
+  /** Overlay renderer handshake — tells main its IPC listeners are live. */
+  overlayReady: () => Promise<{ success: boolean }>
   openExternal: (url: string) => Promise<void>
   openKnownFolder: (key: 'downloads' | 'applications') => Promise<void>
   getArch: () => Promise<string>
@@ -42,9 +84,8 @@ export interface ElectronAPI {
     stack?: string
     componentStack?: string | null
   }) => Promise<{ success: boolean; error?: string }>
-  confirmDeleteAccount: () => Promise<{ confirmed: boolean }>,
-  resetAppData: () => Promise<{ success: boolean; cancelled?: boolean; error?: string }>
-  wipeLocalAccountData: () => Promise<{ success: boolean; error?: string }>
+  confirmDeleteAccount: (scope?: 'supabase-delete' | 'firebase-delete' | 'local' | 'full-delete') => Promise<{ confirmed: boolean }>,
+  wipeLocalAccountData: (scope?: 'local' | 'full-delete') => Promise<{ success: boolean; error?: string }>
   onScreenshotTaken: (callback: (data: { path: string; preview: string }) => void) => () => void
   onScreenshotAttached: (callback: (data: { path: string; preview: string }) => void) => () => void
   onCaptureAndProcess: (callback: (data: { path: string; preview: string }) => void) => () => void
@@ -83,6 +124,8 @@ export interface ElectronAPI {
   // ===========================================================================
   setOpenAtLogin: (open: boolean) => Promise<{ success: boolean; error?: string }>
   getOpenAtLogin: () => Promise<boolean>
+  /** Native cross-screen toast (same pipeline as pause/resume/summary toasts). */
+  showAppNotification: (title: string, message: string) => Promise<{ success: boolean; error?: string }>
   getVerboseLogging: () => Promise<boolean>
   setVerboseLogging: (enabled: boolean) => Promise<{ success: boolean }>
   flushDatabase: () => Promise<{ success: boolean }>
@@ -104,7 +147,7 @@ export interface ElectronAPI {
   getAvailableOllamaModels: () => Promise<string[]>
   switchToOllama: (model?: string, url?: string) => Promise<{ success: boolean; error?: string }>
   switchToGemini: (apiKey?: string, modelId?: string) => Promise<{ success: boolean; error?: string }>
-  testLlmConnection: (provider: 'gemini' | 'groq' | 'openai' | 'claude', apiKey?: string) => Promise<{ success: boolean; error?: string }>
+  testLlmConnection: (provider: 'gemini' | 'groq' | 'openai' | 'claude', apiKey?: string, modelId?: string) => Promise<{ success: boolean; error?: string }>
   selectServiceAccount: () => Promise<{ success: boolean; path?: string; cancelled?: boolean; error?: string }>
   getDefaultModel: () => Promise<{ model: string }>
   setModel: (modelId: string) => Promise<{ success: boolean; error?: string }>
@@ -116,6 +159,9 @@ export interface ElectronAPI {
   onOllamaPullComplete: (callback: () => void) => () => void
   fetchProviderModels: (provider: 'gemini' | 'groq' | 'openai' | 'claude', apiKey: string) => Promise<{ success: boolean; models?: { id: string, label: string }[]; error?: string }>
   setProviderPreferredModel: (provider: 'gemini' | 'groq' | 'openai' | 'claude', modelId: string) => Promise<void>
+  /** Live model-catalog snapshot: current ids per provider (live /models
+   *  cache when fresh, seed fallback otherwise) + the resolved auto model. */
+  getModelCatalog: () => Promise<{ providers: Record<string, { ids: string[]; source: 'live' | 'seed'; fetchedAt: number | null; auto: string }> }>
   getGroqFastTextMode: () => Promise<{ enabled: boolean }>
   setGroqFastTextMode: (enabled: boolean) => Promise<{ success: boolean; error?: string }>
   onGroqFastTextChanged: (callback: (enabled: boolean) => void) => () => void
@@ -148,6 +194,15 @@ export interface ElectronAPI {
     groqSttModel?: string
     hasSonioxKey?: boolean
     hasTavilyKey?: boolean
+    /**
+     * Which tier each key resolved from. `hasXKey` only says a key is usable;
+     * this says whose it is, so Settings can show "using the shared default"
+     * instead of pretending the field is the user's own. Absent when the main
+     * process failed to read the store at all.
+     */
+    keySources?: Record<ApiKeyProviderName, ApiKeySourceName>
+    /** 'failed' means the stored credentials file could not be decrypted. */
+    credentialStoreState?: 'ok' | 'failed'
     geminiPreferredModel?: string
     groqPreferredModel?: string
     openaiPreferredModel?: string
@@ -178,6 +233,8 @@ export interface ElectronAPI {
   testSttConnection: (provider: 'groq' | 'openai' | 'deepgram' | 'elevenlabs' | 'azure' | 'ibmwatson' | 'soniox', apiKey: string, region?: string) => Promise<{ success: boolean; error?: string }>
   setDiarizeClientEnabled: (enabled: boolean) => Promise<{ success: boolean; error?: string }>
   getDiarizeClientEnabled: () => Promise<boolean>
+  setTranslateTranscripts: (enabled: boolean) => Promise<{ success: boolean; error?: string }>
+  getTranslateTranscripts: () => Promise<boolean>
   getAudioPipelineStats: () => Promise<Record<string, unknown> | null>
   getOutputRoute: () => Promise<{ kind: string; transport: string; name: string } | null>
   getRecognitionLanguages: () => Promise<Record<string, any>>
@@ -191,6 +248,32 @@ export interface ElectronAPI {
   onSpeakerNamesResolved: (callback: (names: { user: string; client: string }) => void) => () => void
   getInputDevices: () => Promise<Array<{ id: string; name: string }>>
   getOutputDevices: () => Promise<Array<{ id: string; name: string }>>
+  getPlatform: () => string
+  checkPermissions: () => Promise<{
+    microphone: boolean
+    systemAudio: boolean
+    screenCapture: boolean
+    /** Full TCC tri-state, so the UI can tell "never asked" from "denied". */
+    microphoneStatus: PermissionStatus
+    screenStatus: PermissionStatus
+    platform: string
+  }>
+  requestPermission: (type: 'microphone' | 'screen') => Promise<boolean>
+  /** `pane` picks which macOS Privacy pane to open. Defaults to microphone. */
+  openPermissionSettings: (pane?: 'microphone' | 'screen') => Promise<void>
+  /**
+   * Replays the last screen-capture warning latched by the main process. Needed
+   * because the startup denial check can fire before a renderer has subscribed.
+   */
+  getSystemAudioPermissionWarning: () => Promise<string | null>
+  /** Runs `tccutil reset` for Microphone + ScreenCapture. macOS only. */
+  repairTccPermissions: () => Promise<{
+    ok: boolean
+    bundleId?: string
+    results?: Array<{ service: string; ok: boolean; output: string }>
+    promptRelaunch?: boolean
+    message: string
+  }>
 
   // ===========================================================================
   // Native Audio Service Events
@@ -200,10 +283,20 @@ export interface ElectronAPI {
   onNativeAudioConnected: (callback: () => void) => () => void
   onNativeAudioDisconnected: (callback: () => void) => () => void
   onMeetingAudioWarning: (callback: (message: string) => void) => () => void
+  onMeetingAudioError: (callback: (message: string) => void) => () => void
+  onSystemAudioPermissionDenied: (callback: (message: string) => void) => () => void
+  /** Fires when a previously reported system-audio problem has resolved. */
+  onSystemAudioRecovered: (callback: (channel: 'system' | 'mic') => void) => () => void
+  onAudioCaptureFailed: (callback: (payload: AudioCaptureFailure) => void) => () => void
+  /** Live per-chunk RMS level (0–1) from the meeting's real mic/system-audio captures — drives the dock wave indicator. */
+  onAudioLevel: (callback: (payload: { channel: 'mic' | 'system'; level: number }) => void) => () => void
   getNativeAudioStatus: () => Promise<{ connected: boolean }>
-  startAudioTest: (deviceId?: string) => Promise<{ success: boolean }>
+  startAudioTest: (deviceId?: string, outputDeviceId?: string) => Promise<{ success: boolean }>
   stopAudioTest: () => Promise<{ success: boolean }>
   onAudioTestLevel: (callback: (level: number) => void) => () => void
+  /** System-audio probe, emitted during the same startAudioTest lifecycle. */
+  onAudioTestSystemLevel: (callback: (level: number) => void) => () => void
+  onAudioTestSystemError: (callback: (errorMessage: string) => void) => () => void
 
   // ===========================================================================
   // Intelligence Mode (Assist / What-To-Say / Clarify / Hints / Recap / etc.)
@@ -260,11 +353,17 @@ export interface ElectronAPI {
   onIntelligenceManualResult: (callback: (data: { answer: string; question: string }) => void) => () => void
   onIntelligenceModeChanged: (callback: (data: { mode: string }) => void) => () => void
   onIntelligenceError: (callback: (data: { error: string, mode: string }) => void) => () => void
-  onSessionReset: (callback: () => void) => () => void
+  onSessionReset: (callback: (payload?: { meetingGeneration?: number }) => void) => () => void
 
   // Live Analysis
-  updateLiveAnalysis: (data: LiveAnalysisData) => Promise<{ success: boolean }>
-  setLiveAnalysisInFlight: (inFlight: boolean) => Promise<{ success: boolean }>;
+  //
+  // `generation` is the meeting generation the result was computed for. Main
+  // uses it to route a run that resolved after its meeting ended onto that
+  // meeting's row instead of into the call that is live now — the guard behind
+  // "meeting A's analysis must never appear in meeting B".
+  updateLiveAnalysis: (data: LiveAnalysisData, generation?: number | null) => Promise<{ success: boolean }>
+  setLiveAnalysisInFlight: (inFlight: boolean, generation?: number | null) => Promise<{ success: boolean }>;
+  getMeetingGeneration: () => Promise<{ success: boolean; data?: number }>;
 
   // ===========================================================================
   // Chat (Gemini Streaming)
@@ -279,6 +378,9 @@ export interface ElectronAPI {
   // Meeting Lifecycle
   // ===========================================================================
   getMeetingActive: () => Promise<boolean>
+  /** Metadata (title, calendarEvent, attendees, etc.) the current meeting was
+   * started with — null outside an active meeting or for a manual start. */
+  getMeetingMetadata: () => Promise<{ calendarEvent?: CalendarEvent } & Record<string, any> | null>
   onMeetingStateChanged: (callback: (data: { isActive: boolean }) => void) => () => void
   onLiveCallEnded: (callback: (data: { meetingId: string }) => void) => () => void
   onMeetingCompleted: (callback: () => void) => () => void
@@ -294,11 +396,29 @@ export interface ElectronAPI {
   endMeeting: (meetingTypes?: ('discovery' | 'demo' | 'negotiation')[], tenantId?: string | null) => Promise<{ success: boolean; meetingId?: string | null; error?: string }>
   finalizeMicSTT: () => Promise<void>
   getRecentMeetings: () => Promise<Array<{ id: string; title: string; date: string; duration: string; summary: string; isProcessed?: boolean }>>
+  /**
+   * Local SQLite only — never the Supabase mirror (which `getRecentMeetings`
+   * prefers when a cloud session exists). The row for a just-ended call is
+   * written to SQLite synchronously, so this is the only read that can surface
+   * the processing card without waiting on the mirror. Use it for
+   * immediately-after-a-call reads; use getRecentMeetings for full history.
+   */
+  getRecentMeetingsLocal: () => Promise<Array<{ id: string; title: string; date: string; duration: string; summary: string; isProcessed?: boolean }>>
   getMeetingDetails: (id: string) => Promise<any>
+  /**
+   * Local SQLite only — never the Supabase mirror (which `getMeetingDetails`
+   * prefers when a cloud session exists). The placeholder row saved the moment
+   * a call ends already carries the full transcript in SQLite, while the cloud
+   * copy only exists once the async mirror queue drains. Use it for
+   * immediately-after-a-call detail reads (e.g. the Transcript tab of a
+   * meeting still in its "Processing..." state); use getMeetingDetails for
+   * everything else.
+   */
+  getMeetingDetailsLocal: (id: string) => Promise<any>
   updateMeetingTitle: (id: string, title: string) => Promise<boolean>
   updateMeetingSummary: (id: string, updates: { overview?: string, actionItems?: string[], keyPoints?: string[], actionItemsTitle?: string, keyPointsTitle?: string }) => Promise<boolean>
   regenerateMeetingSummary: (id: string) => Promise<any>
-  uploadTranscript: (text: string, title?: string, meetingTypes?: ('discovery' | 'demo' | 'negotiation')[]) => Promise<{ success: boolean; meetingId?: string; error?: string }>
+  uploadTranscript: (text: string, title?: string, meetingTypes?: ('discovery' | 'demo' | 'negotiation')[], tenantId?: string | null) => Promise<{ success: boolean; meetingId?: string; error?: string }>
   deleteMeeting: (id: string) => Promise<boolean>
   onMeetingsUpdated: (callback: () => void) => () => void
 
@@ -354,7 +474,15 @@ export interface ElectronAPI {
       mimeType: string
     }
     error?: string
-  }>
+  }>,
+  companyUploadAssetToBackend: (payload: {
+    filePath: string;
+    assetId: string;
+    label: string;
+    assetType: string;
+    tenantId: string | null;
+  }) => Promise<{ status: string; chunks?: number; error?: string; statusCode?: number; code?: string }>;
+  onCompanyUploadProgress: (callback: (p: { assetId: string; phase: 'uploading' | 'processing'; percent: number }) => void) => () => void;
   companyDeleteAsset: (assetId: string) => Promise<{ success: boolean; error?: string }>
   companySyncAsset: (assetId: string) => Promise<{ success: boolean; status?: string; error?: string }>
   companySetPersonaEngine: (enabled: boolean) => Promise<{ success: boolean; error?: string }>
@@ -393,6 +521,24 @@ export interface ElectronAPI {
   onSalesBriefStreamToken: (callback: (token: string) => void) => () => void
   onSalesBriefStreamDone: (callback: () => void) => () => void
   onSalesBriefStreamError: (callback: (error: string) => void) => () => void
+
+  // ===========================================================================
+  // Meeting reminder popup (floating card window)
+  // ===========================================================================
+  /** Handshake from the popup renderer — resolves with the event to display. */
+  meetingPopupReady: () => Promise<{ event: CalendarEvent | null; autoStartAt: number | null }>
+  /** Pushed when the auto-start countdown is armed; carries its deadline (epoch ms). */
+  onMeetingPopupAutoStart: (callback: (data: { autoStartAt: number }) => void) => () => void
+  /** Start recording automatically when a calendar meeting begins. Defaults to true. */
+  getAutoStartMeetings: () => Promise<boolean>
+  setAutoStartMeetings: (enabled: boolean) => Promise<{ success: boolean }>
+  onAutoStartMeetingsChanged: (callback: (enabled: boolean) => void) => () => void
+  meetingPopupTakeNotes: () => Promise<{ success: boolean }>
+  meetingPopupJoin: () => Promise<{ success: boolean; error?: string }>
+  meetingPopupDismiss: () => Promise<{ success: boolean }>
+  /** Dev-only: show the card with a synthetic event. */
+  meetingPopupDebugShow: (overrides?: Partial<CalendarEvent>) => Promise<{ success: boolean; error?: string }>
+  onMeetingPopupEvent: (callback: (event: CalendarEvent) => void) => () => void
 
   // ===========================================================================
   // Theme
@@ -461,9 +607,22 @@ export interface ElectronAPI {
     photoURL?: string | null
   }>
   authGetPersistedRefreshToken: () => Promise<{ refreshToken: string | null; uid: string | null }>
+  authGetPersistedRefreshToken: () => Promise<{ refreshToken: string | null; uid: string | null }>
+
+  // Multi-account (Switch Account) support
+  authListAccounts: () => Promise<Array<{
+    uid: string
+    email?: string
+    displayName?: string
+    photoURL?: string
+    isActive: boolean
+  }>>
+  authGetRefreshTokenForUid: (uid: string) => Promise<{ refreshToken: string | null; uid: string }>
+  authRemoveAccount: (uid: string) => Promise<{ success: boolean }>
   onAuthStateChanged: (
     callback: (state: { signedIn: boolean; uid?: string; email?: string | null; displayName?: string | null; photoURL?: string | null }) => void
   ) => () => void
+  onGoogleSignInPopupClosed: (callback: () => void) => () => void
 
   // ===========================================================================
   // Tenant ID (cross-window)

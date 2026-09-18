@@ -18,7 +18,7 @@ import { useTeamInvite, useOverlayOpacity, useAppLifecycleListeners, useMeetingS
 // features
 // ---------------------------------------------------------------------------
 import { ManagerDashboard } from "@/features/dashboard";
-import { InviteAccountMismatchBanner } from "@/features/tenant";
+import { InviteAccountMismatchBanner, TeamInviteNotification, InviteAcceptedNotifier } from "@/features/tenant";
 import { SettingsPopup, SettingsOverlay } from "@/features/settings"; // Keeping for legacy/specific window support if needed
 import { StartupSequence } from "@/features/onboarding";
 // import UpdateBanner from "../features/updates/UpdateBanner";
@@ -28,13 +28,15 @@ import { StartupSequence } from "@/features/onboarding";
 // ---------------------------------------------------------------------------
 import { ToastProvider, ToastViewport } from "@/features/ui/toast";
 import { ModelSelectorWindow, GodojoInterface, Launcher, ErrorBoundary } from "@/features/common";
-import { IncompatibleProviderBanner, AdCampaignToasters } from "@/features/common";
+import { IncompatibleProviderBanner, AdCampaignToasters, SystemAudioPermissionBanner, GhostGlowOverlay } from "@/features/common";
+import { AudioStatusTray } from "@/features/common";
 // import { SupportToaster } from "@/features/common";
 
 // ---------------------------------------------------------------------------
 // pages
 // ---------------------------------------------------------------------------
 import { EmailVerification, SignIn } from "@/pages";
+import { AuthToastHost } from "@/features/auth/AuthToastHost";
 
 // ---------------------------------------------------------------------------
 // premium
@@ -56,11 +58,33 @@ const App: React.FC = () => {
   // PostHog needs its own init() call per window.
   useEffect(() => {
     posthogAnalytics.initAnalytics();
+  }, []);
+
+  // `meeting-completed` is broadcast by the main process to EVERY open window
+  // (see electron/MeetingPersistence.ts) but is meant to count each saved
+  // meeting exactly once. Since every window runs its own posthog-js instance,
+  // tracking it in all of them multiplies the count by the number of live
+  // windows. Gate it to the single launcher window so it fires exactly once.
+  useEffect(() => {
+    if (!isLauncherWindow) return;
     const unsubscribeMeetingCompleted = window.electronAPI?.onMeetingCompleted?.(() => {
       posthogAnalytics.trackMeetingCompleted();
     });
     return () => unsubscribeMeetingCompleted?.();
-  }, []);
+  }, [isLauncherWindow]);
+
+  // Tell main this window's IPC listeners are live. `session-reset` — the
+  // floating dock's only "a call started" signal — is fire-and-forget, so a
+  // meeting started with no user interaction (the calendar reminder popup,
+  // which can recreate a destroyed overlay) would otherwise send it before
+  // anyone is subscribed and have it silently dropped. Runs after the
+  // dock's own subscriptions. React runs child effects before parent effects,
+  // so by the time this fires, GodojoInterface/useFloatingDock have already
+  // registered their `session-reset` listener.
+  useEffect(() => {
+    if (!isOverlayWindow) return;
+    window.electronAPI?.overlayReady?.();
+  }, [isOverlayWindow]);
 
   const FirebaseAuthStates = useFirebaseAuth(isLauncherWindow, isDefault, isOverlayWindow);
   const { authUser, authChecked, pendingVerificationUser, sessionExpiredMessage } = FirebaseAuthStates;
@@ -72,7 +96,7 @@ const App: React.FC = () => {
   const { hasProfile, isPremiumActive, setIsPremiumActive, isProcessingMeeting, setIsProcessingMeeting } = AppLifecycleStates;
   const { lastMeetingEndTime, appStartTime, ollamaPull, incompatibleWarning, dismissIncompatibleWarning, reindexIncompatibleMeetings } = AppLifecycleStates;
 
-  const { handleStartMeeting, handleEndMeeting } = useMeetingSession(tenantId, setIsProcessingMeeting);
+  const { handleStartMeeting, handleEndMeeting, showPermissionTray, setShowPermissionTray, proceedWithMeeting } = useMeetingSession(tenantId, setIsProcessingMeeting);
 
   // --- Local UI state ----------------------------------------------------
   const [showStartup, setShowStartup] = useState(true);
@@ -145,7 +169,7 @@ const App: React.FC = () => {
   if (isOverlayWindow) {
     return (
       <ErrorBoundary context="Overlay">
-        <div className="w-[550px] relative bg-transparent">
+        <div className="w-[430px] relative bg-transparent">
           <QueryClientProvider client={queryClient}>
             <ToastProvider>
               <div
@@ -154,6 +178,11 @@ const App: React.FC = () => {
                   transition: "background-color 75ms ease, border-color 75ms ease, box-shadow 75ms ease",
                 } as React.CSSProperties}
               >
+                {/* Permission warnings render above the meeting UI. The overlay
+                    window is created hidden and only appears once a meeting starts,
+                    so this is the first point at which an in-meeting denial can
+                    actually be seen. */}
+                <SystemAudioPermissionBanner />
                 <GodojoInterface onEndMeeting={handleEndMeeting} overlayOpacity={overlayOpacity} />
               </div>
               <ToastViewport />
@@ -169,6 +198,7 @@ const App: React.FC = () => {
   return (
     <ErrorBoundary context="Launcher">
       <div className="h-full min-h-0 w-full relative bg-[#000000]">
+        <AuthToastHost />
         {/* Auth gate: while we don't know yet, render nothing (avoids SignIn flash).
             Once known, if no user is signed in show the SignIn page instead of the
             launcher. The SignIn component triggers onIdTokenChanged on success, which
@@ -238,10 +268,11 @@ const App: React.FC = () => {
                             isAdmin
                               ? () => {
                                 setIsSettingsOpen(false); // switching to Dashboard closes Settings
-                                setIsManagerDashboardOpen((open) => !open); // toggle: click again to close
+                                setIsManagerDashboardOpen(true); // clicking Dashboard again keeps it open
                               }
                               : undefined
                           }
+                          onCloseManagerDashboard={() => setIsManagerDashboardOpen(false)}
                           onPageChange={setIsLauncherMainView}
                           ollamaPullStatus={ollamaPull.status}
                           ollamaPullPercent={ollamaPull.percent}
@@ -256,8 +287,31 @@ const App: React.FC = () => {
                         initialTab={settingsInitialTab}
                         deepLinkInviteToken={deepLinkInviteToken}
                         onDeepLinkTokenConsumed={clearDeepLinkInviteToken}
+                        tenantId={tenantId}
+                        isAdmin={isAdmin}
                       />
                       <ManagerDashboard isOpen={isManagerDashboardOpen} onClose={() => setIsManagerDashboardOpen(false)} />
+                      {/* Ghost Mode indicator — soft edge glow above every screen (Launcher /
+                          Settings / Dashboard) whenever the window is hidden from capture. */}
+                      <GhostGlowOverlay />
+                      {/* Audio status footer — rendered once at the App root (like the
+                          header) so it stays visible above every screen (Launcher /
+                          Settings / Dashboard), not just while the Launcher is mounted. */}
+                      <AudioStatusTray
+                        isVisible={showPermissionTray}
+                        onClose={() => setShowPermissionTray?.(false)}
+                        onAllGranted={proceedWithMeeting}
+                      />
+                      {/* Team-invite popup — watches GET /invitations/me at the
+                          app root so an invitation from a teammate/admin surfaces
+                          over EVERY launcher screen (list, meeting details,
+                          Settings, Dashboard, chat) instead of only when the
+                          Roles & Permissions tab happens to be opened. */}
+                      <TeamInviteNotification authUser={authUser} suppressed={!!deepLinkInviteToken} />
+                      {/* Mirror side: when someone accepts OUR team's invitation,
+                          notify the owner/admin — in-app toast + native cross-screen
+                          notification (same pipeline as Summary Ready). */}
+                      <InviteAcceptedNotifier tenant={tenant} isAdmin={isAdmin} />
                       <ToastViewport />
                     </ToastProvider>
                   </QueryClientProvider>

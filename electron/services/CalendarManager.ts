@@ -1,4 +1,4 @@
-import { app, safeStorage, shell, net } from 'electron';
+import { app, safeStorage, shell, net, BrowserWindow, screen } from 'electron';
 import axios from 'axios';
 import http from 'http';
 import url from 'url';
@@ -12,7 +12,27 @@ const GOOGLE_CLIENT_ID = process.env.GOOGLE_CLIENT_ID || "YOUR_CLIENT_ID_HERE";
 const GOOGLE_CLIENT_SECRET = process.env.GOOGLE_CLIENT_SECRET || "YOUR_CLIENT_SECRET_HERE";
 const REDIRECT_URI = "http://localhost:11111/auth/callback";
 const SCOPES = ["https://www.googleapis.com/auth/calendar.readonly"];
-const TOKEN_PATH = path.join(app.getPath('userData'), 'calendar_tokens.enc');
+
+// Per-app-user token file, mirroring CredentialsManager.credentialsPathForUid /
+// DatabaseManager.switchUser. A single shared `calendar_tokens.enc` meant
+// whichever account last connected Google Calendar stayed connected for
+// every subsequent signed-in user on this machine — "switch account" showed
+// the previous user's meetings because the token file (and this class's
+// in-memory token/connection state) was never scoped to a uid in the first
+// place.
+function tokenPathForUid(uid: string | null): string {
+    const safe = (uid ?? 'anon').replace(/[^A-Za-z0-9_-]/g, '') || 'anon';
+    return path.join(app.getPath('userData'), `calendar_tokens-${safe}.enc`);
+}
+
+/**
+ * How long before a reminder we ask main to pre-warm the floating popup
+ * window. Defined locally rather than imported from MeetingPopupWindowHelper
+ * on purpose: that module pulls in WindowHelper, which imports main.ts, and
+ * main.ts only require()s this file lazily. Importing it here would turn that
+ * into a module-load cycle for the sake of one number.
+ */
+const PREWARM_LEAD_MS = 30 * 1000;
 
 if (GOOGLE_CLIENT_ID === "YOUR_CLIENT_ID_HERE" || GOOGLE_CLIENT_SECRET === "YOUR_CLIENT_SECRET_HERE") {
     console.warn('[CalendarManager] Google OAuth credentials are using defaults. Calendar features will not work until valid credentials are provided via env vars.');
@@ -28,6 +48,8 @@ export interface CalendarEvent {
     attendees?: Array<{ email: string; name?: string; organizer?: boolean; self?: boolean }>;
     organizer?: string;
     description?: string;
+    /** Free-text location from the calendar entry, when the organizer set one. */
+    location?: string;
 }
 
 export class CalendarManager extends EventEmitter {
@@ -37,6 +59,8 @@ export class CalendarManager extends EventEmitter {
     private expiryDate: number | null = null;
     private isConnected: boolean = false;
     private updateInterval: NodeJS.Timeout | null = null;
+    private currentUid: string | null = null;
+    private tokenPath: string = tokenPathForUid(null);
 
     private constructor() {
         super();
@@ -54,12 +78,75 @@ export class CalendarManager extends EventEmitter {
         this.loadTokens();
     }
 
+    /**
+     * Re-point at the given user's calendar token file. Called from the
+     * AuthManager 'user-switched' handler (see ipcHandlers.ts), the same
+     * place DatabaseManager/CredentialsManager re-bind. Without this, this
+     * singleton (and its single global token file) kept serving whichever
+     * Google account was connected by the FIRST signed-in user, forever.
+     */
+    public switchUser(uid: string | null): void {
+        const nextPath = tokenPathForUid(uid);
+        if (nextPath === this.tokenPath) return; // already on this user's file
+
+        console.log(`[CalendarManager] Switching calendar scope: ${this.currentUid ?? 'anon'} -> ${uid ?? 'anon'}`);
+
+        this.reminderTimeouts.forEach(t => clearTimeout(t));
+        this.reminderTimeouts = [];
+
+        // Drop the previous account's in-memory tokens/events before loading
+        // the new user's file — loadTokens() only overwrites fields it finds,
+        // so a user with no calendar connected would otherwise keep seeing
+        // the last account's live token.
+        this.accessToken = null;
+        this.refreshToken = null;
+        this.expiryDate = null;
+        this.isConnected = false;
+
+        this.currentUid = uid;
+        this.tokenPath = nextPath;
+        this.loadTokens();
+
+        // Tell the UI to drop whatever it rendered under the old identity and
+        // re-fetch — connection status AND the event list both changed.
+        this.emit('connection-changed', this.isConnected);
+        this.emit('events-updated');
+    }
+
     // =========================================================================
     // Auth Flow
     // =========================================================================
 
     public async startAuthFlow(): Promise<void> {
         return new Promise((resolve, reject) => {
+            // Kept as a backstop for cases the window-close listener below
+            // can't catch (e.g. the consent page hangs, network stalls) —
+            // but the primary "user bailed" signal is now the auth window's
+            // 'closed' event, which fires immediately instead of waiting up
+            // to 3 minutes.
+            const AUTH_TIMEOUT_MS = 3 * 60 * 1000; // 3 minutes
+            let settled = false;
+            let authWindow: BrowserWindow | null = null;
+
+            const finish = (fn: () => void) => {
+                if (settled) return;
+                settled = true;
+                clearTimeout(timeoutTimer);
+                try { server.close(); } catch { /* already closed */ }
+                // Close the auth window ourselves on the success/error paths
+                // too, so it doesn't linger open after we've already
+                // resolved/rejected. Guarded by `settled` above, so this
+                // doesn't loop back into finish() via the 'closed' listener.
+                if (authWindow && !authWindow.isDestroyed()) {
+                    try { authWindow.close(); } catch { /* already closing */ }
+                }
+                fn();
+            };
+
+            const timeoutTimer = setTimeout(() => {
+                finish(() => reject(new Error('AUTH_TIMEOUT')));
+            }, AUTH_TIMEOUT_MS);
+
             // 1. Create Loopback Server
             const server = http.createServer(async (req, res) => {
                 try {
@@ -70,35 +157,101 @@ export class CalendarManager extends EventEmitter {
 
                         if (error) {
                             res.end('Authentication failed! You can close this window.');
-                            server.close();
-                            reject(new Error(error));
+                            finish(() => reject(new Error(error)));
                             return;
                         }
 
                         if (code) {
                             res.end('Authentication successful! You can close this window and return to Godojo.ai.');
-                            server.close();
+                            // Close the server before the (possibly slow) token
+                            // exchange, but don't resolve/reject yet — reuse
+                            // `finish` only once the exchange actually settles.
+                            try { server.close(); } catch { /* already closing */ }
 
                             // 2. Exchange code for tokens
-                            await this.exchangeCodeForToken(code);
-                            resolve();
+                            try {
+                                await this.exchangeCodeForToken(code);
+                                finish(() => resolve());
+                            } catch (exchangeErr) {
+                                finish(() => reject(exchangeErr));
+                            }
                         }
                     }
                 } catch (err) {
                     res.end('Authentication error.');
-                    server.close();
-                    reject(err);
+                    finish(() => reject(err));
                 }
             });
 
             server.listen(11111, () => {
-                // 3. Open Browser
+                // 3. Open the consent screen in an Electron-controlled window
+                // (not the system default browser via shell.openExternal) —
+                // this is what lets us detect the user closing it before
+                // finishing, and reset the UI immediately instead of relying
+                // on the 3-minute timeout above.
                 const authUrl = this.getAuthUrl();
-                shell.openExternal(authUrl);
+
+                // Center on whichever display the GoDojo window is currently
+                // on — same reasoning as the Google-sign-in popup in
+                // WindowHelper.ts: without explicit x/y, Electron always
+                // defaults to the primary display, so on a multi-monitor
+                // setup the popup opens on the laptop screen even when the
+                // app itself is on an external monitor.
+                const popupWidth = 520;
+                const popupHeight = 680;
+                let popupX: number | undefined;
+                let popupY: number | undefined;
+
+                try {
+                    const activeWindow = BrowserWindow.getFocusedWindow()
+                        ?? BrowserWindow.getAllWindows().find(w => !w.isDestroyed() && w.isVisible());
+                    if (activeWindow) {
+                        const bounds = activeWindow.getBounds();
+                        const centerX = bounds.x + Math.floor(bounds.width / 2);
+                        const centerY = bounds.y + Math.floor(bounds.height / 2);
+                        const { workArea } = screen.getDisplayNearestPoint({ x: centerX, y: centerY });
+                        popupX = workArea.x + Math.floor((workArea.width - popupWidth) / 2);
+                        popupY = workArea.y + Math.floor((workArea.height - popupHeight) / 2);
+                    }
+                } catch (e) {
+                    console.warn('[CalendarManager] Could not determine current display for auth popup:', e);
+                }
+
+                authWindow = new BrowserWindow({
+                    width: popupWidth,
+                    height: popupHeight,
+                    ...(popupX !== undefined && popupY !== undefined ? { x: popupX, y: popupY } : {}),
+                    title: 'Connect Google Calendar',
+                    webPreferences: { nodeIntegration: false, contextIsolation: true },
+                    // The main overlay/dock window runs at a high always-on-top
+                    // level (see WindowHelper.ts: 'floating' on macOS,
+                    // 'screen-saver' on Windows) so it stays visible over a
+                    // Zoom/Meet call. A plain BrowserWindow defaults to the
+                    // normal level, which sits BELOW that — so this popup was
+                    // opening behind the main window instead of in front of it.
+                    // Match its always-on-top level so it actually surfaces.
+                    alwaysOnTop: true,
+                });
+                if (process.platform === 'darwin') {
+                    authWindow.setAlwaysOnTop(true, 'floating');
+                } else {
+                    authWindow.setAlwaysOnTop(true, 'screen-saver');
+                }
+                authWindow.loadURL(authUrl);
+                authWindow.once('ready-to-show', () => {
+                    authWindow?.show();
+                    authWindow?.focus();
+                });
+                authWindow.on('closed', () => {
+                    authWindow = null;
+                    // If this fires after we've already resolved/rejected via
+                    // the callback route, `finish()` is a no-op (settled).
+                    finish(() => reject(new Error('AUTH_CANCELLED')));
+                });
             });
 
             server.on('error', (err) => {
-                reject(err);
+                finish(() => reject(err));
             });
         });
     }
@@ -109,8 +262,8 @@ export class CalendarManager extends EventEmitter {
         this.expiryDate = null;
         this.isConnected = false;
 
-        if (fs.existsSync(TOKEN_PATH)) {
-            fs.unlinkSync(TOKEN_PATH);
+        if (fs.existsSync(this.tokenPath)) {
+            fs.unlinkSync(this.tokenPath);
         }
 
         this.emit('connection-changed', false);
@@ -229,18 +382,18 @@ export class CalendarManager extends EventEmitter {
         });
 
         const encrypted = safeStorage.encryptString(data);
-        const tmpPath = TOKEN_PATH + '.tmp';
+        const tmpPath = this.tokenPath + '.tmp';
         fs.writeFileSync(tmpPath, encrypted);
-        fs.renameSync(tmpPath, TOKEN_PATH);
+        fs.renameSync(tmpPath, this.tokenPath);
     }
 
     private loadTokens() {
-        if (!fs.existsSync(TOKEN_PATH)) return;
+        if (!fs.existsSync(this.tokenPath)) return;
 
         try {
             if (!safeStorage.isEncryptionAvailable()) return;
 
-            const encrypted = fs.readFileSync(TOKEN_PATH);
+            const encrypted = fs.readFileSync(this.tokenPath);
             const decrypted = safeStorage.decryptString(encrypted);
             const data = JSON.parse(decrypted);
 
@@ -285,8 +438,18 @@ export class CalendarManager extends EventEmitter {
                 const delay = reminderTime - now;
                 // Only schedule if within next 24h (which fetch already limits)
                 if (delay < 24 * 60 * 60 * 1000) {
+                    // Pre-warm the floating popup window shortly before the
+                    // reminder so it appears instantly and still costs nothing
+                    // at rest — it is destroyed again once dismissed.
+                    const prewarmDelay = delay - PREWARM_LEAD_MS;
+                    if (prewarmDelay > 0) {
+                        this.reminderTimeouts.push(setTimeout(() => {
+                            this.emit('reminder-prewarm', event);
+                        }, prewarmDelay));
+                    }
+
                     const timeout = setTimeout(() => {
-                        this.showNotification(event);
+                        this.showReminder(event);
                     }, delay);
                     this.reminderTimeouts.push(timeout);
                 }
@@ -294,33 +457,18 @@ export class CalendarManager extends EventEmitter {
         });
     }
 
-    private showNotification(event: CalendarEvent) {
-        const { Notification } = require('electron');
-        const notif = new Notification({
-            title: 'Meeting starting soon',
-            body: `"${event.title}" starts in 2 minutes. Start Godojo.ai?`,
-            actions: [
-                { type: 'button', text: 'Start Meeting' },
-                { type: 'button', text: 'Dismiss' }
-            ],
-            sound: true
-        });
-
-        notif.on('action', (event_unused: any, index: number) => {
-            if (index === 0) {
-                // Start Meeting
-                // We need to tell the main process to open window and start meeting
-                // Ideally we emit an event that AppState listens to
-                this.emit('start-meeting-requested', event);
-            }
-        });
-
-        notif.on('click', () => {
-            // Just open window
-            this.emit('open-requested');
-        });
-
-        notif.show();
+    /**
+     * Announce that a meeting is about to start.
+     *
+     * This used to raise a native OS Notification directly. It now emits
+     * `reminder-due` and lets main.ts decide how to present it — normally the
+     * custom floating popup window (MeetingPopupWindowHelper), falling back to
+     * the native notification if the popup can't be shown. Keeping the
+     * decision in main.ts is what lets Google and Zoom reminders share one
+     * presentation path.
+     */
+    private showReminder(event: CalendarEvent) {
+        this.emit('reminder-due', event);
     }
 
     // =========================================================================
@@ -383,7 +531,7 @@ export class CalendarManager extends EventEmitter {
                     timeMax: tomorrow.toISOString(),
                     singleEvents: true,
                     orderBy: 'startTime',
-                    fields: 'items(id,summary,start,end,hangoutLink,description,attendees,organizer,creator)'
+                    fields: 'items(id,summary,start,end,hangoutLink,description,location,attendees,organizer,creator)'
                 }
             });
 
@@ -454,6 +602,7 @@ export class CalendarManager extends EventEmitter {
                         attendees,
                         organizer: item.organizer?.email || '',
                         description: item.description || undefined,
+                        location: item.location || undefined,
                     };
                 });
 

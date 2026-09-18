@@ -10,6 +10,21 @@ export interface AppSettings {
     disguiseMode?: 'terminal' | 'settings' | 'activity' | 'none';
     verboseLogging?: boolean;
     actionButtonMode?: 'recap' | 'brainstorm';
+    /**
+     * Start recording automatically when a calendar meeting is about to begin,
+     * unless the user cancels the countdown on the reminder card.
+     * Defaults to ON — read it as `get('autoStartMeetings') ?? true`.
+     */
+    autoStartMeetings?: boolean;
+    // One-time marker: whether the production "open at login" default has
+    // already been applied. Prevents re-forcing openAtLogin=true on every
+    // launch after a user has deliberately turned it off — see main.ts.
+    openAtLoginDefaultApplied?: boolean;
+    // Last login-item state WE registered (user toggle or the production
+    // default). getLoginItemSettings() can misreport this in packaged builds,
+    // so the Settings toggle reads this instead — see the get-open-at-login
+    // handler in ipcHandlers.ts.
+    openAtLogin?: boolean;
 }
 
 export class SettingsManager {

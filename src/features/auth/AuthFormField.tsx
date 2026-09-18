@@ -39,12 +39,13 @@ interface AuthFormFieldProps {
     isLight: boolean;
     animationIndex: number;
     hasAnimated: boolean;
+    required?: boolean;
     onChange: (e: React.ChangeEvent<HTMLInputElement>) => void;
     onKeyDown: (e: React.KeyboardEvent) => void;
 }
 
 /** A single icon-prefixed text/email/tel input, animated in on first mount. */
-export const AuthFormField: React.FC<AuthFormFieldProps> = ({ icon: Icon, type, name, value, placeholder, isLight, animationIndex, hasAnimated, onChange, onKeyDown }) => (
+export const AuthFormField: React.FC<AuthFormFieldProps> = ({ icon: Icon, type, name, value, placeholder, isLight, animationIndex, hasAnimated, required, onChange, onKeyDown }) => (
 
     <motion.div
         custom={animationIndex}
@@ -58,6 +59,7 @@ export const AuthFormField: React.FC<AuthFormFieldProps> = ({ icon: Icon, type, 
             type={type}
             name={name}
             value={value}
+            required={required}
             onKeyDown={onKeyDown}
             onChange={onChange}
             placeholder={placeholder}

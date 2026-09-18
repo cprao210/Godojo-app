@@ -4,7 +4,7 @@
 extern crate napi_derive;
 
 use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::Duration;
 
@@ -18,6 +18,7 @@ pub mod audio_config;
 pub mod echo_align;
 pub mod echo_control;
 pub mod license;
+pub mod log_gate;
 pub mod microphone;
 pub mod output_route;
 pub mod silence_suppression;
@@ -33,6 +34,61 @@ use crate::webrtc_aec::{ApmCapture, ApmRender};
 // MicrophoneCapture owns an ApmCapture (per-thread capture accumulator).
 static WEBRTC_APM: Lazy<std::sync::Arc<crate::apm_shim::Processor>> =
     Lazy::new(webrtc_aec::create_processor);
+
+// ============================================================================
+// Native → JS diagnostic log bridge
+// ============================================================================
+//
+// Raw stdout/stderr from this addon (println!/eprintln!) is NOT captured by
+// electron/main.ts's console.log override in a packaged build, so any
+// diagnostic printed only that way is invisible in natively_debug.log — the
+// one thing a field report actually contains. `native_log!` prints exactly as
+// before (dev console / `npm run app:dev` is unaffected) and additionally
+// forwards the same formatted line to a JS callback, when one is registered,
+// so it lands in natively_debug.log like every other log line.
+//
+// Registered once by nativeModuleLoader right after the addon loads. Absent
+// (e.g. a native unit-test binary, or before the JS side has wired it up),
+// native_log! silently behaves like plain println! — audio capture must never
+// depend on a JS logger being attached.
+static NATIVE_LOG_CALLBACK: Lazy<Mutex<Option<ThreadsafeFunction<String>>>> =
+    Lazy::new(|| Mutex::new(None));
+
+/// Registers the JS-side sink for `native_log!`. Safe to call again (e.g. a
+/// dev hot-reload) — replaces whatever was previously registered.
+#[napi]
+pub fn set_native_log_callback(callback: ThreadsafeFunction<String>) {
+    if let Ok(mut slot) = NATIVE_LOG_CALLBACK.lock() {
+        *slot = Some(callback);
+    }
+}
+
+/// Forwards one already-formatted line to the registered JS callback, if any.
+/// NonBlocking so a slow or absent JS sink never stalls the calling thread
+/// (some call sites are on the real-time audio path's setup/teardown edges).
+#[doc(hidden)]
+pub fn __forward_native_log(line: String) {
+    if let Ok(slot) = NATIVE_LOG_CALLBACK.lock() {
+        if let Some(tsfn) = slot.as_ref() {
+            tsfn.call(Ok(line), ThreadsafeFunctionCallMode::NonBlocking);
+        }
+    }
+}
+
+/// Prints a line exactly like `println!`, and additionally forwards the same
+/// formatted line to the JS logger if `set_native_log_callback` has been
+/// called — so it reaches `natively_debug.log` in a packaged build, where raw
+/// native stdout does not. Use for anything a field report needs to show
+/// (backend init, format negotiation, permission failures); the per-frame DSP
+/// loop should keep using plain println!/eprintln! (or nothing).
+#[macro_export]
+macro_rules! native_log {
+    ($($arg:tt)*) => {{
+        let line = format!($($arg)*);
+        println!("{}", line);
+        $crate::__forward_native_log(line);
+    }};
+}
 
 // Echo gating policy lives in echo_control (mode flag, headphone bypass,
 // convergence-tracked soft gate). Legacy statics SPEAKER_ACTIVE /
@@ -106,6 +162,29 @@ pub struct SystemAudioCapture {
     device_id: Option<String>,
 }
 
+/// Platform-specific tail appended to a total system-audio init failure. This
+/// string reaches the user through the JS error path, so it names the one thing
+/// they can actually do about it.
+///
+/// It must NOT contain "not supported on this platform" — SystemAudioCapture.ts
+/// treats that phrase as permanent and stops retrying the lane.
+fn system_audio_failure_hint() -> &'static str {
+    #[cfg(target_os = "macos")]
+    {
+        " Grant Screen Recording permission in System Settings > Privacy & Security."
+    }
+    #[cfg(target_os = "linux")]
+    {
+        " Make sure a PulseAudio-compatible sound server is running \
+         (`systemctl --user status pipewire-pulse` or `pulseaudio --check`); \
+         install pipewire-pulse or pulseaudio if neither is present."
+    }
+    #[cfg(not(any(target_os = "macos", target_os = "linux")))]
+    {
+        " Check that an output device is present and enabled."
+    }
+}
+
 #[napi]
 impl SystemAudioCapture {
     #[napi(constructor)]
@@ -171,8 +250,9 @@ impl SystemAudioCapture {
                             // Propagate the error to JS so the UI can show a permission prompt.
                             tsfn.call(
                                 Err(napi::Error::from_reason(format!(
-                                    "System audio capture failed: {}. On macOS, grant Screen Recording permission in System Settings > Privacy & Security.",
-                                    e2
+                                    "System audio capture failed: {}.{}",
+                                    e2,
+                                    system_audio_failure_hint()
                                 ))),
                                 ThreadsafeFunctionCallMode::NonBlocking,
                             );
@@ -530,6 +610,12 @@ impl MicrophoneCapture {
             .take_consumer()
             .ok_or_else(|| napi::Error::from_reason("Failed to get consumer"))?;
 
+        // CPAL reports device loss ONLY through the stream error callback, and that
+        // callback cannot reach JS by itself. The DSP thread polls this slot so an
+        // unplugged mic becomes an immediate restart instead of a channel that goes
+        // quiet and has to wait out the JS stall watchdog.
+        let error_slot = input_ref.error_slot();
+
         // Create resampler for mic (same as SystemAudio path — always output 16kHz)
         let mut resampler = if native_rate != 16000 {
             match Resampler::new(native_rate as f64) {
@@ -637,6 +723,18 @@ impl MicrophoneCapture {
 
             loop {
                 if stop_signal.load(Ordering::Relaxed) {
+                    break;
+                }
+
+                // Device died (unplugged headset, driver reset, format change).
+                // Hand it to JS as a capture error: the supervisor there re-opens
+                // against whatever input device is current now.
+                if let Some(err) = error_slot.lock().ok().and_then(|mut slot| slot.take()) {
+                    eprintln!("[MicrophoneCapture] {} — exiting DSP thread", err);
+                    tsfn.call(
+                        Err(napi::Error::from_reason(err)),
+                        ThreadsafeFunctionCallMode::NonBlocking,
+                    );
                     break;
                 }
 
@@ -841,7 +939,10 @@ pub fn get_output_route() -> OutputRouteJs {
 }
 
 /// JSON snapshot of the echo pipeline (mode, gate state, ERLE, delay,
-/// alignment, mute ratio). Poll from JS for field telemetry / debug panel.
+/// alignment, mute ratio) plus the mic gate's own counters
+/// (`mic_gate_*`: how many frames each stage of the RMS+VAD gate rejected, and
+/// the peak RMS the microphone actually produced). Poll from JS for field
+/// telemetry / debug panel.
 #[napi]
 pub fn get_audio_pipeline_stats() -> String {
     echo_control::pipeline_stats_json(&WEBRTC_APM)
@@ -851,12 +952,43 @@ pub fn get_audio_pipeline_stats() -> String {
 /// treats the level as 0. Bump when the native audio contract changes in a way
 /// JS needs to detect at runtime.
 ///   0 (implicit, older binaries) — no continuity guarantee.
-///   2 — the capture layer keeps the sample ring continuously fed during silence:
-///       the macOS tap streams silence natively, and the Windows WASAPI loopback
-///       synthesizes silence during render-idle instead of stalling. Lets the JS
-///       capture-stall watchdog relax to a long last-resort window rather than
-///       aggressively restarting capture (which interrupts the STT stream).
+///   2 — the capture layer keeps the sample ring continuously fed during silence,
+///       on every platform that has a system-audio backend:
+///         * macOS — the process tap streams silence natively.
+///         * Windows — the WASAPI loopback synthesizes silence during render-idle
+///           instead of stalling.
+///         * Linux — a sink's monitor source emits silence while the sink is idle,
+///           and speaker/linux.rs tops the ring up itself if the sink suspends.
+///       Lets the JS capture-stall watchdog relax to a long last-resort window
+///       rather than aggressively restarting capture (which interrupts STT).
 #[napi]
 pub fn get_native_feature_level() -> u32 {
     2
+}
+#[cfg(test)]
+mod native_log_tests {
+    use super::__forward_native_log;
+
+    // ThreadsafeFunction construction requires a live napi::Env (a real JS
+    // runtime), which `cargo test` does not have — so these tests cover the
+    // one part that runs identically with or without a registered callback:
+    // native_log! and the forwarding path must never panic or block when
+    // nothing is registered, since audio capture must not depend on a JS
+    // logger being attached (dev binaries, native-only test runs, or a
+    // binary loaded before nativeModuleLoader wires the callback up).
+
+    #[test]
+    fn forward_native_log_is_a_no_op_with_no_callback_registered() {
+        // No set_native_log_callback call has happened in this test binary —
+        // this must not panic.
+        __forward_native_log("test line, no sink registered".to_string());
+    }
+
+    #[test]
+    fn native_log_macro_prints_and_forwards_without_panicking() {
+        // Exercises the macro's println! + forward_native_log expansion with
+        // format-string arguments, matching real call sites like
+        // `native_log!("[CoreAudioTap] Format: {}Hz, {}ch", rate, channels)`.
+        native_log!("[Test] {}Hz, {}ch", 48_000, 1);
+    }
 }

@@ -5,10 +5,11 @@
 // useModelSelectorWindow.
 
 import { useCallback, useEffect, useMemo, useState } from "react";
-import { STANDARD_CLOUD_MODELS, prettifyModelId } from "@/../utils/modelUtils";
+import { STANDARD_CLOUD_MODELS, AUTO_MODEL_OPTIONS, prettifyModelId } from "@/../utils/modelUtils";
 import { validateCurl } from "@/lib/curl-validator";
 import { AIProviderCustomProvider } from "@/types";
 import { settingsToast } from "@/lib/settingsToastBus";
+import type { ApiKeySourceName } from "@/electron";
 
 export type StandardProviderId = "gemini" | "groq" | "openai" | "claude";
 export type OllamaStatus = "checking" | "detected" | "not-found" | "fixing";
@@ -66,6 +67,10 @@ function useStandardProviders() {
     const [testStatus, setTestStatus] = useState<Record<string, ConnectionTestStatus>>({});
     const [testError, setTestError] = useState<Record<string, string>>({});
     const [preferredModels, setPreferredModels] = useState<Record<string, string>>({});
+    // Which tier each key came from. hasStoredKey only says "a key is usable";
+    // this distinguishes the user's own key from the shared default, so the card
+    // can offer to override instead of implying the field is already theirs.
+    const [keySources, setKeySources] = useState<Record<string, ApiKeySourceName>>({});
 
     const setApiKeyValue = useCallback((provider: StandardProviderId, value: string) => {
         setApiKeys((prev) => ({ ...prev, [provider]: value }));
@@ -81,12 +86,17 @@ function useStandardProviders() {
         const creds = await window.electronAPI?.getStoredCredentials?.();
         if (!creds) return;
 
+        const sources = creds.keySources ?? {};
+        // Stays "a key is usable from some tier" — this gates the default-model
+        // dropdown and Test Connection, and a user on the shared default must
+        // keep both. `keySources` carries the user-vs-default distinction.
         setHasStoredKey({
             gemini: creds.hasGeminiKey,
             groq: creds.hasGroqKey,
             openai: creds.hasOpenaiKey,
             claude: creds.hasClaudeKey,
         });
+        setKeySources(sources as Record<string, ApiKeySourceName>);
 
         const pm: Record<string, string> = {};
         if (creds.geminiPreferredModel) pm.gemini = creds.geminiPreferredModel;
@@ -97,8 +107,10 @@ function useStandardProviders() {
     }, []);
 
     const handleSaveKey = useCallback(async (provider: StandardProviderId) => {
-        const key = apiKeys[provider];
-        if (!key.trim()) return;
+        // Trim here as well as in the main process: a key pasted with a trailing
+        // newline used to be stored verbatim and rejected by the provider.
+        const key = apiKeys[provider].trim();
+        if (!key) return;
 
         setSavingStatus((prev) => ({ ...prev, [provider]: true }));
         try {
@@ -106,6 +118,7 @@ function useStandardProviders() {
             if (result && result.success) {
                 setSavedStatus((prev) => ({ ...prev, [provider]: true }));
                 setHasStoredKey((prev) => ({ ...prev, [provider]: true }));
+                setKeySources((prev) => ({ ...prev, [provider]: "user" }));
                 setApiKeyValue(provider, "");
                 setTimeout(() => setSavedStatus((prev) => ({ ...prev, [provider]: false })), 2000);
 
@@ -128,13 +141,16 @@ function useStandardProviders() {
             if (result && result.success) {
                 setHasStoredKey((prev) => ({ ...prev, [provider]: false }));
                 setApiKeyValue(provider, "");
+                // Re-read rather than assuming 'none': removing a user key usually
+                // falls back to the shared default, and the card should say so.
+                await loadStandardProviders();
             }
         } catch (e) {
             console.error(`Failed to remove ${provider} key:`, e);
         }
-    }, [setApiKeyValue]);
+    }, [setApiKeyValue, loadStandardProviders]);
 
-    const handleTestConnection = useCallback(async (provider: StandardProviderId) => {
+    const handleTestConnection = useCallback(async (provider: StandardProviderId, modelId?: string) => {
         const key = apiKeys[provider];
         // Allow testing if a key is typed OR one is already stored.
         if (!key.trim() && !hasStoredKey[provider]) return;
@@ -144,7 +160,7 @@ function useStandardProviders() {
 
         try {
             // @ts-ignore
-            const result = await window.electronAPI.testLlmConnection(provider, key);
+            const result = await window.electronAPI.testLlmConnection(provider, key, modelId);
             if (result.success) {
                 setTestStatus((prev) => ({ ...prev, [provider]: "success" }));
                 setTimeout(() => setTestStatus((prev) => ({ ...prev, [provider]: "idle" })), 3000);
@@ -170,6 +186,7 @@ function useStandardProviders() {
         savedStatus,
         savingStatus,
         hasStoredKey,
+        keySources,
         testStatus,
         testError,
         preferredModels,
@@ -374,7 +391,7 @@ function useOllamaProviders() {
 // Default model + Fast Response Mode
 // ============================================================
 function useDefaultModelSettings(hasGroqKey: boolean) {
-    const [defaultModel, setDefaultModel] = useState<string>("gemini-3.1-flash-lite-preview");
+    const [defaultModel, setDefaultModel] = useState<string>("gemini-3.1-flash-lite");
     const [fastResponseMode, setFastResponseMode] = useState(false);
 
     const loadDefaultModelSettings = useCallback(async () => {
@@ -469,6 +486,10 @@ export function useAIProvidersSettings() {
 
         for (const [prov, cfg] of Object.entries(STANDARD_CLOUD_MODELS)) {
             if (!standard.hasStoredKey[prov]) continue;
+            // "Auto" first: resolves to the provider's current model at call
+            // time — the set-and-forget choice that survives deprecations.
+            const auto = AUTO_MODEL_OPTIONS[prov];
+            if (auto) opts.push({ id: auto.id, name: auto.name });
             cfg.ids.forEach((id, i) => opts.push({ id, name: cfg.names[i] }));
             const pm = standard.preferredModels[prov];
             if (pm && !cfg.ids.includes(pm)) {

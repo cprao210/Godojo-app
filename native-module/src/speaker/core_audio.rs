@@ -1,3 +1,4 @@
+use crate::native_log;
 use anyhow::Result;
 use ca::aggregate_device_keys as agg_keys;
 use cidre::{arc, av, cat, cf, core_audio as ca, ns, os};
@@ -38,7 +39,7 @@ impl SpeakerInput {
         };
 
         let output_uid = output_device.uid()?;
-        println!("[CoreAudioTap] Target device UID: {}", output_uid);
+        native_log!("[CoreAudioTap] Target device UID: {}", output_uid);
 
         // 2. Create global tap
         let sub_device = cf::DictionaryOf::with_keys_values(
@@ -48,7 +49,7 @@ impl SpeakerInput {
 
         let tap_desc = ca::TapDesc::with_mono_global_tap_excluding_processes(&ns::Array::new());
         let tap = tap_desc.create_process_tap()?;
-        println!("[CoreAudioTap] Tap created: {:?}", tap.uid());
+        native_log!("[CoreAudioTap] Tap created: {:?}", tap.uid());
 
         let sub_tap = cf::DictionaryOf::with_keys_values(
             &[ca::sub_device_keys::uid()],
@@ -92,7 +93,7 @@ impl SpeakerInput {
             .map_err(|_| anyhow::anyhow!("Failed to get ASBD from tap"))?;
         let format = av::AudioFormat::with_asbd(&asbd).unwrap();
         let channels = asbd.channels_per_frame;
-        println!(
+        native_log!(
             "[CoreAudioTap] Format: {}Hz, {}ch",
             asbd.sample_rate, channels
         );
@@ -114,7 +115,7 @@ impl SpeakerInput {
 
         let proc_id = agg_device.create_io_proc_id(proc, Some(&mut *ctx))?;
         let started_device = ca::device_start(agg_device, Some(proc_id))?;
-        println!("[CoreAudioTap] Aggregate device started successfully");
+        native_log!("[CoreAudioTap] Aggregate device started successfully");
 
         // We now return the fully started device inside Ok.
         // If anything above fails, it yields an Err(), triggering SCK fallback smoothly!
