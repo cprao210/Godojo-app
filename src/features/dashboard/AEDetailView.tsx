@@ -43,8 +43,8 @@ export const AeDetailView: React.FC<AeDetailViewProps> = ({ ae, tenantId, onBack
 
     const AeDetailsStates = useAeDetail({ ae, tenantId });
 
-    const { isLoadingDetail, detailError, displayName, displayRole, displayCalls, displayScore } = AeDetailsStates;
-    const { dimensions, strengthsAndGaps, recentCalls, pagedCalls, callsPage, setCallsPage, callsTotalPages, callsRangeStart, callsRangeEnd } = AeDetailsStates;
+    const { isLoadingDetail, isPaging, detailError, displayName, displayRole, displayCalls, displayScore } = AeDetailsStates;
+    const { dimensions, strengthsAndGaps, recentCalls, pagedCalls, callsPage, setCallsPage, callsTotalPages, callsRangeStart, callsRangeEnd, callsTotal } = AeDetailsStates;
     const { selectedMeeting, setSelectedMeeting, handleSelectCall } = AeDetailsStates;
 
     const cardCls = isLight ? 'bg-white border-slate-200' : 'bg-[#141820] border-border-subtle';
@@ -177,8 +177,9 @@ export const AeDetailView: React.FC<AeDetailViewProps> = ({ ae, tenantId, onBack
                                                 totalPages={callsTotalPages}
                                                 rangeStart={callsRangeStart}
                                                 rangeEnd={callsRangeEnd}
-                                                total={recentCalls.length}
+                                                total={callsTotal}
                                                 isLight={isLight}
+                                                isPaging={isPaging}
                                                 onPageChange={setCallsPage}
                                             />
                                         </>

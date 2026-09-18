@@ -238,10 +238,22 @@ export const RecentCallsList: React.FC<{ calls: RecentCall[]; isLight: boolean; 
 );
 
 // ─── Recent calls pagination footer ──────────────────────────────────────────
-// Same page-number-buttons pattern as MembersTable's footer, adapted for a
-// client-side slice (the AE detail endpoint returns the whole recent_calls
-// array in one response, so there's no separate page fetch to trigger here —
-// `onPageChange` just moves which slice of the already-loaded list is shown).
+// Same page-number-buttons pattern as MembersTable's footer, but fed by the
+// server-side pagination of GET /tenants/:tenant_id/members/:user_id — each
+// page change fires a fresh fetch (useAeDetail owns that), so `isPaging` dims
+// the controls while a page request is in flight. Page numbers are windowed
+// around the current page (the call total is unbounded now, so rendering one
+// button per page would overflow the card).
+const MAX_VISIBLE_PAGES = 5;
+
+function visiblePageRange(page: number, totalPages: number): number[] {
+    const span = Math.min(MAX_VISIBLE_PAGES, totalPages);
+    let start = Math.max(1, page - Math.floor(span / 2));
+    const end = Math.min(totalPages, start + span - 1);
+    start = Math.max(1, end - span + 1);
+    return Array.from({ length: end - start + 1 }, (_, i) => start + i);
+}
+
 export const RecentCallsPagination: React.FC<{
     page: number;
     totalPages: number;
@@ -249,12 +261,16 @@ export const RecentCallsPagination: React.FC<{
     rangeEnd: number;
     total: number;
     isLight: boolean;
+    isPaging?: boolean;
     onPageChange: (page: number) => void;
-}> = ({ page, totalPages, rangeStart, rangeEnd, total, isLight, onPageChange }) => {
+}> = ({ page, totalPages, rangeStart, rangeEnd, total, isLight, isPaging, onPageChange }) => {
     if (total === 0) return null;
 
+    const pages = visiblePageRange(page, totalPages);
+    const navButtonCls = 'w-7 h-7 rounded-lg border border-border-subtle flex items-center justify-center text-text-tertiary disabled:opacity-40 hover:text-text-primary transition-colors';
+
     return (
-        <div className={`flex items-center justify-between pt-3 mt-1 border-t ${isLight ? 'border-slate-100' : 'border-border-subtle'}`}>
+        <div className={`flex items-center justify-between pt-3 mt-1 border-t ${isLight ? 'border-slate-100' : 'border-border-subtle'} ${isPaging ? 'opacity-50 pointer-events-none transition-opacity' : 'transition-opacity'}`}>
             <span className="text-xs text-text-tertiary">
                 Showing {rangeStart} to {rangeEnd} of {total} meetings
             </span>
@@ -263,12 +279,13 @@ export const RecentCallsPagination: React.FC<{
                     <button
                         onClick={() => onPageChange(Math.max(1, page - 1))}
                         disabled={page <= 1}
-                        className="w-7 h-7 rounded-lg border border-border-subtle flex items-center justify-center text-text-tertiary disabled:opacity-40 hover:text-text-primary transition-colors"
+                        className={navButtonCls}
                         aria-label="Previous page"
                     >
                         <ChevronLeft size={14} />
                     </button>
-                    {Array.from({ length: totalPages }, (_, i) => i + 1).map((n) => (
+                    {pages[0] > 1 && <span className="text-xs text-text-tertiary px-0.5">…</span>}
+                    {pages.map((n) => (
                         <button
                             key={n}
                             onClick={() => onPageChange(n)}
@@ -280,10 +297,11 @@ export const RecentCallsPagination: React.FC<{
                             {n}
                         </button>
                     ))}
+                    {pages[pages.length - 1] < totalPages && <span className="text-xs text-text-tertiary px-0.5">…</span>}
                     <button
                         onClick={() => onPageChange(Math.min(totalPages, page + 1))}
                         disabled={page >= totalPages}
-                        className="w-7 h-7 rounded-lg border border-border-subtle flex items-center justify-center text-text-tertiary disabled:opacity-40 hover:text-text-primary transition-colors"
+                        className={navButtonCls}
                         aria-label="Next page"
                     >
                         <ChevronRight size={14} />
@@ -291,5 +309,5 @@ export const RecentCallsPagination: React.FC<{
                 </div>
             )}
         </div>
-    );
+    )
 };

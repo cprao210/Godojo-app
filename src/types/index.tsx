@@ -1356,10 +1356,15 @@ export interface MemberDetailRecentCall {
 
 export interface MemberDetailStrength { title: string; description: string; frequency: string; }
 
+export interface MemberDetailPagination {
+  offset: number; limit: number; has_more: boolean;
+}
+
 export interface MemberDetail {
   user_id: string; name: string; image: string | null; role: TenantRole;
   calls_total: number; avg_score: number; radar_scores: MemberDetailRadarScores;
   weakest_area: string | null; recent_calls: MemberDetailRecentCall[]; strengths: MemberDetailStrength[];
+  pagination: MemberDetailPagination;
 }
 
 export interface MemberSuspended {

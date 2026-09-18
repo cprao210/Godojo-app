@@ -20,10 +20,11 @@ import {
     MemberDetailRecentCall,
 } from "@/types";
 
-// How many of the AE's meetings are shown per page in the "Recent calls"
-// list on their profile. Pagination here is client-side, over whatever
-// `recent_calls` the member-detail endpoint returns — see the note on
-// `useAeDetail` below.
+// How many of the AE's meetings the backend returns per page of "Recent
+// calls". Pagination is server-side: each page change triggers a fresh GET
+// with a new meeting_offset (the AE detail route speaks raw offset/limit,
+// unlike listMembers' page/limit). The response carries calls_total +
+// pagination.has_more so the footer can render "x to y of N".
 export const AE_CALLS_PAGE_SIZE = 10;
 
 // ─── Dimension metadata (icon/color per radar_scores key) ──────────────────
@@ -100,38 +101,68 @@ interface UseAeDetailArgs {
 }
 
 export function useAeDetail({ ae, tenantId }: UseAeDetailArgs) {
+    // ── "Recent calls" pagination (server-side) ──────────────────────────────
+    // Page 1 doubles as the initial detail fetch; changing the page re-runs
+    // the same GET with a shifted meeting_offset. The gauge/strengths cards
+    // only need page 1's aggregate data, and since those aggregates are
+    // all-time on the backend, every page returns identical values for them —
+    // we simply stop re-rendering them from a stale page.
+    const [callsPage, setCallsPage] = useState(1);
     // ── Detail fetch (GET /tenants/:tenant_id/members/:user_id) ─────────────
     const [detail, setDetail] = useState<MemberDetail | null>(null);
     const [isLoadingDetail, setIsLoadingDetail] = useState(false);
+    // Distinguishes "first load for this AE" (skeletons) from "paging to
+    // another page of calls" (keep the old rows visible, just dimmed).
+    const [isPaging, setIsPaging] = useState(false);
     const [detailError, setDetailError] = useState<string | null>(null);
+
+    // Opening a different AE (or closing the panel) resets both the cached
+    // detail and the page cursor — otherwise the new AE would inherit the
+    // previous one's offset and could land past their last page.
+    useEffect(() => {
+        setCallsPage(1);
+        setDetail(null);
+        setDetailError(null);
+    }, [ae?.userId, tenantId]);
 
     useEffect(() => {
         if (!ae || !tenantId) {
             setDetail(null);
             setDetailError(null);
+            setIsPaging(false);
             return;
         }
         let cancelled = false;
-        setIsLoadingDetail(true);
+        // First paint for this AE gets skeletons; page flips keep the
+        // previous page's rows on screen instead.
+        setIsPaging(detail !== null);
+        if (detail === null) setIsLoadingDetail(true);
         setDetailError(null);
-        setDetail(null);
         tenantsApi
-            .getMember(tenantId, ae.userId)
+            .getMember(tenantId, ae.userId, {
+                meetingOffset: (callsPage - 1) * AE_CALLS_PAGE_SIZE,
+                meetingLimit: AE_CALLS_PAGE_SIZE,
+            })
             .then((data) => {
-                if (!cancelled) setDetail(data);
+                if (cancelled) return;
+                setDetail(data);
+                setIsLoadingDetail(false);
+                setIsPaging(false);
             })
             .catch((err: unknown) => {
                 if (cancelled) return;
                 setDetailError(err instanceof ApiError ? err.message : "Failed to load AE detail.");
-            })
-            .finally(() => {
-                if (!cancelled) setIsLoadingDetail(false);
+                setIsLoadingDetail(false);
+                setIsPaging(false);
             });
         return () => {
             cancelled = true;
         };
-        // Re-fetch whenever a different AE (or tenant) is opened.
-    }, [ae?.userId, tenantId]);
+        // Re-fetch whenever a different AE (or tenant) is opened, or the
+        // requested page of calls changes. `detail` is read (not tracked) to
+        // decide skeleton vs soft-refresh, hence the eslint disable.
+        // eslint-disable-next-line react-hooks/exhaustive-deps
+    }, [ae?.userId, tenantId, callsPage]);
 
     // Prefer live detail once it's back; fall back to the dashboard summary
     // (name/role/calls/score) so the header paints instantly on open.
@@ -145,29 +176,20 @@ export function useAeDetail({ ae, tenantId }: UseAeDetailArgs) {
     const recentCalls = detail ? recentCallsFrom(detail) : [];
     const sparkline = recentCalls.map((c) => c.score).reverse();
 
-    // ── "Recent calls" pagination (client-side, over the array the member-
-    // detail endpoint already returned) ──────────────────────────────────
-    // NOTE: the backend's GET /tenants/:tenant_id/members/:user_id route
-    // doesn't currently take a page/limit for recent_calls (unlike
-    // listMembers, which does) — it hands back whatever it considers
-    // "recent". This paginates that array so the admin can page through it
-    // instead of scrolling one long list; if the backend caps recent_calls
-    // itself (e.g. only ever sends the last N), this can't surface calls
-    // beyond that cap until the route grows its own pagination.
-    const [callsPage, setCallsPage] = useState(1);
-
-    // Re-fetching a different AE, or the list getting shorter (e.g. a
-    // narrower detail response) than the page we were on — snap back to
-    // page 1 rather than landing on an empty page.
-    useEffect(() => {
-        setCallsPage(1);
-    }, [ae?.userId]);
-
-    const callsTotalPages = Math.max(1, Math.ceil(recentCalls.length / AE_CALLS_PAGE_SIZE));
+    // ── Pagination math, straight from the server's numbers ──────────────────
+    // calls_total is the AE's all-time meeting count, so totalPages is stable
+    // across pages; has_more from the current response is the tie-breaker if
+    // a meeting lands between two page fetches.
+    const callsTotal = detail?.calls_total ?? 0;
+    const offset = detail?.pagination.offset ?? (callsPage - 1) * AE_CALLS_PAGE_SIZE;
+    const hasMore = detail?.pagination.has_more ?? false;
+    const callsTotalPages = Math.max(1, Math.ceil(callsTotal / AE_CALLS_PAGE_SIZE));
+    // A narrower response (calls deleted mid-session) can leave callsPage
+    // pointing past the last page — clamp so the footer never claims an
+    // impossible range.
     const safeCallsPage = Math.min(callsPage, callsTotalPages);
-    const callsRangeStart = recentCalls.length === 0 ? 0 : (safeCallsPage - 1) * AE_CALLS_PAGE_SIZE + 1;
-    const callsRangeEnd = Math.min(safeCallsPage * AE_CALLS_PAGE_SIZE, recentCalls.length);
-    const pagedCalls = recentCalls.slice((safeCallsPage - 1) * AE_CALLS_PAGE_SIZE, safeCallsPage * AE_CALLS_PAGE_SIZE);
+    const callsRangeStart = recentCalls.length === 0 ? 0 : offset + 1;
+    const callsRangeEnd = offset + recentCalls.length;
 
     // ── Post-call analysis (opens the same MeetingDetails view used elsewhere) ─
     const [selectedMeeting, setSelectedMeeting] = useState<Meeting | null>(null);
@@ -187,6 +209,7 @@ export function useAeDetail({ ae, tenantId }: UseAeDetailArgs) {
     return {
         detail,
         isLoadingDetail,
+        isPaging,
         detailError,
         displayName,
         displayRole,
@@ -195,12 +218,15 @@ export function useAeDetail({ ae, tenantId }: UseAeDetailArgs) {
         dimensions,
         strengthsAndGaps,
         recentCalls,
-        pagedCalls,
+        recentCallsPage: recentCalls,
+        pagedCalls: recentCalls,
         callsPage: safeCallsPage,
         setCallsPage,
         callsTotalPages,
         callsRangeStart,
         callsRangeEnd,
+        callsTotal,
+        hasMore,
         sparkline,
         selectedMeeting,
         setSelectedMeeting,
