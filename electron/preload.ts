@@ -655,8 +655,9 @@ contextBridge.exposeInMainWorld("electronAPI", {
   // Fired once, exactly when endMeeting() resolves the real meetingId for
   // the call that just ended — race-free alternative to inferring "the
   // current meeting" from getRecentMeetings()[0] (see main.ts#endMeeting).
-  onLiveCallEnded: (callback: (data: { meetingId: string }) => void) => {
-    const subscription = (_: any, data: { meetingId: string }) => callback(data);
+  // source + candidates feed the launcher's end-of-call company prompt.
+  onLiveCallEnded: (callback: (data: { meetingId: string; source?: string; candidates?: { name: string; domain: string }[] }) => void) => {
+    const subscription = (_: any, data: { meetingId: string; source?: string; candidates?: { name: string; domain: string }[] }) => callback(data);
     ipcRenderer.on('live-call-ended', subscription);
     return () => { ipcRenderer.removeListener('live-call-ended', subscription); };
   },

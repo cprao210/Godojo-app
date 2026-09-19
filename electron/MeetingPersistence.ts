@@ -14,6 +14,8 @@ import { reconcileScorecardWithLiveAnalysis } from './scorecardReconciliation';
 import { reconcileBantMeddicWithLiveAnalysis } from './summaryReconciliation';
 import { hasMultipleClientSpeakers, resolveSpeakerDisplayName, buildSpeakerRoster, formatSpeakerRosterBlock, transcriptTurnLabel, SpeakerNameMapLike } from './utils/speakerLabels';
 import { parseUploadTranscript } from './utils/uploadTranscriptParser';
+import { AuthManager } from './services/AuthManager';
+import { deriveCompanyCandidates } from '../utils/companyDomainShared';
 import { buildUploadAnalysisPrompt, normalizeUploadAnalysis } from './utils/uploadAnalysis';
 import { requestBackendChunking } from './utils/backendRagChunking';
 
@@ -297,7 +299,7 @@ export class MeetingPersistence {
      *   Forwarded as the scorecard's `hintMeetingTypes` so auto-detection respects the
      *   rep's explicit selection instead of guessing from the transcript alone.
      */
-    public async stopMeeting(meetingTypes?: ('discovery' | 'demo' | 'negotiation')[], tenantId?: string | null): Promise<string | null> {
+    public async stopMeeting(meetingTypes?: ('discovery' | 'demo' | 'negotiation')[], tenantId?: string | null): Promise<{ meetingId: string | null; source: string; candidates: { name: string; domain: string }[] } | null> {
         console.log('[MeetingPersistence] Stopping meeting and queueing save...');
 
         // 0. Force-save any pending interim transcript
@@ -408,6 +410,12 @@ export class MeetingPersistence {
             transcript: placeholderTranscript,
             usage: [],
             tenantId: tenantId || null,
+            // Tagged from the FIRST save so the meeting card's
+            // Calendar/Quick/Upload badge is correct during the processing
+            // window — derived from the actual session metadata, NOT
+            // hardcoded (a hardcoded 'calendar' here mislabeled every quick
+            // meeting as Calendar while it processed).
+            source: metadataSnapshot?.source ?? 'manual',
             isProcessed: false
         };
 
@@ -452,7 +460,23 @@ export class MeetingPersistence {
             }
         })();
 
-        return meetingId;
+        // Company-prompt payload for the launcher window: the session source
+        // and the attendee-domain candidates (organizer + consumer domains
+        // excluded — same classification the backend applies; see
+        // utils/companyDomainShared). The backend keeps the authoritative
+        // Python list; this TS twin exists because end-of-call decisions run
+        // in main, offline from the backend, and must not race the AI pipeline.
+        // The signed-in user's email excludes the rep's whole domain (incl.
+        // subdomains / unflagged colleagues) — the self/organizer flags alone
+        // can't do that.
+        const stoppedSource = metadataSnapshot?.source ?? 'manual';
+        const stoppedCandidates = stoppedSource === 'upload'
+            ? []
+            : deriveCompanyCandidates(metadataSnapshot?.attendees || [], {
+                userEmail: AuthManager.getInstance().snapshot().email,
+            });
+
+        return { meetingId, source: stoppedSource, candidates: stoppedCandidates };
     }
 
     /**
@@ -461,7 +485,7 @@ export class MeetingPersistence {
     private async processAndSaveMeeting(
         data: { transcript: TranscriptSegment[], usage: any[], startTime: number, endTime?: number, totalPausedMs?: number, durationMs: number, context: string },
         meetingId: string,
-        metadata?: { title?: string; calendarEventId?: string; source?: 'manual' | 'calendar'; calendarEvent?: any } | null,
+        metadata?: { title?: string; calendarEventId?: string; source?: 'manual' | 'calendar' | 'upload'; calendarEvent?: any } | null,
         liveAnalysisData?: LiveAnalysisData | null,
         speakerNames?: { user: string; client: string; clientDiarized?: string },
         companyIntel?: Record<string, any> | null,
@@ -473,7 +497,7 @@ export class MeetingPersistence {
 
         // Use passed-in metadata snapshot (NOT this.session.getMeetingMetadata() which is already cleared)
         let calendarEventId: string | undefined;
-        let source: 'manual' | 'calendar' = 'manual';
+        let source: 'manual' | 'calendar' | 'upload' = 'manual';
         // Raw calendar event, wrapped in an array to match the provider's event-feed
         // shape (see CalendarManager.CalendarEvent) — persisted verbatim, untouched.
         let calendarEventMetadata: any[] | undefined;
@@ -1152,6 +1176,10 @@ export class MeetingPersistence {
                 usage: [],
                 tenantId: tenantId || null,
                 isProcessed: false,
+                // Tagged from the FIRST save so the meeting card's
+                // Live/Quick/Upload badge never mislabels an upload as Quick
+                // during the processing window.
+                source: 'upload',
             };
 
             DatabaseManager.getInstance().saveMeeting(placeholder, startTimeMs, startTimeMs + durationMs, 0);
@@ -1163,7 +1191,7 @@ export class MeetingPersistence {
             this.processAndSaveMeeting(
                 { transcript, usage: [], startTime: startTimeMs, durationMs, context },
                 meetingId,
-                { title: title || undefined, source: 'manual' },
+                { title: title || undefined, source: 'upload' },
                 null,           // liveAnalysisData — not available for uploads
                 undefined,      // speakerNames
                 null,           // companyIntel

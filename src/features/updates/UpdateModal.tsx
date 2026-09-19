@@ -221,7 +221,7 @@ const UpdateModal: React.FC<UpdateModalProps> = ({
                                             <span className="text-[10px] text-amber-500">!</span>
                                         </div>
                                         <div className="space-y-0.5">
-                                            <p className="text-[12px] font-medium text-white/80 leading-tight">
+                                            <p className="text-[12px] font-medium text-white/80 leading-normal">
                                                 If macOS says "App is damaged"
                                             </p>
                                             <p className="text-[11px] text-white/40 leading-snug">

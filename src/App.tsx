@@ -1,4 +1,4 @@
-import React, { useEffect, useState } from "react";
+import React, { useCallback, useEffect, useState } from "react";
 import { AnimatePresence, motion } from "framer-motion";
 import { QueryClientProvider } from "react-query";
 
@@ -7,17 +7,19 @@ import { QueryClientProvider } from "react-query";
 // ---------------------------------------------------------------------------
 import { queryClient } from "@/lib/queryClient";
 import { posthogAnalytics } from "@/lib/analytics/posthog.service";
+import { meetingsApi } from "@/api";
 
 // ---------------------------------------------------------------------------
 // hooks — core app logic, extracted out of App.tsx
 // ---------------------------------------------------------------------------
-import { useWindowRoute, useFirebaseAuth, useTenant, useAutoOpenDashboardForAdmins } from "@/hooks";
+import { useResolvedTheme, useWindowRoute, useFirebaseAuth, useTenant, useAutoOpenDashboardForAdmins } from "@/hooks";
 import { useTeamInvite, useOverlayOpacity, useAppLifecycleListeners, useMeetingSession } from "@/hooks";
 
 // ---------------------------------------------------------------------------
 // features
 // ---------------------------------------------------------------------------
 import { ManagerDashboard } from "@/features/dashboard";
+import { CompanySelectModal } from "@/features/meetings";
 import { InviteAccountMismatchBanner, TeamInviteNotification, InviteAcceptedNotifier } from "@/features/tenant";
 import { SettingsPopup, SettingsOverlay } from "@/features/settings"; // Keeping for legacy/specific window support if needed
 import { StartupSequence } from "@/features/onboarding";
@@ -95,6 +97,39 @@ const App: React.FC = () => {
   const AppLifecycleStates = useAppLifecycleListeners();
   const { hasProfile, isPremiumActive, setIsPremiumActive, isProcessingMeeting, setIsProcessingMeeting } = AppLifecycleStates;
   const { lastMeetingEndTime, appStartTime, ollamaPull, incompatibleWarning, dismissIncompatibleWarning, reindexIncompatibleMeetings } = AppLifecycleStates;
+
+  // Post-call company prompt — part of the meeting lifecycle, fired the
+  // moment the call ends (NOT after AI processing). The end-meeting decision
+  // MUST live in this (launcher) window: the end button runs in the overlay
+  // window's renderer, so React state set there can never render a modal
+  // here. main.ts broadcasts 'live-call-ended' with the session source and
+  // attendee-domain candidates; we then check the backend association (a
+  // single external domain was already auto-linked at start) and show the
+  // picker only when the meeting is still company-less and wasn't skipped.
+  // Uploads are answered inside the upload modal and never prompted.
+  const [companyPromptMeetingId, setCompanyPromptMeetingId] = useState<string | null>(null);
+  const [companyPromptCandidates, setCompanyPromptCandidates] = useState<{ name: string; domain: string }[]>([]);
+  const isLight = useResolvedTheme() === 'light';
+  useEffect(() => {
+    if (isOverlayWindow) return; // no room for a modal in the 430px dock
+    const off = window.electronAPI?.onLiveCallEnded?.((payload) => {
+      const meetingId = payload?.meetingId;
+      if (!meetingId || payload?.source === 'upload') return;
+      (async () => {
+        try {
+          const meeting = await meetingsApi.get(meetingId);
+          if (meeting.company || meeting.company_skipped) return;
+          setCompanyPromptCandidates(payload.candidates ?? []);
+          setCompanyPromptMeetingId(meetingId);
+        } catch {
+          // Lookup failed — skip the prompt; the MeetingDetails chip is the
+          // recovery path. A company prompt must never block the post-call flow.
+        }
+      })();
+    });
+    return () => off?.();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [isOverlayWindow]);
 
   const { handleStartMeeting, handleEndMeeting, showPermissionTray, setShowPermissionTray, proceedWithMeeting } = useMeetingSession(tenantId, setIsProcessingMeeting);
 
@@ -312,6 +347,21 @@ const App: React.FC = () => {
                           notify the owner/admin — in-app toast + native cross-screen
                           notification (same pipeline as Summary Ready). */}
                       <InviteAcceptedNotifier tenant={tenant} isAdmin={isAdmin} />
+                      {/* Post-call company prompt (quick meetings only) —
+                          skippable; Skip records company_skipped so the same
+                          meeting never asks again. */}
+                      <AnimatePresence>
+                        {companyPromptMeetingId && (
+                          <CompanySelectModal
+                            key={companyPromptMeetingId}
+                            meetingId={companyPromptMeetingId}
+                            mode="post-call"
+                            candidates={companyPromptCandidates}
+                            isLight={isLight}
+                            onClose={() => setCompanyPromptMeetingId(null)}
+                          />
+                        )}
+                      </AnimatePresence>
                       <ToastViewport />
                     </ToastProvider>
                   </QueryClientProvider>

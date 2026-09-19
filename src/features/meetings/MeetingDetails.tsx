@@ -1,11 +1,14 @@
 import React, { useEffect, useRef, useState } from 'react';
 import { useResolvedTheme, useMeetingDetails, formatTime, formatTranscriptTimestamp, cleanMarkdown, isSummaryEmpty } from '@/hooks';
 import { hasGeneratedSummary } from '@/lib/meetingLifecycle';
-import { Mail, ChevronDown, ChevronUp, BarChart3, ArrowUp, Copy, Check, TrendingUp, TriangleAlert, MessageSquare } from 'lucide-react';
+import { Mail, ChevronDown, ChevronUp, BarChart3, ArrowUp, Copy, Check, TrendingUp, TriangleAlert, MessageSquare, Building2, Plus } from 'lucide-react';
 import { MessagesSquareIcon, ChartColumnIncreasing, CircleCheck, NotepadText, RefreshCcw, RefreshCw, NotebookPen, ClipboardList } from 'lucide-react';
 import { motion, AnimatePresence } from 'framer-motion';
 
 import { MeetingChatOverlay, FollowUpEmailModal, MeetingScorecardPanel } from '@/features/meetings';
+// Direct-file import (not the barrel): MeetingDetails itself is exported from
+// that barrel, so going through it here would be a self-import cycle.
+import { CompanySelectModal } from '@/features/meetings/CompanyAssociation';
 import { chatMarkdownComponents, SourcesDisplay } from '@/features/chat';
 import { EditableTextBlock } from '@/features/common';
 import { posthogAnalytics } from '@/lib/analytics/posthog.service';
@@ -119,6 +122,9 @@ function docSourcesFor(sources: AiInteractionSource[] | undefined) {
 const MeetingDetails: React.FC<MeetingDetailsProps> = ({ meeting: initialMeeting, viewContext }) => {
 
     const isLight = useResolvedTheme() === 'light';
+    // Customer-company chip (view/change) — the modal writes through the
+    // backend, then the meeting query is invalidated so the chip refreshes.
+    const [isCompanyModalOpen, setIsCompanyModalOpen] = useState(false);
     const {
         meeting,
         isProcessing,
@@ -268,6 +274,35 @@ const MeetingDetails: React.FC<MeetingDetailsProps> = ({ meeting: initialMeeting
                                     Follow-up email
                                 </button>
                             </div>
+
+                            {/* Customer company chip — click to change/remove. The
+                                association lives on the backend; AI context for this
+                                meeting resolves through it. */}
+                            <div className="mb-1">
+                                {meeting.company ? (
+                                    <button
+                                        onClick={() => setIsCompanyModalOpen(true)}
+                                        className={`inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-[11.5px] font-medium transition-colors ${isLight
+                                            ? 'bg-emerald-50 border border-emerald-200 text-emerald-700 hover:bg-emerald-100'
+                                            : 'bg-emerald-500/10 border border-emerald-500/25 text-emerald-400 hover:bg-emerald-500/20'
+                                            }`}
+                                    >
+                                        <Building2 size={11} />
+                                        {meeting.company.name}
+                                    </button>
+                                ) : (
+                                    <button
+                                        onClick={() => setIsCompanyModalOpen(true)}
+                                        className={`inline-flex items-center gap-1 px-2.5 py-1 rounded-full text-[11.5px] font-medium border border-dashed transition-colors ${isLight
+                                            ? 'border-slate-300 text-slate-400 hover:text-slate-600 hover:border-slate-400'
+                                            : 'border-border-subtle text-text-tertiary hover:text-text-secondary'
+                                            }`}
+                                    >
+                                        <Plus size={10} />
+                                        Add company
+                                    </button>
+                                )}
+                            </div>
                         </div>
 
                         <FollowUpEmailModal
@@ -276,6 +311,35 @@ const MeetingDetails: React.FC<MeetingDetailsProps> = ({ meeting: initialMeeting
                             meeting={meeting}
                             isLight={isLight}
                         />
+
+                        <AnimatePresence>
+                            {isCompanyModalOpen && (
+                                <CompanySelectModal
+                                    key="company-modal"
+                                    meetingId={meeting.id}
+                                    mode="edit"
+                                    initialCompany={meeting.company ?? null}
+                                    isLight={isLight}
+                                    onClose={() => setIsCompanyModalOpen(false)}
+                                    onSaved={(saved) => {
+                                        // Paint the chip instantly from the PUT
+                                        // response, then reconcile with a refetch
+                                        // (the refetch is also what corrected stale
+                                        // reads used to depend on).
+                                        queryClient.setQueryData<Meeting | undefined>(meetingKey, (prev) =>
+                                            prev ? { ...prev, company: saved } : prev,
+                                        );
+                                        queryClient.invalidateQueries(meetingKey);
+                                    }}
+                                    onCleared={() => {
+                                        queryClient.setQueryData<Meeting | undefined>(meetingKey, (prev) =>
+                                            prev ? { ...prev, company: null } : prev,
+                                        );
+                                        queryClient.invalidateQueries(meetingKey);
+                                    }}
+                                />
+                            )}
+                        </AnimatePresence>
                     </div>
 
                     {/* Tabs + Action buttons row */}

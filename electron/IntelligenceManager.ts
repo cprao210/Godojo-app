@@ -247,7 +247,7 @@ export class IntelligenceManager extends EventEmitter {
     // Meeting Lifecycle (delegates to persistence)
     // ============================================
 
-    async stopMeeting(meetingTypes?: ('discovery' | 'demo' | 'negotiation')[], tenantId?: string | null): Promise<string | null> {
+    async stopMeeting(meetingTypes?: ('discovery' | 'demo' | 'negotiation')[], tenantId?: string | null): Promise<{ meetingId: string | null; source: string; candidates: { name: string; domain: string }[] } | null> {
         return this.persistence.stopMeeting(meetingTypes, tenantId);
     }
 

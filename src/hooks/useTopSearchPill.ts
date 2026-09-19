@@ -3,54 +3,73 @@
 // (⌘K to open, arrows to navigate, Enter to select, Escape to close), and
 // click-outside-to-close. Kept separate from the component so the component
 // only owns rendering — same split as useGlobalChat / useCalendarConnections.
+//
+// The pill is ALSO the meetings list's filter control: its query and the
+// type/date filters write to the shared meetingFilterStore, which the
+// launcher's meetings list reads. The query is persistent — dismissing the
+// pill keeps the list filtered; the input's × clears it.
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Meeting, PillState, SearchResult } from "@/types";
+import { meetingKindOf, meetingSearchText } from "@/api/meetingMapping";
+import {
+    CallCategory,
+    MeetingDateFilter,
+    MeetingSourceTypeFilter,
+    getMeetingFilters,
+    meetingDateRangeStartMs,
+    setMeetingFilters,
+    useMeetingFilters,
+} from "@/lib/meetingFilterStore";
 
 // ============================================
-// Fuzzy Search Helpers
+// Search Helpers
 // ============================================
-// Pure, side-effect-free — colocated here since nothing outside this hook
-// (or its tests) needs them.
 
-function fuzzyMatch(text: string, query: string): boolean {
-    const normalizedText = text.toLowerCase();
-    const normalizedQuery = query.toLowerCase();
+function searchMeetings(
+    meetings: Meeting[],
+    query: string,
+    filters: { source: MeetingSourceTypeFilter; dateRange: MeetingDateFilter; callTypes: string[] },
+): SearchResult[] {
+    const text = query.trim().toLowerCase();
+    if (!text) return [];
 
-    // Simple contains match for now.
-    // (Character-level fuzzy matching was tried and removed for stricter accuracy —
-    // only an exact substring match counts.)
-    return normalizedText.includes(normalizedQuery);
-}
-
-function searchMeetings(meetings: Meeting[], query: string): SearchResult[] {
-    if (!query.trim()) return [];
-
+    const rangeStart = meetingDateRangeStartMs(filters.dateRange);
     const results: SearchResult[] = [];
     const seen = new Set<string>();
 
     for (const meeting of meetings) {
         if (seen.has(meeting.id)) continue;
 
-        // Match against title and summary.
-        const titleMatch = fuzzyMatch(meeting.title, query);
-        const summaryMatch = meeting.summary && fuzzyMatch(meeting.summary, query);
-
-        if (titleMatch || summaryMatch) {
-            seen.add(meeting.id);
-            results.push({
-                id: meeting.id,
-                type: "meeting",
-                title: meeting.title,
-                subtitle: new Date(meeting.date).toLocaleDateString("en-US", {
-                    month: "short",
-                    day: "numeric",
-                }),
-                meetingId: meeting.id,
-            });
+        // Filters narrow the dropdown the same way they narrow the list.
+        if (filters.source !== 'all' && meetingKindOf(meeting) !== filters.source) continue;
+        if (rangeStart != null) {
+            const t = new Date(meeting.date).getTime();
+            if (Number.isNaN(t) || t < rangeStart) continue;
+        }
+        if (filters.callTypes.length > 0) {
+            const types = meeting.meetingTypes ?? [];
+            if (!filters.callTypes.some(c => types.includes(c))) continue;
         }
 
-        if (results.length >= 5) break;
+        // Text match spans title, summary, company name/domain, and attendee
+        // names/emails (see meetingSearchText).
+        if (!meetingSearchText(meeting).includes(text)) continue;
+
+        seen.add(meeting.id);
+        const dateLabel = new Date(meeting.date).toLocaleDateString("en-US", {
+            month: "short",
+            day: "numeric",
+        });
+        results.push({
+            id: meeting.id,
+            type: "meeting",
+            title: meeting.title,
+            subtitle: meeting.company?.name ? `${meeting.company.name} · ${dateLabel}` : dateLabel,
+            meetingId: meeting.id,
+        });
+
+        if (results.length >= 8) break;
     }
 
     return results;
@@ -68,9 +87,12 @@ interface UseTopSearchPillArgs {
 
 export function useTopSearchPill({ meetings, onOpenMeeting, onExpansionChange }: UseTopSearchPillArgs) {
     const [state, setState] = useState<PillState>("idle");
+    // The query doubles as the persistent meetings-list filter (see the store).
     const [query, setQuery] = useState("");
     const [selectedIndex, setSelectedIndex] = useState(-1);
+    const [isFilterOpen, setIsFilterOpen] = useState(false);
 
+    const filters = useMeetingFilters();
     const inputRef = useRef<HTMLInputElement>(null);
     const containerRef = useRef<HTMLDivElement>(null);
 
@@ -80,11 +102,18 @@ export function useTopSearchPill({ meetings, onOpenMeeting, onExpansionChange }:
         onExpansionChange?.(state !== "idle");
     }, [state, onExpansionChange]);
 
+    // Every keystroke updates the shared filter store — the meetings list
+    // behind the pill re-filters live (pure client-side, zero API calls).
+    const handleQueryChange = useCallback((value: string) => {
+        setQuery(value);
+        setMeetingFilters({ search: value.trim() });
+    }, []);
+
     // Search results for the current query — only computed while the "results" state is active.
     const sessionResults = useMemo(() => {
         if (state !== "results" || !query.trim()) return [];
-        return searchMeetings(meetings, query);
-    }, [meetings, query, state]);
+        return searchMeetings(meetings, query, { source: filters.source, dateRange: filters.dateRange, callTypes: filters.callTypes });
+    }, [meetings, query, state, filters.source, filters.dateRange, filters.callTypes]);
 
     const totalItems = sessionResults.length;
 
@@ -96,20 +125,28 @@ export function useTopSearchPill({ meetings, onOpenMeeting, onExpansionChange }:
 
     const close = useCallback(() => {
         setState("idle");
-        // Delay clearing the query so the exit animation has something to fade out.
-        setTimeout(() => {
-            setQuery("");
-            setSelectedIndex(-1);
-        }, 150);
+        // The query is intentionally NOT cleared on close — it is the
+        // persistent list filter (the user filtered their meetings via the
+        // header search and expects the list to stay filtered). Only the
+        // keyboard-selection index resets; the input's × clears the query
+        // and the filter together.
+        setSelectedIndex(-1);
+        setIsFilterOpen(false);
         inputRef.current?.blur();
     }, []);
 
     const handleInputChange = useCallback((e: React.ChangeEvent<HTMLInputElement>) => {
         const value = e.target.value;
-        setQuery(value);
+        handleQueryChange(value);
         setSelectedIndex(-1);
         setState(value.trim() ? "results" : "focused");
-    }, []);
+    }, [handleQueryChange]);
+
+    const clearQuery = useCallback(() => {
+        handleQueryChange("");
+        setSelectedIndex(-1);
+        inputRef.current?.focus();
+    }, [handleQueryChange]);
 
     const handleInputFocus = useCallback(() => {
         setState((prev) => (prev === "idle" ? "focused" : prev));
@@ -118,6 +155,25 @@ export function useTopSearchPill({ meetings, onOpenMeeting, onExpansionChange }:
     const handlePillClick = useCallback(() => {
         if (state === "idle") open();
     }, [state, open]);
+
+    const toggleFilterOpen = useCallback(() => {
+        setIsFilterOpen(prev => !prev);
+    }, []);
+
+    const setFilters = useCallback((patch: { source?: MeetingSourceTypeFilter; dateRange?: MeetingDateFilter; callTypes?: CallCategory[] }) => {
+        setMeetingFilters(patch);
+    }, []);
+
+    const toggleCallType = useCallback((category: CallCategory) => {
+        const current = getMeetingFilters().callTypes;
+        const next = current.includes(category)
+            ? current.filter(c => c !== category)
+            : [...current, category];
+        setMeetingFilters({ callTypes: next });
+    }, []);
+
+    const activeFilterCount = (filters.source !== 'all' ? 1 : 0) + (filters.dateRange !== 'all' ? 1 : 0)
+        + (filters.callTypes.length > 0 ? 1 : 0);
 
     const handleSelect = useCallback(
         (index: number) => {
@@ -199,6 +255,14 @@ export function useTopSearchPill({ meetings, onOpenMeeting, onExpansionChange }:
         sessionResults,
         isExpanded,
         showResults,
+        // filters (shared store — drives the meetings list too)
+        filters,
+        setFilters,
+        toggleCallType,
+        activeFilterCount,
+        isFilterOpen,
+        toggleFilterOpen,
+        clearQuery,
         // refs
         inputRef,
         containerRef,
@@ -211,3 +275,4 @@ export function useTopSearchPill({ meetings, onOpenMeeting, onExpansionChange }:
         setSelectedIndex,
     };
 }
+

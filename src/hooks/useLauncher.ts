@@ -11,10 +11,12 @@ import { useMutation, useQuery, useQueryClient } from 'react-query';
 import { useShortcuts, useResolvedTheme } from '@/hooks';
 import { loadUserProfile } from '@/features/settings';
 import { chatApi, meetingsApi } from '@/api';
-import { PROCESSING_TITLE, isMeetingProcessing, shouldMergeLocalMeeting } from '@/api/meetingMapping';
+import { PROCESSING_TITLE, isMeetingProcessing, meetingKindOf, meetingSearchText, shouldMergeLocalMeeting } from '@/api/meetingMapping';
+import { useMeetingFilters, meetingDateRangeStartMs } from '@/lib/meetingFilterStore';
 import { OPTIMISTIC_LIVE_ID, byNewestFirst, isOptimisticId } from '@/api/meetingMapping';
 import { mergeMeetingCopies, reconcileFetchedMeetings } from '@/api/meetingMapping';
 import { ApiError } from '@/lib/apiClient';
+import type { PickedCompany } from '@/features/meetings/CompanyAssociation';
 import { LauncherProps, Meeting, UpcomingMeeting } from '@/types';
 import { posthogAnalytics } from '@/lib/analytics/posthog.service';
 
@@ -25,6 +27,8 @@ const HOUR = 60 * MINUTE;
 // clicked. Matches the backend's documented example (`?limit=10`).
 const INITIAL_MEETINGS_LIMIT = 20;
 const LOAD_MORE_MEETINGS_STEP = 10;
+// Rows per slim page when building the full client-side meeting index.
+const MEETINGS_INDEX_PAGE_SIZE = 200;
 
 // ─── Pure formatting helpers ─────────────────────────────────────────────────
 // Exported so LauncherWidgets can format the same way without re-deriving
@@ -96,6 +100,36 @@ const PROCESSING_POLL_TIMEOUT_MS = 5 * 60 * 1000;
 // for this call" now lives in meetingMapping.ts alongside the reconciliation
 // rules that consume it (OPTIMISTIC_LIVE_ID / isOptimisticId).
 
+/** Client-side search + type/date filtering over the full meetings index.
+The search haystack lives in meetingMapping (shared with the header pill). */
+export function applyMeetingFilters(
+    meetings: Meeting[],
+    opts: {
+        search: string;
+        source: 'all' | 'calendar' | 'quick' | 'upload';
+        dateRange: 'all' | 'today' | '7d' | '30d';
+        callTypes: string[];
+    },
+): Meeting[] {
+    const s = opts.search.toLowerCase();
+    const rangeStart = meetingDateRangeStartMs(opts.dateRange);
+    return meetings.filter(m => {
+        if (opts.source !== 'all' && meetingKindOf(m) !== opts.source) return false;
+        if (rangeStart != null) {
+            const t = new Date(m.date).getTime();
+            if (Number.isNaN(t) || t < rangeStart) return false;
+        }
+        // Multi-select call categories: match ANY of the selected ones — a
+        // demo+negotiation meeting matches either selection.
+        if (opts.callTypes.length > 0) {
+            const types = m.meetingTypes ?? [];
+            if (!opts.callTypes.some(c => types.includes(c))) return false;
+        }
+        if (s && !meetingSearchText(m).includes(s)) return false;
+        return true;
+    });
+}
+
 /**
  * Folds locally-known meetings into whatever the list currently shows.
  *
@@ -155,31 +189,31 @@ export function useLauncher({ onStartMeeting, ollamaPullStatus = 'idle', onPageC
     // SQLite, and must not wipe the optimistic card for a call main hasn't
     // committed yet. See reconcileFetchedMeetings for both rules.
     //
-    // "Load more" raises meetingsLimit and refetches — the backend has no
-    // offset/cursor param, only `?limit=N` returning the N most recent, so
-    // paging further just means asking for a bigger N. The query key stays
-    // the single ['meetings'] (not ['meetings', meetingsLimit]) deliberately:
-    // this hook has ~10 other spots that read/write the meetings cache via
-    // queryClient.*QueryData(['meetings'], ...) for optimistic updates (row
-    // delete, live-meeting patches, etc.) — keying by limit would silently
-    // detach every one of those from whatever page is actually on screen.
-    //
-    // A ref, not state, holds the limit: refetchQueries() below fires
-    // immediately and synchronously, before React has re-rendered with a new
-    // queryFn closure over a state update — a ref sidesteps that races by
-    // being readable (and bumped) synchronously in the same tick.
-    const meetingsLimitRef = React.useRef(INITIAL_MEETINGS_LIMIT);
-    // How many rows the backend itself returned for the current limit, before
-    // the local-only merge above adds any extra rows — that merge can only
-    // ever add local rows the backend hasn't synced yet, never true "next
-    // page" rows, so it would make hasMoreMeetings a false positive forever
-    // if counted instead.
-    const backendMeetingsCountRef = React.useRef(0);
-
+    // The query builds the FULL meeting index in slim card-shape (a few paged
+    // requests over ?slim=true rows — no heavy summary_json) and then ALL
+    // search/filter/count happen in memory: playing with the header filters
+    // costs zero API calls, and the filters work across every meeting, not
+    // just a fetched page. The query key stays the single ['meetings']
+    // deliberately: this hook has ~10 other spots that read/write the
+    // meetings cache via queryClient.*QueryData(['meetings'], ...) for
+    // optimistic updates (row delete, live-meeting patches, etc.).
     const { data: meetings = [], isLoading, isFetching } = useQuery<Meeting[]>(['meetings'], async () => {
-        const fresh = await meetingsApi.list({ limit: meetingsLimitRef.current });
-        backendMeetingsCountRef.current = fresh.length;
-        return reconcileFetchedMeetings(queryClient.getQueryData<Meeting[]>(['meetings']) ?? [], fresh);
+        const all: Meeting[] = [];
+        const seen = new Set<string>();
+        const maxRows = 5000; // safety valve — a corpus this big needs server-side search instead
+        let offset = 0;
+        let page: Meeting[] = [];
+        do {
+            page = await meetingsApi.list({ limit: MEETINGS_INDEX_PAGE_SIZE, offset, slim: true });
+            for (const m of page) {
+                if (!seen.has(m.id)) {
+                    seen.add(m.id);
+                    all.push(m);
+                }
+            }
+            offset += page.length;
+        } while (page.length === MEETINGS_INDEX_PAGE_SIZE && offset < maxRows);
+        return reconcileFetchedMeetings(queryClient.getQueryData<Meeting[]>(['meetings']) ?? [], all);
     }, {
         // Poll only while a meeting is still processing (replaces the manual setInterval).
         staleTime: 10_000,
@@ -195,16 +229,34 @@ export function useLauncher({ onStartMeeting, ollamaPullStatus = 'idle', onPageC
         },
     });
 
-    // The backend returning a full page (exactly `limit` rows) is the only
-    // signal available that there might be more beyond it — there's no total
-    // count or cursor in the response. Once a page comes back short, there's
-    // nothing further to load.
-    const hasMoreMeetings = backendMeetingsCountRef.current >= meetingsLimitRef.current;
-    const isLoadingMoreMeetings = isFetching && meetingsLimitRef.current > INITIAL_MEETINGS_LIMIT;
+    // ─── Meeting search + filters (pure client-side) ─────────────────────────
+    // The search query and type/date filters are OWNED by the header search
+    // pill via the shared meetingFilterStore (the pill is the single filter
+    // control). Filtering is a pure in-memory pass — zero API calls.
+    const { search: filterSearch, source: filterSource, dateRange: filterDateRange, callTypes: filterCallTypes } = useMeetingFilters();
+
+    const filteredMeetings = React.useMemo(
+        () => applyMeetingFilters(meetings, {
+            search: filterSearch,
+            source: filterSource,
+            dateRange: filterDateRange,
+            callTypes: filterCallTypes,
+        }),
+        [meetings, filterSearch, filterSource, filterDateRange, filterCallTypes],
+    );
+
+    // Display cap over the FILTERED list — "Show more" reveals more locally
+    // (no API), so even a multi-thousand-meeting corpus can't flood the DOM.
+    const [meetingDisplayCap, setMeetingDisplayCap] = useState(INITIAL_MEETINGS_LIMIT);
+    const visibleMeetings = React.useMemo(
+        () => filteredMeetings.slice(0, meetingDisplayCap),
+        [filteredMeetings, meetingDisplayCap],
+    );
+    const hasMoreMeetings = filteredMeetings.length > meetingDisplayCap;
+    const isLoadingMoreMeetings = false; // local slice — instant, no skeleton needed
     const loadMoreMeetings = React.useCallback(() => {
-        meetingsLimitRef.current += LOAD_MORE_MEETINGS_STEP;
-        void queryClient.refetchQueries(['meetings']);
-    }, [queryClient]);
+        setMeetingDisplayCap(cap => cap + LOAD_MORE_MEETINGS_STEP);
+    }, []);
 
     // Detect whether any meeting in the list is still being processed
     const hasProcessingMeeting = meetings.some(isMeetingProcessing);
@@ -690,6 +742,10 @@ export function useLauncher({ onStartMeeting, ollamaPullStatus = 'idle', onPageC
     const [uploadTitle, setUploadTitle] = useState('');
     const [isUploading, setIsUploading] = useState(false);
     const [uploadMeetingTypes, setUploadMeetingTypes] = useState<('discovery' | 'demo' | 'negotiation')[]>(['discovery']);
+    // Optional customer-company answered IN the modal, so an uploaded
+    // transcript never needs the post-call company prompt (quick meetings
+    // only get that). Best-effort association after the meeting row exists.
+    const [uploadCompany, setUploadCompany] = useState<PickedCompany | null>(null);
     const [uploadError, setUploadError] = useState<string | null>(null);
     const [focusedMeetingId, setFocusedMeetingId] = useState<string | null>(null);
     const [isMeetingsExpanded, setIsMeetingsExpanded] = useState(false);
@@ -757,6 +813,19 @@ export function useLauncher({ onStartMeeting, ollamaPullStatus = 'idle', onPageC
                 setUploadText('');
                 setUploadTitle('');
                 setUploadMeetingTypes(['discovery']);
+                // Associate the picked company (best-effort — the upload itself
+                // already succeeded, so a failed association must not fail the
+                // flow or lose the meeting; the MeetingDetails chip is the
+                // recovery path).
+                if (result.meetingId && uploadCompany) {
+                    meetingsApi.setCompany(
+                        result.meetingId,
+                        uploadCompany.companyId
+                            ? { company_id: uploadCompany.companyId }
+                            : { name: uploadCompany.name },
+                    ).catch(err => console.warn('[useLauncher] company association failed:', err));
+                }
+                setUploadCompany(null);
                 fetchMeetings(); // reconciles with the real SQLite/backend rows
             } else {
                 // Remove the placeholder on failure
@@ -943,6 +1012,12 @@ export function useLauncher({ onStartMeeting, ollamaPullStatus = 'idle', onPageC
         isUploading,
         uploadMeetingTypes,
         setUploadMeetingTypes,
+        uploadCompany,
+
+        // ─── Meeting search + filters (owned by the header pill's store) ─────
+        meetingsTotal: filteredMeetings.length,
+        visibleMeetings,
+        setUploadCompany,
         uploadError,
         handleUploadTranscript,
 

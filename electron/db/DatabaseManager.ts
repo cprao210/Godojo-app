@@ -138,7 +138,7 @@ export interface Meeting {
      * verbatim as JSON — kept as an array to match the provider's event feed shape.
      */
     calendarEventMetadata?: any[];
-    source?: 'manual' | 'calendar';
+    source?: 'manual' | 'calendar' | 'upload';
     meetingTypes?: ('discovery' | 'demo' | 'negotiation')[];
     tenantId?: string | null;
 }

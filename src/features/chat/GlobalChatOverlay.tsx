@@ -80,7 +80,7 @@ const GlobalChatOverlay: React.FC<GlobalChatOverlayProps> = ({ isOpen, onClose, 
                                     </div>
                                     <div className="min-w-0">
                                         <div className="flex items-center gap-1.5 min-w-0">
-                                            <div className="text-[13px] font-semibold text-text-primary leading-tight truncate">Godojo Chat Assistant</div>
+                                            <div className="text-[13px] font-semibold text-text-primary leading-normal truncate">Godojo Chat Assistant</div>
                                             {/* Informational tooltip: hover the info icon for the "better results" hint */}
                                             <div className="group/tooltip relative flex items-center shrink-0">
                                                 <Info size={13} className="text-text-tertiary hover:text-text-secondary cursor-help transition-colors" />

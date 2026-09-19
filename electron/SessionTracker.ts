@@ -68,7 +68,7 @@ export class SessionTracker {
     private currentMeetingMetadata: {
         title?: string;
         calendarEventId?: string;
-        source?: 'manual' | 'calendar';
+        source?: 'manual' | 'calendar' | 'upload';
         attendees?: Array<{ email: string; name?: string; organizer?: boolean; self?: boolean }>;
         organizer?: string;
         /** Full raw calendar event payload, carried through verbatim to persistence. */

@@ -155,6 +155,52 @@ export const byNewestFirst = (a: Meeting, b: Meeting) =>
  */
 export const OPTIMISTIC_LIVE_ID = "optimistic-live-call";
 
+// ─── Meeting-kind identification (Calendar / Quick / Upload) ─────────────────
+// Derived from the row's source + calendar fields; drives the meeting card's
+// badge and the header type filter. Kept here (data layer) so both the
+// LauncherWidgets badge and useLauncher's client-side filter share one rule.
+
+export type MeetingKind = 'calendar' | 'quick' | 'upload';
+
+export function meetingKindOf(m: Meeting): MeetingKind | null {
+    const hasCalendar = !!(m.calendarEventId || m.calendarEventMetadata?.length);
+    // 'upload' beats everything — an uploaded transcript has no live session.
+    if (m.source === 'upload') return 'upload';
+    if (m.source === 'calendar' || hasCalendar) return 'calendar';
+    if (m.source === 'manual') return 'quick';
+    // Backend placeholder rows stamp EVERY live session 'live' and (until the
+    // mirror lands the full row) carry no calendar fields — Quick is the safe
+    // read there; hasCalendar above already rescued calendar-sourced ones.
+    if (m.source === 'live') return 'quick';
+    // Unknown (optimistic placeholders before reconciliation) — no badge
+    // rather than a guess that flips a frame later.
+    return null;
+}
+
+// Lowercased search haystack per meeting — title, summary, company, attendee
+// names/emails, and the raw calendar metadata — computed once per row object
+// (WeakMap) so repeated search/filter passes never re-stringify the metadata.
+// Shared by the header pill's dropdown search and the meetings list filter.
+const meetingSearchTextCache = new WeakMap<Meeting, string>();
+
+export function meetingSearchText(m: Meeting): string {
+    let h = meetingSearchTextCache.get(m);
+    if (h === undefined) {
+        const attendees = ((m as any).attendees ?? []) as Array<{ email?: string; displayName?: string; name?: string }>;
+        h = [
+            m.title ?? '',
+            m.summary ?? '',
+            m.company?.name ?? '',
+            m.company?.domain ?? '',
+            ...attendees.map(a => `${a?.displayName || a?.name || ''} ${a?.email || ''}`),
+            JSON.stringify(m.calendarEventMetadata ?? ''),
+        ].join(' ').toLowerCase();
+        meetingSearchTextCache.set(m, h);
+    }
+    return h;
+}
+
+
 /** Renderer-invented row that no backend/DB list can possibly return yet. */
 export const isOptimisticId = (id: string) => id.startsWith("optimistic-");
 
@@ -226,6 +272,16 @@ export function mapMeetingRow(row: any): Meeting {
     calendarEventId: row.calendar_event_id ?? undefined,
     calendarEventMetadata: row.calendar_event_metadata ?? undefined,
     source: row.source ?? undefined,
+    // Meeting → company association (backend-enriched; see
+    // company_resolution.attach_companies). company_skipped only arrives on
+    // detail reads but is defaulted here so prompt-decision logic can treat
+    // list rows uniformly.
+    company: row.company ?? null,
+    company_skipped: row.company_skipped ?? false,
+    company_candidates: Array.isArray(row.company_candidates) ? row.company_candidates : undefined,
+    // Call categories from the scorecard (a meeting can carry several —
+    // demo + negotiation etc.), powering the multi-check category filter.
+    meetingTypes: Array.isArray(row.meeting_types) ? row.meeting_types : undefined,
     isProcessed: row.is_processed === true || row.is_processed === 1,
     transcript: [],
     usage: [],

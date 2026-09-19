@@ -29,13 +29,14 @@ const Launcher: React.FC<LauncherProps> = ({ onStartMeeting, onOpenSettings, onC
     const launcherStates = useLauncher({ onStartMeeting, onPageChange, ollamaPullStatus, authUser });
     const { isLight, meetings, deleteMutation, upcomingEvents, isCalendarConnected, handleCalendarConnected, handleCalendarDisconnected } = launcherStates;
     const { isMeetingsLoading, isMeetingsRefreshing } = launcherStates;
-    const { hasMoreMeetings, isLoadingMoreMeetings, loadMoreMeetings } = launcherStates;
+    const { visibleMeetings, hasMoreMeetings, isLoadingMoreMeetings, loadMoreMeetings } = launcherStates;
     const { focusedMeeting, focusedMeetingId, setFocusedMeetingId, getMeetingStartText } = launcherStates;
     const { isDetectable, toggleDetectable, isRefreshing, handleRefresh, isMeetingActive, onStartMeetingClick } = launcherStates;
     const { showNotification, effectiveName, selectedMeeting, forwardMeeting, handleOpenMeeting, handleBack, handleForward } = launcherStates;
     const { activeMenuId, setActiveMenuId, setMenuEntered, menuEntered, isMeetingsExpanded, setIsMeetingsExpanded } = launcherStates;
     const { isUploadOpen, setIsUploadOpen, uploadText, setUploadText, uploadTitle, setUploadTitle } = launcherStates;
-    const { isUploading, uploadMeetingTypes, setUploadMeetingTypes, uploadError, handleUploadTranscript } = launcherStates;
+    const { meetingsTotal } = launcherStates;
+    const { isUploading, uploadMeetingTypes, setUploadMeetingTypes, uploadCompany, setUploadCompany, uploadError, handleUploadTranscript } = launcherStates;
     const { salesBriefEvent, setSalesBriefEvent, isGlobalChatOpen, setIsGlobalChatOpen, submittedGlobalQuery, setSubmittedGlobalQuery } = launcherStates;
 
     // ─── Floating "Load more" button visibility ─────────────────────────────
@@ -262,11 +263,12 @@ const Launcher: React.FC<LauncherProps> = ({ onStartMeeting, onOpenSettings, onC
                                             onToggleExpand={() => setIsMeetingsExpanded(prev => !prev)}
                                             onOpenUpload={() => setIsUploadOpen(true)}
                                             isRefreshing={isMeetingsRefreshing}
+                                            meetingsTotal={meetingsTotal}
                                         />
 
                                         {/* Rows — no outer card, dividers only between rows */}
                                         <MeetingsList
-                                            meetings={meetings}
+                                            meetings={visibleMeetings}
                                             isLight={isLight}
                                             isLoading={isMeetingsLoading}
                                             isLoadingMore={isLoadingMoreMeetings}
@@ -351,9 +353,11 @@ const Launcher: React.FC<LauncherProps> = ({ onStartMeeting, onOpenSettings, onC
                 setUploadText={setUploadText}
                 uploadMeetingTypes={uploadMeetingTypes}
                 setUploadMeetingTypes={setUploadMeetingTypes}
+                uploadCompany={uploadCompany}
+                setUploadCompany={setUploadCompany}
                 uploadError={uploadError}
                 isUploading={isUploading}
-                onClose={() => setIsUploadOpen(false)}
+                onClose={() => { setIsUploadOpen(false); setUploadCompany(null); }}
                 onSubmit={handleUploadTranscript}
             />
 

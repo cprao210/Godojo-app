@@ -944,6 +944,25 @@ export interface MeetingDetailedSummary {
   [key: string]: any;
 }
 
+export interface CompanyRef {
+  id: string;
+  name: string;
+  domain?: string | null;
+}
+
+// A row in the customer-companies registry (GET/POST /companies). Distinct
+// from the seller's own company-context — this is the customer attached to
+// meetings for AI context.
+export interface Company {
+  id: string;
+  name: string;
+  normalized_name: string;
+  domain: string | null;
+  source: "calendar" | "manual" | "import";
+  created_at?: string;
+  updated_at?: string;
+}
+
 export interface Meeting {
   id: string;
   title: string;
@@ -955,6 +974,16 @@ export interface Meeting {
   calendarEventId?: string;
   calendarEventMetadata?: any[];
   source?: string;
+  // Customer company attached to this meeting (backend resolves via
+  // meetings.company_id). company_skipped records that the user dismissed
+  // the post-call company prompt, so it isn't shown again.
+  company?: CompanyRef | null;
+  company_skipped?: boolean;
+  // When the meeting's attendees span 2+ external domains, the backend
+  // can't pick — these are the candidates the end-of-call prompt offers.
+  company_candidates?: { name: string; domain: string }[] | null;
+  // Call categories from the scorecard (multi — demo + negotiation etc.).
+  meetingTypes?: string[];
   detailedSummary?: MeetingDetailedSummary;
   participants?: { email: string | null; name: string | null; oraganizer: boolean; self: boolean }[];
   transcript?: MeetingTranscriptLine[];

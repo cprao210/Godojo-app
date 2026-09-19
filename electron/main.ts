@@ -3449,7 +3449,8 @@ export class AppState {
     // phase uses a deterministic ID rather than getRecentMeetings(1) which
     // could return a different meeting if the user starts a new session before
     // background processing finishes.
-    const meetingId = await this.intelligenceManager.stopMeeting(meetingTypes, tenantId);
+    const stopped = await this.intelligenceManager.stopMeeting(meetingTypes, tenantId);
+    const meetingId = stopped?.meetingId ?? null;
     // Tell the overlay window EXACTLY which meeting this call became — don't
     // make it infer this from getRecentMeetings()[0]. That list is sorted by
     // `created_at`, and while that's now pinned write-once (DatabaseManager
@@ -3457,8 +3458,17 @@ export class AppState {
     // "most recent row" is still a guess. This broadcast is the one
     // authoritative, race-free source for "which meeting did the call I just
     // ended turn into".
+    //
+    // source + candidates ride along for the company-association prompt: the
+    // LAUNCHER window (a separate renderer — the overlay has no room for a
+    // modal) decides whether to show the picker, and it needs the session
+    // source plus attendee-domain candidates without racing the AI pipeline.
     if (meetingId) {
-      this.broadcast('live-call-ended', { meetingId });
+      this.broadcast('live-call-ended', {
+        meetingId,
+        source: stopped!.source,
+        candidates: stopped!.candidates,
+      });
     }
     // Pending-live-analysis bookkeeping moved into MeetingPersistence's
     // deferred finalize phase — it must run after the analysis-settle wait to
