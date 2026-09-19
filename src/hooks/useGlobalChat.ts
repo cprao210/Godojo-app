@@ -6,6 +6,7 @@
 
 import { useCallback, useEffect, useRef, useState } from "react";
 import { chatApi, statusLabel, groupSources } from "@/api/chatApi";
+import { indexSourceMap } from "@/features/chat/citations";
 import { useStreamBuffer } from "@/hooks/useStreamBuffer";
 import { posthogAnalytics } from "@/lib/analytics/posthog.service";
 import { ChatHistoryTurn, ChatSession, ChatSources, GlobalChatMessage, GlobalChatState, StreamHandle } from "@/types";
@@ -140,6 +141,21 @@ export function useGlobalChat({ isOpen, onClose, initialQuery = "" }: UseGlobalC
             onSources: (s) => {
                 sources = s;
             },
+            // Arrives BEFORE the first token: the [n] -> source map the renderer
+            // uses to draw inline citation chips + hover cards.
+            onSourceMap: (entries) => {
+                const map = indexSourceMap(entries);
+                setMessages((prev) =>
+                    prev.map((msg) => (msg.id === assistantMessageId ? { ...msg, sourceMap: map } : msg)),
+                );
+            },
+            // Arrives after the final token: chips for these indices failed
+            // semantic verification and render dimmed.
+            onSourcesVerified: (_verified, unverified) => {
+                setMessages((prev) =>
+                    prev.map((msg) => (msg.id === assistantMessageId ? { ...msg, unverifiedCitations: unverified } : msg)),
+                );
+            },
             onSessionCreated: (id) => {
                 setSessionId(id);
                 // A brand-new session — the sidebar doesn't know about it yet.
@@ -152,20 +168,22 @@ export function useGlobalChat({ isOpen, onClose, initialQuery = "" }: UseGlobalC
                     prev.map((s) => (s.id === sessionId ? { ...s, title } : s)),
                 );
             },
-            // Backend discarded a partial answer and is starting over — clear
-            // the buffer and the rendered text so the retry replaces it.
+            // Backend discarded a partial answer and is starting over — drop
+            // the buffered frames so the retry replaces rather than appends,
+            // but keep the partial text on screen dimmed with a badge instead
+            // of wiping the bubble (a vanishing answer reads as a glitch).
             onReset: () => {
                 streamBuffer.reset();
                 setStatusText("Rewriting…");
                 setMessages((prev) =>
-                    prev.map((msg) => (msg.id === assistantMessageId ? { ...msg, content: "" } : msg)),
+                    prev.map((msg) => (msg.id === assistantMessageId ? { ...msg, rewriting: true } : msg)),
                 );
             },
             onToken: (chunk) => {
                 setChatState("streaming_response");
                 setStatusText(null);
                 streamBuffer.appendToken(chunk, (content) => {
-                    setMessages((prev) => prev.map((msg) => (msg.id === assistantMessageId ? { ...msg, content } : msg)));
+                    setMessages((prev) => prev.map((msg) => (msg.id === assistantMessageId ? { ...msg, content, rewriting: false } : msg)));
                 });
             },
             // Backend decided this was a factual/RAG query and returned the
@@ -174,7 +192,7 @@ export function useGlobalChat({ isOpen, onClose, initialQuery = "" }: UseGlobalC
             onRagAnswer: (ragAnswer) => {
                 setMessages((prev) =>
                     prev.map((msg) =>
-                        msg.id === assistantMessageId ? { ...msg, content: ragAnswer.answer, isStreaming: false, sources } : msg,
+                        msg.id === assistantMessageId ? { ...msg, content: ragAnswer.answer, isStreaming: false, rewriting: false, sources } : msg,
                     ),
                 );
                 setChatState("idle");
@@ -185,7 +203,7 @@ export function useGlobalChat({ isOpen, onClose, initialQuery = "" }: UseGlobalC
                 setMessages((prev) =>
                     prev.map((msg) =>
                         msg.id === assistantMessageId && msg.isStreaming
-                            ? { ...msg, content: finalContent, isStreaming: false, sources }
+                            ? { ...msg, content: finalContent, isStreaming: false, rewriting: false, sources }
                             : msg,
                     ),
                 );
@@ -236,6 +254,9 @@ export function useGlobalChat({ isOpen, onClose, initialQuery = "" }: UseGlobalC
                     // already renders null for zero sources anyway, so keeping
                     // this undefined-when-absent is just cleaner upstream.
                     sources: turn.sources?.length ? groupSources(turn.sources) : undefined,
+                    // Inline-citation map persisted at answer time — restored so
+                    // reloaded answers re-render the numbered chips, same as live.
+                    sourceMap: turn.source_map?.length ? indexSourceMap(turn.source_map) : undefined,
                 })),
             );
             setSessionId(id);

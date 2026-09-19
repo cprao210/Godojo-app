@@ -21,7 +21,7 @@ import { GlobalChatOverlay, FloatingChatButton } from '@/features/chat';
 import { useLauncher } from '@/hooks';
 import { LauncherHeader, GhostModeToggle, RefreshButton, StartMeetingButton, OllamaPullBadge } from './LauncherWidgets';
 import { CalendarConnectCard, RecentMeetingsHeader, MeetingsList, RefreshToast, TranscriptUploadModal, LoadMoreMeetingsButton } from './LauncherWidgets';
-import { LauncherProps, Meeting } from '@/types';
+import { LauncherProps, Meeting, SourceMapEntry } from '@/types';
 import { posthogAnalytics } from '@/lib/analytics/posthog.service';
 
 const Launcher: React.FC<LauncherProps> = ({ onStartMeeting, onOpenSettings, onCloseSettings, onOpenManagerDashboard, onCloseManagerDashboard, isManagerDashboardOpen = false, isSettingsOpen = false, onPageChange, ollamaPullStatus = 'idle', ollamaPullPercent = 0, ollamaPullMessage = '', authUser, onSignOut }) => {
@@ -59,6 +59,18 @@ const Launcher: React.FC<LauncherProps> = ({ onStartMeeting, onOpenSettings, onC
         if (isSettingsOpen) onCloseSettings?.();
         if (isManagerDashboardOpen) onCloseManagerDashboard?.();
         handleOpenMeeting(meeting);
+    };
+
+    // Doc citation chips: open the cited company asset. Only a resolvable
+    // file_url (system-browser open) is actionable today — the app-relative
+    // asset_url route doesn't exist in this Electron app, and CiteChip falls
+    // back to its pinned preview card when no resolvable URL applies.
+    const handleOpenAsset = (src: SourceMapEntry) => {
+        if (src.file_url) {
+            window.open(src.file_url, '_blank');
+            return;
+        }
+        console.warn('[Launcher] Asset citation has no resolvable file_url:', src.id, src.asset_url);
     };
 
     useEffect(() => {
@@ -330,6 +342,7 @@ const Launcher: React.FC<LauncherProps> = ({ onStartMeeting, onOpenSettings, onC
                         handleOpenMeeting(meeting);
                     }
                 }}
+                onOpenAsset={handleOpenAsset}
             />
             {/* Sales Brief Panel */}
             <AnimatePresence>

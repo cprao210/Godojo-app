@@ -176,6 +176,7 @@ describe('chatApi.queryGlobal', () => {
             query: 'what changed last quarter?',
             session_id: null,
             history: [],
+            citations_inline: true,
         });
     });
 
@@ -191,6 +192,7 @@ describe('chatApi.queryGlobal', () => {
             query: 'follow-up question',
             session_id: 'session-abc',
             history: [],
+            citations_inline: true,
         });
     });
 
@@ -405,6 +407,7 @@ describe('chatApi.queryMeeting', () => {
             query: 'what was decided?',
             session_id: null,
             history: [],
+            citations_inline: true,
         });
     });
 });

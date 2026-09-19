@@ -8,8 +8,16 @@
 
 import { Prism as SyntaxHighlighter } from 'react-syntax-highlighter';
 import { vscDarkPlus } from 'react-syntax-highlighter/dist/esm/styles/prism';
+import { CiteChip } from './citations';
 
 export const chatMarkdownComponents = {
+    // Inline [n] citation chips — rehypeCitations turns the markers into
+    // <cite> hast nodes; the hover card reads the message's source_map from
+    // CitationProvider (see citations.tsx). `node` is passed through so
+    // CiteChip can read the original `indices` array from the hast properties
+    // (react-markdown otherwise flattens it to a string on the props).
+    cite: ({ node, ...props }: any) => <CiteChip node={node} {...props} />,
+
     p: ({ node, ...props }: any) => <p className="mb-2 last:mb-0 whitespace-pre-wrap break-words" {...props} />,
     a: ({ node, ...props }: any) => (
         <a className="text-blue-500 hover:underline break-words" {...props} />

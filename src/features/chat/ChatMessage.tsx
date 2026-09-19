@@ -4,8 +4,9 @@ import { motion } from 'framer-motion';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import { chatMarkdownComponents } from './markdownComponents';
+import { CitationProvider, rehypeCitations, CiteChip } from './citations';
 import SourcesDisplay from './SourcesDisplay';
-import { ChatSources } from '@/types';
+import { ChatSources, SourceMapEntry } from '@/types';
 
 // ============================================
 // Message Components
@@ -28,10 +29,20 @@ interface AssistantMessageProps {
     content: string;
     isStreaming?: boolean;
     sources?: ChatSources;
+    /** [n] -> source map from the `source_map` frame (inline chips + hover cards). */
+    sourceMap?: Record<number, SourceMapEntry>;
+    /** Citation indices that failed semantic verification — dim those chips. */
+    unverifiedCitations?: number[];
+    /** Backend discarded a partial answer and is re-streaming — dim + badge
+     * instead of wiping (handled in the reset callbacks of the hooks). */
+    rewriting?: boolean;
     onOpenMeeting?: (meetingId: string) => void;
+    /** Opens a cited company-asset document (resolvable file_url). Omitting
+     * it leaves doc chips on the preview-card fallback. */
+    onOpenAsset?: (src: SourceMapEntry) => void;
 }
 
-export const AssistantMessage: React.FC<AssistantMessageProps> = ({ content, isStreaming, sources, onOpenMeeting }) => {
+export const AssistantMessage: React.FC<AssistantMessageProps> = ({ content, isStreaming, sources, sourceMap, unverifiedCitations, rewriting, onOpenMeeting, onOpenAsset }) => {
     const [copied, setCopied] = useState(false);
 
     // While waiting for the first frame the assistant placeholder has no
@@ -62,20 +73,39 @@ export const AssistantMessage: React.FC<AssistantMessageProps> = ({ content, isS
                 <Sparkles size={11} className="text-white" />
             </div>
             <div className="flex flex-col items-start min-w-0 max-w-[85%]">
-                <div className="bg-bg-item-surface text-text-primary text-[13.5px] leading-relaxed px-4 py-2.5 rounded-2xl rounded-tl-md min-w-0 max-w-full">
-                    <div className="markdown-content min-w-0 max-w-full overflow-x-hidden">
-                        <ReactMarkdown
-                            // No math plugin here on purpose: sales answers are
-                            // dense with currency ("$204,000 and $173,400"),
-                            // which remark-math/KaTeX happily parses as an
-                            // inline $…$ equation — the mixed-font artifact in
-                            // pricing answers. All other markdown surfaces in
-                            // the app render plain GFM; stay consistent.
-                            remarkPlugins={[remarkGfm]}
-                            components={chatMarkdownComponents}
+                <div className="bg-bg-item-surface text-text-primary text-[13.5px] leading-relaxed px-4 py-2.5 rounded-2xl rounded-tl-md min-w-0 max-w-full transition-opacity" style={rewriting ? { opacity: 0.55 } : undefined}>
+                    {rewriting && (
+                        <div className="mb-1.5 text-[10px] uppercase tracking-wide text-text-tertiary animate-pulse">
+                            Rewriting…
+                        </div>
+                    )}
+                    {/* overflow-x-clip (not -hidden): hidden forces overflow-y to
+                        auto, turning this box into a scroll container that clips
+                        the citation hover cards escaping above the first line. */}
+                    <div className="markdown-content min-w-0 max-w-full overflow-x-clip">
+                        <CitationProvider
+                            map={sourceMap}
+                            unverified={unverifiedCitations}
+                            onOpenMeeting={onOpenMeeting}
+                            onOpenAsset={onOpenAsset}
                         >
-                            {content}
-                        </ReactMarkdown>
+                            <ReactMarkdown
+                                // No math plugin here on purpose: sales answers are
+                                // dense with currency ("$204,000 and $173,400"),
+                                // which remark-math/KaTeX happily parses as an
+                                // inline $…$ equation — the mixed-font artifact in
+                                // pricing answers. All other markdown surfaces in
+                                // the app render plain GFM; stay consistent.
+                                remarkPlugins={[remarkGfm]}
+                                rehypePlugins={[rehypeCitations]}
+                                components={{
+                                    ...chatMarkdownComponents,
+                                    cite: CiteChip as any,
+                                }}
+                            >
+                                {content}
+                            </ReactMarkdown>
+                        </CitationProvider>
                     </div>
                     {isStreaming && (
                         <motion.span
@@ -94,7 +124,7 @@ export const AssistantMessage: React.FC<AssistantMessageProps> = ({ content, isS
                             {copied ? <Check size={12} className="text-emerald-500" /> : <Copy size={12} />}
                             {copied ? 'Copied' : 'Copy'}
                         </button>
-                        {sources && <SourcesDisplay sources={sources} onOpenMeeting={onOpenMeeting} />}
+                        {sources && <SourcesDisplay sources={sources} onOpenMeeting={onOpenMeeting} onOpenAsset={onOpenAsset} sourceMap={sourceMap} />}
                     </div>
                 )}
             </div>

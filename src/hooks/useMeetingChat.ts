@@ -8,6 +8,7 @@
 import { useState, useEffect, useRef, useCallback } from 'react';
 import { useStreamBuffer } from './useStreamBuffer';
 import { chatApi, statusLabel } from '@/api';
+import { indexSourceMap } from '@/features/chat/citations';
 import { posthogAnalytics } from '@/lib/analytics/posthog.service';
 import type { ChatSources, MeetingChatMessage, MeetingChatState, StreamHandle, MeetingContext } from '@/types';
 
@@ -154,13 +155,30 @@ export function useMeetingChat({ isOpen, onClose, onMessagesChange, messages, me
             onRetry: (attempt, max) => setStatusText(`Reconnecting… (${attempt}/${max})`),
             onSessionCreated: (id) => setSessionId(id),
             onSources: (s) => { sources = s; },
-            // Backend discarded a partial answer and is starting over — clear
-            // the buffer and the rendered text so the retry replaces it.
+            // [n] -> source map, sent before the first token: drives inline
+            // citation chips + hover cards.
+            onSourceMap: (entries) => {
+                const map = indexSourceMap(entries);
+                onMessagesChange(prev => prev.map(msg =>
+                    msg.id === assistantMessageId ? { ...msg, sourceMap: map } : msg
+                ));
+            },
+            // Post-stream: chips for these indices failed semantic
+            // verification and render dimmed.
+            onSourcesVerified: (_verified, unverified) => {
+                onMessagesChange(prev => prev.map(msg =>
+                    msg.id === assistantMessageId ? { ...msg, unverifiedCitations: unverified } : msg
+                ));
+            },
+            // Backend discarded a partial answer and is starting over — drop
+            // the buffered frames so the retry replaces rather than appends,
+            // but keep the partial text on screen dimmed with a badge instead
+            // of wiping the bubble (a vanishing answer reads as a glitch).
             onReset: () => {
                 streamBuffer.reset();
                 setStatusText('Rewriting…');
                 onMessagesChange(prev => prev.map(msg =>
-                    msg.id === assistantMessageId ? { ...msg, content: '' } : msg
+                    msg.id === assistantMessageId ? { ...msg, rewriting: true } : msg
                 ));
             },
             onToken: (chunk) => {
@@ -168,7 +186,7 @@ export function useMeetingChat({ isOpen, onClose, onMessagesChange, messages, me
                 setStatusText(null);
                 streamBuffer.appendToken(chunk, (content) => {
                     onMessagesChange(prev => prev.map(msg =>
-                        msg.id === assistantMessageId ? { ...msg, content } : msg
+                        msg.id === assistantMessageId ? { ...msg, content, rewriting: false } : msg
                     ));
                 });
             },
@@ -178,7 +196,7 @@ export function useMeetingChat({ isOpen, onClose, onMessagesChange, messages, me
             onRagAnswer: (ragAnswer) => {
                 onMessagesChange(prev => prev.map(msg =>
                     msg.id === assistantMessageId
-                        ? { ...msg, content: ragAnswer.answer, isStreaming: false, sources }
+                        ? { ...msg, content: ragAnswer.answer, isStreaming: false, rewriting: false, sources }
                         : msg
                 ));
                 setChatState('idle');
