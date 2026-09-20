@@ -1,4 +1,4 @@
-import React, { useCallback, useEffect, useState } from "react";
+import React, { useCallback, useEffect, useRef, useState } from "react";
 import { AnimatePresence, motion } from "framer-motion";
 import { QueryClientProvider } from "react-query";
 
@@ -6,6 +6,7 @@ import { QueryClientProvider } from "react-query";
 // lib — infra / service wrappers
 // ---------------------------------------------------------------------------
 import { queryClient } from "@/lib/queryClient";
+import { skipSplashThisLoad } from "@/lib/splash";
 import { posthogAnalytics } from "@/lib/analytics/posthog.service";
 import { meetingsApi } from "@/api";
 
@@ -23,6 +24,7 @@ import { CompanySelectModal } from "@/features/meetings";
 import { InviteAccountMismatchBanner, TeamInviteNotification, InviteAcceptedNotifier } from "@/features/tenant";
 import { SettingsPopup, SettingsOverlay } from "@/features/settings"; // Keeping for legacy/specific window support if needed
 import { StartupSequence } from "@/features/onboarding";
+import { BirdLoader } from "@/features/ui/BirdLoader";
 // import UpdateBanner from "../features/updates/UpdateBanner";
 
 // ---------------------------------------------------------------------------
@@ -134,7 +136,22 @@ const App: React.FC = () => {
   const { handleStartMeeting, handleEndMeeting, showPermissionTray, setShowPermissionTray, proceedWithMeeting } = useMeetingSession(tenantId, setIsProcessingMeeting);
 
   // --- Local UI state ----------------------------------------------------
-  const [showStartup, setShowStartup] = useState(true);
+  // Splash policy: the full-screen splash plays ONLY on (a) app start / hard
+  // refresh and (b) sign-in. It starts armed on every page load, except the
+  // reload that finishes an account switch (lib/splash.ts), which goes straight
+  // to the app behind the plain loader. Everywhere else the app shows <BirdLoader />
+  // inline, instantly, with no splash.
+  const [showStartup, setShowStartup] = useState(!skipSplashThisLoad);
+  // Re-arm whenever the user is signed out (sign-out, expired session, "add
+  // another account", pending email verification) so the NEXT sign-in plays
+  // the splash again. Without this it only ever played once per page load.
+  useEffect(() => {
+    if (authChecked && !authUser) setShowStartup(true);
+  }, [authChecked, authUser]);
+  // Has the splash been on screen during this page load? Decides whether the
+  // main view fades in after it (splash hand-over) or renders in place.
+  const splashShownRef = useRef(false);
+  if (showStartup && authUser) splashShownRef.current = true;
   const [isSettingsOpen, setIsSettingsOpen] = useState(false);
   const [isManagerDashboardOpen, setIsManagerDashboardOpen] = useState(false);
   const [settingsInitialTab, setSettingsInitialTab] = useState("general");
@@ -239,7 +256,17 @@ const App: React.FC = () => {
             launcher. The SignIn component triggers onIdTokenChanged on success, which
             updates `authUser` below and unmounts itself. */}
         {!authChecked ? (
-          <div className="h-full w-full" />
+          // Normal boot: stay blank — the splash (or SignIn) follows immediately.
+          // Account-switch reload: no splash is coming, so show the same loader
+          // the switch cover was showing to make the reload seamless.
+          skipSplashThisLoad ? (
+            <div className={`h-full w-full flex flex-col items-center justify-center gap-3 ${isLight ? "bg-white" : "bg-[#000000]"}`}>
+              <BirdLoader size={72} />
+              <span className="text-xs text-text-secondary">Switching account…</span>
+            </div>
+          ) : (
+            <div className="h-full w-full" />
+          )
         ) : pendingVerificationUser ? (
           <QueryClientProvider client={queryClient}>
             <ToastProvider>
@@ -278,7 +305,11 @@ const App: React.FC = () => {
                 <motion.div
                   key="main"
                   className="h-full w-full"
-                  initial={{ opacity: 0, scale: 0.98, y: 15 }} // "Linear" style entry: slightly down and scaled down
+                  // After the splash: "Linear" style entry (slightly down and scaled down).
+                  // After an account-switch reload there is no splash to hand over
+                  // from, and fading in from the black root would flash — render
+                  // in place instead.
+                  initial={skipSplashThisLoad && !splashShownRef.current ? false : { opacity: 0, scale: 0.98, y: 15 }}
                   animate={{ opacity: 1, scale: 1, y: 0 }} // Slide up and snap to place
                   transition={{
                     duration: 0.8,

@@ -7,16 +7,24 @@ const dragStyle: React.CSSProperties & { WebkitAppRegion: string } = {
   WebkitAppRegion: 'drag',
 };
 
+// The original animated splash (assets/Splash.svg). App.tsx only mounts this
+// on app start / hard refresh and on sign-in — see lib/splash.ts and the
+// showStartup logic in App.tsx. All other loading states use <BirdLoader />.
 const StartupSequence: React.FC<{ onComplete: () => void }> = ({ onComplete }) => {
   const imgRef = useRef<HTMLImageElement>(null);
   const timeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  // Held in a ref so the 3s timer isn't restarted every time App re-renders
+  // and passes a fresh inline callback (the old [onComplete] dependency did
+  // exactly that and could stretch the splash well past 3s).
+  const onCompleteRef = useRef(onComplete);
+  onCompleteRef.current = onComplete;
 
   useEffect(() => {
     let finished = false;
     const finish = () => {
       if (finished) return;
       finished = true;
-      onComplete();
+      onCompleteRef.current();
     };
 
     const img = imgRef.current;
@@ -37,7 +45,7 @@ const StartupSequence: React.FC<{ onComplete: () => void }> = ({ onComplete }) =
       finished = true;
       if (timeoutRef.current) clearTimeout(timeoutRef.current);
     };
-  }, [onComplete]);
+  }, []);
 
   return (
     <div style={{

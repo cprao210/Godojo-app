@@ -2,6 +2,7 @@ import React from 'react';
 import { Plus, MessageSquare, Trash2 } from 'lucide-react';
 import { motion } from 'framer-motion';
 import { ChatSessionSidebarProps } from '@/types';
+import { BirdLoader } from '@/features/ui/BirdLoader';
 
 // ============================================
 // Chat Session Sidebar — list of past global-chat
@@ -29,7 +30,10 @@ const ChatSessionSidebar: React.FC<ChatSessionSidebarProps> = ({
 
             <div className="flex-1 overflow-y-auto custom-scrollbar px-1.5 py-1.5">
                 {isLoading ? (
-                    <div className="px-2 py-2 text-[11.5px] text-text-tertiary">Loading…</div>
+                    <div className="flex items-center gap-2 px-2 py-2 text-[11.5px] text-text-tertiary">
+                        <BirdLoader size={22} label="Loading conversations" />
+                        Loading…
+                    </div>
                 ) : sessions.length === 0 ? (
                     <div className="px-2 py-2 text-[11.5px] text-text-tertiary leading-relaxed">
                         No conversations yet. Start one above.
