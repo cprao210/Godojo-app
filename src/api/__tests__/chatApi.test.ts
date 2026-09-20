@@ -18,6 +18,7 @@ vi.mock('@/lib/apiClient', async () => {
 import { chatApi, statusLabel } from '@/api';
 import { groupSources } from '@/api/chatApi';
 import { getAuthHeaders, apiFetch } from '@/lib/apiClient';
+import type { ChatStreamHandlers } from '@/types';
 
 const mockedGetAuthHeaders = vi.mocked(getAuthHeaders);
 const mockedApiFetch = vi.mocked(apiFetch);
@@ -613,5 +614,185 @@ describe('reset frame', () => {
         await result.settled;
 
         expect(result.resets).toBe(0);
+    });
+});
+
+// The backend reports generation failures IN-BAND: HTTP 200, a few `status`
+// frames, then `event: error` followed by `event: done`. That is exactly what
+// the DevTools EventStream tab showed for the failing chat:
+//   status(connected) status(searching) status(connected) status(searching)
+//   status(ranking) error done
+// These frames must go through the same retry path as a 5xx / dropped
+// connection, for all three chat entry points.
+describe('in-band error frames', () => {
+    const ERROR_MESSAGE = 'Something went wrong while generating a response. Please try again.';
+    const errorFrame = `event: error\ndata: {"error": "${ERROR_MESSAGE}"}`;
+    const doneFrame = 'event: done\ndata: {}';
+
+    /** A 200 whose stream fails after the pipeline stages — the screenshot. */
+    const failedAttempt = () =>
+        sseResponse([
+            'event: status\ndata: {"status": "connected"}',
+            'event: status\ndata: {"status": "searching"}',
+            'event: status\ndata: {"status": "ranking"}',
+            errorFrame,
+            doneFrame,
+        ]);
+
+    const goodAttempt = (text = 'Recovered answer') =>
+        sseResponse([`event: token\ndata: {"chunk":"${text}"}`, doneFrame]);
+
+    const callers: [string, (h: ChatStreamHandlers) => unknown][] = [
+        ['queryGlobal', (h) => chatApi.queryGlobal('hi', null, [], h)],
+        ['queryMeeting', (h) => chatApi.queryMeeting('m-1', 'hi', null, [], h)],
+        ['queryLive', (h) => chatApi.queryLive('hi', [], [], undefined, h)],
+    ];
+
+    let fetchMock: ReturnType<typeof vi.fn>;
+
+    beforeEach(() => {
+        fetchMock = vi.fn();
+        vi.stubGlobal('fetch', fetchMock);
+        vi.useFakeTimers(); // skip the 600ms/1.2s/2.4s backoff
+    });
+
+    afterEach(() => {
+        vi.useRealTimers();
+    });
+
+    describe.each(callers)('%s', (_name, call) => {
+        it('retries an error frame that arrives before any content, then completes', async () => {
+            fetchMock.mockImplementationOnce(() => Promise.resolve(failedAttempt()));
+            fetchMock.mockImplementationOnce(() => Promise.resolve(goodAttempt()));
+            const onRetry = vi.fn();
+            const onError = vi.fn();
+            const result = collectHandlers();
+
+            call({ ...result.handlers, onRetry, onError });
+            await vi.runAllTimersAsync();
+            await result.settled;
+
+            expect(onError).not.toHaveBeenCalled();
+            expect(result.done).toBe(true);
+            expect(result.tokens.join('')).toBe('Recovered answer');
+            expect(onRetry).toHaveBeenCalledTimes(1);
+            expect(onRetry).toHaveBeenCalledWith(1, MAX_STREAM_RETRIES);
+            expect(fetchMock).toHaveBeenCalledTimes(2);
+        });
+
+        it('surfaces the backend message once retries are exhausted — onError only, never onDone', async () => {
+            fetchMock.mockImplementation(() => Promise.resolve(failedAttempt()));
+            const onRetry = vi.fn();
+            const onDone = vi.fn();
+            const result = collectHandlers();
+
+            call({ ...result.handlers, onRetry, onDone });
+            await vi.runAllTimersAsync();
+            await result.settled;
+
+            expect(result.error).toBe(ERROR_MESSAGE);
+            expect(onDone).not.toHaveBeenCalled();
+            expect(onRetry).toHaveBeenCalledTimes(MAX_STREAM_RETRIES);
+            expect(fetchMock).toHaveBeenCalledTimes(MAX_STREAM_RETRIES + 1);
+        });
+
+        it('does not retry once answer tokens have streamed, and reports the error exactly once', async () => {
+            fetchMock.mockImplementation(() =>
+                Promise.resolve(sseResponse(['event: token\ndata: {"chunk":"Partial"}', errorFrame, doneFrame])),
+            );
+            const onRetry = vi.fn();
+            const onError = vi.fn();
+            const onDone = vi.fn();
+            const result = collectHandlers();
+
+            call({ ...result.handlers, onRetry, onError, onDone });
+            await vi.runAllTimersAsync();
+
+            expect(onError).toHaveBeenCalledTimes(1);
+            expect(onError).toHaveBeenCalledWith(ERROR_MESSAGE);
+            // The `done` frame that trails the error must not turn into a
+            // second terminal callback (it used to: consumers got onError
+            // then onDone and the latter reset the error state to idle).
+            expect(onDone).not.toHaveBeenCalled();
+            expect(onRetry).not.toHaveBeenCalled();
+            expect(fetchMock).toHaveBeenCalledTimes(1);
+        });
+    });
+
+    it('still retries when a source_ids frame arrived first — sources are not answer text', async () => {
+        fetchMock.mockImplementationOnce(() =>
+            Promise.resolve(sseResponse([
+                'event: source_ids\ndata: {"sources":[{"id":"m1","title":"Call A","type":"meeting"}]}',
+                errorFrame,
+                doneFrame,
+            ])),
+        );
+        fetchMock.mockImplementationOnce(() => Promise.resolve(goodAttempt()));
+        const onRetry = vi.fn();
+        const result = collectHandlers();
+
+        chatApi.queryGlobal('hi', null, [], { ...result.handlers, onRetry });
+        await vi.runAllTimersAsync();
+        await result.settled;
+
+        expect(result.done).toBe(true);
+        expect(result.error).toBeUndefined();
+        expect(onRetry).toHaveBeenCalledTimes(1);
+        expect(fetchMock).toHaveBeenCalledTimes(2);
+    });
+
+    it('does not treat a stream that only delivered sources and then closed silently as a finished answer', async () => {
+        fetchMock.mockImplementationOnce(() =>
+            Promise.resolve(sseResponse([
+                'event: source_ids\ndata: {"sources":[{"id":"m1","title":"Call A","type":"meeting"}]}',
+            ])),
+        );
+        fetchMock.mockImplementationOnce(() => Promise.resolve(goodAttempt()));
+        const onRetry = vi.fn();
+        const result = collectHandlers();
+
+        chatApi.queryGlobal('hi', null, [], { ...result.handlers, onRetry });
+        await vi.runAllTimersAsync();
+        await result.settled;
+
+        expect(result.tokens.join('')).toBe('Recovered answer');
+        expect(onRetry).toHaveBeenCalledTimes(1);
+    });
+
+    it('reuses the session created by a failed first attempt instead of creating a second one', async () => {
+        fetchMock.mockImplementationOnce(() =>
+            Promise.resolve(sseResponse([
+                'event: session_created\ndata: {"session_id":"s-1"}',
+                'event: status\ndata: {"status":"connected"}',
+                errorFrame,
+                doneFrame,
+            ])),
+        );
+        fetchMock.mockImplementationOnce(() => Promise.resolve(goodAttempt()));
+        const onSessionCreated = vi.fn();
+        const result = collectHandlers();
+
+        chatApi.queryGlobal('hi', null, [], { ...result.handlers, onSessionCreated });
+        await vi.runAllTimersAsync();
+        await result.settled;
+
+        const bodies = fetchMock.mock.calls.map(([, init]) => JSON.parse((init as RequestInit).body as string));
+        expect(bodies[0].session_id).toBeNull();
+        expect(bodies[1].session_id).toBe('s-1');
+        expect(onSessionCreated).toHaveBeenCalledTimes(1);
+        expect(onSessionCreated).toHaveBeenCalledWith('s-1');
+    });
+
+    it('never silently drops an error frame that has no payload', async () => {
+        fetchMock.mockImplementation(() => Promise.resolve(sseResponse(['event: error', doneFrame])));
+        const result = collectHandlers();
+
+        chatApi.queryGlobal('hi', null, [], result.handlers);
+        await vi.runAllTimersAsync();
+        await result.settled;
+
+        expect(result.done).toBe(false);
+        expect(result.error).toBe('Something went wrong.');
+        expect(fetchMock).toHaveBeenCalledTimes(MAX_STREAM_RETRIES + 1);
     });
 });

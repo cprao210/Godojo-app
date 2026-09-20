@@ -1,7 +1,7 @@
 // Streaming wrappers over the FastAPI chat/RAG routes. Unlike apiClient's axios
 // instance (which buffers the whole response as JSON), these endpoints stream
-// Server-Sent Events — `event: token|source_ids|done` frames, each followed by
-// a `data:` line — so we read the response body directly with `fetch` +
+// Server-Sent Events — `event: token|source_ids|error|done` frames, each
+// followed by a `data:` line — so we read the response body directly with `fetch` +
 // ReadableStream. Auth/tenant headers mirror apiClient's axios interceptor via
 // getAuthHeaders().
 
@@ -60,8 +60,22 @@ class EmptyStreamError extends Error {
     }
 }
 
+/** The backend accepted the request (200) and then reported a failure
+ * IN-BAND with an `event: error` frame (typically followed by `event: done`),
+ * e.g. "Something went wrong while generating a response." From the caller's
+ * side this is the same class of failure as a 5xx — it just arrives after the
+ * response headers instead of in them — so it is thrown into streamSSE's
+ * retry loop rather than handed straight to `onError`. */
+class StreamErrorFrame extends Error {
+    constructor(message: string) {
+        super(message);
+        this.name = 'StreamErrorFrame';
+    }
+}
+
 function isRetryableStreamError(err: unknown): boolean {
     if (err instanceof EmptyStreamError) return true;
+    if (err instanceof StreamErrorFrame) return true;
     if (err instanceof ApiError) return err.status >= 500 || err.status === 429;
     // fetch() rejects with a plain TypeError for network-level failures
     // (offline, DNS, connection reset) — anything else thrown here (e.g. a
@@ -76,14 +90,23 @@ function isRetryableStreamError(err: unknown): boolean {
  * progress comes entirely through the handler callbacks.
  *
  * Automatically retries (with backoff) on transient failures — but ONLY while
- * nothing has streamed back to the user yet. The moment a token, rag_answer,
- * or sources frame arrives, retries are disabled for the rest of this call:
+ * no answer text has streamed back to the user yet. The moment a token or
+ * rag_answer frame arrives, retries are disabled for the rest of this call:
  * re-sending the request after partial content has already rendered would
  * duplicate or garble what's on screen, which is worse than just surfacing
- * the error and letting the person hit "try again" themselves. A stream that
- * closes cleanly without ever sending content counts as transient too: the
- * consumers would otherwise finalize an empty assistant bubble and call it a
- * successful answer.
+ * the error and letting the person hit "try again" themselves. Sources /
+ * source_map / status frames are NOT answer text — a retry simply re-sends
+ * them — so they don't disable retries.
+ *
+ * "Transient" covers three shapes: a failed HTTP response (5xx/429) or dropped
+ * connection; a 200 whose body reports failure via an `event: error` frame;
+ * and a stream that closes cleanly without ever sending content (consumers
+ * would otherwise finalize an empty assistant bubble and call it a successful
+ * answer).
+ *
+ * Exactly ONE terminal callback fires per call: either `onDone` or `onError`,
+ * never both (an `error` frame is normally followed by a `done` frame, which
+ * must not be reported as a second, contradictory outcome).
  */
 function streamSSE(path: string, body: unknown, handlers: ChatStreamHandlers): StreamHandle {
     const controller = new AbortController();
@@ -98,15 +121,23 @@ function streamSSE(path: string, body: unknown, handlers: ChatStreamHandlers): S
     // callback, exactly as before this guard existed).
     let receivedDoneFrame = false;
     const markDoneFrame = () => { receivedDoneFrame = true; };
+    let createdSessionId: string | null = null;
 
-    // Wrap onToken/onRagAnswer/onSources so we can flip the retry gate the
-    // instant real content starts arriving, without touching every call site
-    // below.
+    // Wrap onToken/onRagAnswer so we can flip the retry gate the instant real
+    // answer content starts arriving, without touching every call site below.
+    // Sources are metadata that a retry re-sends (and the consumers replace),
+    // so an error after `source_ids` but before the first token is still
+    // retryable.
     const guardedHandlers: ChatStreamHandlers = {
         ...handlers,
         onToken: (chunk) => { hasStreamedContent = true; handlers.onToken(chunk); },
         onRagAnswer: (answer) => { hasStreamedContent = true; handlers.onRagAnswer?.(answer); },
-        onSources: (sources) => { hasStreamedContent = true; handlers.onSources?.(sources); },
+        // A brand-new chat sends `session_id: null` and the backend creates
+        // the session mid-stream. If that attempt then fails and we retry
+        // with `null` again, the backend would create a SECOND session and
+        // leave the first orphaned in the sidebar. Remember the id so the
+        // retry resumes the session that already exists.
+        onSessionCreated: (id) => { createdSessionId = id; handlers.onSessionCreated?.(id); },
     };
 
     (async () => {
@@ -116,7 +147,7 @@ function streamSSE(path: string, body: unknown, handlers: ChatStreamHandlers): S
                 const res = await fetch(`${API_BASE}${path}`, {
                     method: "POST",
                     headers: { "Content-Type": "application/json", ...authHeaders },
-                    body: JSON.stringify(body),
+                    body: JSON.stringify(withSessionId(body, createdSessionId)),
                     signal: controller.signal,
                 });
 
@@ -135,19 +166,27 @@ function streamSSE(path: string, body: unknown, handlers: ChatStreamHandlers): S
                 const decoder = new TextDecoder();
                 let buffer = "";
 
-                while (true) {
-                    const { value, done } = await reader.read();
-                    if (done) break;
-                    buffer += decoder.decode(value, { stream: true });
+                try {
+                    while (true) {
+                        const { value, done } = await reader.read();
+                        if (done) break;
+                        buffer += decoder.decode(value, { stream: true });
 
-                    // SSE frames are separated by a blank line.
-                    let sep: number;
-                    while ((sep = buffer.indexOf("\n\n")) !== -1) {
-                        dispatchFrame(buffer.slice(0, sep), guardedHandlers, markDoneFrame);
-                        buffer = buffer.slice(sep + 2);
+                        // SSE frames are separated by a blank line.
+                        let sep: number;
+                        while ((sep = buffer.indexOf("\n\n")) !== -1) {
+                            dispatchFrame(buffer.slice(0, sep), guardedHandlers, markDoneFrame);
+                            buffer = buffer.slice(sep + 2);
+                        }
                     }
+                    if (buffer.trim()) dispatchFrame(buffer, guardedHandlers, markDoneFrame); // trailing frame, no closing blank line
+                } finally {
+                    // dispatchFrame throws on an `error` frame, leaving the
+                    // body unread. Cancel so the connection is released
+                    // before we back off and re-request (no-op if the stream
+                    // already ended normally).
+                    reader.cancel().catch(() => { });
                 }
-                if (buffer.trim()) dispatchFrame(buffer, guardedHandlers, markDoneFrame); // trailing frame, no closing blank line
 
                 // A SILENT close (no content, no done frame) is not a success —
                 // the consumers would finalize an empty assistant bubble and
@@ -181,7 +220,7 @@ function streamSSE(path: string, body: unknown, handlers: ChatStreamHandlers): S
                 handlers.onError(
                     err instanceof EmptyStreamError
                         ? "The assistant returned an empty response. Please try again."
-                        : err instanceof ApiError
+                        : err instanceof ApiError || err instanceof StreamErrorFrame
                             ? err.message
                             : "Couldn't get a response. Please try again.",
                 );
@@ -193,6 +232,29 @@ function streamSSE(path: string, body: unknown, handlers: ChatStreamHandlers): S
     return { abort: () => controller.abort() };
 }
 
+/** Best-effort message from an `error` frame payload. Never throws — a
+ * malformed payload must not mask the fact that the backend reported an error. */
+function errorFrameMessage(data: string): string {
+    const fallback = "Something went wrong.";
+    if (!data) return fallback;
+    try {
+        const parsed = JSON.parse(data) as { error?: unknown };
+        return typeof parsed.error === "string" && parsed.error ? parsed.error : fallback;
+    } catch {
+        return fallback;
+    }
+}
+
+/** Retries of a brand-new chat must resume the session the failed attempt
+ * created (see onSessionCreated in streamSSE). Only bodies that carry a null
+ * `session_id` are touched — `/chat/live` has none, and a resumed chat already
+ * has its own. */
+function withSessionId(body: unknown, sessionId: string | null): unknown {
+    if (!sessionId || typeof body !== "object" || body === null) return body;
+    const b = body as Record<string, unknown>;
+    return "session_id" in b && b.session_id == null ? { ...b, session_id: sessionId } : body;
+}
+
 function dispatchFrame(frame: string, handlers: ChatStreamHandlers, onDoneFrame?: () => void): void {
     let event = "message";
     let data = "";
@@ -200,6 +262,12 @@ function dispatchFrame(frame: string, handlers: ChatStreamHandlers, onDoneFrame?
         if (line.startsWith("event:")) event = line.slice(6).trim();
         else if (line.startsWith("data:")) data += line.slice(5).trim();
     }
+
+    // Checked BEFORE the empty-data early return: an `error` frame with a
+    // missing/blank payload is still an error, and dropping it would let the
+    // trailing `done` frame report the turn as a (blank) success.
+    if (event === "error") throw new StreamErrorFrame(errorFrameMessage(data));
+
     if (!data) return;
 
     switch (event) {
@@ -262,11 +330,6 @@ function dispatchFrame(frame: string, handlers: ChatStreamHandlers, onDoneFrame?
             // Backend threw away a partial answer and is starting over. The
             // payload carries `reason` for logs; the UI only needs to clear.
             handlers.onReset?.();
-            break;
-        }
-        case "error": {
-            const parsed = JSON.parse(data) as { error?: string };
-            handlers.onError(parsed.error ?? "Something went wrong.");
             break;
         }
         case "done":

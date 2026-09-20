@@ -152,7 +152,16 @@ export function useMeetingChat({ isOpen, onClose, onMessagesChange, messages, me
         // prior turns itself, same as queryGlobal — see chatApi.ts.
         activeStreamRef.current = chatApi.queryMeeting(meetingContext.id, question, sessionId, [], {
             onStatus: (status) => setStatusText(statusLabel(status)),
-            onRetry: (attempt, max) => setStatusText(`Reconnecting… (${attempt}/${max})`),
+            // Retry = the turn starts over: show it, and drop whatever the
+            // failed attempt delivered so a retry that comes back without
+            // sources/citations can't inherit stale ones.
+            onRetry: (attempt, max) => {
+                sources = undefined;
+                setStatusText(`Reconnecting… (${attempt}/${max})`);
+                onMessagesChange(prev => prev.map(msg =>
+                    msg.id === assistantMessageId ? { ...msg, sourceMap: undefined } : msg
+                ));
+            },
             onSessionCreated: (id) => setSessionId(id),
             onSources: (s) => { sources = s; },
             // [n] -> source map, sent before the first token: drives inline

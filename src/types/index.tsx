@@ -362,10 +362,15 @@ export interface ChatStreamHandlers {
    * label with `statusLabel()` below. */
   onStatus?: (status: string) => void;
   /** Fired right before an automatic retry attempt, after a transient
-   * failure (network error, 5xx, 429) that happened before any content
-   * streamed back. `attempt` is 1-indexed. Never fires once tokens/an
-   * answer have started rendering — a partial answer is never retried,
-   * since re-sending would duplicate or garble what's already shown. */
+   * failure (network error, 5xx, 429, an in-band `error` frame, or an empty
+   * stream) that happened before any answer text streamed back. `attempt` is
+   * 1-indexed. Never fires once tokens/an answer have started rendering — a
+   * partial answer is never retried, since re-sending would duplicate or
+   * garble what's already shown.
+   *
+   * The retry starts the turn over, so drop anything the failed attempt
+   * delivered that the retry will re-send (sources, source map, status text)
+   * — otherwise a retry that comes back without them leaves stale ones. */
   onRetry?: (attempt: number, maxAttempts: number) => void;
   /** Fired when the backend discards what it has already streamed and starts
    * the answer again — an upstream drop mid-sentence, or a refusal it caught
@@ -380,8 +385,11 @@ export interface ChatStreamHandlers {
    * these across the call and POST them to `chatApi.linkMeetingInteractions`
    * once the call ends and a real meeting_id exists. */
   onInteractionId?: (interactionId: number) => void;
-  /** Fired once the stream has fully closed (after the `done` frame). */
+  /** Fired once the stream has fully closed (after the `done` frame). Never
+   * fires for a turn that ended in `onError`. */
   onDone?: () => void;
+  /** Terminal failure: retries (if any applied) are exhausted or not allowed.
+   * Fires at most once per call and never together with `onDone`. */
   onError: (error: string) => void;
 }
 

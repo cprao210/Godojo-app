@@ -455,6 +455,19 @@ export const FloatingChatPanel: React.FC<FloatingChatPanelProps> = React.memo(({
                     const label = statusLabel(status);
                     setMessages(prev => prev.map(m => m.id === assistantId ? { ...m, status: label } : m));
                 },
+                // Transient failure before any answer text (5xx, dropped
+                // connection, backend `error` frame, empty stream) — chatApi
+                // is about to re-ask. Surface it on the bubble and drop what
+                // the failed attempt delivered: sources render straight off
+                // the message here, so a retry that returns none must not
+                // leave the previous attempt's chips on screen.
+                onRetry: (attempt, max) => {
+                    setMessages(prev => prev.map(m =>
+                        m.id === assistantId
+                            ? { ...m, status: `Reconnecting… (${attempt}/${max})`, sources: undefined, sourceMap: undefined }
+                            : m
+                    ));
+                },
                 onInteractionId: (interactionId) => {
                     onInteractionId?.(interactionId);
                 },
@@ -542,6 +555,17 @@ export const FloatingChatPanel: React.FC<FloatingChatPanelProps> = React.memo(({
                     setErrorMessage(error);
                     setIsProcessing(false);
                     activeStreamRef.current = null;
+                    // Drain the queued question here too, exactly as onDone
+                    // does. An `error` frame used to be followed by an onDone
+                    // that did this; chatApi now guarantees a single terminal
+                    // callback, so without this a question typed while the
+                    // failing turn was in flight would sit in the ref and be
+                    // sent later, after an unrelated turn.
+                    if (pendingQuestionRef.current) {
+                        const next = pendingQuestionRef.current;
+                        pendingQuestionRef.current = null;
+                        setTimeout(() => submitQuestion(next), 50);
+                    }
                 },
             },
         );

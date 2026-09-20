@@ -138,6 +138,18 @@ export function useGlobalChat({ isOpen, onClose, initialQuery = "" }: UseGlobalC
         // last 20 turns from ai_interactions itself, so we always pass [].
         activeStreamRef.current = chatApi.queryGlobal(question, sessionId, [], {
             onStatus: (status) => setStatusText(statusLabel(status)),
+            // A transient failure (5xx, dropped connection, backend `error`
+            // frame, empty stream) before any answer text — chatApi is about
+            // to re-ask. Show it, and drop whatever the failed attempt
+            // delivered so a retry that comes back without sources/citations
+            // can't inherit stale ones.
+            onRetry: (attempt, max) => {
+                sources = undefined;
+                setStatusText(`Reconnecting… (${attempt}/${max})`);
+                setMessages((prev) =>
+                    prev.map((msg) => (msg.id === assistantMessageId ? { ...msg, sourceMap: undefined } : msg)),
+                );
+            },
             onSources: (s) => {
                 sources = s;
             },
