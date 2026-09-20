@@ -296,6 +296,34 @@ export interface ChatSources {
   assets: SourceRef[];
 }
 
+/** One entry of the up-front `source_map` SSE frame: what an inline [n]
+ * citation marker means. Emitted BEFORE the first token so chips can render
+ * while the answer streams. Only fields relevant to the source type are
+ * present — absent keys are omitted, never null. */
+export interface SourceMapEntry {
+  index: number;
+  id: string;
+  title: string;
+  type: 'doc' | 'meeting';
+  /** Doc: section heading; meeting summary blocks: 'Key points' etc. */
+  section?: string;
+  page?: number;
+  asset_type?: string;
+  speaker?: string;
+  owner?: string;
+  start_ms?: number;
+  end_ms?: number;
+  snippet?: string;
+  /** NotebookLM-style enhancements from backend */
+  timestamp_label?: string;
+  meeting_url?: string;
+  asset_url?: string;
+  preview_text?: string;
+  /** Resolvable file URL for the asset (system-browser open). Absent today:
+   * company_assets stores no file path, so doc chips fall back to preview. */
+  file_url?: string;
+}
+
 export interface RagAnswer {
   answer: string;
   sources: unknown[];
@@ -312,6 +340,13 @@ export interface ChatStreamHandlers {
   onRagAnswer?: (answer: RagAnswer) => void;
   /** Fired once, usually before the first token, with the retrieved chunk ids. */
   onSources?: (sources: ChatSources) => void;
+  /** Fired BEFORE the first token with the full [n] -> source mapping so the
+   * renderer can turn inline citation markers into hover chips live. */
+  onSourceMap?: (entries: SourceMapEntry[]) => void;
+  /** Fired once after the final token (inline-citations mode): which cited
+   * indices passed semantic verification and which failed. Failed ones get
+   * dimmed; indices in neither list keep their chip. */
+  onSourcesVerified?: (verified: number[], unverified: number[]) => void;
   /** Fired once, only on a brand-new chat (session_id was null in the
    * request) — the backend just created the session. Store this id and send
    * it as `session_id` on every subsequent turn in this conversation. */
@@ -361,6 +396,9 @@ export interface ChatHistoryTurn {
   // chatApi.ts). Only present on assistant turns that answered from RAG
   // context, and can be missing/empty even then — never assume it's there.
   sources?: { id: string; title: string; type: string }[];
+  /** Inline-citation map ([n] → source) persisted at answer time in the
+   * turn's metadata_json — drives chip rendering on session reload. */
+  source_map?: SourceMapEntry[];
 }
 
 export interface ChatSession {
@@ -390,6 +428,13 @@ export interface GlobalChatMessage {
   content: string;
   isStreaming?: boolean;
   sources?: ChatSources;
+  /** [n] -> source mapping from the `source_map` frame (chips + hover cards). */
+  sourceMap?: Record<number, SourceMapEntry>;
+  /** Citation indices that failed semantic verification — dim those chips. */
+  unverifiedCitations?: number[];
+  /** Backend discarded a partial answer (self-check rewrite, stream failure)
+   * and is re-streaming. Bubble dims with a badge instead of being wiped. */
+  rewriting?: boolean;
 }
 
 export type GlobalChatState = 'idle' | 'waiting_for_llm' | 'streaming_response' | 'error';
@@ -543,6 +588,15 @@ export interface FloatingChatMessage {
    * message is still streaming with no text yet. Cleared once the first
    * token/rag_answer arrives. */
   status?: string;
+  /** [n] -> source mapping from the live `source_map` frame — drives the
+   * inline citation chips + hover cards in the call panel. */
+  sourceMap?: Record<number, SourceMapEntry>;
+  /** Citation indices that failed semantic verification — dim those chips. */
+  unverifiedCitations?: number[];
+  /** Backend discarded a partial answer (refusal retry, brevity regen) and is
+   * re-streaming. The partial text dims with a badge instead of being wiped —
+   * mid-call, a vanishing answer reads as a glitch. */
+  rewriting?: boolean;
 }
 
 // --- src/features/live-analysis/types.ts ---
@@ -754,6 +808,10 @@ export interface AiInteractionItem {
   // Optional — plenty of interactions (e.g. the "couldn't find that" case)
   // have no useful sources, or none at all. Never assume present.
   sources?: AiInteractionSource[];
+  // Inline-citation map ([n] → source) persisted at answer time and lifted
+  // to top level by the backend — same shape `source_map` SSE frame and the
+  // session-reload endpoint carry. Drives the hoverable citation chips.
+  source_map?: SourceMapEntry[];
 }
 
 export interface AiInteractionsResponse {
@@ -804,6 +862,10 @@ export interface MeetingChatMessage {
   content: string;
   isStreaming?: boolean;
   sources?: ChatSources;
+  sourceMap?: Record<number, SourceMapEntry>;
+  unverifiedCitations?: number[];
+  /** Backend discarded a partial answer and is re-streaming — dim + badge. */
+  rewriting?: boolean;
 }
 
 export interface MeetingContext {
@@ -1523,6 +1585,9 @@ export interface GlobalChatOverlayProps {
    * single-source chip under an assistant answer. Omit to render the chip
    * as plain (non-clickable) text instead. */
   onOpenMeeting?: (meetingId: string) => void;
+  /** Opens a cited company-asset document (resolvable file_url from the
+   * backend). Omitting it leaves doc chips on the preview-card fallback. */
+  onOpenAsset?: (src: SourceMapEntry) => void;
 }
 
 export interface ChatSessionSidebarProps {
@@ -1782,6 +1847,15 @@ export interface Message {
    * message is still streaming with no text yet. Cleared once the first
    * token/rag_answer arrives. */
   status?: string;
+  /** [n] -> source mapping from the live `source_map` frame — drives the
+   * inline citation chips + hover cards in the call panel. */
+  sourceMap?: Record<number, SourceMapEntry>;
+  /** Citation indices that failed semantic verification — dim those chips. */
+  unverifiedCitations?: number[];
+  /** Backend discarded a partial answer (refusal retry, brevity regen) and is
+   * re-streaming. The partial text dims with a badge instead of being wiped —
+   * mid-call, a vanishing answer reads as a glitch. */
+  rewriting?: boolean;
 }
 
 export interface FloatingChatPanelProps {

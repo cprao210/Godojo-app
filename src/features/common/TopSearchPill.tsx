@@ -211,7 +211,7 @@ const TopSearchPill: React.FC<TopSearchPillProps> = ({
                                                     <div className="flex items-center gap-1.5 flex-wrap">
                                                         {(['all', 'today', '7d', '30d'] as const).map(v => {
                                                             const selected = filters.dateRange === v;
-                                                            const label = v === 'all' ? 'All time' : v === 'today' ? 'Today' : v === '7d' ? 'Last 7 days' : 'Last 30 days';
+                                                            const label = v === 'all' ? 'All time' : v === 'today' ? 'Today' : v === '7d' ? 'Last week' : 'Last month';
                                                             return (
                                                                 <button
                                                                     key={v}

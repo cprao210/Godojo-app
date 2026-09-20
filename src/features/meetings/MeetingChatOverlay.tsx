@@ -3,6 +3,7 @@ import { X, Copy, Check, FileText, ExternalLink } from 'lucide-react';
 import { motion, AnimatePresence } from 'framer-motion';
 import { IMAGES } from '@/lib/assets';
 import ReactMarkdown from 'react-markdown';
+import { CitationProvider, rehypeCitations, CiteChip } from '@/features/chat/citations';
 import remarkGfm from 'remark-gfm';
 import { chatMarkdownComponents } from '@/features/chat';
 import { useMeetingChat } from '@/hooks';
@@ -99,7 +100,7 @@ const SourcesDisplay: React.FC<{ sources: ChatSources; onOpenMeeting?: (meetingI
     );
 };
 
-const AssistantMessage: React.FC<{ content: string; isStreaming?: boolean; sources?: ChatSources; onOpenMeeting?: (meetingId: string) => void }> = ({ content, isStreaming, sources, onOpenMeeting }) => {
+const AssistantMessage: React.FC<{ content: string; isStreaming?: boolean; sources?: ChatSources; sourceMap?: Record<number, import('@/types').SourceMapEntry>; unverifiedCitations?: number[]; rewriting?: boolean; onOpenMeeting?: (meetingId: string) => void }> = ({ content, isStreaming, sources, sourceMap, unverifiedCitations, rewriting, onOpenMeeting }) => {
     const [copied, setCopied] = useState(false);
 
     // While waiting for the first frame the assistant placeholder has no
@@ -126,16 +127,31 @@ const AssistantMessage: React.FC<{ content: string; isStreaming?: boolean; sourc
             transition={{ duration: 0.15 }}
             className="flex flex-col items-start mb-6"
         >
-            <div className="text-text-primary text-[15px] leading-relaxed max-w-[85%]">
+            <div className="text-text-primary text-[15px] leading-relaxed max-w-[85%] transition-opacity" style={rewriting ? { opacity: 0.55 } : undefined}>
+                {rewriting && (
+                    <div className="mb-1.5 text-[10px] uppercase tracking-wide text-text-tertiary animate-pulse">
+                        Rewriting…
+                    </div>
+                )}
                 <div className="markdown-content">
-                    <ReactMarkdown
-                        // See ChatMessage.tsx: math parsing is disabled app-wide
-                        // so currency never renders as inline LaTeX.
-                        remarkPlugins={[remarkGfm]}
-                        components={chatMarkdownComponents}
+                    <CitationProvider
+                        map={sourceMap}
+                        unverified={unverifiedCitations}
+                        onOpenMeeting={onOpenMeeting}
                     >
-                        {content}
-                    </ReactMarkdown>
+                        <ReactMarkdown
+                            // See ChatMessage.tsx: math parsing is disabled app-wide
+                            // so currency never renders as inline LaTeX.
+                            remarkPlugins={[remarkGfm]}
+                            rehypePlugins={[rehypeCitations]}
+                            components={{
+                                ...chatMarkdownComponents,
+                                cite: CiteChip as any,
+                            }}
+                        >
+                            {content}
+                        </ReactMarkdown>
+                    </CitationProvider>
                 </div>
                 {isStreaming && (
                     <motion.span
@@ -235,8 +251,7 @@ const MeetingChatOverlay: React.FC<MeetingChatOverlayProps> = ({
                         <div className="flex-1 overflow-y-auto px-6 py-4 pb-32 custom-scrollbar">
                             {messages.map((msg) => (
                                 msg.role === 'user'
-                                    ? <UserMessage key={msg.id} content={msg.content} />
-                                    : <AssistantMessage key={msg.id} content={msg.content} isStreaming={msg.isStreaming} sources={msg.sources} onOpenMeeting={onOpenMeeting} />
+                                    ? <UserMessage key={msg.id} content={msg.content} />                                            : <AssistantMessage key={msg.id} content={msg.content} isStreaming={msg.isStreaming} sources={msg.sources} sourceMap={msg.sourceMap} unverifiedCitations={msg.unverifiedCitations} rewriting={msg.rewriting} onOpenMeeting={onOpenMeeting} />
                             ))}
 
                             {chatState === 'waiting_for_llm' && <TypingIndicator label={statusText ?? undefined} />}

@@ -10,6 +10,7 @@ import { MeetingChatOverlay, FollowUpEmailModal, MeetingScorecardPanel } from '@
 // that barrel, so going through it here would be a self-import cycle.
 import { CompanySelectModal } from '@/features/meetings/CompanyAssociation';
 import { chatMarkdownComponents, SourcesDisplay } from '@/features/chat';
+import { CitationProvider, rehypeCitations, CiteChip, indexSourceMap } from '@/features/chat/citations';
 import { EditableTextBlock } from '@/features/common';
 import { posthogAnalytics } from '@/lib/analytics/posthog.service';
 import { IMAGES } from '@/lib/assets';
@@ -1372,24 +1373,31 @@ const MeetingDetails: React.FC<MeetingDetailsProps> = ({ meeting: initialMeeting
                                                     <div>
                                                         <div className="text-[11px] text-text-tertiary mb-1.5 font-medium">{formatTime(interaction.timestamp)}</div>
                                                         <div className="text-text-secondary text-[15px] leading-relaxed max-w-none">
-                                                            <ReactMarkdown
-                                                                remarkPlugins={[remarkGfm]}
-                                                                components={{
-                                                                    ...chatMarkdownComponents,
-                                                                    // Ask Dojo tab keeps headings/paragraphs down to plain
-                                                                    // body copy (no bold/large text) unlike the chat overlays.
-                                                                    h1: ({ node, ...props }: any) => <p className="text-[15px] text-text-secondary font-normal leading-relaxed mb-2 whitespace-pre-wrap" {...props} />,
-                                                                    h2: ({ node, ...props }: any) => <p className="text-[15px] text-text-secondary font-normal leading-relaxed mb-2 whitespace-pre-wrap" {...props} />,
-                                                                    h3: ({ node, ...props }: any) => <p className="text-[15px] text-text-secondary font-normal leading-relaxed mb-2 whitespace-pre-wrap" {...props} />,
-                                                                    p: ({ node, ...props }: any) => <p className="text-[15px] text-text-secondary font-normal leading-relaxed mb-2 whitespace-pre-wrap" {...props} />,
-                                                                    ul: ({ node, ...props }: any) => <ul className="list-disc ml-4 mb-2 space-y-1" {...props} />,
-                                                                    ol: ({ node, ...props }: any) => <ol className="list-decimal ml-4 mb-2 space-y-1" {...props} />,
-                                                                    li: ({ node, ...props }: any) => <li className="text-[15px] text-text-secondary font-normal" {...props} />,
-                                                                    strong: ({ node, ...props }: any) => <span className="font-normal text-text-secondary" {...props} />,
-                                                                }}
-                                                            >
-                                                                {cleanMarkdown(interaction.ai_response || '')}
-                                                            </ReactMarkdown>
+                                                            {/* Same inline-citation design as the chat overlays:
+                                                                [n] markers become hoverable chips backed by the
+                                                                source_map persisted with each interaction. */}
+                                                            <CitationProvider map={indexSourceMap(interaction.source_map ?? [])}>
+                                                                <ReactMarkdown
+                                                                    remarkPlugins={[remarkGfm]}
+                                                                    rehypePlugins={[rehypeCitations]}
+                                                                    components={{
+                                                                        ...chatMarkdownComponents,
+                                                                        cite: CiteChip as any,
+                                                                        // Ask Dojo tab keeps headings/paragraphs down to plain
+                                                                        // body copy (no bold/large text) unlike the chat overlays.
+                                                                        h1: ({ node, ...props }: any) => <p className="text-[15px] text-text-secondary font-normal leading-relaxed mb-2 whitespace-pre-wrap" {...props} />,
+                                                                        h2: ({ node, ...props }: any) => <p className="text-[15px] text-text-secondary font-normal leading-relaxed mb-2 whitespace-pre-wrap" {...props} />,
+                                                                        h3: ({ node, ...props }: any) => <p className="text-[15px] text-text-secondary font-normal leading-relaxed mb-2 whitespace-pre-wrap" {...props} />,
+                                                                        p: ({ node, ...props }: any) => <p className="text-[15px] text-text-secondary font-normal leading-relaxed mb-2 whitespace-pre-wrap" {...props} />,
+                                                                        ul: ({ node, ...props }: any) => <ul className="list-disc ml-4 mb-2 space-y-1" {...props} />,
+                                                                        ol: ({ node, ...props }: any) => <ol className="list-decimal ml-4 mb-2 space-y-1" {...props} />,
+                                                                        li: ({ node, ...props }: any) => <li className="text-[15px] text-text-secondary font-normal" {...props} />,
+                                                                        strong: ({ node, ...props }: any) => <span className="font-normal text-text-secondary" {...props} />,
+                                                                    }}
+                                                                >
+                                                                    {cleanMarkdown(interaction.ai_response || '')}
+                                                                </ReactMarkdown>
+                                                            </CitationProvider>
                                                         </div>
                                                         {(() => {
                                                             const docSources = docSourcesFor(interaction.sources);

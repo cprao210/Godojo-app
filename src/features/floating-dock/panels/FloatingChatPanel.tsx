@@ -8,6 +8,7 @@ import { useStreamBuffer } from '@/hooks';
 import { chatApi, statusLabel } from '@/api';
 import { chatMarkdownComponents } from '@/features/chat';
 import SourcesDisplay from '@/features/chat/SourcesDisplay';
+import { CitationProvider, indexSourceMap, rehypeCitations, CiteChip } from '@/features/chat/citations';
 import { ChatHistoryTurn, FloatingChatPanelProps, LiveTranscriptSegment, Message, StreamHandle } from '@/types';
 import { getDockSurfaceStyle } from '../dockSurfaceStyle';
 import { posthogAnalytics } from '@/lib/analytics/posthog.service';
@@ -175,10 +176,23 @@ const MessageBubble: React.FC<{ msg: Message }> = ({ msg }) => {
                         <TypingDots label={msg.status} />
                     ) : (
                         <>
-                            <div className="markdown-content">
-                                <ReactMarkdown remarkPlugins={[remarkGfm]} components={chatMarkdownComponents}>
-                                    {msg.text}
-                                </ReactMarkdown>
+                            {msg.rewriting && (
+                                <div className="mb-2 text-[10px] uppercase tracking-wide text-white/45 animate-pulse">
+                                    Rewriting…
+                                </div>
+                            )}
+                            <div className="markdown-content" style={msg.rewriting ? { opacity: 0.55 } : undefined}>
+                                <CitationProvider
+                                    map={msg.sourceMap}
+                                    unverified={msg.unverifiedCitations}
+                                >
+                                    <ReactMarkdown remarkPlugins={[remarkGfm]} rehypePlugins={[rehypeCitations]} components={{
+                                        ...chatMarkdownComponents,
+                                        cite: CiteChip as any,
+                                    }}>
+                                        {msg.text}
+                                    </ReactMarkdown>
+                                </CitationProvider>
                                 {msg.ragAnswer && (
                                     <div className="mt-2 text-[10px] text-white/35 flex items-center gap-2">
                                         <span>{Math.round(msg.ragAnswer.confidence * 100)}% confidence</span>
@@ -428,7 +442,7 @@ export const FloatingChatPanel: React.FC<FloatingChatPanelProps> = React.memo(({
         let rafId: number | null = null;
         const flush = () => {
             rafId = null;
-            setMessages(prev => prev.map(m => m.id === assistantId ? { ...m, text: localBuffer } : m));
+            setMessages(prev => prev.map(m => m.id === assistantId ? { ...m, text: localBuffer, rewriting: false } : m));
         };
 
         activeStreamRef.current = chatApi.queryLive(
@@ -453,27 +467,38 @@ export const FloatingChatPanel: React.FC<FloatingChatPanelProps> = React.memo(({
                     if (sources.meetings.length === 0 && sources.assets.length === 0) return;
                     setMessages(prev => prev.map(m => m.id === assistantId ? { ...m, sources } : m));
                 },
+                // [n] -> source map, sent before the first token: drives the
+                // inline citation chips + hover cards.
+                onSourceMap: (entries) => {
+                    const map = indexSourceMap(entries);
+                    setMessages(prev => prev.map(m => m.id === assistantId ? { ...m, sourceMap: map } : m));
+                },
+                // Post-stream: chips for these indices failed semantic
+                // verification and render dimmed.
+                onSourcesVerified: (_verified, unverified) => {
+                    setMessages(prev => prev.map(m => m.id === assistantId ? { ...m, unverifiedCitations: unverified } : m));
+                },
                 onReset: () => {
-                    // The backend discarded a partial answer. Drop the text we
-                    // have rendered and any frame queued to render it, so the
-                    // replacement replaces rather than appends. Status comes
-                    // back so the rep sees work continuing, not a blank bubble.
+                    // The backend discarded a partial answer. Drop the queued
+                    // frame so the replacement replaces rather than appends,
+                    // but keep the partial text on screen dimmed with a
+                    // 'Rewriting…' badge instead of wiping the bubble —
+                    // mid-call, a vanishing answer reads as a glitch.
                     localBuffer = '';
                     if (rafId !== null) {
                         cancelAnimationFrame(rafId);
                         rafId = null;
                     }
                     setMessages(prev => prev.map(m =>
-                        m.id === assistantId ? { ...m, text: '', status: 'Rewriting…' } : m
+                        m.id === assistantId ? { ...m, rewriting: true, status: 'Rewriting…' } : m
                     ));
                 },
                 onToken: (chunk) => {
                     localBuffer += chunk;
                     if (rafId === null) rafId = requestAnimationFrame(flush);
-                    // First token has arrived — clear the status label so the
-                    // dots/status row is replaced by real content, not shown
-                    // alongside it.
-                    setMessages(prev => prev.map(m => (m.id === assistantId && m.status) ? { ...m, status: undefined } : m));
+                    // First token has arrived — clear the status label and
+                    // the rewrite dim so real content replaces both.
+                    setMessages(prev => prev.map(m => (m.id === assistantId && (m.status || m.rewriting)) ? { ...m, status: undefined, rewriting: false } : m));
                 },
                 onRagAnswer: (rag) => {
                     // Structured answer arrives whole — render as a complete
@@ -486,6 +511,7 @@ export const FloatingChatPanel: React.FC<FloatingChatPanelProps> = React.memo(({
                                 text: rag.answer,
                                 isStreaming: false,
                                 status: undefined,
+                                rewriting: false,
                                 ragAnswer: { confidence: rag.confidence ?? 0, sourceCount: rag.sources?.length ?? 0 },
                             }
                             : m

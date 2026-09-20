@@ -19,7 +19,7 @@ const BETTER_RESULTS_HINT = 'For better results please mention meeting names or 
 // Centered modal-style chat widget. All state, streaming, and DOM listeners
 // (auto-scroll, auto-focus, outside-click, Escape) live in useGlobalChat —
 // this component is rendering-only, composed from the pieces above.
-const GlobalChatOverlay: React.FC<GlobalChatOverlayProps> = ({ isOpen, onClose, initialQuery = '', onOpenMeeting }) => {
+const GlobalChatOverlay: React.FC<GlobalChatOverlayProps> = ({ isOpen, onClose, initialQuery = '', onOpenMeeting, onOpenAsset }) => {
 
     const globalChatStates = useGlobalChat({ isOpen, onClose, initialQuery });
     const isLight = useResolvedTheme() === "light";
@@ -112,7 +112,7 @@ const GlobalChatOverlay: React.FC<GlobalChatOverlayProps> = ({ isOpen, onClose, 
                                     {messages.map((msg) => (
                                         msg.role === 'user'
                                             ? <UserMessage key={msg.id} content={msg.content} />
-                                            : <AssistantMessage key={msg.id} content={msg.content} isStreaming={msg.isStreaming} sources={msg.sources} onOpenMeeting={onOpenMeeting} />
+                                            : <AssistantMessage key={msg.id} content={msg.content} isStreaming={msg.isStreaming} sources={msg.sources} sourceMap={msg.sourceMap} unverifiedCitations={msg.unverifiedCitations} rewriting={msg.rewriting} onOpenMeeting={onOpenMeeting} onOpenAsset={onOpenAsset} />
                                     ))}
 
                                     {chatState === 'waiting_for_llm' && <TypingIndicator label={statusText ?? undefined} />}

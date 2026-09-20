@@ -6,7 +6,7 @@
 // getAuthHeaders().
 
 import { getAuthHeaders, API_BASE, ApiError, apiFetch } from "@/lib/apiClient";
-import { ChatHistoryTurn, ChatSession, ChatSources, ChatStreamHandlers, CalendarEvent, LiveTranscriptSegment, RagAnswer, StreamHandle } from "@/types";
+import { ChatHistoryTurn, ChatSession, ChatSources, ChatStreamHandlers, CalendarEvent, LiveTranscriptSegment, RagAnswer, SourceMapEntry, StreamHandle } from "@/types";
 
 /** Groups a backend source list into the `{meetings, assets}` shape
  * ChatSources/SourcesDisplay expect. Shared by the live `source_ids` stream
@@ -223,6 +223,21 @@ function dispatchFrame(frame: string, handlers: ChatStreamHandlers, onDoneFrame?
             handlers.onSources?.(groupSources(parsed.sources));
             break;
         }
+        case "source_map": {
+            // Emitted before the first token: the [n] -> source mapping the
+            // renderer needs to draw citation chips live.
+            const parsed = JSON.parse(data) as { sources?: SourceMapEntry[] };
+            handlers.onSourceMap?.(parsed.sources ?? []);
+            break;
+        }
+        case "sources_verified": {
+            // Post-stream semantic verification. Indices in `unverified` had a
+            // citing sentence that didn't match their chunk — dim those chips;
+            // indices in neither list are unverifiable and keep their chip.
+            const parsed = JSON.parse(data) as { verified?: number[]; unverified?: number[] };
+            handlers.onSourcesVerified?.(parsed.verified ?? [], parsed.unverified ?? []);
+            break;
+        }
         case "rag_answer": {
             const parsed = JSON.parse(data) as RagAnswer;
             handlers.onRagAnswer?.(parsed);
@@ -303,7 +318,7 @@ export const chatApi = {
         history: ChatHistoryTurn[],
         handlers: ChatStreamHandlers,
     ): StreamHandle =>
-        streamSSE("/chat/rag/query/global", { query, session_id: sessionId, history }, handlers),
+        streamSSE("/chat/rag/query/global", { query, session_id: sessionId, history, citations_inline: true }, handlers),
 
     /** Post-meeting chat — MeetingChatOverlay. Same session_id/history contract as queryGlobal. */
     queryMeeting: (
@@ -313,7 +328,7 @@ export const chatApi = {
         history: ChatHistoryTurn[],
         handlers: ChatStreamHandlers,
     ): StreamHandle =>
-        streamSSE(`/chat/rag/query/meeting/${meetingId}`, { query, session_id: sessionId, history }, handlers),
+        streamSSE(`/chat/rag/query/meeting/${meetingId}`, { query, session_id: sessionId, history, citations_inline: true }, handlers),
 
     /** In-call chat — FloatingChatPanel. Needs the live transcript + prior turns,
      * plus the calendar event(s) the meeting was matched to (attendees, organizer,

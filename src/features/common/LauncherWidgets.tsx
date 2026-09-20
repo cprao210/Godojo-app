@@ -12,6 +12,7 @@ import {
     Settings, RefreshCw, Ghost, Trash2, Download, DownloadCloud, CheckCircle,
     AlertCircle, Briefcase, Upload, X, ChevronUp, ChevronDown,
     Radio, Mic, FileUp, Building2, Search, Check,
+    Timer,
 } from 'lucide-react';
 import { TopSearchPill, WindowControls } from '@/features/common';
 import { ConnectCalendarButton } from '@/features/calendar';
@@ -643,7 +644,7 @@ const MEETING_KIND_META: Record<MeetingKindType, {
     // Calendar-scheduled meeting recorded live.
     calendar: {
         label: 'Calendar',
-        tileIcon: Radio,
+        tileIcon: Calendar,
         tileCls: (isLight) => isLight ? 'bg-blue-500/10 text-accent-primary' : 'bg-blue-500/10 text-blue-400',
         pillCls: (isLight) => isLight
             ? 'bg-blue-50 border-blue-200 text-blue-600'
@@ -652,7 +653,7 @@ const MEETING_KIND_META: Record<MeetingKindType, {
     // Quick recording started manually — no calendar event behind it.
     quick: {
         label: 'Quick',
-        tileIcon: Mic,
+        tileIcon: Timer,
         tileCls: (isLight) => isLight ? 'bg-amber-500/10 text-amber-600' : 'bg-amber-500/10 text-amber-400',
         pillCls: (isLight) => isLight
             ? 'bg-amber-50 border-amber-200 text-amber-600'
@@ -661,7 +662,7 @@ const MEETING_KIND_META: Record<MeetingKindType, {
     // Transcript pasted into the upload modal — never recorded live.
     upload: {
         label: 'Upload',
-        tileIcon: FileUp,
+        tileIcon: Upload,
         tileCls: (isLight) => isLight ? 'bg-violet-500/10 text-violet-600' : 'bg-violet-500/10 text-violet-400',
         pillCls: (isLight) => isLight
             ? 'bg-violet-50 border-violet-200 text-violet-600'
