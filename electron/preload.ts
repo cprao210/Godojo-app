@@ -661,6 +661,17 @@ contextBridge.exposeInMainWorld("electronAPI", {
     ipcRenderer.on('live-call-ended', subscription);
     return () => { ipcRenderer.removeListener('live-call-ended', subscription); };
   },
+  // Fired once the SupabaseMirrorService outbox actually lands this meeting's
+  // row in Supabase — the moment GET /meetings/:id on the FastAPI backend
+  // (same Postgres instance) stops 404ing for it. Distinct from, and always
+  // AFTER, 'live-call-ended' (which fires right after the local SQLite
+  // placeholder save, before the row is synced). Use this to gate anything
+  // that needs the backend row to exist, e.g. the post-call company prompt.
+  onMeetingBackendReady: (callback: (data: { meetingId: string }) => void) => {
+    const subscription = (_: any, data: { meetingId: string }) => callback(data);
+    ipcRenderer.on('meeting-backend-ready', subscription);
+    return () => { ipcRenderer.removeListener('meeting-backend-ready', subscription); };
+  },
   onMeetingCompleted: (callback: () => void) => {
     const subscription = () => callback();
     ipcRenderer.on('meeting-completed', subscription);

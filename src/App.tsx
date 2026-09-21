@@ -109,29 +109,65 @@ const App: React.FC = () => {
   // single external domain was already auto-linked at start) and show the
   // picker only when the meeting is still company-less and wasn't skipped.
   // Uploads are answered inside the upload modal and never prompted.
+  //
+  // 'live-call-ended' fires the instant the LOCAL SQLite placeholder is
+  // saved — well before the meeting row is synced to the backend (see
+  // MeetingPersistence.stopMeeting / SupabaseMirrorService's outbox). A GET
+  // /meetings/:id fired right off that event races the sync and 404s more
+  // often than not, which is why the prompt used to only "sometimes" show.
+  // So: stash the live-call-ended payload, then wait for the dedicated
+  // 'meeting-backend-ready' signal (fired once the row actually lands in
+  // Supabase) before checking. A timeout is kept as a last-resort fallback
+  // only, in case that event is somehow missed — without it, a lost signal
+  // would silently suppress the prompt forever instead of just being slow.
   const [companyPromptMeetingId, setCompanyPromptMeetingId] = useState<string | null>(null);
   const [companyPromptCandidates, setCompanyPromptCandidates] = useState<{ name: string; domain: string }[]>([]);
   const isLight = useResolvedTheme() === 'light';
+  const pendingCompanyCheckRef = useRef<{ meetingId: string; candidates: { name: string; domain: string }[] } | null>(null);
+
+  const checkAndShowCompanyPrompt = useCallback(async (
+    meetingId: string,
+    candidates: { name: string; domain: string }[],
+  ) => {
+    try {
+      const meeting = await meetingsApi.get(meetingId);
+      if (meeting.company || meeting.company_skipped) return;
+      setCompanyPromptCandidates(candidates);
+      setCompanyPromptMeetingId(meetingId);
+    } catch {
+      // Lookup failed — skip the prompt; the MeetingDetails chip is the
+      // recovery path. A company prompt must never block the post-call flow.
+    }
+  }, []);
+
   useEffect(() => {
     if (isOverlayWindow) return; // no room for a modal in the 430px dock
-    const off = window.electronAPI?.onLiveCallEnded?.((payload) => {
+
+    const offEnded = window.electronAPI?.onLiveCallEnded?.((payload) => {
       const meetingId = payload?.meetingId;
       if (!meetingId || payload?.source === 'upload') return;
-      (async () => {
-        try {
-          const meeting = await meetingsApi.get(meetingId);
-          if (meeting.company || meeting.company_skipped) return;
-          setCompanyPromptCandidates(payload.candidates ?? []);
-          setCompanyPromptMeetingId(meetingId);
-        } catch {
-          // Lookup failed — skip the prompt; the MeetingDetails chip is the
-          // recovery path. A company prompt must never block the post-call flow.
-        }
-      })();
+      const candidates = payload.candidates ?? [];
+      pendingCompanyCheckRef.current = { meetingId, candidates };
+
+      // Fallback only — normally 'meeting-backend-ready' below resolves
+      // this well before 20s.
+      setTimeout(() => {
+        const pending = pendingCompanyCheckRef.current;
+        if (pending?.meetingId !== meetingId) return; // already handled
+        pendingCompanyCheckRef.current = null;
+        void checkAndShowCompanyPrompt(pending.meetingId, pending.candidates);
+      }, 20000);
     });
-    return () => off?.();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [isOverlayWindow]);
+
+    const offReady = window.electronAPI?.onMeetingBackendReady?.(({ meetingId }) => {
+      const pending = pendingCompanyCheckRef.current;
+      if (!meetingId || pending?.meetingId !== meetingId) return; // not the one we're waiting on
+      pendingCompanyCheckRef.current = null;
+      void checkAndShowCompanyPrompt(meetingId, pending.candidates);
+    });
+
+    return () => { offEnded?.(); offReady?.(); };
+  }, [isOverlayWindow, checkAndShowCompanyPrompt]);
 
   const { handleStartMeeting, handleEndMeeting, showPermissionTray, setShowPermissionTray, proceedWithMeeting } = useMeetingSession(tenantId, setIsProcessingMeeting);
 
@@ -390,6 +426,22 @@ const App: React.FC = () => {
                             candidates={companyPromptCandidates}
                             isLight={isLight}
                             onClose={() => setCompanyPromptMeetingId(null)}
+                            onSaved={() => {
+                              // Same reconciliation MeetingDetails.tsx's
+                              // edit-mode modal does: the PUT already
+                              // persisted on the backend, but nothing told
+                              // React Query the detail/list caches are
+                              // stale, so a Meeting Details view opened
+                              // right after would keep showing the old
+                              // (company-less) data until something else
+                              // happened to invalidate it.
+                              queryClient.invalidateQueries(["meeting", companyPromptMeetingId]);
+                              queryClient.invalidateQueries(["meetings"]);
+                            }}
+                            onCleared={() => {
+                              queryClient.invalidateQueries(["meeting", companyPromptMeetingId]);
+                              queryClient.invalidateQueries(["meetings"]);
+                            }}
                           />
                         )}
                       </AnimatePresence>

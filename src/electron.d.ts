@@ -383,6 +383,10 @@ export interface ElectronAPI {
   getMeetingMetadata: () => Promise<{ calendarEvent?: CalendarEvent } & Record<string, any> | null>
   onMeetingStateChanged: (callback: (data: { isActive: boolean }) => void) => () => void
   onLiveCallEnded: (callback: (data: { meetingId: string; source?: string; candidates?: { name: string; domain: string }[] }) => void) => () => void
+  /** Fires once the meeting row is actually confirmed synced to the backend
+   * (Supabase) — always after, and separate from, onLiveCallEnded. Use this
+   * to gate anything that needs GET /meetings/:id to succeed. */
+  onMeetingBackendReady: (callback: (data: { meetingId: string }) => void) => () => void
   onMeetingCompleted: (callback: () => void) => () => void
   savePendingLiveChatInteractions: (meetingId: string, interactionIds: number[]) => Promise<{ success: boolean; error?: string }>
   getPendingLiveChatInteractions: (meetingId: string) => Promise<number[]>

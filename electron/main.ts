@@ -5195,6 +5195,24 @@ async function initializeApp() {
       SupabaseMirrorService.getInstance().init(sqliteDb);
       console.log('[Main] SupabaseMirrorService initialized');
 
+      // Bridge the mirror's "a meetings row actually landed in Supabase"
+      // signal out to every renderer. This is deliberately a SEPARATE event
+      // from 'live-call-ended' (broadcast synchronously in endMeeting(),
+      // right after the local SQLite placeholder save) rather than a delay
+      // bolted onto it: useFloatingDock.ts and useLauncher.ts both depend on
+      // 'live-call-ended' firing immediately (call-ended dock state, the
+      // optimistic "Processing..." card) and are explicitly written around
+      // the backend row NOT existing yet at that point. Gating that broadcast
+      // on the backend write would silently regress both. Anything that
+      // specifically needs "the backend can now answer GET /meetings/:id for
+      // this id" (the post-call company prompt) should listen for THIS event
+      // instead.
+      SupabaseMirrorService.getInstance().on('meeting-synced', ({ id }: { id: string }) => {
+        BrowserWindow.getAllWindows().forEach((w) => {
+          if (!w.isDestroyed()) w.webContents.send('meeting-backend-ready', { meetingId: id });
+        });
+      });
+
       // One-time historical backfill: pushes any local SQLite rows that pre-date
       // mirror configuration up to Supabase. Idempotent — the backfill module
       // checkpoints progress in app_state ('supabase_backfill_done') so it's a

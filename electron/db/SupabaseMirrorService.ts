@@ -17,6 +17,7 @@
 //   - Vector entities: rag_chunk_vectors_{dim} and rag_summary_vectors_{dim}
 //     for each dimension tier (768, 1536, 3072).
 
+import { EventEmitter } from 'events';
 import { SupabaseClientManager } from './SupabaseClient';
 import { AuthManager } from '../services/AuthManager';
 import Database from 'better-sqlite3';
@@ -49,7 +50,7 @@ interface OutboxItem {
 // at a spinner for.
 const PRIORITY_TABLES = new Set(['meetings']);
 
-export class SupabaseMirrorService {
+export class SupabaseMirrorService extends EventEmitter {
     private static instance: SupabaseMirrorService;
     private outbox: OutboxItem[] = [];
     private draining = false;
@@ -57,7 +58,7 @@ export class SupabaseMirrorService {
     private enabled = false;
     private db: Database.Database | null = null;
 
-    private constructor() { }
+    private constructor() { super(); }
 
     static getInstance(): SupabaseMirrorService {
         if (!this.instance) this.instance = new SupabaseMirrorService();
@@ -482,6 +483,18 @@ export class SupabaseMirrorService {
                     this._deleteOutboxItem(item.id, item.ownerUid);
                     this.lastSyncAt = Date.now();
                     this.lastError = null;
+                    // A 'meetings' upsert landing means the row is now readable
+                    // through the FastAPI backend (same Postgres/Supabase
+                    // instance both sides hit) — the one moment renderer code
+                    // racing GET /meetings/:id right after call-end actually
+                    // cares about. Only the *creating* upsert qualifies: a
+                    // later 'update' (title/summary patch) implies the row
+                    // already existed, so it isn't a "now readable" transition
+                    // worth a fresh notification.
+                    if (item.table === 'meetings' && item.op === 'upsert') {
+                        const meetingId = (item.payload as any)?.id;
+                        if (meetingId) this.emit('meeting-synced', { id: meetingId });
+                    }
                 } else {
                     item.retries++;
                     if (item.retries >= MAX_RETRY) {
