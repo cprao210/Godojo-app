@@ -20,7 +20,7 @@ import { MeetingDetails, MeetingTimeline, NextMeetingDetails, NextMeetingEmptySt
 import { GlobalChatOverlay, FloatingChatButton } from '@/features/chat';
 import { useLauncher } from '@/hooks';
 import { LauncherHeader, GhostModeToggle, RefreshButton, StartMeetingButton, OllamaPullBadge } from './LauncherWidgets';
-import { CalendarConnectCard, RecentMeetingsHeader, MeetingsList, RefreshToast, TranscriptUploadModal, LoadMoreMeetingsButton } from './LauncherWidgets';
+import { CalendarConnectCard, RecentMeetingsHeader, MeetingsList, RefreshToast, TranscriptUploadModal, LoadMoreMeetingsButton, CompanyLinkFailureNotice } from './LauncherWidgets';
 import { LauncherProps, Meeting, SourceMapEntry } from '@/types';
 import { posthogAnalytics } from '@/lib/analytics/posthog.service';
 
@@ -37,6 +37,7 @@ const Launcher: React.FC<LauncherProps> = ({ onStartMeeting, onOpenSettings, onC
     const { isUploadOpen, setIsUploadOpen, uploadText, setUploadText, uploadTitle, setUploadTitle } = launcherStates;
     const { meetingsTotal } = launcherStates;
     const { isUploading, uploadMeetingTypes, setUploadMeetingTypes, uploadCompany, setUploadCompany, uploadError, handleUploadTranscript } = launcherStates;
+    const { uploadCompanyDraft, setUploadCompanyDraft, companyLinkFailure, retryCompanyLink, dismissCompanyLinkFailure } = launcherStates;
     const { salesBriefEvent, setSalesBriefEvent, isGlobalChatOpen, setIsGlobalChatOpen, submittedGlobalQuery, setSubmittedGlobalQuery } = launcherStates;
 
     // ─── Floating "Load more" button visibility ─────────────────────────────
@@ -368,10 +369,20 @@ const Launcher: React.FC<LauncherProps> = ({ onStartMeeting, onOpenSettings, onC
                 setUploadMeetingTypes={setUploadMeetingTypes}
                 uploadCompany={uploadCompany}
                 setUploadCompany={setUploadCompany}
+                uploadCompanyDraft={uploadCompanyDraft}
+                setUploadCompanyDraft={setUploadCompanyDraft}
                 uploadError={uploadError}
                 isUploading={isUploading}
-                onClose={() => { setIsUploadOpen(false); setUploadCompany(null); }}
+                onClose={() => { setIsUploadOpen(false); setUploadCompany(null); setUploadCompanyDraft(''); }}
                 onSubmit={handleUploadTranscript}
+            />
+
+            {/* Deferred company-association failure (upload flow) */}
+            <CompanyLinkFailureNotice
+                isLight={isLight}
+                companyName={companyLinkFailure?.company.name ?? null}
+                onRetry={retryCompanyLink}
+                onDismiss={dismissCompanyLinkFailure}
             />
 
         </div>

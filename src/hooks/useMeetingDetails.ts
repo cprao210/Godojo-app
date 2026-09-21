@@ -19,7 +19,7 @@ import { useQuery, useMutation, useQueryClient } from 'react-query';
 import { meetingsApi, chatApi } from '@/api';
 import { isMeetingProcessing } from '@/api/meetingMapping';
 import { guardSession } from '@/lib/firebase';
-import type { Meeting, MeetingTranscriptLine, MeetingScorecardResult, LiveAnalysisData } from '@/types';
+import type { CompanyRef, Meeting, MeetingTranscriptLine, MeetingScorecardResult, LiveAnalysisData } from '@/types';
 import { normalizeBant, normalizeMeddicc, confirmedOnly, BANT_ORDER, MEDDICC_ORDER } from '@/lib/bantMeddic';
 import { deriveProcessingStage, hasGeneratedSummary, PROCESSING_STALL_TIMEOUT_MS } from '@/lib/meetingLifecycle';
 import { classifyLLMError } from '@/lib/utils';
@@ -207,6 +207,28 @@ export function useMeetingDetails(initialMeeting: Meeting) {
     // resolve that way, so they count as resolved and render the list row.
     const isDetailResolved = !canFetchDetail || dataUpdatedAt > 0;
 
+    // Company resolution, deliberately SEPARATE from the detail query above.
+    //
+    // Two reasons the chip could otherwise never show an association:
+    //  1. the detail query is `enabled: !isProcessing`, so for the whole
+    //     processing window the view renders the stale list-row prop, and
+    //  2. every local/IPC read (DatabaseManager, SupabaseReadService) omits
+    //     `company` — neither selects company_id — so unblockFromLocal can't
+    //     supply it either.
+    // The backend (attach_companies) is the only source, and for an uploaded
+    // transcript the association is written asynchronously AFTER the row
+    // syncs, so this polls until it resolves rather than reading once.
+    const { data: resolvedCompany } = useQuery<CompanyRef | null>(
+        ["meeting-company", initialMeeting.id],
+        async () => (await meetingsApi.get(initialMeeting.id)).company ?? null,
+        {
+            enabled: canFetchDetail && !meetingData.company,
+            retry: 2,
+            refetchInterval: (data) => (data ? false : 15_000),
+            refetchOnWindowFocus: true,
+        },
+    );
+
     // /chat/live interaction_ids collected during the live call can't be
     // linked to a meeting until the backend actually has that meeting row —
     // useFloatingDock.ts only persists them locally at call-end (see
@@ -232,6 +254,21 @@ export function useMeetingDetails(initialMeeting: Meeting) {
             }
         })();
     }, [isProcessing, dataUpdatedAt, meetingData.id, initialMeeting.id]);
+
+    // A meeting opened while its backend row was still mirroring has a detail
+    // cache seeded from the list row (no company). When the mirror lands —
+    // and, for uploads, when the deferred association is written just after —
+    // re-read rather than waiting for the next mount.
+    useEffect(() => {
+        if (!canFetchDetail) return;
+        const off = window.electronAPI?.onMeetingBackendReady?.(({ meetingId }) => {
+            if (meetingId !== initialMeeting.id) return;
+            void queryClient.invalidateQueries(meetingKey);
+            void queryClient.invalidateQueries(["meeting-company", initialMeeting.id]);
+        });
+        return () => { off?.(); };
+        // eslint-disable-next-line react-hooks/exhaustive-deps
+    }, [canFetchDetail, initialMeeting.id]);
 
     // The HTTP transcript depends on the Supabase mirror having already synced this
     // meeting's transcript rows — fire-and-forget, and can lag behind (or, for some
@@ -292,11 +329,17 @@ export function useMeetingDetails(initialMeeting: Meeting) {
     // reach the UI. This does NOT change which source is picked — that logic
     // above is untouched — it only cleans the result of whichever one wins.
     const meeting: Meeting = useMemo(
-        () =>
-            localTranscript && localTranscript.length > 0
-                ? { ...meetingData, transcript: dedupeTranscript(localTranscript) }
-                : { ...meetingData, transcript: dedupeTranscript(meetingData.transcript) },
-        [meetingData, localTranscript]
+        () => {
+            const base =
+                localTranscript && localTranscript.length > 0
+                    ? { ...meetingData, transcript: dedupeTranscript(localTranscript) }
+                    : { ...meetingData, transcript: dedupeTranscript(meetingData.transcript) };
+            // Only ever FILLS a gap — a company already on meetingData (the
+            // canonical detail read, or the optimistic paint after an edit)
+            // always wins over the poll's copy.
+            return base.company ? base : { ...base, company: resolvedCompany ?? null };
+        },
+        [meetingData, localTranscript, resolvedCompany]
     );
 
     // Drives the Transcript tab's own skeleton — deliberately NOT the same
@@ -674,7 +717,17 @@ export function useMeetingDetails(initialMeeting: Meeting) {
             try {
                 const details = await window.electronAPI?.getMeetingDetails?.(initialMeeting.id);
                 if (details && !isMeetingProcessing(details)) {
-                    queryClient.setQueryData<Meeting>(meetingKey, (prev) => ({ ...(prev ?? initialMeeting), ...details }));
+                    queryClient.setQueryData<Meeting>(meetingKey, (prev) => {
+                        const base = prev ?? initialMeeting;
+                        return {
+                            ...base,
+                            ...details,
+                            // The local/mirror read has NO company column — letting
+                            // it through would blank an association we already hold.
+                            company: (details as Meeting).company ?? base.company ?? null,
+                            company_skipped: (details as Meeting).company_skipped ?? base.company_skipped,
+                        };
+                    });
                     setIsProcessing(false);
                     void queryClient.invalidateQueries(scorecardKey);
                 }
@@ -695,11 +748,20 @@ export function useMeetingDetails(initialMeeting: Meeting) {
         const isHttpResultComplete = (m: Meeting) =>
             !!m.isProcessed && (m.transcript?.length ?? 0) > 0 && !!m.detailedSummary?.scorecard;
 
+        // GET /meetings/:id is canonical for `company`, EXCEPT while an async
+        // association (upload flow) is still in flight — then it legitimately
+        // returns null and would erase a chip we just painted. Keep whichever
+        // copy actually has one.
+        const withKnownCompany = (updated: Meeting): Meeting => {
+            const prev = queryClient.getQueryData<Meeting>(meetingKey);
+            return updated.company ? updated : { ...updated, company: prev?.company ?? null };
+        };
+
         const checkViaHttpThenLocal = () =>
             meetingsApi.get(initialMeeting.id)
                 .then((updated) => {
                     if (updated && isHttpResultComplete(updated)) {
-                        queryClient.setQueryData<Meeting>(meetingKey, updated);
+                        queryClient.setQueryData<Meeting>(meetingKey, withKnownCompany(updated));
                         setIsProcessing(false);
                         void queryClient.invalidateQueries(scorecardKey);
                     } else {
@@ -707,7 +769,7 @@ export function useMeetingDetails(initialMeeting: Meeting) {
                             // Still stop showing the "processing" skeleton — the
                             // summary IS ready — but let unblockFromLocal fill in
                             // the transcript/scorecard from the reliable local copy.
-                            queryClient.setQueryData<Meeting>(meetingKey, updated);
+                            queryClient.setQueryData<Meeting>(meetingKey, withKnownCompany(updated));
                         }
                         void unblockFromLocal();
                     }

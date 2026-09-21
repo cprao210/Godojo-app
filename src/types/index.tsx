@@ -1053,6 +1053,15 @@ export interface Company {
   updated_at?: string;
 }
 
+// What the company picker hands back before anything is persisted.
+// `companyId: null` means "create-or-get this name" — the backend's
+// MeetingCompanyAssociate accepts exactly one of company_id / name.
+export interface PickedCompany {
+  companyId: string | null;
+  name: string;
+  domain?: string | null;
+}
+
 export interface Meeting {
   id: string;
   title: string;

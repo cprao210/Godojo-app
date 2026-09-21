@@ -21,6 +21,7 @@ import { useTeamInvite, useOverlayOpacity, useAppLifecycleListeners, useMeetingS
 // ---------------------------------------------------------------------------
 import { ManagerDashboard } from "@/features/dashboard";
 import { CompanySelectModal } from "@/features/meetings";
+import { applyCompanyToCaches } from "@/lib/companyAssociation";
 import { InviteAccountMismatchBanner, TeamInviteNotification, InviteAcceptedNotifier } from "@/features/tenant";
 import { SettingsPopup, SettingsOverlay } from "@/features/settings"; // Keeping for legacy/specific window support if needed
 import { StartupSequence } from "@/features/onboarding";
@@ -426,22 +427,12 @@ const App: React.FC = () => {
                             candidates={companyPromptCandidates}
                             isLight={isLight}
                             onClose={() => setCompanyPromptMeetingId(null)}
-                            onSaved={() => {
-                              // Same reconciliation MeetingDetails.tsx's
-                              // edit-mode modal does: the PUT already
-                              // persisted on the backend, but nothing told
-                              // React Query the detail/list caches are
-                              // stale, so a Meeting Details view opened
-                              // right after would keep showing the old
-                              // (company-less) data until something else
-                              // happened to invalidate it.
-                              queryClient.invalidateQueries(["meeting", companyPromptMeetingId]);
-                              queryClient.invalidateQueries(["meetings"]);
-                            }}
-                            onCleared={() => {
-                              queryClient.invalidateQueries(["meeting", companyPromptMeetingId]);
-                              queryClient.invalidateQueries(["meetings"]);
-                            }}
+                            // Optimistic patch + invalidate. Invalidating alone
+                            // meant a Meeting Details view opened immediately
+                            // after showed "Add company" until the refetch
+                            // resolved.
+                            onSaved={(saved) => applyCompanyToCaches(queryClient, companyPromptMeetingId, saved)}
+                            onCleared={() => applyCompanyToCaches(queryClient, companyPromptMeetingId, null)}
                           />
                         )}
                       </AnimatePresence>

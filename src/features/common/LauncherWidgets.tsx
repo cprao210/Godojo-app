@@ -12,14 +12,15 @@ import {
     Settings, RefreshCw, Ghost, Trash2, Download, DownloadCloud, CheckCircle,
     AlertCircle, Briefcase, Upload, X, ChevronUp, ChevronDown,
     Radio, Mic, FileUp, Building2, Search, Check,
-    Timer,
+    Timer, Info,
 } from 'lucide-react';
 import { TopSearchPill, WindowControls } from '@/features/common';
 import { ConnectCalendarButton } from '@/features/calendar';
 import { UserProfileButton } from '@/features/tenant';
 // Direct-file import (not the meetings barrel): the meetings barrel imports
 // from features/common, so a barrel→barrel import here would be a cycle.
-import { CompanyPickerField, type PickedCompany } from '@/features/meetings/CompanyAssociation';
+import { CompanyPickerField } from '@/features/meetings/CompanyAssociation';
+import type { PickedCompany } from '@/types';
 import { generateMeetingPDF } from '@/../utils/pdfGenerator';
 import { isMac } from '@/../utils/platformUtils';
 import { posthogAnalytics } from '@/lib/analytics/posthog.service';
@@ -1296,6 +1297,8 @@ interface TranscriptUploadModalProps {
     setUploadMeetingTypes: React.Dispatch<React.SetStateAction<('discovery' | 'demo' | 'negotiation')[]>>;
     uploadCompany: PickedCompany | null;
     setUploadCompany: (v: PickedCompany | null) => void;
+    uploadCompanyDraft: string;
+    setUploadCompanyDraft: (v: string) => void;
     uploadError: string | null;
     isUploading: boolean;
     onClose: () => void;
@@ -1305,6 +1308,7 @@ interface TranscriptUploadModalProps {
 export const TranscriptUploadModal: React.FC<TranscriptUploadModalProps> = ({
     isOpen, isLight, uploadTitle, setUploadTitle, uploadText, setUploadText,
     uploadMeetingTypes, setUploadMeetingTypes, uploadCompany, setUploadCompany,
+    uploadCompanyDraft, setUploadCompanyDraft,
     uploadError, isUploading, onClose, onSubmit,
 }) => (
     <AnimatePresence>
@@ -1388,10 +1392,13 @@ export const TranscriptUploadModal: React.FC<TranscriptUploadModalProps> = ({
                                     isLight={isLight}
                                     value={uploadCompany}
                                     onChange={setUploadCompany}
+                                    onDraftChange={setUploadCompanyDraft}
                                     placeholder="Search or enter the customer's company…"
                                 />
                                 <p className="text-[10px] text-text-tertiary mt-1">
-                                    Gives the analysis and Ask Dojo the right customer context
+                                    {uploadCompanyDraft.trim() && !uploadCompany
+                                        ? `“${uploadCompanyDraft.trim()}” will be created and linked on submit`
+                                        : 'Gives the analysis and Ask Dojo the right customer context'}
                                 </p>
                             </div>
 
@@ -1447,18 +1454,41 @@ export const TranscriptUploadModal: React.FC<TranscriptUploadModalProps> = ({
                             {/* Transcript textarea */}
                             <div>
                                 <div className="flex items-baseline justify-between mb-1">
-                                    <label className="text-[10px] font-medium text-text-tertiary uppercase tracking-wider">
-                                        Transcript
-                                    </label>
+                                    <div className="flex items-center gap-1.5">
+                                        <label className="text-[10px] font-medium text-text-tertiary uppercase tracking-wider">
+                                            Transcript
+                                        </label>
+                                        {/* Info tooltip — lists every supported paste format so people
+                                            don't have to guess or trial-and-error their transcript's
+                                            shape before it will parse correctly. */}
+                                        <div className="group/format-help relative flex items-center">
+                                            <Info size={11} className="text-text-tertiary hover:text-text-secondary cursor-help transition-colors" />
+                                            <div className="pointer-events-none absolute bottom-[calc(100%+8px)] left-1/2 -translate-x-1/2 w-max max-w-[300px] rounded-lg bg-bg-elevated border border-border-subtle px-3 py-2.5 text-[11px] leading-relaxed text-text-secondary opacity-0 scale-95 transition-all duration-150 group-hover/format-help:opacity-100 group-hover/format-help:scale-100 shadow-lg z-10">
+                                                <p className="font-semibold text-text-primary mb-1.5">8 supported formats</p>
+                                                <ul className="space-y-1 font-mono text-[10.5px]">
+                                                    <li>Alex: hello...</li>
+                                                    <li>[00:10] Alex: hello...</li>
+                                                    <li>Alex [00:10]: hello...</li>
+                                                    <li>Alex:<br />hello...</li>
+                                                    <li>[00:00:10] [Alex]: hello...</li>
+                                                    <li>[Alex] [00:00:10]: hello...</li>
+                                                    <li>Alex (00:26): hello...</li>
+                                                    <li>[00:26] [Alex]:<br />hello...</li>
+                                                </ul>
+                                                <p className="mt-1.5 text-text-tertiary">Timestamps are optional — with or without them, name and speaker labels are detected automatically.</p>
+                                            </div>
+                                        </div>
+                                    </div>
                                     <span className="text-[10px] text-text-tertiary">
-                                        {uploadText.split('\n').filter(l => l.trim()).length} lines · Supports [timestamp] SPEAKER: text format
+                                        {uploadText.split('\n').filter(l => l.trim()).length} lines · 8 formats supported
                                     </span>
                                 </div>
                                 <textarea
                                     value={uploadText}
                                     onChange={e => setUploadText(e.target.value)}
-                                    placeholder={`Paste transcript here. Supported formats:\n\n[00:00:12] SALES PERSON: Hello, thanks for joining...\nCLIENT: Happy to be here...\n\nor plain speaker labels without timestamps:\nAlex: Thanks for making time, Daniel...\nDaniel: Yeah, dispatch is our biggest headache...`}
+                                    placeholder={`Paste transcript here — 8 formats supported, e.g.:\n\nAlex: Hello, thanks for joining...\n[00:00:12] SALES PERSON: Hello, thanks for joining...\nAlex [00:10]: Hello, thanks for joining...\nAlex (00:26): Hello, thanks for joining...\n\nHover the ⓘ above for the full list, including multi-line turns.`}
                                     rows={9}
+                                    title="Supports 8 transcript formats — hover the info icon above the textarea for the full list"
                                     className={[
                                         'w-full rounded-[10px] px-3 py-2.5 text-[12px] text-text-primary focus:outline-none transition-colors resize-none font-mono leading-relaxed',
                                         isLight
@@ -1513,6 +1543,58 @@ export const TranscriptUploadModal: React.FC<TranscriptUploadModalProps> = ({
                     </div>
                 </motion.div>
             </>
+        )}
+    </AnimatePresence>
+);
+
+// ─────────────────────────────────────────────────────────────────────────
+// Company-link failure notice.
+//
+// The upload → company association is deferred (it can only run once the
+// meeting row reaches the backend), so its failure lands long after the modal
+// closed. Previously a console.warn — the user just saw a meeting with no
+// company and no explanation. The entry also stays queued, so this is a
+// convenience retry, not the only one.
+// ─────────────────────────────────────────────────────────────────────────
+
+export const CompanyLinkFailureNotice: React.FC<{
+    isLight: boolean;
+    companyName: string | null;
+    onRetry: () => void;
+    onDismiss: () => void;
+}> = ({ isLight, companyName, onRetry, onDismiss }) => (
+    <AnimatePresence>
+        {companyName && (
+            <motion.div
+                initial={{ opacity: 0, y: 12 }}
+                animate={{ opacity: 1, y: 0 }}
+                exit={{ opacity: 0, y: 12 }}
+                transition={{ duration: 0.18 }}
+                className={[
+                    'fixed bottom-4 left-1/2 -translate-x-1/2 z-[95] flex items-center gap-3',
+                    'rounded-xl border px-3.5 py-2.5 shadow-xl',
+                    isLight
+                        ? 'bg-white border-amber-200 text-slate-700'
+                        : 'bg-bg-secondary border-amber-500/25 text-text-primary',
+                ].join(' ')}
+            >
+                <span className="text-[12.5px]">
+                    Couldn’t link <span className="font-semibold">{companyName}</span> to that meeting.
+                </span>
+                <button
+                    onClick={onRetry}
+                    className="px-2.5 py-1 rounded-lg text-[12px] font-semibold text-white bg-accent-primary hover:bg-blue-500 transition-colors"
+                >
+                    Retry
+                </button>
+                <button
+                    onClick={onDismiss}
+                    className="p-1 rounded-full text-text-tertiary hover:text-text-primary transition-colors"
+                    aria-label="Dismiss"
+                >
+                    <X size={12} />
+                </button>
+            </motion.div>
         )}
     </AnimatePresence>
 );

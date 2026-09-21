@@ -162,3 +162,79 @@ describe('parseUploadTranscript — edge cases', () => {
         expect(segments.map(s => s.displayName)).toEqual(['CLIENT', 'SALES PERSON']);
     });
 });
+
+// ── Formats 3–8 — the additional label/timestamp shapes ────────────────────
+describe('parseUploadTranscript — additional label/timestamp formats', () => {
+    it('format 3 — "LABEL [TS]: text" (timestamp bracket after the label)', () => {
+        const { segments, durationMs } = parseUploadTranscript('Alex [00:10]: hello there');
+        expect(segments).toEqual([
+            { speaker: 'user', text: 'hello there', timestamp: 10_000, final: true, displayName: 'Alex' },
+        ]);
+        expect(durationMs).toBe(10_000);
+    });
+
+    it('format 4 — "LABEL:" alone, message starts on the next line', () => {
+        const { segments } = parseUploadTranscript('Alex:\nhello there\nDaniel:\nhi back');
+        expect(segments.map(s => [s.displayName, s.text, s.speaker])).toEqual([
+            ['Alex', 'hello there', 'user'],
+            ['Daniel', 'hi back', 'client'],
+        ]);
+    });
+
+    it('format 4 — merges multiple following lines into the same turn', () => {
+        const { segments } = parseUploadTranscript('Alex:\nline one\nline two');
+        expect(segments).toHaveLength(1);
+        expect(segments[0].text).toBe('line one\nline two');
+    });
+
+    it('format 5 — "[TS] [LABEL]: text" (bracketed timestamp + bracketed label)', () => {
+        const { segments, durationMs } = parseUploadTranscript('[00:00:10] [Alex]: hello there');
+        expect(segments).toEqual([
+            { speaker: 'user', text: 'hello there', timestamp: 10_000, final: true, displayName: 'Alex' },
+        ]);
+        expect(durationMs).toBe(10_000);
+    });
+
+    it('format 6 — "[LABEL] [TS]: text" (bracketed label + bracketed timestamp)', () => {
+        const { segments, durationMs } = parseUploadTranscript('[Alex] [00:00:10]: hello there');
+        expect(segments).toEqual([
+            { speaker: 'user', text: 'hello there', timestamp: 10_000, final: true, displayName: 'Alex' },
+        ]);
+        expect(durationMs).toBe(10_000);
+    });
+
+    it('format 7 — "LABEL (TS): text" (parenthesised timestamp)', () => {
+        const { segments, durationMs } = parseUploadTranscript('Alex (00:26): hello there');
+        expect(segments).toEqual([
+            { speaker: 'user', text: 'hello there', timestamp: 26_000, final: true, displayName: 'Alex' },
+        ]);
+        expect(durationMs).toBe(26_000);
+    });
+
+    it('format 8 — "[TS] [LABEL]:" with no trailing text, message on the next line(s)', () => {
+        const { segments, durationMs } = parseUploadTranscript('[00:26] [Alex]:\nhello there\nand more');
+        expect(segments).toHaveLength(1);
+        expect(segments[0].displayName).toBe('Alex');
+        expect(segments[0].timestamp).toBe(26_000);
+        expect(segments[0].text).toBe('hello there\nand more');
+        expect(durationMs).toBe(26_000);
+    });
+
+    it('handles a conversation mixing several of the new formats turn by turn', () => {
+        const convo = [
+            '[00:00:05] [Alex]: Hey Daniel, thanks for joining',
+            '[Daniel] [00:00:08]: Of course',
+            "Alex (00:15): Let's dive in",
+            'Daniel:',
+            'Sounds good to me',
+        ].join('\n');
+        const { segments, durationMs } = parseUploadTranscript(convo);
+        expect(segments.map(s => [s.displayName, s.speaker, s.timestamp, s.text])).toEqual([
+            ['Alex', 'user', 5_000, 'Hey Daniel, thanks for joining'],
+            ['Daniel', 'client', 8_000, 'Of course'],
+            ['Alex', 'user', 15_000, "Let's dive in"],
+            ['Daniel', 'client', 0, 'Sounds good to me'],
+        ]);
+        expect(durationMs).toBe(15_000);
+    });
+});

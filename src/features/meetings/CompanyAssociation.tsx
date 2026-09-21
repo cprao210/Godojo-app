@@ -19,7 +19,7 @@ import React, { useEffect, useRef, useState } from 'react';
 import { AnimatePresence, motion } from 'framer-motion';
 import { Briefcase, Building2, Check, Loader2, Plus, Search, X } from 'lucide-react';
 import { companiesApi, meetingsApi } from '@/api';
-import { Company, CompanyRef } from '@/types';
+import { Company, CompanyRef, PickedCompany } from '@/types';
 
 // ─── Shared helpers ──────────────────────────────────────────────────────────
 
@@ -35,13 +35,10 @@ async function resolveTenantId(): Promise<string | null> {
     }
 }
 
-export interface PickedCompany {
-    companyId: string | null; // null → create-new by name
-    name: string;
-    // Carried through to the create-or-get so a NEW company is born with the
-    // domain detected from the meeting's attendees.
-    domain?: string | null;
-}
+// Moved to @/types so non-feature modules (lib/companyAssociation.ts) can use
+// it without importing from a feature folder. Re-exported here because
+// useLauncher / LauncherWidgets import it from this path.
+export type { PickedCompany };
 
 // ─── CompanyPickerField ──────────────────────────────────────────────────────
 // Combobox: debounced search over GET /companies (name OR domain), result
@@ -58,13 +55,50 @@ export const CompanyPickerField: React.FC<{
     /** Attendee-domain candidates from the backend — shown when the search
     box is empty so the user can resolve a multi-domain meeting in one click. */
     suggestions?: { name: string; domain: string }[];
-}> = ({ isLight, value, onChange, placeholder = 'Search or enter company name…', autoFocus, suggestions }) => {
+    /** Raw text in the box, before anything is committed. Lets a parent whose
+    submit button lives OUTSIDE this component rescue a half-typed name. */
+    onDraftChange?: (draft: string) => void;
+}> = ({ isLight, value, onChange, placeholder = 'Search or enter company name…', autoFocus, suggestions, onDraftChange }) => {
     const [query, setQuery] = useState(value?.name ?? '');
     const [results, setResults] = useState<Company[]>([]);
     const [isSearching, setIsSearching] = useState(false);
     const [isOpen, setIsOpen] = useState(false);
     const debounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
     const rootRef = useRef<HTMLDivElement | null>(null);
+
+    // A click on a dropdown row blurs the input first. Without this guard the
+    // blur would commit the raw query, flip this component into its selected
+    // "pill" state, unmount the list — and the click the user actually made
+    // would land on nothing.
+    const suppressBlurCommit = useRef(false);
+
+    // Keep the box in sync when the parent replaces or CLEARS the selection
+    // (useLauncher resets uploadCompany to null after a successful submit —
+    // without this the next upload opens pre-filled with the last company).
+    useEffect(() => {
+        setQuery(value?.name ?? '');
+        onDraftChange?.(value?.name ?? '');
+        // eslint-disable-next-line react-hooks/exhaustive-deps
+    }, [value?.companyId, value?.name]);
+
+    /**
+     * Turn whatever is typed into a real selection.
+     *
+     * THIS is the bug the upload modal hit: onChange previously fired only
+     * from a dropdown click, so "type a name, hit Submit" left value === null
+     * and the association was never attempted at all — no request, nothing in
+     * the logs, just a meeting with no company.
+     */
+    const commitDraft = () => {
+        const name = query.trim();
+        if (!name || value) return;
+        // Prefer an already-registered company over creating a duplicate.
+        const match = results.find(r => r.name.trim().toLowerCase() === name.toLowerCase());
+        onChange(match
+            ? { companyId: match.id, name: match.name, domain: match.domain }
+            : { companyId: null, name });
+        setIsOpen(false);
+    };
 
     // Debounced search — 250ms quiet period, per the plan's picker UX.
     useEffect(() => {
@@ -118,7 +152,12 @@ export const CompanyPickerField: React.FC<{
     };
 
     const pickNew = () => {
-        onChange({ companyId: null, name: query.trim() });
+        const raw = query.trim();
+        // "acme.com" typed straight into the box — seed the registry row's
+        // domain (find_or_create_company enriches on it) so the company is
+        // searchable by domain later, same as a suggestion.
+        const looksLikeDomain = /^[a-z0-9-]+(\.[a-z0-9-]+)+$/i.test(raw);
+        onChange({ companyId: null, name: raw, ...(looksLikeDomain ? { domain: raw.toLowerCase() } : {}) });
         setIsOpen(false);
     };
 
@@ -139,7 +178,7 @@ export const CompanyPickerField: React.FC<{
                 </div>
                 <button
                     type="button"
-                    onClick={() => { onChange(null); setQuery(''); }}
+                    onClick={() => { onChange(null); setQuery(''); onDraftChange?.(''); }}
                     className={isLight ? 'text-emerald-600 hover:text-emerald-800' : 'text-emerald-400 hover:text-emerald-200'}
                     aria-label="Clear company"
                 >
@@ -157,8 +196,16 @@ export const CompanyPickerField: React.FC<{
                     type="text"
                     value={query}
                     autoFocus={autoFocus}
-                    onChange={e => { setQuery(e.target.value); setIsOpen(true); }}
+                    onChange={e => { setQuery(e.target.value); onDraftChange?.(e.target.value); setIsOpen(true); }}
                     onFocus={() => setIsOpen(true)}
+                    onBlur={() => {
+                        if (suppressBlurCommit.current) { suppressBlurCommit.current = false; return; }
+                        commitDraft();
+                    }}
+                    onKeyDown={e => {
+                        if (e.key === 'Enter') { e.preventDefault(); commitDraft(); }
+                        else if (e.key === 'Escape') { setIsOpen(false); }
+                    }}
                     placeholder={placeholder}
                     className={[
                         'w-full rounded-[10px] pl-8 pr-8 py-[7px] text-[13px] text-text-primary focus:outline-none transition-colors',
@@ -179,6 +226,7 @@ export const CompanyPickerField: React.FC<{
                         animate={{ opacity: 1, y: 0 }}
                         exit={{ opacity: 0, y: -4 }}
                         transition={{ duration: 0.12 }}
+                        onMouseDown={() => { suppressBlurCommit.current = true; }}
                         className={[
                             // z-30 keeps the list above the modal footer; the
                             // panel no longer clips it (no overflow-hidden).

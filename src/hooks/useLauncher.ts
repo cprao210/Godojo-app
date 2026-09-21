@@ -16,7 +16,8 @@ import { useMeetingFilters, meetingDateRangeStartMs } from '@/lib/meetingFilterS
 import { OPTIMISTIC_LIVE_ID, byNewestFirst, isOptimisticId } from '@/api/meetingMapping';
 import { mergeMeetingCopies, reconcileFetchedMeetings } from '@/api/meetingMapping';
 import { ApiError } from '@/lib/apiClient';
-import type { PickedCompany } from '@/features/meetings/CompanyAssociation';
+import { applyCompanyToCaches, flushPendingLinks, forgetPendingLink, linkMeetingCompany, rememberPendingLink } from '@/lib/companyAssociation';
+import type { PickedCompany } from '@/types';
 import { LauncherProps, Meeting, UpcomingMeeting } from '@/types';
 import { posthogAnalytics } from '@/lib/analytics/posthog.service';
 
@@ -746,6 +747,12 @@ export function useLauncher({ onStartMeeting, ollamaPullStatus = 'idle', onPageC
     // transcript never needs the post-call company prompt (quick meetings
     // only get that). Best-effort association after the meeting row exists.
     const [uploadCompany, setUploadCompany] = useState<PickedCompany | null>(null);
+    // Raw text still sitting in the picker's input. Submit is OUTSIDE the
+    // picker, so without this a typed-but-uncommitted name is silently lost.
+    const [uploadCompanyDraft, setUploadCompanyDraft] = useState('');
+    // Set when the deferred association ultimately fails, so the UI can say so
+    // and offer a retry instead of failing invisibly in the console.
+    const [companyLinkFailure, setCompanyLinkFailure] = useState<{ meetingId: string; company: PickedCompany } | null>(null);
     const [uploadError, setUploadError] = useState<string | null>(null);
     const [focusedMeetingId, setFocusedMeetingId] = useState<string | null>(null);
     const [isMeetingsExpanded, setIsMeetingsExpanded] = useState(false);
@@ -757,6 +764,12 @@ export function useLauncher({ onStartMeeting, ollamaPullStatus = 'idle', onPageC
         if (!uploadText.trim()) return;
         setIsUploading(true);
         setUploadError(null);
+
+        // Snapshot the company BEFORE any await: the state is reset on success
+        // below, and a name the user typed without picking a dropdown row only
+        // exists as a draft. `uploadCompany` wins when both are present.
+        const draftName = uploadCompanyDraft.trim();
+        const pickedCompany: PickedCompany | null = uploadCompany ?? (draftName ? { companyId: null, name: draftName } : null);
 
         // Optimistically inject a placeholder immediately so the user sees
         // the card appear right away without needing to hit refresh.
@@ -813,19 +826,35 @@ export function useLauncher({ onStartMeeting, ollamaPullStatus = 'idle', onPageC
                 setUploadText('');
                 setUploadTitle('');
                 setUploadMeetingTypes(['discovery']);
-                // Associate the picked company (best-effort — the upload itself
-                // already succeeded, so a failed association must not fail the
-                // flow or lose the meeting; the MeetingDetails chip is the
-                // recovery path).
-                if (result.meetingId && uploadCompany) {
-                    meetingsApi.setCompany(
-                        result.meetingId,
-                        uploadCompany.companyId
-                            ? { company_id: uploadCompany.companyId }
-                            : { name: uploadCompany.name },
-                    ).catch(err => console.warn('[useLauncher] company association failed:', err));
+                // Associate the picked company.
+                //
+                // This CANNOT be a plain immediate PUT: uploadTranscript returns
+                // as soon as the LOCAL SQLite placeholder is written, while
+                // PUT /meetings/:id/company re-selects the meeting server-side
+                // and 404s until SupabaseMirrorService's outbox lands the row.
+                // The old .catch(console.warn) made that 404 invisible — the
+                // company simply never appeared. linkMeetingCompany waits for
+                // 'meeting-backend-ready' (the signal App.tsx's post-call
+                // prompt already waits on), retries, and reconciles the caches;
+                // the queue entry survives a quit mid-wait.
+                if (result.meetingId && pickedCompany) {
+                    const linkedMeetingId = result.meetingId;
+                    rememberPendingLink(linkedMeetingId, pickedCompany);
+                    linkMeetingCompany(linkedMeetingId, pickedCompany)
+                        .then(saved => {
+                            forgetPendingLink(linkedMeetingId);
+                            applyCompanyToCaches(queryClient, linkedMeetingId, saved);
+                        })
+                        .catch(err => {
+                            console.error('[useLauncher] company association failed:', err);
+                            // Left queued on purpose — a transient failure
+                            // retries on next launch even if the user ignores
+                            // the notice.
+                            setCompanyLinkFailure({ meetingId: linkedMeetingId, company: pickedCompany });
+                        });
                 }
                 setUploadCompany(null);
+                setUploadCompanyDraft('');
                 fetchMeetings(); // reconciles with the real SQLite/backend rows
             } else {
                 // Remove the placeholder on failure
@@ -840,9 +869,35 @@ export function useLauncher({ onStartMeeting, ollamaPullStatus = 'idle', onPageC
         }
     };
 
+    /** Manual retry for a deferred association that exhausted its attempts. */
+    const retryCompanyLink = () => {
+        const pending = companyLinkFailure;
+        if (!pending) return;
+        setCompanyLinkFailure(null);
+        // The row is long since synced by now — go straight to the PUT.
+        linkMeetingCompany(pending.meetingId, pending.company, { skipWait: true })
+            .then(saved => {
+                forgetPendingLink(pending.meetingId);
+                applyCompanyToCaches(queryClient, pending.meetingId, saved);
+            })
+            .catch(() => setCompanyLinkFailure(pending));
+    };
+
+    const dismissCompanyLinkFailure = () => {
+        if (companyLinkFailure) forgetPendingLink(companyLinkFailure.meetingId);
+        setCompanyLinkFailure(null);
+    };
+
     useEffect(() => {
         setMenuEntered(false);
     }, [activeMenuId]);
+
+    // Retry associations that never completed (app quit during the mirror
+    // window, renderer reload). Once per mount; the queue self-prunes.
+    useEffect(() => {
+        void flushPendingLinks(queryClient);
+        // eslint-disable-next-line react-hooks/exhaustive-deps
+    }, []);
 
     // Auto-select the soonest meeting when events first load or change
     useEffect(() => {
@@ -1013,11 +1068,15 @@ export function useLauncher({ onStartMeeting, ollamaPullStatus = 'idle', onPageC
         uploadMeetingTypes,
         setUploadMeetingTypes,
         uploadCompany,
-
+        setUploadCompany,
+        uploadCompanyDraft,
+        setUploadCompanyDraft,
+        companyLinkFailure,
+        retryCompanyLink,
+        dismissCompanyLinkFailure,
         // ─── Meeting search + filters (owned by the header pill's store) ─────
         meetingsTotal: filteredMeetings.length,
         visibleMeetings,
-        setUploadCompany,
         uploadError,
         handleUploadTranscript,
 

@@ -9,6 +9,7 @@ import { MeetingChatOverlay, FollowUpEmailModal, MeetingScorecardPanel } from '@
 // Direct-file import (not the barrel): MeetingDetails itself is exported from
 // that barrel, so going through it here would be a self-import cycle.
 import { CompanySelectModal } from '@/features/meetings/CompanyAssociation';
+import { applyCompanyToCaches } from '@/lib/companyAssociation';
 import { chatMarkdownComponents, SourcesDisplay } from '@/features/chat';
 import { CitationProvider, rehypeCitations, CiteChip, indexSourceMap } from '@/features/chat/citations';
 import { EditableTextBlock } from '@/features/common';
@@ -324,24 +325,26 @@ const MeetingDetails: React.FC<MeetingDetailsProps> = ({ meeting: initialMeeting
                                     meetingId={meeting.id}
                                     mode="edit"
                                     initialCompany={meeting.company ?? null}
+                                    // get_meeting populates company_candidates
+                                    // whenever the event spans 2+ external
+                                    // attendee domains — the backend
+                                    // deliberately doesn't pick for the user.
+                                    // The post-call prompt rendered these; the
+                                    // edit chip never did, so a multi-domain
+                                    // meeting made you type a name the backend
+                                    // had already worked out.
+                                    candidates={meeting.company_candidates ?? undefined}
                                     isLight={isLight}
                                     onClose={() => setIsCompanyModalOpen(false)}
-                                    onSaved={(saved) => {
-                                        // Paint the chip instantly from the PUT
-                                        // response, then reconcile with a refetch
-                                        // (the refetch is also what corrected stale
-                                        // reads used to depend on).
-                                        queryClient.setQueryData<Meeting | undefined>(meetingKey, (prev) =>
-                                            prev ? { ...prev, company: saved } : prev,
-                                        );
-                                        queryClient.invalidateQueries(meetingKey);
-                                    }}
-                                    onCleared={() => {
-                                        queryClient.setQueryData<Meeting | undefined>(meetingKey, (prev) =>
-                                            prev ? { ...prev, company: null } : prev,
-                                        );
-                                        queryClient.invalidateQueries(meetingKey);
-                                    }}
+                                    // One helper for all three surfaces so the
+                                    // detail cache, the company poll and the
+                                    // launcher list can't drift apart. The old
+                                    // version never touched ['meetings'], so
+                                    // the card and its search haystack
+                                    // (meetingSearchText reads company.name)
+                                    // stayed stale.
+                                    onSaved={(saved) => applyCompanyToCaches(queryClient, meeting.id, saved)}
+                                    onCleared={() => applyCompanyToCaches(queryClient, meeting.id, null)}
                                 />
                             )}
                         </AnimatePresence>

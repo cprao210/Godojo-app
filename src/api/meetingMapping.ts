@@ -139,7 +139,17 @@ export function shouldMergeLocalMeeting(
  */
 export function mergeMeetingCopies(incoming: Meeting, known: Meeting): Meeting {
   if (isMeetingProcessing(incoming) && !isMeetingProcessing(known)) {
-    return { ...incoming, ...known };
+    // Company is backend-only: neither DatabaseManager nor SupabaseReadService
+    // selects company_id, so `known` (usually the local copy) can never supply
+    // it and a blanket spread would blank what the backend row legitimately
+    // has. Field-wise, whichever copy actually knows wins.
+    return {
+      ...incoming,
+      ...known,
+      company: known.company ?? incoming.company ?? null,
+      company_skipped: known.company_skipped ?? incoming.company_skipped,
+      company_candidates: known.company_candidates ?? incoming.company_candidates,
+    };
   }
   return incoming;
 }
@@ -163,18 +173,18 @@ export const OPTIMISTIC_LIVE_ID = "optimistic-live-call";
 export type MeetingKind = 'calendar' | 'quick' | 'upload';
 
 export function meetingKindOf(m: Meeting): MeetingKind | null {
-    const hasCalendar = !!(m.calendarEventId || m.calendarEventMetadata?.length);
-    // 'upload' beats everything — an uploaded transcript has no live session.
-    if (m.source === 'upload') return 'upload';
-    if (m.source === 'calendar' || hasCalendar) return 'calendar';
-    if (m.source === 'manual') return 'quick';
-    // Backend placeholder rows stamp EVERY live session 'live' and (until the
-    // mirror lands the full row) carry no calendar fields — Quick is the safe
-    // read there; hasCalendar above already rescued calendar-sourced ones.
-    if (m.source === 'live') return 'quick';
-    // Unknown (optimistic placeholders before reconciliation) — no badge
-    // rather than a guess that flips a frame later.
-    return null;
+  const hasCalendar = !!(m.calendarEventId || m.calendarEventMetadata?.length);
+  // 'upload' beats everything — an uploaded transcript has no live session.
+  if (m.source === 'upload') return 'upload';
+  if (m.source === 'calendar' || hasCalendar) return 'calendar';
+  if (m.source === 'manual') return 'quick';
+  // Backend placeholder rows stamp EVERY live session 'live' and (until the
+  // mirror lands the full row) carry no calendar fields — Quick is the safe
+  // read there; hasCalendar above already rescued calendar-sourced ones.
+  if (m.source === 'live') return 'quick';
+  // Unknown (optimistic placeholders before reconciliation) — no badge
+  // rather than a guess that flips a frame later.
+  return null;
 }
 
 // Lowercased search haystack per meeting — title, summary, company, attendee
@@ -184,20 +194,20 @@ export function meetingKindOf(m: Meeting): MeetingKind | null {
 const meetingSearchTextCache = new WeakMap<Meeting, string>();
 
 export function meetingSearchText(m: Meeting): string {
-    let h = meetingSearchTextCache.get(m);
-    if (h === undefined) {
-        const attendees = ((m as any).attendees ?? []) as Array<{ email?: string; displayName?: string; name?: string }>;
-        h = [
-            m.title ?? '',
-            m.summary ?? '',
-            m.company?.name ?? '',
-            m.company?.domain ?? '',
-            ...attendees.map(a => `${a?.displayName || a?.name || ''} ${a?.email || ''}`),
-            JSON.stringify(m.calendarEventMetadata ?? ''),
-        ].join(' ').toLowerCase();
-        meetingSearchTextCache.set(m, h);
-    }
-    return h;
+  let h = meetingSearchTextCache.get(m);
+  if (h === undefined) {
+    const attendees = ((m as any).attendees ?? []) as Array<{ email?: string; displayName?: string; name?: string }>;
+    h = [
+      m.title ?? '',
+      m.summary ?? '',
+      m.company?.name ?? '',
+      m.company?.domain ?? '',
+      ...attendees.map(a => `${a?.displayName || a?.name || ''} ${a?.email || ''}`),
+      JSON.stringify(m.calendarEventMetadata ?? ''),
+    ].join(' ').toLowerCase();
+    meetingSearchTextCache.set(m, h);
+  }
+  return h;
 }
 
 

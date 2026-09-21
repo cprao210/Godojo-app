@@ -1,9 +1,21 @@
 // uploadTranscriptParser.ts
-// Pure parser for the Upload Transcript modal's raw text. Supports both
-// timestamped (`[HH:MM:SS] SALES PERSON: Hello`) and plain
-// (`Alex: Hello`) speaker-label formats, plus multi-line messages:
-// a line that does not start a new speaker label belongs to the previous
-// segment until another valid label is detected.
+// Pure parser for the Upload Transcript modal's raw text. Supports several
+// speaker-label shapes, with or without a timestamp, plus multi-line
+// messages: a line that does not start a new speaker label belongs to the
+// previous segment until another valid label is detected.
+//
+// Supported line formats (see the regexes below for exact matching rules):
+//   1. Alex: hello...                    — plain "LABEL: text"
+//   2. [00:10] Alex: hello...            — bracketed timestamp, then label
+//   3. Alex [00:10]: hello...            — label, then bracketed timestamp
+//   4. Alex:                             — label alone; the message starts
+//      hello...                            on the following line(s)
+//   5. [00:00:10] [Alex]: hello...       — bracketed timestamp + bracketed label
+//   6. [Alex] [00:00:10]: hello...       — bracketed label + bracketed timestamp
+//   7. Alex (00:26): hello...            — label, then parenthesised timestamp
+//   8. [00:26] [Alex]:                   — format 5/6 shape with the message
+//      hello...                            starting on the following line(s)
+// Timestamps accept H:MM:SS or MM:SS in any of the bracket/paren shapes above.
 //
 // Contract with MeetingPersistence.uploadTranscript:
 //   • `speaker` is the internal role and it is assigned by APPEARANCE ORDER,
@@ -13,10 +25,11 @@
 //     "SALES PERSON / CLIENT" and "REP / CUSTOMER" all map identically — the
 //     transcript opens with the rep's voice.
 //   • `displayName` carries the ORIGINAL label exactly as it appeared
-//     ("Alex", "SALES PERSON", "Speaker 2") so the Transcript tab and the
-//     LLM prompts keep real attribution instead of flattening everyone to
-//     "Other Party" (the renderer's own fallback for segments with no label).
-//   • Timestamps are NEVER invented. Segments without a bracketed timestamp
+//     ("Alex", "SALES PERSON", "Speaker 2") — with any wrapping [] or ()
+//     stripped — so the Transcript tab and the LLM prompts keep real
+//     attribution instead of flattening everyone to "Other Party" (the
+//     renderer's own fallback for segments with no label).
+//   • Timestamps are NEVER invented. Segments without a parseable timestamp
 //     get 0, and `durationMs` is null when the source had no usable
 //     timestamps — the caller must not fake a duration from line counts.
 
@@ -47,13 +60,43 @@ const KNOWN_ROLE_LABELS = new Set([
     'CLIENT', 'CUSTOMER', 'BUYER', 'PROSPECT', 'THEM', 'LEAD', 'CPO', 'INTERVIEWER',
 ]);
 
-// "[00:00:12] LABEL: text" / "[00:12] LABEL: text" — H:MM:SS or MM:SS.
+// Formats 2, 5, 8 — "[00:00:12] LABEL: text" / "[00:12] LABEL: text", where
+// LABEL may itself be bracketed ("[Alex]") and text may be empty (format 8,
+// with the message continuing on the next line(s)). H:MM:SS or MM:SS.
 const BRACKET_LINE = /^\[\s*(\d{1,2}(?::\d{1,2}){1,2})\s*\]\s*([^:\n]{1,60}):\s*(.*)$/;
-// "LABEL: text" — label starts with a letter; a colon must be followed by
-// whitespace so URLs ("https://x") and inline colons never look like labels.
+
+// Formats 3, 6 — "LABEL [00:00:12]: text" / "[LABEL] [00:00:12]: text" —
+// the timestamp bracket comes after the label instead of before it.
+const LABEL_THEN_BRACKET_TS = /^(\[[^\]\n]{1,60}\]|[A-Za-z][A-Za-z0-9 .'\u2019\-]{0,59}?)\s*\[\s*(\d{1,2}(?::\d{1,2}){1,2})\s*\]\s*:\s*(.*)$/;
+
+// Format 7 — "LABEL (00:26): text" — parenthesised timestamp after the label.
+const LABEL_THEN_PAREN_TS = /^([A-Za-z][A-Za-z0-9 .'\u2019\-]{0,59}?)\s*\(\s*(\d{1,2}(?::\d{1,2}){1,2})\s*\)\s*:\s*(.*)$/;
+
+// Format 1 — "LABEL: text" — label starts with a letter; a colon must be
+// followed by whitespace so URLs ("https://x") and inline colons never look
+// like labels.
 const PLAIN_LINE = /^([A-Za-z][A-Za-z0-9 .'\u2019\-()]{0,59}?):\s+(.+)$/;
 
+// Format 4 — "LABEL:" alone on its line, nothing (or only whitespace) after
+// the colon — the message text starts on the following line(s).
+const LABEL_ONLY_LINE = /^([A-Za-z][A-Za-z0-9 .'\u2019\-()]{0,59}?):\s*$/;
+
 const normalizeLabel = (raw: string): string => raw.trim().replace(/\s+/g, ' ');
+
+/** Strips a single layer of wrapping brackets/parens ("[Alex]" → "Alex"),
+ * used for the label-bracket formats (5, 6, 8) where the capture group
+ * includes the brackets themselves. Leaves unbracketed labels untouched. */
+function stripLabelWrapping(raw: string): string {
+    const trimmed = raw.trim();
+    if (trimmed.length >= 2) {
+        const first = trimmed[0];
+        const last = trimmed[trimmed.length - 1];
+        if ((first === '[' && last === ']') || (first === '(' && last === ')')) {
+            return trimmed.slice(1, -1).trim();
+        }
+    }
+    return trimmed;
+}
 
 /** "[HH:MM:SS]" / "[MM:SS]" → ms; null when unparseable. */
 function parseTimestamp(raw: string): number | null {
@@ -102,12 +145,14 @@ export function parseUploadTranscript(rawText: string): ParsedUploadTranscript {
         const line = rawLine.trim();
         if (!line) continue;
 
-        const bracketed = line.match(BRACKET_LINE);
-        if (bracketed) {
-            const ts = parseTimestamp(bracketed[1].trim()) ?? 0;
+        // Formats 2, 5, 8 — "[TS] LABEL: text" (label may be bracketed;
+        // text may be empty when the message continues on later lines).
+        const bracketFirst = line.match(BRACKET_LINE);
+        if (bracketFirst) {
+            const ts = parseTimestamp(bracketFirst[1].trim()) ?? 0;
             if (ts > 0) timestampsSeen.push(ts);
-            const label = normalizeLabel(bracketed[2]);
-            const text = bracketed[3].trim();
+            const label = normalizeLabel(stripLabelWrapping(bracketFirst[2]));
+            const text = bracketFirst[3].trim();
             if (!label) {
                 // Bracket + text but no recognisable label — keep the timestamp
                 // (it still anchors this line) but leave the speaker unlabelled.
@@ -118,6 +163,31 @@ export function parseUploadTranscript(rawText: string): ParsedUploadTranscript {
             continue;
         }
 
+        // Formats 3, 6 — "LABEL [TS]: text" / "[LABEL] [TS]: text".
+        const labelBracketTs = line.match(LABEL_THEN_BRACKET_TS);
+        if (labelBracketTs) {
+            const label = normalizeLabel(stripLabelWrapping(labelBracketTs[1]));
+            if (isLikelySpeakerLabel(label)) {
+                const ts = parseTimestamp(labelBracketTs[2].trim()) ?? 0;
+                if (ts > 0) timestampsSeen.push(ts);
+                push(roleForLabel(label), labelBracketTs[3].trim(), ts, label);
+                continue;
+            }
+        }
+
+        // Format 7 — "LABEL (TS): text".
+        const labelParenTs = line.match(LABEL_THEN_PAREN_TS);
+        if (labelParenTs) {
+            const label = normalizeLabel(labelParenTs[1]);
+            if (isLikelySpeakerLabel(label)) {
+                const ts = parseTimestamp(labelParenTs[2].trim()) ?? 0;
+                if (ts > 0) timestampsSeen.push(ts);
+                push(roleForLabel(label), labelParenTs[3].trim(), ts, label);
+                continue;
+            }
+        }
+
+        // Format 1 — "LABEL: text" on a single line.
         const plain = line.match(PLAIN_LINE);
         if (plain && isLikelySpeakerLabel(plain[1])) {
             const label = normalizeLabel(plain[1]);
@@ -125,10 +195,19 @@ export function parseUploadTranscript(rawText: string): ParsedUploadTranscript {
             continue;
         }
 
-        // Continuation of the previous speaker's message (multi-line turns).
+        // Format 4 — "LABEL:" alone; the message starts on the next line(s).
+        const labelOnly = line.match(LABEL_ONLY_LINE);
+        if (labelOnly && isLikelySpeakerLabel(labelOnly[1])) {
+            const label = normalizeLabel(labelOnly[1]);
+            push(roleForLabel(label), '', 0, label);
+            continue;
+        }
+
+        // Continuation of the previous speaker's message (multi-line turns,
+        // including formats 4 and 8 where the label line carried no text).
         const last = segments[segments.length - 1];
         if (last) {
-            last.text += `\n${line}`;
+            last.text = last.text ? `${last.text}\n${line}` : line;
         } else {
             // Transcript starts with unattributed text — no label to preserve,
             // so the renderer's "Other Party" fallback is the honest result.
