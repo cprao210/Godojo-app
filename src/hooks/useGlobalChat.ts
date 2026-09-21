@@ -37,12 +37,24 @@ export function useGlobalChat({ isOpen, onClose, initialQuery = "" }: UseGlobalC
 
     const messagesEndRef = useRef<HTMLDivElement>(null);
     const chatWindowRef = useRef<HTMLDivElement>(null);
-    const inputRef = useRef<HTMLInputElement>(null);
+    const inputRef = useRef<HTMLTextAreaElement>(null);
+    // Tracks the assistant placeholder id for whichever turn is currently
+    // in flight, so stopGeneration() can finalize the right message without
+    // threading the id through the submitQuestion closure.
+    const currentAssistantIdRef = useRef<string | null>(null);
 
     // ── Auto-scroll to bottom on new messages ───────────────────────────────
     useEffect(() => {
         messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
     }, [messages]);
+
+    // Auto-resize textarea
+    useEffect(() => {
+        const el = inputRef.current;
+        if (!el) return;
+        el.style.height = 'auto';
+        el.style.height = `${Math.min(el.scrollHeight, 96)}px`; // max ~4 lines
+    }, [query]);
 
     // ── Load the sidebar's session list whenever the overlay opens ──────────
     const refreshSessions = useCallback(async () => {
@@ -115,6 +127,7 @@ export function useGlobalChat({ isOpen, onClose, initialQuery = "" }: UseGlobalC
         setStatusText(null);
 
         const assistantMessageId = `assistant-${Date.now()}`;
+        currentAssistantIdRef.current = assistantMessageId;
 
         // Add typing indicator delay (200ms) - makes the AI feel "thoughtful"
         await new Promise((resolve) => setTimeout(resolve, 200));
@@ -223,6 +236,7 @@ export function useGlobalChat({ isOpen, onClose, initialQuery = "" }: UseGlobalC
                 setStatusText(null);
                 streamBuffer.reset();
                 activeStreamRef.current = null;
+                currentAssistantIdRef.current = null;
             },
             onError: (error) => {
                 console.error("[GlobalChat] Stream error:", error);
@@ -232,10 +246,40 @@ export function useGlobalChat({ isOpen, onClose, initialQuery = "" }: UseGlobalC
                 setStatusText(null);
                 streamBuffer.reset();
                 activeStreamRef.current = null;
+                currentAssistantIdRef.current = null;
             },
         });
         // eslint-disable-next-line react-hooks/exhaustive-deps
     }, [chatState, sessionId, refreshSessions]);
+
+    // ── Stop / cancel an in-flight generation ────────────────────────────────
+    // chatApi's streamSSE resolves silently on an aborted signal (no onDone /
+    // onError fires — see chatApi.ts), so stopping here has to do the
+    // finalizing work those callbacks would otherwise have done: commit
+    // whatever text has streamed in so far, drop the streaming cursor, and
+    // put the chat state back to idle so the input re-enables immediately.
+    const stopGeneration = useCallback(() => {
+        activeStreamRef.current?.abort();
+        activeStreamRef.current = null;
+
+        const assistantMessageId = currentAssistantIdRef.current;
+        if (assistantMessageId) {
+            const finalContent = streamBuffer.getBufferedContent();
+            setMessages((prev) =>
+                prev.map((msg) =>
+                    msg.id === assistantMessageId
+                        ? { ...msg, content: finalContent, isStreaming: false, rewriting: false }
+                        : msg,
+                ),
+            );
+        }
+
+        streamBuffer.reset();
+        currentAssistantIdRef.current = null;
+        setChatState("idle");
+        setStatusText(null);
+        // eslint-disable-next-line react-hooks/exhaustive-deps
+    }, []);
 
     // ── Start a fresh chat — clears the active session + transcript ─────────
     const startNewChat = useCallback(() => {
@@ -338,6 +382,11 @@ export function useGlobalChat({ isOpen, onClose, initialQuery = "" }: UseGlobalC
 
     const handleInputKeyDown = useCallback(
         (e: React.KeyboardEvent) => {
+            // Shift+Enter inserts a newline — let the textarea handle it
+            // natively instead of submitting.
+            if (e.key === "Enter" && e.shiftKey) {
+                return;
+            }
             if (e.key === "Enter" && query.trim()) {
                 e.preventDefault();
                 submitQuestion(query);
@@ -386,6 +435,7 @@ export function useGlobalChat({ isOpen, onClose, initialQuery = "" }: UseGlobalC
         submitQuestion,
         handleInputKeyDown,
         handleSendClick,
+        stopGeneration,
         resetOnExit,
         startNewChat,
         loadSession,

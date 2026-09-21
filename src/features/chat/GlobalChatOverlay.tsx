@@ -25,7 +25,7 @@ const GlobalChatOverlay: React.FC<GlobalChatOverlayProps> = ({ isOpen, onClose, 
     const isLight = useResolvedTheme() === "light";
     const { messages, chatState, errorMessage, statusText, query, setQuery } = globalChatStates;
     const { messagesEndRef, chatWindowRef, inputRef, submitQuestion, handleInputKeyDown } = globalChatStates;
-    const { handleSendClick, resetOnExit, sessionId, sessions, isLoadingSessions } = globalChatStates;
+    const { handleSendClick, resetOnExit, sessionId, sessions, isLoadingSessions, isBusy, stopGeneration } = globalChatStates;
     const { startNewChat, loadSession, deleteSession } = globalChatStates;
 
     return (
@@ -145,6 +145,8 @@ const GlobalChatOverlay: React.FC<GlobalChatOverlayProps> = ({ isOpen, onClose, 
                                 onKeyDown={handleInputKeyDown}
                                 onSend={handleSendClick}
                                 inputRef={inputRef}
+                                isBusy={isBusy}
+                                onStop={stopGeneration}
                             />
                         </div>
                     </motion.div>

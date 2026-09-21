@@ -1,7 +1,7 @@
 import React, { useEffect, useRef, useState } from 'react';
 import { useResolvedTheme, useMeetingDetails, formatTime, formatTranscriptTimestamp, cleanMarkdown, isSummaryEmpty } from '@/hooks';
 import { hasGeneratedSummary } from '@/lib/meetingLifecycle';
-import { Mail, ChevronDown, ChevronUp, BarChart3, ArrowUp, Copy, Check, TrendingUp, TriangleAlert, MessageSquare, Building2, Plus } from 'lucide-react';
+import { Mail, ChevronDown, ChevronUp, BarChart3, ArrowUp, Copy, Check, TrendingUp, TriangleAlert, MessageSquare, Building2, Plus, Square } from 'lucide-react';
 import { MessagesSquareIcon, ChartColumnIncreasing, CircleCheck, NotepadText, RefreshCcw, RefreshCw, NotebookPen, ClipboardList } from 'lucide-react';
 import { motion, AnimatePresence } from 'framer-motion';
 
@@ -140,6 +140,7 @@ const MeetingDetails: React.FC<MeetingDetailsProps> = ({ meeting: initialMeeting
         aiInteractionsData,
         hasMoreAiInteractions, isLoadingMoreAiInteractions, loadMoreAiInteractions,
         query, setQuery,
+        meetingInputRef,
         isCopied,
         isRegenerating,
         regenError,
@@ -153,6 +154,9 @@ const MeetingDetails: React.FC<MeetingDetailsProps> = ({ meeting: initialMeeting
         transcriptTimesAreRelative,
         handleSubmitQuestion,
         handleInputKeyDown,
+        isChatBusy,
+        handleChatBusyChange,
+        handleStopChatGeneration,
         handleCopy,
         handleTitleSave,
         handleActionItemSave,
@@ -1328,93 +1332,93 @@ const MeetingDetails: React.FC<MeetingDetailsProps> = ({ meeting: initialMeeting
                                     ))
                                 ) : (
                                     <>
-                                    {/* Older Q&A pages in — above the newest exchange the
+                                        {/* Older Q&A pages in — above the newest exchange the
                                         tab auto-scrolls to, hence ChevronUp. Kept visible
                                         while loading (hasMore || isLoadingMore) so it doesn't
                                         flicker out and back between click and refetch. */}
-                                    {(hasMoreAiInteractions || isLoadingMoreAiInteractions) && (aiInteractionsData?.items?.length ?? 0) > 0 && (
-                                        <div className="flex justify-center">
-                                            <button
-                                                type="button"
-                                                onClick={handleAskDojoLoadMore}
-                                                disabled={isLoadingMoreAiInteractions}
-                                                className={[
-                                                    'flex items-center gap-2 rounded-full px-4 py-2 text-[13px] font-medium shadow-lg',
-                                                    'transition-colors disabled:cursor-not-allowed disabled:opacity-60',
-                                                    isLight
-                                                        ? 'bg-white text-slate-700 border border-slate-200 hover:bg-slate-50 shadow-slate-900/10'
-                                                        : 'bg-gray-800 text-white/90 border border-white/10 hover:bg-gray-700 shadow-black/40',
-                                                ].join(' ')}
-                                            >
-                                                {isLoadingMoreAiInteractions
-                                                    ? <RefreshCw size={14} className="animate-spin" />
-                                                    : <ChevronUp size={14} />}
-                                                {isLoadingMoreAiInteractions ? 'Loading…' : 'Load more'}
-                                            </button>
-                                        </div>
-                                    )}
-                                    {(aiInteractionsData?.items ?? []).map((interaction) => (
-                                        <div key={interaction.id} className="space-y-4">
-                                            {/* User Question */}
-                                            {interaction.user_query && (
-                                                <div className="flex justify-end">
-                                                    <div className="bg-accent-primary text-white px-5 py-2.5 rounded-2xl rounded-tr-sm max-w-[80%] text-[15px] leading-relaxed shadow-sm">
-                                                        {interaction.user_query}
+                                        {(hasMoreAiInteractions || isLoadingMoreAiInteractions) && (aiInteractionsData?.items?.length ?? 0) > 0 && (
+                                            <div className="flex justify-center">
+                                                <button
+                                                    type="button"
+                                                    onClick={handleAskDojoLoadMore}
+                                                    disabled={isLoadingMoreAiInteractions}
+                                                    className={[
+                                                        'flex items-center gap-2 rounded-full px-4 py-2 text-[13px] font-medium shadow-lg',
+                                                        'transition-colors disabled:cursor-not-allowed disabled:opacity-60',
+                                                        isLight
+                                                            ? 'bg-white text-slate-700 border border-slate-200 hover:bg-slate-50 shadow-slate-900/10'
+                                                            : 'bg-gray-800 text-white/90 border border-white/10 hover:bg-gray-700 shadow-black/40',
+                                                    ].join(' ')}
+                                                >
+                                                    {isLoadingMoreAiInteractions
+                                                        ? <RefreshCw size={14} className="animate-spin" />
+                                                        : <ChevronUp size={14} />}
+                                                    {isLoadingMoreAiInteractions ? 'Loading…' : 'Load more'}
+                                                </button>
+                                            </div>
+                                        )}
+                                        {(aiInteractionsData?.items ?? []).map((interaction) => (
+                                            <div key={interaction.id} className="space-y-4">
+                                                {/* User Question */}
+                                                {interaction.user_query && (
+                                                    <div className="flex justify-end">
+                                                        <div className="bg-accent-primary text-white px-5 py-2.5 rounded-2xl rounded-tr-sm max-w-[80%] text-[15px] leading-relaxed shadow-sm">
+                                                            {interaction.user_query}
+                                                        </div>
                                                     </div>
-                                                </div>
-                                            )}
+                                                )}
 
-                                            {/* AI Answer */}
-                                            {interaction.ai_response && (
-                                                <div className="flex items-start gap-4">
-                                                    <div className="mt-1 w-6 h-6 rounded-full bg-bg-input flex items-center justify-center border border-border-subtle shrink-0">
-                                                        <img src={IMAGES.godojoLogoIcon} alt="AI" className="w-4 h-4 opacity-50 object-contain force-black-icon" />
-                                                    </div>
-                                                    <div>
-                                                        <div className="text-[11px] text-text-tertiary mb-1.5 font-medium">{formatTime(interaction.timestamp)}</div>
-                                                        <div className="text-text-secondary text-[15px] leading-relaxed max-w-none">
-                                                            {/* Same inline-citation design as the chat overlays:
+                                                {/* AI Answer */}
+                                                {interaction.ai_response && (
+                                                    <div className="flex items-start gap-4">
+                                                        <div className="mt-1 w-6 h-6 rounded-full bg-bg-input flex items-center justify-center border border-border-subtle shrink-0">
+                                                            <img src={IMAGES.godojoLogoIcon} alt="AI" className="w-4 h-4 opacity-50 object-contain force-black-icon" />
+                                                        </div>
+                                                        <div>
+                                                            <div className="text-[11px] text-text-tertiary mb-1.5 font-medium">{formatTime(interaction.timestamp)}</div>
+                                                            <div className="text-text-secondary text-[15px] leading-relaxed max-w-none">
+                                                                {/* Same inline-citation design as the chat overlays:
                                                                 [n] markers become hoverable chips backed by the
                                                                 source_map persisted with each interaction. */}
-                                                            <CitationProvider map={indexSourceMap(interaction.source_map ?? [])}>
-                                                                <ReactMarkdown
-                                                                    remarkPlugins={[remarkGfm]}
-                                                                    rehypePlugins={[rehypeCitations]}
-                                                                    components={{
-                                                                        ...chatMarkdownComponents,
-                                                                        cite: CiteChip as any,
-                                                                        // Ask Dojo tab keeps headings/paragraphs down to plain
-                                                                        // body copy (no bold/large text) unlike the chat overlays.
-                                                                        h1: ({ node, ...props }: any) => <p className="text-[15px] text-text-secondary font-normal leading-relaxed mb-2 whitespace-pre-wrap" {...props} />,
-                                                                        h2: ({ node, ...props }: any) => <p className="text-[15px] text-text-secondary font-normal leading-relaxed mb-2 whitespace-pre-wrap" {...props} />,
-                                                                        h3: ({ node, ...props }: any) => <p className="text-[15px] text-text-secondary font-normal leading-relaxed mb-2 whitespace-pre-wrap" {...props} />,
-                                                                        p: ({ node, ...props }: any) => <p className="text-[15px] text-text-secondary font-normal leading-relaxed mb-2 whitespace-pre-wrap" {...props} />,
-                                                                        ul: ({ node, ...props }: any) => <ul className="list-disc ml-4 mb-2 space-y-1" {...props} />,
-                                                                        ol: ({ node, ...props }: any) => <ol className="list-decimal ml-4 mb-2 space-y-1" {...props} />,
-                                                                        li: ({ node, ...props }: any) => <li className="text-[15px] text-text-secondary font-normal" {...props} />,
-                                                                        strong: ({ node, ...props }: any) => <span className="font-normal text-text-secondary" {...props} />,
-                                                                    }}
-                                                                >
-                                                                    {cleanMarkdown(interaction.ai_response || '')}
-                                                                </ReactMarkdown>
-                                                            </CitationProvider>
+                                                                <CitationProvider map={indexSourceMap(interaction.source_map ?? [])}>
+                                                                    <ReactMarkdown
+                                                                        remarkPlugins={[remarkGfm]}
+                                                                        rehypePlugins={[rehypeCitations]}
+                                                                        components={{
+                                                                            ...chatMarkdownComponents,
+                                                                            cite: CiteChip as any,
+                                                                            // Ask Dojo tab keeps headings/paragraphs down to plain
+                                                                            // body copy (no bold/large text) unlike the chat overlays.
+                                                                            h1: ({ node, ...props }: any) => <p className="text-[15px] text-text-secondary font-normal leading-relaxed mb-2 whitespace-pre-wrap" {...props} />,
+                                                                            h2: ({ node, ...props }: any) => <p className="text-[15px] text-text-secondary font-normal leading-relaxed mb-2 whitespace-pre-wrap" {...props} />,
+                                                                            h3: ({ node, ...props }: any) => <p className="text-[15px] text-text-secondary font-normal leading-relaxed mb-2 whitespace-pre-wrap" {...props} />,
+                                                                            p: ({ node, ...props }: any) => <p className="text-[15px] text-text-secondary font-normal leading-relaxed mb-2 whitespace-pre-wrap" {...props} />,
+                                                                            ul: ({ node, ...props }: any) => <ul className="list-disc ml-4 mb-2 space-y-1" {...props} />,
+                                                                            ol: ({ node, ...props }: any) => <ol className="list-decimal ml-4 mb-2 space-y-1" {...props} />,
+                                                                            li: ({ node, ...props }: any) => <li className="text-[15px] text-text-secondary font-normal" {...props} />,
+                                                                            strong: ({ node, ...props }: any) => <span className="font-normal text-text-secondary" {...props} />,
+                                                                        }}
+                                                                    >
+                                                                        {cleanMarkdown(interaction.ai_response || '')}
+                                                                    </ReactMarkdown>
+                                                                </CitationProvider>
+                                                            </div>
+                                                            {(() => {
+                                                                const docSources = docSourcesFor(interaction.sources);
+                                                                if (docSources.length === 0) return null;
+                                                                // Same "first chip + +N popover" treatment as Global Chat,
+                                                                // instead of wrapping every source into its own chip.
+                                                                return (
+                                                                    <div className="mt-2">
+                                                                        <SourcesDisplay sources={{ meetings: [], assets: docSources }} />
+                                                                    </div>
+                                                                );
+                                                            })()}
                                                         </div>
-                                                        {(() => {
-                                                            const docSources = docSourcesFor(interaction.sources);
-                                                            if (docSources.length === 0) return null;
-                                                            // Same "first chip + +N popover" treatment as Global Chat,
-                                                            // instead of wrapping every source into its own chip.
-                                                            return (
-                                                                <div className="mt-2">
-                                                                    <SourcesDisplay sources={{ meetings: [], assets: docSources }} />
-                                                                </div>
-                                                            );
-                                                        })()}
                                                     </div>
-                                                </div>
-                                            )}
-                                        </div>
-                                    ))}
+                                                )}
+                                            </div>
+                                        ))}
                                     </>
                                 )}
                                 {!isLoadingAskDojo && !(aiInteractionsData?.items?.length) && (
@@ -1507,9 +1511,9 @@ const MeetingDetails: React.FC<MeetingDetailsProps> = ({ meeting: initialMeeting
                 )}
                 <div className="w-full max-w-[440px] relative group pointer-events-auto">
                     {/* Dark Glass Effect Input (Matching Reference) */}
-                    <input
-                        type="text"
+                    <textarea
                         value={query}
+                        ref={meetingInputRef}
                         onChange={(e) => setQuery(e.target.value)}
                         onKeyDown={handleInputKeyDown}
                         // Clicking/focusing the input opens the panel immediately —
@@ -1519,21 +1523,35 @@ const MeetingDetails: React.FC<MeetingDetailsProps> = ({ meeting: initialMeeting
                             if (!isChatOpen) setIsChatOpen(true);
                         }}
                         placeholder="Ask about this meeting..."
-                        className={`w-full pl-5 pr-12 py-3 backdrop-blur-[24px] backdrop-saturate-[140%] focus:outline-none transition-shadow duration-200 rounded-full text-sm text-text-primary placeholder-text-tertiary/70 ${isLight ? 'bg-white/80 border border-slate-200 shadow-[0_8px_30px_rgba(0,0,0,0.08)]' : 'bg-transparent border border-white/20 shadow-[0_8px_30px_rgb(0,0,0,0.12)]'}`}
+                        rows={1}
+                        className={`w-full pl-5 pr-12 py-3 backdrop-blur-[24px] backdrop-saturate-[140%] focus:outline-none transition-shadow duration-200 rounded-3xl text-sm text-text-primary placeholder-text-tertiary/70 resize-none leading-relaxed ${isLight ? 'bg-white/80 border border-slate-200 shadow-[0_8px_30px_rgba(0,0,0,0.08)]' : 'bg-transparent border border-white/20 shadow-[0_8px_30px_rgb(0,0,0,0.12)]'}`}
+                        style={{ maxHeight: 120, overflowY: 'auto' }}
                     />
-                    <button
-                        onClick={handleSubmitQuestion}
-                        className={`absolute right-2 top-1/2 -translate-y-1/2 p-1.5 rounded-full transition-all duration-200 border border-white/5 ${query.trim() ? 'bg-text-primary text-bg-primary hover:scale-105' : 'bg-bg-item-active text-text-primary hover:bg-bg-item-hover'
-                            }`}
-                    >
-                        <ArrowUp size={16} className="transform rotate-45" />
-                    </button>
+                    {isChatBusy ? (
+                        <button
+                            onClick={handleStopChatGeneration}
+                            className="absolute right-2 bottom-4 p-1.5 rounded-full transition-all duration-200 border border-white/5 bg-bg-item-active text-text-primary hover:bg-bg-item-hover"
+                            aria-label="Stop generating"
+                            title="Stop generating"
+                        >
+                            <Square size={14} fill="currentColor" />
+                        </button>
+                    ) : (
+                        <button
+                            onClick={handleSubmitQuestion}
+                            className={`absolute right-2 bottom-4 p-1.5 rounded-full transition-all duration-200 border border-white/5 ${query.trim() ? 'bg-text-primary text-bg-primary hover:scale-105' : 'bg-bg-item-active text-text-primary hover:bg-bg-item-hover'
+                                }`}
+                        >
+                            <ArrowUp size={16} className="transform rotate-45" />
+                        </button>
+                    )}
                 </div>
             </div>
 
             {/* Chat Overlay */}
             <MeetingChatOverlay
                 isOpen={isChatOpen}
+                onBusyChange={handleChatBusyChange}
                 onClose={() => {
                     setIsChatOpen(false);
                     setQuery('');

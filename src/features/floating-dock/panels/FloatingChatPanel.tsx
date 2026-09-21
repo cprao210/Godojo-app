@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
-import { Brain, Copy, Check, RotateCcw, Send } from 'lucide-react';
+import { Brain, Copy, Check, RotateCcw, Send, Square } from 'lucide-react';
 import ReactMarkdown from 'react-markdown';
 import { guardSession } from '@/lib/firebase';
 import remarkGfm from 'remark-gfm';
@@ -250,6 +250,11 @@ export const FloatingChatPanel: React.FC<FloatingChatPanelProps> = React.memo(({
     const streamBuffer = useStreamBuffer();
     const activeStreamRef = useRef<StreamHandle | null>(null);
     const pendingQuestionRef = useRef<string | null>(null);
+    // Tracks the assistant bubble id + accumulated text for whichever turn
+    // is in flight, so stopGeneration() can finalize the right message with
+    // whatever content had already streamed in.
+    const currentAssistantIdRef = useRef<string | null>(null);
+    const currentBufferRef = useRef('');
 
     // Auto-scroll
     useEffect(() => {
@@ -431,6 +436,7 @@ export const FloatingChatPanel: React.FC<FloatingChatPanelProps> = React.memo(({
         setIsProcessing(true);
         const userMessage: Message = { id: `user-${Date.now()}`, role: 'user', text: question };
         const assistantId = `assistant-${Date.now()}`;
+        currentAssistantIdRef.current = assistantId;
         setMessages(prev => [...prev, userMessage, { id: assistantId, role: 'system', text: '', isStreaming: true }]);
 
         const historyBeforeThisTurn = buildHistory(messages);
@@ -439,6 +445,7 @@ export const FloatingChatPanel: React.FC<FloatingChatPanelProps> = React.memo(({
         // no way for a concurrent/overlapping/duplicate call, or leftover
         // state from a prior turn, to reset or overwrite this turn's text.
         let localBuffer = '';
+        currentBufferRef.current = '';
         let rafId: number | null = null;
         const flush = () => {
             rafId = null;
@@ -508,6 +515,7 @@ export const FloatingChatPanel: React.FC<FloatingChatPanelProps> = React.memo(({
                 },
                 onToken: (chunk) => {
                     localBuffer += chunk;
+                    currentBufferRef.current = localBuffer;
                     if (rafId === null) rafId = requestAnimationFrame(flush);
                     // First token has arrived — clear the status label and
                     // the rewrite dim so real content replaces both.
@@ -542,6 +550,7 @@ export const FloatingChatPanel: React.FC<FloatingChatPanelProps> = React.memo(({
                     ));
                     setIsProcessing(false);
                     activeStreamRef.current = null;
+                    currentAssistantIdRef.current = null;
                     if (pendingQuestionRef.current) {
                         const next = pendingQuestionRef.current;
                         pendingQuestionRef.current = null;
@@ -555,6 +564,7 @@ export const FloatingChatPanel: React.FC<FloatingChatPanelProps> = React.memo(({
                     setErrorMessage(error);
                     setIsProcessing(false);
                     activeStreamRef.current = null;
+                    currentAssistantIdRef.current = null;
                     // Drain the queued question here too, exactly as onDone
                     // does. An `error` frame used to be followed by an onDone
                     // that did this; chatApi now guarantees a single terminal
@@ -569,6 +579,29 @@ export const FloatingChatPanel: React.FC<FloatingChatPanelProps> = React.memo(({
                 },
             },
         );
+    };
+
+    // chatApi's streamSSE resolves silently on an aborted signal (no onDone /
+    // onError fires — see chatApi.ts), so stopping here does the finalizing
+    // work those callbacks would otherwise have done: commit whatever text
+    // has streamed in so far, drop the streaming cursor, and clear the busy
+    // state so the input re-enables immediately.
+    const stopGeneration = () => {
+        activeStreamRef.current?.abort();
+        activeStreamRef.current = null;
+
+        const assistantId = currentAssistantIdRef.current;
+        if (assistantId) {
+            const finalText = currentBufferRef.current;
+            setMessages(prev => prev.map(m =>
+                m.id === assistantId ? { ...m, text: finalText, isStreaming: false } : m
+            ));
+        }
+
+        currentAssistantIdRef.current = null;
+        currentBufferRef.current = '';
+        setIsProcessing(false);
+        pendingQuestionRef.current = null;
     };
 
     const handleSend = () => {
@@ -747,35 +780,38 @@ export const FloatingChatPanel: React.FC<FloatingChatPanelProps> = React.memo(({
                             scrollbarWidth: 'none',
                         }}
                     />
-                    <motion.button
-                        onClick={handleSend}
-                        whileTap={{ scale: 0.88 }}
-                        disabled={!inputValue.trim() || isProcessing}
-                        className="shrink-0 w-8 h-8 rounded-xl flex items-center justify-center transition-all mb-0.5"
-                        style={{
-                            background: inputValue.trim() && !isProcessing
-                                ? 'rgba(139,92,246,0.85)'
-                                : 'rgba(255,255,255,0.06)',
-                            opacity: isProcessing ? 0.5 : 1,
-                        }}
-                    >
-                        {isProcessing ? (
-                            <motion.div
-                                className="w-3.5 h-3.5 rounded-full border-2 border-t-transparent"
-                                style={{ borderColor: 'rgba(255,255,255,0.4)', borderTopColor: 'transparent' }}
-                                animate={{ rotate: 360 }}
-                                transition={{ duration: 0.8, repeat: Infinity, ease: 'linear' }}
-                            />
-                        ) : (
+                    {isProcessing ? (
+                        <motion.button
+                            onClick={stopGeneration}
+                            whileTap={{ scale: 0.88 }}
+                            className="shrink-0 w-8 h-8 rounded-xl flex items-center justify-center transition-all mb-0.5"
+                            style={{ background: 'rgba(255,255,255,0.1)' }}
+                            aria-label="Stop generating"
+                            title="Stop generating"
+                        >
+                            <Square size={12} fill="#fff" style={{ color: '#fff' }} />
+                        </motion.button>
+                    ) : (
+                        <motion.button
+                            onClick={handleSend}
+                            whileTap={{ scale: 0.88 }}
+                            disabled={!inputValue.trim()}
+                            className="shrink-0 w-8 h-8 rounded-xl flex items-center justify-center transition-all mb-0.5"
+                            style={{
+                                background: inputValue.trim()
+                                    ? 'rgba(139,92,246,0.85)'
+                                    : 'rgba(255,255,255,0.06)',
+                            }}
+                        >
                             <Send
                                 size={14}
                                 style={{ color: inputValue.trim() ? '#fff' : 'rgba(255,255,255,0.2)' }}
                             />
-                        )}
-                    </motion.button>
+                        </motion.button>
+                    )}
                 </div>
                 <p className="text-[10px] text-white/15 text-center mt-1.5 leading-none">
-                    Enter to send · Shift+Enter for new line
+                    {isProcessing ? 'Click stop to cancel the response' : 'Enter to send · Shift+Enter for new line'}
                 </p>
             </div>
         </div>

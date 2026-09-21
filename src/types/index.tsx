@@ -2024,6 +2024,11 @@ export interface MeetingChatOverlayProps {
    * single-source chip under an assistant answer. Omit to render the chip
    * as plain (non-clickable) text instead. */
   onOpenMeeting?: (meetingId: string) => void;
+  /** Fired whenever the overlay's own streaming state changes, so the
+   * ask-bar input (rendered by the parent, outside this overlay) can show
+   * a stop button and call it to cancel the in-flight generation. `stop`
+   * is null whenever isBusy is false. */
+  onBusyChange?: (isBusy: boolean, stop: (() => void) | null) => void;
 }
 
 // --- src/features/meetings/components/MeetingDetails.tsx ---

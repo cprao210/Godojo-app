@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useEffect, useState } from 'react';
 import { X, Copy, Check, FileText, ExternalLink } from 'lucide-react';
 import { motion, AnimatePresence } from 'framer-motion';
 import { IMAGES } from '@/lib/assets';
@@ -189,6 +189,7 @@ const MeetingChatOverlay: React.FC<MeetingChatOverlayProps> = ({
     meetingContext,
     initialQuery,
     onOpenMeeting,
+    onBusyChange,
 }) => {
     const {
         chatState,
@@ -198,7 +199,21 @@ const MeetingChatOverlay: React.FC<MeetingChatOverlayProps> = ({
         chatWindowRef,
         handleBackdropClick,
         handleClose,
+        isBusy,
+        stopGeneration,
     } = useMeetingChat({ isOpen, onClose, onMessagesChange, messages, meetingContext, initialQuery });
+
+    // Report streaming state up to the parent — the ask-bar input (and its
+    // send/stop button) lives outside this overlay in MeetingDetails, so it
+    // needs a way to know when to show "stop" and what to call.
+    useEffect(() => {
+        onBusyChange?.(isBusy, isBusy ? stopGeneration : null);
+        // eslint-disable-next-line react-hooks/exhaustive-deps
+    }, [isBusy]);
+
+    // Make sure the parent doesn't keep a stale stop handle once this
+    // overlay unmounts (e.g. navigating away from the meeting).
+    useEffect(() => () => onBusyChange?.(false, null), []);
 
     return (
         <AnimatePresence>
@@ -251,7 +266,7 @@ const MeetingChatOverlay: React.FC<MeetingChatOverlayProps> = ({
                         <div className="flex-1 overflow-y-auto px-6 py-4 pb-32 custom-scrollbar">
                             {messages.map((msg) => (
                                 msg.role === 'user'
-                                    ? <UserMessage key={msg.id} content={msg.content} />                                            : <AssistantMessage key={msg.id} content={msg.content} isStreaming={msg.isStreaming} sources={msg.sources} sourceMap={msg.sourceMap} unverifiedCitations={msg.unverifiedCitations} rewriting={msg.rewriting} onOpenMeeting={onOpenMeeting} />
+                                    ? <UserMessage key={msg.id} content={msg.content} /> : <AssistantMessage key={msg.id} content={msg.content} isStreaming={msg.isStreaming} sources={msg.sources} sourceMap={msg.sourceMap} unverifiedCitations={msg.unverifiedCitations} rewriting={msg.rewriting} onOpenMeeting={onOpenMeeting} />
                             ))}
 
                             {chatState === 'waiting_for_llm' && <TypingIndicator label={statusText ?? undefined} />}

@@ -41,6 +41,10 @@ export function useMeetingChat({ isOpen, onClose, onMessagesChange, messages, me
     const pendingQuestionRef = useRef<string | null>(null);
     const chatStateRef = useRef<MeetingChatState>('idle');
     const lastSubmittedQueryIdRef = useRef<number | null>(null);
+    // Tracks the assistant placeholder id for whichever turn is in flight,
+    // so stopGeneration() can finalize the right message without threading
+    // the id through the submitQuestion closure.
+    const currentAssistantIdRef = useRef<string | null>(null);
 
     // A different meeting means a different conversation — don't carry the
     // previous meeting's session_id over.
@@ -133,6 +137,7 @@ export function useMeetingChat({ isOpen, onClose, onMessagesChange, messages, me
         setStatusText(null);
 
         const assistantMessageId = `assistant-${Date.now()}`;
+        currentAssistantIdRef.current = assistantMessageId;
 
         // Add typing indicator delay (200ms) - makes the AI feel "thoughtful"
         await new Promise(resolve => setTimeout(resolve, 200));
@@ -222,6 +227,7 @@ export function useMeetingChat({ isOpen, onClose, onMessagesChange, messages, me
                 setStatusText(null);
                 streamBuffer.reset();
                 activeStreamRef.current = null;
+                currentAssistantIdRef.current = null;
                 if (pendingQuestionRef.current) {
                     const next = pendingQuestionRef.current;
                     pendingQuestionRef.current = null;
@@ -236,6 +242,7 @@ export function useMeetingChat({ isOpen, onClose, onMessagesChange, messages, me
                 setStatusText(null);
                 streamBuffer.reset();
                 activeStreamRef.current = null;
+                currentAssistantIdRef.current = null;
                 if (pendingQuestionRef.current) {
                     const next = pendingQuestionRef.current;
                     pendingQuestionRef.current = null;
@@ -246,15 +253,49 @@ export function useMeetingChat({ isOpen, onClose, onMessagesChange, messages, me
         // eslint-disable-next-line react-hooks/exhaustive-deps
     }, [meetingContext.id, sessionId]);
 
+    // ── Stop / cancel an in-flight generation ────────────────────────────────
+    // chatApi's streamSSE resolves silently on an aborted signal (no onDone /
+    // onError fires — see chatApi.ts), so stopping here has to do the
+    // finalizing work those callbacks would otherwise have done: commit
+    // whatever text has streamed in so far, drop the streaming cursor, and
+    // put the chat state back to idle so the input re-enables immediately.
+    const stopGeneration = useCallback(() => {
+        activeStreamRef.current?.abort();
+        activeStreamRef.current = null;
+
+        const assistantMessageId = currentAssistantIdRef.current;
+        if (assistantMessageId) {
+            const finalContent = streamBuffer.getBufferedContent();
+            onMessagesChange(prev => prev.map(msg =>
+                msg.id === assistantMessageId
+                    ? { ...msg, content: finalContent, isStreaming: false, rewriting: false }
+                    : msg
+            ));
+        }
+
+        streamBuffer.reset();
+        currentAssistantIdRef.current = null;
+        // Don't fire a queued follow-up after an explicit stop — the person
+        // cancelled the turn on purpose, not because it failed.
+        pendingQuestionRef.current = null;
+        setChatState('idle');
+        setStatusText(null);
+        // eslint-disable-next-line react-hooks/exhaustive-deps
+    }, []);
+
+    const isBusy = chatState === 'waiting_for_llm' || chatState === 'streaming_response';
+
     return {
         chatState,
         errorMessage,
         statusText,
         sessionId,
+        isBusy,
         messagesEndRef,
         chatWindowRef,
         handleBackdropClick,
         handleClose,
         submitQuestion,
+        stopGeneration,
     };
 }

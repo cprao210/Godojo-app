@@ -14,7 +14,7 @@
  *
  * MeetingDetails.tsx (and its tab components) just render what this returns.
  */
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useQuery, useMutation, useQueryClient } from 'react-query';
 import { meetingsApi, chatApi } from '@/api';
 import { isMeetingProcessing } from '@/api/meetingMapping';
@@ -447,6 +447,7 @@ export function useMeetingDetails(initialMeeting: Meeting) {
         ? isLoadingAiInteractions || (aiInteractionsUpdatedAt === 0 && !aiInteractionsError)
         : isProcessing;
     const [query, setQuery] = useState('');
+    const meetingInputRef = useRef<HTMLTextAreaElement>(null);
     const [isCopied, setIsCopied] = useState(false);
     const [isRegenerating, setIsRegenerating] = useState(false);
     const [regenError, setRegenError] = useState<string | null>(null);
@@ -455,6 +456,18 @@ export function useMeetingDetails(initialMeeting: Meeting) {
     const [pendingQuery, setPendingQuery] = useState<{ text: string; id: number } | null>(null);
     const [chatMessages, setChatMessages] = useState<import('@/types').MeetingChatMessage[]>([]);
     const [isTalktimeOpen, setIsTalktimeOpen] = useState(false);
+    // Mirrors MeetingChatOverlay's own streaming state (reported via its
+    // onBusyChange prop) so the ask-bar input rendered here can swap its
+    // send button for a stop button and cancel the in-flight generation.
+    const [isChatBusy, setIsChatBusy] = useState(false);
+    const stopChatGenerationRef = useRef<(() => void) | null>(null);
+    const handleChatBusyChange = useCallback((busy: boolean, stop: (() => void) | null) => {
+        setIsChatBusy(busy);
+        stopChatGenerationRef.current = stop;
+    }, []);
+    const handleStopChatGeneration = useCallback(() => {
+        stopChatGenerationRef.current?.();
+    }, []);
 
     // ─── What is this meeting actually doing, and what may be painted yet? ────
     //
@@ -540,6 +553,14 @@ export function useMeetingDetails(initialMeeting: Meeting) {
         }
         return false;
     }, [meeting.transcript]);
+
+    // Auto-resize textarea
+    useEffect(() => {
+        const el = meetingInputRef.current;
+        if (!el) return;
+        el.style.height = 'auto';
+        el.style.height = `${Math.min(el.scrollHeight, 96)}px`; // max ~4 lines
+    }, [query]);
 
     // Speaking Balance calls getSpeakerDisplayName('user'/'client') with no
     // per-segment displayName (there's no single segment to derive one from
@@ -723,6 +744,11 @@ export function useMeetingDetails(initialMeeting: Meeting) {
     };
 
     const handleInputKeyDown = (e: React.KeyboardEvent) => {
+        // Shift+Enter inserts a newline — let the textarea handle it
+        // natively instead of submitting.
+        if (e.key === 'Enter' && e.shiftKey) {
+            return;
+        }
         if (e.key === 'Enter' && query.trim()) {
             e.preventDefault();
             handleSubmitQuestion();
@@ -1024,6 +1050,10 @@ ${formatNextCallPlaybook() || '  None'}
         transcriptTimesAreRelative,
         handleSubmitQuestion,
         handleInputKeyDown,
+        meetingInputRef,
+        isChatBusy,
+        handleChatBusyChange,
+        handleStopChatGeneration,
         handleCopy,
         handleTitleSave,
         handleActionItemSave,
