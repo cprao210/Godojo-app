@@ -15,6 +15,7 @@ import * as path from "path";
 import * as fs from "fs";
 import { AudioDevices } from "./audio/AudioDevices";
 import { detectTavilyIntent, extractAllowedCompaniesFromAttendees } from "./services/TavilyIntentDetector";
+import { generateCompanyIntel, createTavilySearch, isCachedIntelFresh, INTEL_SCHEMA_VERSION } from "./services/CompanyIntelService";
 import { searchCompany, clearCompanyCache } from "./services/TavilyManager";
 
 import { buildCompanyContextBlock } from './utils/salesBriefUtils';
@@ -2806,220 +2807,78 @@ export function initializeIpcHandlers(appState: AppState): void {
 
       const { companyName, domain, forceRefresh = false } = payload;
 
-      // ── Persistence: return cached intel unless forceRefresh ─────────────
+      // ── Persistence ───────────────────────────────────────────────────────
+      // Serve the cache only while it is fresh AND was produced by the current
+      // pipeline. Entries written by the old pipeline (no `_schema`) or older
+      // than the TTL are regenerated — they used to be served forever.
       const cacheKey = `company_intel:${(domain || companyName).toLowerCase()}`;
       const db = DatabaseManager.getInstance();
-      if (!forceRefresh) {
-        const cached = db.getAppState(cacheKey);
-        if (cached) {
-          try {
-            const parsed = JSON.parse(cached);
+      let expiredButCurrent: any = null;
+      const cachedRaw = db.getAppState(cacheKey);
+      if (cachedRaw) {
+        try {
+          const parsed = JSON.parse(cachedRaw);
+          if (!forceRefresh && isCachedIntelFresh(parsed)) {
             console.log(`[IPC] fetch-company-intel: returning cached intel for "${companyName}"`);
             return { success: true, intel: parsed, fromCache: true };
-          } catch {
-            // corrupt cache — fall through to fresh fetch
-            db.deleteAppState(cacheKey);
           }
+          // Only an entry from the CURRENT pipeline may be shown as a fallback
+          // if the refresh fails; older ones may be the wrong data we're replacing.
+          if (parsed?._schema === INTEL_SCHEMA_VERSION) expiredButCurrent = parsed;
+        } catch {
+          // corrupt cache — fall through to fresh fetch
+          db.deleteAppState(cacheKey);
         }
       }
 
-      // Run parallel Tavily searches for different intel categories
-      const tavilySearch = async (query: string, maxResults = 4): Promise<any[]> => {
-        const res = await fetch('https://api.tavily.com/search', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${tavilyApiKey}` },
-          body: JSON.stringify({
-            query,
-            max_results: maxResults,
-            search_depth: 'advanced',   // advanced depth gives higher-quality, more specific results
-            include_answer: true,
-            include_domains: domain ? [domain] : [],  // bias results toward the known domain when available
-          }),
-        });
-        if (!res.ok) throw new Error(`Tavily error: ${res.status}`);
-        const data = await res.json() as any;
-        return data.results || [];
-      };
+      const fallbackToExpired = (error: string) =>
+        expiredButCurrent
+          ? {
+            success: true,
+            fromCache: true,
+            intel: {
+              ...expiredButCurrent,
+              _warnings: [
+                ...(expiredButCurrent._warnings ?? []),
+                `Couldn't refresh (${error}). Showing results saved on ${String(expiredButCurrent._generatedAt).slice(0, 10)}.`,
+              ],
+            },
+          }
+          : { success: false, error };
 
-      // When a domain is known, anchor every query to it so same-name companies
-      // from different industries cannot bleed into the results.
-      const domainAnchor = domain ? `"${domain}"` : `"${companyName}"`;
-      const nameAndDomain = domain ? `"${companyName}" ${domain}` : `"${companyName}"`;
-
-      const linkedinSlug = domain ? domain.split('.')[0] : companyName.toLowerCase().replace(/\s+/g, '-');
-      const linkedinQuery = `site:linkedin.com/company ${linkedinSlug} "${companyName}"`;
-
-      const [overviewResults, fundingResults, newsResults, leadershipResults, competitorResults, linkedinResults] = await Promise.allSettled([
-        tavilySearch(`${nameAndDomain} company overview founded headquarters employees industry`),
-        tavilySearch(`${nameAndDomain} funding valuation investors series revenue`),
-        tavilySearch(`${nameAndDomain} latest news announcements 2024 2025`, 5),
-        tavilySearch(`${nameAndDomain} leadership CEO CRO CMO executive team`),
-        tavilySearch(`${nameAndDomain} competitors alternative products market`, 5),
-        tavilySearch(linkedinQuery, 2),
-      ]);
-
-      const extract = (r: PromiseSettledResult<any[]>) => r.status === 'fulfilled' ? r.value : [];
-
-      // Extract the LinkedIn company URL from results if found
-      const linkedinHits = extract(linkedinResults);
-      const linkedinPageUrl = linkedinHits
-        .map((r: any) => r.url as string)
-        .find((u: string) => u?.includes('linkedin.com/company/')) || null;
-
-      // Aggregate all snippets and pass to LLM for structured extraction
-      const linkedinSnippets = extract(linkedinResults).map((r: any) => r.content || r.snippet || '').filter(Boolean);
-
-      // Format each result as "[SOURCE: url]\ncontent" so the LLM can judge
-      // whether a snippet actually refers to the target company.
-      const formatResults = (results: any[]) =>
-        results
-          .filter((r: any) => (r.content || r.snippet || '').trim())
-          .map((r: any) => `[SOURCE: ${r.url || 'unknown'}]\n${(r.content || r.snippet || '').trim()}`)
-          .join('\n\n');
-
-      const allSnippets = [
-        '=== GENERAL OVERVIEW ===',
-        formatResults(extract(overviewResults)),
-        '=== FUNDING & FINANCIALS ===',
-        formatResults(extract(fundingResults)),
-        '=== RECENT NEWS ===',
-        formatResults(extract(newsResults)),
-        '=== LEADERSHIP ===',
-        formatResults(extract(leadershipResults)),
-        '=== COMPETITORS & MARKET ===',
-        formatResults(extract(competitorResults)),
-        ...(extract(linkedinResults).length
-          ? ['=== LINKEDIN (authoritative for headcount, description, founding year) ===',
-            formatResults(extract(linkedinResults))]
-          : []),
-      ].filter(Boolean).join('\n\n---\n\n');
-
+      // ── Generation ────────────────────────────────────────────────────────
+      // Search + verification live in CompanyIntelService (unit-tested offline).
+      // The model call uses the structured-output entry point: it does NOT get
+      // the chat assistant's persona or the knowledge-mode intercept that
+      // chatWithGemini applied to this extraction before.
       const llmHelper = appState.processingHelper.getLLMHelper();
+      const result = await generateCompanyIntel(
+        { companyName, domain },
+        {
+          search: createTavilySearch(tavilyApiKey),
+          generate: (prompt: string) => llmHelper.generateContentStructured(prompt),
+        },
+      );
+      if (result.success === false) return fallbackToExpired(result.error);
+      const intel = result.intel;
 
-      const extractionPrompt = `You are a company research analyst. Extract structured intelligence ONLY about the specific company identified below. Return ONLY a valid JSON object — no markdown, no explanation.
-
-      TARGET COMPANY: ${companyName}${domain ? `\nTARGET WEBSITE/DOMAIN: ${domain}` : ''}
-      
-      CRITICAL DISAMBIGUATION RULES (read before processing):
-      1. Many companies share similar names. Every data point you extract MUST be verifiable from a snippet whose [SOURCE] URL belongs to ${domain ? `"${domain}"` : `"${companyName}"`} or a known authority (LinkedIn, Crunchbase, Bloomberg, TechCrunch, Reuters, etc.) that explicitly mentions ${companyName}${domain ? ` or ${domain}` : ''}.
-      2. If a snippet's source domain does not match and does not clearly reference the TARGET company by full name, IGNORE that snippet entirely — do not extract from it.
-      3. For "competitors": list only companies that are described as direct competitors TO ${companyName} in the snippets. Do NOT list companies that merely appear in the same snippet by coincidence. If no competitors can be confirmed, return null.
-      4. For "recentNews": include only headlines that are explicitly about ${companyName}${domain ? ` (${domain})` : ''}. If the same company name could refer to multiple organizations, only include news where the snippet's source URL or content confirms it is about the target. If unsure, exclude it — null is better than wrong data.
-      5. Never infer or hallucinate. If a field cannot be directly confirmed from the provided snippets, set it to null.
-      
-      Web search snippets (each prefixed with its source URL):
-      ${allSnippets.slice(0, 10000)}
-      
-      Return this exact JSON structure (use null for unknown fields, never omit a key):
-      {
-        "companyName": string,
-        "website": string | null,
-        "foundedYear": number | null,
-        "companyAge": number | null,
-        "founders": string[] | null,
-        "headquarters": string | null,
-        "employeeCount": string | null,
-        "industry": string | null,
-        "revenue": string | null,
-        "valuation": string | null,
-        "fundingStage": string | null,
-        "latestFundingNews": string | null,
-        "investors": string[] | null,
-        "keyProducts": string[] | null,
-        "competitors": string[] | null,
-        "recentNews": [{ "headline": string, "date": string | null, "source": string | null }] | null,
-        "leadershipChanges": [{ "name": string, "role": string, "date": string | null }] | null,
-        "linkedinUrl": string | null,
-        "businessModel": string | null,
-        "geographicPresence": string[] | null,
-        "topCustomers": string[] | null
-      }
-      
-      ADDITIONAL RULES:
-      - All string[] fields MUST be JSON arrays, never comma-separated strings
-      - "recentNews[].source" should be the domain of the article URL (e.g. "techcrunch.com")
-      - Use null for any field you cannot confirm from the snippets
-      - Do not add keys beyond those listed above`;
-
-      const raw = await llmHelper.chatWithGemini(extractionPrompt, undefined, undefined, false);
-      if (!raw) return { success: false, error: 'LLM extraction failed' };
-
-      // Safely parse JSON — strip markdown fences if present
-      const clean = raw.replace(/```json|```/g, '').trim();
-      let intel: any;
-      try {
-        intel = JSON.parse(clean);
-      } catch {
-        // Try extracting first {...} block
-        const match = clean.match(/\{[\s\S]+\}/);
-        if (match) intel = JSON.parse(match[0]);
-        else return { success: false, error: 'Could not parse company intelligence' };
-      }
-
-      // Prefer the directly-found LinkedIn URL over whatever the LLM extracted
-      if (linkedinPageUrl && (!intel.linkedinUrl || !intel.linkedinUrl.includes('linkedin.com/company/'))) {
-        intel.linkedinUrl = linkedinPageUrl;
-      }
-
-      // Attach raw news snippets for the "Recent News" click-through
-      intel._newsSnippets = extract(newsResults).slice(0, 3).map((r: any) => ({
-        title: r.title,
-        url: r.url,
-        date: r.published_date || null,
-      }));
-
-      // Normalize string[] fields — the LLM occasionally returns a
-      // comma-separated string despite the prompt instruction.  Defensively
-      // coerce every known list field so the renderer never crashes on .map().
-      const LIST_FIELDS = [
-        'founders', 'investors', 'keyProducts', 'competitors',
-        'geographicPresence', 'topCustomers',
-      ] as const;
-
-      for (const field of LIST_FIELDS) {
-        const v = intel[field];
-        if (v === null || v === undefined) {
-          intel[field] = null;
-        } else if (Array.isArray(v)) {
-          // Filter nulls, trim whitespace
-          intel[field] = v
-            .filter((x: any) => typeof x === 'string' && x.trim())
-            .map((x: string) => x.trim());
-          if (intel[field].length === 0) intel[field] = null;
-        } else if (typeof v === 'string' && v.trim()) {
-          // Comma-separated fallback
-          intel[field] = v.split(',').map((s: string) => s.trim()).filter(Boolean);
-          if (intel[field].length === 0) intel[field] = null;
-        } else {
-          intel[field] = null;
+      // Sparse, partial or unverified results are shown (with their warnings)
+      // but not persisted, so the next open retries instead of pinning them.
+      if (result.cacheable) {
+        try {
+          db.setAppState(cacheKey, JSON.stringify(intel));
+          console.log(`[IPC] fetch-company-intel: cached intel for "${companyName}" (key: ${cacheKey})`);
+        } catch (e) {
+          console.warn('[IPC] fetch-company-intel: failed to cache intel:', e);
         }
       }
 
-      // Validate object-array fields — ensure shape is correct or null them
-      if (intel.recentNews !== null && intel.recentNews !== undefined) {
-        if (!Array.isArray(intel.recentNews) ||
-          !intel.recentNews.every((n: any) => typeof n?.headline === 'string')) {
-          intel.recentNews = null;
-        }
-      }
-      if (intel.leadershipChanges !== null && intel.leadershipChanges !== undefined) {
-        if (!Array.isArray(intel.leadershipChanges) ||
-          !intel.leadershipChanges.every((n: any) => typeof n?.name === 'string' && typeof n?.role === 'string')) {
-          intel.leadershipChanges = null;
-        }
-      }
-
-      // Persist intel so re-opening doesn't re-fetch
-      try {
-        db.setAppState(cacheKey, JSON.stringify(intel));
-        console.log(`[IPC] fetch-company-intel: cached intel for "${companyName}" (key: ${cacheKey})`);
-      } catch (e) {
-        console.warn('[IPC] fetch-company-intel: failed to cache intel:', e);
-      }
-
-      // Auto-store in appState so chat assistant can access it immediately without a separate set-company-intel call
-      appState.setCompanyIntel(intel);
-      console.log(`[IPC] fetch-company-intel: auto-stored intel in appState for "${companyName}"`);
+      // appState feeds the chat / follow-up email / post-call summary prompts as
+      // "prospect intelligence". Low-confidence intel (company guessed from a
+      // meeting title, or a name collision) must not reach them — and must not
+      // leave the PREVIOUS company's intel sitting in that slot either.
+      appState.setCompanyIntel(intel._confidence === 'low' ? null : intel);
+      console.log(`[IPC] fetch-company-intel: "${companyName}" → confidence=${intel._confidence}, cacheable=${result.cacheable}`);
 
       return { success: true, intel };
     } catch (error: any) {

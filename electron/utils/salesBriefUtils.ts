@@ -103,11 +103,19 @@ export function inferMeetingType(title: string): MeetingClassification {
  */
 export function buildCompanyContextBlock(intel: Record<string, any> | null): string {
     if (!intel) return '';
+    // Low confidence = the company was guessed from a meeting title, or the
+    // search results were about a different company. Handing that to the model
+    // as "prospect intelligence" is how wrong facts end up in follow-up emails.
+    if (intel._confidence === 'low') return '';
     const v = (x: any) => x && x !== 'null' && x !== 'N/A' ? x : null;
 
     const lines: string[] = [
         '═══════════════════════════════════════',
         'PROSPECT COMPANY INTELLIGENCE (pre-call research — use to personalise your analysis)',
+        'Auto-researched from public web sources: treat as unverified background. Do not state these details to the prospect as fact unless the call confirms them.',
+        ...(intel._confidence === 'medium' && Array.isArray(intel._warnings) && intel._warnings.length
+            ? [`Reliability: MEDIUM — ${intel._warnings.join(' ')}`]
+            : []),
         '═══════════════════════════════════════',
     ];
 

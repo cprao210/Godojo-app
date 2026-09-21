@@ -18,6 +18,10 @@ import { MapPin, NotebookPen, Video, X } from "lucide-react";
 // Imported from the leaf module, not the `@/hooks` barrel.
 import { formatTimeShort } from "@/hooks/useMeetingTimeline";
 import { detectProviderOrOther } from "@/lib/meetingProviderUtils";
+// Pure, dependency-free — the same candidate/"our own domain" logic the Sales
+// Brief uses, so a teammate on the rep's domain is never mistaken for the
+// prospect here either. Leaf module: safe for this window to load.
+import { deriveCompanyCandidates } from "@/lib/companyCandidates";
 import type { CalendarEvent, CompanyIntel } from "@/types";
 
 const PROVIDER_LABELS: Record<string, string> = {
@@ -26,43 +30,6 @@ const PROVIDER_LABELS: Record<string, string> = {
     teams: "Microsoft Teams",
     other: "Online meeting",
 };
-
-const GENERIC_EMAIL_DOMAINS = new Set([
-    "gmail.com", "yahoo.com", "outlook.com", "hotmail.com", "icloud.com",
-    "aol.com", "protonmail.com", "mail.com", "live.com", "me.com", "msn.com",
-]);
-
-/**
- * Pick the prospect company from the attendee list.
- *
- * This mirrors deriveCompanyCandidates() in useCompanyIntel.ts, but is
- * re-implemented here rather than imported: that module pulls in
- * `@/lib/firebase` and the PostHog service, which are exactly the two things
- * this window exists to avoid loading.
- */
-function deriveProspect(event: CalendarEvent): { companyName: string; domain: string } | null {
-    const attendees = event.attendees ?? [];
-    const hasSelfFlag = attendees.some((a: any) => a.self);
-    const selfDomain = (hasSelfFlag
-        ? attendees.find((a: any) => a.self)?.email?.split("@")[1]
-        : event.organizer?.split("@")[1]
-    )?.toLowerCase() ?? "";
-
-    for (const attendee of attendees) {
-        const email: string | undefined = attendee?.email;
-        if (!email) continue;
-        const domain = email.split("@")[1]?.toLowerCase();
-        if (!domain || GENERIC_EMAIL_DOMAINS.has(domain)) continue;
-        if (hasSelfFlag ? attendee.self : domain === selfDomain) continue;
-
-        const bare = domain.split(".")[0];
-        return {
-            companyName: bare.charAt(0).toUpperCase() + bare.slice(1),
-            domain,
-        };
-    }
-    return null;
-}
 
 /** Compose the one-line context blurb from the structured intel record. */
 function blurbFromIntel(intel: CompanyIntel): string | null {
@@ -236,7 +203,9 @@ export default function MeetingPopup() {
     // --- Company blurb, strictly after the card is on screen ---------------
     useEffect(() => {
         if (!event) return;
-        const prospect = deriveProspect(event);
+        // The reminder card has no room to ask, so it takes the company with
+        // the most invitees. (The Sales Brief asks the user when there are several.)
+        const prospect = deriveCompanyCandidates(event).candidates[0];
         if (!prospect) return;
 
         let cancelled = false;

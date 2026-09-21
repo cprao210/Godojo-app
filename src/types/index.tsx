@@ -260,6 +260,12 @@ export interface ConnectCalendarButtonProps {
 }
 
 // --- src/features/calendar/SalesBriefPanel.tsx ---
+/** Fields of CompanyIntel that can carry a "where did this come from" link. */
+export type CompanyIntelFieldKey =
+  | 'foundedYear' | 'founders' | 'headquarters' | 'employeeCount' | 'industry'
+  | 'revenue' | 'valuation' | 'fundingStage' | 'latestFundingNews' | 'investors'
+  | 'keyProducts' | 'competitors' | 'businessModel' | 'geographicPresence' | 'topCustomers';
+
 export interface CompanyIntel {
   companyName: string;
   website: string | null;
@@ -276,13 +282,27 @@ export interface CompanyIntel {
   investors: string[] | null;
   keyProducts: string[] | null;
   competitors: string[] | null;
-  recentNews: Array<{ headline: string; date: string | null }> | null;
-  leadershipChanges: Array<{ name: string; role: string; date: string | null }> | null;
+  /** `url`/`source` belong to THIS item (the article the headline came from). */
+  recentNews: Array<{ headline: string; date: string | null; url?: string | null; source?: string | null }> | null;
+  /** `url` (when present) is the article that announced the change. */
+  leadershipChanges: Array<{ name: string; role: string; date: string | null; url?: string | null }> | null;
   linkedinUrl: string | null;
   businessModel: string | null;
   geographicPresence: string[] | null;
   topCustomers: string[] | null;
   _newsSnippets?: Array<{ title: string; url: string; date: string | null }>;
+  /** How far to trust this result. `low` = the company was guessed from a
+   * meeting title or the sources described a different company. */
+  _confidence?: 'high' | 'medium' | 'low';
+  /** Plain-language reasons the result may be incomplete or unreliable. */
+  _warnings?: string[];
+  /** The pages the intel was compiled from. */
+  _sources?: Array<{ title: string; url: string; tier: 'site' | 'web' | 'news' | 'linkedin' }>;
+  /** Per-field link to the ONE retrieved page that supports that value, so the
+   * panel can offer "verify this". Only fields with a value AND a supporting
+   * page appear; results cached before this existed simply lack it. */
+  _fieldSources?: Partial<Record<CompanyIntelFieldKey, { url: string; title: string }>>;
+  _generatedAt?: string;
 }
 
 // --- src/features/chat/api/chatApi.ts ---

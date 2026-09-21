@@ -4,7 +4,8 @@ import { X, ExternalLink, RefreshCw, Copy, Check, Building2, Users, TrendingUp, 
 import { DollarSign, Layers, Rocket, Newspaper, UserCheck, Linkedin, Target, Map } from 'lucide-react';
 import { Star, ChevronRight, AlertCircle, WifiOff, Trophy, Zap, GitBranch, Briefcase } from 'lucide-react';
 import { useResolvedTheme, useCompanyIntel, hasValue, pickValue, isIntelEmpty, openExternalUrl, LOADING_STAGES } from '@/hooks';
-import { SalesBriefPanelProps } from '@/types';
+import { SalesBriefPanelProps, CompanyIntel, CompanyIntelFieldKey } from '@/types';
+import type { CompanyCandidate } from '@/lib/companyCandidates';
 
 interface SkeletonProps {
     w?: string;
@@ -20,6 +21,9 @@ interface FieldProps {
     isLight: boolean;
     loading?: boolean;
     accent?: boolean;
+    /** The retrieved page this value came from; renders a link beside the label. */
+    source?: { url: string; title: string } | null;
+    onOpenSource?: (url: string) => void;
 }
 
 interface PillListProps {
@@ -38,6 +42,68 @@ interface NoDataPlaceholderProps {
     onRetry: () => void;
     isLight: boolean;
 }
+
+// ─── Accuracy banner — shown when a result shouldn't be trusted blindly ───────
+interface AccuracyBannerProps {
+    warnings: string[];
+    isLight: boolean;
+}
+
+const AccuracyBanner: React.FC<AccuracyBannerProps> = ({ warnings, isLight }) => (
+    <div
+        role="note"
+        className={['flex items-start gap-2.5 mt-4 px-3.5 py-3 rounded-xl border text-[11px] leading-relaxed',
+            isLight ? 'bg-amber-50 border-amber-200/80 text-amber-800' : 'bg-amber-500/10 border-amber-500/25 text-amber-200'].join(' ')}
+    >
+        <AlertCircle size={13} className="shrink-0 mt-0.5" />
+        <ul className="space-y-1">
+            {warnings.map((w, i) => <li key={i}>{w}</li>)}
+        </ul>
+    </div>
+);
+
+// ─── Sources note — where the details came from, and how far to trust them ────
+interface SourcesNoteProps {
+    sources: NonNullable<CompanyIntel['_sources']>;
+    generatedAt?: string;
+    isLight: boolean;
+    onOpen: (url: string) => void;
+}
+
+const sourceHost = (url: string): string => {
+    try { return new URL(url).hostname.replace(/^www\./, ''); } catch { return url; }
+};
+
+const SourcesNote: React.FC<SourcesNoteProps> = ({ sources, generatedAt, isLight, onOpen }) => {
+    const seen = new Set<string>();
+    const unique = sources.filter((s) => {
+        const host = sourceHost(s.url);
+        if (seen.has(host)) return false;
+        seen.add(host);
+        return true;
+    });
+    const when = generatedAt && !Number.isNaN(Date.parse(generatedAt)) ? new Date(generatedAt).toLocaleDateString() : null;
+    return (
+        <div className="mt-5">
+            <p className={['text-[10px] leading-relaxed', isLight ? 'text-slate-400' : 'text-slate-500'].join(' ')}>
+                Compiled from public web sources{when ? ` on ${when}` : ''}. It can be incomplete or wrong — verify key facts before using them with a prospect.
+            </p>
+            <div className="flex flex-wrap gap-1.5 mt-2">
+                {unique.map((s) => (
+                    <button
+                        key={s.url}
+                        onClick={() => onOpen(s.url)}
+                        title={s.title || s.url}
+                        className={['inline-flex items-center gap-1 px-2 py-0.5 rounded-md text-[10px] transition-colors',
+                            isLight ? 'bg-slate-100 text-slate-500 hover:bg-slate-200' : 'bg-white/[0.06] text-slate-400 hover:bg-white/[0.1]'].join(' ')}
+                    >
+                        {sourceHost(s.url)} <ExternalLink size={8} />
+                    </button>
+                ))}
+            </div>
+        </div>
+    );
+};
 
 // ─── Skeleton pulse block ─────────────────────────────────────────────────────
 const Skeleton: React.FC<SkeletonProps> = ({ w = 'w-full', h = 'h-3', className = '', isLight = false }) => (
@@ -86,8 +152,37 @@ const CompanyLogo: React.FC<CompanyLogoProps> = ({ website, fallbackLetter, isLi
     );
 };
 
+// ─── "Verify this" link — one per field, beside its title ────────────────────
+interface SourceLinkProps {
+    url: string;
+    /** Page title, when known — shown in the tooltip next to the host. */
+    title?: string;
+    /** What the link is for, e.g. "Valuation" — for the accessible name. */
+    label: string;
+    isLight: boolean;
+    onOpen: (url: string) => void;
+}
+
+const SourceLink: React.FC<SourceLinkProps> = ({ url, title, label, isLight, onOpen }) => {
+    const host = sourceHost(url);
+    return (
+        <button
+            type="button"
+            onClick={(e) => { e.stopPropagation(); onOpen(url); }}
+            title={`Verify on ${host}${title && title !== host ? ` — ${title}` : ''}`}
+            aria-label={`Open the source for ${label} (${host})`}
+            className={['shrink-0 inline-flex h-4 w-4 items-center justify-center rounded transition-colors',
+                isLight
+                    ? 'text-blue-500/80 hover:text-blue-700 hover:bg-blue-50'
+                    : 'text-blue-400/80 hover:text-blue-300 hover:bg-white/[0.08]'].join(' ')}
+        >
+            <ExternalLink size={10} />
+        </button>
+    );
+};
+
 // ─── Single field row ─────────────────────────────────────────────────────────
-const Field: React.FC<FieldProps> = ({ icon, label, value, isLight, loading, accent }) => (
+const Field: React.FC<FieldProps> = ({ icon, label, value, isLight, loading, accent, source, onOpenSource }) => (
     <div className="flex items-start gap-3 py-2.5 group">
         <div className={[
             'mt-0.5 flex h-6 w-6 shrink-0 items-center justify-center rounded-md',
@@ -96,10 +191,15 @@ const Field: React.FC<FieldProps> = ({ icon, label, value, isLight, loading, acc
             {icon}
         </div>
         <div className="flex-1 min-w-0">
-            <p className={['text-[10px] font-semibold uppercase tracking-widest mb-0.5',
-                isLight ? 'text-slate-400' : 'text-slate-500'].join(' ')}>
-                {label}
-            </p>
+            <div className="flex items-center justify-between gap-2 mb-0.5">
+                <p className={['text-[10px] font-semibold uppercase tracking-widest',
+                    isLight ? 'text-slate-400' : 'text-slate-500'].join(' ')}>
+                    {label}
+                </p>
+                {!loading && source && onOpenSource && (
+                    <SourceLink url={source.url} title={source.title} label={label} isLight={isLight} onOpen={onOpenSource} />
+                )}
+            </div>
             {loading ? (
                 <Skeleton w="w-3/4" h="h-3.5" isLight={isLight} />
             ) : (
@@ -225,6 +325,66 @@ const NoDataPlaceholder: React.FC<NoDataPlaceholderProps> = ({ companyName, onRe
     </div>
 );
 
+// ─── Company chooser — shown FIRST when the invite spans several companies ────
+// Nothing is fetched until the user picks one, so no lookup is spent on a guess.
+interface CompanyChooserProps {
+    candidates: CompanyCandidate[];
+    onSelect: (index: number) => void;
+    isLight: boolean;
+}
+
+const CompanyChooser: React.FC<CompanyChooserProps> = ({ candidates, onSelect, isLight }) => (
+    <motion.div
+        initial={{ opacity: 0, y: 8 }}
+        animate={{ opacity: 1, y: 0 }}
+        exit={{ opacity: 0 }}
+        transition={{ duration: 0.2 }}
+        className="flex flex-col items-center gap-5 px-6 py-8"
+    >
+        <div className={['w-12 h-12 rounded-2xl flex items-center justify-center',
+            isLight ? 'bg-blue-50' : 'bg-blue-500/10'].join(' ')}>
+            <Building2 size={22} className={isLight ? 'text-blue-600' : 'text-blue-400'} />
+        </div>
+        <div className="text-center">
+            <p className="text-[14px] font-semibold text-text-primary mb-1">Which company should we research?</p>
+            <p className={['text-[12px] leading-relaxed max-w-xs',
+                isLight ? 'text-slate-500' : 'text-slate-400'].join(' ')}>
+                This invite includes {candidates.length} outside companies. Choose one to generate its insights.
+            </p>
+        </div>
+        <div className="w-full max-w-[420px] max-h-[300px] overflow-y-auto custom-scrollbar flex flex-col gap-2">
+            {candidates.map((c, i) => (
+                <button
+                    key={c.domain}
+                    onClick={() => onSelect(i)}
+                    className={[
+                        'group flex items-center gap-3 w-full px-3.5 py-3 rounded-xl border text-left transition-colors',
+                        isLight
+                            ? 'bg-white border-slate-200 hover:border-blue-300 hover:bg-blue-50/40'
+                            : 'bg-white/[0.03] border-white/[0.08] hover:border-blue-500/40 hover:bg-blue-500/[0.06]',
+                    ].join(' ')}
+                >
+                    <span className={['flex h-9 w-9 shrink-0 items-center justify-center rounded-lg text-[13px] font-bold',
+                        isLight ? 'bg-slate-100 text-slate-600' : 'bg-white/[0.07] text-slate-200'].join(' ')}>
+                        {c.companyName.charAt(0)}
+                    </span>
+                    <span className="flex-1 min-w-0">
+                        <span className="block truncate text-[13px] font-semibold text-text-primary">{c.companyName}</span>
+                        <span className={['block truncate text-[11px]', isLight ? 'text-slate-400' : 'text-slate-500'].join(' ')}>
+                            {c.domain}
+                        </span>
+                    </span>
+                    <span className={['shrink-0 whitespace-nowrap text-[10px]', isLight ? 'text-slate-400' : 'text-slate-500'].join(' ')}>
+                        {c.attendeeCount} {c.attendeeCount === 1 ? 'attendee' : 'attendees'}
+                    </span>
+                    <ChevronRight size={14} className={['shrink-0 transition-transform group-hover:translate-x-0.5',
+                        isLight ? 'text-slate-300' : 'text-slate-600'].join(' ')} />
+                </button>
+            ))}
+        </div>
+    </motion.div>
+);
+
 // ─── Main component ────────────────────────────────────────────────────────────
 
 const SalesBriefPanel: React.FC<SalesBriefPanelProps> = ({ eventData, onClose }) => {
@@ -233,10 +393,14 @@ const SalesBriefPanel: React.FC<SalesBriefPanelProps> = ({ eventData, onClose })
     const companyIntelStates = useCompanyIntel(eventData);
     const { intel, loading, error, loadingStage, isCopied } = companyIntelStates;
     const { fromCache, companyName, fetchIntel, copyToClipboard } = companyIntelStates;
-    const { candidates, selectedIndex, selectCandidate } = companyIntelStates;
+    const { candidates, selectedIndex, selectCandidate, awaitingSelection } = companyIntelStates;
     const [pickerOpen, setPickerOpen] = React.useState(false);
 
     const openUrl = openExternalUrl;
+    // Link props for a field's row. A field only has a source when it has a
+    // value AND a retrieved page supports it; results cached before this
+    // existed have none, and then no link is shown.
+    const src = (key: CompanyIntelFieldKey) => ({ source: intel?._fieldSources?.[key] ?? null, onOpenSource: openUrl });
     // `isSet` for boolean guards (`isSet(x) && <JSX/>`); `pick` when the
     // actual value needs rendering (`pick(x) || fallback`) — hasValue()
     // only ever returns true/false, so it can't be used for the latter.
@@ -308,65 +472,6 @@ const SalesBriefPanel: React.FC<SalesBriefPanelProps> = ({ eventData, onClose })
                                 </button>
                             </>
                         )}
-                        {/* ── Company picker — only when attendees span more than one
-                        company (e.g. a group demo with 3 different domains) ── */}
-                        {candidates.length > 1 && (
-                            <div className={['relative px-5 py-2.5 shrink-0',
-                                isLight ? 'border-slate-200/60' : 'border-white/[0.06]'].join(' ')}>
-                                <button
-                                    onClick={() => setPickerOpen((o) => !o)}
-                                    className={[
-                                        'flex items-center gap-2 w-full px-3 py-1.5 rounded-lg text-[12px] font-medium transition-colors',
-                                        isLight ? 'bg-white border border-slate-200 text-slate-700 hover:bg-slate-50' : 'bg-white/[0.05] border border-white/[0.08] text-slate-200 hover:bg-white/[0.08]',
-                                    ].join(' ')}
-                                >
-                                    <Building2 size={12} className={isLight ? 'text-slate-400' : 'text-slate-500'} />
-                                    <span className="flex-1 text-left truncate">
-                                        {candidates[selectedIndex]?.companyName ?? 'Select company'}
-                                    </span>
-                                    <span className={['text-[10px]', isLight ? 'text-slate-400' : 'text-slate-500'].join(' ')}>
-                                        {selectedIndex + 1} of {candidates.length}
-                                    </span>
-                                    <ChevronDown size={12} className={[
-                                        'transition-transform', pickerOpen ? 'rotate-180' : '',
-                                        isLight ? 'text-slate-400' : 'text-slate-500',
-                                    ].join(' ')} />
-                                </button>
-
-                                <AnimatePresence>
-                                    {pickerOpen && (
-                                        <motion.div
-                                            initial={{ opacity: 0, y: -4 }}
-                                            animate={{ opacity: 1, y: 0 }}
-                                            exit={{ opacity: 0, y: -4 }}
-                                            transition={{ duration: 0.15 }}
-                                            className={[
-                                                'absolute left-5 right-5 mt-1 rounded-lg overflow-hidden z-10',
-                                                isLight ? 'bg-white border border-slate-200 shadow-lg' : 'bg-[#171a23] border border-white/[0.08] shadow-xl',
-                                            ].join(' ')}
-                                        >
-                                            {candidates.map((c, i) => (
-                                                <button
-                                                    key={c.domain}
-                                                    onClick={() => { selectCandidate(i); setPickerOpen(false); }}
-                                                    className={[
-                                                        'flex items-center justify-between gap-3 w-full px-3 py-2 text-[12px] transition-colors',
-                                                        i === selectedIndex
-                                                            ? (isLight ? 'bg-blue-50 text-blue-700 font-medium' : 'bg-blue-500/15 text-blue-300 font-medium')
-                                                            : (isLight ? 'text-slate-600 hover:bg-slate-50' : 'text-slate-300 hover:bg-white/[0.06]'),
-                                                    ].join(' ')}
-                                                >
-                                                    <span className="truncate min-w-0 text-left">{c.companyName}</span>
-                                                    <span className={['text-[10px] shrink-0 whitespace-nowrap', isLight ? 'text-slate-400' : 'text-slate-500'].join(' ')}>
-                                                        {c.domain}
-                                                    </span>
-                                                </button>
-                                            ))}
-                                        </motion.div>
-                                    )}
-                                </AnimatePresence>
-                            </div>
-                        )}
                         <button
                             onClick={onClose}
                             className={['p-1.5 rounded-lg transition-colors',
@@ -377,11 +482,79 @@ const SalesBriefPanel: React.FC<SalesBriefPanelProps> = ({ eventData, onClose })
                     </div>
                 </div>
 
+                {/* ── Company switcher — after a company has been chosen, when the
+                    invite spans more than one. Hidden while the chooser itself is
+                    showing (awaitingSelection). ── */}
+                {candidates.length > 1 && !awaitingSelection && (
+                    <div className={['relative px-5 py-2.5 shrink-0 border-b',
+                        isLight ? 'border-slate-200/60' : 'border-white/[0.06]'].join(' ')}>
+                        <button
+                            onClick={() => setPickerOpen((o) => !o)}
+                            className={[
+                                'flex items-center gap-2 w-full px-3 py-1.5 rounded-lg text-[12px] font-medium transition-colors',
+                                isLight ? 'bg-white border border-slate-200 text-slate-700 hover:bg-slate-50' : 'bg-white/[0.05] border border-white/[0.08] text-slate-200 hover:bg-white/[0.08]',
+                            ].join(' ')}
+                        >
+                            <Building2 size={12} className={isLight ? 'text-slate-400' : 'text-slate-500'} />
+                            <span className="flex-1 text-left truncate">
+                                {candidates[selectedIndex ?? 0]?.companyName ?? 'Select company'}
+                            </span>
+                            <span className={['text-[10px]', isLight ? 'text-slate-400' : 'text-slate-500'].join(' ')}>
+                                {(selectedIndex ?? 0) + 1} of {candidates.length}
+                            </span>
+                            <ChevronDown size={12} className={[
+                                'transition-transform', pickerOpen ? 'rotate-180' : '',
+                                isLight ? 'text-slate-400' : 'text-slate-500',
+                            ].join(' ')} />
+                        </button>
+
+                        <AnimatePresence>
+                            {pickerOpen && (
+                                <motion.div
+                                    initial={{ opacity: 0, y: -4 }}
+                                    animate={{ opacity: 1, y: 0 }}
+                                    exit={{ opacity: 0, y: -4 }}
+                                    transition={{ duration: 0.15 }}
+                                    className={[
+                                        'absolute left-5 right-5 mt-1 rounded-lg overflow-hidden z-10',
+                                        isLight ? 'bg-white border border-slate-200 shadow-lg' : 'bg-[#171a23] border border-white/[0.08] shadow-xl',
+                                    ].join(' ')}
+                                >
+                                    {candidates.map((c, i) => (
+                                        <button
+                                            key={c.domain}
+                                            onClick={() => { selectCandidate(i); setPickerOpen(false); }}
+                                            className={[
+                                                'flex items-center justify-between gap-3 w-full px-3 py-2 text-[12px] transition-colors',
+                                                i === selectedIndex
+                                                    ? (isLight ? 'bg-blue-50 text-blue-700 font-medium' : 'bg-blue-500/15 text-blue-300 font-medium')
+                                                    : (isLight ? 'text-slate-600 hover:bg-slate-50' : 'text-slate-300 hover:bg-white/[0.06]'),
+                                            ].join(' ')}
+                                        >
+                                            <span className="truncate min-w-0 text-left">{c.companyName}</span>
+                                            <span className={['text-[10px] shrink-0 whitespace-nowrap', isLight ? 'text-slate-400' : 'text-slate-500'].join(' ')}>
+                                                {c.domain}
+                                            </span>
+                                        </button>
+                                    ))}
+                                </motion.div>
+                            )}
+                        </AnimatePresence>
+                    </div>
+                )}
+
 
 
                 {/* ── Scrollable body ── */}
                 <div className="flex-1 overflow-y-auto custom-scrollbar">
                     <AnimatePresence mode="wait">
+
+                        {/* ── Chooser: several outside companies and none picked yet.
+                            The hook reports loading=false in this state, so no other
+                            body state renders alongside it. ── */}
+                        {awaitingSelection && (
+                            <CompanyChooser key="chooser" candidates={candidates} onSelect={selectCandidate} isLight={isLight} />
+                        )}
 
                         {/* ── Loading state ── */}
                         {loading && (
@@ -457,6 +630,11 @@ const SalesBriefPanel: React.FC<SalesBriefPanelProps> = ({ eventData, onClose })
                             </motion.div>
                         )}
 
+                        {/* ── Reliability warnings (low/medium confidence, failed lookups, …) ── */}
+                        {intel?._warnings && intel._warnings.length > 0 && (
+                            <AccuracyBanner warnings={intel._warnings} isLight={isLight} />
+                        )}
+
                         {/* ── Intel loaded ── */}
                         {!loading && !error && intel && !isIntelEmpty(intel) && (
                             <motion.div
@@ -499,8 +677,14 @@ const SalesBriefPanel: React.FC<SalesBriefPanelProps> = ({ eventData, onClose })
                                                     isLight ? 'text-slate-700' : 'text-slate-300'].join(' ')}>
                                                     {intel.headquarters!.split(',').slice(-2).join(',').trim()}
                                                 </p>
-                                                <p className={['text-[9px] uppercase tracking-wider font-semibold',
-                                                    isLight ? 'text-slate-400' : 'text-slate-500'].join(' ')}>HQ</p>
+                                                <div className={['flex items-center justify-center gap-1 text-[9px] uppercase tracking-wider font-semibold',
+                                                    isLight ? 'text-slate-400' : 'text-slate-500'].join(' ')}>
+                                                    HQ
+                                                    {intel._fieldSources?.headquarters && (
+                                                        <SourceLink url={intel._fieldSources.headquarters.url} title={intel._fieldSources.headquarters.title}
+                                                            label="Headquarters" isLight={isLight} onOpen={openUrl} />
+                                                    )}
+                                                </div>
                                             </div>
                                         )}
                                     </div>
@@ -512,26 +696,26 @@ const SalesBriefPanel: React.FC<SalesBriefPanelProps> = ({ eventData, onClose })
                                     <div className={['border-r pr-4',
                                         isLight ? 'border-slate-100' : 'border-white/[0.04]'].join(' ')}>
                                         <SectionHeader title="Company Profile" isLight={isLight} />
-                                        <Field icon={<Layers size={12} />} label="Industry / Category" isLight={isLight}
+                                        <Field icon={<Layers size={12} />} label="Industry / Category" isLight={isLight} {...src('industry')}
                                             value={pick(intel.industry) || <span className="opacity-40">—</span>} />
                                         {isSet(intel.employeeCount) && (
-                                            <Field icon={<Users size={12} />} label="Employees" isLight={isLight}
+                                            <Field icon={<Users size={12} />} label="Employees" isLight={isLight} {...src('employeeCount')}
                                                 value={intel.employeeCount} />
                                         )}
-                                        <Field icon={<DollarSign size={12} />} label="Revenue / Turnover" isLight={isLight}
+                                        <Field icon={<DollarSign size={12} />} label="Revenue / Turnover" isLight={isLight} {...src('revenue')}
                                             value={pick(intel.revenue) || <span className="opacity-40">Not available</span>} />
-                                        <Field icon={<TrendingUp size={12} />} label="Valuation" isLight={isLight}
+                                        <Field icon={<TrendingUp size={12} />} label="Valuation" isLight={isLight} {...src('valuation')}
                                             value={pick(intel.valuation) || <span className="opacity-40">Not available</span>} />
-                                        <Field icon={<Rocket size={12} />} label="Funding Stage" isLight={isLight}
+                                        <Field icon={<Rocket size={12} />} label="Funding Stage" isLight={isLight} {...src('fundingStage')}
                                             value={pick(intel.fundingStage) || <span className="opacity-40">—</span>} />
-                                        <Field icon={<GitBranch size={12} />} label="Latest Funding" isLight={isLight}
+                                        <Field icon={<GitBranch size={12} />} label="Latest Funding" isLight={isLight} {...src('latestFundingNews')}
                                             value={pick(intel.latestFundingNews) || <span className="opacity-40">—</span>} />
                                         {isSet(intel.investors) && intel.investors!.length > 0 && (
-                                            <Field icon={<Star size={12} />} label="Investors" isLight={isLight}
+                                            <Field icon={<Star size={12} />} label="Investors" isLight={isLight} {...src('investors')}
                                                 value={<PillList items={intel.investors!.slice(0, 4)} isLight={isLight} />} />
                                         )}
                                         {isSet(intel.founders) && intel.founders!.length > 0 && (
-                                            <Field icon={<Users size={12} />} label="Founders" isLight={isLight}
+                                            <Field icon={<Users size={12} />} label="Founders" isLight={isLight} {...src('founders')}
                                                 value={intel.founders!.join(', ')} />
                                         )}
                                     </div>
@@ -540,23 +724,23 @@ const SalesBriefPanel: React.FC<SalesBriefPanelProps> = ({ eventData, onClose })
                                     <div className="pl-2">
                                         <SectionHeader title="Products & Market" isLight={isLight} />
                                         {isSet(intel.keyProducts) && intel.keyProducts!.length > 0 && (
-                                            <Field icon={<Zap size={12} />} label="Key Products / Services" isLight={isLight}
+                                            <Field icon={<Zap size={12} />} label="Key Products / Services" isLight={isLight} {...src('keyProducts')}
                                                 value={<PillList items={intel.keyProducts!.slice(0, 5)} isLight={isLight}
                                                     color={isLight ? 'bg-blue-50 border-blue-100 text-blue-600' : 'bg-blue-500/10 border-blue-500/20 text-blue-400'} />} />
                                         )}
                                         {isSet(intel.competitors) && intel.competitors!.length > 0 && (
-                                            <Field icon={<Target size={12} />} label="Competitors" isLight={isLight}
+                                            <Field icon={<Target size={12} />} label="Competitors" isLight={isLight} {...src('competitors')}
                                                 value={<PillList items={intel.competitors!.slice(0, 5)} isLight={isLight}
                                                     color={isLight ? 'bg-orange-50 border-orange-100 text-orange-600' : 'bg-orange-500/10 border-orange-500/20 text-orange-400'} />} />
                                         )}
-                                        <Field icon={<Building2 size={12} />} label="Business Model" isLight={isLight}
+                                        <Field icon={<Building2 size={12} />} label="Business Model" isLight={isLight} {...src('businessModel')}
                                             value={pick(intel.businessModel) || <span className="opacity-40">—</span>} />
                                         {isSet(intel.geographicPresence) && intel.geographicPresence!.length > 0 && (
-                                            <Field icon={<Map size={12} />} label="Geographic Presence" isLight={isLight}
+                                            <Field icon={<Map size={12} />} label="Geographic Presence" isLight={isLight} {...src('geographicPresence')}
                                                 value={<PillList items={intel.geographicPresence!} isLight={isLight} />} />
                                         )}
                                         {isSet(intel.topCustomers) && intel.topCustomers!.length > 0 && (
-                                            <Field icon={<Trophy size={12} />} label="Top Customers" isLight={isLight}
+                                            <Field icon={<Trophy size={12} />} label="Top Customers" isLight={isLight} {...src('topCustomers')}
                                                 value={<PillList items={intel.topCustomers!.slice(0, 4)} isLight={isLight}
                                                     color={isLight ? 'bg-emerald-50 border-emerald-100 text-emerald-700' : 'bg-emerald-500/10 border-emerald-500/20 text-emerald-400'} />} />
                                         )}
@@ -569,15 +753,18 @@ const SalesBriefPanel: React.FC<SalesBriefPanelProps> = ({ eventData, onClose })
                                         <SectionHeader title="Recent News / Announcements" isLight={isLight} />
                                         <div className="space-y-0.5 mt-1">
                                             {intel.recentNews!.slice(0, 3).map((n, i) => {
-                                                const snippet = intel._newsSnippets?.[i];
+                                                // The link is generated together with the headline. It used to be
+                                                // looked up BY ARRAY POSITION in a separate list, so a headline
+                                                // could open a different article than the one shown.
+                                                const url = n.url ?? null;
                                                 return (
                                                     <button
                                                         key={i}
-                                                        onClick={() => snippet?.url && openUrl(snippet.url)}
+                                                        onClick={() => url && openUrl(url)}
                                                         className={[
                                                             'w-full flex items-start gap-3 px-3 py-2.5 rounded-xl text-left transition-colors group',
                                                             isLight ? 'hover:bg-slate-50' : 'hover:bg-white/[0.04]',
-                                                            snippet?.url ? 'cursor-pointer' : 'cursor-default',
+                                                            url ? 'cursor-pointer' : 'cursor-default',
                                                         ].join(' ')}
                                                     >
                                                         <div className={['flex h-6 w-6 shrink-0 mt-0.5 items-center justify-center rounded-md',
@@ -589,14 +776,14 @@ const SalesBriefPanel: React.FC<SalesBriefPanelProps> = ({ eventData, onClose })
                                                                 isLight ? 'text-slate-700' : 'text-slate-300'].join(' ')}>
                                                                 {n.headline}
                                                             </p>
-                                                            {n.date && (
+                                                            {(n.date || n.source) && (
                                                                 <p className={['text-[10px] mt-0.5',
                                                                     isLight ? 'text-slate-400' : 'text-slate-500'].join(' ')}>
-                                                                    {n.date}
+                                                                    {[n.date, n.source].filter(Boolean).join(' · ')}
                                                                 </p>
                                                             )}
                                                         </div>
-                                                        {snippet?.url && (
+                                                        {url && (
                                                             <ChevronRight size={13} className={[
                                                                 'shrink-0 mt-0.5 opacity-0 group-hover:opacity-100 transition-opacity',
                                                                 isLight ? 'text-slate-400' : 'text-slate-500'].join(' ')} />
@@ -619,7 +806,7 @@ const SalesBriefPanel: React.FC<SalesBriefPanelProps> = ({ eventData, onClose })
                                                         isLight ? 'bg-slate-100 text-slate-400' : 'bg-white/[0.06] text-slate-500'].join(' ')}>
                                                         <UserCheck size={11} />
                                                     </div>
-                                                    <div>
+                                                    <div className="flex-1 min-w-0">
                                                         <p className={['text-[12px] font-medium',
                                                             isLight ? 'text-slate-700' : 'text-slate-300'].join(' ')}>
                                                             {l.name}
@@ -635,6 +822,11 @@ const SalesBriefPanel: React.FC<SalesBriefPanelProps> = ({ eventData, onClose })
                                                             </p>
                                                         )}
                                                     </div>
+                                                    {l.url && (
+                                                        <div className="mt-0.5">
+                                                            <SourceLink url={l.url} label={`${l.name}'s appointment`} isLight={isLight} onOpen={openUrl} />
+                                                        </div>
+                                                    )}
                                                 </div>
                                             ))}
                                         </div>
@@ -660,6 +852,11 @@ const SalesBriefPanel: React.FC<SalesBriefPanelProps> = ({ eventData, onClose })
                                             <ExternalLink size={10} className={isLight ? 'text-blue-400' : 'text-blue-500'} />
                                         </button>
                                     </>
+                                )}
+
+                                {/* ── Where this came from ── */}
+                                {intel._sources && intel._sources.length > 0 && (
+                                    <SourcesNote sources={intel._sources} generatedAt={intel._generatedAt} isLight={isLight} onOpen={openUrl} />
                                 )}
 
                                 {/* ── Footer ── */}
