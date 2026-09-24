@@ -1,6 +1,7 @@
 import React, { useEffect, useRef, useState } from 'react';
 import { useResolvedTheme, useMeetingDetails, formatTime, formatTranscriptTimestamp, cleanMarkdown, isSummaryEmpty } from '@/hooks';
 import { hasGeneratedSummary } from '@/lib/meetingLifecycle';
+import { BANT_ORDER, MEDDICC_ORDER } from '@/lib/bantMeddic';
 import { Mail, ChevronDown, ChevronUp, BarChart3, ArrowUp, Copy, Check, TrendingUp, TriangleAlert, MessageSquare, Building2, Plus, Square } from 'lucide-react';
 import { MessagesSquareIcon, ChartColumnIncreasing, CircleCheck, NotepadText, RefreshCcw, RefreshCw, NotebookPen, ClipboardList } from 'lucide-react';
 import { motion, AnimatePresence } from 'framer-motion';
@@ -109,8 +110,35 @@ const DetailAnalysisAccordion: React.FC<DetailAnalysisAccordionProps> = ({ score
  * meeting/live-shaped entries (`{ title, meeting_id }`, often "live" as a
  * placeholder, not a real openable meeting) are dropped. Dedupes on `id`
  * since the same doc commonly appears once per matched chunk. */
-function docSourcesFor(sources: AiInteractionSource[] | undefined) {
-    if (!sources?.length) return [];
+// ── Sales-coach placeholder/gap helpers ─────────────────────────────────────
+// Exact-match placeholder detection for summary coach items. The old PREFIX
+// match ("not ", "no ", "none"…) silently dropped real improvement content
+// ("Not able to identify the champion", "No budget discussion happened") and
+// could hide the Better Execution / Room to Improve sections entirely.
+const SUMMARY_PLACEHOLDERS = new Set([
+    'n/a', 'na', 'none', 'none.', '-', '—', 'unknown', 'not discussed',
+    'not mentioned', 'not applicable', 'nothing', 'nothing.',
+]);
+
+function isPlaceholderSummaryContent(content: string | undefined | null): boolean {
+    if (!content) return true;
+    const normalized = content.trim().toLowerCase().replace(/[.!?]+$/, '').trim();
+    return normalized === '' || SUMMARY_PLACEHOLDERS.has(normalized);
+}
+
+/** Strips a leading "Label:" so placeholder checks test the real content. */
+function stripGapLabel(item: string): string {
+    const colonIndex = item.indexOf(':');
+    return (colonIndex > 0 && colonIndex < 30) ? item.substring(colonIndex + 1).trim() : item;
+}
+
+/** 'economicBuyer' → 'EconomicBuyer' (label-chip casing, matching the
+ * electron-side buildConfirmedWhatIDidRight convention). */
+function titleCaseComponent(key: string): string {
+    return key.charAt(0).toUpperCase() + key.slice(1);
+}
+
+function docSourcesFor(sources: AiInteractionSource[] | undefined) {    if (!sources?.length) return [];
     const seen = new Set<string>();
     const out: { id: string; title: string }[] = [];
     for (const s of sources) {
@@ -843,21 +871,11 @@ const MeetingDetails: React.FC<MeetingDetailsProps> = ({ meeting: initialMeeting
                                                                 const content = hasLabel ? item.substring(colonIndex + 1).trim() : item.trim();
                                                                 return { label, content };
                                                             })
-                                                            .filter(({ content }) => {
-                                                                if (!content || content.trim() === '' || content.trim() === '-' || content.trim() === '—') return false;
-                                                                const lower = content.toLowerCase().trim();
-                                                                return (
-                                                                    !lower.startsWith('n/a') &&
-                                                                    !lower.startsWith('not ') &&
-                                                                    !lower.startsWith('none') &&
-                                                                    !lower.startsWith('no ') &&
-                                                                    !lower.startsWith('unknown') &&
-                                                                    !lower.startsWith('not discussed') &&
-                                                                    !lower.startsWith('not mentioned') &&
-                                                                    lower !== '-' &&
-                                                                    lower !== '—'
-                                                                );
-                                                            });
+                                                            // Exact-placeholder matching only — the old prefix
+                                                            // match ("not ", "no ", "none"…) silently dropped
+                                                            // real content like "Not able to identify the
+                                                            // champion" and could hide the whole section.
+                                                            .filter(({ content }) => !isPlaceholderSummaryContent(content));
 
                                                         if (!validBetterItems || validBetterItems.length === 0) return null;
 
@@ -888,29 +906,36 @@ const MeetingDetails: React.FC<MeetingDetailsProps> = ({ meeting: initialMeeting
 
                                                     {/* Missed Completely */}
                                                     {(() => {
-                                                        const validMissedItems = meeting.detailedSummary?.salesCoachReview?.whatIMissedCompletely
-                                                            ?.map(item => {
+                                                        // LLM items first; when they're all placeholders
+                                                        // (or absent — the old generation bug), derive the
+                                                        // section from the RECONCILED bant/meddicc Missing
+                                                        // fields persisted alongside the summary, so
+                                                        // "Room to Improve" shows whenever Call Analysis
+                                                        // shows gaps — including for already-saved meetings.
+                                                        const missedSource = (() => {
+                                                            const llmItems = meeting.detailedSummary?.salesCoachReview?.whatIMissedCompletely ?? [];
+                                                            const substantive = llmItems.filter(item => !isPlaceholderSummaryContent(stripGapLabel(item)));
+                                                            if (substantive.length > 0) return llmItems;
+                                                            const bant = meeting.detailedSummary?.bant ?? {};
+                                                            const meddicc = meeting.detailedSummary?.meddicc ?? {};
+                                                            const derived = [
+                                                                ...MEDDICC_ORDER.filter(k => (meddicc as any)[k]?.status === 'Missing')
+                                                                    .map(k => `MEDDICC ${titleCaseComponent(k)}: ${(meddicc as any)[k]?.detail?.trim() || 'Never addressed in this call — follow up next time.'}`),
+                                                                ...BANT_ORDER.filter(k => (bant as any)[k]?.status === 'Missing')
+                                                                    .map(k => `BANT ${titleCaseComponent(k)}: ${(bant as any)[k]?.detail?.trim() || 'Never addressed in this call — follow up next time.'}`),
+                                                            ];
+                                                            return derived;
+                                                        })();
+
+                                                        const validMissedItems = missedSource
+                                                            .map(item => {
                                                                 const colonIndex = item.indexOf(':');
                                                                 const hasLabel = colonIndex > 0 && colonIndex < 30;
                                                                 const label = hasLabel ? item.substring(0, colonIndex).trim() : null;
                                                                 const content = hasLabel ? item.substring(colonIndex + 1).trim() : item;
                                                                 return { label, content };
                                                             })
-                                                            .filter(({ content }) => {
-                                                                if (!content || content.trim() === '' || content.trim() === '-' || content.trim() === '—') return false;
-                                                                const lower = content.toLowerCase().trim();
-                                                                return (
-                                                                    !lower.startsWith('n/a') &&
-                                                                    !lower.startsWith('not ') &&
-                                                                    !lower.startsWith('none') &&
-                                                                    !lower.startsWith('no ') &&
-                                                                    !lower.startsWith('unknown') &&
-                                                                    !lower.startsWith('not discussed') &&
-                                                                    !lower.startsWith('not mentioned') &&
-                                                                    lower !== '-' &&
-                                                                    lower !== '—'
-                                                                );
-                                                            });
+                                                            .filter(({ content }) => !isPlaceholderSummaryContent(content));
 
                                                         if (!validMissedItems || validMissedItems.length === 0) return null;
 
@@ -926,7 +951,7 @@ const MeetingDetails: React.FC<MeetingDetailsProps> = ({ meeting: initialMeeting
                                                                             {label || '—'}
                                                                         </span>
                                                                         <div className="w-px self-stretch bg-red-500/20 shrink-0" />
-                                                                        <p className="text-sm text-red-300 leading-relaxed">{content}</p>
+                                                                        <p className="text-sm text-red-400 leading-relaxed">{content}</p>
                                                                     </div>
                                                                 ))}
                                                             </div>

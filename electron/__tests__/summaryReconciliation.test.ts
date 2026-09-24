@@ -2,6 +2,8 @@ import { describe, expect, it } from 'vitest';
 
 import {
     buildConfirmedWhatIDidRight,
+    buildMissingWhatIMissed,
+    isPlaceholderSummaryItem,
     reconcileBantMeddicWithLiveAnalysis,
 } from '../summaryReconciliation';
 
@@ -126,5 +128,69 @@ describe('buildConfirmedWhatIDidRight', () => {
             {}
         );
         expect(items).toEqual(['BANT Budget: ']);
+    });
+});
+
+describe('whatIMissedCompletely fallback (Room to Improve)', () => {
+    it('MIXED analysis with empty LLM missed-list derives Missing-field items — section can no longer hide', () => {
+        const out = reconcileBantMeddicWithLiveAnalysis(
+            { salesCoachReview: { whatIMissedCompletely: [] } },
+            MIXED,
+        );
+        // Missing in MIXED: bant.timeline, meddic.decision_criteria, meddic.champion
+        expect(out.salesCoachReview.whatIMissedCompletely).toEqual([
+            'MEDDICC DecisionCriteria: Never addressed in this call — follow up next time.',
+            'MEDDICC Champion: Never addressed in this call — follow up next time.',
+            'BANT Timeline: Never addressed in this call — follow up next time.',
+        ]);
+    });
+
+    it('placeholder LLM output ("N/A", "None.") falls back to the deterministic list', () => {
+        const out = reconcileBantMeddicWithLiveAnalysis(
+            { salesCoachReview: { whatIMissedCompletely: ['N/A', 'None.', '—'] } },
+            MIXED,
+        );
+        expect(out.salesCoachReview.whatIMissedCompletely).toHaveLength(3);
+        expect(out.salesCoachReview.whatIMissedCompletely[0]).toContain('MEDDICC DecisionCriteria');
+    });
+
+    it('substantive LLM items win over the fallback (no clobbering)', () => {
+        const llmItems = ['Pain: no pain points were ever explored with the prospect'];
+        const out = reconcileBantMeddicWithLiveAnalysis(
+            { salesCoachReview: { whatIMissedCompletely: llmItems } },
+            MIXED,
+        );
+        expect(out.salesCoachReview.whatIMissedCompletely).toEqual(llmItems);
+    });
+
+    it('all-confirmed analysis derives an empty missed-list (Room to Improve legitimately absent)', () => {
+        const out = reconcileBantMeddicWithLiveAnalysis(
+            { salesCoachReview: { whatIMissedCompletely: [] } },
+            ALL_CONFIRMED,
+        );
+        expect(out.salesCoachReview.whatIMissedCompletely).toEqual([]);
+    });
+
+    it('items starting with "Not"/"No" are NOT placeholders — prefix filtering is gone', () => {
+        const llmItems = ['Authority: Not able to identify the decision maker', 'Budget: No budget discussion happened'];
+        const out = reconcileBantMeddicWithLiveAnalysis(
+            { salesCoachReview: { whatIMissedCompletely: llmItems } },
+            MIXED,
+        );
+        expect(out.salesCoachReview.whatIMissedCompletely).toEqual(llmItems);
+    });
+});
+
+describe('isPlaceholderSummaryItem', () => {
+    it('matches only exact placeholders, with or without trailing punctuation', () => {
+        expect(isPlaceholderSummaryItem('n/a')).toBe(true);
+        expect(isPlaceholderSummaryItem(' None. ')).toBe(true);
+        expect(isPlaceholderSummaryItem('—')).toBe(true);
+        expect(isPlaceholderSummaryItem('not discussed')).toBe(true);
+        expect(isPlaceholderSummaryItem(undefined)).toBe(true);
+        // Real content that the old prefix filter wrongly dropped:
+        expect(isPlaceholderSummaryItem('Not able to identify the champion')).toBe(false);
+        expect(isPlaceholderSummaryItem('No budget discussion happened')).toBe(false);
+        expect(isPlaceholderSummaryItem('None of the pain points were explored')).toBe(false);
     });
 });
