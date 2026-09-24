@@ -29,6 +29,7 @@ import type {
     ScoredCategory,
     Signal,
 } from '../src/types';
+import { fieldEvidenceList, fieldText } from '../src/lib/bantMeddic';
 
 export type FrameworkKind = 'meddic' | 'bant' | 'objection_handling' | 'buying_signals';
 
@@ -100,7 +101,10 @@ const trimmed = (value: string | undefined | null): string => (value ?? '').trim
  * shows ❌ is the contradiction this is here to prevent.
  */
 function deriveFromFields(
-    fields: { label: string; status: string; evidence: string }[],
+    // `summary` is the field's assessment — the coaching lines read it.
+    // `evidence` is the supporting statements — only transcriptEvidence, whose
+    // whole job is to show the user what the claim rests on, reads those.
+    fields: { label: string; status: string; summary: string; evidence: string[] }[],
     frameworkName: string,
     maxScore: number
 ): Derived {
@@ -115,10 +119,9 @@ function deriveFromFields(
             `From the call analysis ${frameworkName} assessment: ${confirmed.length} of ${fields.length} ` +
             `components confirmed by the client, ${partial.length} partial, ${missing.length} not established.`,
         transcriptEvidence: [...confirmed, ...partial]
-            .filter(f => f.evidence.length > 0)
-            .map(f => `${f.label}: ${f.evidence}`),
+            .flatMap(f => f.evidence.map(statement => `${f.label}: ${statement}`)),
         strengths: confirmed.map(f =>
-            f.evidence ? `${f.label} confirmed — ${f.evidence}` : `${f.label} confirmed by the client.`
+            f.summary ? `${f.label} confirmed — ${f.summary}` : `${f.label} confirmed by the client.`
         ),
         improvementAreas: [
             ...partial.map(f => `${f.label} is only partially established — get the client to confirm it explicitly.`),
@@ -206,7 +209,8 @@ function deriveForKind(kind: FrameworkKind, live: LiveAnalysisData, maxScore: nu
                 MEDDIC_FIELDS.map(([key, label]) => ({
                     label,
                     status: live.meddic?.[key]?.status ?? '',
-                    evidence: trimmed(live.meddic?.[key]?.evidence),
+                    summary: fieldText(live.meddic?.[key]),
+                    evidence: fieldEvidenceList(live.meddic?.[key]),
                 })),
                 'MEDDIC',
                 maxScore
@@ -216,7 +220,8 @@ function deriveForKind(kind: FrameworkKind, live: LiveAnalysisData, maxScore: nu
                 BANT_FIELDS.map(([key, label]) => ({
                     label,
                     status: live.bant?.[key]?.status ?? '',
-                    evidence: trimmed(live.bant?.[key]?.evidence),
+                    summary: fieldText(live.bant?.[key]),
+                    evidence: fieldEvidenceList(live.bant?.[key]),
                 })),
                 'BANT',
                 maxScore

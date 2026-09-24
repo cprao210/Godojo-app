@@ -452,6 +452,8 @@ export const FloatingIntelligencePanel: React.FC<FloatingIntelligencePanelProps>
     meetingTypes,
     onMeetingTypesChange,
     isPerformanceMode = false,
+    changedFields,
+    onFieldFeedback,
 }) => {
     const [showRefreshPicker, setShowRefreshPicker] = useState(false);
     const refreshPickerRef = useRef<HTMLDivElement>(null);
@@ -805,6 +807,8 @@ export const FloatingIntelligencePanel: React.FC<FloatingIntelligencePanelProps>
                         analysisData={displayData!}
                         hideBar="Missing Details"
                         activeTab={activeTab as 'meddicc' | 'bant' | 'signals' | 'objections' | 'deal_optimizer'}
+                        changedFields={changedFields}
+                        onFieldFeedback={onFieldFeedback}
                     />
                 )}
             </div>

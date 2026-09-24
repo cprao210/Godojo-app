@@ -14,7 +14,7 @@ import { meetingsApi } from "@/api";
 // hooks — core app logic, extracted out of App.tsx
 // ---------------------------------------------------------------------------
 import { useResolvedTheme, useWindowRoute, useFirebaseAuth, useTenant, useAutoOpenDashboardForAdmins } from "@/hooks";
-import { useTeamInvite, useOverlayOpacity, useAppLifecycleListeners, useMeetingSession } from "@/hooks";
+import { useTeamInvite, useOverlayOpacity, useAppLifecycleListeners, useMeetingSession, useUploadAnalysisBridge } from "@/hooks";
 
 // ---------------------------------------------------------------------------
 // features
@@ -77,6 +77,12 @@ const App: React.FC = () => {
     });
     return () => unsubscribeMeetingCompleted?.();
   }, [isLauncherWindow]);
+
+  // Uploaded transcripts are analysed by the live-analysis API, which only
+  // exists in this process (apiClient owns the Firebase token). Main sends the
+  // turns here while it processes the meeting; the launcher gate keeps exactly
+  // one window answering, the same way meeting-completed is gated above.
+  useUploadAnalysisBridge(isLauncherWindow);
 
   // Tell main this window's IPC listeners are live. `session-reset` — the
   // floating dock's only "a call started" signal — is fire-and-forget, so a

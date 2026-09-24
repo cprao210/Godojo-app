@@ -750,6 +750,48 @@ export function useLauncher({ onStartMeeting, ollamaPullStatus = 'idle', onPageC
     // Raw text still sitting in the picker's input. Submit is OUTSIDE the
     // picker, so without this a typed-but-uncommitted name is silently lost.
     const [uploadCompanyDraft, setUploadCompanyDraft] = useState('');
+    // "Which speaker is you?" — the pasted transcript's speakers, and the one
+    // that becomes the rep. Main pre-selects a speaker named like the
+    // signed-in user, else the first one; the user can override it. The
+    // analysis grades only the prospect side, so a swapped rep scores 0.
+    const [uploadSpeakers, setUploadSpeakers] = useState<string[]>([]);
+    const [uploadRepSpeaker, setUploadRepSpeaker] = useState<string | null>(null);
+    const [uploadRepSource, setUploadRepSource] = useState<'picked' | 'name' | 'first' | null>(null);
+    // The label the user clicked, kept across edits while that speaker still exists.
+    const uploadRepPickedRef = React.useRef<string | null>(null);
+
+    useEffect(() => {
+        if (!isUploadOpen) return;
+        let cancelled = false;
+        const timer = setTimeout(async () => {
+            try {
+                const res = await window.electronAPI?.getUploadTranscriptSpeakers?.(uploadText);
+                if (cancelled || !res) return;
+                setUploadSpeakers(res.speakers);
+                const picked = uploadRepPickedRef.current;
+                if (picked && res.speakers.includes(picked)) return;
+                uploadRepPickedRef.current = null;
+                setUploadRepSpeaker(res.suggestedRep);
+                setUploadRepSource(res.suggestedBy);
+            } catch (e) {
+                console.warn('[useLauncher] could not list transcript speakers:', e);
+            }
+        }, 300);
+        return () => { cancelled = true; clearTimeout(timer); };
+    }, [uploadText, isUploadOpen]);
+
+    const pickUploadRepSpeaker = (label: string) => {
+        uploadRepPickedRef.current = label;
+        setUploadRepSpeaker(label);
+        setUploadRepSource('picked');
+    };
+
+    const resetUploadSpeakers = () => {
+        uploadRepPickedRef.current = null;
+        setUploadSpeakers([]);
+        setUploadRepSpeaker(null);
+        setUploadRepSource(null);
+    };
     // Set when the deferred association ultimately fails, so the UI can say so
     // and offer a retry instead of failing invisibly in the console.
     const [companyLinkFailure, setCompanyLinkFailure] = useState<{ meetingId: string; company: PickedCompany } | null>(null);
@@ -802,7 +844,8 @@ export function useLauncher({ onStartMeeting, ollamaPullStatus = 'idle', onPageC
                 uploadText.trim(),
                 uploadTitle.trim() || undefined,
                 uploadMeetingTypes,
-                tenantId
+                tenantId,
+                uploadRepSpeaker
             );
             if (result?.success) {
                 // Link the optimistic card to the real meeting row so the
@@ -855,6 +898,7 @@ export function useLauncher({ onStartMeeting, ollamaPullStatus = 'idle', onPageC
                 }
                 setUploadCompany(null);
                 setUploadCompanyDraft('');
+                resetUploadSpeakers();
                 fetchMeetings(); // reconciles with the real SQLite/backend rows
             } else {
                 // Remove the placeholder on failure
@@ -1071,6 +1115,11 @@ export function useLauncher({ onStartMeeting, ollamaPullStatus = 'idle', onPageC
         setUploadCompany,
         uploadCompanyDraft,
         setUploadCompanyDraft,
+        uploadSpeakers,
+        uploadRepSpeaker,
+        uploadRepSource,
+        pickUploadRepSpeaker,
+        resetUploadSpeakers,
         companyLinkFailure,
         retryCompanyLink,
         dismissCompanyLinkFailure,

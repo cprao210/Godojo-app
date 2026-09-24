@@ -92,6 +92,25 @@ export const mergeObjectionDelta = (
   );
 };
 
+/**
+ * An item the REP owns — their own "let me check and get back to you" (`ae_deferral`) — is a
+ * follow-up they promised, not the prospect's objection. Every producer (live objection
+ * handler, end-of-call pass, upload analysis) returns both kinds in one `objections` array;
+ * listing them together read as "it's picking the sales person's objections".
+ */
+export const isRepFollowUp = (obj: Objection): boolean =>
+  obj.type === 'ae_deferral' || obj.owner === 'ae';
+
+/** Prospect objections vs. the rep's own follow-ups, order preserved. */
+export const splitRepFollowUps = (
+  all: Objection[],
+): { objections: Objection[]; followUps: Objection[] } => {
+  const objections: Objection[] = [];
+  const followUps: Objection[] = [];
+  for (const obj of all) (isRepFollowUp(obj) ? followUps : objections).push(obj);
+  return { objections, followUps };
+};
+
 /** Split the single owned list into what the panel renders as active vs. collapsed. */
 export const partitionObjections = (
   all: Objection[],
@@ -188,7 +207,10 @@ export const shouldTick = (args: TickDecisionArgs): boolean => {
 /** A field the backend hasn't spoken to yet. `status: 'missing'` (not '') on purpose:
  *  FloatingIntelligencePanel's hasContent() treats any status other than 'missing' as
  *  real content, so '' here would make an empty skeleton look populated. */
-const MISSING_FIELD = { emoji: '\u274c', status: 'missing', evidence: '' } as const;
+// `evidence: []` models the current contract (a list of statements); the
+// accessors in bantMeddic treat a bare '' and [] identically, but this is the
+// shape every future reader will copy from.
+const MISSING_FIELD = { emoji: '\u274c' as const, status: 'missing' as const, evidence: [] as string[] };
 
 /**
  * An otherwise-empty LiveAnalysisData carrying nothing but `objections`.

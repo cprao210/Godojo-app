@@ -26,6 +26,9 @@ import {
   hydrateOrchestratorFromContext,
 } from './utils/companyKnowledge';
 import { AuthManager } from './services/AuthManager';
+import { parseUploadTranscript } from './utils/uploadTranscriptParser';
+import { handleUploadAnalysisResult } from './utils/uploadAnalysisBridge';
+import { handleFinalAnalysisV2Result } from './utils/finalAnalysisBridge';
 import { PendingLiveChatStore } from './PendingLiveChatStore';
 import { posthogMain } from './services/PostHogMainService';
 import { tenantContext } from './services/TenantContext';
@@ -672,6 +675,18 @@ export function initializeIpcHandlers(appState: AppState): void {
 
   safeHandle("get-meeting-generation", async () => {
     return { success: true, data: appState.getMeetingGeneration() };
+  });
+
+  // The renderer's answer to a 'run-upload-analysis' request. ipcMain.on, not
+  // handle: main is the one waiting on a reply here, not the renderer, so this
+  // is the reply leg of a main→renderer request (same shape as the cropper's).
+  ipcMain.on('upload-analysis-result', (_event, payload) => {
+    handleUploadAnalysisResult(payload);
+  });
+
+  // The overlay's answer to a 'run-final-analysis-v2' request (live analysis v2 end-of-call pass).
+  ipcMain.on('final-analysis-v2-result', (_event, payload) => {
+    handleFinalAnalysisV2Result(payload);
   });
 
   safeHandle("quit-app", () => {
@@ -2174,6 +2189,14 @@ export function initializeIpcHandlers(appState: AppState): void {
     return DatabaseManager.getInstance().updateMeetingSummary(id, updates);
   });
 
+  const currentMeetingOrNull = (id: string) => {
+    try {
+      return DatabaseManager.getInstance().getMeetingDetails(id);
+    } catch {
+      return null;
+    }
+  };
+
   safeHandle("regenerate-meeting-summary", async (_, { id }: { id: string }) => {
 
     try {
@@ -2200,11 +2223,14 @@ export function initializeIpcHandlers(appState: AppState): void {
         // }
         return { success: true, meeting: updated };
       }
-      return { success: false };
+      return { success: false, meeting: currentMeetingOrNull(id) };
     } catch (e: any) {
 
       console.error('[ipcHandlers] regenerate-meeting-summary error:', e);
-      return { success: false, error: e?.message || String(e) };
+      // Regenerating can save a new Call Analysis before the summary step fails
+      // (see MeetingPersistence.regenerateSummary) — hand the row back so the UI
+      // shows it instead of waiting for the next page open.
+      return { success: false, error: e?.message || String(e), meeting: currentMeetingOrNull(id) };
 
     }
 
@@ -2224,9 +2250,19 @@ export function initializeIpcHandlers(appState: AppState): void {
     return { success: true };
   });
 
-  safeHandle("upload-transcript", async (_, { text, title, meetingTypes, tenantId }: { text: string; title?: string; meetingTypes?: ('discovery' | 'demo' | 'negotiation')[]; tenantId?: string | null }) => {
+  // The upload modal's "Which speaker is you?" picker: the transcript's speakers and the one
+  // uploadTranscript would pick as the rep if the user picks nothing (name match, else first).
+  safeHandle("upload-transcript-speakers", async (_, text: string) => {
+    const { displayName, email } = AuthManager.getInstance().snapshot();
+    const { speakers, repSpeaker, repSource } = parseUploadTranscript(typeof text === 'string' ? text : '', {
+      repNameHints: [displayName, email],
+    });
+    return { speakers, suggestedRep: repSpeaker, suggestedBy: repSource };
+  });
+
+  safeHandle("upload-transcript", async (_, { text, title, meetingTypes, tenantId, repSpeaker }: { text: string; title?: string; meetingTypes?: ('discovery' | 'demo' | 'negotiation')[]; tenantId?: string | null; repSpeaker?: string | null }) => {
     try {
-      const meetingId = await appState.getIntelligenceManager().uploadTranscript(text, title, meetingTypes, tenantId);
+      const meetingId = await appState.getIntelligenceManager().uploadTranscript(text, title, meetingTypes, tenantId, repSpeaker);
       if (meetingId) return { success: true, meetingId };
       return { success: false, error: 'Transcript too short or could not be parsed' };
     } catch (e) {

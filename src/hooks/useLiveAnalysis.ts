@@ -3,8 +3,8 @@ import { LiveAnalysisData, LiveAnalysisTurn, MeetingType, Objection } from '@/ty
 import { intelligenceApi } from '@/api/intelligenceApi';
 import { posthogAnalytics } from '@/lib/analytics/posthog.service';
 import { getMeetingGeneration } from '@/lib/meetingGeneration';
-import { stableId } from '@/lib/objections';
 import { shouldAdvanceCursor } from '@/lib/meetingLifecycle';
+import { stampIds } from '@/lib/liveAnalysisIds';
 
 // ─── useLiveAnalysis ───────────────────────────────────────────────────────
 //
@@ -97,34 +97,9 @@ async function withAnalysisRetries<T>(
 // exempts quotes carried verbatim from the prior analysis). The renderer
 // trusts that merged result directly — it does not re-merge client-side.
 //
-// Two gaps in the backend response are closed here:
-//   • Stable ids — the backend schema has no `id` field, so it's dropped on
-//     every round-trip. Re-stamp it deterministically from the quote
-//     (stableId is a pure function of the text), so dismiss/checked UI state
-//     keyed by id survives refreshes.
-//   • Dedupe safety net — the backend dedupes by prompt but not
-//     deterministically, so drop any exact id collision, keeping the first
-//     (newest, since the backend orders newly-detected items first).
-const stampIds = (data: LiveAnalysisData): LiveAnalysisData => {
-  const dedupeStamp = <T extends { id?: string; quote: string }>(items: T[]): T[] => {
-    const seen = new Set<string>();
-    const out: T[] = [];
-    for (const item of items) {
-      const id = item.id ?? stableId(item.quote);
-      if (seen.has(id)) continue;
-      seen.add(id);
-      out.push({ ...item, id });
-    }
-    return out;
-  };
-  return {
-    bant: data.bant,
-    meddic: data.meddic,
-    objections: dedupeStamp(data.objections),
-    signals: dedupeStamp(data.signals),
-    dealOptimizer: dedupeStamp(data.dealOptimizer ?? []),
-  };
-};
+// The two gaps it leaves (missing ids, non-deterministic dedupe) are closed by
+// the shared stampIds in src/lib/liveAnalysisIds — shared because the uploaded
+// transcript replay goes through this same route and must stamp identically.
 
 export const useLiveAnalysis = (
   transcriptRef: React.MutableRefObject<Array<{ speaker: string; displayName?: string; text: string; timestamp: number }>>,

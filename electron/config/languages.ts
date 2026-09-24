@@ -7,6 +7,17 @@ export type LanguageOption = {
     group: string; // For UI grouping
     /** Deepgram-specific language param when it differs from iso639 (e.g. 'multi') */
     deepgram?: string;
+    /** Soniox `language_hints` when more than one language is expected (e.g. ['hi', 'en']). */
+    hints?: string[];
+    /** Google `alternativeLanguageCodes` (English variants set these too). */
+    alternates?: string[];
+    /**
+     * Languages actually expected on the call (ISO-639-1). When set, a final recognized in any
+     * OTHER language is flagged as a suspect line (transcriptQuality.ts) — shown dimmed and never
+     * used as live-analysis evidence. Unset (e.g. 'multilingual') falls back to the adaptive
+     * "rare language on this call" check.
+     */
+    callLanguages?: string[];
 };
 
 export type EnglishVariant = LanguageOption & {
@@ -67,7 +78,21 @@ export const RECOGNITION_LANGUAGES: Record<string, LanguageOption> = {
     // Deepgram Nova-3 code-switching across 10 languages (en, es, fr, de, hi,
     // ru, pt, ja, it, nl). Other providers fall back to English via bcp47/iso639.
     'multilingual': { label: 'Multilingual (Deepgram Nova-3)', code: 'multilingual', bcp47: 'en-US', iso639: 'en', deepgram: 'multi', group: 'Multilingual' },
-    'hindi': { label: 'Hindi', code: 'hindi', bcp47: 'hi-IN', iso639: 'hi', group: 'Hindi' },
+    'hindi': { label: 'Hindi', code: 'hindi', bcp47: 'hi-IN', iso639: 'hi', group: 'Hindi', callLanguages: ['hi', 'en'] },
+    // Code-mixed Indian calls. Deepgram has no hi+en-only mode, so it stays on `multi`, but the
+    // call-language scope still flags anything recognized as Spanish/Russian/etc. as suspect.
+    // Soniox and Google are told to expect exactly these two languages.
+    'hindi-english': {
+        label: 'Hindi + English (Hinglish)',
+        code: 'hindi-english',
+        bcp47: 'hi-IN',
+        iso639: 'hi',
+        group: 'Hindi + English',
+        deepgram: 'multi',
+        hints: ['hi', 'en'],
+        alternates: ['en-IN'],
+        callLanguages: ['hi', 'en'],
+    },
     'russian': { label: 'Russian', code: 'russian', bcp47: 'ru-RU', iso639: 'ru', group: 'Russian' },
     'spanish': { label: 'Spanish', code: 'spanish', bcp47: 'es-ES', iso639: 'es', group: 'Spanish' },
     'french': { label: 'French', code: 'french', bcp47: 'fr-FR', iso639: 'fr', group: 'French' },

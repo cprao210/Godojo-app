@@ -369,7 +369,9 @@ import {
   type LevelGateState,
 } from "./audio/audioLevelGate"
 import { TranscriptEchoFilter, type AecTelemetry } from "./audio/TranscriptEchoFilter"
-import { TranscriptTranslator } from "./services/TranscriptTranslator"
+import { TranscriptTranslator, TRANSLATE_CONTEXT_LINES } from "./services/TranscriptTranslator"
+import { assessFinal, LanguageTracker } from "./services/transcriptQuality"
+import { RECOGNITION_LANGUAGES } from "./config/languages"
 import type { SttWord } from "./audio/sttWordUtils"
 import { GoogleSTT } from "./audio/GoogleSTT"
 import { RestSTT } from "./audio/RestSTT"
@@ -1975,6 +1977,41 @@ export class AppState {
   // so 1:1 calls render exactly as before diarization existed.
   private _clientSpeakerIndicesSeen: Set<number> = new Set();
 
+  // Live-analysis v2 transcript quality (§2.1): a stable id per final, a per-call language
+  // tracker for the suspect-line check, and the last few ORIGINAL finals as translation context.
+  // All reset at meeting start.
+  private _turnSeq = 0;
+  private _langTracker = new LanguageTracker();
+  private _recentOriginals: string[] = [];
+
+  /**
+   * Stamp a final with its turn id, language guess and suspect flag — computed on the ORIGINAL
+   * recognized text, before any translation, so a hallucinated "Déjame ver" is caught whatever
+   * the translator later makes of it.
+   */
+  private _assessFinalSegment(text: string, confidence: number): {
+    turnId: string; lang: string; asrSuspect: boolean; suspectReason: string | null; arrivalMs: number;
+  } {
+    const cm = CredentialsManager.getInstance();
+    const langKey = cm.getSttLanguage();
+    const provider = cm.getSttProvider();
+    const verdict = assessFinal(text, {
+      callLanguages: RECOGNITION_LANGUAGES[langKey]?.callLanguages,
+      tracker: this._langTracker,
+      confidence,
+      // Only these providers report a real per-segment confidence; the rest hard-code 1.0.
+      confidenceIsReal: provider === 'deepgram' || provider === 'google',
+    });
+    this._turnSeq += 1;
+    return {
+      turnId: `t_${this._meetingGeneration}_${String(this._turnSeq).padStart(5, '0')}`,
+      lang: verdict.lang,
+      asrSuspect: verdict.suspect,
+      suspectReason: verdict.reason,
+      arrivalMs: Date.now(),
+    };
+  }
+
   // Set when transcript translation is enabled AND an LLM key exists; null
   // otherwise, which makes the translation branch in the STT handler inert.
   private _transcriptTranslator: TranscriptTranslator | null = null;
@@ -2287,12 +2324,30 @@ export class AppState {
       // gets the English rendering when transcript translation is on. Finals go
       // through a per-speaker queue to stay in spoken order; interims skip
       // translation entirely and dispatch synchronously.
-      const dispatch = (text: string) => this._dispatchTranscript(speaker, { ...segment, text });
+      //
+      // Finals also carry the ORIGINAL text next to whatever `text` becomes (live analysis v2
+      // grounds evidence on the original, never on the translation), plus a turn id, a language
+      // guess and a suspect flag computed on the original.
+      const original = segment.text;
+      const quality = segment.isFinal && original.trim()
+        ? this._assessFinalSegment(original, segment.confidence)
+        : undefined;
+      if (quality?.asrSuspect) {
+        console.log(`[Main] Suspect final (${speaker}, ${quality.suspectReason}, lang=${quality.lang}): "${original}"`);
+      }
+      const dispatch = (text: string) => this._dispatchTranscript(speaker, {
+        ...segment,
+        text,
+        ...(quality ? { textOriginal: original, ...quality } : {}),
+      });
 
-      if (segment.isFinal && this._transcriptTranslator && segment.text.trim()) {
-        const original = segment.text;
+      if (segment.isFinal && this._transcriptTranslator && original.trim()) {
+        // Context = the previous few finals in spoken (arrival) order, captured NOW rather than
+        // when the queued task runs, so it never includes lines spoken after this one.
+        const context = this._recentOriginals.slice(-TRANSLATE_CONTEXT_LINES);
+        this._recentOriginals = [...this._recentOriginals.slice(-(TRANSLATE_CONTEXT_LINES * 2)), original];
         this._transcriptTranslator.enqueue(speaker, async () => {
-          const text = await this._transcriptTranslator!.translate(original);
+          const text = await this._transcriptTranslator!.translate(original, context);
           if (text !== original) {
             console.log(`[Main] Translated (${speaker}): "${original}" → "${text}"`);
           }
@@ -2300,6 +2355,9 @@ export class AppState {
           dispatch(text);
         });
         return;
+      }
+      if (segment.isFinal && original.trim()) {
+        this._recentOriginals = [...this._recentOriginals.slice(-(TRANSLATE_CONTEXT_LINES * 2)), original];
       }
 
       dispatch(segment.text);
@@ -2319,7 +2377,12 @@ export class AppState {
    */
   private _dispatchTranscript(
     speaker: 'client' | 'user',
-    segment: { text: string; isFinal: boolean; confidence: number; speakerIndex?: number },
+    segment: {
+      text: string; isFinal: boolean; confidence: number; speakerIndex?: number;
+      // Finals only (live analysis v2 transcript quality, §2.1 T3/T5):
+      textOriginal?: string; turnId?: string; lang?: string; asrSuspect?: boolean;
+      suspectReason?: string | null; arrivalMs?: number;
+    },
   ): void {
     this.intelligenceManager.handleTranscript({
       speaker: speaker,
@@ -2366,7 +2429,15 @@ export class AppState {
       timestamp: Date.now(),
       final: segment.isFinal,
       confidence: segment.confidence,
-      speakerIndex: segment.speakerIndex
+      speakerIndex: segment.speakerIndex,
+      // Finals only; undefined on interims. `text` stays the (possibly translated) display text
+      // every existing consumer reads; `textOriginal` is what was actually recognized.
+      textOriginal: segment.textOriginal,
+      turnId: segment.turnId,
+      lang: segment.lang,
+      asrSuspect: segment.asrSuspect,
+      suspectReason: segment.suspectReason ?? undefined,
+      arrivalMs: segment.arrivalMs,
       // NOTE: segment.words stays main-process internal (echo filter input) —
       // deliberately NOT serialized into the 10+/sec IPC stream.
     };
@@ -3258,6 +3329,9 @@ export class AppState {
     // Generation tagging is what keeps it from reaching this one.
     this._liveAnalysisInFlight = false;
     this._clientSpeakerIndicesSeen.clear();
+    this._turnSeq = 0;
+    this._langTracker.reset();
+    this._recentOriginals = [];
     this._echoFilter.reset();
     this._userPartialPending = false;
     // Reset the session clock HERE, synchronously, the same instant the
