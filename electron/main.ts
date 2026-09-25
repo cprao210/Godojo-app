@@ -5935,7 +5935,18 @@ async function initializeApp() {
 
 
   // app.dock?.hide() // REMOVED: User wants Dock icon visible
-  app.commandLine.appendSwitch("disable-background-timer-throttling")
+  //
+  // NOTE: the global `disable-background-timer-throttling` switch was removed.
+  // It un-throttled EVERY window — hidden settings/model-selector popups kept
+  // their renderer timers running at full cadence for the whole app session,
+  // which is pure waste on low-end machines. Background throttling is now
+  // opted INTO per window: only the overlay window sets
+  // `backgroundThrottling: false` (WindowHelper.createOverlayWindow), because
+  // its renderer owns the live-analysis/objection timers and the audio-level
+  // feed that must keep ticking while the dock is hidden behind another app's
+  // fullscreen. Everything else (launcher, popups) throttles normally when
+  // hidden — safe because post-call processing polls run while the launcher
+  // is the visible window again.
 }
 
 // Start the application
