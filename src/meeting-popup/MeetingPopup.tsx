@@ -316,9 +316,24 @@ export default function MeetingPopup() {
 
     if (!event || !timing) return <div className="w-full h-full bg-transparent" />;
 
+    // The card floats in the app's ONLY fully-transparent window on every
+    // platform (the launcher/overlay windows are opaque on Windows — see
+    // WindowHelper: transparent: isMac). On machines where Chromium falls
+    // back to software/degraded GPU compositing (the exact machine class
+    // dockSurfaceStyle.ts anticipates), a backdrop-filter element with a
+    // semi-transparent background inside a transparent window mis-renders:
+    // the card's own background fails to paint and the popup goes almost
+    // fully transparent. GPU-dependent → sporadic users on BOTH Windows and
+    // macOS. Two deterministic rules, same on every platform:
+    //   1. NO backdrop-blur on the card — in a transparent window it only
+    //      ever sampled the transparent body, so it added zero visuals and
+    //      100% of the fragile compositing path.
+    //   2. Near-opaque panel — legibility can never depend on how the
+    //      compositor handles layered alpha. (Same mitigation Performance
+    //      Mode applies to the dock: drop blur, boost opacity.)
     const panelClass = isLight
-        ? "bg-[#F3F4F6]/92 border-black/10 shadow-black/10"
-        : "bg-[#1E1E1E]/85 border-white/10 shadow-black/40";
+        ? "bg-[#F3F4F6]/98 border-black/10 shadow-black/10"
+        : "bg-[#1E1E1E]/97 border-white/10 shadow-black/40";
     const chipClass = isLight
         ? "bg-black/5 border-black/10 text-neutral-700"
         : "bg-white/5 border-white/10 text-neutral-300";
@@ -329,7 +344,7 @@ export default function MeetingPopup() {
         <div className="w-full bg-transparent flex flex-col">
             <div
                 ref={cardRef}
-                className={`w-full backdrop-blur-xl border rounded-[18px] shadow-2xl p-4 flex flex-col gap-3 animate-scale-in origin-top-right ${panelClass}`}
+                className={`w-full border rounded-[18px] shadow-2xl p-4 flex flex-col gap-3 animate-scale-in origin-top-right ${panelClass}`}
             >
                 {/* Time + dismiss */}
                 <div className="flex items-start justify-between gap-2">
