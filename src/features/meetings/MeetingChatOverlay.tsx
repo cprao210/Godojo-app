@@ -190,6 +190,7 @@ const MeetingChatOverlay: React.FC<MeetingChatOverlayProps> = ({
     initialQuery,
     onOpenMeeting,
     onBusyChange,
+    onTurnComplete,
 }) => {
     const {
         chatState,
@@ -201,7 +202,7 @@ const MeetingChatOverlay: React.FC<MeetingChatOverlayProps> = ({
         handleClose,
         isBusy,
         stopGeneration,
-    } = useMeetingChat({ isOpen, onClose, onMessagesChange, messages, meetingContext, initialQuery });
+    } = useMeetingChat({ isOpen, onClose, onMessagesChange, messages, meetingContext, initialQuery, onTurnComplete });
 
     // Report streaming state up to the parent — the ask-bar input (and its
     // send/stop button) lives outside this overlay in MeetingDetails, so it

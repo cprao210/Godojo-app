@@ -137,9 +137,12 @@ const HoverCard: React.FC<{
     // Use enhanced fields from backend when available, fall back to legacy
     const previewText = src.preview_text || src.snippet;
 
-    // Build metadata line: prefer timestamp_label from backend, fall back to formatted start_ms
+    // Build metadata line: prefer timestamp_label from backend, fall back to formatted start_ms.
+    // Live moments already carry "This call, MM:SS" in the title — just the speaker here.
     const where = src.type === 'doc'
         ? [src.page ? `p. ${src.page}` : null, src.section].filter(Boolean).join(' · ')
+        : src.type === 'live_moment'
+        ? (src.speaker ?? '')
         : [
             src.section,
             src.speaker,

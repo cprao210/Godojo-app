@@ -439,6 +439,14 @@ export const chatApi = {
     listSessions: (): Promise<ChatSession[]> =>
         apiFetch<{ sessions: ChatSession[] }>("/chat/sessions").then((r) => r.sessions),
 
+    /** The meeting's existing chat session id (null when none) — lets the
+     * meeting-chat overlay resume the prior conversation instead of minting
+     * a new session on every visit (P1-6). */
+    findMeetingSession: (meetingId: string): Promise<string | null> =>
+        apiFetch<{ session_id: string | null }>(
+            `/chat/sessions/by-meeting/${meetingId}`,
+        ).then((r) => r.session_id ?? null),
+
     /** Full turn history for resuming a chat (last 20 messages, chronological). */
     getSessionMessages: (sessionId: string): Promise<ChatHistoryTurn[]> =>
         apiFetch<{ session_id: string; messages: ChatHistoryTurn[] }>(

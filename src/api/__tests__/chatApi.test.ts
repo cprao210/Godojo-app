@@ -146,6 +146,37 @@ describe('statusLabel', () => {
     });
 });
 
+describe('live source_map (P2-11)', () => {
+    afterEach(() => {
+        vi.unstubAllGlobals();
+    });
+
+    it('passes live_moment entries through to onSourceMap and indexes them for chips', async () => {
+        const { indexSourceMap } = await import('@/features/chat/citations');
+        const fetchMock = vi.fn().mockResolvedValueOnce(sseResponse([
+            'event: source_map\ndata: {"sources":[' +
+                '{"index":1,"id":"live","title":"This call, 02:14","type":"live_moment","speaker":"Linda","timestamp_label":"02:14","snippet":"We need SSO."},' +
+                '{"index":2,"id":"a1","title":"Pricing deck","type":"doc","page":3}' +
+            ']}',
+            'event: token\ndata: {"chunk":"They need SSO [1]."}',
+            'event: done\ndata: {}',
+        ]));
+        vi.stubGlobal('fetch', fetchMock);
+        const { handlers, settled } = collectHandlers();
+        let entries: import('@/types').SourceMapEntry[] = [];
+
+        chatApi.queryLive('what do they need?', [], [], undefined, {
+            ...handlers,
+            onSourceMap: (e) => { entries = e; },
+        });
+        await settled;
+
+        expect(entries.map((e) => e.type)).toEqual(['live_moment', 'doc']);
+        const map = indexSourceMap(entries);
+        expect(map[1]).toMatchObject({ title: 'This call, 02:14', speaker: 'Linda', type: 'live_moment' });
+    });
+});
+
 describe('chatApi.queryGlobal', () => {
     let fetchMock: ReturnType<typeof vi.fn>;
 

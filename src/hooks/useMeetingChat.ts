@@ -8,9 +8,10 @@
 import { useState, useEffect, useRef, useCallback } from 'react';
 import { useStreamBuffer } from './useStreamBuffer';
 import { chatApi, statusLabel } from '@/api';
+import { groupSources } from '@/api/chatApi';
 import { indexSourceMap } from '@/features/chat/citations';
 import { posthogAnalytics } from '@/lib/analytics/posthog.service';
-import type { ChatSources, MeetingChatMessage, MeetingChatState, StreamHandle, MeetingContext } from '@/types';
+import type { ChatSources, ChatHistoryTurn, MeetingChatMessage, MeetingChatState, StreamHandle, MeetingContext } from '@/types';
 
 export interface UseMeetingChatArgs {
     isOpen: boolean;
@@ -19,9 +20,16 @@ export interface UseMeetingChatArgs {
     messages: MeetingChatMessage[];
     meetingContext: MeetingContext;
     initialQuery?: { text: string; id: number } | null;
+    /** Called once a turn's stream completes successfully (P1-7). */
+    onTurnComplete?: () => void;
 }
 
-export function useMeetingChat({ isOpen, onClose, onMessagesChange, messages, meetingContext, initialQuery }: UseMeetingChatArgs) {
+export function useMeetingChat({ isOpen, onClose, onMessagesChange, messages, meetingContext, initialQuery, onTurnComplete }: UseMeetingChatArgs) {
+    // Latest callback for the stream's onDone — submitQuestion's closure is
+    // memoized on [meetingContext.id, sessionId] and would otherwise call a
+    // stale one.
+    const onTurnCompleteRef = useRef(onTurnComplete);
+    useEffect(() => { onTurnCompleteRef.current = onTurnComplete; }, [onTurnComplete]);
     const [chatState, setChatState] = useState<MeetingChatState>('idle');
     const [errorMessage, setErrorMessage] = useState<string | null>(null);
     const [statusText, setStatusText] = useState<string | null>(null);
@@ -32,6 +40,10 @@ export function useMeetingChat({ isOpen, onClose, onMessagesChange, messages, me
     // needs to remember the id the backend hands back on the first turn and
     // keep reusing it for the rest of this meeting's conversation.
     const [sessionId, setSessionId] = useState<string | null>(null);
+    // Mirror for async code (the resume lookup) that must see the latest id,
+    // not the one captured when it started.
+    const sessionIdRef = useRef<string | null>(null);
+    useEffect(() => { sessionIdRef.current = sessionId; }, [sessionId]);
 
     const messagesEndRef = useRef<HTMLDivElement>(null);
     const chatWindowRef = useRef<HTMLDivElement>(null);
@@ -47,12 +59,55 @@ export function useMeetingChat({ isOpen, onClose, onMessagesChange, messages, me
     const currentAssistantIdRef = useRef<string | null>(null);
 
     // A different meeting means a different conversation — don't carry the
-    // previous meeting's session_id over.
+    // previous meeting's session_id over. Instead, resume THIS meeting's
+    // existing session if it has one (P1-6): reuse its id so new turns land
+    // in the same conversation, and rehydrate its turns when nothing is on
+    // screen yet. Best-effort — a failed lookup just starts a fresh session.
     useEffect(() => {
         setSessionId(null);
+        sessionIdRef.current = null;
+        const meetingId = meetingContext.id;
+        if (!meetingId) return;
+        let cancelled = false;
+        (async () => {
+            try {
+                const found = await chatApi.findMeetingSession(meetingId);
+                if (cancelled || !found) return;
+                // A turn submitted while the lookup was in flight already
+                // minted a session — keep that one.
+                if (sessionIdRef.current) return;
+                sessionIdRef.current = found;
+                setSessionId(found);
+                const history: ChatHistoryTurn[] = await chatApi.getSessionMessages(found);
+                if (cancelled || history.length === 0) return;
+                const restored: MeetingChatMessage[] = history.map((turn, i) => ({
+                    id: `${found}-${i}`,
+                    role: turn.role,
+                    content: turn.content,
+                    sources: turn.sources?.length ? groupSources(turn.sources) : undefined,
+                    sourceMap: turn.source_map?.length ? indexSourceMap(turn.source_map) : undefined,
+                }));
+                // Only fill an empty transcript — never clobber turns the
+                // user already has on screen.
+                onMessagesChange(prev => (prev.length > 0 ? prev : restored));
+            } catch (e) {
+                console.warn('[MeetingChat] Session resume failed:', e);
+            }
+        })();
+        return () => { cancelled = true; };
+        // eslint-disable-next-line react-hooks/exhaustive-deps
     }, [meetingContext.id]);
 
-    useEffect(() => () => activeStreamRef.current?.abort(), []);
+    // Unmount: abort AND finalize. streamSSE resolves silently on an aborted
+    // signal (no onDone/onError), so a bare abort() would strand the
+    // assistant placeholder at isStreaming:true — and the messages live in
+    // the PARENT (useMeetingDetails), which may outlive this overlay's
+    // unmount. The body runs at cleanup time, after render, so the forward
+    // reference to stopGeneration below is safe.
+    useEffect(() => () => {
+        if (activeStreamRef.current) stopGeneration();
+        // eslint-disable-next-line react-hooks/exhaustive-deps
+    }, []);
 
     useEffect(() => {
         chatStateRef.current = chatState;
@@ -79,13 +134,19 @@ export function useMeetingChat({ isOpen, onClose, onMessagesChange, messages, me
         if (isOpen) posthogAnalytics.trackMeetingChatOpened();
     }, [isOpen]);
 
-    // Reset state when overlay closes
+    // Reset state when overlay closes — FINALIZE the turn, not just abort it.
+    // A bare abort() leaves the assistant placeholder isStreaming:true
+    // forever (streamSSE resolves silently on abort — no onDone/onError),
+    // and the messages live in the parent and survive close/reopen, so the
+    // truncated answer would reappear with a permanently blinking cursor.
+    // stopGeneration commits the buffered text and drops the cursor. The
+    // callback body runs post-render, so the forward reference is safe.
     useEffect(() => {
         if (!isOpen) {
-            setChatState('idle');
+            stopGeneration();
             setErrorMessage(null);
-            activeStreamRef.current?.abort();
         }
+        // eslint-disable-next-line react-hooks/exhaustive-deps
     }, [isOpen]);
 
     const handleClose = useCallback(() => {
@@ -167,7 +228,7 @@ export function useMeetingChat({ isOpen, onClose, onMessagesChange, messages, me
                     msg.id === assistantMessageId ? { ...msg, sourceMap: undefined } : msg
                 ));
             },
-            onSessionCreated: (id) => setSessionId(id),
+            onSessionCreated: (id) => { sessionIdRef.current = id; setSessionId(id); },
             onSources: (s) => { sources = s; },
             // [n] -> source map, sent before the first token: drives inline
             // citation chips + hover cards.
@@ -228,6 +289,8 @@ export function useMeetingChat({ isOpen, onClose, onMessagesChange, messages, me
                 streamBuffer.reset();
                 activeStreamRef.current = null;
                 currentAssistantIdRef.current = null;
+                // The turn is saved — let the parent refresh the Ask-Dojo tab.
+                onTurnCompleteRef.current?.();
                 if (pendingQuestionRef.current) {
                     const next = pendingQuestionRef.current;
                     pendingQuestionRef.current = null;
@@ -259,6 +322,9 @@ export function useMeetingChat({ isOpen, onClose, onMessagesChange, messages, me
     // finalizing work those callbacks would otherwise have done: commit
     // whatever text has streamed in so far, drop the streaming cursor, and
     // put the chat state back to idle so the input re-enables immediately.
+    // This is also the close/unmount finalizer: the overlay-close effect and
+    // the unmount cleanup both route through it, so no abort path can leave
+    // a placeholder stuck isStreaming:true.
     const stopGeneration = useCallback(() => {
         activeStreamRef.current?.abort();
         activeStreamRef.current = null;

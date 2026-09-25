@@ -145,6 +145,15 @@ export function useGlobalChat({ isOpen, onClose, initialQuery = "" }: UseGlobalC
 
         streamBuffer.reset();
         let sources: ChatSources | undefined;
+        // The session id for THIS turn. Starts as the state captured when
+        // submitQuestion ran (null on a brand-new chat) and is updated by
+        // onSessionCreated — which fires before the title frame on the same
+        // stream — so onTitleUpdated can patch the sidebar row in place.
+        // Reading the `sessionId` state directly here would be a stale
+        // closure: setSessionId() re-renders but never reaches the in-flight
+        // stream's callbacks, so a brand-new chat's title frame used to be
+        // dropped (s.id === null never matched).
+        let activeSessionId = sessionId;
 
         // history is only consulted by the backend when sessionId is null
         // (brand-new chat, first turn); once a session exists it loads the
@@ -182,6 +191,7 @@ export function useGlobalChat({ isOpen, onClose, initialQuery = "" }: UseGlobalC
                 );
             },
             onSessionCreated: (id) => {
+                activeSessionId = id;
                 setSessionId(id);
                 // A brand-new session — the sidebar doesn't know about it yet.
                 // Re-fetch so it shows up (title arrives moments later via
@@ -190,7 +200,7 @@ export function useGlobalChat({ isOpen, onClose, initialQuery = "" }: UseGlobalC
             },
             onTitleUpdated: (title) => {
                 setSessions((prev) =>
-                    prev.map((s) => (s.id === sessionId ? { ...s, title } : s)),
+                    prev.map((s) => (s.id === activeSessionId ? { ...s, title } : s)),
                 );
             },
             // Backend discarded a partial answer and is starting over — drop
@@ -281,6 +291,24 @@ export function useGlobalChat({ isOpen, onClose, initialQuery = "" }: UseGlobalC
         // eslint-disable-next-line react-hooks/exhaustive-deps
     }, []);
 
+    // ── Close the overlay, aborting any in-flight stream first ────────────────
+    // X and Escape route through this instead of raw onClose: the overlay is
+    // mounted unconditionally (Launcher), so the unmount-abort effect never
+    // fires on close — without this, the server turn keeps running after the
+    // UI reset and late onToken callbacks re-busy the hook (a "streaming"
+    // state with no visible window; the answer only findable by reloading
+    // the session later). Mirrors the click-outside behavior below.
+    // resetOnExit wipes the transcript on close, so no placeholder
+    // finalization is needed (unlike stopGeneration); streamSSE resolves
+    // silently on an aborted signal, so no onDone/onError follows.
+    const requestClose = useCallback(() => {
+        activeStreamRef.current?.abort();
+        activeStreamRef.current = null;
+        currentAssistantIdRef.current = null;
+        onClose();
+        // eslint-disable-next-line react-hooks/exhaustive-deps
+    }, [onClose]);
+
     // ── Start a fresh chat — clears the active session + transcript ─────────
     const startNewChat = useCallback(() => {
         activeStreamRef.current?.abort();
@@ -344,12 +372,12 @@ export function useGlobalChat({ isOpen, onClose, initialQuery = "" }: UseGlobalC
     useEffect(() => {
         const handleKeyDown = (e: KeyboardEvent) => {
             if (e.key === "Escape" && isOpen) {
-                onClose();
+                requestClose();
             }
         };
         window.addEventListener("keydown", handleKeyDown);
         return () => window.removeEventListener("keydown", handleKeyDown);
-    }, [isOpen, onClose]);
+    }, [isOpen, requestClose]);
 
     // ── Click outside the panel closes it and aborts any in-flight stream ──
     // The FAB has its own onClick that owns toggling, so clicks on it are
@@ -361,8 +389,7 @@ export function useGlobalChat({ isOpen, onClose, initialQuery = "" }: UseGlobalC
             const target = e.target as HTMLElement;
             if (target.closest("[data-global-chat-fab]")) return;
             if (chatWindowRef.current && !chatWindowRef.current.contains(target)) {
-                activeStreamRef.current?.abort();
-                onClose();
+                requestClose();
             }
         };
 
@@ -375,7 +402,7 @@ export function useGlobalChat({ isOpen, onClose, initialQuery = "" }: UseGlobalC
             clearTimeout(timer);
             document.removeEventListener("mousedown", handleClickOutside);
         };
-    }, [isOpen, onClose]);
+    }, [isOpen, requestClose]);
 
     // ── Cancel any in-flight stream if the overlay unmounts ─────────────────
     useEffect(() => () => activeStreamRef.current?.abort(), []);
@@ -406,6 +433,13 @@ export function useGlobalChat({ isOpen, onClose, initialQuery = "" }: UseGlobalC
     // Called by AnimatePresence's onExitComplete once the closing animation
     // finishes — resets state so the next open starts from a clean slate.
     const resetOnExit = useCallback(() => {
+        // Safety net: every close path should already have aborted via
+        // requestClose (X/Escape/click-outside), but this runs for ANY exit
+        // route — a stream still alive here would keep firing callbacks into
+        // the freshly reset hook (onToken re-busies chatState).
+        activeStreamRef.current?.abort();
+        activeStreamRef.current = null;
+        currentAssistantIdRef.current = null;
         setChatState("idle");
         setMessages([]);
         setErrorMessage(null);
@@ -437,6 +471,7 @@ export function useGlobalChat({ isOpen, onClose, initialQuery = "" }: UseGlobalC
         handleSendClick,
         stopGeneration,
         resetOnExit,
+        requestClose,
         startNewChat,
         loadSession,
         deleteSession,

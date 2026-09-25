@@ -26,7 +26,7 @@ const GlobalChatOverlay: React.FC<GlobalChatOverlayProps> = ({ isOpen, onClose, 
     const { messages, chatState, errorMessage, statusText, query, setQuery } = globalChatStates;
     const { messagesEndRef, chatWindowRef, inputRef, submitQuestion, handleInputKeyDown } = globalChatStates;
     const { handleSendClick, resetOnExit, sessionId, sessions, isLoadingSessions, isBusy, stopGeneration } = globalChatStates;
-    const { startNewChat, loadSession, deleteSession } = globalChatStates;
+    const { startNewChat, loadSession, deleteSession, requestClose } = globalChatStates;
 
     return (
         <AnimatePresence onExitComplete={resetOnExit}>
@@ -96,7 +96,7 @@ const GlobalChatOverlay: React.FC<GlobalChatOverlayProps> = ({ isOpen, onClose, 
                                     </div>
                                 </div>
                                 <button
-                                    onClick={onClose}
+                                    onClick={requestClose}
                                     className="p-1.5 rounded-full hover:bg-bg-item-surface transition-colors group shrink-0"
                                     aria-label="Close chat"
                                 >
