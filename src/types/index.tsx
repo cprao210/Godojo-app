@@ -1535,6 +1535,13 @@ export interface ParsedReleaseNotes {
   sections: ReleaseNoteSection[];
   fullBody?: string;
   url?: string;
+  /** Downloadable release files with byte sizes (installer/DMG/AppImage) —
+   * powers the update modal's download-size chip. */
+  assets?: { name: string; size: number }[];
+  /** GitHub release flags — true means internal test build; the update
+   * announce gate refuses to surface such releases to users. */
+  isPrerelease?: boolean;
+  isDraft?: boolean;
 }
 
 // --- src/lib/apiClient.ts ---
@@ -2348,6 +2355,15 @@ export interface UpdateModalProps {
   downloadProgress: number;
   status: 'idle' | 'checking' | 'downloading' | 'ready' | 'error' | 'instructions';
   errorMessage?: string | null;
+  /** Theme flag — the modal matches the app theme (Invitation-Modal styling). */
+  isLight: boolean;
+  /** Full package size (bytes) of this platform's artifact, or null. */
+  downloadSizeBytes?: number | null;
+  /** ACTUAL bytes this download transfers (delta size on Windows) — known
+   *  once downloading; the modal prefers it over downloadSizeBytes. */
+  downloadTotalBytes?: number | null;
+  /** Bytes transferred so far in the in-flight download. */
+  downloadTransferredBytes?: number | null;
   /** Quit + install a downloaded update. The guarded path (refuses while a
    *  meeting is active or in dev) — the modal must never call
    *  restartAndInstall directly. */

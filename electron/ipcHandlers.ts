@@ -703,7 +703,7 @@ export function initializeIpcHandlers(appState: AppState): void {
     // Production-only, like its siblings check-for-updates / download-update:
     // in dev there is no downloaded update and the fallback path used to
     // app.exit(0), silently killing a dev session from a stray click.
-    if (!app.isPackaged) {
+    if (!app.isPackaged && !appState.isDevUpdatesEnabled()) {
       return { success: false, error: 'Updates are disabled in development builds' }
     }
     // Never tear down a live call to apply an update. The renderer refuses
@@ -730,7 +730,7 @@ export function initializeIpcHandlers(appState: AppState): void {
     // Updates are a production-only feature — electron-updater has no signed/
     // published feed to check against in a dev build, so refuse up front
     // instead of letting it silently no-op or hit a manual fallback.
-    if (!app.isPackaged) {
+    if (!app.isPackaged && !appState.isDevUpdatesEnabled()) {
       console.log('[IPC] check-for-updates ignored: running unpackaged (development)')
       return { success: false, error: 'Updates are disabled in development builds' }
     }
@@ -745,7 +745,7 @@ export function initializeIpcHandlers(appState: AppState): void {
   })
 
   safeHandle("download-update", async () => {
-    if (!app.isPackaged) {
+    if (!app.isPackaged && !appState.isDevUpdatesEnabled()) {
       console.log('[IPC] download-update ignored: running unpackaged (development)')
       return { success: false, error: 'Updates are disabled in development builds' }
     }
@@ -780,7 +780,10 @@ export function initializeIpcHandlers(appState: AppState): void {
   // dev run so it can hide/disable the Updates UI accordingly, without
   // relying on process.env.NODE_ENV (unreliable inside Electron).
   safeHandle("is-app-packaged", async () => {
-    return app.isPackaged
+    // Effective updates-allowed flag, not raw packaging: with the dev test
+    // override (GODOJO_DEV_UPDATES=1) the whole Updates UI must enable in
+    // `npm run dev` exactly like production (see docs/TESTING-UPDATES.md).
+    return app.isPackaged || appState.isDevUpdatesEnabled()
   })
 
   // Window movement handlers

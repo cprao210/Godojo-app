@@ -7,12 +7,26 @@ export interface ReleaseNoteSection {
     items: string[];
 }
 
+/** A downloadable file attached to a GitHub release (installer, DMG,
+ *  AppImage…). `size` is bytes — the source for the UI's download-size chip. */
+export interface ReleaseAsset {
+    name: string;
+    size: number;
+}
+
 export interface ParsedReleaseNotes {
     version: string;
     summary: string;
     sections: ReleaseNoteSection[];
     fullBody: string; // Fallback
     url: string;
+    assets?: ReleaseAsset[];
+    /** True when GitHub flags this release as a pre-release. Such releases
+     *  must NEVER be announced to users (internal/platform testing only). */
+    isPrerelease?: boolean;
+    /** True for draft releases (normally invisible to the unauthenticated
+     *  API — captured defensively in case an authenticated fetch returns one). */
+    isDraft?: boolean;
 }
 
 export class ReleaseNotesManager {
@@ -58,7 +72,31 @@ export class ReleaseNotesManager {
                 url = `https://api.github.com/repos/${this.repoOwner}/${this.repoName}/releases/tags/${tag}`;
             }
 
-            const response = await this.makeRequest(url);
+            let response = await this.makeRequest(url);
+
+            // /releases/latest 404s not only when no releases exist, but also
+            // when every release is a PRERELEASE (the endpoint excludes them).
+            // Fall back to the list endpoint — but only consider PRODUCTION
+            // releases: prereleases and drafts are internal/test builds and
+            // must never surface to users (see docs/TESTING-UPDATES.md).
+            if (!response && version === 'latest') {
+                console.log("[ReleaseNotesManager] releases/latest unavailable — falling back to the releases list (production releases only)");
+                const listUrl = `https://api.github.com/repos/${this.repoOwner}/${this.repoName}/releases?per_page=30`;
+                const listResponse = await this.makeRequest(listUrl);
+                if (listResponse) {
+                    try {
+                        const releases = JSON.parse(listResponse);
+                        const latest = Array.isArray(releases)
+                            ? releases.find((r: any) => !r?.prerelease && !r?.draft)
+                            : null;
+                        if (latest && typeof latest === 'object') {
+                            response = JSON.stringify(latest);
+                        }
+                    } catch (e) {
+                        console.warn("[ReleaseNotesManager] Failed to parse releases list fallback:", e);
+                    }
+                }
+            }
 
             if (!response) {
                 console.warn("[ReleaseNotesManager] Failed to fetch release notes from API.");
@@ -69,8 +107,18 @@ export class ReleaseNotesManager {
             const body = data.body || "";
             const htmlUrl = data.html_url || "";
             const tagName = data.tag_name || version; // Use tag_name from API if available
+            // Release assets carry their byte sizes — used to show the real
+            // download size in the update modal (not the installed-app size).
+            const assets: ReleaseAsset[] = Array.isArray(data.assets)
+                ? data.assets.map((a: any) => ({ name: String(a?.name ?? ''), size: Number(a?.size ?? 0) })).filter((a: ReleaseAsset) => a.name && a.size > 0)
+                : [];
 
             const parsed = this.parseReleaseNotes(body, tagName, htmlUrl);
+            parsed.assets = assets;
+            // Capture the release's publication state so the update-announce
+            // gate in main.ts can refuse to announce test builds to users.
+            parsed.isPrerelease = data.prerelease === true;
+            parsed.isDraft = data.draft === true;
             this.cachedNotes = parsed;
             return parsed;
 

@@ -1,4 +1,4 @@
-import { app, BrowserWindow, Tray, Menu, nativeImage, ipcMain, shell, systemPreferences, screen, desktopCapturer, powerMonitor } from "electron"
+import { app, BrowserWindow, Tray, Menu, nativeImage, ipcMain, shell, systemPreferences, screen, desktopCapturer, powerMonitor, net } from "electron"
 import path from "path"
 import fs from "fs"
 import { autoUpdater } from "electron-updater"
@@ -418,7 +418,7 @@ try {
 import { CredentialsManager } from "./services/CredentialsManager"
 import { SettingsManager } from "./services/SettingsManager"
 import { setVerboseLoggingFlag } from "./verboseLog"
-import { ReleaseNotesManager } from "./update/ReleaseNotesManager"
+import { ReleaseNotesManager, type ParsedReleaseNotes } from "./update/ReleaseNotesManager"
 import { OllamaManager } from './services/OllamaManager'
 import { LiveAnalysisData } from "../src/types";
 
@@ -1472,6 +1472,31 @@ export class AppState {
     autoUpdater.channel = 'latest'
     console.log(`[AutoUpdater] Channel: ${autoUpdater.channel}`)
 
+    // Production releases ONLY. electron-updater auto-flips allowPrerelease
+    // to true when the RUNNING version itself has a prerelease component —
+    // e.g. an internal build versioned "2.0.9-windows" parses as semver
+    // prerelease ['windows'] — which switches the provider to the atom-feed
+    // path that happily picks the newest release of ANY kind, including test
+    // pre-releases. Pinning false keeps every installed build on the
+    // production track regardless of its own version string.
+    autoUpdater.allowPrerelease = false
+
+    // DEV UPDATE TESTING: GODOJO_DEV_UPDATES=1 unlocks the whole Updates flow
+    // in `npm run dev` against a LOCAL feed (see scripts/dev-update-server.mjs
+    // and docs/TESTING-UPDATES.md) — same code path as production, no real
+    // release needed. electron-updater also requires dev-app-update.yml to be
+    // active in dev; the runtime setFeedURL below points it at the local server.
+    if (this.isDevUpdatesEnabled()) {
+      const feedUrl = process.env.GODOJO_DEV_UPDATE_FEED || 'http://127.0.0.1:5178/'
+      console.log(`[AutoUpdater] DEV UPDATES ENABLED — local feed: ${feedUrl}`)
+      // MANDATORY: without this, every check silently no-ops in dev with
+      // "Skip checkForUpdates because application is not packed and dev
+      // update config is not forced" (AppUpdater.js:278-280) — the button
+      // spins, the 20s checking timeout expires, and nothing happens.
+      autoUpdater.forceDevUpdateConfig = true
+      autoUpdater.setFeedURL({ provider: 'generic', url: feedUrl })
+    }
+
     autoUpdater.on("checking-for-update", () => {
       console.log("[AutoUpdater] Checking for update...")
       this.broadcast("update-checking")
@@ -1479,28 +1504,90 @@ export class AppState {
 
     autoUpdater.on("update-available", async (info) => {
       console.log("[AutoUpdater] Update available:", info.version)
+      this.updateOpPhase = 'idle'
 
-      // Fetch structured release notes
+      // Fetch structured release notes (by TAG when the provider supplies
+      // one — platform-suffixed releases like v2.0.9-windows only resolve
+      // via their real tag, not the plain version). Skipped entirely in dev
+      // test mode: the fixture version (999.0.0) has no GitHub release, and
+      // the list-fallback would otherwise pull a REAL release's notes/sizes
+      // into the fixture flow — the modal then shows the fallback notes line
+      // and the fixture's own size, fully deterministic.
       const releaseManager = ReleaseNotesManager.getInstance();
-      const notes = await releaseManager.fetchReleaseNotes(info.version);
+      const releaseTag = (info as { tag?: string }).tag
+      const notes = this.isDevUpdatesEnabled()
+        ? await this.fetchDevFeedNotes()
+        : await releaseManager.fetchReleaseNotes(releaseTag ?? info.version);
 
-      // Notify renderer that an update is available with parsed notes if available
+      // PRODUCTION-RELEASE GATE: drafts and pre-releases are internal test
+      // builds (platform-specific test releases included) and must NEVER be
+      // announced to users. The updater's own prerelease handling isn't
+      // sufficient (allowPrerelease can auto-flip; /releases/latest semantics
+      // only apply to its lookup, not to what a feed may serve), so the
+      // GitHub release's own flags are the authoritative check. When the
+      // flags say test-release: treat exactly like "no update". Notes being
+      // null (API down / local dev fixture feed with no GitHub release)
+      // passes through unchanged — the gate only ever BLOCKS on positive
+      // evidence of a test release.
+      if (notes?.isDraft || notes?.isPrerelease) {
+        console.log(`[AutoUpdater] Release ${releaseTag ?? info.version} is a ${notes.isDraft ? 'draft' : 'pre-release'} (internal test build) — NOT announcing to users`)
+        this.updateOpPhase = 'idle'
+        this.broadcast('update-not-available', { version: app.getVersion() })
+        return
+      }
+
+      // Notify renderer that an update is available with parsed notes if
+      // available, plus the real download size for this platform's artifact
+      // (from the GitHub release assets — NOT the installed-app size). In
+      // dev-feed mode there are no GitHub assets; the fixture server exposes
+      // the installer's byte size via dev-feed-meta.json instead.
+      let downloadSizeBytes: number | null = null
+      if (this.isDevUpdatesEnabled()) {
+        downloadSizeBytes = await this.fetchDevFeedInstallerSize()
+      } else {
+        downloadSizeBytes = this.platformReleaseAssetSize(notes?.assets ?? [], info.version)
+      }
       this.broadcast("update-available", {
         ...info,
-        parsedNotes: notes
+        parsedNotes: notes,
+        downloadSizeBytes,
       })
     })
 
     autoUpdater.on("update-not-available", (info) => {
       console.log("[AutoUpdater] Update not available:", info.version)
+      this.updateOpPhase = 'idle'
       this.broadcast("update-not-available", info)
     })
 
     autoUpdater.on("error", (err) => {
+      // DEV LAYER: the full technical error (status code, URL, headers, stack)
+      // is preserved here in logs — it must never reach the UI verbatim.
       console.error("[AutoUpdater] Error:", err)
-      // Include more details in the error message for debugging
-      const errorMessage = err.message || err.toString() || 'Unknown update error'
-      this.broadcast("update-error", errorMessage)
+
+      // "No published release yet" arrives HERE first (the error event fires
+      // before the check promise rejects), so it must be classified at the
+      // source — otherwise the renderer gets a raw-404 update-error followed
+      // by a too-late update-not-available, and the update modal pops open
+      // with a technical 404 for what is really a valid "up to date" state.
+      if (this.isNoReleaseAvailableError(err)) {
+        console.log('[AutoUpdater] No published release found on GitHub — treating as up to date')
+        this.updateOpPhase = 'idle'
+        this.broadcast('update-not-available', { version: app.getVersion() })
+        return
+      }
+
+      // Background (auto) check failures are nobody's business: the auto-check
+      // loop already retries quietly with backoff, so broadcasting an error
+      // here would pop the update modal for a transient offline moment.
+      if (this.updateOpPhase === 'auto-check') {
+        console.warn('[AutoUpdater] Background check failed — staying quiet (auto-retry scheduled):', err?.message ?? err)
+        return
+      }
+
+      // USER LAYER: only a concise, human-readable message is broadcast —
+      // never URLs, headers, status codes, or stack traces.
+      this.broadcast("update-error", this.sanitizeUpdateErrorForUser(err))
     })
 
     autoUpdater.on("download-progress", (progressObj) => {
@@ -1513,6 +1600,7 @@ export class AppState {
 
     autoUpdater.on("update-downloaded", (info) => {
       console.log("[AutoUpdater] Update downloaded:", info.version)
+      this.updateOpPhase = 'idle'
       // Notify renderer that update is ready to install
       this.broadcast("update-downloaded", info)
     })
@@ -1538,6 +1626,11 @@ export class AppState {
 
   private autoCheckTimer: NodeJS.Timeout | null = null;
   private autoCheckFailures = 0;
+  /** What the user/updater is currently doing, so the error handler can
+   * distinguish a quiet background auto-check from a user-initiated action.
+   * 'auto-check' errors stay log-only; 'manual-check'/'download' errors are
+   * broadcast (sanitized) so the surface the user clicked can show them. */
+  private updateOpPhase: 'idle' | 'auto-check' | 'manual-check' | 'download' = 'idle';
 
   private scheduleAutoUpdateCheck(delayMs: number): void {
     if (this.autoCheckTimer) clearTimeout(this.autoCheckTimer);
@@ -1553,6 +1646,7 @@ export class AppState {
   private async runAutoUpdateCheck(): Promise<void> {
     if (!app.isPackaged) return;
 
+    this.updateOpPhase = 'auto-check';
     try {
       await autoUpdater.checkForUpdatesAndNotify();
       // Completed (available or up to date) — resume the steady cadence.
@@ -1580,8 +1674,54 @@ export class AppState {
     }
   }
 
+  /** Dev-feed fixture helper: GET+parse a JSON file off the local fixture
+   *  server (dev-feed-meta.json, dev-feed-notes.json, …). Null on any
+   *  failure — the fixture flow degrades gracefully, never errors. */
+  private async fetchDevFeedJson<T>(file: string): Promise<T | null> {
+    try {
+      const base = process.env.GODOJO_DEV_UPDATE_FEED || 'http://127.0.0.1:5178/'
+      const url = new URL(file, base).toString()
+      const body = await new Promise<string | null>((resolve) => {
+        const req = net.request(url)
+        req.on('response', (res) => {
+          if (res.statusCode !== 200) return resolve(null)
+          let data = ''
+          res.on('data', (c) => { data += c.toString() })
+          res.on('end', () => resolve(data))
+          res.on('error', () => resolve(null))
+        })
+        req.on('error', () => resolve(null))
+        req.end()
+      })
+      return body ? (JSON.parse(body) as T) : null
+    } catch {
+      return null
+    }
+  }
+
+  /** Fixture size chip data: {installerBytes} from dev-feed-meta.json. */
+  private async fetchDevFeedInstallerSize(): Promise<number | null> {
+    const meta = await this.fetchDevFeedJson<{ installerBytes?: number }>('dev-feed-meta.json')
+    return typeof meta?.installerBytes === 'number' && meta.installerBytes > 0 ? meta.installerBytes : null
+  }
+
+  /** Fixture release notes: dev-feed-notes.json in the exact ParsedReleaseNotes
+   *  shape the GitHub path produces, so the modal/tab render it identically. */
+  private async fetchDevFeedNotes(): Promise<ParsedReleaseNotes | null> {
+    return this.fetchDevFeedJson<ParsedReleaseNotes>('dev-feed-notes.json')
+  }
+
   public async quitAndInstallUpdate(): Promise<void> {
     console.log('[AutoUpdater] quitAndInstall called - applying update...')
+
+    // The dev fixture feed downloads a DUMMY installer — attempting a real
+    // install against it is meaningless (and quitAndInstall from an unpackaged
+    // dev app is unsupported anyway). Refuse with a clear message instead.
+    if (this.isDevUpdatesEnabled()) {
+      console.log('[AutoUpdater] quitAndInstall refused: dev update-testing mode (dummy installer)')
+      this.broadcast('update-error', "Dev test mode: the downloaded file is a fixture, not a real installer — everything up to this point is the production flow.")
+      return
+    }
 
     // On macOS, unsigned apps can't auto-restart via quitAndInstall
     // Workaround: Open the folder containing the downloaded update so user can install manually
@@ -1630,31 +1770,81 @@ export class AppState {
     })
   }
 
+  /**
+   * Byte size of THIS platform's update artifact, picked from the GitHub
+   * release assets. Windows matches the NSIS setup exe (what electron-updater
+   * downloads; with differential/blockmap download only the changed blocks
+   * transfer, and the live progress total then reflects the smaller delta —
+   * both are exposed and the UI prefers actual transferred bytes once known).
+   * macOS matches the DMG the manual-install flow opens in the browser.
+   * Linux matches the AppImage.
+   */
+  private platformReleaseAssetSize(assets: { name: string; size: number }[], version: string): number | null {
+    if (!assets.length) return null
+    const v = (version || '').replace(/^v/, '')
+    const pick = (pred: (name: string) => boolean): number | null => {
+      const hit = assets.find(a => pred(a.name))
+      return hit ? hit.size : null
+    }
+    if (process.platform === 'win32') {
+      // NSIS setup artifact (nsis.artifactName): GoDojo.AI-Setup-<v>.exe
+      return pick(n => /^GoDojo\.AI-Setup-.*\.exe$/i.test(n))
+        // fall back to the plain win artifact (portable shares the prefix)
+        ?? pick(n => new RegExp(`^GoDojo\\.AI-${v.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}.*\\.exe$`, 'i').test(n))
+        ?? pick(n => n.toLowerCase().endsWith('.exe'))
+    }
+    if (process.platform === 'darwin') {
+      // Prefer this machine's arch DMG (builds ship both arm64 + x64)
+      const arch = process.arch === 'arm64' ? 'arm64' : 'x64'
+      return pick(n => new RegExp(`^GoDojo\\.AI-.*-${arch}\\.dmg$`, 'i').test(n))
+        ?? pick(n => n.toLowerCase().endsWith('.dmg'))
+    }
+    // linux — AppImage is the only self-updatable target
+    return pick(n => n.toLowerCase().endsWith('.appimage'))
+  }
+
+  /** Dev-only override that unlocks the production update flow locally
+   *  against a fixture feed (GODOJO_DEV_UPDATES=1). Production builds are
+   *  unaffected — this can only ever be true when NOT packaged. */
+  public isDevUpdatesEnabled(): boolean {
+    return !app.isPackaged && process.env.GODOJO_DEV_UPDATES === '1'
+  }
+
+  /** Whether update checks/downloads are allowed at all: packaged (any
+   *  environment), or dev with the explicit test override. */
+  public isUpdatesAllowed(): boolean {
+    return app.isPackaged || this.isDevUpdatesEnabled()
+  }
+
   public async checkForUpdates(): Promise<void> {
-    console.log('[AutoUpdater] Manual check for updates requested')
-    // Production-only: don't fall back to the manual GitHub API check in dev
-    // either — that previously let "Check for Updates" work locally even
-    // though the feature is meant to be production-only.
-    if (!app.isPackaged) {
-      console.log('[AutoUpdater] Skipping: development build (updates are production-only)')
+    console.log("[AutoUpdater] Manual check for updates requested")
+    // Production-only, like its siblings check-for-updates / download-update:
+    // don't fall back to the manual GitHub API check in dev either — that
+    // previously let "Check for Updates" work locally even though the feature
+    // is meant to be production-only. Exception: GODOJO_DEV_UPDATES=1, which
+    // intentionally runs the REAL flow against a local fixture feed.
+    if (!this.isUpdatesAllowed()) {
+      console.log("[AutoUpdater] Skipping: development build (updates are production-only)")
       this.broadcast("update-error", "Updates are disabled in development builds")
       return
     }
     try {
+      this.updateOpPhase = 'manual-check';
       await autoUpdater.checkForUpdatesAndNotify()
     } catch (err: any) {
-      console.error('[AutoUpdater] checkForUpdates failed:', err)
+      console.error("[AutoUpdater] checkForUpdates failed:", err)
       // electron-updater throws (typically a 404 fetching latest.yml) when
       // GitHub has no published release yet — e.g. right after deleting all
       // releases, or before the first one is published. That's not a real
       // failure, it just means there's nothing to update to yet.
       if (this.isNoReleaseAvailableError(err)) {
-        console.log('[AutoUpdater] No published release found on GitHub — treating as up to date')
+        console.log("[AutoUpdater] No published release found on GitHub — treating as up to date")
         this.broadcast("update-not-available", { version: app.getVersion() })
         return
       }
-      const errorMessage = err.message || err.toString() || 'Download failed'
-      this.broadcast("update-error", errorMessage)
+      this.broadcast("update-error", this.sanitizeUpdateErrorForUser(err))
+    } finally {
+      if (this.updateOpPhase === 'manual-check') this.updateOpPhase = 'idle'
     }
   }
 
@@ -1673,6 +1863,36 @@ export class AppState {
     )
   }
 
+  /**
+   * USER-FACING error sanitizer. The renderer must only ever receive a short,
+   * human-readable sentence — electron-updater's raw HTTPError message (the
+   * "404 method: GET url: … Headers: {…}" format) leaks the API URL, request
+   * headers and status codes, overflows the modal, and means nothing to a
+   * user. The full technical error is already logged by the caller (dev layer).
+   */
+  private sanitizeUpdateErrorForUser(err: any): string {
+    const status = err?.statusCode ?? err?.status
+    const msg = (err?.message || err?.toString() || '').toLowerCase()
+    const isDownload = this.updateOpPhase === 'download'
+
+    if (status === 401 || status === 403) {
+      return "The update server rejected the request. Please try again later."
+    }
+    if (status === 429) {
+      return "The update server is busy right now. Please try again in a few minutes."
+    }
+    const networkHints = ['econnrefused', 'enotfound', 'etimedout', 'eai_again', 'econnreset',
+                          'network', 'timed out', 'timeout', 'offline', 'getaddrinfo', 'socket']
+    if (status != null || networkHints.some(h => msg.includes(h))) {
+      return isDownload
+        ? "The update couldn't be downloaded. Please check your internet connection and try again."
+        : "We couldn't check for updates right now. Please check your internet connection and try again."
+    }
+    return isDownload
+      ? "The update couldn't be downloaded. Please try again, or download it from the releases page."
+      : "We couldn't check for the latest version right now. Please try again later."
+  }
+
   public downloadUpdate(): void {
     console.log('[AutoUpdater] Starting download...')
     // deb (Linux) and portable (Windows) installs can't be self-updated by
@@ -1688,16 +1908,46 @@ export class AppState {
       this.broadcast('update-error', "The portable version can't update itself. Please download the installer from the releases page.")
       return
     }
-    try {
-      // Errors during download are surfaced via autoUpdater.on("error") which
-      // already broadcasts "update-error". Do not broadcast here to avoid duplicates.
-      autoUpdater.downloadUpdate().catch(err => {
-        console.error('[AutoUpdater] downloadUpdate failed:', err)
-      })
-    } catch (err: any) {
-      console.error('[AutoUpdater] downloadUpdate exception:', err)
+    // Errors during download are surfaced via autoUpdater.on("error") which
+    // already broadcasts "update-error". Do not broadcast here to avoid duplicates.
+    const beginDownload = () => {
+      try {
+        this.updateOpPhase = 'download'
+        autoUpdater.downloadUpdate().catch(err => {
+          console.error('[AutoUpdater] downloadUpdate failed:', err)
+        })
+      } catch (err: any) {
+        console.error("[AutoUpdater] downloadUpdate exception:", err)
+      }
+    }
+
+    // DEV MODE: wipe the updater's on-disk download cache first. electron-
+    // updater reuses a previously downloaded file (validateDownloadPath in
+    // AppUpdater) and fires update-downloaded INSTANTLY without any network
+    // traffic — on a dev fixture that reads as "the progress bar blinked
+    // and it's done", because it literally never downloaded. Clearing
+    // forces a genuine cold download (through the throttled fixture
+    // server) on every click.
+    if (this.isDevUpdatesEnabled()) {
+      this.clearDevUpdateCache().finally(beginDownload)
+    } else {
+      beginDownload()
     }
   }
+
+  /** Empties electron-updater's pending-download cache via its own helper
+     *  (same object the macOS install path reads .file from), so the next
+     *  downloadUpdate() can't short-circuit on a cached file. Dev-only. */
+    private async clearDevUpdateCache(): Promise<void> {
+      try {
+        const updater = autoUpdater as any
+        const helper = updater.downloadedUpdateHelper ?? await updater.getOrCreateDownloadHelper?.()
+        await helper?.clear?.()
+        console.log('[AutoUpdater] Dev mode: cleared cached update — next download starts cold')
+      } catch (e) {
+        console.warn('[AutoUpdater] Dev cache clear failed (non-fatal, download proceeds):', e)
+      }
+    }
 
   // New Property for System Audio & Microphone
   private systemAudioCapture: SystemAudioCapture | null = null;
