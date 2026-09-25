@@ -427,6 +427,16 @@ export interface ChatHistoryTurn {
   /** Inline-citation map ([n] → source) persisted at answer time in the
    * turn's metadata_json — drives chip rendering on session reload. */
   source_map?: SourceMapEntry[];
+  /** Company pinned to the chat when this turn was answered (assistant turns only). The latest
+   * assistant turn's pin restores the chat's company chip when the session is reopened. */
+  company_pin?: ChatCompanyPin | null;
+}
+
+/** A customer company pinned to a global chat session (chip / @mention): every question in the
+ * session is about it until removed. Sent as `company_id` with each global chat request. */
+export interface ChatCompanyPin {
+  id: string;
+  name: string;
 }
 
 export interface ChatSession {

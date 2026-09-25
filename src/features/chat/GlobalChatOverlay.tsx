@@ -26,7 +26,7 @@ const GlobalChatOverlay: React.FC<GlobalChatOverlayProps> = ({ isOpen, onClose, 
     const { messages, chatState, errorMessage, statusText, query, setQuery } = globalChatStates;
     const { messagesEndRef, chatWindowRef, inputRef, submitQuestion, handleInputKeyDown } = globalChatStates;
     const { handleSendClick, resetOnExit, sessionId, sessions, isLoadingSessions, isBusy, stopGeneration } = globalChatStates;
-    const { startNewChat, loadSession, deleteSession } = globalChatStates;
+    const { startNewChat, loadSession, deleteSession, pinnedCompany, setPinnedCompany } = globalChatStates;
 
     return (
         <AnimatePresence onExitComplete={resetOnExit}>
@@ -91,7 +91,7 @@ const GlobalChatOverlay: React.FC<GlobalChatOverlayProps> = ({ isOpen, onClose, 
                                         </div>
                                         <div className="text-[11px] text-text-tertiary leading-tight">
                                             {/* {isBusy ? (statusText ?? 'Typing…') : 'Online · searches all meetings'} */}
-                                            Online · searches all meetings
+                                            {pinnedCompany ? `Online · ${pinnedCompany.name}'s calls` : 'Online · searches all meetings'}
                                         </div>
                                     </div>
                                 </div>
@@ -147,6 +147,9 @@ const GlobalChatOverlay: React.FC<GlobalChatOverlayProps> = ({ isOpen, onClose, 
                                 inputRef={inputRef}
                                 isBusy={isBusy}
                                 onStop={stopGeneration}
+                                pinnedCompany={pinnedCompany}
+                                onPinCompany={setPinnedCompany}
+                                onClearCompany={() => setPinnedCompany(null)}
                             />
                         </div>
                     </motion.div>

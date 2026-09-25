@@ -181,6 +181,22 @@ describe('chatApi.queryGlobal', () => {
         });
     });
 
+    it('sends the company pinned to the chat as company_id (and nothing when none is pinned)', async () => {
+        fetchMock.mockResolvedValueOnce(sseResponse(['event: done\ndata: {}']));
+        const { handlers, settled } = collectHandlers();
+
+        chatApi.queryGlobal('how was the call?', 'sess-1', [], handlers, 'company-uuid-1');
+        await settled;
+
+        expect(JSON.parse(fetchMock.mock.calls[0][1].body)).toEqual({
+            query: 'how was the call?',
+            session_id: 'sess-1',
+            history: [],
+            citations_inline: true,
+            company_id: 'company-uuid-1',
+        });
+    });
+
     it('sends the stored session_id and omits history on a resumed chat', async () => {
         fetchMock.mockResolvedValueOnce(sseResponse(['event: done\ndata: {}']));
         const { handlers, settled } = collectHandlers();

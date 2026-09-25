@@ -380,8 +380,20 @@ export const chatApi = {
         sessionId: string | null,
         history: ChatHistoryTurn[],
         handlers: ChatStreamHandlers,
+        /** Company pinned to this chat (chip / @mention) — sent only when set. */
+        companyId?: string | null,
     ): StreamHandle =>
-        streamSSE("/chat/rag/query/global", { query, session_id: sessionId, history, citations_inline: true }, handlers),
+        streamSSE(
+            "/chat/rag/query/global",
+            {
+                query,
+                session_id: sessionId,
+                history,
+                citations_inline: true,
+                ...(companyId ? { company_id: companyId } : {}),
+            },
+            handlers,
+        ),
 
     /** Post-meeting chat — MeetingChatOverlay. Same session_id/history contract as queryGlobal. */
     queryMeeting: (
