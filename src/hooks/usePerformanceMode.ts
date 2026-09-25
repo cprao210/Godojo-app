@@ -1,33 +1,38 @@
 // usePerformanceMode.ts
 //
-// Decides whether the floating dock should run in "Performance Mode" — a
+// Decides whether the app should run in "Performance Mode" — a
 // reduced-visual-fidelity mode that drops the (expensive) backdrop-filter
-// blur used across the dock, DockButton, and the three overlay panels down
-// to a flat, solid background.
+// blur used across the UI down to flat, solid backgrounds, and disables
+// decorative animations (see App.tsx's app-wide wiring + index.css).
 //
 // WHY THIS EXISTS: backdrop-filter blur is one of the most GPU-intensive CSS
 // effects available — it re-samples everything behind an element on every
-// composite. The floating dock stacks several independently-blurred, mostly
-// always-mounted layers (the pill, up to 3 panels, every dock button) on top
-// of a transparent, frameless, always-on-top window. On a discrete GPU this
-// is invisible; on a lot of mid-range/integrated-GPU laptops — where Chromium
-// itself has decided to fall back to SOFTWARE compositing/rasterization
-// (see electron/ipcHandlers.ts: get-gpu-performance-status, backed by
-// app.getGPUFeatureStatus()) — the same effect becomes CPU-bound and is a
-// primary source of the lag/hangs users report.
+// composite. The app stacks several independently-blurred layers (the dock
+// pill + panels, modals, toasts) — some over transparent, frameless,
+// always-on-top windows. On a discrete GPU this is invisible; on weak
+// machines it dominates CPU/GPU during calls (measured ~47% CPU / ~61% GPU
+// on an i3-10110U laptop during screen share).
 //
 // Modes:
-//   - 'auto' (default): ask the main process once at startup whether this
-//     machine's GPU compositing/rasterization is running in software
-//     fallback, and enable Performance Mode automatically if so.
+//   - 'auto' (default): ask the main process once at startup. Auto turns ON
+//     when ANY of:
+//       1. Chromium fell back to software compositing/rasterization
+//          (app.getGPUFeatureStatus(), via ipcHandlers).
+//       2. CPU thread count <= 4.
+//       3. Intel integrated GPU (vendor 0x8086) AND total RAM <= 8 GB.
+//     RAM alone NEVER triggers (an 8 GB Apple Silicon Mac keeps full
+//     fidelity). The decision comes from the pure function
+//     utils/performanceClassification.ts (unit-tested) and includes the
+//     triggering reason.
 //   - 'on' / 'off': explicit user override (persisted), always wins over
-//     the auto GPU check.
+//     the automatic detection.
 //
-// Safe-by-default: if the GPU query fails or is unavailable for any reason,
-// we do NOT assume the worst — we fall back to full visual fidelity (current
-// behavior) rather than silently degrading everyone's UI.
+// Safe-by-default: if the hardware query fails or is unavailable for any
+// reason, we do NOT assume the worst — we fall back to full visual fidelity
+// rather than silently degrading everyone's UI.
 
 import { useEffect, useState } from 'react';
+import type { PerformanceClassification } from '../../utils/performanceClassification';
 
 export type PerformanceModePreference = 'auto' | 'on' | 'off';
 
@@ -45,20 +50,34 @@ const readStoredPreference = (): PerformanceModePreference => {
 
 export function usePerformanceMode() {
     const [preference, setPreferenceState] = useState<PerformanceModePreference>(readStoredPreference);
-    // Result of the one-time GPU capability check, only consulted when
+    // Result of the one-time hardware capability check, only consulted when
     // preference === 'auto'. `null` while the check is in flight — during
     // that brief window we default to full fidelity (see isPerformanceMode
     // below) rather than flashing the reduced UI on and off.
-    const [isLowPowerGpu, setIsLowPowerGpu] = useState<boolean | null>(null);
+    const [autoClassification, setAutoClassification] = useState<PerformanceClassification | null>(null);
 
     useEffect(() => {
         let cancelled = false;
         window.electronAPI?.getGpuPerformanceStatus?.()
-            .then((status) => {
-                if (!cancelled) setIsLowPowerGpu(status?.isLowPowerGpu ?? false);
+            .then((status: any) => {
+                if (cancelled) return;
+                // New payload carries the full classification (reason included);
+                // fall back to the legacy boolean if an older main process
+                // somehow answered without it.
+                const classification: PerformanceClassification = status?.autoClassification ?? {
+                    autoPerformanceMode: !!status?.isLowPowerGpu,
+                    reason: status?.isLowPowerGpu ? 'Chromium software rendering fallback' : null,
+                    summary: '',
+                };
+                setAutoClassification(classification);
+                if (classification.autoPerformanceMode) {
+                    console.info(`Performance Mode auto: on — ${classification.reason} (${classification.summary})`);
+                }
             })
             .catch(() => {
-                if (!cancelled) setIsLowPowerGpu(false); // fail safe: full fidelity
+                // fail safe: full fidelity, and record the OFF decision so
+                // 'auto' resolves instead of flickering
+                if (!cancelled) setAutoClassification({ autoPerformanceMode: false, reason: null, summary: '' });
             });
         return () => { cancelled = true; };
     }, []);
@@ -75,9 +94,17 @@ export function usePerformanceMode() {
     const isPerformanceMode =
         preference === 'on' ? true :
             preference === 'off' ? false :
-                !!isLowPowerGpu; // 'auto': off until the GPU check resolves, then follows it
+                autoClassification?.autoPerformanceMode ?? false; // 'auto': off until the check resolves
 
-    return { isPerformanceMode, preference, setPreference };
+    return {
+        isPerformanceMode,
+        preference,
+        setPreference,
+        /** Why 'auto' resolved the way it did (null while the check is in
+         *  flight or when auto is OFF). Useful for the settings UI and
+         *  telemetry; never overrides the explicit user choice. */
+        autoReason: autoClassification?.reason ?? null,
+    };
 }
 
 export default usePerformanceMode;

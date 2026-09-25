@@ -8,7 +8,12 @@ interface ElectronAPI {
     width: number
     height: number
   }) => Promise<void>
-  getGpuPerformanceStatus: () => Promise<{ isLowPowerGpu: boolean; raw: Record<string, string> | null }>
+  getGpuPerformanceStatus: () => Promise<{
+    isLowPowerGpu: boolean;
+    raw: Record<string, string> | null;
+    hardware: { cpuThreads: number | null; totalRamGB: number | null; gpuVendorId: string | null };
+    autoClassification: { autoPerformanceMode: boolean; reason: string | null; summary: string };
+  }>
   getRecognitionLanguages: () => Promise<Record<string, any>>
   getScreenshots: () => Promise<Array<{ path: string; preview: string }>>
   deleteScreenshot: (

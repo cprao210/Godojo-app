@@ -12,6 +12,8 @@ import { GEMINI_FLASH_MODEL } from "./IntelligenceManager"
 import { DatabaseManager } from "./db/DatabaseManager"; // Import Database Manager
 import { SupabaseReadService } from "./db/SupabaseReadService";
 import * as path from "path";
+import * as os from "os";
+import { classifyPerformanceMode } from "../utils/performanceClassification";
 import * as fs from "fs";
 import { AudioDevices } from "./audio/AudioDevices";
 import { detectTavilyIntent, extractAllowedCompaniesFromAttendees } from "./services/TavilyIntentDetector";
@@ -51,6 +53,14 @@ export function initializeIpcHandlers(appState: AppState): void {
   // of GPU-composited), which is the main driver of lag/hangs reported on
   // mid-range machines. The renderer uses this once at startup to decide
   // whether to default Performance Mode on. See usePerformanceMode.ts.
+  //
+  // The response also carries a HARDWARE classification (pure fn —
+  // utils/performanceClassification.ts): software fallback alone misses
+  // weak-but-functional GPUs (e.g. Intel UHD that Chromium still composites
+  // with), so auto Performance Mode additionally triggers on <=4 CPU threads
+  // or Intel iGPU + <=8 GB RAM. RAM alone never triggers (an 8 GB Apple
+  // Silicon Mac must keep full fidelity). The user's explicit On/Off choice
+  // still wins — this only feeds the 'auto' preference.
   safeHandle('get-gpu-performance-status', async () => {
     try {
       // Electron types GPUFeatureStatus as a fixed set of known keys, not an
@@ -65,8 +75,35 @@ export function initializeIpcHandlers(appState: AppState): void {
         isSoftwareFallback(status.rasterization) ||
         isSoftwareFallback(status['2d_canvas']);
 
-      console.log("[ipcHandler] isLowPowerGpu", isLowPowerGpu);
-      return { isLowPowerGpu, raw: status };
+      // Hardware facts for the classification. Every fact is
+      // failure-tolerant: unknown (null) never triggers a rule.
+      const cpuThreads = os.cpus()?.length || null;
+      const totalRamGB = os.totalmem() > 0 ? Math.round((os.totalmem() / (1024 ** 3)) * 10) / 10 : null;
+      let gpuVendorId: string | null = null;
+      try {
+        // 'basic' GPUInfo includes the PCI vendorId (e.g. "0x8086" = Intel)
+        // and is cheap; it can be an empty string before GPU collection
+        // completes — treat that as unknown.
+        const gpuInfo = (await app.getGPUInfo('basic')) as { vendorId?: string } | null;
+        gpuVendorId = gpuInfo?.vendorId || null;
+      } catch { /* vendor unknown — classification degrades gracefully */ }
+
+      const classification = classifyPerformanceMode({
+        cpuThreads,
+        totalRamGB,
+        gpuVendorId,
+        isSoftwareRendering: isLowPowerGpu,
+      });
+
+      if (classification.autoPerformanceMode) {
+        console.log(`[ipcHandler] Performance Mode auto: on — ${classification.reason} (${classification.summary})`);
+      }
+      return {
+        isLowPowerGpu,
+        raw: status,
+        hardware: { cpuThreads, totalRamGB, gpuVendorId },
+        autoClassification: classification,
+      };
     } catch (err) {
       // If we can't determine GPU status, don't assume the worst — default
       // to the current (full-fidelity) behavior rather than silently
