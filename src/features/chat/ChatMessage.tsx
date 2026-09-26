@@ -4,8 +4,14 @@ import { motion } from 'framer-motion';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import { chatMarkdownComponents } from './markdownComponents';
+<<<<<<< Updated upstream
 import { CitationProvider, rehypeCitations, CiteChip } from './citations';
 import { SourceMapEntry } from '@/types';
+=======
+import { CitationProvider, rehypeCitations, CiteChip, citationLabels } from './citations';
+import SourcesDisplay from './SourcesDisplay';
+import { ChatSources, SourceMapEntry } from '@/types';
+>>>>>>> Stashed changes
 
 // ============================================
 // Message Components
@@ -124,6 +130,10 @@ export const AssistantMessage: React.FC<AssistantMessageProps> = ({ content, isS
                             {copied ? <Check size={12} className="text-emerald-500" /> : <Copy size={12} />}
                             {copied ? 'Copied' : 'Copy'}
                         </button>
+<<<<<<< Updated upstream
+=======
+                        {sources && <SourcesDisplay sources={sources} onOpenMeeting={onOpenMeeting} onOpenAsset={onOpenAsset} sourceMap={sourceMap} labels={citationLabels(content)} />}
+>>>>>>> Stashed changes
                     </div>
                 )}
             </div>
