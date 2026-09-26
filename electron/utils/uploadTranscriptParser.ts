@@ -18,12 +18,17 @@
 // Timestamps accept H:MM:SS or MM:SS in any of the bracket/paren shapes above.
 //
 // Contract with MeetingPersistence.uploadTranscript:
-//   • `speaker` is the internal role and it is assigned by APPEARANCE ORDER,
-//     regardless of what the label says: the FIRST identifiable speaker is
-//     always the sales person / microphone user ('user'); every subsequent
-//     distinct speaker is client-side ('client'). So "Alex / Daniel",
-//     "SALES PERSON / CLIENT" and "REP / CUSTOMER" all map identically — the
-//     transcript opens with the rep's voice.
+//   • `speaker` is the internal role: exactly ONE label is the sales person /
+//     microphone user ('user'), every other speaker is client-side ('client').
+//     The rep label is resolved once every speaker is known (resolveRepSpeaker):
+//       1. `repLabel` — the speaker the rep picked in the upload modal;
+//       2. a unique match against the signed-in user's name / email;
+//       3. otherwise the FIRST identifiable speaker, regardless of what the
+//          label says ("SALES PERSON / CLIENT" and "CLIENT / SALES PERSON"
+//          both make the first one the rep).
+//     Step 3 alone got real uploads backwards whenever the prospect spoke
+//     first — and the v2 analysis grades only the prospect side, so a swapped
+//     call scores 0 BANT/MEDDIC.
 //   • `displayName` carries the ORIGINAL label exactly as it appeared
 //     ("Alex", "SALES PERSON", "Speaker 2") — with any wrapping [] or ()
 //     stripped — so the Transcript tab and the LLM prompts keep real
@@ -47,12 +52,26 @@ export interface ParsedUploadTranscript {
     segments: UploadedTranscriptSegment[];
     /** Last bracketed timestamp (call length); null when none were usable. */
     durationMs: number | null;
+    /** Distinct speaker labels in order of first appearance (first casing seen). */
+    speakers: string[];
+    /** The label mapped to 'user'; null when the transcript had no labels. */
+    repSpeaker: string | null;
+    /** Which rule chose repSpeaker — see resolveRepSpeaker. */
+    repSource: RepSpeakerSource | null;
+}
+
+export type RepSpeakerSource = 'picked' | 'name' | 'first';
+
+export interface ParseUploadOptions {
+    /** Label the rep picked in the upload modal (case-insensitive). Ignored when no speaker has it. */
+    repLabel?: string | null;
+    /** The signed-in user's display name and/or email, for guessing the rep when nothing was picked. */
+    repNameHints?: Array<string | null | undefined>;
 }
 
 // Known role keywords. These exist ONLY to recognise a label-shaped line
 // (e.g. a lowercase "rep:"/"client:" that no case pattern would match) —
-// they deliberately do NOT decide the role anymore: the first identifiable
-// speaker is always the sales/mic user, see parseUploadTranscript.
+// they deliberately do NOT decide the role, see resolveRepSpeaker.
 const KNOWN_ROLE_LABELS = new Set([
     'REP', 'REPRESENTATIVE', 'ME', 'USER', 'YOU', 'SALES', 'SELLER',
     'SALES PERSON', 'SALESPERSON', 'SALES REP', 'SALESREP',
@@ -124,15 +143,55 @@ function isLikelySpeakerLabel(raw: string): boolean {
     return false;
 }
 
-export function parseUploadTranscript(rawText: string): ParsedUploadTranscript {
+const labelKey = (label: string): string => normalizeLabel(label).toUpperCase();
+
+/** Lowercase name tokens: "Sourish Kundu" / "sourish.kundu@x.com" → ['sourish', 'kundu']. */
+function nameTokens(raw: string): string[] {
+    const local = raw.includes('@') ? raw.slice(0, raw.indexOf('@')) : raw;
+    return local.toLowerCase().split(/[^a-z\u00c0-\u024f]+/).filter(t => t.length >= 2);
+}
+
+/**
+ * The label that is the rep ('user'). A picked label wins when a speaker has it; then a label
+ * whose every name token belongs to the signed-in user ("Sourish", "sourish kundu" for
+ * "Sourish Kundu") — only when exactly ONE label matches, since a shared first name is no
+ * evidence; then the first speaker. Role keywords never match a name ("SALES PERSON" has no
+ * name tokens in common with a person), so the fallback still covers labelled transcripts.
+ */
+export function resolveRepSpeaker(
+    speakers: string[],
+    opts: ParseUploadOptions = {},
+): { label: string; source: RepSpeakerSource } | null {
+    if (!speakers.length) return null;
+    const picked = opts.repLabel ? labelKey(opts.repLabel) : null;
+    if (picked) {
+        const hit = speakers.find(s => labelKey(s) === picked);
+        if (hit) return { label: hit, source: 'picked' };
+    }
+    const hintTokens = new Set((opts.repNameHints ?? []).flatMap(h => (h ? nameTokens(h) : [])));
+    if (hintTokens.size) {
+        const matches = speakers.filter(s => {
+            const tokens = nameTokens(s);
+            return tokens.length > 0 && tokens.every(t => t.length >= 3 && hintTokens.has(t));
+        });
+        if (matches.length === 1) return { label: matches[0], source: 'name' };
+    }
+    return { label: speakers[0], source: 'first' };
+}
+
+export function parseUploadTranscript(rawText: string, opts: ParseUploadOptions = {}): ParsedUploadTranscript {
     const segments: UploadedTranscriptSegment[] = [];
     const timestampsSeen: number[] = [];
-    // First identifiable speaker = sales/mic user; every later one = client side.
-    let firstLabel: string | null = null;
-    const roleForLabel = (label: string): 'user' | 'client' => {
-        const key = label.toUpperCase();
-        if (firstLabel === null) firstLabel = key;
-        return key === firstLabel ? 'user' : 'client';
+    // Roles are assigned after the loop, once every speaker is known — see resolveRepSpeaker.
+    const speakers: string[] = [];
+    const seenKeys = new Set<string>();
+    const roleForLabel = (label: string): 'client' => {
+        const key = labelKey(label);
+        if (!seenKeys.has(key)) {
+            seenKeys.add(key);
+            speakers.push(label);
+        }
+        return 'client';
     };
 
     const push = (speaker: 'user' | 'client', text: string, timestamp: number, displayName?: string) => {
@@ -224,5 +283,13 @@ export function parseUploadTranscript(rawText: string): ParsedUploadTranscript {
         durationMs = last > 0 ? last : null;
     }
 
-    return { segments, durationMs };
+    const rep = resolveRepSpeaker(speakers, opts);
+    if (rep) {
+        const repKey = labelKey(rep.label);
+        for (const seg of segments) {
+            if (seg.displayName && labelKey(seg.displayName) === repKey) seg.speaker = 'user';
+        }
+    }
+
+    return { segments, durationMs, speakers, repSpeaker: rep?.label ?? null, repSource: rep?.source ?? null };
 }

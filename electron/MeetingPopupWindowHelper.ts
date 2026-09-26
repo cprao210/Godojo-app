@@ -1,6 +1,8 @@
 import { BrowserWindow, screen, systemPreferences, shell } from "electron"
 import { EventEmitter } from "node:events"
 import path from "node:path"
+import os from "node:os"
+import { isLowMemoryMachine } from "../utils/performanceClassification"
 import { getStartUrl } from "./WindowHelper"
 import type { CalendarEvent } from "./services/CalendarManager"
 
@@ -158,6 +160,11 @@ export class MeetingPopupWindowHelper extends EventEmitter {
         if (this.isDuplicate(event)) return
         this.pendingEvent = event
         if (this.windows.length > 0) return
+        // Low-memory machines (<=8 GB): skip the 30s-ahead pre-warm — that is
+        // one spare renderer PER DISPLAY doing nothing. showReminder() below
+        // already creates the windows on demand; first show is a beat slower,
+        // which the low-memory playbook accepts.
+        if (isLowMemoryMachine(os.totalmem() > 0 ? Math.round((os.totalmem() / (1024 ** 3)) * 10) / 10 : null)) return
         this.createWindows()
     }
 

@@ -1,6 +1,6 @@
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import UpdateModal from './UpdateModal';
-import { useUpdateStatus } from '@/hooks';
+import { useUpdateStatus, useResolvedTheme } from '@/hooks';
 import { PENDING_MANUAL_UPDATE_KEY, UpdateInfo } from '@/hooks/useUpdateStatus';
 import { ParsedReleaseNotes } from '@/types';
 
@@ -16,9 +16,13 @@ const UpdateBanner: React.FC = () => {
         status,
         downloadProgress,
         errorMessage,
+        downloadSizeBytes,
+        downloadTotalBytes,
+        downloadTransferredBytes,
         installUpdate,
         startInstall,
     } = useUpdateStatus();
+    const isLight = useResolvedTheme() === 'light';
 
     // Banner-local UI state: whether the modal is on screen, the "just
     // updated" toast, and the dev-only UI mock (the shared hook is
@@ -51,6 +55,11 @@ const UpdateBanner: React.FC = () => {
         };
     }, []);
 
+    // Latest status for the error listener below — listeners are registered
+    // once (empty deps), so they can't close over the current status directly.
+    const statusRef = useRef(status);
+    useEffect(() => { statusRef.current = status; }, [status]);
+
     useEffect(() => {
         // Listen for update available
         const unsubAvailable = window.electronAPI.onUpdateAvailable(() => {
@@ -69,11 +78,18 @@ const UpdateBanner: React.FC = () => {
             setIsVisible(true);
         });
 
-        // Listen for update errors. Show them even if the modal was dismissed:
-        // a failed user-initiated download is invisible otherwise, and the
-        // stale error would sit in shared state until the next event resets it.
+        // Listen for update errors — but ONLY re-open the modal when a
+        // DOWNLOAD was in flight (the failure happened right in front of the
+        // user, in this modal's own flow). A failed CHECK must not pop a
+        // modal: every check is initiated from the Settings > Updates tab,
+        // whose error card + "Update failed" pill already show the result —
+        // popping a second surface for the same click is exactly the
+        // "unnecessary update UI" problem. Background auto-check failures
+        // never broadcast update-error at all (see main.ts updateOpPhase).
         const unsubError = window.electronAPI.onUpdateError(() => {
-            setIsVisible(true);
+            if (statusRef.current === 'downloading') {
+                setIsVisible(true);
+            }
         });
 
         return () => {
@@ -147,6 +163,10 @@ const UpdateBanner: React.FC = () => {
                     downloadProgress={downloadProgress}
                     status={modalStatus}
                     errorMessage={errorMessage}
+                    isLight={isLight}
+                    downloadSizeBytes={downloadSizeBytes}
+                    downloadTotalBytes={downloadTotalBytes}
+                    downloadTransferredBytes={downloadTransferredBytes}
                 />
             )}
 

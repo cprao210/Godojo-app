@@ -1,9 +1,11 @@
 import React from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
+import { Sparkles, X, Check, Download, Loader2, AlertCircle, HardDriveDownload, ExternalLink } from 'lucide-react';
 import { UpdateModalProps } from '@/types';
 import { releasesPageUrl } from '@/../utils/updateFeed';
+import { formatUpdateSize } from '@/hooks/useUpdateStatus';
 
-const CopyBlock = ({ command }: { command: string }) => {
+const CopyBlock = ({ command, isLight }: { command: string; isLight: boolean }) => {
     const [copied, setCopied] = React.useState(false);
     const handleCopy = () => {
         navigator.clipboard.writeText(command);
@@ -11,19 +13,25 @@ const CopyBlock = ({ command }: { command: string }) => {
         setTimeout(() => setCopied(false), 2000);
     };
     return (
-        <div className="flex items-center justify-between bg-black/20 rounded-lg pl-3 pr-1.5 py-1.5 border border-white/[0.03] group hover:border-white/10 transition-colors mt-1.5 mb-2.5 w-full">
-            <code className="text-[10px] font-mono text-blue-400 truncate mr-2 select-all overflow-hidden whitespace-nowrap">
+        <div className={`flex items-center justify-between rounded-xl pl-3 pr-1.5 py-1.5 border transition-colors w-full ${isLight
+            ? 'bg-slate-50 border-slate-200 hover:border-slate-300'
+            : 'bg-white/[0.03] border-white/[0.07] hover:border-white/[0.12]'
+            }`}>
+            <code className={`text-[10px] font-mono truncate mr-2 select-all overflow-hidden whitespace-nowrap ${isLight ? 'text-blue-600' : 'text-blue-400'}`}>
                 {command}
             </code>
             <button
                 onClick={handleCopy}
-                className="h-6 px-2.5 rounded-md bg-white/5 hover:bg-white/10 active:bg-white/15 flex items-center justify-center transition-colors border border-white/5 flex-shrink-0"
+                className={`h-6 px-2.5 rounded-lg flex items-center justify-center transition-colors border shrink-0 ${isLight
+                    ? 'bg-white border-slate-200 text-slate-500 hover:text-slate-800 hover:bg-slate-50'
+                    : 'bg-white/5 border-white/10 text-white/50 hover:text-white/85 hover:bg-white/10'
+                    }`}
                 title="Copy to clipboard"
             >
                 {copied ? (
-                    <span className="text-[10px] font-semibold text-green-400">Copied</span>
+                    <span className={`text-[10px] font-semibold ${isLight ? 'text-emerald-600' : 'text-emerald-400'}`}>Copied</span>
                 ) : (
-                    <span className="text-[10px] font-medium text-white/50 group-hover:text-white/80">Copy</span>
+                    <span className="text-[10px] font-medium">Copy</span>
                 )}
             </button>
         </div>
@@ -41,23 +49,29 @@ const UpdateModal: React.FC<UpdateModalProps> = ({
     status,
     errorMessage,
     onInstallUpdate,
+    isLight,
+    downloadSizeBytes,
+    downloadTotalBytes,
+    downloadTransferredBytes,
 }) => {
     // Helper to format version string
     const formatVersion = (v: string) => {
         if (!v) return 'Unknown';
-        if (v === 'latest') return 'Latest';
-        if (v === 'vlatest') return 'Latest';
+        if (v === 'latest' || v === 'vlatest') return 'Latest';
         return v.startsWith('v') ? v : `v${v}`;
     };
 
     const displayVersion = formatVersion(updateInfo?.version);
-
     const showFallback = !parsedNotes || (!parsedNotes.summary && (!parsedNotes.sections || parsedNotes.sections.length === 0));
 
-    // Auto-switch to progress view if status changes to downloading AND it was user-initiated
-    const handleUpdateClick = () => {
-        onInstall();
-    };
+    // Size shown BEFORE downloading = full package size (from the GitHub
+    // release asset). Once downloading, electron-updater reports the ACTUAL
+    // transfer total — on Windows differential updates that's the much
+    // smaller delta, so the modal switches to it the moment it's known.
+    const preDownloadSize = formatUpdateSize(downloadSizeBytes);
+    const liveTotal = formatUpdateSize(downloadTotalBytes);
+    const liveTransferred = formatUpdateSize(downloadTransferredBytes);
+    const headerSize = liveTotal ?? preDownloadSize;
 
     // Auto-scroll logic
     const scrollContainerRef = React.useRef<HTMLDivElement>(null);
@@ -72,10 +86,8 @@ const UpdateModal: React.FC<UpdateModalProps> = ({
             if (isUserInteractionRef.current || !scrollContainerRef.current) return;
 
             const el = scrollContainerRef.current;
-            // Smooth scroll speed
             el.scrollTop += 0.5;
 
-            // Check if reached bottom (with small buffer)
             if (el.scrollTop + el.clientHeight >= el.scrollHeight - 1) {
                 el.scrollTop = 0; // Cycle to top
             }
@@ -83,7 +95,6 @@ const UpdateModal: React.FC<UpdateModalProps> = ({
             animationFrameRef.current = requestAnimationFrame(scroll);
         };
 
-        // Start scrolling after a small delay to let render finish
         const timeoutId = setTimeout(() => {
             animationFrameRef.current = requestAnimationFrame(scroll);
         }, 1000);
@@ -99,247 +110,295 @@ const UpdateModal: React.FC<UpdateModalProps> = ({
         if (animationFrameRef.current) cancelAnimationFrame(animationFrameRef.current);
     };
 
+    const panel = (children: React.ReactNode) => (
+        <div className="px-6 pb-6 pt-1 flex flex-col min-h-0 flex-1">{children}</div>
+    );
+
+    const sizePill = headerSize && status !== 'error' && status !== 'instructions' ? (
+        <span className={`inline-flex items-center gap-1.5 text-[11px] font-semibold px-2.5 py-1 rounded-full border ${isLight
+            ? 'bg-blue-50 text-blue-700 border-blue-200'
+            : 'bg-blue-500/10 text-blue-300 border-blue-400/20'
+            }`}>
+            <HardDriveDownload size={11} />
+            {headerSize} download
+        </span>
+    ) : null;
+
     return (
         <AnimatePresence>
             {isOpen && (
-                <div className="fixed inset-0 z-[9999] flex items-center justify-center font-sans antialiased">
-                    {/* Backdrop */}
+                <div
+                    className="fixed inset-0 z-[9999] flex items-center justify-center p-6 bg-black/60 backdrop-blur-sm font-sans antialiased"
+                    onMouseDown={(e) => { if (e.target === e.currentTarget) onDismiss(); }}
+                >
                     <motion.div
-                        initial={{ opacity: 0 }}
-                        animate={{ opacity: 1 }}
-                        exit={{ opacity: 0 }}
-                        transition={{ duration: 0.3 }}
-                        className="absolute inset-0 bg-black/40 backdrop-blur-sm"
-                        onClick={onDismiss}
-                    />
-
-                    {/* Modal - Apple Style: Premium, Deep Shadow, Subtle Border */}
-                    <motion.div
-                        initial={{ opacity: 0, scale: 0.96, y: 8 }}
+                        initial={{ opacity: 0, scale: 0.96, y: 12 }}
                         animate={{ opacity: 1, scale: 1, y: 0 }}
                         exit={{ opacity: 0, scale: 0.96, y: 8 }}
-                        transition={{
-                            type: "spring",
-                            stiffness: 350,
-                            damping: 30
-                        }}
-                        className="relative w-[510px] h-[380px] bg-[#1E1E1E]/90 backdrop-blur-2xl rounded-xl shadow-[0_50px_100px_-20px_rgba(0,0,0,0.5)] border border-white/[0.08] overflow-hidden flex flex-col"
+                        transition={{ duration: 0.22, ease: [0.19, 1, 0.22, 1] }}
+                        className={`w-full max-w-[460px] max-h-[600px] rounded-3xl border shadow-2xl overflow-hidden flex flex-col ${isLight
+                            ? 'bg-white border-slate-200'
+                            : 'bg-[#141820] border-white/10'
+                            }`}
                     >
-                        {/* Content Container */}
-                        {status === 'error' ? (
-                            <div className="p-8 flex flex-col items-center justify-center h-full text-center">
-                                <div className="space-y-2 mb-6">
-                                    <h2 className="text-[17px] font-semibold text-white tracking-tight">
-                                        Update Failed
-                                    </h2>
-                                    {errorMessage && (
-                                        <p className="text-[13px] text-red-400 font-medium">
-                                            {errorMessage}
+                        {/* ── Header band (Invitation-Modal style) ── */}
+                        <div className={`px-6 pt-6 pb-5 shrink-0 ${isLight
+                            ? 'bg-gradient-to-b from-blue-50 to-white'
+                            : 'bg-gradient-to-b from-blue-500/[0.12] to-transparent'
+                            }`}>
+                            <div className="flex items-start justify-between">
+                                <div className="flex items-center gap-3.5">
+                                    <div className={`w-12 h-12 rounded-2xl flex items-center justify-center shrink-0 border shadow-sm ${isLight
+                                        ? 'bg-white border-slate-200 text-blue-600'
+                                        : 'bg-blue-500/15 border-blue-400/20 text-blue-400'
+                                        }`}>
+                                        {status === 'downloading' ? <Loader2 size={22} strokeWidth={2} className="animate-spin" />
+                                            : status === 'ready' ? <Check size={22} strokeWidth={2} />
+                                                : status === 'error' ? <AlertCircle size={22} strokeWidth={2} className="text-red-400" />
+                                                    : <Sparkles size={22} strokeWidth={2} />}
+                                    </div>
+                                    <div>
+                                        <p className={`text-[10px] font-bold uppercase tracking-[0.14em] ${isLight ? 'text-blue-600' : 'text-blue-400'}`}>
+                                            Software Update
                                         </p>
-                                    )}
-                                    <p className="text-[13px] text-white/40">
-                                        Check your internet connection or download the update manually from GitHub.
-                                    </p>
+                                        <h3 className="text-[17px] font-bold text-text-primary leading-snug mt-0.5">
+                                            {status === 'error' ? 'Update Failed'
+                                                : status === 'downloading' ? 'Downloading Update'
+                                                    : status === 'ready' ? 'Ready to Install'
+                                                        : status === 'instructions' ? 'Manual Update Required'
+                                                            : 'Update Available'}
+                                        </h3>
+                                        <div className="flex items-center gap-2 mt-1.5 flex-wrap">
+                                            {status !== 'error' && (
+                                                <p className="text-xs text-text-secondary">
+                                                    Version <span className="font-semibold text-text-primary">{displayVersion}</span>
+                                                </p>
+                                            )}
+                                            {sizePill}
+                                        </div>
+                                    </div>
                                 </div>
                                 <button
                                     onClick={onDismiss}
-                                    className="px-5 py-[6px] bg-white/10 hover:bg-white/20 text-white text-[13px] font-medium rounded-lg transition-colors"
+                                    aria-label="Dismiss"
+                                    className={`w-7 h-7 rounded-lg flex items-center justify-center transition-colors shrink-0 ${isLight
+                                        ? 'text-slate-400 hover:text-slate-600 hover:bg-slate-100'
+                                        : 'text-white/40 hover:text-white/80 hover:bg-white/[0.06]'
+                                        }`}
                                 >
-                                    Close
+                                    <X size={15} />
                                 </button>
                             </div>
-                        ) : status === 'instructions' ? (
-                            <div className="p-8 flex flex-col h-full relative text-left w-full max-w-full">
-                                <div className="space-y-1.5 mb-5 text-center mt-2">
-                                    <h2 className="text-[17px] font-semibold text-white tracking-tight">
-                                        Manual Update Required
-                                    </h2>
-                                    <p className="text-[13px] text-white/40 font-medium leading-relaxed">
-                                        The download has started in your browser. Follow these steps to install the update:
-                                    </p>
+                        </div>
+
+                        {/* ── Body ── */}
+                        {status === 'error' ? (
+                            panel(
+                                <div className="flex flex-col items-center justify-center text-center flex-1">
+                                    <div className="space-y-2 mb-6 max-w-full">
+                                        {errorMessage && (
+                                            <p className={`text-[13px] font-medium leading-relaxed break-words overflow-hidden max-h-[96px] overflow-y-auto px-2 ${isLight ? 'text-red-600' : 'text-red-400'}`}>
+                                                {errorMessage}
+                                            </p>
+                                        )}
+                                        <p className={`text-[13px] break-words ${isLight ? 'text-slate-500' : 'text-white/45'}`}>
+                                            Check your internet connection or download the update manually from GitHub.
+                                        </p>
+                                    </div>
+                                    <div className="flex items-center gap-3 w-full">
+                                        <button
+                                            onClick={() => window.electronAPI.openExternal(releasesPageUrl())}
+                                            className={`flex-1 px-4 py-2.5 rounded-xl text-sm font-semibold transition-all flex items-center justify-center gap-2 border ${isLight
+                                                ? 'border-slate-200 text-slate-600 hover:bg-slate-50'
+                                                : 'border-white/10 text-white/70 hover:bg-white/[0.05] hover:text-white'
+                                                }`}
+                                        >
+                                            <ExternalLink size={14} /> Releases page
+                                        </button>
+                                        <button
+                                            onClick={onDismiss}
+                                            className="flex-1 px-4 py-2.5 rounded-xl text-sm font-bold transition-all flex items-center justify-center gap-2 shadow-lg shadow-blue-600/25 bg-gradient-to-r from-blue-600 to-indigo-600 hover:from-blue-500 hover:to-indigo-500 text-white"
+                                        >
+                                            Close
+                                        </button>
+                                    </div>
                                 </div>
-                                <div className="flex-1 overflow-y-auto custom-scrollbar pr-2 mb-4 space-y-2 w-full">
-                                    <div className="space-y-1.5 w-full">
+                            )
+                        ) : status === 'instructions' ? (
+                            panel(
+                                <>
+                                    <p className={`text-[13px] leading-relaxed text-center ${isLight ? 'text-slate-600' : 'text-white/60'}`}>
+                                        The download has started in your browser{preDownloadSize ? ` (${preDownloadSize})` : ''}. Follow these steps to install the update:
+                                    </p>
+                                    <div className="flex-1 overflow-y-auto custom-scrollbar mt-4 space-y-2 min-h-0">
                                         <div className="flex items-center justify-between gap-2">
-                                            <p className="text-[12px] font-medium text-white/80">1. Open the downloaded file and install GoDojo AI.</p>
+                                            <p className={`text-[12px] font-medium ${isLight ? 'text-slate-700' : 'text-white/80'}`}>1. Open the downloaded file and install GoDojo AI.</p>
                                             <button
                                                 onClick={() => window.electronAPI.openKnownFolder('downloads')}
-                                                className="shrink-0 text-[10px] font-medium text-blue-400 hover:text-blue-300 underline underline-offset-2 whitespace-nowrap"
+                                                className="shrink-0 text-[11px] font-medium text-blue-400 hover:text-blue-300 underline underline-offset-2 whitespace-nowrap"
                                             >
                                                 Open Downloads
                                             </button>
                                         </div>
-                                    </div>
-                                    <div className="space-y-1 mt-3 w-full">
-                                        <div className="flex items-center justify-between gap-2">
-                                            <p className="text-[12px] font-medium text-white/80">2. Clear quarantine on the installed app:</p>
-                                            <button
-                                                onClick={() => window.electronAPI.openKnownFolder('applications')}
-                                                className="shrink-0 text-[10px] font-medium text-blue-400 hover:text-blue-300 underline underline-offset-2 whitespace-nowrap"
-                                            >
-                                                Open Applications
-                                            </button>
+                                        <div className="space-y-1.5 mt-3">
+                                            <div className="flex items-center justify-between gap-2">
+                                                <p className={`text-[12px] font-medium ${isLight ? 'text-slate-700' : 'text-white/80'}`}>2. Clear quarantine on the installed app:</p>
+                                                <button
+                                                    onClick={() => window.electronAPI.openKnownFolder('applications')}
+                                                    className="shrink-0 text-[11px] font-medium text-blue-400 hover:text-blue-300 underline underline-offset-2 whitespace-nowrap"
+                                                >
+                                                    Open Applications
+                                                </button>
+                                            </div>
+                                            <CopyBlock command={`xattr -cr "/Applications/GoDojo AI.app"`} isLight={isLight} />
                                         </div>
-                                        <CopyBlock command={`xattr -cr "/Applications/GoDojo AI.app"`} />
                                     </div>
-                                </div>
-                                <div className="flex flex-col items-center gap-2 mt-auto w-full">
+                                    <div className="flex flex-col items-center gap-2 mt-5 shrink-0">
+                                        <button
+                                            onClick={onDismiss}
+                                            className={`px-6 py-2.5 rounded-xl text-sm font-semibold transition-all w-full ${isLight
+                                                ? 'border border-slate-200 text-slate-600 hover:bg-slate-50'
+                                                : 'border border-white/10 text-white/70 hover:bg-white/[0.05] hover:text-white'
+                                                }`}
+                                        >
+                                            Done
+                                        </button>
+                                        <button
+                                            onClick={() => window.electronAPI.openExternal(releasesPageUrl())}
+                                            className={`text-[11px] font-medium transition-colors ${isLight ? 'text-slate-400 hover:text-slate-600' : 'text-white/30 hover:text-white/55'}`}
+                                        >
+                                            Having trouble? Open the Releases page instead
+                                        </button>
+                                    </div>
+                                </>
+                            )
+                        ) : status === 'downloading' ? (
+                            panel(
+                                <div className="flex flex-col items-center justify-center text-center flex-1">
+                                    {/* Progress */}
+                                    <div className="w-full max-w-[300px] space-y-2.5 mb-6">
+                                        <div className={`h-[6px] w-full rounded-full overflow-hidden ${isLight ? 'bg-slate-100' : 'bg-white/10'}`}>
+                                            <motion.div
+                                                initial={{ width: 0 }}
+                                                animate={{ width: `${downloadProgress}%` }}
+                                                transition={{ ease: 'linear', duration: 0.2 }}
+                                                className="h-full rounded-full bg-gradient-to-r from-blue-600 to-indigo-500 shadow-[0_0_10px_rgba(59,130,246,0.5)]"
+                                            />
+                                        </div>
+                                        <p className={`text-[11px] font-medium tabular-nums flex items-center justify-center gap-2 ${isLight ? 'text-slate-500' : 'text-white/40'}`}>
+                                            <span>{Math.round(downloadProgress)}%</span>
+                                            {liveTransferred && liveTotal && <span className="opacity-60">·</span>}
+                                            {liveTransferred && liveTotal && <span>{liveTransferred} / {liveTotal}</span>}
+                                        </p>
+                                    </div>
+
+                                    {/* macOS quarantine hint */}
+                                    <div className={`w-full max-w-[360px] rounded-2xl border p-3.5 flex flex-col gap-2.5 text-left ${isLight
+                                        ? 'bg-slate-50 border-slate-200'
+                                        : 'bg-white/[0.03] border-white/[0.07]'
+                                        }`}>
+                                        <div className="flex items-start gap-2.5">
+                                            <div className={`w-5 h-5 rounded-full flex items-center justify-center flex-shrink-0 mt-0.5 ${isLight ? 'bg-amber-100' : 'bg-amber-500/10'}`}>
+                                                <span className="text-[10px] text-amber-500">!</span>
+                                            </div>
+                                            <div className="space-y-0.5">
+                                                <p className={`text-[12px] font-medium leading-normal ${isLight ? 'text-slate-700' : 'text-white/80'}`}>
+                                                    If macOS says "App is damaged"
+                                                </p>
+                                                <p className={`text-[11px] leading-snug ${isLight ? 'text-slate-500' : 'text-white/40'}`}>
+                                                    Move app to Applications folder, then run:
+                                                </p>
+                                            </div>
+                                        </div>
+                                        <CopyBlock command={`xattr -cr "/Applications/GoDojo AI.app"`} isLight={isLight} />
+                                    </div>
+
                                     <button
                                         onClick={onDismiss}
-                                        className="px-6 py-[6px] bg-white/10 hover:bg-white/20 text-white text-[13px] font-medium rounded-lg transition-colors w-[200px]"
+                                        className={`text-[13px] font-medium transition-colors mt-4 ${isLight ? 'text-slate-400 hover:text-slate-600' : 'text-white/30 hover:text-white/60'}`}
                                     >
-                                        Done
-                                    </button>
-                                    <button
-                                        onClick={() => window.electronAPI.openExternal(releasesPageUrl())}
-                                        className="text-[11px] font-medium text-white/30 hover:text-white/55 transition-colors"
-                                    >
-                                        Having trouble? Open the Releases page instead
+                                        Hide
                                     </button>
                                 </div>
-                            </div>
-                        ) : status === 'downloading' ? (
-                            <div className="p-8 flex flex-col items-center justify-center h-full text-center relative">
-
-                                {/* 1. Header Text */}
-                                <div className="space-y-1.5 mb-8">
-                                    <h2 className="text-[17px] font-semibold text-white tracking-tight">
-                                        Downloading Update...
-                                    </h2>
-                                    <p className="text-[13px] text-white/40 font-medium">
-                                        {downloadProgress < 100 ? 'Please wait while we prepare the update.' : 'Finalizing package...'}
-                                    </p>
-                                </div>
-
-                                {/* 2. Premium Troubleshooting Card */}
-                                <div
-                                    tabIndex={-1}
-                                    className="w-full max-w-[360px] bg-white/[0.03] rounded-xl border border-white/[0.06] p-3.5 flex flex-col gap-2.5 text-left mb-8 outline-none focus:outline-none focus:ring-0"
-                                >
-                                    <div className="flex items-start gap-2.5">
-                                        <div className="w-5 h-5 rounded-full bg-amber-500/10 flex items-center justify-center flex-shrink-0 mt-0.5">
-                                            <span className="text-[10px] text-amber-500">!</span>
-                                        </div>
-                                        <div className="space-y-0.5">
-                                            <p className="text-[12px] font-medium text-white/80 leading-normal">
-                                                If macOS says "App is damaged"
-                                            </p>
-                                            <p className="text-[11px] text-white/40 leading-snug">
-                                                Move app to Applications folder, then run:
-                                            </p>
-                                        </div>
-                                    </div>
-
-                                    {/* Code Block with Copy */}
-                                    <CopyBlock command={`xattr -cr "/Applications/GoDojo AI.app"`} />
-                                </div>
-
-                                {/* 3. Progress Bar */}
-                                <div className="w-full max-w-[260px] space-y-2.5 mb-2">
-                                    <div className="h-[5px] w-full bg-white/10 rounded-full overflow-hidden">
-                                        <motion.div
-                                            initial={{ width: 0 }}
-                                            animate={{ width: `${downloadProgress}%` }}
-                                            transition={{ ease: "linear", duration: 0.2 }}
-                                            className="h-full bg-[#007AFF] rounded-full shadow-[0_0_10px_rgba(0,122,255,0.5)]"
-                                        />
-                                    </div>
-                                    <p className="text-[11px] font-medium text-white/30 tabular-nums">
-                                        {Math.round(downloadProgress)}% Complete
-                                    </p>
-                                </div>
-
-                                <button
-                                    onClick={onDismiss}
-                                    className="text-[13px] font-medium text-white/30 hover:text-white/60 transition-colors mt-auto mb-1"
-                                >
-                                    Hide
-                                </button>
-                            </div>
+                            )
                         ) : (
-                            <div className="p-7 pb-4 flex flex-col gap-2 h-full min-h-0">
-                                {/* Header Group */}
-                                <div className="flex flex-col gap-0.5 text-center relative flex-shrink-0 pt-1">
-                                    <h2 className="text-[19px] font-semibold text-white tracking-tight">
-                                        Update Available
-                                    </h2>
-                                    <p className="text-[13px] text-white/50 font-medium tracking-wide">
-                                        Version {displayVersion} is ready to install.
-                                    </p>
-                                </div>
-
-                                {/* Minimal List - Scrollable area */}
-                                <div
-                                    ref={scrollContainerRef}
-                                    onWheel={handleUserScrollInteraction}
-                                    onTouchMove={handleUserScrollInteraction}
-                                    onMouseDown={handleUserScrollInteraction}
-                                    className="py-2 flex-1 overflow-y-auto custom-scrollbar min-h-[120px] pr-2 -mr-2"
-                                >
-                                    {showFallback ? (
-                                        <p className="text-[13px] text-white/60 text-center leading-relaxed mt-8">
-                                            Includes performance improvements and bug fixes.
-                                        </p>
-                                    ) : (
-                                        <div className="space-y-5 px-1">
-                                            {parsedNotes?.sections?.map((section, idx) => {
-                                                if (section.items.length === 0) return null;
-                                                if (section.title === 'Summary') return null;
-
-                                                return (
-                                                    <div key={idx} className="space-y-2.5">
-                                                        {/* Section Header: Refined, Medium Weight */}
-                                                        <h3 className="text-[13px] font-medium text-white/90 pl-1">
-                                                            {section.title}
-                                                        </h3>
-                                                        <ul className="space-y-2">
-                                                            {section.items.map((item, i) => (
-                                                                <li key={i} className="text-[13px] text-white/70 leading-[1.5] flex items-start gap-3 pl-1">
-                                                                    <span className="text-white/30 mt-[6px] text-[10px] transform scale-75 flex-shrink-0">
-                                                                        —
-                                                                    </span>
-                                                                    <span>{item}</span>
-                                                                </li>
-                                                            ))}
-                                                        </ul>
-                                                    </div>
-                                                );
-                                            })}
-                                        </div>
-                                    )}
-                                </div>
-
-                                {/* Footer Actions */}
-                                <div className="flex items-center justify-between flex-shrink-0">
-                                    {/* Secondary Action - Left Aligned, Plain Text */}
-                                    <button
-                                        onClick={onRemindLater ?? onDismiss}
-                                        className="text-[13px] font-medium text-white/40 hover:text-white/70 transition-colors"
+                            panel(
+                                <>
+                                    {/* Release notes — scrollable */}
+                                    <div
+                                        ref={scrollContainerRef}
+                                        onWheel={handleUserScrollInteraction}
+                                        onTouchMove={handleUserScrollInteraction}
+                                        onMouseDown={handleUserScrollInteraction}
+                                        className={`py-1 flex-1 overflow-y-auto custom-scrollbar min-h-[120px] pr-2 -mr-2 ${isLight ? 'text-slate-700' : 'text-white/70'}`}
                                     >
-                                        Remind Me Later
-                                    </button>
+                                        {showFallback ? (
+                                            <p className={`text-[13px] text-center leading-relaxed mt-8 ${isLight ? 'text-slate-500' : 'text-white/60'}`}>
+                                                Includes performance improvements and bug fixes.
+                                            </p>
+                                        ) : (
+                                            <div className="space-y-5 px-1">
+                                                {parsedNotes?.summary && (
+                                                    <p className={`text-[13px] leading-relaxed ${isLight ? 'text-slate-600' : 'text-white/60'}`}>
+                                                        {parsedNotes.summary}
+                                                    </p>
+                                                )}
+                                                {parsedNotes?.sections?.map((section, idx) => {
+                                                    if (section.items.length === 0) return null;
+                                                    if (section.title === 'Summary') return null;
 
-                                    {/* Primary Action - Right Aligned, System Blue.
-                                        onInstallUpdate is the guarded path (meeting-active +
+                                                    return (
+                                                        <div key={idx} className="space-y-2.5">
+                                                            <h3 className={`text-[12px] font-bold uppercase tracking-wide ${isLight ? 'text-slate-500' : 'text-white/50'}`}>
+                                                                {section.title}
+                                                            </h3>
+                                                            <ul className="space-y-2">
+                                                                {section.items.map((item, i) => (
+                                                                    <li key={i} className="text-[13px] leading-[1.5] flex items-start gap-3">
+                                                                        <span className={`mt-[7px] text-[10px] shrink-0 ${isLight ? 'text-blue-400' : 'text-blue-400/70'}`}>—</span>
+                                                                        <span>{item}</span>
+                                                                    </li>
+                                                                ))}
+                                                            </ul>
+                                                        </div>
+                                                    );
+                                                })}
+                                            </div>
+                                        )}
+                                    </div>
+
+                                    {/* Actions (Invitation-Modal style) */}
+                                    <div className="flex items-center gap-3 mt-5 shrink-0">
+                                        <button
+                                            onClick={onRemindLater ?? onDismiss}
+                                            className={`flex-1 px-4 py-2.5 rounded-xl text-sm font-semibold transition-all border ${isLight
+                                                ? 'border-slate-200 text-slate-600 hover:bg-slate-50'
+                                                : 'border-white/10 text-white/70 hover:bg-white/[0.05] hover:text-white'
+                                                }`}
+                                        >
+                                            Remind Me Later
+                                        </button>
+                                        {/* onInstallUpdate is the guarded path (meeting-active +
                                         dev refusal live in useUpdateStatus) — never call
                                         restartAndInstall directly from here. */}
-                                    {status === 'ready' ? (
-                                        <button
-                                            onClick={onInstallUpdate}
-                                            className="px-5 py-[6px] bg-[#007AFF] hover:bg-[#0062CC] text-white text-[13px] font-medium rounded-lg shadow-sm transition-colors"
-                                        >
-                                            Restart & Install
-                                        </button>
-                                    ) : (
-                                        <button
-                                            onClick={handleUpdateClick}
-                                            className="px-5 py-[6px] bg-[#007AFF] hover:bg-[#0062CC] text-white text-[13px] font-medium rounded-lg shadow-sm transition-colors"
-                                        >
-                                            Update Now
-                                        </button>
-                                    )}
-                                </div>
-                            </div>
+                                        {status === 'ready' ? (
+                                            <button
+                                                onClick={onInstallUpdate}
+                                                className="flex-1 px-4 py-2.5 rounded-xl text-sm font-bold transition-all flex items-center justify-center gap-2 shadow-lg shadow-blue-600/25 bg-gradient-to-r from-blue-600 to-indigo-600 hover:from-blue-500 hover:to-indigo-500 text-white"
+                                            >
+                                                <Check size={15} /> Restart & Install
+                                            </button>
+                                        ) : (
+                                            <button
+                                                onClick={onInstall}
+                                                className="flex-1 px-4 py-2.5 rounded-xl text-sm font-bold transition-all flex items-center justify-center gap-2 shadow-lg shadow-blue-600/25 bg-gradient-to-r from-blue-600 to-indigo-600 hover:from-blue-500 hover:to-indigo-500 text-white"
+                                            >
+                                                <Download size={15} /> Update Now
+                                            </button>
+                                        )}
+                                    </div>
+                                </>
+                            )
                         )}
                     </motion.div>
                 </div>

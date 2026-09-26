@@ -6,7 +6,7 @@ import { SessionTracker, TranscriptSegment } from './SessionTracker';
 import { LLMHelper } from './LLMHelper';
 import { DatabaseManager, Meeting, formatDuration } from './db/DatabaseManager';
 import { GROQ_TITLE_PROMPT, GROQ_SUMMARY_JSON_PROMPT, verifySummaryAgainstTranscript, buildCorrectionAddendum } from './llm';
-import { LiveAnalysisData, MeetingScorecardResult } from '../src/types';
+import { BANTField, LiveAnalysisData, MEDDICField, MeetingScorecardResult } from '../src/types';
 import { AppState } from './main';
 import { buildCompanyContextBlock } from '../electron/utils/salesBriefUtils';
 import { buildScorecardPrompt } from './llm/ScoreCardLLM';
@@ -17,6 +17,16 @@ import { parseUploadTranscript } from './utils/uploadTranscriptParser';
 import { AuthManager } from './services/AuthManager';
 import { deriveCompanyCandidates } from '../utils/companyDomainShared';
 import { buildUploadAnalysisPrompt, normalizeUploadAnalysis } from './utils/uploadAnalysis';
+import { requestUploadAnalysis, isLocalUploadAnalysisForced } from './utils/uploadAnalysisBridge';
+import { requestFinalAnalysisV2, isFinalAnalysisV2Enabled } from './utils/finalAnalysisBridge';
+import {
+    generateCallAnalysis,
+    hasUsableCallAnalysis,
+    meetingTypesForRegenerate,
+    MeetingTypeHint,
+    REGENERATE_ANALYSIS_TIMEOUT_MS,
+} from './utils/callAnalysis';
+import { fieldEvidenceList, fieldSummary, fieldText } from '../src/lib/bantMeddic';
 import { requestBackendChunking } from './utils/backendRagChunking';
 
 const crypto = require('crypto');
@@ -74,6 +84,21 @@ const buildSummaryPrompt = (liveAnalysis?: LiveAnalysisData | null, companyIntel
             ? liveAnalysis.signals.slice(0, 8).map(s => `  - [${s.category}/${s.intensity}] ${s.quote}`).join('\n')
             : '  None captured';
 
+        // One grounding line per criterion: `status | assessment`, with the
+        // supporting statements demoted to a labelled reference block beneath.
+        // The assessment is what becomes `detail`; the references are raw
+        // material for the transcript-derived sections, never for `detail`.
+        const PAD = ' '.repeat(12);
+        const fieldBlock = (label: string, pad: number, f: MEDDICField | BANTField | undefined): string => {
+            const head = `${PAD}- ${(label + ':').padEnd(pad)} ${f?.status || 'missing'} | ${fieldText(f) || 'No assessment'}`;
+            // Only when the assessment isn't itself the evidence: on a row saved
+            // before summaries existed, fieldText already IS the evidence, and a
+            // reference block would just repeat the same text back at the model.
+            const refs = fieldSummary(f) ? fieldEvidenceList(f) : [];
+            if (refs.length === 0) return head;
+            return [head, ...refs.map((r, i) => `${PAD}      ${i === 0 ? '(reference)' : '           '} "${r}"`)].join('\n');
+        };
+
         const companySection = buildCompanyContextBlock(companyIntel ?? null);
         return `You are an expert B2B sales analyst. A sales call just ended. Generate a structured post-call summary. Return ONLY valid JSON (no markdown code blocks, no commentary).
             ${companySection ? `\n${companySection}\nUse the company intelligence above to enrich your analysis — recognise their known products, competitors, and business model in the transcript.\n` : ''} Generate a structured post-call summary. Return ONLY valid JSON (no markdown code blocks, no commentary).
@@ -87,22 +112,26 @@ const buildSummaryPrompt = (liveAnalysis?: LiveAnalysisData | null, companyIntel
             unambiguous new evidence. Never downgrade without a clear contradiction in the transcript.
 
             BANT:
-            - Budget:    ${liveAnalysis.bant.budget.status} | ${liveAnalysis.bant.budget.evidence || 'No evidence'}
-            - Authority: ${liveAnalysis.bant.authority.status} | ${liveAnalysis.bant.authority.evidence || 'No evidence'}
-            - Need:      ${liveAnalysis.bant.need.status} | ${liveAnalysis.bant.need.evidence || 'No evidence'}
-            - Timeline:  ${liveAnalysis.bant.timeline.status} | ${liveAnalysis.bant.timeline.evidence || 'No evidence'}
+${fieldBlock('Budget', 10, liveAnalysis.bant.budget)}
+${fieldBlock('Authority', 10, liveAnalysis.bant.authority)}
+${fieldBlock('Need', 10, liveAnalysis.bant.need)}
+${fieldBlock('Timeline', 10, liveAnalysis.bant.timeline)}
 
             MEDDIC:
-            - Metrics:           ${liveAnalysis.meddic.metrics.status} | ${liveAnalysis.meddic.metrics.evidence || 'No evidence'}
-            - Economic Buyer:    ${liveAnalysis.meddic.economic_buyer.status} | ${liveAnalysis.meddic.economic_buyer.evidence || 'No evidence'}
-            - Decision Criteria: ${liveAnalysis.meddic.decision_criteria.status} | ${liveAnalysis.meddic.decision_criteria.evidence || 'No evidence'}
-            - Decision Process:  ${liveAnalysis.meddic.decision_process.status} | ${liveAnalysis.meddic.decision_process.evidence || 'No evidence'}
-            - Identify Pain:     ${liveAnalysis.meddic.identify_pain.status} | ${liveAnalysis.meddic.identify_pain.evidence || 'No evidence'}
-            - Champion:          ${liveAnalysis.meddic.champion.status} | ${liveAnalysis.meddic.champion.evidence || 'No evidence'}
-            - Competition:       ${liveAnalysis.meddic.competition.status} | ${liveAnalysis.meddic.competition.evidence || 'No evidence'}
+${fieldBlock('Metrics', 18, liveAnalysis.meddic.metrics)}
+${fieldBlock('Economic Buyer', 18, liveAnalysis.meddic.economic_buyer)}
+${fieldBlock('Decision Criteria', 18, liveAnalysis.meddic.decision_criteria)}
+${fieldBlock('Decision Process', 18, liveAnalysis.meddic.decision_process)}
+${fieldBlock('Identify Pain', 18, liveAnalysis.meddic.identify_pain)}
+${fieldBlock('Champion', 18, liveAnalysis.meddic.champion)}
+${fieldBlock('Competition', 18, liveAnalysis.meddic.competition)}
 
             Status mapping for the output fields below: confirmed → Clear | partial → Partial | missing → Missing
-            Evidence strings above map verbatim to the "detail" fields in the output.
+            The text after the status is the ASSESSMENT for that criterion — it maps verbatim to the
+            "detail" field in the output. (It is the backend's own rendering, so it is already in the
+            summary's language.) The indented "(reference)" lines are the supporting statements behind
+            that assessment: draw on them for overview, keyPoints and nextCallPlaybook, but NEVER copy
+            them into a "detail" field.
 
             Objections captured during the call (${liveAnalysis.objections.length}):
             ${objectionsBlock}
@@ -123,7 +152,7 @@ const buildSummaryPrompt = (liveAnalysis?: LiveAnalysisData | null, companyIntel
 
             For BANT and MEDDIC in the output: use the live analysis values above as-is.
             Map status: confirmed→Clear, partial→Partial, missing→Missing.
-            Use the evidence string verbatim as the "detail" field.
+            Use the assessment string verbatim as the "detail" field — not the "(reference)" quotes.
 
             {
                 "overview": "2-3 sentence summary of what the call covered and the current deal status",
@@ -134,20 +163,20 @@ const buildSummaryPrompt = (liveAnalysis?: LiveAnalysisData | null, companyIntel
                 },
 
                 "bant": {
-                    "budget":    { "status": "Clear | Partial | Missing", "detail": "copy from live analysis evidence above — only override if transcript shows a clear change" },
-                    "authority": { "status": "Clear | Partial | Missing", "detail": "copy from live analysis evidence above — only override if transcript shows a clear change" },
-                    "need":      { "status": "Clear | Partial | Missing", "detail": "copy from live analysis evidence above — only override if transcript shows a clear change" },
-                    "timeline":  { "status": "Clear | Partial | Missing", "detail": "copy from live analysis evidence above — only override if transcript shows a clear change" }
+                    "budget":    { "status": "Clear | Partial | Missing", "detail": "copy the assessment from live analysis above — only override if transcript shows a clear change" },
+                    "authority": { "status": "Clear | Partial | Missing", "detail": "copy the assessment from live analysis above — only override if transcript shows a clear change" },
+                    "need":      { "status": "Clear | Partial | Missing", "detail": "copy the assessment from live analysis above — only override if transcript shows a clear change" },
+                    "timeline":  { "status": "Clear | Partial | Missing", "detail": "copy the assessment from live analysis above — only override if transcript shows a clear change" }
                 },
 
                 "meddicc": {
-                    "metrics":          { "status": "Clear | Partial | Missing", "detail": "copy from live analysis evidence above" },
-                    "economicBuyer":    { "status": "Clear | Partial | Missing", "detail": "copy from live analysis evidence above" },
-                    "decisionCriteria": { "status": "Clear | Partial | Missing", "detail": "copy from live analysis evidence above" },
-                    "decisionProcess":  { "status": "Clear | Partial | Missing", "detail": "copy from live analysis evidence above" },
-                    "identifyPain":     { "status": "Clear | Partial | Missing", "detail": "copy from live analysis evidence above" },
-                    "champion":         { "status": "Clear | Partial | Missing", "detail": "copy from live analysis evidence above" },
-                    "competition":      { "status": "Clear | Partial | Missing", "detail": "copy from live analysis evidence above" },
+                    "metrics":          { "status": "Clear | Partial | Missing", "detail": "copy the assessment from live analysis above" },
+                    "economicBuyer":    { "status": "Clear | Partial | Missing", "detail": "copy the assessment from live analysis above" },
+                    "decisionCriteria": { "status": "Clear | Partial | Missing", "detail": "copy the assessment from live analysis above" },
+                    "decisionProcess":  { "status": "Clear | Partial | Missing", "detail": "copy the assessment from live analysis above" },
+                    "identifyPain":     { "status": "Clear | Partial | Missing", "detail": "copy the assessment from live analysis above" },
+                    "champion":         { "status": "Clear | Partial | Missing", "detail": "copy the assessment from live analysis above" },
+                    "competition":      { "status": "Clear | Partial | Missing", "detail": "copy the assessment from live analysis above" },
                     "gaps": ["list of MEDDICC components that are Missing or Partial — these need follow-up"]
                 },
 
@@ -280,6 +309,12 @@ const buildSummaryPrompt = (liveAnalysis?: LiveAnalysisData | null, companyIntel
         - salesCoachReview.whatIMissedCompletely: items MUST follow this strict label sequence: Identify Champion, Metrics, Authority, Process, Pain. Never randomize the order.
     `;
 };
+
+/** The signed-in user's name and email — what an uploaded transcript's rep label is matched against. */
+function uploadRepNameHints(): Array<string | null> {
+    const { displayName, email } = AuthManager.getInstance().snapshot();
+    return [displayName, email];
+}
 
 export class MeetingPersistence {
     private session: SessionTracker;
@@ -443,13 +478,27 @@ export class MeetingPersistence {
         // endMeeting).
         void (async () => {
             try {
-                await appState?.waitForLiveAnalysisToSettle?.(FINAL_ANALYSIS_MAX_WAIT_MS);
-                appState?.recordPendingLiveAnalysis?.(meetingId);
+                // Live analysis v2: ONE end-of-call pass over the whole call (POST /v2/end)
+                // replaces "wait for the last tick to settle". Its result is patched onto
+                // the placeholder right away (Call Analysis tab shows it while the summary
+                // is still being written) and is what the summary is grounded on. Any
+                // failure falls back to the settle-wait + live snapshot below.
+                let analysisForSummary = liveAnalysisData;
+                const finalV2 = isFinalAnalysisV2Enabled()
+                    ? await this.runFinalAnalysisV2(meetingId, meetingTypes)
+                    : null;
+                if (finalV2) {
+                    analysisForSummary = finalV2;
+                    appState?.recordPendingLiveAnalysis?.(null);
+                } else {
+                    await appState?.waitForLiveAnalysisToSettle?.(FINAL_ANALYSIS_MAX_WAIT_MS);
+                    appState?.recordPendingLiveAnalysis?.(meetingId);
+                }
                 await this.processAndSaveMeeting(
                     snapshot,
                     meetingId,
                     metadataSnapshot,
-                    liveAnalysisData,
+                    analysisForSummary,
                     speakerNamesSnapshot,
                     undefined,      // companyIntel — not captured at stop time for live calls
                     meetingTypes,    // ← rep's live selection, was previously dropped (always undefined)
@@ -477,6 +526,94 @@ export class MeetingPersistence {
             });
 
         return { meetingId, source: stoppedSource, candidates: stoppedCandidates };
+    }
+
+    /**
+     * Live analysis v2 end-of-call pass, run by the overlay (see ./utils/finalAnalysisBridge).
+     * On success the result is written onto the placeholder meeting at once — the meeting
+     * page's Call Analysis tab renders `detailedSummary.liveAnalysis` even while the summary is
+     * still processing — and returned so the summary is grounded on it. Null means "fall back".
+     */
+    private async runFinalAnalysisV2(
+        meetingId: string,
+        meetingTypes?: ('discovery' | 'demo' | 'negotiation')[],
+    ): Promise<LiveAnalysisData | null> {
+        const startedAt = Date.now();
+        try {
+            const data = await requestFinalAnalysisV2(meetingTypes ?? []);
+            if (!data) return null;
+            try {
+                const db = DatabaseManager.getInstance();
+                const meeting = db.getMeetingDetails(meetingId);
+                if (meeting) {
+                    const existing = meeting.detailedSummary || { actionItems: [], keyPoints: [] };
+                    db.updateMeeting(meetingId, { detailedSummary: { ...existing, liveAnalysis: data } });
+                    const wins = require('electron').BrowserWindow.getAllWindows();
+                    wins.forEach((w: any) => w.webContents.send('meetings-updated'));
+                }
+            } catch (e) {
+                console.warn('[MeetingPersistence] Could not patch the end-of-call analysis onto the placeholder:', e);
+            }
+            console.log(
+                `[MeetingPersistence] v2 end-of-call analysis ready in ${Date.now() - startedAt}ms ` +
+                `(${data.objections.length} objections, ${data.signals.length} signals)`,
+            );
+            return data;
+        } catch (e: any) {
+            console.warn(
+                `[MeetingPersistence] v2 end-of-call analysis unavailable after ${Date.now() - startedAt}ms ` +
+                `(${e?.message ?? e}) — falling back to the live snapshot.`,
+            );
+            return null;
+        }
+    }
+
+    /**
+     * Call Analysis for a meeting that has no live analysis (uploads, recovered meetings,
+     * and regenerating a meeting whose first analysis failed). Backend producer first,
+     * then the local one-shot analyser — see ./utils/callAnalysis. Never throws.
+     *
+     * @param transcriptText labelled transcript (roster block + turns) for the local analyser
+     * @param backendTimeoutMs ceiling on the backend attempt; defaults to the bridge's own
+     */
+    private async generateCallAnalysisFor(
+        segments: Array<Pick<TranscriptSegment, 'speaker' | 'text'>>,
+        meetingTypes: MeetingTypeHint[],
+        transcriptText: string,
+        backendTimeoutMs?: number,
+    ): Promise<LiveAnalysisData | null> {
+        const startedAt = Date.now();
+        const { analysis, producer } = await generateCallAnalysis(
+            segments.map(t => ({ speaker: t.speaker, text: t.text })),
+            meetingTypes,
+            {
+                forceLocal: isLocalUploadAnalysisForced(),
+                requestBackend: (turns, types) =>
+                    requestUploadAnalysis(turns, types, backendTimeoutMs ? { timeoutMs: backendTimeoutMs } : {}),
+                runLocal: async (isNegotiation) => {
+                    const analysisPrompt = buildUploadAnalysisPrompt(isNegotiation);
+                    const analysisRaw = await this.llmHelper.generateMeetingSummary(
+                        analysisPrompt,
+                        transcriptText.substring(0, 12000),
+                        analysisPrompt,
+                    );
+                    if (!analysisRaw) return null;
+                    const jsonMatch = analysisRaw.match(/```json\n([\s\S]*?)\n```/) || [null, analysisRaw];
+                    const jsonStr = (jsonMatch[1] || analysisRaw).trim();
+                    try {
+                        return normalizeUploadAnalysis(JSON.parse(jsonStr), isNegotiation);
+                    } catch (e) {
+                        console.warn('[MeetingPersistence] Failed to parse call analysis JSON:', e);
+                        return null;
+                    }
+                },
+            },
+        );
+        console.log(
+            `[MeetingPersistence] Call analysis ${analysis ? `from ${producer}` : 'unavailable'} ` +
+            `after ${Date.now() - startedAt}ms`,
+        );
+        return analysis;
     }
 
     /**
@@ -598,12 +735,13 @@ export class MeetingPersistence {
             if (data.transcript.length > 2) {
 
                 // Build a compact Groq-compatible system prompt that includes live analysis grounding.
-                // Groq has a lower token budget, so we pass only the status+evidence lines.
+                // Groq has a lower token budget, so we pass only the status+assessment lines —
+                // fieldText, never the raw evidence list (which would interpolate as "a,b").
                 const liveAnalysisGroqBlock = liveAnalysisData ? `
                 LIVE ANALYSIS REFERENCE (captured during the call):
-                BANT: Budget=${liveAnalysisData.bant.budget.status}|${liveAnalysisData.bant.budget.evidence || ''}, Authority=${liveAnalysisData.bant.authority.status}|${liveAnalysisData.bant.authority.evidence || ''}, Need=${liveAnalysisData.bant.need.status}|${liveAnalysisData.bant.need.evidence || ''}, Timeline=${liveAnalysisData.bant.timeline.status}|${liveAnalysisData.bant.timeline.evidence || ''}
-                MEDDIC: Metrics=${liveAnalysisData.meddic.metrics.status}|${liveAnalysisData.meddic.metrics.evidence || ''}, EconBuyer=${liveAnalysisData.meddic.economic_buyer.status}|${liveAnalysisData.meddic.economic_buyer.evidence || ''}, Pain=${liveAnalysisData.meddic.identify_pain.status}|${liveAnalysisData.meddic.identify_pain.evidence || ''}, Champion=${liveAnalysisData.meddic.champion.status}|${liveAnalysisData.meddic.champion.evidence || ''}
-                Use this as your grounding anchor. Map statuses: confirmed→Clear, partial→Partial, missing→Missing. Use evidence text verbatim in "detail" fields where available.
+                BANT: Budget=${liveAnalysisData.bant.budget.status}|${fieldText(liveAnalysisData.bant.budget)}, Authority=${liveAnalysisData.bant.authority.status}|${fieldText(liveAnalysisData.bant.authority)}, Need=${liveAnalysisData.bant.need.status}|${fieldText(liveAnalysisData.bant.need)}, Timeline=${liveAnalysisData.bant.timeline.status}|${fieldText(liveAnalysisData.bant.timeline)}
+                MEDDIC: Metrics=${liveAnalysisData.meddic.metrics.status}|${fieldText(liveAnalysisData.meddic.metrics)}, EconBuyer=${liveAnalysisData.meddic.economic_buyer.status}|${fieldText(liveAnalysisData.meddic.economic_buyer)}, Pain=${liveAnalysisData.meddic.identify_pain.status}|${fieldText(liveAnalysisData.meddic.identify_pain)}, Champion=${liveAnalysisData.meddic.champion.status}|${fieldText(liveAnalysisData.meddic.champion)}
+                Use this as your grounding anchor. Map statuses: confirmed→Clear, partial→Partial, missing→Missing. Use the assessment text verbatim in "detail" fields where available.
                 ` : '';
                 const groqSummaryPrompt = liveAnalysisGroqBlock
                     ? GROQ_SUMMARY_JSON_PROMPT + '\n\n' + liveAnalysisGroqBlock
@@ -688,44 +826,41 @@ export class MeetingPersistence {
         }
 
         // Generate call analysis for uploaded transcripts (no live analysis available).
-        // The prompt + post-processing live in ./utils/uploadAnalysis, which mirrors
-        // the FastAPI backend's live-analysis behaviour exactly (objection category
-        // taxonomy, dealOptimizer gated on the negotiation meeting-type hint,
-        // NO QUOTE = NO STATUS, ask-this only for non-confirmed fields, catalogue-
-        // valid signal types, stableId stamps) — without uploads ever calling the
-        // backend. The live path keeps using the real endpoints untouched.
+        //
+        // PRIMARY: the backend's /intelligence/live-analysis route — reached
+        // through the very same renderer-side intelligenceApi the live panel
+        // calls, because that client owns the Firebase token and cannot run in
+        // main (see ./utils/uploadAnalysisBridge). One implementation serves
+        // both paths, and uploads gain the company-asset RAG grounding and
+        // critique/revise loop that only exist server-side.
+        //
+        // FALLBACK: ./utils/uploadAnalysis, the local one-shot prompt that used
+        // to be the only path here. It mirrors the backend's behaviour by hand
+        // (objection category taxonomy, dealOptimizer gated on the negotiation
+        // meeting-type hint, NO QUOTE = NO STATUS, ask-this only for
+        // non-confirmed fields, catalogue-valid signal types, stableId stamps),
+        // so it stays usable with no network, no auth, or an exhausted backend
+        // budget — and is pinned on by NATIVELY_UPLOAD_ANALYSIS_LOCAL=1.
         if (!liveAnalysisData && data.transcript.length > 2) {
-            try {
-                const isNegotiation = (hintMeetingTypes ?? []).includes('negotiation');
-                const analysisPrompt = buildUploadAnalysisPrompt(isNegotiation);
+            // Backend first, local analyser as the fallback — shared with
+            // regenerateSummary, see ./utils/callAnalysis.
+            liveAnalysisData = await this.generateCallAnalysisFor(
+                humanSegments,
+                hintMeetingTypes ?? [],
+                rosterBlock + fullTranscriptText,
+            );
 
-                const transcriptText = (rosterBlock + humanSegments
-                    .map(t => `${transcriptTurnLabel(t, speakerNames, multiClientSpeakers)}: ${t.text}`)
-                    .join('\n')).substring(0, 12000);
-
-                const analysisRaw = await this.llmHelper.generateMeetingSummary(analysisPrompt, transcriptText, analysisPrompt);
-                if (analysisRaw) {
-                    const jsonMatch = analysisRaw.match(/```json\n([\s\S]*?)\n```/) || [null, analysisRaw];
-                    const jsonStr = (jsonMatch[1] || analysisRaw).trim();
-                    try {
-                        liveAnalysisData = normalizeUploadAnalysis(JSON.parse(jsonStr), isNegotiation);
-                        // Call Analysis exists only now on the upload/recovery
-                        // path — the reconciliation inside the summary step above
-                        // ran while liveAnalysisData was still null (its no-op
-                        // early-return) and was never re-applied. Re-run it here
-                        // so the summary's BANT/MEDDIC — and, via
-                        // buildConfirmedWhatIDidRight, the Sales Self-Analysis
-                        // "What I did right" list — can never disagree with the
-                        // call analysis. This is the same guarantee
-                        // finalizeScorecard() gives the scorecard: the analysis
-                        // is the single source of truth for every surface.
-                        summaryData = reconcileBantMeddicWithLiveAnalysis(summaryData, liveAnalysisData);
-                    } catch (e) {
-                        console.warn('[MeetingPersistence] Failed to parse call analysis JSON:', e);
-                    }
-                }
-            } catch (e) {
-                console.warn('[MeetingPersistence] Call analysis generation failed (non-fatal):', e);
+            // Call Analysis exists only now on the upload/recovery path — the
+            // reconciliation inside the summary step above ran while
+            // liveAnalysisData was still null (its no-op early-return) and was
+            // never re-applied. Re-run it here, for whichever producer won, so
+            // the summary's BANT/MEDDIC — and, via buildConfirmedWhatIDidRight,
+            // the Sales Self-Analysis "What I did right" list — can never
+            // disagree with the call analysis. This is the same guarantee
+            // finalizeScorecard() gives the scorecard: the analysis is the
+            // single source of truth for every surface.
+            if (liveAnalysisData) {
+                summaryData = reconcileBantMeddicWithLiveAnalysis(summaryData, liveAnalysisData);
             }
         }
 
@@ -1071,8 +1206,43 @@ export class MeetingPersistence {
                 .map(t => `${transcriptTurnLabel(t, regenSpeakerNames, regenMultiClients)}: ${t.text}`)
                 .join('\n');
 
-            // Re-use live analysis from detailedSummary if present so the regen is also grounded
-            const existingLiveAnalysis = (meeting.detailedSummary as any)?.liveAnalysis as LiveAnalysisData | undefined;
+            // Re-use live analysis from detailedSummary if present so the regen is also grounded.
+            // A meeting without one (an upload or recovered meeting whose first analysis
+            // failed — e.g. an exhausted LLM quota) gets it generated here, before the
+            // summary, so the Call Analysis tab fills in and the summary's BANT/MEDDIC is
+            // reconciled against it exactly as on the first save. Regenerating used to
+            // rebuild only the summary, so such a meeting never got a Call Analysis.
+            const storedLiveAnalysis = (meeting.detailedSummary as any)?.liveAnalysis;
+            let existingLiveAnalysis: LiveAnalysisData | undefined =
+                hasUsableCallAnalysis(storedLiveAnalysis) ? storedLiveAnalysis : undefined;
+            let generatedLiveAnalysis: LiveAnalysisData | null = null;
+            // An upload's analysis comes from its transcript alone, so regenerating re-runs it too
+            // and picks up analysis fixes (e.g. what counts as an objection). A live call keeps
+            // the analysis made at the end of the call. If the re-run fails, the stored one stays.
+            const refreshUploadAnalysis = meeting.source === 'upload' && !!existingLiveAnalysis;
+            if ((!existingLiveAnalysis || refreshUploadAnalysis) && regenSegments.length > 2) {
+                const regenTypes = meetingTypesForRegenerate(
+                    meeting.meetingTypes,
+                    DatabaseManager.getInstance().getMeetingScorecard(meetingId)?.detectedTypes,
+                    (meeting.detailedSummary as any)?.scorecard?.detectedTypes,
+                );
+                console.log(
+                    `[MeetingPersistence] Regenerate: ${meetingId} ` +
+                    (refreshUploadAnalysis ? 'is an upload — re-running its call analysis' : 'has no call analysis — generating it'),
+                );
+                generatedLiveAnalysis = await this.generateCallAnalysisFor(
+                    regenSegments,
+                    regenTypes,
+                    fullRegenerateContext,
+                    REGENERATE_ANALYSIS_TIMEOUT_MS,
+                );
+                if (generatedLiveAnalysis) {
+                    existingLiveAnalysis = generatedLiveAnalysis;
+                    // Written straight away so it survives a summary failure below — the
+                    // Call Analysis tab reads it on its own.
+                    DatabaseManager.getInstance().updateMeetingSummary(meetingId, { liveAnalysis: generatedLiveAnalysis });
+                }
+            }
             const groqSummaryPrompt = GROQ_SUMMARY_JSON_PROMPT;
 
             const generatedSummary = await this.llmHelper.generateMeetingSummary(
@@ -1090,9 +1260,14 @@ export class MeetingPersistence {
             // Same guarantee as the initial save path — regenerating must not
             // let BANT/MEDDIC drift from the meeting's stored live analysis.
             summaryData = reconcileBantMeddicWithLiveAnalysis(summaryData, existingLiveAnalysis);
+            // Never let the summary JSON carry a stray liveAnalysis key over the real one.
+            delete summaryData.liveAnalysis;
 
             DatabaseManager.getInstance().updateMeetingSummary(meetingId, summaryData);
-            console.log(`[MeetingPersistence] Regenerated summary for meeting ${meetingId}`);
+            console.log(
+                `[MeetingPersistence] Regenerated summary for meeting ${meetingId}` +
+                (generatedLiveAnalysis ? ' (with a new call analysis)' : ''),
+            );
 
             // Re-score using the latest criteria so any criteria changes made before
             // clicking "regenerate" are reflected in the scorecard shown in the UI.
@@ -1134,15 +1309,20 @@ export class MeetingPersistence {
         rawText: string,
         title?: string,
         meetingTypes?: ('discovery' | 'demo' | 'negotiation')[],
-        tenantId?: string | null
+        tenantId?: string | null,
+        repSpeaker?: string | null
     ): Promise<string | null> {
         try {
             // Parse "[HH:MM:SS] SALES PERSON: text", "[MM:SS] ...", plain
             // "Alex: text", and multi-line messages via the shared parser —
             // original speaker labels survive as displayName, timestamps are
             // never invented, and duration is null when the source had none.
-            const { segments, durationMs: parsedDurationMs } = parseUploadTranscript(rawText);
+            // The rep is the speaker picked in the upload modal, else the one
+            // named like the signed-in user, else the first speaker.
+            const { segments, durationMs: parsedDurationMs, repSpeaker: resolvedRep, repSource } =
+                parseUploadTranscript(rawText, { repLabel: repSpeaker, repNameHints: uploadRepNameHints() });
             const transcript = segments as TranscriptSegment[];
+            console.log(`[MeetingPersistence] Upload: rep speaker ${resolvedRep ? `"${resolvedRep}"` : 'none'} (${repSource ?? 'no labels'})`);
 
             if (transcript.length < 2) {
                 console.warn('[MeetingPersistence] Upload: transcript too short');

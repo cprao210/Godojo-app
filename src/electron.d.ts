@@ -1,4 +1,4 @@
-import { LiveAnalysisData, CalendarEvent } from "@/types";
+import { LiveAnalysisData, LiveAnalysisTurn, CalendarEvent } from "@/types";
 
 /** macOS TCC state for a single privacy service. */
 export type PermissionStatus = 'granted' | 'denied' | 'not-determined' | 'restricted'
@@ -42,7 +42,12 @@ export interface ElectronAPI {
   // Window Management
   // ===========================================================================
   updateContentDimensions: (dimensions: { width: number; height: number }) => Promise<void>
-  getGpuPerformanceStatus: () => Promise<{ isLowPowerGpu: boolean; raw: Record<string, string> | null }>
+  getGpuPerformanceStatus: () => Promise<{
+    isLowPowerGpu: boolean;
+    raw: Record<string, string> | null;
+    hardware: { cpuThreads: number | null; totalRamGB: number | null; gpuVendorId: string | null };
+    autoClassification: { autoPerformanceMode: boolean; reason: string | null; summary: string };
+  }>
   onToggleExpand: (callback: () => void) => () => void
   onResetView: (callback: () => void) => () => void
   moveWindowLeft: () => Promise<void>
@@ -278,7 +283,7 @@ export interface ElectronAPI {
   // ===========================================================================
   // Native Audio Service Events
   // ===========================================================================
-  onNativeAudioTranscript: (callback: (transcript: { speaker: string; displayName?: string; text: string; timestamp?: number; final: boolean; confidence?: number; speakerIndex?: number; retract?: boolean }) => void) => () => void
+  onNativeAudioTranscript: (callback: (transcript: { speaker: string; displayName?: string; text: string; timestamp?: number; final: boolean; confidence?: number; speakerIndex?: number; retract?: boolean; textOriginal?: string; turnId?: string; lang?: string; asrSuspect?: boolean; suspectReason?: string; arrivalMs?: number }) => void) => () => void
   onNativeAudioSuggestion: (callback: (suggestion: { context: string; lastQuestion: string; confidence: number }) => void) => () => void
   onNativeAudioConnected: (callback: () => void) => () => void
   onNativeAudioDisconnected: (callback: () => void) => () => void
@@ -422,9 +427,35 @@ export interface ElectronAPI {
   updateMeetingTitle: (id: string, title: string) => Promise<boolean>
   updateMeetingSummary: (id: string, updates: { overview?: string, actionItems?: string[], keyPoints?: string[], actionItemsTitle?: string, keyPointsTitle?: string }) => Promise<boolean>
   regenerateMeetingSummary: (id: string) => Promise<any>
-  uploadTranscript: (text: string, title?: string, meetingTypes?: ('discovery' | 'demo' | 'negotiation')[], tenantId?: string | null) => Promise<{ success: boolean; meetingId?: string; error?: string }>
+  uploadTranscript: (text: string, title?: string, meetingTypes?: ('discovery' | 'demo' | 'negotiation')[], tenantId?: string | null, repSpeaker?: string | null) => Promise<{ success: boolean; meetingId?: string; error?: string }>
+  /** The pasted transcript's speakers and the rep uploadTranscript would pick by default ('name' = matched the signed-in user). */
+  getUploadTranscriptSpeakers: (text: string) => Promise<{ speakers: string[]; suggestedRep: string | null; suggestedBy: 'picked' | 'name' | 'first' | null }>
   deleteMeeting: (id: string) => Promise<boolean>
   onMeetingsUpdated: (callback: () => void) => () => void
+
+  /**
+   * Main asks this window to run the call analysis for an uploaded transcript,
+   * because the live-analysis API is renderer-only. Answered by
+   * useUploadAnalysisBridge in the launcher window.
+   */
+  onRunUploadAnalysis: (
+    callback: (request: { requestId: string; turns: LiveAnalysisTurn[]; meetingTypes: ('discovery' | 'demo' | 'negotiation')[] }) => void,
+  ) => () => void
+  respondUploadAnalysis: (
+    requestId: string,
+    result: { ok: boolean; data?: LiveAnalysisData | null; error?: string },
+  ) => void
+  /**
+   * Main asks the overlay for the live analysis v2 end-of-call pass (POST /v2/end).
+   * Answered by useFloatingDock, which holds the signed state and the transcript.
+   */
+  onRunFinalAnalysisV2: (
+    callback: (request: { requestId: string; meetingTypes: ('discovery' | 'demo' | 'negotiation')[] }) => void,
+  ) => () => void
+  respondFinalAnalysisV2: (
+    requestId: string,
+    result: { ok: boolean; data?: LiveAnalysisData | null; error?: string },
+  ) => void
 
   // Meeting Scorecards
   meetingGetScorecard: (meetingId: string) => Promise<{ success: boolean; data?: any; error?: string }>

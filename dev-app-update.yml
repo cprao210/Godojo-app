@@ -1,0 +1,11 @@
+# Development-only updater feed config.
+#
+# electron-updater IGNORES this file in packaged builds and REQUIRES it to
+# allow any update activity in `npm run dev` (without it, the updater logs
+# "Skip checkForUpdates because application is not packed").
+#
+# The runtime feed URL can be overridden with GODOJO_DEV_UPDATE_FEED when
+# GODOJO_DEV_UPDATES=1 is set — see scripts/dev-update-server.mjs and
+# docs/TESTING-UPDATES.md for the full local testing setup.
+provider: generic
+url: http://127.0.0.1:5178/

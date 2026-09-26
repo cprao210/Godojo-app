@@ -1,5 +1,6 @@
 import React, { useState } from 'react';
-import { CalendarClock, Ghost, PointerOff, Power, Terminal, MessageSquare, Palette, Monitor, Sun, Moon, Globe, ChevronDown, Eye, Layout, Settings, Activity, Skull, Database, Flame, HardDrive, Trash2 } from 'lucide-react';
+import { CalendarClock, Ghost, PointerOff, Power, Terminal, MessageSquare, Palette, Monitor, Sun, Moon, Globe, ChevronDown, Eye, Layout, Settings, Activity, Skull, Database, Flame, HardDrive, Trash2, Gauge } from 'lucide-react';
+import { usePerformanceMode, type PerformanceModePreference } from '@/hooks';
 import { OVERLAY_OPACITY_MIN } from '@/lib/overlayAppearance';
 import { useSettingsOverlay } from '@/hooks';
 import { getFirebaseAuth } from '@/lib/firebase';
@@ -86,6 +87,12 @@ const GeneralTab: React.FC<{ overlay: SettingsOverlayHook }> = ({ overlay }) => 
         isAiLangDropdownOpen, setIsAiLangDropdownOpen, aiLangDropdownRef } = overlay;
 
     const cardCls = isLight ? 'bg-white border-slate-200/80' : 'bg-bg-item-surface border-border-subtle';
+
+    // Performance Mode — the SAME control the floating dock's settings expose
+    // (shared usePerformanceMode store: preference lives in localStorage and
+    // every instance live-syncs, so changing it here flips the dock mid-call
+    // and vice versa, without remounting anything).
+    const { isPerformanceMode, preference: perfPreference, setPreference: setPerfPreference, autoReason } = usePerformanceMode();
 
     // DEV-ONLY: "Delete My Account" — self-service full wipe of the signed-in
     // user's data, OR any one of its three parts individually — Supabase
@@ -233,6 +240,48 @@ const GeneralTab: React.FC<{ overlay: SettingsOverlayHook }> = ({ overlay }) => 
                         activeTrackClass="bg-sky-500"
                         ariaLabel="Toggle Mouse Passthrough"
                     />
+                </div>
+
+                {/* Performance Mode — same control as the floating dock's
+                    settings panel (shared preference store). Auto detects weak
+                    hardware (software rendering, <=4 CPU threads, or Intel
+                    iGPU + <=8 GB RAM) and drops expensive visual effects
+                    app-wide; On/Off are explicit overrides that always win. */}
+                <div className={`${cardCls} rounded-xl p-5 border flex items-center justify-between transition-all ${isPerformanceMode ? 'shadow-lg shadow-blue-500/10' : ''}`}>
+                    <div className="flex flex-col gap-1 flex-1 min-w-0">
+                        <div className="flex items-center gap-2">
+                            <Gauge size={18} className={isPerformanceMode ? 'text-blue-400' : 'text-text-primary'} />
+                            <h3 className="text-lg font-bold text-text-primary">Performance Mode</h3>
+                        </div>
+                        <p className="text-xs text-text-secondary">
+                            {perfPreference === 'auto'
+                                ? (isPerformanceMode
+                                    ? `Enabled automatically for this device${autoReason ? ` — ${autoReason.toLowerCase()}` : '.'}`
+                                    : 'Enabled automatically if needed for this device.')
+                                : perfPreference === 'on'
+                                    ? 'Reduced visual effects for maximum smoothness.'
+                                    : 'Full visual effects.'}
+                        </p>
+                    </div>
+                    <div className="flex items-center gap-1 p-1 rounded-lg border border-border-muted shrink-0 ml-4" role="group" aria-label="Performance Mode">
+                        {(['auto', 'on', 'off'] as PerformanceModePreference[]).map((v) => (
+                            <button
+                                key={v}
+                                onClick={() => setPerfPreference(v)}
+                                className={[
+                                    'px-3 py-1.5 rounded-md text-xs font-semibold capitalize transition-colors',
+                                    perfPreference === v
+                                        ? 'bg-blue-600 text-white shadow-sm'
+                                        : isLight
+                                            ? 'text-text-secondary hover:bg-slate-100 hover:text-text-primary'
+                                            : 'text-text-tertiary hover:bg-white/[0.06] hover:text-text-secondary',
+                                ].join(' ')}
+                                aria-pressed={perfPreference === v}
+                            >
+                                {v}
+                            </button>
+                        ))}
+                    </div>
                 </div>
 
                 <div>

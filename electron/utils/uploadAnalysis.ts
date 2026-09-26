@@ -12,16 +12,20 @@
 //   • signal_type filtered against the backend catalogue (empty → drop)
 //   • dealOptimizer hard-gated on the negotiation flag (mirrors the backend's
 //     `if not deal_optimizer: d["dealOptimizer"] = []`), triggers validated
-//   • 300-char sentence-boundary clamps on evidence/quotes; objection quotes
-//     deliberately unclamped (whole-thought quoting).
+//   • sentence-boundary clamps: 200 chars per BANT/MEDDIC evidence item (max 3,
+//     deduped), 200 for the summary, 300 for signal/deal quotes; objection
+//     quotes deliberately unclamped (whole-thought quoting).
 // The live path keeps consuming the backend endpoints untouched.
 
 import { DealOptimizerAlert, LiveAnalysisData, Objection, Signal } from '../../src/types';
 import { stableId } from '../../src/lib/objections';
+import { toEvidenceList } from '../../src/lib/bantMeddic';
 import {
     clampEvidence,
     DEAL_TRIGGERS,
+    EVIDENCE_ITEM_MAX_CHARS,
     EVIDENCE_MAX_CHARS,
+    EVIDENCE_MAX_ITEMS,
     FALLBACK_SUGGESTED_QUESTIONS,
     OBJECTION_CATEGORY_LABELS,
     OBJECTION_REVIEW_THRESHOLD,
@@ -29,6 +33,7 @@ import {
     signalCategoryForTypes,
     SIGNAL_TYPE_CATALOG,
     STATUS_EMOJI,
+    SUMMARY_MAX_CHARS,
 } from '../../src/lib/analysisTaxonomy';
 
 type QualStatus = 'confirmed' | 'partial' | 'missing';
@@ -78,19 +83,19 @@ SPEAKERS: the transcript may begin with a SPEAKER IDENTITY MAP naming each parti
 
 {
   "bant": {
-    "budget":    { "emoji": "✅|⚠️|❌", "status": "confirmed|partial|missing", "evidence": "verbatim quote or empty string", "suggested_question": "string" },
-    "authority": { "emoji": "✅|⚠️|❌", "status": "confirmed|partial|missing", "evidence": "verbatim quote or empty string", "suggested_question": "string" },
-    "need":      { "emoji": "✅|⚠️|❌", "status": "confirmed|partial|missing", "evidence": "verbatim quote or empty string", "suggested_question": "string" },
-    "timeline":  { "emoji": "✅|⚠️|❌", "status": "confirmed|partial|missing", "evidence": "verbatim quote or empty string", "suggested_question": "string" }
+    "budget":    { "emoji": "✅|⚠️|❌", "status": "confirmed|partial|missing", "evidence": ["verbatim quote", "..."], "summary": "one sentence, under 25 words", "suggested_question": "string" },
+    "authority": { "emoji": "✅|⚠️|❌", "status": "confirmed|partial|missing", "evidence": ["verbatim quote", "..."], "summary": "one sentence, under 25 words", "suggested_question": "string" },
+    "need":      { "emoji": "✅|⚠️|❌", "status": "confirmed|partial|missing", "evidence": ["verbatim quote", "..."], "summary": "one sentence, under 25 words", "suggested_question": "string" },
+    "timeline":  { "emoji": "✅|⚠️|❌", "status": "confirmed|partial|missing", "evidence": ["verbatim quote", "..."], "summary": "one sentence, under 25 words", "suggested_question": "string" }
   },
   "meddic": {
-    "metrics":           { "emoji": "✅|⚠️|❌", "status": "confirmed|partial|missing", "evidence": "verbatim quote or empty string", "suggested_question": "string" },
-    "economic_buyer":    { "emoji": "✅|⚠️|❌", "status": "confirmed|partial|missing", "evidence": "verbatim quote or empty string", "suggested_question": "string" },
-    "decision_criteria": { "emoji": "✅|⚠️|❌", "status": "confirmed|partial|missing", "evidence": "verbatim quote or empty string", "suggested_question": "string" },
-    "decision_process":  { "emoji": "✅|⚠️|❌", "status": "confirmed|partial|missing", "evidence": "verbatim quote or empty string", "suggested_question": "string" },
-    "identify_pain":     { "emoji": "✅|⚠️|❌", "status": "confirmed|partial|missing", "evidence": "verbatim quote or empty string", "suggested_question": "string" },
-    "champion":          { "emoji": "✅|⚠️|❌", "status": "confirmed|partial|missing", "evidence": "verbatim quote or empty string", "suggested_question": "string" },
-    "competition":       { "emoji": "✅|⚠️|❌", "status": "confirmed|partial|missing", "evidence": "verbatim quote or empty string", "suggested_question": "string" }
+    "metrics":           { "emoji": "✅|⚠️|❌", "status": "confirmed|partial|missing", "evidence": ["verbatim quote", "..."], "summary": "one sentence, under 25 words", "suggested_question": "string" },
+    "economic_buyer":    { "emoji": "✅|⚠️|❌", "status": "confirmed|partial|missing", "evidence": ["verbatim quote", "..."], "summary": "one sentence, under 25 words", "suggested_question": "string" },
+    "decision_criteria": { "emoji": "✅|⚠️|❌", "status": "confirmed|partial|missing", "evidence": ["verbatim quote", "..."], "summary": "one sentence, under 25 words", "suggested_question": "string" },
+    "decision_process":  { "emoji": "✅|⚠️|❌", "status": "confirmed|partial|missing", "evidence": ["verbatim quote", "..."], "summary": "one sentence, under 25 words", "suggested_question": "string" },
+    "identify_pain":     { "emoji": "✅|⚠️|❌", "status": "confirmed|partial|missing", "evidence": ["verbatim quote", "..."], "summary": "one sentence, under 25 words", "suggested_question": "string" },
+    "champion":          { "emoji": "✅|⚠️|❌", "status": "confirmed|partial|missing", "evidence": ["verbatim quote", "..."], "summary": "one sentence, under 25 words", "suggested_question": "string" },
+    "competition":       { "emoji": "✅|⚠️|❌", "status": "confirmed|partial|missing", "evidence": ["verbatim quote", "..."], "summary": "one sentence, under 25 words", "suggested_question": "string" }
   },
   "objections": [
     { "type": "customer_question|ae_deferral", "quote": "verbatim prospect (or AE) speech spanning the whole concern, no speaker label", "owner": "customer|ae", "status": "open|deferred", "suggested_answer": "rebuttal for customer_question, else empty string", "category": "budget_pricing|timing|authority|competitor|product_fit|trust_risk|contract_terms|technical_integration|need_to_think|other", "confidence": 0.0, "resolved": false }
@@ -102,14 +107,17 @@ SPEAKERS: the transcript may begin with a SPEAKER IDENTITY MAP naming each parti
 
 SECTION 1: BANT + MEDDIC
 - "confirmed" = explicit, quotable evidence; "partial" = mentioned but incomplete; "missing" = no evidence.
-- NO QUOTE = NO STATUS: a field may only be confirmed/partial if its "evidence" is a VERBATIM span from the transcript (narrowest span that proves it, under 45 words, no speaker label). Never paraphrase or fix grammar inside evidence.
-- Each field gets its OWN evidence span. A sentence that proves one field does not become evidence for related fields; with no sentence specific to a field, that field stays "missing".
+- NO QUOTE = NO STATUS: a field may only be confirmed/partial if its "evidence" list contains AT LEAST ONE VERBATIM span from the transcript (narrowest span that proves it, under 45 words, no speaker label). Never paraphrase or fix grammar inside evidence. Use [] when there is none.
+- evidence is a LIST of 1-3 spans, most important first. Every span in the list must independently bear on THIS field — do not pad the list with context.
+- Each field gets its OWN evidence spans. A sentence that proves one field does not become evidence for related fields; with no sentence specific to a field, that field stays "missing".
+- summary: what the "evidence" list SAYS, readable at a glance — ONE sentence, under 25 words, in English. Clean up ASR mess (stutters, dropped words, run-ons, mid-clause code-switching) — this is the one place rewording is allowed. A faithful rendering of THOSE quotes only: no facts they do not contain, no interpretation of what they imply. With several quotes, join what they establish into one clause. "" when evidence is [].
 - Budget means money allocated/available to spend. A discount or price negotiation is NOT budget evidence.
 - A named internal person who will drive or coordinate the rollout counts as "champion" at least "partial", even without explicit advocacy.
 - suggested_question: populate for BOTH "missing" AND "partial", under 15 words, referencing something specific from this call — for "missing" a question that surfaces the signal from scratch; for "partial" a question that CONFIRMS or upgrades it by pinning down the exact missing detail (a number, a name, a date). "" ONLY when status is "confirmed": never ask for information the transcript already establishes.
 
 SECTION 2: OBJECTIONS
-- "customer_question" = any unresolved customer pushback, phrased as a question OR a statement — a question mark is NOT required. Covers: specific unresolved questions, stated concerns/doubts/risks, price/value pushback, timing/priority pushback, disagreement with the premise. A flat statement of doubt IS an objection. Skip small talk.
+- "customer_question" = any unresolved customer pushback, phrased as a question OR a statement — a question mark is NOT required. Covers: questions that carry doubt or a constraint clashing with how the product works ("if you give one shared device to the whole team, how do you track each person?"), stated concerns/doubts/risks, price/value pushback, timing/priority pushback, disagreement with the premise. A flat statement of doubt IS an objection. Skip small talk.
+- NOT objections: a neutral how-does-it-work question with no doubt in it ("what about the continuation of the shift?", "do they have to carry their own phones?"), a wish or requirement stated as a need ("we want to track the guards at night") unless the prospect doubts we can meet it, and anything the SALES PERSON said other than an ae_deferral.
 - "ae_deferral" = ONLY when the REP commits to a specific deliverable (not vague "I'll send that over"); owner "ae", status "deferred", suggested_answer "".
 - owner is "customer" for customer_question; "status": "open" unless an ae_deferral.
 - suggested_answer: only for customer_question — a direct, confident 1-2 sentence rebuttal specific to this call, under 40 words. Never generic filler ("integrates seamlessly", "we understand your concern").
@@ -128,19 +136,37 @@ Return raw JSON only.`;
 
 function normalizeQual(raw: any, key: string): LiveAnalysisData['bant']['budget'] {
     let status: QualStatus = raw?.status === 'confirmed' || raw?.status === 'partial' ? raw.status : 'missing';
-    const evidence = typeof raw?.evidence === 'string' ? raw.evidence.trim() : '';
+    // Mirrors the backend's as_evidence_list + clamp_evidence: dedupe, cap the
+    // COUNT, then clamp each item to the per-item ceiling.
+    const evidence: string[] = [];
+    for (const span of toEvidenceList(raw?.evidence)) {
+        if (evidence.some(existing => sameQuote(existing, span))) continue;
+        evidence.push(span);
+        if (evidence.length >= EVIDENCE_MAX_ITEMS) break;
+    }
+    for (let i = 0; i < evidence.length; i++) evidence[i] = clampEvidence(evidence[i], EVIDENCE_ITEM_MAX_CHARS);
     // NO QUOTE = NO STATUS (mirror of require_evidence): an unevidenced claim
-    // collapses to missing — the same way the backend downgrades it.
-    if (status !== 'missing' && !evidence) status = 'missing';
+    // collapses to missing — the same way the backend downgrades it. Note the
+    // explicit length check: `!evidence` on an array is ALWAYS false, so the
+    // scalar-era form of this guard would silently disable the rule entirely.
+    if (status !== 'missing' && evidence.length === 0) status = 'missing';
     let question = typeof raw?.suggested_question === 'string' ? raw.suggested_question.trim() : '';
     // A confirmed metric never carries an ask-this recommendation.
     if (status === 'confirmed') question = '';
     // …and every still-open field always does (ensure_suggested_questions).
     else if (!question) question = FALLBACK_SUGGESTED_QUESTIONS[key] ?? '';
+    // The summary is what every surface SHOWS, but it is not what gates the
+    // status: evidence is the proof, the summary is how we render it. A model
+    // that quotes well but forgets the summary keeps its status, and fieldText
+    // falls back to the evidence exactly as it does for a pre-summary row.
+    // Blanked with no evidence, exactly like the backend's require_evidence.
+    let summary = typeof raw?.summary === 'string' ? clampEvidence(raw.summary.trim(), SUMMARY_MAX_CHARS) : '';
+    if (evidence.length === 0) summary = '';
     return {
         emoji: STATUS_EMOJI[status],
         status,
-        evidence: clampEvidence(evidence),
+        evidence,
+        summary,
         suggested_question: question,
     };
 }

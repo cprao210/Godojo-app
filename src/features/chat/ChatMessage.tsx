@@ -4,14 +4,9 @@ import { motion } from 'framer-motion';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import { chatMarkdownComponents } from './markdownComponents';
-<<<<<<< Updated upstream
 import { CitationProvider, rehypeCitations, CiteChip } from './citations';
 import { SourceMapEntry } from '@/types';
-=======
-import { CitationProvider, rehypeCitations, CiteChip, citationLabels } from './citations';
-import SourcesDisplay from './SourcesDisplay';
-import { ChatSources, SourceMapEntry } from '@/types';
->>>>>>> Stashed changes
+import { useResolvedTheme } from '@/hooks/useResolvedTheme';
 
 // ============================================
 // Message Components
@@ -51,6 +46,8 @@ interface AssistantMessageProps {
 export const AssistantMessage: React.FC<AssistantMessageProps> = ({ content, isStreaming, sourceMap, unverifiedCitations, rewriting, onOpenMeeting, onOpenAsset }) => {
     const [copied, setCopied] = useState(false);
 
+    const isLight = useResolvedTheme() !== 'dark';
+
     // While waiting for the first frame the assistant placeholder has no
     // content yet — render nothing here and let the single TypingIndicator
     // (rendered by the parent list) own the "thinking" state. Without this,
@@ -79,7 +76,7 @@ export const AssistantMessage: React.FC<AssistantMessageProps> = ({ content, isS
                 <Sparkles size={11} className="text-white" />
             </div>
             <div className="flex flex-col items-start min-w-0 max-w-[85%]">
-                <div className="bg-bg-item-surface text-text-primary text-[13.5px] leading-relaxed px-4 py-2.5 rounded-2xl rounded-tl-md min-w-0 max-w-full transition-opacity" style={rewriting ? { opacity: 0.55 } : undefined}>
+                <div className={`${isLight ? 'bg-bg-elevated' : 'bg-bg-item-surface'} text-text-primary text-[13.5px] leading-relaxed px-4 py-2.5 rounded-2xl rounded-tl-md min-w-0 max-w-full transition-opacity`} style={rewriting ? { opacity: 0.55 } : undefined}>
                     {rewriting && (
                         <div className="mb-1.5 text-[10px] uppercase tracking-wide text-text-tertiary animate-pulse">
                             Rewriting…
@@ -130,10 +127,6 @@ export const AssistantMessage: React.FC<AssistantMessageProps> = ({ content, isS
                             {copied ? <Check size={12} className="text-emerald-500" /> : <Copy size={12} />}
                             {copied ? 'Copied' : 'Copy'}
                         </button>
-<<<<<<< Updated upstream
-=======
-                        {sources && <SourcesDisplay sources={sources} onOpenMeeting={onOpenMeeting} onOpenAsset={onOpenAsset} sourceMap={sourceMap} labels={citationLabels(content)} />}
->>>>>>> Stashed changes
                     </div>
                 )}
             </div>

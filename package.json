@@ -21,7 +21,8 @@
     "dist": "npm run app:build",
     "build:native": "node scripts/build-native.js",
     "test": "vitest run",
-    "test:watch": "vitest"
+    "test:watch": "vitest",
+    "dev:updates": "concurrently -k \"node scripts/dev-update-server.mjs\" \"cross-env GODOJO_DEV_UPDATES=1 npm run app:dev\""
   },
   "build": {
     "generateUpdatesFilesForAllChannels": true,

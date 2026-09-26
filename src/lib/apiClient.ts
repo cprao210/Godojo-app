@@ -25,6 +25,12 @@ const BASE = (import.meta.env.VITE_API_BASE_URL as string | undefined) ?? "http:
  * don't have to re-derive it. */
 export const API_BASE = `${BASE}/api/v1`;
 
+/**
+ * `apiFetch`'s init. The fetch-era `RequestInit` plus `timeoutMs`, an opt-in per-request
+ * override of the instance's 60s ceiling — see apiFetch.
+ */
+export type ApiFetchInit = RequestInit & { timeoutMs?: number };
+
 /** Typed error carrying the backend envelope's code + optional details. */
 export class ApiError extends Error {
   constructor(public status: number, public code: string, message: string, public details?: unknown) {
@@ -176,7 +182,9 @@ http.interceptors.response.use(
       throw new ApiError(
         504,
         "client_timeout",
-        `Backend did not answer within ${http.defaults.timeout}ms`,
+        // The EFFECTIVE timeout, not the instance default: a caller that raised its own
+        // ceiling (the v2 end-of-call pass) would otherwise be told it waited 60s.
+        `Backend did not answer within ${(axiosError.config as RetryConfig | undefined)?.timeout ?? http.defaults.timeout}ms`,
         details,
       );
     }
@@ -198,14 +206,22 @@ http.interceptors.response.use(
  * `init.signal` is forwarded too, so latency-bounded callers (the objection-handler
  * tick) can impose a deadline well under the instance's 60s ceiling and cancel on
  * unmount; it is undefined for every other caller, leaving them unchanged.
+ *
+ * `init.timeoutMs` is the opposite knob, and the only way to go the other way: `signal`
+ * can shorten a request but never lengthen one, so a caller that legitimately needs longer
+ * than the 60s instance ceiling — the live analysis v2 end-of-call pass, which asks the
+ * backend to analyse a whole call in one go — has to override the timeout per request.
+ * Omitted by every other caller, so the ceiling is unchanged for them.
  */
-export async function apiFetch<T>(path: string, init: RequestInit = {}): Promise<T> {
+export async function apiFetch<T>(path: string, init: ApiFetchInit = {}): Promise<T> {
   const res: AxiosResponse<T> = await http.request<T>({
     url: path,
     method: (init.method ?? "GET") as string,
     data: init.body,
     headers: init.headers as Record<string, string> | undefined,
     signal: init.signal ?? undefined,
+    // undefined falls through to the instance's 60s default.
+    timeout: init.timeoutMs,
   });
 
   if (res.status === 204) return undefined as T;

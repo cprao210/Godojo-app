@@ -9,6 +9,17 @@ import { useEffect, useMemo, useRef, useState } from 'react';
 // Imported directly (not via the './index' barrel) to avoid a circular
 // import — this hook is itself re-exported from that barrel.
 import { useLiveAnalysis } from './useLiveAnalysis';
+import { LIVE_ANALYSIS_V2_ENABLED, useLiveAnalysisV2 } from './useLiveAnalysisV2';
+
+// v1 or v2 is chosen ONCE, at module load, from the build flag (VITE_LIVE_ANALYSIS_V2) — never
+// per render — so the hook order is stable for the life of the app.
+type LiveAnalysisHook = (
+    ...args: Parameters<typeof useLiveAnalysis>
+) => ReturnType<typeof useLiveAnalysis> &
+    Partial<Pick<ReturnType<typeof useLiveAnalysisV2>, 'changedFields' | 'sendFieldFeedback' | 'finalizeAnalysis'>>;
+const useLiveAnalysisImpl: LiveAnalysisHook = LIVE_ANALYSIS_V2_ENABLED
+    ? (useLiveAnalysisV2 as unknown as LiveAnalysisHook)
+    : useLiveAnalysis;
 import { useObjectionWatch } from './useObjectionWatch';
 import { ActivePanel, ChatMessage, LiveAnalysisData, MeetingType } from '@/types';
 import { objectionsOnlyAnalysis } from '@/lib/objections';
@@ -156,8 +167,8 @@ export function useFloatingDock({ transcriptRef, isMeetingPaused, companyIntel }
     } = useObjectionWatch(transcriptRef, isMeetingPaused);
 
     // ── Lifted analysis session — survives panel switches/remounts ──────────
-    const { analysisData, isLoading: analysisLoading, error: analysisError, runAnalysis, resetAnalysis, isRefreshRun, getAnalysisProgress } =
-        useLiveAnalysis(
+    const { analysisData, isLoading: analysisLoading, error: analysisError, runAnalysis, resetAnalysis, isRefreshRun, getAnalysisProgress, changedFields, sendFieldFeedback, finalizeAnalysis } =
+        useLiveAnalysisImpl(
             transcriptRef,
             isMeetingPaused,
             companyIntel,
@@ -272,6 +283,10 @@ export function useFloatingDock({ transcriptRef, isMeetingPaused, companyIntel }
      * whether this function is still around to observe it finish.
      */
     const ensureFinalAnalysisBeforeEndCall = async () => {
+        // v2: the end-of-call pass (POST /v2/end) is driven by main through the
+        // run-final-analysis-v2 bridge below, after the placeholder save — a final
+        // tick here would only race it.
+        if (LIVE_ANALYSIS_V2_ENABLED) return;
         const progress = getAnalysisProgress();
 
         const decision = decideFinalAnalysis({
@@ -301,6 +316,43 @@ export function useFloatingDock({ transcriptRef, isMeetingPaused, companyIntel }
         // whether the renderer sticks around to see it resolve.
         void runAnalysisRef.current(true);
     };
+
+    // ── End-of-call pass (v2) — main asks, this overlay answers ────────────
+    // Main (MeetingPersistence.stopMeeting) asks for the final analysis once the
+    // placeholder meeting is saved. The overlay is the one place that holds both
+    // the v2 signed state and the full transcript with original text + turn ids,
+    // and its API client owns the auth token — so the request is served here.
+    // The final pass returns objections for the whole call; if it found none but
+    // the live watcher did, the watcher's list is kept rather than dropped.
+    const finalizeRef = useRef(finalizeAnalysis);
+    useEffect(() => { finalizeRef.current = finalizeAnalysis; }, [finalizeAnalysis]);
+    const watchedObjectionsRef = useRef<LiveAnalysisData['objections']>([]);
+    useEffect(() => {
+        watchedObjectionsRef.current = [...activeObjections, ...resolvedObjections];
+    }, [activeObjections, resolvedObjections]);
+    useEffect(() => {
+        if (!LIVE_ANALYSIS_V2_ENABLED) return;
+        const off = window.electronAPI?.onRunFinalAnalysisV2?.((request) => {
+            const requestId = request?.requestId;
+            if (!requestId) return;
+            (async () => {
+                try {
+                    const data = await finalizeRef.current?.();
+                    if (!data) {
+                        window.electronAPI?.respondFinalAnalysisV2?.(requestId, { ok: false, error: 'no final analysis' });
+                        return;
+                    }
+                    const merged = data.objections.length === 0 && watchedObjectionsRef.current.length > 0
+                        ? { ...data, objections: watchedObjectionsRef.current }
+                        : data;
+                    window.electronAPI?.respondFinalAnalysisV2?.(requestId, { ok: true, data: merged });
+                } catch (e: any) {
+                    window.electronAPI?.respondFinalAnalysisV2?.(requestId, { ok: false, error: e?.message ?? 'final analysis failed' });
+                }
+            })();
+        });
+        return () => off?.();
+    }, []);
 
     // ── Chat history — lifted so it survives panel switches ─────────────────
     const [chatMessages, setChatMessages] = useState<ChatMessage[]>([]);
@@ -559,7 +611,9 @@ export function useFloatingDock({ transcriptRef, isMeetingPaused, companyIntel }
     // that returned only `missing` fields is non-null here but renders as empty
     // in the panel, and that combination is exactly what used to bring the ring
     // back after the loading skeleton.
-    const isCountdownActive = countdownCycleActive && analysisData === null;
+    // v2 has no minutes countdown: it ticks on settled prospect speech, so before the first result
+    // the panel shows its plain "waiting" state instead of a timer.
+    const isCountdownActive = !LIVE_ANALYSIS_V2_ENABLED && countdownCycleActive && analysisData === null;
 
     return {
         // panel switching / freeze
@@ -585,6 +639,9 @@ export function useFloatingDock({ transcriptRef, isMeetingPaused, companyIntel }
         runAnalysis,
         isRefreshRun,
         ensureFinalAnalysisBeforeEndCall,
+        // live analysis v2 only (undefined on v1): fields the latest tick changed + 👍/👎 feedback
+        changedFields,
+        sendFieldFeedback,
         // chat history (lifted)
         handleInteractionId,
         chatMessages,

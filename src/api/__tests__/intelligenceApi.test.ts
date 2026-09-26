@@ -1,5 +1,5 @@
 // Locks the live-analysis wire contract: speaker-label formatting and the request body
-// fields the backend gates on (`meeting_types` → dealOptimizer, `mode` → fast/deep).
+// fields the backend gates on (`meeting_types` → dealOptimizer, `mode` → fast/deep; live ticks default to deep).
 
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 
@@ -18,7 +18,21 @@ const bodyOfCall = (i = 0) =>
 describe('intelligenceApi.analyzeLive', () => {
   beforeEach(() => mockedApiFetch.mockClear());
 
-  it('formats speaker labels and sends fast mode + empty meeting_types by default', async () => {
+  // The trailing window is what keeps a live tick's prompt small; the default
+  // must not move.
+  const manyTurns = (n: number) =>
+    Array.from({ length: n }, (_, i) => ({ speaker: 'client', text: `turn ${i}` }));
+
+  it('keeps only the trailing 80 turns when maxTurns is not passed', async () => {
+    await intelligenceApi.analyzeLive(manyTurns(120));
+    const lines = bodyOfCall().transcript.split('\n');
+    expect(lines).toHaveLength(80);
+    // Trailing, so the HEAD is what was dropped.
+    expect(lines[0]).toBe('PROSPECT: turn 40');
+    expect(lines[79]).toBe('PROSPECT: turn 119');
+  });
+
+  it('formats speaker labels and sends deep mode + empty meeting_types by default', async () => {
     await intelligenceApi.analyzeLive([
       { speaker: 'user', text: ' hi there ' },
       { speaker: 'client', text: 'the price is too high' },
@@ -27,7 +41,7 @@ describe('intelligenceApi.analyzeLive', () => {
     const body = bodyOfCall();
     expect(body.transcript).toBe('SALES PERSON: hi there\nPROSPECT: the price is too high');
     expect(body.meeting_id).toBeNull();
-    expect(body.mode).toBe('fast');
+    expect(body.mode).toBe('deep');
     expect(body.meeting_types).toEqual([]);
   });
 
@@ -40,11 +54,11 @@ describe('intelligenceApi.analyzeLive', () => {
 
   it('passes mode through when specified', async () => {
     await intelligenceApi.analyzeLive([{ speaker: 'client', text: 'x' }], null, {
-      mode: 'deep',
+      mode: 'fast',
       meetingTypes: ['demo'],
     });
     const body = bodyOfCall();
-    expect(body.mode).toBe('deep');
+    expect(body.mode).toBe('fast');
     expect(body.meeting_types).toEqual(['demo']);
   });
 
@@ -75,6 +89,39 @@ describe('intelligenceApi.analyzeLive', () => {
   it('omits previous_analysis on fresh (first-run) calls', async () => {
     await intelligenceApi.analyzeLive([{ speaker: 'client', text: 'x' }]);
     expect(bodyOfCall()).not.toHaveProperty('previous_analysis');
+  });
+
+  // The client is a PASSTHROUGH for the analysis state: it holds the backend's
+  // own object and posts it straight back. This is why BANT/MEDDIC are
+  // normalized at READ time (the accessors in src/lib/bantMeddic) and never
+  // rewritten in place — the contract has gained fields without warning
+  // before, and anything this client doesn't model must still survive the
+  // round trip.
+  it('round-trips the analysis verbatim, including keys the client does not model', async () => {
+    const prev = {
+      bant: {
+        budget: {
+          emoji: '⚠️',
+          status: 'partial',
+          summary: 'Pricing has been discussed, but no budget is approved.',
+          evidence: ['Pricing discussed was ₹60 per user per month.', 'Considering a 100-user trial.'],
+          evidence_clean: 'Pricing has been discussed, but no budget is approved.',
+          suggested_question: 'What budget has been approved?',
+          some_field_the_client_has_never_heard_of: { nested: [1, 2, 3] },
+        },
+      },
+      objections: [],
+      signals: [],
+    } as any;
+
+    await intelligenceApi.analyzeLive(
+      [{ speaker: 'client', text: 'and the budget?' }],
+      null,
+      { previousAnalysis: prev },
+    );
+
+    // Byte-identical, not merely deep-equal-after-coercion.
+    expect(JSON.stringify(bodyOfCall().previous_analysis)).toBe(JSON.stringify(prev));
   });
 });
 

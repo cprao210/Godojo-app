@@ -12,6 +12,8 @@ import { GEMINI_FLASH_MODEL } from "./IntelligenceManager"
 import { DatabaseManager } from "./db/DatabaseManager"; // Import Database Manager
 import { SupabaseReadService } from "./db/SupabaseReadService";
 import * as path from "path";
+import * as os from "os";
+import { classifyPerformanceMode } from "../utils/performanceClassification";
 import * as fs from "fs";
 import { AudioDevices } from "./audio/AudioDevices";
 import { detectTavilyIntent, extractAllowedCompaniesFromAttendees } from "./services/TavilyIntentDetector";
@@ -27,6 +29,9 @@ import {
   hydrateOrchestratorFromContext,
 } from './utils/companyKnowledge';
 import { AuthManager } from './services/AuthManager';
+import { parseUploadTranscript } from './utils/uploadTranscriptParser';
+import { handleUploadAnalysisResult } from './utils/uploadAnalysisBridge';
+import { handleFinalAnalysisV2Result } from './utils/finalAnalysisBridge';
 import { PendingLiveChatStore } from './PendingLiveChatStore';
 import { posthogMain } from './services/PostHogMainService';
 import { tenantContext } from './services/TenantContext';
@@ -52,6 +57,14 @@ export function initializeIpcHandlers(appState: AppState): void {
   // of GPU-composited), which is the main driver of lag/hangs reported on
   // mid-range machines. The renderer uses this once at startup to decide
   // whether to default Performance Mode on. See usePerformanceMode.ts.
+  //
+  // The response also carries a HARDWARE classification (pure fn —
+  // utils/performanceClassification.ts): software fallback alone misses
+  // weak-but-functional GPUs (e.g. Intel UHD that Chromium still composites
+  // with), so auto Performance Mode additionally triggers on <=4 CPU threads
+  // or Intel iGPU + <=8 GB RAM. RAM alone never triggers (an 8 GB Apple
+  // Silicon Mac must keep full fidelity). The user's explicit On/Off choice
+  // still wins — this only feeds the 'auto' preference.
   safeHandle('get-gpu-performance-status', async () => {
     try {
       // Electron types GPUFeatureStatus as a fixed set of known keys, not an
@@ -66,8 +79,35 @@ export function initializeIpcHandlers(appState: AppState): void {
         isSoftwareFallback(status.rasterization) ||
         isSoftwareFallback(status['2d_canvas']);
 
-      console.log("[ipcHandler] isLowPowerGpu", isLowPowerGpu);
-      return { isLowPowerGpu, raw: status };
+      // Hardware facts for the classification. Every fact is
+      // failure-tolerant: unknown (null) never triggers a rule.
+      const cpuThreads = os.cpus()?.length || null;
+      const totalRamGB = os.totalmem() > 0 ? Math.round((os.totalmem() / (1024 ** 3)) * 10) / 10 : null;
+      let gpuVendorId: string | null = null;
+      try {
+        // 'basic' GPUInfo includes the PCI vendorId (e.g. "0x8086" = Intel)
+        // and is cheap; it can be an empty string before GPU collection
+        // completes — treat that as unknown.
+        const gpuInfo = (await app.getGPUInfo('basic')) as { vendorId?: string } | null;
+        gpuVendorId = gpuInfo?.vendorId || null;
+      } catch { /* vendor unknown — classification degrades gracefully */ }
+
+      const classification = classifyPerformanceMode({
+        cpuThreads,
+        totalRamGB,
+        gpuVendorId,
+        isSoftwareRendering: isLowPowerGpu,
+      });
+
+      if (classification.autoPerformanceMode) {
+        console.log(`[ipcHandler] Performance Mode auto: on — ${classification.reason} (${classification.summary})`);
+      }
+      return {
+        isLowPowerGpu,
+        raw: status,
+        hardware: { cpuThreads, totalRamGB, gpuVendorId },
+        autoClassification: classification,
+      };
     } catch (err) {
       // If we can't determine GPU status, don't assume the worst — default
       // to the current (full-fidelity) behavior rather than silently
@@ -675,6 +715,18 @@ export function initializeIpcHandlers(appState: AppState): void {
     return { success: true, data: appState.getMeetingGeneration() };
   });
 
+  // The renderer's answer to a 'run-upload-analysis' request. ipcMain.on, not
+  // handle: main is the one waiting on a reply here, not the renderer, so this
+  // is the reply leg of a main→renderer request (same shape as the cropper's).
+  ipcMain.on('upload-analysis-result', (_event, payload) => {
+    handleUploadAnalysisResult(payload);
+  });
+
+  // The overlay's answer to a 'run-final-analysis-v2' request (live analysis v2 end-of-call pass).
+  ipcMain.on('final-analysis-v2-result', (_event, payload) => {
+    handleFinalAnalysisV2Result(payload);
+  });
+
   safeHandle("quit-app", () => {
     app.quit()
   })
@@ -704,7 +756,7 @@ export function initializeIpcHandlers(appState: AppState): void {
     // Production-only, like its siblings check-for-updates / download-update:
     // in dev there is no downloaded update and the fallback path used to
     // app.exit(0), silently killing a dev session from a stray click.
-    if (!app.isPackaged) {
+    if (!app.isPackaged && !appState.isDevUpdatesEnabled()) {
       return { success: false, error: 'Updates are disabled in development builds' }
     }
     // Never tear down a live call to apply an update. The renderer refuses
@@ -731,7 +783,7 @@ export function initializeIpcHandlers(appState: AppState): void {
     // Updates are a production-only feature — electron-updater has no signed/
     // published feed to check against in a dev build, so refuse up front
     // instead of letting it silently no-op or hit a manual fallback.
-    if (!app.isPackaged) {
+    if (!app.isPackaged && !appState.isDevUpdatesEnabled()) {
       console.log('[IPC] check-for-updates ignored: running unpackaged (development)')
       return { success: false, error: 'Updates are disabled in development builds' }
     }
@@ -746,7 +798,7 @@ export function initializeIpcHandlers(appState: AppState): void {
   })
 
   safeHandle("download-update", async () => {
-    if (!app.isPackaged) {
+    if (!app.isPackaged && !appState.isDevUpdatesEnabled()) {
       console.log('[IPC] download-update ignored: running unpackaged (development)')
       return { success: false, error: 'Updates are disabled in development builds' }
     }
@@ -781,7 +833,10 @@ export function initializeIpcHandlers(appState: AppState): void {
   // dev run so it can hide/disable the Updates UI accordingly, without
   // relying on process.env.NODE_ENV (unreliable inside Electron).
   safeHandle("is-app-packaged", async () => {
-    return app.isPackaged
+    // Effective updates-allowed flag, not raw packaging: with the dev test
+    // override (GODOJO_DEV_UPDATES=1) the whole Updates UI must enable in
+    // `npm run dev` exactly like production (see docs/TESTING-UPDATES.md).
+    return app.isPackaged || appState.isDevUpdatesEnabled()
   })
 
   // Window movement handlers
@@ -2175,6 +2230,14 @@ export function initializeIpcHandlers(appState: AppState): void {
     return DatabaseManager.getInstance().updateMeetingSummary(id, updates);
   });
 
+  const currentMeetingOrNull = (id: string) => {
+    try {
+      return DatabaseManager.getInstance().getMeetingDetails(id);
+    } catch {
+      return null;
+    }
+  };
+
   safeHandle("regenerate-meeting-summary", async (_, { id }: { id: string }) => {
 
     try {
@@ -2201,11 +2264,14 @@ export function initializeIpcHandlers(appState: AppState): void {
         // }
         return { success: true, meeting: updated };
       }
-      return { success: false };
+      return { success: false, meeting: currentMeetingOrNull(id) };
     } catch (e: any) {
 
       console.error('[ipcHandlers] regenerate-meeting-summary error:', e);
-      return { success: false, error: e?.message || String(e) };
+      // Regenerating can save a new Call Analysis before the summary step fails
+      // (see MeetingPersistence.regenerateSummary) — hand the row back so the UI
+      // shows it instead of waiting for the next page open.
+      return { success: false, error: e?.message || String(e), meeting: currentMeetingOrNull(id) };
 
     }
 
@@ -2225,9 +2291,19 @@ export function initializeIpcHandlers(appState: AppState): void {
     return { success: true };
   });
 
-  safeHandle("upload-transcript", async (_, { text, title, meetingTypes, tenantId }: { text: string; title?: string; meetingTypes?: ('discovery' | 'demo' | 'negotiation')[]; tenantId?: string | null }) => {
+  // The upload modal's "Which speaker is you?" picker: the transcript's speakers and the one
+  // uploadTranscript would pick as the rep if the user picks nothing (name match, else first).
+  safeHandle("upload-transcript-speakers", async (_, text: string) => {
+    const { displayName, email } = AuthManager.getInstance().snapshot();
+    const { speakers, repSpeaker, repSource } = parseUploadTranscript(typeof text === 'string' ? text : '', {
+      repNameHints: [displayName, email],
+    });
+    return { speakers, suggestedRep: repSpeaker, suggestedBy: repSource };
+  });
+
+  safeHandle("upload-transcript", async (_, { text, title, meetingTypes, tenantId, repSpeaker }: { text: string; title?: string; meetingTypes?: ('discovery' | 'demo' | 'negotiation')[]; tenantId?: string | null; repSpeaker?: string | null }) => {
     try {
-      const meetingId = await appState.getIntelligenceManager().uploadTranscript(text, title, meetingTypes, tenantId);
+      const meetingId = await appState.getIntelligenceManager().uploadTranscript(text, title, meetingTypes, tenantId, repSpeaker);
       if (meetingId) return { success: true, meetingId };
       return { success: false, error: 'Transcript too short or could not be parsed' };
     } catch (e) {

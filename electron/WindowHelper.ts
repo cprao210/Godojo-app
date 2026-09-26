@@ -519,6 +519,12 @@ export class WindowHelper {
         contextIsolation: true,
         preload: path.join(__dirname, "preload.js"),
         scrollBounce: true,
+        // This renderer owns the live-analysis and objection timers and the
+        // audio-level feed — they must keep ticking even while the dock is
+        // collapsed/hidden behind another app's fullscreen window. This is
+        // the ONLY window with background throttling disabled now that the
+        // global disable-background-timer-throttling switch is gone.
+        backgroundThrottling: false,
       },
       show: false,
       frame: false, // Frameless

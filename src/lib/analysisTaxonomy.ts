@@ -90,18 +90,24 @@ export const STATUS_EMOJI: Record<'confirmed' | 'partial' | 'missing', '✅' | '
     missing: '❌',
 };
 
-/** Sentence-boundary clamp length (backend EVIDENCE_MAX_CHARS). */
+/** Sentence-boundary clamp length for signal/deal quotes (backend EVIDENCE_MAX_CHARS). */
 export const EVIDENCE_MAX_CHARS = 300;
+/** Per-item clamp for BANT/MEDDIC evidence (backend EVIDENCE_ITEM_MAX_CHARS). */
+export const EVIDENCE_ITEM_MAX_CHARS = 200;
+/** Max BANT/MEDDIC evidence items per field (backend EVIDENCE_MAX_ITEMS). */
+export const EVIDENCE_MAX_ITEMS = 3;
+/** Clamp for a BANT/MEDDIC `summary` (backend SUMMARY_MAX_CHARS). */
+export const SUMMARY_MAX_CHARS = 200;
 
 /**
- * Clamp to EVIDENCE_MAX_CHARS at the last sentence boundary, falling back to
- * a hard cut (mirrors validators.clamp_evidence). Objection quotes are
- * deliberately NOT clamped by callers — the backend prompt requires one quote
- * spanning every sub-point of an enumerated burst.
+ * Clamp to `limit` at the last sentence boundary, falling back to a hard cut
+ * (mirrors validators.clamp_evidence). Objection quotes are deliberately NOT
+ * clamped by callers — the backend prompt requires one quote spanning every
+ * sub-point of an enumerated burst.
  */
-export function clampEvidence(text: string): string {
-    if (!text || text.length <= EVIDENCE_MAX_CHARS) return text;
-    const window = text.slice(0, EVIDENCE_MAX_CHARS);
+export function clampEvidence(text: string, limit: number = EVIDENCE_MAX_CHARS): string {
+    if (!text || text.length <= limit) return text;
+    const window = text.slice(0, limit);
     const boundary = Math.max(
         window.lastIndexOf('. '),
         window.lastIndexOf('! '),

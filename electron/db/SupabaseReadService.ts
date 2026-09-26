@@ -66,7 +66,7 @@ export class SupabaseReadService {
                 calendarEventId: row.calendar_event_id,
                 calendarEventMetadata: row.calendar_event_metadata ?? undefined,
                 source: row.source as any,
-                isProcessed: row.is_processed === true || row.is_processed === 1,
+                isProcessed: row.is_processed == null ? undefined : row.is_processed === true || row.is_processed === 1,
                 // List view stays light — no transcript/usage.
                 transcript: [] as any[],
                 usage: [] as any[]

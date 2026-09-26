@@ -278,7 +278,7 @@ const AudioTab: React.FC<{ overlay: SettingsOverlayHook }> = ({ overlay }) => {
                         <div className="flex justify-between text-xs text-text-secondary mb-2 px-1">
                             <span>Input Level</span>
                         </div>
-                        <div className="h-1.5 bg-bg-input rounded-full overflow-hidden">
+                        <div className="h-1.5 bg-bg-item-surface rounded-full overflow-hidden">
                             <div className="h-full bg-green-500 transition-all duration-100 ease-out" style={{ width: `${audio.micLevel}%` }} />
                         </div>
                         {audio.micError && (
@@ -302,7 +302,7 @@ const AudioTab: React.FC<{ overlay: SettingsOverlayHook }> = ({ overlay }) => {
                             <span>System Audio Level</span>
                             <span className="text-text-tertiary">Interviewer / meeting audio</span>
                         </div>
-                        <div className="h-1.5 bg-bg-input rounded-full overflow-hidden">
+                        <div className="h-1.5 bg-bg-item-surface rounded-full overflow-hidden">
                             <div
                                 className={`h-full transition-all duration-100 ease-out ${audio.systemAudioError ? 'bg-red-500/40' : 'bg-green-500'}`}
                                 style={{ width: `${audio.systemAudioError ? 100 : audio.systemAudioLevel}%` }}
@@ -330,7 +330,7 @@ const AudioTab: React.FC<{ overlay: SettingsOverlayHook }> = ({ overlay }) => {
                     <div className="flex justify-end">
                         <button
                             onClick={audio.playTestSound}
-                            className="text-xs bg-bg-input hover:bg-bg-elevated text-text-primary px-3 py-1.5 rounded-md transition-colors flex items-center gap-2"
+                            className="text-xs bg-bg-card hover:bg-bg-elevated text-text-primary px-3 py-1.5 rounded-md transition-colors flex items-center gap-2"
                         >
                             <Speaker size={12} /> Test Sound
                         </button>

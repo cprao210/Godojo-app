@@ -20,9 +20,10 @@ import { meetingsApi, chatApi } from '@/api';
 import { isMeetingProcessing } from '@/api/meetingMapping';
 import { guardSession } from '@/lib/firebase';
 import type { CompanyRef, Meeting, MeetingTranscriptLine, MeetingScorecardResult, LiveAnalysisData } from '@/types';
-import { normalizeBant, normalizeMeddicc, confirmedOnly, BANT_ORDER, MEDDICC_ORDER } from '@/lib/bantMeddic';
+import { normalizeBant, normalizeMeddicc, confirmedOnly, fieldEvidenceList, fieldSummary, fieldText, BANT_ORDER, MEDDICC_ORDER } from '@/lib/bantMeddic';
 import { deriveProcessingStage, hasGeneratedSummary, PROCESSING_STALL_TIMEOUT_MS } from '@/lib/meetingLifecycle';
 import { classifyLLMError } from '@/lib/utils';
+import { splitRepFollowUps } from '@/lib/objections';
 import { posthogAnalytics } from '@/lib/analytics/posthog.service';
 
 export const formatTime = (ms: number) => {
@@ -192,6 +193,21 @@ export function useMeetingDetails(initialMeeting: Meeting) {
         () => meetingsApi.get(initialMeeting.id),
         {
             initialData: initialMeeting,
+            // CRITICAL: without this, react-query v3 stamps `dataUpdatedAt`
+            // with Date.now() the moment initialData is registered — so
+            // `dataUpdatedAt > 0` (checked below) becomes true on the very
+            // first render, before ANY fetch has run. Downstream that made
+            // `isDetailResolved` true while the placeholder still had no
+            // summary, which flashed "No summary yet" (with a Generate
+            // button) for the few seconds the real GET /meetings/{id} took
+            // to land — most visible for slim list rows and the AE
+            // drill-down's placeholder meetings, which never carry
+            // summary_json. With `initialDataUpdatedAt: 0`, dataUpdatedAt
+            // stays 0 until a REAL fetch completes (or the unblock
+            // setQueryData below runs), which is what both consumers below
+            // always meant. Staleness is unaffected: staleTime is already 0,
+            // so the mount refetch behaves exactly as before.
+            initialDataUpdatedAt: 0,
             enabled: !isProcessing && canFetchDetail,
         },
     );
@@ -203,8 +219,10 @@ export function useMeetingDetails(initialMeeting: Meeting) {
     // `idle`, which is also not "loading". `dataUpdatedAt` is the only honest
     // signal — react-query stamps it on a completed fetch AND on the
     // `setQueryData` the unblock effect below performs, which are precisely the
-    // two ways real detail data arrives. Ids with no backend row can never
-    // resolve that way, so they count as resolved and render the list row.
+    // two ways real detail data arrives. (initialData itself does NOT count:
+    // `initialDataUpdatedAt: 0` above keeps the mount-time placeholder from
+    // stamping it.) Ids with no backend row can never resolve that way, so they
+    // count as resolved and render the list row.
     const isDetailResolved = !canFetchDetail || dataUpdatedAt > 0;
 
     // Company resolution, deliberately SEPARATE from the detail query above.
@@ -234,9 +252,12 @@ export function useMeetingDetails(initialMeeting: Meeting) {
     // useFloatingDock.ts only persists them locally at call-end (see
     // PendingLiveChatStore.ts). `meetingData` is seeded via `initialData`
     // above and stays truthy even before a real network fetch resolves, so
-    // gate on `dataUpdatedAt > 0` — react-query only sets that after an
-    // actual completed query, which IS the confirmation the backend has
-    // synced this meeting.
+    // gate on `dataUpdatedAt > 0` — with `initialDataUpdatedAt: 0` (see the
+    // query options above) that only happens after an actual completed query,
+    // which IS the confirmation the backend has synced this meeting. (Before
+    // that flag, initialData stamped dataUpdatedAt at mount and this effect
+    // fired prematurely — 404 against a not-yet-mirrored row, retried later
+    // by the 15s sweep, but noisy and racy.)
     useEffect(() => {
         if (isProcessing || dataUpdatedAt === 0 || meetingData.id !== initialMeeting.id) return;
 
@@ -939,11 +960,17 @@ ${formatNextCallPlaybook() || '  None'}
             const la = meeting.detailedSummary.liveAnalysis;
             const sections: string[] = [];
 
-            // Helper to format a field
+            // Helper to format a field: the assessment on the status line, then
+            // the supporting statements indented beneath it. An export is
+            // exactly where the reference material belongs — someone pasting
+            // this into a CRM wants the claim AND what it rests on.
             const formatField = (label: string, field: any) => {
                 if (!field || !field.status) return '';
                 const statusIcon = field.status === 'confirmed' ? '✅' : field.status === 'partial' ? '⚠️' : '❌';
-                return `  ${statusIcon} ${label}: ${field.status.toUpperCase()} - ${field.evidence || 'Not mentioned'}`;
+                const head = `  ${statusIcon} ${label}: ${field.status.toUpperCase()} - ${fieldText(field) || 'Not mentioned'}`;
+                // Only when the assessment isn't itself the evidence (old rows).
+                const refs = fieldSummary(field) ? fieldEvidenceList(field) : [];
+                return refs.length ? [head, ...refs.map(r => `      • ${r}`)].join('\n') : head;
             };
 
             // MEDDIC Section
@@ -996,13 +1023,23 @@ ${formatNextCallPlaybook() || '  None'}
             }
 
             // Objections Section
-            if (la.objections && la.objections.length > 0) {
-                sections.push(`OBJECTIONS (${la.objections.length})`);
+            // The prospect's objections, then the rep's own follow-ups — never mixed.
+            const { objections: prospectObjections, followUps: repFollowUps } =
+                splitRepFollowUps(la.objections || []);
+            if (prospectObjections.length > 0) {
+                sections.push(`OBJECTIONS (${prospectObjections.length})`);
                 sections.push(`${'─'.repeat(40)}`);
-                la.objections.forEach((obj, idx) => {
-                    const typeLabel = obj.type === 'ae_deferral' ? 'Follow-up' : 'Question';
-                    sections.push(`  ${idx + 1}. [${typeLabel}] "${obj.quote}"`);
-                    sections.push(`     Owner: ${obj.owner}`);
+                prospectObjections.forEach((obj, idx) => {
+                    sections.push(`  ${idx + 1}. "${obj.quote}"`);
+                    if (obj.rep_response) sections.push(`     Rep: "${obj.rep_response}"`);
+                    sections.push('');
+                });
+            }
+            if (repFollowUps.length > 0) {
+                sections.push(`YOUR FOLLOW-UPS (${repFollowUps.length})`);
+                sections.push(`${'─'.repeat(40)}`);
+                repFollowUps.forEach((obj, idx) => {
+                    sections.push(`  ${idx + 1}. "${obj.quote}"`);
                     sections.push('');
                 });
             }
@@ -1056,6 +1093,18 @@ ${formatNextCallPlaybook() || '  None'}
                 // locally-served scorecard so the panel shows the fresh result.
                 void queryClient.invalidateQueries(scorecardKey);
             } else {
+                // The summary step failed, but regenerating may already have saved a
+                // new Call Analysis (a meeting that had none) — show it now.
+                const savedAnalysis = result?.meeting?.detailedSummary?.liveAnalysis;
+                if (savedAnalysis && !meeting.detailedSummary?.liveAnalysis) {
+                    queryClient.setQueryData<Meeting>(meetingKey, (prev) => {
+                        const base = prev ?? meeting;
+                        return {
+                            ...base,
+                            detailedSummary: { ...(base.detailedSummary ?? { actionItems: [], keyPoints: [] }), liveAnalysis: savedAnalysis },
+                        };
+                    });
+                }
                 // `result.error` now carries the real provider error (e.g. Gemini
                 // "429 RESOURCE_EXHAUSTED" / Groq rate-limit text) instead of being
                 // swallowed to a bare `false` — classify it into something the user

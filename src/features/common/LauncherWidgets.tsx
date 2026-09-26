@@ -906,7 +906,7 @@ export const MeetingRow: React.FC<MeetingRowProps> = ({
                         exit={{ opacity: 0, scale: 0.95, y: 4 }}
                         transition={{ duration: 0.1 }}
                         style={{ position: 'fixed', top: menuPos.top, left: menuPos.left }}
-                        className={['w-[100px] backdrop-blur-xl rounded-lg shadow-2xl z-[9999] overflow-hidden border', isLight ? 'bg-bg-elevated border-border-muted shadow-[0_8px_24px_rgba(0,0,0,0.12)]' : 'bg-bg-card/90 border-border-muted'].join(' ')}
+                        className={['w-[100px] rounded-lg shadow-2xl z-[9999] overflow-hidden border', isLight ? 'bg-bg-elevated border-border-muted shadow-[0_8px_24px_rgba(0,0,0,0.12)]' : 'bg-bg-card border-border-muted'].join(' ')}
                         onClick={(e) => e.stopPropagation()}
                         onMouseEnter={onMenuMouseEnter}
                         onMouseLeave={onMenuMouseLeave}
@@ -1299,6 +1299,12 @@ interface TranscriptUploadModalProps {
     setUploadCompany: (v: PickedCompany | null) => void;
     uploadCompanyDraft: string;
     setUploadCompanyDraft: (v: string) => void;
+    /** Speakers found in the pasted transcript, in order of appearance. */
+    uploadSpeakers: string[];
+    /** The speaker treated as the rep ("you"); everyone else is the prospect side. */
+    uploadRepSpeaker: string | null;
+    uploadRepSource: 'picked' | 'name' | 'first' | null;
+    onPickRepSpeaker: (label: string) => void;
     uploadError: string | null;
     isUploading: boolean;
     onClose: () => void;
@@ -1309,6 +1315,7 @@ export const TranscriptUploadModal: React.FC<TranscriptUploadModalProps> = ({
     isOpen, isLight, uploadTitle, setUploadTitle, uploadText, setUploadText,
     uploadMeetingTypes, setUploadMeetingTypes, uploadCompany, setUploadCompany,
     uploadCompanyDraft, setUploadCompanyDraft,
+    uploadSpeakers, uploadRepSpeaker, uploadRepSource, onPickRepSpeaker,
     uploadError, isUploading, onClose, onSubmit,
 }) => (
     <AnimatePresence>
@@ -1497,6 +1504,46 @@ export const TranscriptUploadModal: React.FC<TranscriptUploadModalProps> = ({
                                     ].join(' ')}
                                 />
                             </div>
+
+                            {/* Which speaker is you — only the OTHER speakers are graded
+                                for BANT/MEDDIC, so a wrong pick scores the call as empty. */}
+                            {uploadSpeakers.length >= 2 && (
+                                <div>
+                                    <label className="text-[10px] font-medium text-text-tertiary uppercase tracking-wider mb-1.5 block">
+                                        Which speaker is you?
+                                    </label>
+                                    <div className="flex items-center gap-1.5 flex-wrap">
+                                        {uploadSpeakers.map(label => {
+                                            const on = label === uploadRepSpeaker;
+                                            return (
+                                                <button
+                                                    key={label}
+                                                    type="button"
+                                                    onClick={() => onPickRepSpeaker(label)}
+                                                    className={[
+                                                        'px-2.5 py-[5px] rounded-lg text-[11.5px] font-medium transition-all active:scale-95 select-none border max-w-[220px] truncate',
+                                                        on
+                                                            ? 'border-accent-primary/50 bg-accent-primary/15 text-accent-primary'
+                                                            : isLight
+                                                                ? 'border-black/10 bg-black/[0.04] text-text-tertiary hover:text-text-secondary'
+                                                                : 'border-white/[0.08] bg-white/[0.04] text-text-tertiary hover:text-text-secondary',
+                                                    ].join(' ')}
+                                                    title={label}
+                                                >
+                                                    {label}
+                                                </button>
+                                            );
+                                        })}
+                                    </div>
+                                    <p className="text-[10px] text-text-tertiary mt-1">
+                                        {uploadRepSource === 'name'
+                                            ? 'Matched to your account name — pick yourself if that’s wrong'
+                                            : uploadRepSource === 'first'
+                                                ? 'Defaulted to the first speaker — pick yourself if that’s wrong'
+                                                : 'Everyone else is analysed as the prospect side'}
+                                    </p>
+                                </div>
+                            )}
 
                             {uploadError && (
                                 <div className={['flex items-center gap-2 text-[12px] rounded-lg px-3 py-2 border', isLight ? 'text-red-600 bg-red-50 border-red-200' : 'text-red-400 bg-red-500/10 border-red-500/20'].join(' ')}>

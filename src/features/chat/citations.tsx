@@ -401,16 +401,11 @@ export const CiteChip: React.FC<{
         <>
             {indices.map((i, k) => {
                 const src = map?.[i];
-<<<<<<< Updated upstream
                 // No backing source → render nothing: a marker that can't show
                 // its source is never displayed (the backend already drops
                 // these; this guards older stored turns).
                 if (!src) return null;
-                return <CitationPill key={i} index={i} src={src} />;
-=======
-                if (!src) return <sup key={i} className="text-text-tertiary">[{i}]</sup>;
                 return <CitationPill key={i} index={i} label={labels[k] ?? i} src={src} />;
->>>>>>> Stashed changes
             })}
         </>
     );
