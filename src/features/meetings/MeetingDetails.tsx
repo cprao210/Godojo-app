@@ -138,7 +138,8 @@ function titleCaseComponent(key: string): string {
     return key.charAt(0).toUpperCase() + key.slice(1);
 }
 
-function docSourcesFor(sources: AiInteractionSource[] | undefined) {    if (!sources?.length) return [];
+function docSourcesFor(sources: AiInteractionSource[] | undefined) {
+    if (!sources?.length) return [];
     const seen = new Set<string>();
     const out: { id: string; title: string }[] = [];
     for (const s of sources) {
@@ -1402,7 +1403,12 @@ const MeetingDetails: React.FC<MeetingDetailsProps> = ({ meeting: initialMeeting
                                                         <div className="mt-1 w-6 h-6 rounded-full bg-bg-input flex items-center justify-center border border-border-subtle shrink-0">
                                                             <img src={IMAGES.godojoLogoIcon} alt="AI" className="w-4 h-4 opacity-50 object-contain force-black-icon" />
                                                         </div>
-                                                        <div>
+                                                        {/* flex-1 min-w-0: without min-w-0 this flex item can't shrink
+                                                            below its content's intrinsic width, so a wide markdown
+                                                            table (which scrolls fine on its own — see the table
+                                                            wrapper in markdownComponents.tsx) just expands this row
+                                                            instead, pushing the whole panel into horizontal overflow. */}
+                                                        <div className="flex-1 min-w-0">
                                                             <div className="text-[11px] text-text-tertiary mb-1.5 font-medium">{formatTime(interaction.timestamp)}</div>
                                                             <div className="text-text-secondary text-[15px] leading-relaxed max-w-none">
                                                                 {/* Same inline-citation design as the chat overlays:
