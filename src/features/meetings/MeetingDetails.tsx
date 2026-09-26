@@ -1595,6 +1595,16 @@ const MeetingDetails: React.FC<MeetingDetailsProps> = ({ meeting: initialMeeting
                 initialQuery={pendingQuery}
                 messages={chatMessages}
                 onMessagesChange={setChatMessages}
+                // Ask-Dojo tab goes stale after a chat turn (P1-7). The backend
+                // persists the turn in a background task right around `done`,
+                // so refresh now AND once more after the write has landed —
+                // an immediate-only refetch can race the insert. When the tab
+                // isn't mounted this just marks it stale for its next view.
+                onTurnComplete={() => {
+                    const key = ['ai-interactions', meeting.id];
+                    void queryClient.invalidateQueries(key);
+                    window.setTimeout(() => void queryClient.invalidateQueries(key), 1500);
+                }}
             />
         </div>
     )

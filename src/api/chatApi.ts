@@ -73,6 +73,22 @@ class StreamErrorFrame extends Error {
     }
 }
 
+/** No bytes (frames or `: ping` heartbeats) for this long = dead connection.
+ * The backend heartbeats every 15s, so this allows two missed pings. */
+const STREAM_IDLE_TIMEOUT_MS = 45_000;
+const IDLE_TIMEOUT = Symbol("idle-timeout");
+
+function readWithTimeout(
+    reader: ReadableStreamDefaultReader<Uint8Array>,
+    ms: number,
+): Promise<ReadableStreamReadResult<Uint8Array> | typeof IDLE_TIMEOUT> {
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const timeout = new Promise<typeof IDLE_TIMEOUT>((resolve) => {
+        timer = setTimeout(() => resolve(IDLE_TIMEOUT), ms);
+    });
+    return Promise.race([reader.read(), timeout]).finally(() => clearTimeout(timer));
+}
+
 function isRetryableStreamError(err: unknown): boolean {
     if (err instanceof EmptyStreamError) return true;
     if (err instanceof StreamErrorFrame) return true;
@@ -167,8 +183,23 @@ function streamSSE(path: string, body: unknown, handlers: ChatStreamHandlers): S
                 let buffer = "";
 
                 try {
-                    while (true) {
-                        const { value, done } = await reader.read();
+                    // `done` is the backend's terminal frame: the turn ends
+                    // there, not when the socket happens to close. Waiting for
+                    // the close left the cursor blinking (and Copy hidden)
+                    // whenever the connection lingered after `done`.
+                    // The watchdog covers a connection that goes silent — the
+                    // backend pings every 15s, so STREAM_IDLE_TIMEOUT_MS of
+                    // nothing means it is dead.
+                    readLoop: while (true) {
+                        const next = await readWithTimeout(reader, STREAM_IDLE_TIMEOUT_MS);
+                        if (next === IDLE_TIMEOUT) {
+                            if (hasStreamedContent) {
+                                console.warn(`[chatApi] stream idle (${path}); finishing with the streamed answer`);
+                                break;
+                            }
+                            throw new EmptyStreamError();
+                        }
+                        const { value, done } = next;
                         if (done) break;
                         buffer += decoder.decode(value, { stream: true });
 
@@ -177,9 +208,10 @@ function streamSSE(path: string, body: unknown, handlers: ChatStreamHandlers): S
                         while ((sep = buffer.indexOf("\n\n")) !== -1) {
                             dispatchFrame(buffer.slice(0, sep), guardedHandlers, markDoneFrame);
                             buffer = buffer.slice(sep + 2);
+                            if (receivedDoneFrame) break readLoop;
                         }
                     }
-                    if (buffer.trim()) dispatchFrame(buffer, guardedHandlers, markDoneFrame); // trailing frame, no closing blank line
+                    if (!receivedDoneFrame && buffer.trim()) dispatchFrame(buffer, guardedHandlers, markDoneFrame); // trailing frame, no closing blank line
                 } finally {
                     // dispatchFrame throws on an `error` frame, leaving the
                     // body unread. Cancel so the connection is released
@@ -281,19 +313,13 @@ function dispatchFrame(frame: string, handlers: ChatStreamHandlers, onDoneFrame?
             handlers.onStatus?.(parsed.status);
             break;
         }
-        case "source_ids": {
-            const parsed = JSON.parse(data) as {
-                sources?: (
-                    | { id: string; title: string; type: string }
-                    | { asset_id: string; title: string; kind: string }
-                )[];
-            };
-            handlers.onSources?.(groupSources(parsed.sources));
+        case "source_ids":
+            // Separate source lists are no longer shown — sources appear only
+            // as inline citation chips (source_map). Ignored for older servers.
             break;
-        }
         case "source_map": {
-            // Emitted before the first token: the [n] -> source mapping the
-            // renderer needs to draw citation chips live.
+            // Emitted before the first token: ONLY the entries the answer
+            // cites inline, each with the exact excerpt it drew on (`quote`).
             const parsed = JSON.parse(data) as { sources?: SourceMapEntry[] };
             handlers.onSourceMap?.(parsed.sources ?? []);
             break;
@@ -333,9 +359,9 @@ function dispatchFrame(frame: string, handlers: ChatStreamHandlers, onDoneFrame?
             break;
         }
         case "done":
-            // `{}` — no payload to act on. Signal streamSSE (its empty-stream
-            // guard keys off this) but do NOT call handlers.onDone here: the
-            // read loop's close is the single, existing completion point.
+            // `{}` — no payload to act on. Signal streamSSE, which stops
+            // reading and fires the single onDone; not called here so the
+            // exactly-one-terminal-callback contract stays in one place.
             onDoneFrame?.();
             break;
         default:
@@ -438,6 +464,14 @@ export const chatApi = {
     /** Sidebar list. Sorted newest-first by the backend, capped at 30. */
     listSessions: (): Promise<ChatSession[]> =>
         apiFetch<{ sessions: ChatSession[] }>("/chat/sessions").then((r) => r.sessions),
+
+    /** The meeting's existing chat session id (null when none) — lets the
+     * meeting-chat overlay resume the prior conversation instead of minting
+     * a new session on every visit (P1-6). */
+    findMeetingSession: (meetingId: string): Promise<string | null> =>
+        apiFetch<{ session_id: string | null }>(
+            `/chat/sessions/by-meeting/${meetingId}`,
+        ).then((r) => r.session_id ?? null),
 
     /** Full turn history for resuming a chat (last 20 messages, chronological). */
     getSessionMessages: (sessionId: string): Promise<ChatHistoryTurn[]> =>

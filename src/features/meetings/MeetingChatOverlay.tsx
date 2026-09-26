@@ -1,5 +1,5 @@
 import React, { useEffect, useState } from 'react';
-import { X, Copy, Check, FileText, ExternalLink } from 'lucide-react';
+import { X, Copy, Check } from 'lucide-react';
 import { motion, AnimatePresence } from 'framer-motion';
 import { IMAGES } from '@/lib/assets';
 import ReactMarkdown from 'react-markdown';
@@ -7,7 +7,7 @@ import { CitationProvider, rehypeCitations, CiteChip } from '@/features/chat/cit
 import remarkGfm from 'remark-gfm';
 import { chatMarkdownComponents } from '@/features/chat';
 import { useMeetingChat } from '@/hooks';
-import { ChatSources, MeetingChatOverlayProps } from '@/types';
+import { MeetingChatOverlayProps } from '@/types';
 
 // ============================================
 // Typing Indicator Component
@@ -52,55 +52,7 @@ const UserMessage: React.FC<{ content: string }> = ({ content }) => (
     </motion.div>
 );
 
-// ============================================
-// Sources Display
-// ============================================
-// Renders retrieved meeting sources under an assistant message, mirroring the
-// "Sources" affordance of most RAG chat apps:
-//  - Nothing rendered at all if there are no sources.
-//  - Exactly one meeting source: shown as a clickable chip (opens that meeting).
-//  - Multiple meeting sources: shown as plain (non-clickable) text —
-//    "Title of First +N" — since there's no single obvious place to navigate.
-// Asset sources (company knowledge base docs) are counted but not clickable,
-// since there's no meeting to open for them.
-const SourcesDisplay: React.FC<{ sources: ChatSources; onOpenMeeting?: (meetingId: string) => void }> = ({ sources, onOpenMeeting }) => {
-    const { meetings, assets } = sources;
-    const totalCount = meetings.length + assets.length;
-    if (totalCount === 0) return null;
-
-    // Single meeting, no assets → clickable chip with the real title.
-    if (meetings.length === 1 && assets.length === 0) {
-        const meeting = meetings[0];
-        const isClickable = !!onOpenMeeting;
-        const Tag: any = isClickable ? 'button' : 'span';
-        return (
-            <Tag
-                {...(isClickable ? { onClick: () => onOpenMeeting!(meeting.id) } : {})}
-                className={`flex items-center gap-1.5 text-[13px] text-text-tertiary max-w-[280px] ${isClickable ? 'hover:text-text-secondary hover:underline transition-colors cursor-pointer' : ''}`}
-                title={meeting.title}
-            >
-                <FileText size={13} className="shrink-0" />
-                <span className="truncate">{meeting.title}</span>
-                {isClickable && <ExternalLink size={11} className="shrink-0" />}
-            </Tag>
-        );
-    }
-
-    // Multiple sources (any mix of meetings/assets) → plain text summary,
-    // "First Title +N" — not clickable, since there's no single destination.
-    const firstTitle = meetings[0]?.title ?? assets[0]?.title ?? '';
-    const extraCount = totalCount - 1;
-    return (
-        <span className="flex items-center gap-1.5 text-[13px] text-text-tertiary max-w-[320px]" title={[...meetings, ...assets].map(s => s.title).join(', ')}>
-            <FileText size={13} className="shrink-0" />
-            <span className="truncate">
-                {firstTitle}{extraCount > 0 ? ` +${extraCount}` : ''}
-            </span>
-        </span>
-    );
-};
-
-const AssistantMessage: React.FC<{ content: string; isStreaming?: boolean; sources?: ChatSources; sourceMap?: Record<number, import('@/types').SourceMapEntry>; unverifiedCitations?: number[]; rewriting?: boolean; onOpenMeeting?: (meetingId: string) => void }> = ({ content, isStreaming, sources, sourceMap, unverifiedCitations, rewriting, onOpenMeeting }) => {
+const AssistantMessage: React.FC<{ content: string; isStreaming?: boolean; sourceMap?: Record<number, import('@/types').SourceMapEntry>; unverifiedCitations?: number[]; rewriting?: boolean; onOpenMeeting?: (meetingId: string) => void }> = ({ content, isStreaming, sourceMap, unverifiedCitations, rewriting, onOpenMeeting }) => {
     const [copied, setCopied] = useState(false);
 
     // While waiting for the first frame the assistant placeholder has no
@@ -170,7 +122,6 @@ const AssistantMessage: React.FC<{ content: string; isStreaming?: boolean; sourc
                         {copied ? <Check size={14} className="text-emerald-500" /> : <Copy size={14} />}
                         {copied ? 'Copied' : 'Copy message'}
                     </button>
-                    {sources && <SourcesDisplay sources={sources} onOpenMeeting={onOpenMeeting} />}
                 </div>
             )}
         </motion.div>
@@ -190,6 +141,7 @@ const MeetingChatOverlay: React.FC<MeetingChatOverlayProps> = ({
     initialQuery,
     onOpenMeeting,
     onBusyChange,
+    onTurnComplete,
 }) => {
     const {
         chatState,
@@ -201,7 +153,7 @@ const MeetingChatOverlay: React.FC<MeetingChatOverlayProps> = ({
         handleClose,
         isBusy,
         stopGeneration,
-    } = useMeetingChat({ isOpen, onClose, onMessagesChange, messages, meetingContext, initialQuery });
+    } = useMeetingChat({ isOpen, onClose, onMessagesChange, messages, meetingContext, initialQuery, onTurnComplete });
 
     // Report streaming state up to the parent — the ask-bar input (and its
     // send/stop button) lives outside this overlay in MeetingDetails, so it
@@ -266,7 +218,7 @@ const MeetingChatOverlay: React.FC<MeetingChatOverlayProps> = ({
                         <div className="flex-1 overflow-y-auto px-6 py-4 pb-32 custom-scrollbar">
                             {messages.map((msg) => (
                                 msg.role === 'user'
-                                    ? <UserMessage key={msg.id} content={msg.content} /> : <AssistantMessage key={msg.id} content={msg.content} isStreaming={msg.isStreaming} sources={msg.sources} sourceMap={msg.sourceMap} unverifiedCitations={msg.unverifiedCitations} rewriting={msg.rewriting} onOpenMeeting={onOpenMeeting} />
+                                    ? <UserMessage key={msg.id} content={msg.content} /> : <AssistantMessage key={msg.id} content={msg.content} isStreaming={msg.isStreaming} sourceMap={msg.sourceMap} unverifiedCitations={msg.unverifiedCitations} rewriting={msg.rewriting} onOpenMeeting={onOpenMeeting} />
                             ))}
 
                             {chatState === 'waiting_for_llm' && <TypingIndicator label={statusText ?? undefined} />}

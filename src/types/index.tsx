@@ -324,7 +324,10 @@ export interface SourceMapEntry {
   index: number;
   id: string;
   title: string;
-  type: 'doc' | 'meeting';
+  /** 'live_moment': a transcript line of the call in progress — titled
+   * "This call, MM:SS", carries speaker + timestamp_label, never clickable
+   * (no meeting page exists mid-call). */
+  type: 'doc' | 'meeting' | 'live_moment';
   /** Doc: section heading; meeting summary blocks: 'Key points' etc. */
   section?: string;
   page?: number;
@@ -334,6 +337,9 @@ export interface SourceMapEntry {
   start_ms?: number;
   end_ms?: number;
   snippet?: string;
+  /** The exact excerpt of this source the answer's citing sentence(s) drew
+   * on — shown in the hover card. Absent on turns stored before it existed. */
+  quote?: string;
   /** NotebookLM-style enhancements from backend */
   timestamp_label?: string;
   meeting_url?: string;
@@ -2045,6 +2051,10 @@ export interface MeetingChatOverlayProps {
    * a stop button and call it to cancel the in-flight generation. `stop`
    * is null whenever isBusy is false. */
   onBusyChange?: (isBusy: boolean, stop: (() => void) | null) => void;
+  /** Fired after a chat turn completes successfully — the parent refreshes
+   * the Ask-Dojo tab (['ai-interactions', meetingId]) so the new turn shows
+   * without a manual reload (P1-7). */
+  onTurnComplete?: () => void;
 }
 
 // --- src/features/meetings/components/MeetingDetails.tsx ---

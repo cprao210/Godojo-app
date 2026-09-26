@@ -7,7 +7,6 @@ import remarkGfm from 'remark-gfm';
 import { useStreamBuffer } from '@/hooks';
 import { chatApi, statusLabel } from '@/api';
 import { chatMarkdownComponents } from '@/features/chat';
-import SourcesDisplay from '@/features/chat/SourcesDisplay';
 import { CitationProvider, indexSourceMap, rehypeCitations, CiteChip } from '@/features/chat/citations';
 import { ChatHistoryTurn, FloatingChatPanelProps, LiveTranscriptSegment, Message, StreamHandle } from '@/types';
 import { getDockSurfaceStyle } from '../dockSurfaceStyle';
@@ -201,15 +200,6 @@ const MessageBubble: React.FC<{ msg: Message }> = ({ msg }) => {
                                         )}
                                     </div>
                                 )}
-                                {msg.sources && (
-                                    <div className="mt-2">
-                                        {/* Live chat has nowhere to route a meeting click from yet
-                                            (no onOpenMeeting wired into FloatingChatPanelProps), and
-                                            live sources are asset-only in practice anyway — plain,
-                                            non-clickable chips. */}
-                                        <SourcesDisplay sources={msg.sources} />
-                                    </div>
-                                )}
                             </div>
                             {!msg.isStreaming && (
                                 <button
@@ -351,9 +341,26 @@ export const FloatingChatPanel: React.FC<FloatingChatPanelProps> = React.memo(({
 
     // }, []);
 
-    // Abort any in-flight stream on unmount (panel switch, meeting end)
+    // Abort any in-flight stream on unmount (panel switch, meeting end) AND
+    // finalize its bubble: streamSSE resolves silently on abort (no onDone),
+    // and the messages live in the parent, so a bare abort would leave the
+    // answer with a permanently blinking cursor and no Copy button.
     useEffect(() => {
-        return () => activeStreamRef.current?.abort();
+        return () => {
+            activeStreamRef.current?.abort();
+            activeStreamRef.current = null;
+            const assistantId = currentAssistantIdRef.current;
+            if (assistantId) {
+                const finalText = currentBufferRef.current;
+                onMessagesChange(prev => prev.map(m =>
+                    m.id === assistantId && m.isStreaming
+                        ? { ...m, text: finalText || m.text, isStreaming: false, status: undefined, rewriting: false }
+                        : m
+                ));
+                currentAssistantIdRef.current = null;
+            }
+        };
+        // eslint-disable-next-line react-hooks/exhaustive-deps
     }, []);
 
     // Auto-resize textarea
@@ -471,24 +478,15 @@ export const FloatingChatPanel: React.FC<FloatingChatPanelProps> = React.memo(({
                 onRetry: (attempt, max) => {
                     setMessages(prev => prev.map(m =>
                         m.id === assistantId
-                            ? { ...m, status: `Reconnecting… (${attempt}/${max})`, sources: undefined, sourceMap: undefined }
+                            ? { ...m, status: `Reconnecting… (${attempt}/${max})`, sourceMap: undefined }
                             : m
                     ));
                 },
                 onInteractionId: (interactionId) => {
                     onInteractionId?.(interactionId);
                 },
-                onSources: (sources) => {
-                    // Nothing to show for a turn with no asset_id-bearing
-                    // sources — leave msg.sources unset so SourcesDisplay
-                    // never mounts for it (redundant with its own
-                    // totalCount===0 guard, but avoids the message-list diff
-                    // churn of setting an empty object on every turn).
-                    if (sources.meetings.length === 0 && sources.assets.length === 0) return;
-                    setMessages(prev => prev.map(m => m.id === assistantId ? { ...m, sources } : m));
-                },
-                // [n] -> source map, sent before the first token: drives the
-                // inline citation chips + hover cards.
+                // [n] -> source map, sent before the first token: ONLY the
+                // cited entries — sources appear solely as inline chips.
                 onSourceMap: (entries) => {
                     const map = indexSourceMap(entries);
                     setMessages(prev => prev.map(m => m.id === assistantId ? { ...m, sourceMap: map } : m));
