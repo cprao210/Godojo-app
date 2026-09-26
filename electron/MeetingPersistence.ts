@@ -966,14 +966,40 @@ export class MeetingPersistence {
             AppState.getInstance()?.notifyMeetingSummaryReady?.(title);
 
             // Kick backend RAG ingest now that the meeting + transcript are
-            // committed (chat/Ask-Dojo read only from backend meeting_chunks).
-            // Fire-and-forget: the util owns retry/backoff and a durable queue,
-            // because the transcript rows reach the backend via the async
-            // mirror — the first attempt can legitimately find "No transcript
-            // yet". Never let this throw into the meeting-save catch below.
-            void requestBackendChunking(meetingId, tenantId ?? null).catch(
-                (e) => console.error('[MeetingPersistence] backend chunk trigger failed:', e),
-            );
+            // committed locally (chat/Ask-Dojo read only from backend
+            // meeting_chunks). Fire-and-forget from the caller's perspective —
+            // wrapped in its own async IIFE so nothing here can throw into the
+            // meeting-save catch below or delay the UI notifications above.
+            //
+            // Wait for the Supabase mirror to actually land the transcript
+            // batch first. saveMeeting() above only ENQUEUED it (the mirror is
+            // async-by-design so local writes never block on network), so
+            // without this the chunking POST would routinely race the mirror
+            // and get "No transcript found" on its very first attempt —
+            // exactly the case requestBackendChunking's retry/queue logic
+            // exists to paper over. Flushing here doesn't remove the need for
+            // that retry logic (offline, slow network, backend hiccups are
+            // still possible), it just means the common case succeeds on the
+            // first try instead of needing 5s–30s of backoff.
+            //
+            // Timeout is generous (20s, vs flush()'s 8s default) because an
+            // upload's transcript batch can be large (comment above notes up
+            // to ~1500 turns) and 'transcripts' now shares PRIORITY_TABLES
+            // with 'meetings' (see SupabaseMirrorService) so it isn't stuck
+            // behind unrelated meetings' ai_interactions/chunks batches. If
+            // the flush still times out, requestBackendChunking's own
+            // retry/durable-queue logic takes over exactly as before.
+            void (async () => {
+                try {
+                    const { SupabaseMirrorService } = require('./db/SupabaseMirrorService');
+                    await SupabaseMirrorService.getInstance().flush(20_000);
+                } catch (e) {
+                    console.warn('[MeetingPersistence] mirror flush before chunk trigger failed (non-fatal, chunking retries will cover it):', e);
+                }
+                await requestBackendChunking(meetingId, tenantId ?? null).catch(
+                    (e) => console.error('[MeetingPersistence] backend chunk trigger failed:', e),
+                );
+            })();
 
         } catch (error) {
             console.error('[MeetingPersistence] Failed to save meeting:', error);

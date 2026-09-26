@@ -48,7 +48,13 @@ interface OutboxItem {
 // right after a meeting ends, so it shouldn't sit behind a batch of
 // transcript lines / ai_interactions / chunks that the user isn't staring
 // at a spinner for.
-const PRIORITY_TABLES = new Set(['meetings']);
+// 'transcripts' also jumps the queue: MeetingPersistence now awaits flush()
+// right after saveMeeting() so the backend chunking call (POST
+// /meetings/:id/chunking) finds the transcript already on Supabase instead
+// of racing the mirror. That wait is only as fast as the transcript batch's
+// turn in the outbox, so it shouldn't sit behind unrelated ai_interactions/
+// chunks batches queued ahead of it for other meetings.
+const PRIORITY_TABLES = new Set(['meetings', 'transcripts']);
 
 export class SupabaseMirrorService extends EventEmitter {
     private static instance: SupabaseMirrorService;
