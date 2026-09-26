@@ -270,3 +270,54 @@ describe('reconcileScorecardWithLiveAnalysis — safety and headline numbers', (
         expect(catOf(out).reasoning).toContain('0 of 4 components confirmed');
     });
 });
+
+// Under the current contract a criterion carries an assessment (`summary`) and
+// a list of supporting statements. The scorecard is the one consumer that
+// legitimately wants both: the coaching lines read the assessment, while
+// transcriptEvidence exists precisely to show what the claim rests on.
+describe('reconcileScorecardWithLiveAnalysis — assessment vs supporting statements', () => {
+    it('coaches from the assessment and quotes from the statements', () => {
+        const live = liveAnalysis({
+            bant: {
+                budget: {
+                    emoji: '' as const,
+                    status: 'confirmed',
+                    summary: 'A 100-user trial is budgeted at ₹60 per user per month.',
+                    // The backend mirrors summary here for older builds; it must
+                    // not leak into transcriptEvidence in place of the spans.
+                    evidence_clean: 'A 100-user trial is budgeted at ₹60 per user per month.',
+                    evidence: ['Pricing discussed was ₹60 per user per month.', 'Considering a 100-user trial.'],
+                },
+                authority: field('missing'),
+                need: field('missing'),
+                timeline: field('missing'),
+            },
+        });
+
+        const cat = catOf(reconcileScorecardWithLiveAnalysis(scorecard([category()]), live));
+
+        expect(cat.strengths).toEqual([
+            'Budget confirmed — A 100-user trial is budgeted at ₹60 per user per month.',
+        ]);
+        // One entry per statement — the user can check each one separately.
+        expect(cat.transcriptEvidence).toEqual([
+            'Budget: Pricing discussed was ₹60 per user per month.',
+            'Budget: Considering a 100-user trial.',
+        ]);
+    });
+
+    it('falls back to the statements for coaching on a row with no assessment', () => {
+        const live = liveAnalysis({
+            bant: {
+                budget: { emoji: '' as const, status: 'confirmed', evidence: ['we have 50k approved'] },
+                authority: field('missing'),
+                need: field('missing'),
+                timeline: field('missing'),
+            },
+        });
+
+        const cat = catOf(reconcileScorecardWithLiveAnalysis(scorecard([category()]), live));
+        expect(cat.strengths).toEqual(['Budget confirmed — we have 50k approved']);
+        expect(cat.transcriptEvidence).toEqual(['Budget: we have 50k approved']);
+    });
+});

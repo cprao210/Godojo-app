@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 
-import { parseUploadTranscript } from '../utils/uploadTranscriptParser';
+import { parseUploadTranscript, resolveRepSpeaker } from '../utils/uploadTranscriptParser';
 
 // ── Format 1 — timestamped transcript ──────────────────────────────────────
 describe('parseUploadTranscript — timestamped format', () => {
@@ -236,5 +236,65 @@ describe('parseUploadTranscript — additional label/timestamp formats', () => {
             ['Daniel', 'client', 0, 'Sounds good to me'],
         ]);
         expect(durationMs).toBe(15_000);
+    });
+});
+// ── Choosing the rep ────────────────────────────────────────────────────────
+// A real upload ("Automating SAP Invoice Processing Discovery") opened with the
+// PROSPECT's "Hi.", so first-speaker-is-the-rep swapped the roles and the v2
+// analysis, which grades only the prospect side, scored 0 BANT/MEDDIC.
+describe('parseUploadTranscript — choosing the rep', () => {
+    const PROSPECT_FIRST = [
+        '[00:00:01] sourish kundu: Hi.',
+        '[00:00:04] Harshpal Rajput: Sorry sir, really sorry for being late.',
+        '[00:00:09] sourish kundu: I am head IT of Link limited, this is our exact requirement.',
+        '[00:00:15] Harshpal Rajput: That can easily happen in Procol.',
+    ].join('\n');
+    const roles = (r: ReturnType<typeof parseUploadTranscript>) => r.segments.map(s => s.speaker);
+
+    it('lists the speakers in order of first appearance', () => {
+        expect(parseUploadTranscript(PROSPECT_FIRST).speakers).toEqual(['sourish kundu', 'Harshpal Rajput']);
+    });
+
+    it('still falls back to the first speaker when nothing else is known', () => {
+        const r = parseUploadTranscript(PROSPECT_FIRST);
+        expect(roles(r)).toEqual(['user', 'client', 'user', 'client']);
+        expect([r.repSpeaker, r.repSource]).toEqual(['sourish kundu', 'first']);
+    });
+
+    it('the picked speaker is the rep, case-insensitively', () => {
+        const r = parseUploadTranscript(PROSPECT_FIRST, { repLabel: 'HARSHPAL RAJPUT' });
+        expect(roles(r)).toEqual(['client', 'user', 'client', 'user']);
+        expect([r.repSpeaker, r.repSource]).toEqual(['Harshpal Rajput', 'picked']);
+    });
+
+    it('a picked label no speaker has is ignored', () => {
+        const r = parseUploadTranscript(PROSPECT_FIRST, { repLabel: 'Someone Else' });
+        expect(r.repSource).toBe('first');
+    });
+
+    it('matches the signed-in user by display name or email', () => {
+        expect(parseUploadTranscript(PROSPECT_FIRST, { repNameHints: ['Harshpal Rajput'] }).repSpeaker).toBe('Harshpal Rajput');
+        const byEmail = parseUploadTranscript(PROSPECT_FIRST, { repNameHints: [null, 'harshpal.rajput@procol.io'] });
+        expect([byEmail.repSpeaker, byEmail.repSource]).toEqual(['Harshpal Rajput', 'name']);
+        expect(roles(byEmail)).toEqual(['client', 'user', 'client', 'user']);
+    });
+
+    it('a first-name-only label matches, a picked label beats the name match', () => {
+        const convo = ['Daniel: hi', 'Alex: hello Daniel'].join('\n');
+        expect(parseUploadTranscript(convo, { repNameHints: ['Alex Moreno'] }).repSpeaker).toBe('Alex');
+        expect(parseUploadTranscript(convo, { repNameHints: ['Alex Moreno'], repLabel: 'Daniel' }).repSpeaker).toBe('Daniel');
+    });
+
+    it('an ambiguous or generic name match falls back to the first speaker', () => {
+        expect(resolveRepSpeaker(['Moreno', 'Alex'], { repNameHints: ['Alex Moreno'] })).toEqual({ label: 'Moreno', source: 'first' });
+        // A partial name overlap is no match: "Alex Kim" is not "Alex Moreno".
+        expect(resolveRepSpeaker(['Dana', 'Alex Kim'], { repNameHints: ['Alex Moreno'] })).toEqual({ label: 'Dana', source: 'first' });
+        expect(resolveRepSpeaker(['CLIENT', 'SALES PERSON'], { repNameHints: ['Alex Moreno', 'alex@x.io'] })).toEqual({ label: 'CLIENT', source: 'first' });
+    });
+
+    it('a transcript with no labels has no rep', () => {
+        const r = parseUploadTranscript('just some text\nand more');
+        expect([r.speakers, r.repSpeaker, r.repSource]).toEqual([[], null, null]);
+        expect(roles(r)).toEqual(['client']);
     });
 });

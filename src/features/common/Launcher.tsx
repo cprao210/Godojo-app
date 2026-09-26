@@ -38,6 +38,7 @@ const Launcher: React.FC<LauncherProps> = ({ onStartMeeting, onOpenSettings, onC
     const { meetingsTotal } = launcherStates;
     const { isUploading, uploadMeetingTypes, setUploadMeetingTypes, uploadCompany, setUploadCompany, uploadError, handleUploadTranscript } = launcherStates;
     const { uploadCompanyDraft, setUploadCompanyDraft, companyLinkFailure, retryCompanyLink, dismissCompanyLinkFailure } = launcherStates;
+    const { uploadSpeakers, uploadRepSpeaker, uploadRepSource, pickUploadRepSpeaker } = launcherStates;
     const { salesBriefEvent, setSalesBriefEvent, isGlobalChatOpen, setIsGlobalChatOpen, submittedGlobalQuery, setSubmittedGlobalQuery } = launcherStates;
 
     // ─── Floating "Load more" button visibility ─────────────────────────────
@@ -371,6 +372,10 @@ const Launcher: React.FC<LauncherProps> = ({ onStartMeeting, onOpenSettings, onC
                 setUploadCompany={setUploadCompany}
                 uploadCompanyDraft={uploadCompanyDraft}
                 setUploadCompanyDraft={setUploadCompanyDraft}
+                uploadSpeakers={uploadSpeakers}
+                uploadRepSpeaker={uploadRepSpeaker}
+                uploadRepSource={uploadRepSource}
+                onPickRepSpeaker={pickUploadRepSpeaker}
                 uploadError={uploadError}
                 isUploading={isUploading}
                 onClose={() => { setIsUploadOpen(false); setUploadCompany(null); setUploadCompanyDraft(''); }}

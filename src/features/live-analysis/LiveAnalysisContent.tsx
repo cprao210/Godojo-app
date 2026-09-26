@@ -1,9 +1,11 @@
 import React, { useState } from 'react';
-import { Shield, BarChart2, AlertTriangle, Zap, CheckSquare, ChevronDown, ChevronUp, TrendingUp, Sparkles } from 'lucide-react';
+import { Shield, BarChart2, AlertTriangle, Zap, CheckSquare, ChevronDown, ChevronRight, ChevronUp, TrendingUp, Sparkles, ThumbsUp, ThumbsDown } from 'lucide-react';
 import { AnimatePresence, motion } from 'framer-motion';
 import { useResolvedTheme } from '@/hooks';
 import { FieldRowProps, LiveAnalysisContentProps, SectionToggleProps, DealTrigger, Objection } from '@/types';
-import { partitionObjections } from '@/lib/objections';
+import { partitionObjections, splitRepFollowUps } from '@/lib/objections';
+import { fieldDisplay, fieldText } from '@/lib/bantMeddic';
+import { formatCallTime } from '@/lib/liveAnalysisV2';
 
 // ─── Status helpers — overlay (dark glass) variants ────────────────────────
 const statusDot = (status: string) => {
@@ -174,8 +176,109 @@ const SectionToggle: React.FC<SectionToggleProps> = ({
     );
 };
 
+// ─── Evidence disclosure ───────────────────────────────────────────────────
+// The supporting statements behind a field's assessment, collapsed by default.
+// One component for both FieldRow variants: two copies of this drifting apart
+// is exactly the failure the bantMeddic accessors exist to prevent.
+const EvidenceDisclosure: React.FC<{
+    items: string[];
+    open: boolean;
+    onToggle: () => void;
+    isLight: boolean;
+    /** v2: where each item was said (parallel to `items`) — rendered as a call-time chip. */
+    refs?: Array<{ t_start_ms?: number }>;
+}> = ({ items, open, onToggle, isLight, refs }) => (
+    <>
+        <button
+            type="button"
+            onClick={onToggle}
+            aria-expanded={open}
+            className={`flex items-center gap-1 mt-1 text-[10px] font-semibold tracking-wide transition-colors ${
+                isLight ? 'text-slate-400 hover:text-slate-600' : 'text-white/30 hover:text-white/55'
+            }`}
+        >
+            {open ? <ChevronDown size={11} /> : <ChevronRight size={11} />}
+            Evidence ({items.length})
+        </button>
+        <AnimatePresence initial={false}>
+            {open && (
+                <motion.ul
+                    initial={{ height: 0, opacity: 0 }}
+                    animate={{ height: 'auto', opacity: 1 }}
+                    exit={{ height: 0, opacity: 0 }}
+                    transition={{ duration: 0.18, ease: [0.16, 1, 0.3, 1] }}
+                    className={`overflow-hidden list-disc pl-4 mt-1 space-y-0.5 text-[11px] leading-relaxed ${
+                        isLight ? 'text-slate-500' : 'text-white/45'
+                    }`}
+                >
+                    {items.map((e, i) => {
+                        const at = formatCallTime(refs?.[i]?.t_start_ms);
+                        return (
+                            <li key={i}>
+                                {at && (
+                                    <span className={`mr-1 font-mono text-[9px] ${isLight ? 'text-slate-400' : 'text-white/30'}`}>{at}</span>
+                                )}
+                                {e}
+                            </li>
+                        );
+                    })}
+                </motion.ul>
+            )}
+        </AnimatePresence>
+    </>
+);
+
 // ─── FieldRow ──────────────────────────────────────────────────────────────
-const FieldRow: React.FC<FieldRowProps> = ({ label, field, themed = false, isLight = false }) => {
+// v2: a short badge for fields the latest tick changed. Downgrades and corrections read
+// differently from upgrades so a rep notices a grade being withdrawn.
+const changeBadge = (kind?: string): { text: string; cls: string } | null => {
+    if (!kind) return null;
+    if (kind === 'downgrade' || kind === 'correction') {
+        return { text: kind === 'correction' ? 'Corrected' : 'Withdrawn', cls: 'bg-amber-500/15 text-amber-300' };
+    }
+    return { text: 'Updated', cls: 'bg-emerald-500/15 text-emerald-300' };
+};
+
+const FeedbackButtons: React.FC<{ path: string; onFeedback: (path: string, value: 1 | -1) => void }> = ({ path, onFeedback }) => {
+    const [sent, setSent] = useState<1 | -1 | null>(null);
+    const send = (v: 1 | -1) => {
+        setSent(v);
+        onFeedback(path, v);
+    };
+    return (
+        <span className="flex items-center gap-0.5 ml-1">
+            <button
+                type="button"
+                title="This grade is right"
+                aria-label="This grade is right"
+                onClick={() => send(1)}
+                className={`p-0.5 rounded transition-colors ${sent === 1 ? 'text-emerald-300' : 'text-white/20 hover:text-white/55'}`}
+            >
+                <ThumbsUp size={10} />
+            </button>
+            <button
+                type="button"
+                title="This grade is wrong"
+                aria-label="This grade is wrong"
+                onClick={() => send(-1)}
+                className={`p-0.5 rounded transition-colors ${sent === -1 ? 'text-rose-300' : 'text-white/20 hover:text-white/55'}`}
+            >
+                <ThumbsDown size={10} />
+            </button>
+        </span>
+    );
+};
+
+const FieldRow: React.FC<FieldRowProps> = ({ label, field, themed = false, isLight = false, path, changeKind, onFeedback }) => {
+    // `body` is the backend's assessment of the field — its summary — falling
+    // back to the evidence on rows saved before summaries existed. The evidence
+    // list is reference material, so it sits behind the disclosure.
+    const { body, evidence, showDisclosure } = fieldDisplay(field);
+    // Local and per-row: 11 independent rows, and the call sites key by the
+    // stable field key, so an expanded row survives a live tick rather than
+    // snapping shut under the poll.
+    const [evidenceOpen, setEvidenceOpen] = useState(false);
+
     if (themed) {
         return (
             <div className={`rounded-xl border px-3 py-2 mb-1.5 last:mb-0 ${statusRingThemed(field.status, isLight)}`}>
@@ -190,10 +293,18 @@ const FieldRow: React.FC<FieldRowProps> = ({ label, field, themed = false, isLig
                         </span>
                     </div>
                 </div>
-                {field.evidence !== "" && (
+                {body !== "" && (
                     <p className={`text-[12px] leading-relaxed ${isLight ? 'text-slate-600' : 'text-white/65'}`}>
-                        {field.evidence}
+                        {body}
                     </p>
+                )}
+                {showDisclosure && (
+                    <EvidenceDisclosure
+                        items={evidence}
+                        open={evidenceOpen}
+                        onToggle={() => setEvidenceOpen(o => !o)}
+                        isLight={isLight}
+                    />
                 )}
                 {/* "Ask this" only for genuinely open fields — the backend contract
                     (and normalizeUploadAnalysis) guarantee confirmed fields carry no
@@ -216,19 +327,39 @@ const FieldRow: React.FC<FieldRowProps> = ({ label, field, themed = false, isLig
     }
 
     // Original overlay variant
+    const badge = changeBadge(changeKind);
     return (
-        <div className={`rounded-xl border px-3 py-2 mb-1.5 last:mb-0 ${statusRing(field.status)}`}>
+        <div className={`rounded-xl border px-3 py-2 mb-1.5 last:mb-0 ${statusRing(field.status)} ${badge ? 'ring-1 ring-white/15' : ''}`}>
             <div className="flex items-center justify-between mb-0.5">
-                <span className="text-[9px] font-bold uppercase tracking-[0.14em] text-white/30">{label}</span>
+                <span className="flex items-center gap-1.5">
+                    <span className="text-[9px] font-bold uppercase tracking-[0.14em] text-white/30">{label}</span>
+                    {badge && (
+                        <span className={`px-1.5 py-[1px] rounded text-[8px] font-bold uppercase tracking-wider ${badge.cls}`}>
+                            {badge.text}
+                        </span>
+                    )}
+                </span>
                 <div className="flex items-center gap-1.5">
                     <div className={`w-1.5 h-1.5 rounded-full ${statusDot(field.status)}`} />
                     <span className={`text-[10px] font-bold capitalize ${emojiColor(field.status)}`}>
                         {field.status || 'missing'}
                     </span>
+                    {path && onFeedback && field.status && field.status !== 'missing' && (
+                        <FeedbackButtons path={path} onFeedback={onFeedback} />
+                    )}
                 </div>
             </div>
-            {field.evidence !== "" && (
-                <p className="text-[12px] text-white/65 leading-normal">{field.evidence}</p>
+            {body !== "" && (
+                <p className="text-[12px] text-white/65 leading-normal">{body}</p>
+            )}
+            {showDisclosure && (
+                <EvidenceDisclosure
+                    items={evidence}
+                    open={evidenceOpen}
+                    onToggle={() => setEvidenceOpen(o => !o)}
+                    isLight={false}
+                    refs={field.evidence_refs}
+                />
             )}
             {field.suggested_question && field.status !== 'confirmed' ? (
                 <div className="flex items-start gap-1.5">
@@ -257,6 +388,8 @@ export const LiveAnalysisContent: React.FC<LiveAnalysisContentProps> = React.mem
     hideBar = null,
     calledFromAnalysisTab = false,
     activeTab,
+    changedFields,
+    onFieldFeedback,
 }) => {
     // Only consume theme hook when rendered in analysis tab context.
     // Overlay callers always render dark-glass regardless of system theme.
@@ -272,7 +405,7 @@ export const LiveAnalysisContent: React.FC<LiveAnalysisContentProps> = React.mem
             ? [{ title: 'Competitor Presence', desc: 'No direct confirmation on other vendors.', icon: '!' }]
             : []),
         ...(analysisData.meddic.champion.status !== 'confirmed'
-            ? [{ title: 'Internal Champion', desc: analysisData.meddic.champion.evidence || 'Champion not confirmed — need internal sponsor.', icon: '?' }]
+            ? [{ title: 'Internal Champion', desc: fieldText(analysisData.meddic.champion) || 'Champion not confirmed — need internal sponsor.', icon: '?' }]
             : []),
         ...(analysisData.meddic.decision_process.status === 'missing'
             ? [{ title: 'Decision Process', desc: 'Buying process not mapped — need legal/procurement timeline.', icon: '!' }]
@@ -298,9 +431,14 @@ export const LiveAnalysisContent: React.FC<LiveAnalysisContentProps> = React.mem
     // arrive and move between groups every few seconds. Split it once here: still-open
     // objections lead, ones the endpoint reported as `resolved` drop into a collapsed
     // group below (they stay in the array so they still reach the post-call summary).
+    // The rep's own deferrals ("let me check and get back to you") are follow-ups they owe,
+    // not the prospect's objections — they get their own group and never count in the badge.
+    const { objections: prospectObjections, followUps: repFollowUps } =
+        splitRepFollowUps(analysisData.objections);
     const { active: activeObjections, resolved: resolvedObjectionList } =
-        partitionObjections(analysisData.objections);
+        partitionObjections(prospectObjections);
     const [resolvedOpen, setResolvedOpen] = useState(false);
+    const [followUpsOpen, setFollowUpsOpen] = useState(true);
 
     // One card renderer for both call sites — the overlay tab and the analysis-tab
     // accordion previously carried near-identical copies of this markup, and the
@@ -379,11 +517,28 @@ export const LiveAnalysisContent: React.FC<LiveAnalysisContentProps> = React.mem
                             </p>
                         </div>
                     )}
+                    {/* End-of-call analysis only: how the rep actually answered it on the call */}
+                    {obj.rep_response && (
+                        <p className={`text-[11px] leading-snug italic mt-0.5 ${calledFromAnalysisTab ? (isLight ? 'text-slate-500' : 'text-white/40') : 'text-white/40'}`}>
+                            Rep: “{obj.rep_response}”
+                        </p>
+                    )}
                     <div className="flex items-center justify-between gap-1.5 mt-1">
                         <div className="flex items-center gap-1.5 min-w-0">
                             <span className={`text-[9px] font-bold uppercase tracking-wider px-1.5 py-0.5 rounded border ${tagClass}`}>
-                                {obj.type === 'ae_deferral' ? 'Follow up' : 'Open question'}
+                                {obj.type === 'ae_deferral'
+                                    ? 'Follow up'
+                                    : obj.handled === 'resolved'
+                                        ? 'Resolved'
+                                        : obj.handled === 'partially'
+                                            ? 'Partly answered'
+                                            : obj.handled === 'unresolved'
+                                                ? 'Unresolved'
+                                                : 'Open question'}
                             </span>
+                            {obj.topic && !obj.category_label && (
+                                <span className={`text-[9px] truncate ${ownerClass}`}>{obj.topic}</span>
+                            )}
                             {/* Semantic category from the backend objection classifier */}
                             {obj.category_label && (
                                 <span className={`text-[9px] truncate ${ownerClass}`}>{obj.category_label}</span>
@@ -393,6 +548,29 @@ export const LiveAnalysisContent: React.FC<LiveAnalysisContentProps> = React.mem
                     </div>
                 </div>
             </motion.button>
+        );
+    };
+
+    // "Your follow-ups": the rep's own promises, listed under the objections but never as one.
+    const renderFollowUps = (headerTone: string, listClass: string) => {
+        if (repFollowUps.length === 0) return null;
+        return (
+            <div className="pt-1">
+                <button
+                    onClick={() => setFollowUpsOpen(o => !o)}
+                    className={`w-full flex items-center justify-between px-1 py-1.5 text-[10px] font-bold uppercase tracking-wider transition-colors ${headerTone}`}
+                >
+                    <span>Your follow-ups · {repFollowUps.length}</span>
+                    {followUpsOpen ? <ChevronUp size={11} /> : <ChevronDown size={11} />}
+                </button>
+                {followUpsOpen && (
+                    <div className={listClass}>
+                        <AnimatePresence initial={false}>
+                            {repFollowUps.map(renderObjectionCard)}
+                        </AnimatePresence>
+                    </div>
+                )}
+            </div>
         );
     };
 
@@ -732,6 +910,9 @@ export const LiveAnalysisContent: React.FC<LiveAnalysisContentProps> = React.mem
                                     field={analysisData.meddic[key]}
                                     themed={false}
                                     isLight={false}
+                                    path={`meddic.${key}`}
+                                    changeKind={changedFields?.[`meddic.${key}`]}
+                                    onFeedback={onFieldFeedback}
                                 />
                             ))}
                         </div>
@@ -746,6 +927,9 @@ export const LiveAnalysisContent: React.FC<LiveAnalysisContentProps> = React.mem
                                     field={analysisData.bant[key]}
                                     themed={false}
                                     isLight={false}
+                                    path={`bant.${key}`}
+                                    changeKind={changedFields?.[`bant.${key}`]}
+                                    onFeedback={onFieldFeedback}
                                 />
                             ))}
                         </div>
@@ -762,6 +946,9 @@ export const LiveAnalysisContent: React.FC<LiveAnalysisContentProps> = React.mem
                     }
                     return (
                         <div className="px-3 pt-2 pb-4 space-y-1.5">
+                            {prospectObjections.length === 0 && (
+                                <p className="px-1 py-1 text-[11px] text-white/30">No objections from the prospect yet.</p>
+                            )}
                             <AnimatePresence initial={false}>
                                 {activeObjections.map(renderObjectionCard)}
                             </AnimatePresence>
@@ -783,6 +970,7 @@ export const LiveAnalysisContent: React.FC<LiveAnalysisContentProps> = React.mem
                                     )}
                                 </div>
                             )}
+                            {renderFollowUps('text-white/25 hover:text-white/40', 'space-y-1.5 pt-1')}
                         </div>
                     );
                 case 'deal_optimizer':
@@ -967,6 +1155,12 @@ export const LiveAnalysisContent: React.FC<LiveAnalysisContentProps> = React.mem
                                         </div>
                                     )}
                                 </div>
+                            )}
+                            {renderFollowUps(
+                                calledFromAnalysisTab
+                                    ? (isLight ? 'text-slate-400 hover:text-slate-600' : 'text-white/25 hover:text-white/40')
+                                    : 'text-white/25 hover:text-white/40',
+                                'space-y-2 pt-1',
                             )}
                         </div>
                     </SectionToggle>

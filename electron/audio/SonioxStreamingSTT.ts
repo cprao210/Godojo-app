@@ -71,13 +71,16 @@ export class SonioxStreamingSTT extends EventEmitter {
     }
 
     private languageCode?: string;
+    /** Multi-language hints (e.g. ['hi', 'en'] for Hinglish); falls back to [languageCode]. */
+    private languageHints?: string[];
 
     /** Set recognition language hint using ISO-639-1 code */
     public setRecognitionLanguage(key: string): void {
         const config = RECOGNITION_LANGUAGES[key];
         if (config) {
             this.languageCode = config.iso639;
-            console.log(`[SonioxStreaming] Language hint set to ${this.languageCode}`);
+            this.languageHints = config.hints && config.hints.length > 0 ? [...config.hints] : undefined;
+            console.log(`[SonioxStreaming] Language hint set to ${this.languageHints?.join(',') ?? this.languageCode}`);
 
             if (this.isActive) {
                 console.log('[SonioxStreaming] Language changed while active. Restarting...');
@@ -86,6 +89,7 @@ export class SonioxStreamingSTT extends EventEmitter {
             }
         } else if (key === 'auto') {
             this.languageCode = undefined;
+            this.languageHints = undefined;
             console.log(`[SonioxStreaming] Language hint set to auto`);
         }
     }
@@ -207,7 +211,9 @@ export class SonioxStreamingSTT extends EventEmitter {
                 enable_endpoint_detection: true,
             };
 
-            if (this.languageCode) {
+            if (this.languageHints) {
+                config.language_hints = this.languageHints;
+            } else if (this.languageCode) {
                 config.language_hints = [this.languageCode];
             }
 

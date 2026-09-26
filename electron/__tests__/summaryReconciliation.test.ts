@@ -37,6 +37,29 @@ const ALL_CONFIRMED: any = {
     signals: [],
 };
 
+// A non-English call: the backend sends the verbatim span plus its readable
+// rendering, and the summary's `detail` — which people read in the Summary tab,
+// the PDF and the exports — must be the readable one.
+const TRANSLATED: any = {
+    bant: {
+        budget: { status: 'partial', evidence: 'आपकी cost क्या है?', evidence_clean: 'What is your cost?' },
+        authority: { status: 'missing', evidence: '' },
+        need: field('confirmed', 'dispatch is the headache'),
+        timeline: { status: 'missing', evidence: '' },
+    },
+    meddic: {
+        metrics: { status: 'missing', evidence: '' },
+        economic_buyer: { status: 'missing', evidence: '' },
+        decision_criteria: { status: 'missing', evidence: '' },
+        decision_process: { status: 'missing', evidence: '' },
+        identify_pain: { status: 'confirmed', evidence: '30 से 40% के पास mobile ही नहीं है', evidence_clean: "30 to 40% of our guards don't have a mobile." },
+        champion: { status: 'missing', evidence: '' },
+        competition: { status: 'missing', evidence: '' },
+    },
+    objections: [],
+    signals: [],
+};
+
 const MIXED: any = {
     bant: {
         budget: field('confirmed', '200k approved'),
@@ -192,5 +215,78 @@ describe('isPlaceholderSummaryItem', () => {
         expect(isPlaceholderSummaryItem('Not able to identify the champion')).toBe(false);
         expect(isPlaceholderSummaryItem('No budget discussion happened')).toBe(false);
         expect(isPlaceholderSummaryItem('None of the pain points were explored')).toBe(false);
+    });
+});
+
+describe('reconcileBantMeddicWithLiveAnalysis — translated evidence', () => {
+    it('writes the readable rendering into detail, not the verbatim span', () => {
+        const out = reconcileBantMeddicWithLiveAnalysis({}, TRANSLATED);
+        expect(out.bant.budget).toEqual({ status: 'Partial', detail: 'What is your cost?' });
+        expect(out.meddicc.identifyPain).toEqual({
+            status: 'Clear',
+            detail: "30 to 40% of our guards don't have a mobile.",
+        });
+    });
+
+    it('still uses the verbatim span when no rendering was sent', () => {
+        const out = reconcileBantMeddicWithLiveAnalysis({}, TRANSLATED);
+        expect(out.bant.need).toEqual({ status: 'Clear', detail: 'dispatch is the headache' });
+    });
+});
+
+// The current backend contract: each criterion carries a `summary` (its
+// assessment) plus a LIST of supporting statements. `detail` is the one line
+// people read in the Summary tab, the PDF and the follow-up email, so it takes
+// the assessment — the statements are reference material and belong to the
+// Call Analysis card's Evidence disclosure, not here.
+describe('reconcileBantMeddicWithLiveAnalysis — summary is the source of truth', () => {
+    const WITH_SUMMARY: any = {
+        bant: {
+            budget: {
+                status: 'partial',
+                summary: 'Pricing has been discussed, but the approved budget is unconfirmed.',
+                evidence_clean: 'Pricing has been discussed, but the approved budget is unconfirmed.',
+                evidence: ['Pricing discussed was ₹60 per user per month.', 'Considering a 100-user trial.'],
+            },
+            authority: { status: 'missing', summary: '', evidence: [] },
+            // No summary: a row from before the contract changed.
+            need: { status: 'confirmed', evidence: ['Adding sites needs approvals.', 'Monthly changes hurt.'] },
+            timeline: { status: 'missing', evidence: [] },
+        },
+        meddic: {
+            metrics: { status: 'partial', summary: 'Trial size and pricing are set; no business outcome is defined.', evidence: ['~3,000 employees.'] },
+            economic_buyer: { status: 'missing', evidence: [] },
+            decision_criteria: { status: 'missing', evidence: [] },
+            decision_process: { status: 'missing', evidence: [] },
+            identify_pain: { status: 'missing', evidence: [] },
+            champion: { status: 'missing', evidence: [] },
+            competition: { status: 'missing', evidence: [] },
+        },
+        objections: [],
+        signals: [],
+    };
+
+    it('writes the assessment into detail, never the supporting statements', () => {
+        const out = reconcileBantMeddicWithLiveAnalysis({}, WITH_SUMMARY);
+        expect(out.bant.budget).toEqual({
+            status: 'Partial',
+            detail: 'Pricing has been discussed, but the approved budget is unconfirmed.',
+        });
+        expect(out.meddicc.metrics.detail).toBe('Trial size and pricing are set; no business outcome is defined.');
+    });
+
+    it('falls back to the joined statements on a row with no summary', () => {
+        const out = reconcileBantMeddicWithLiveAnalysis({}, WITH_SUMMARY);
+        expect(out.bant.need).toEqual({
+            status: 'Clear',
+            detail: 'Adding sites needs approvals. Monthly changes hurt.',
+        });
+    });
+
+    it('carries the assessment into the Self-Analysis line', () => {
+        const out = reconcileBantMeddicWithLiveAnalysis({}, WITH_SUMMARY);
+        expect(out.salesCoachReview.whatIDidRight).toEqual([
+            'BANT Need: Adding sites needs approvals. Monthly changes hurt.',
+        ]);
     });
 });

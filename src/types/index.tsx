@@ -433,6 +433,16 @@ export interface ChatHistoryTurn {
   /** Inline-citation map ([n] → source) persisted at answer time in the
    * turn's metadata_json — drives chip rendering on session reload. */
   source_map?: SourceMapEntry[];
+  /** Company pinned to the chat when this turn was answered (assistant turns only). The latest
+   * assistant turn's pin restores the chat's company chip when the session is reopened. */
+  company_pin?: ChatCompanyPin | null;
+}
+
+/** A customer company pinned to a global chat session (chip / @mention): every question in the
+ * session is about it until removed. Sent as `company_id` with each global chat request. */
+export interface ChatCompanyPin {
+  id: string;
+  name: string;
 }
 
 export interface ChatSession {
@@ -634,18 +644,69 @@ export interface FloatingChatMessage {
 }
 
 // --- src/features/live-analysis/types.ts ---
+/**
+ * A criterion's evidence. A single `string` on rows saved before the backend
+ * moved to a list of statements; `string[]` after. Never read directly — go
+ * through the accessors in src/lib/bantMeddic, which serve both shapes.
+ */
+export type EvidenceValue = string | string[];
+
 export interface BANTField {
   emoji: '✅' | '⚠️' | '❌' | '';
   status: 'confirmed' | 'partial' | 'missing' | '';
-  evidence: string;
+  /**
+   * The VERBATIM transcript span(s) that prove this field, in whatever language
+   * they were spoken. Kept raw — this is the auditable link back to the
+   * transcript, so it is never translated or tidied in place.
+   *
+   * REFERENCE MATERIAL, not the claim: show it where someone is checking the
+   * assessment (the card's Evidence disclosure, clipboard exports, the
+   * scorecard's transcriptEvidence). What a one-line reader shows is `summary`.
+   */
+  evidence: EvidenceValue;
+  /**
+   * LEGACY. On rows saved before `summary` existed, the readable rendering of
+   * the single evidence quote. The backend now fills it with `summary` purely
+   * for older builds (add_legacy_evidence_mirror), so it is never evidence —
+   * read it only through `fieldText`, as a card-body fallback.
+   */
+  evidence_clean?: string;
+  /**
+   * A faithful one-line English rendering of the `evidence` spans — the card
+   * body, and the SOURCE OF TRUTH for every surface that shows one line about
+   * the field. Absent on rows saved before the backend added it, and blanked by
+   * the backend when a guard drops any span it described, so read it through
+   * `fieldSummary`/`fieldText`, which fall back to the evidence.
+   */
+  summary?: string;
   suggested_question?: string;
+  /** Live analysis v2: where each evidence span was said (parallel to `evidence`). */
+  evidence_refs?: EvidenceRef[];
+  /** Live analysis v2: state version that last changed this field. */
+  updated_version?: number;
+}
+
+/** Live analysis v2: the transcript turn an evidence span was copied from. */
+export interface EvidenceRef {
+  turn_id?: string;
+  /** ms since the call started (renderer-relative clock). */
+  t_start_ms?: number;
 }
 
 export interface MEDDICField {
   emoji: '✅' | '⚠️' | '❌' | '';
   status: 'confirmed' | 'partial' | 'missing' | '';
-  evidence: string;
+  /** Verbatim transcript span(s) — see BANTField.evidence. */
+  evidence: EvidenceValue;
+  /** Legacy card-body fallback — see BANTField.evidence_clean. */
+  evidence_clean?: string;
+  /** One-line reading of this criterion — see BANTField.summary. */
+  summary?: string;
   suggested_question?: string;
+  /** See BANTField.evidence_refs. */
+  evidence_refs?: EvidenceRef[];
+  /** See BANTField.updated_version. */
+  updated_version?: number;
 }
 
 export interface Objection {
@@ -669,6 +730,10 @@ export interface Objection {
   /** Client-only: the objection-handler endpoint echoed this quote in `resolved`.
    *  Never sent as input — the client is the owner of this flag. */
   resolved?: boolean;
+  /** End-of-call analysis (v2/end) only: short topic, the rep's verbatim reply, and how it went. */
+  topic?: string;
+  rep_response?: string;
+  handled?: 'resolved' | 'partially' | 'unresolved';
 }
 
 export interface Signal {
@@ -684,6 +749,27 @@ export interface Signal {
 export interface LiveAnalysisTurn {
   speaker: string;
   text: string;
+}
+
+/**
+ * One FINAL of the live call as the renderer holds it (useGodojoInterface's liveTranscriptRef).
+ * `text` is the display text — English when transcript translation is on. The optional fields are
+ * stamped by the main process (electron/services/transcriptQuality.ts) and carried for live
+ * analysis v2: evidence is grounded on `textOriginal`, never on the translation.
+ */
+export interface LiveTranscriptEntry {
+  speaker: string;
+  displayName?: string;
+  text: string;
+  timestamp: number;
+  speakerIndex?: number;
+  textOriginal?: string;
+  turnId?: string;
+  lang?: string;
+  asrSuspect?: boolean;
+  suspectReason?: string;
+  /** Main-process arrival time of the final (ms epoch). */
+  arrivalMs?: number;
 }
 
 export type DealTrigger =
@@ -727,6 +813,8 @@ export interface LiveAnalysisData {
   objections: Objection[];
   signals: Signal[];
   dealOptimizer?: DealOptimizerAlert[];
+  /** 'v2_end' when produced by the end-of-call pass (POST /intelligence/live-analysis/v2/end). */
+  source?: string;
   /**
    * Set by the backend when it ran out of budget and mirrored the previous
    * analysis back instead of producing a new one (HTTP 200, not an error — see
@@ -1962,6 +2050,10 @@ export interface FloatingIntelligencePanelProps {
   onMeetingTypesChange: (types: MeetingType[]) => void;
   /** See usePerformanceMode.ts — drops backdrop-filter blur when true. */
   isPerformanceMode?: boolean;
+  /** Live analysis v2: see LiveAnalysisContentProps.changedFields. */
+  changedFields?: Record<string, string>;
+  /** Live analysis v2: see LiveAnalysisContentProps.onFieldFeedback. */
+  onFieldFeedback?: (path: string, value: 1 | -1) => void;
 }
 
 // --- src/features/floating-dock/panels/FloatingSettingsPanel.tsx ---
@@ -2009,8 +2101,19 @@ export interface SectionToggleProps {
 
 export interface FieldRowProps {
   label: string;
-  field: { status: string; evidence: string; emoji?: string; suggested_question?: string };
+  /**
+   * The wire-shape field, straight off liveAnalysis. Read it through the
+   * accessors in src/lib/bantMeddic — never `.evidence` directly: it is a
+   * `string` on rows saved before the list contract and `string[]` after.
+   */
+  field: BANTField;   // MEDDICField is structurally identical
   themed?: boolean;
+  /** Live analysis v2 (overlay only): "bant.budget"-style path, for feedback + highlight. */
+  path?: string;
+  /** Live analysis v2: how the latest tick changed this field, if it did. */
+  changeKind?: string;
+  /** Live analysis v2: rep 👍/👎 on this field. */
+  onFeedback?: (path: string, value: 1 | -1) => void;
   isLight?: boolean;
 }
 
@@ -2023,6 +2126,10 @@ export interface LiveAnalysisContentProps {
   calledFromAnalysisTab?: boolean;
   /** When set (overlay context), renders only the active tab section — fully expanded, no accordion. */
   activeTab?: 'meddicc' | 'bant' | 'signals' | 'objections' | 'deal_optimizer';
+  /** Live analysis v2: field path → change kind for fields the latest tick changed. */
+  changedFields?: Record<string, string>;
+  /** Live analysis v2: rep 👍/👎 on a field ("meddic.metrics"). */
+  onFieldFeedback?: (path: string, value: 1 | -1) => void;
 }
 
 // --- src/features/meetings/components/FollowUpEmailModal.tsx ---

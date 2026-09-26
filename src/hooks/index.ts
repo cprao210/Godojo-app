@@ -4,6 +4,7 @@ import { useCompanyIntel, hasValue, pickValue, isIntelEmpty, openExternalUrl, LO
 import { useFirebaseAuth } from './useFirebaseAuth';
 import { useLiveAnalysis } from './useLiveAnalysis';
 import { useMeetingSession } from './useMeetingSession';
+import { useUploadAnalysisBridge } from './useUploadAnalysisBridge';
 import { useOverlayOpacity } from './useOverlayOpacity';
 import { useResolvedTheme } from "./useResolvedTheme";
 import { useShortcuts } from "./useShortcuts";
@@ -80,6 +81,7 @@ export {
     useFirebaseAuth,
     useLiveAnalysis,
     useMeetingSession,
+    useUploadAnalysisBridge,
     useOverlayOpacity,
     useResolvedTheme,
     useShortcuts,

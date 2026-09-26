@@ -9,7 +9,9 @@ import { chatApi, statusLabel } from "@/api/chatApi";
 import { indexSourceMap } from "@/features/chat/citations";
 import { useStreamBuffer } from "@/hooks/useStreamBuffer";
 import { posthogAnalytics } from "@/lib/analytics/posthog.service";
-import { ChatHistoryTurn, ChatSession, GlobalChatMessage, GlobalChatState, StreamHandle } from "@/types";
+import { pinFromHistory } from "@/lib/chatCompanyPin";
+import { isOutsideClick } from "@/lib/outsideClick";
+import { ChatCompanyPin, ChatHistoryTurn, ChatSession, GlobalChatMessage, GlobalChatState, StreamHandle } from "@/types";
 
 interface UseGlobalChatArgs {
     isOpen: boolean;
@@ -27,6 +29,9 @@ export function useGlobalChat({ isOpen, onClose, initialQuery = "" }: UseGlobalC
     // `session_created` frame on the first message; loadSession() sets it
     // directly when resuming from the sidebar.
     const [sessionId, setSessionId] = useState<string | null>(null);
+    // Company pinned to this chat (chip / @mention): sent with every question and saved on each
+    // answered turn by the backend, so reopening the session restores it (pinFromHistory).
+    const [pinnedCompany, setPinnedCompany] = useState<ChatCompanyPin | null>(null);
 
     // ── Session sidebar state ────────────────────────────────────────────────
     const [sessions, setSessions] = useState<ChatSession[]>([]);
@@ -86,6 +91,7 @@ export function useGlobalChat({ isOpen, onClose, initialQuery = "" }: UseGlobalC
         if (id === sessionId) {
             activeStreamRef.current?.abort();
             setSessionId(null);
+            setPinnedCompany(null);
             setMessages([]);
             setChatState("idle");
             setErrorMessage(null);
@@ -258,9 +264,9 @@ export function useGlobalChat({ isOpen, onClose, initialQuery = "" }: UseGlobalC
                 activeStreamRef.current = null;
                 currentAssistantIdRef.current = null;
             },
-        });
+        }, pinnedCompany?.id ?? null);
         // eslint-disable-next-line react-hooks/exhaustive-deps
-    }, [chatState, sessionId, refreshSessions]);
+    }, [chatState, sessionId, refreshSessions, pinnedCompany]);
 
     // ── Stop / cancel an in-flight generation ────────────────────────────────
     // chatApi's streamSSE resolves silently on an aborted signal (no onDone /
@@ -313,6 +319,7 @@ export function useGlobalChat({ isOpen, onClose, initialQuery = "" }: UseGlobalC
     const startNewChat = useCallback(() => {
         activeStreamRef.current?.abort();
         setSessionId(null);
+        setPinnedCompany(null);
         setMessages([]);
         setChatState("idle");
         setErrorMessage(null);
@@ -338,6 +345,7 @@ export function useGlobalChat({ isOpen, onClose, initialQuery = "" }: UseGlobalC
                 })),
             );
             setSessionId(id);
+            setPinnedCompany(pinFromHistory(history));
         } catch (e) {
             console.error("[GlobalChat] Failed to load session:", e);
             setErrorMessage("Couldn't load that conversation. Please try again.");
@@ -382,8 +390,15 @@ export function useGlobalChat({ isOpen, onClose, initialQuery = "" }: UseGlobalC
         const handleClickOutside = (e: MouseEvent) => {
             const target = e.target as HTMLElement;
             if (target.closest("[data-global-chat-fab]")) return;
-            if (chatWindowRef.current && !chatWindowRef.current.contains(target)) {
-                requestClose();
+            if (chatWindowRef.current && !chatWindowRef.current.contains(target)) requestClose();
+            if (target.closest?.("[data-global-chat-fab]")) return;
+            // composedPath + isConnected: picking a company from the chat's suggestion list removes
+            // the clicked item before this runs; contains() alone saw it as outside and closed the
+            // chat (the app then showed Home). See lib/outsideClick.
+            const path = typeof e.composedPath === "function" ? e.composedPath() : [];
+            if (isOutsideClick({ path, panel: chatWindowRef.current, target })) {
+                activeStreamRef.current?.abort();
+                onClose();
             }
         };
 
@@ -438,6 +453,7 @@ export function useGlobalChat({ isOpen, onClose, initialQuery = "" }: UseGlobalC
         setMessages([]);
         setErrorMessage(null);
         setSessionId(null);
+        setPinnedCompany(null);
     }, []);
 
     const isBusy = chatState === "waiting_for_llm" || chatState === "streaming_response";
@@ -469,5 +485,8 @@ export function useGlobalChat({ isOpen, onClose, initialQuery = "" }: UseGlobalC
         startNewChat,
         loadSession,
         deleteSession,
+        // company pinned to this chat
+        pinnedCompany,
+        setPinnedCompany,
     };
 }

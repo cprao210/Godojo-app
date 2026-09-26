@@ -3,8 +3,13 @@ import { describe, expect, it } from 'vitest';
 import { buildUploadAnalysisPrompt, normalizeUploadAnalysis } from '../utils/uploadAnalysis';
 import { stableId } from '../../src/lib/objections';
 
-const qual = (status: string, evidence = status === 'missing' ? '' : 'they have 200k approved', question?: string) => ({
-    status, evidence, suggested_question: question ?? '',
+const qual = (
+    status: string,
+    evidence: string | string[] = status === 'missing' ? [] : ['they have 200k approved'],
+    question?: string,
+    summary?: string,
+) => ({
+    status, evidence, suggested_question: question ?? '', ...(summary === undefined ? {} : { summary }),
 });
 
 describe('buildUploadAnalysisPrompt', () => {
@@ -47,16 +52,16 @@ describe('normalizeUploadAnalysis — BANT/MEDDIC', () => {
 
     it('confirmed fields NEVER carry an ask-this recommendation', () => {
         const out = normalizeUploadAnalysis({
-            bant: { budget: qual('confirmed', 'we have 200k approved', 'What is your budget?') },
+            bant: { budget: qual('confirmed', ['we have 200k approved'], 'What is your budget?') },
         }, false);
         expect(out.bant.budget.suggested_question).toBe('');
         expect(out.bant.budget.emoji).toBe('✅');
-        expect(out.bant.budget.evidence).toBe('we have 200k approved');
+        expect(out.bant.budget.evidence).toEqual(['we have 200k approved']);
     });
 
     it('NO QUOTE = NO STATUS: unevidenced claims downgrade to missing, question kept or filled', () => {
         const out = normalizeUploadAnalysis({
-            bant: { timeline: qual('confirmed', '', 'anything'), need: qual('partial', '') },
+            bant: { timeline: qual('confirmed', [], 'anything'), need: qual('partial', []) },
         }, false);
         expect(out.bant.timeline.status).toBe('missing');
         expect(out.bant.timeline.emoji).toBe('❌');
@@ -70,18 +75,67 @@ describe('normalizeUploadAnalysis — BANT/MEDDIC', () => {
 
     it('partial fields keep their specific question and ⚠️', () => {
         const out = normalizeUploadAnalysis({
-            meddic: { metrics: qual('partial', 'cut scheduling by 40%', 'Which KPI would you track?') },
+            meddic: { metrics: qual('partial', ['cut scheduling by 40%'], 'Which KPI would you track?') },
         }, false);
         expect(out.meddic.metrics.status).toBe('partial');
         expect(out.meddic.metrics.emoji).toBe('⚠️');
         expect(out.meddic.metrics.suggested_question).toBe('Which KPI would you track?');
     });
 
-    it('clamps long evidence to 300 chars at the last sentence boundary', () => {
-        const long = 'A'.repeat(200) + '. ' + 'B'.repeat(200);
-        const out = normalizeUploadAnalysis({ bant: { need: qual('confirmed', long) } }, false);
-        expect(out.bant.need.evidence.length).toBeLessThanOrEqual(300);
-        expect(out.bant.need.evidence.endsWith('.')).toBe(true);
+    it('clamps each evidence item to 200 chars at the last sentence boundary', () => {
+        const a = 'A'.repeat(150) + '. ' + 'B'.repeat(150);
+        const b = 'C'.repeat(150) + '. ' + 'D'.repeat(150);
+        const out = normalizeUploadAnalysis({ bant: { need: qual('confirmed', [a, b]) } }, false);
+        const spans = out.bant.need.evidence as string[];
+        expect(spans).toHaveLength(2);
+        // The cap is per quote (backend EVIDENCE_ITEM_MAX_CHARS), not across the list.
+        for (const span of spans) {
+            expect(span.length).toBeLessThanOrEqual(200);
+            expect(span.endsWith('.')).toBe(true);
+        }
+    });
+
+    it('dedupes evidence spans case/whitespace-insensitively, like the backend', () => {
+        const out = normalizeUploadAnalysis({
+            bant: { budget: qual('confirmed', ['We have 200k', 'we  have 200K', 'CFO signs']) },
+        }, false);
+        expect(out.bant.budget.evidence).toEqual(['We have 200k', 'CFO signs']);
+    });
+
+    it('accepts a scalar evidence string from a model that ignored the list contract', () => {
+        const out = normalizeUploadAnalysis({ bant: { budget: qual('confirmed', 'we have 200k approved') } }, false);
+        expect(out.bant.budget.evidence).toEqual(['we have 200k approved']);
+        expect(out.bant.budget.status).toBe('confirmed');
+    });
+
+    it('an empty evidence LIST still downgrades to missing (`!evidence` is false for [])', () => {
+        const out = normalizeUploadAnalysis({
+            bant: { budget: { status: 'confirmed', evidence: [], summary: 'Budget is approved.' } },
+        }, false);
+        expect(out.bant.budget.status).toBe('missing');
+        // …and the downgraded field carries no assessment either.
+        expect(out.bant.budget.summary).toBe('');
+    });
+
+    it('drops empty and whitespace-only spans, and caps the list at 3', () => {
+        const out = normalizeUploadAnalysis({
+            bant: { budget: qual('confirmed', ['a', '   ', '', 'b', 'c', 'd']) },
+        }, false);
+        expect(out.bant.budget.evidence).toEqual(['a', 'b', 'c']);
+    });
+
+    it('carries the summary through, trimmed, and always emits the key', () => {
+        const out = normalizeUploadAnalysis({
+            bant: {
+                budget: qual('confirmed', ['we have 200k approved'], undefined, '  Budget is approved at 200k.  '),
+                need: qual('partial', ['scheduling is painful']),
+            },
+        }, false);
+        expect(out.bant.budget.summary).toBe('Budget is approved at 200k.');
+        // Absent from the model's output -> '' rather than undefined, so the
+        // local path has one fixed shape. Status is untouched by its absence.
+        expect(out.bant.need.summary).toBe('');
+        expect(out.bant.need.status).toBe('partial');
     });
 });
 

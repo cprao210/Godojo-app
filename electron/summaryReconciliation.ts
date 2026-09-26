@@ -28,7 +28,7 @@
 // direction either.
 
 import { LiveAnalysisData } from '../src/types';
-import { BANT_ORDER, MEDDICC_ORDER } from '../src/lib/bantMeddic';
+import { BANT_ORDER, MEDDICC_ORDER, fieldText, type EvidenceBearing } from '../src/lib/bantMeddic';
 
 const toComponentName = (camelKey: string): string => camelKey.charAt(0).toUpperCase() + camelKey.slice(1);
 
@@ -95,9 +95,13 @@ export function reconcileBantMeddicWithLiveAnalysis(
 
     if (!liveAnalysis) return summaryData; // nothing to reconcile against — leave LLM output as-is
 
-    const field = (f: { status: string; evidence: string } | undefined) => ({
+    // `detail` is the one line read by people (Summary tab, PDF, exports), so
+    // it takes the backend's own assessment of the field — see fieldText. This
+    // must stay identical to toCanonicalField in src/lib/bantMeddic: it is the
+    // same mapping, mirrored here for the main process.
+    const field = (f: ({ status: string } & EvidenceBearing) | undefined) => ({
         status: STATUS_MAP[f?.status ?? ''] ?? 'Missing',
-        detail: f?.evidence || '',
+        detail: fieldText(f),
     });
 
     const reconciledBant = {

@@ -61,6 +61,11 @@ function hasGeneratedContent(m: Pick<Meeting, "summary" | "title">): boolean {
   return hasSummaryText && hasRealTitle;
 }
 
+// Ids already reported by the safety-net warning below. isMeetingProcessing runs
+// on every render / filter / poll tick for every row, so an unguarded warn
+// floods the console with the same ids over and over.
+const warnedStaleFlagIds = new Set<string>();
+
 /**
  * True while a meeting's transcript/summary/scorecard are still being generated.
  *
@@ -82,9 +87,11 @@ export function isMeetingProcessing(m: Pick<Meeting, "isProcessed" | "title">): 
   // guards against a backend bug/race where is_processed never gets flipped
   // to true even after the summary/title/analysis were successfully written.
   if (flaggedAsProcessing && hasGeneratedContent(m as any)) {
-    if (process.env.NODE_ENV !== "production") {
+    const id = (m as any).id ?? "?";
+    if (process.env.NODE_ENV !== "production" && !warnedStaleFlagIds.has(id)) {
+      warnedStaleFlagIds.add(id);
       console.warn(
-        `[meetingMapping] Meeting ${(m as any).id ?? "?"} has generated content but isProcessed is still false — check backend flag-setting logic.`
+        `[meetingMapping] Meeting ${id} has generated content but isProcessed is still false — check backend flag-setting logic.`
       );
     }
     return false;
@@ -292,7 +299,10 @@ export function mapMeetingRow(row: any): Meeting {
     // Call categories from the scorecard (a meeting can carry several —
     // demo + negotiation etc.), powering the multi-check category filter.
     meetingTypes: Array.isArray(row.meeting_types) ? row.meeting_types : undefined,
-    isProcessed: row.is_processed === true || row.is_processed === 1,
+    // A row that doesn't carry the column at all (legacy rows, or a list
+    // projection that leaves it out) stays undefined rather than false —
+    // isMeetingProcessing treats only an explicit false as "still processing".
+    isProcessed: row.is_processed == null ? undefined : row.is_processed === true || row.is_processed === 1,
     transcript: [],
     usage: [],
   };

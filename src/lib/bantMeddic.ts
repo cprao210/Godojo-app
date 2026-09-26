@@ -5,7 +5,12 @@
  *   1. `LiveAnalysisData` (`detailedSummary.liveAnalysis.bant` / `.meddic`) —
  *      the raw shape from the live-analysis backend: snake_case keys
  *      (economic_buyer, decision_criteria, ...), lowercase status
- *      ('confirmed' | 'partial' | 'missing' | ''), field name `evidence`.
+ *      ('confirmed' | 'partial' | 'missing' | ''), a `summary` line and a
+ *      list of verbatim `evidence` spans. Rows saved before that carry a bare
+ *      string `evidence`, no `summary`, and an `evidence_clean` readable
+ *      rendering, so this module's accessors serve both shapes and nothing
+ *      else reads the fields directly. `summary` is the source of truth for
+ *      anything showing one line; `evidence` is reference material.
  *   2. `MeetingDetailedSummary.bant` / `.meddicc` — the canonical UI shape:
  *      camelCase keys (economicBuyer, decisionCriteria, ...), Title-case
  *      status ('Clear' | 'Partial' | 'Missing'), field name `detail`.
@@ -17,7 +22,7 @@
  * hand-rolling the key/status conversion — that's what caused the casing and
  * vocabulary to drift out of sync across call sites.
  */
-import type { LiveAnalysisData } from '@/types';
+import type { EvidenceValue, LiveAnalysisData } from '@/types';
 
 /** Mirrors STATUS_MAP in electron/MeetingPersistence.ts exactly. */
 export const STATUS_MAP: Record<string, 'Clear' | 'Partial' | 'Missing'> = {
@@ -38,11 +43,72 @@ const MEDDIC_KEY_MAP = {
     competition: 'competition',
 } as const;
 
+/** The evidence and summary a BANT/MEDDIC field can carry. */
+export type EvidenceBearing =
+    | { evidence?: EvidenceValue; evidence_clean?: string; summary?: string }
+    | null
+    | undefined;
+
+/** string | string[] | undefined -> a trimmed, non-empty string[]. */
+export const toEvidenceList = (v: EvidenceValue | undefined): string[] => {
+    if (Array.isArray(v)) return v.map((s) => String(s ?? '').trim()).filter(Boolean);
+    if (typeof v === 'string') { const t = v.trim(); return t ? [t] : []; }
+    return [];
+};
+
+/**
+ * The verbatim evidence spans for a BANT/MEDDIC field, in backend order —
+ * the reference material behind the assessment.
+ *
+ * Reads `evidence` only. `evidence_clean` is NOT an evidence rendering any
+ * more: the backend now mirrors `summary` into it for older builds
+ * (add_legacy_evidence_mirror), so treating it as evidence would show the
+ * summary twice and hide the real spans. It is a card-body fallback — see
+ * fieldText.
+ */
+export const fieldEvidenceList = (f: EvidenceBearing): string[] => toEvidenceList(f?.evidence);
+
+/** The backend's one-line reading of the field. '' on rows that predate it. */
+export const fieldSummary = (f: EvidenceBearing): string =>
+    typeof f?.summary === 'string' ? f.summary.trim() : '';
+
+/** The verbatim spans as ONE string, joined with a space. */
+export const fieldEvidence = (f: EvidenceBearing): string => fieldEvidenceList(f).join(' ');
+
+/**
+ * The one line to show for a criterion — the source of truth for every
+ * one-line reader. Same precedence as the backend's to_summary_shape:
+ * `summary`, then `evidence_clean` (the readable rendering on rows saved
+ * before summaries existed), then the joined spans.
+ */
+export const fieldText = (f: EvidenceBearing): string =>
+    fieldSummary(f) || (typeof f?.evidence_clean === 'string' ? f.evidence_clean.trim() : '') || fieldEvidence(f);
+
+/**
+ * Everything a field card needs. The evidence disclosure appears only when
+ * there is a summary: without one, the body already IS the evidence (or its
+ * legacy rendering), and a disclosure would just repeat it. Kept here rather
+ * than in the component so the rule is unit-testable.
+ */
+export function fieldDisplay(f: EvidenceBearing): {
+    evidence: string[];
+    body: string;
+    showDisclosure: boolean;
+} {
+    const evidence = fieldEvidenceList(f);
+    return {
+        evidence,
+        body: fieldText(f),
+        showDisclosure: fieldSummary(f) !== '' && evidence.length > 0,
+    };
+}
+
 type CanonicalField = { status: 'Clear' | 'Partial' | 'Missing'; detail: string };
 
-const toCanonicalField = (f: { status: string; evidence: string } | undefined): CanonicalField => ({
+const toCanonicalField = (f: ({ status: string } & EvidenceBearing) | undefined): CanonicalField => ({
     status: STATUS_MAP[f?.status ?? ''] ?? 'Missing',
-    detail: f?.evidence || '',
+    // `detail` is the one line people read (Summary tab, PDF, Self-Analysis).
+    detail: fieldText(f),
 });
 
 /** Canonical BANT shape: all four fields always present, status is the narrow literal union. */

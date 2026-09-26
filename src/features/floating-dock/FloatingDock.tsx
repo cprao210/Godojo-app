@@ -79,6 +79,8 @@ export const FloatingDock: React.FC<FloatingDockProps> = ({
     const { panelTopOffset, meetingTypes, setMeetingTypes, analysisData, analysisLoading, analysisError } = floatingDockStates;
     const { runAnalysis, isRefreshRun, chatMessages, setChatMessages, autoRefreshInterval, setAutoRefreshInterval } = floatingDockStates;
     const { intelligencePanelFirstOpenedAt, noAnalysisCaptured, isCountdownActive, handleInteractionId } = floatingDockStates;
+    // Live analysis v2 only (both undefined on v1): changed-field highlight + 👍/👎 feedback.
+    const { changedFields, sendFieldFeedback } = floatingDockStates;
 
     // In Performance Mode we swap these springs for short tweens: fewer animated
     // frames (no spring settling/overshoot) = less layout/paint per panel switch
@@ -284,6 +286,8 @@ export const FloatingDock: React.FC<FloatingDockProps> = ({
                         panelFirstOpenedAt={intelligencePanelFirstOpenedAt}
                         noAnalysisCaptured={noAnalysisCaptured}
                         isCountdownActive={isCountdownActive}
+                        changedFields={changedFields}
+                        onFieldFeedback={sendFieldFeedback}
                         meetingTypes={meetingTypes}
                         onMeetingTypesChange={setMeetingTypes}
                         isPerformanceMode={isPerformanceMode}
