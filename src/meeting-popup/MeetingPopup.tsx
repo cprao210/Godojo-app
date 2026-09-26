@@ -328,12 +328,20 @@ export default function MeetingPopup() {
     //   1. NO backdrop-blur on the card — in a transparent window it only
     //      ever sampled the transparent body, so it added zero visuals and
     //      100% of the fragile compositing path.
-    //   2. Near-opaque panel — legibility can never depend on how the
-    //      compositor handles layered alpha. (Same mitigation Performance
-    //      Mode applies to the dock: drop blur, boost opacity.)
+    //   2. FULLY OPAQUE panel, no alpha channel at all. This used to be a
+    //      "near-opaque" `/98`/`/97` background, which still has an alpha
+    //      channel — and on the affected GPU/driver combos ANY alpha on top
+    //      of a transparent BrowserWindow can mis-composite (reports kept
+    //      coming in of the card going fully see-through, e.g. a Chrome
+    //      profile switcher bleeding straight through the "Recording starts
+    //      in…" card). Legibility can never depend on how the compositor
+    //      handles layered alpha, so the panel itself now carries zero alpha
+    //      — solid color, full stop. (Same mitigation Performance Mode
+    //      applies to the dock: drop blur, boost opacity — taken here to its
+    //      logical end.)
     const panelClass = isLight
-        ? "bg-[#F3F4F6]/98 border-black/10 shadow-black/10"
-        : "bg-[#1E1E1E]/97 border-white/10 shadow-black/40";
+        ? "bg-[#F3F4F6] border-black/10 shadow-black/10"
+        : "bg-[#1E1E1E] border-white/10 shadow-black/40";
     const chipClass = isLight
         ? "bg-black/5 border-black/10 text-neutral-700"
         : "bg-white/5 border-white/10 text-neutral-300";
