@@ -192,6 +192,21 @@ export function useMeetingDetails(initialMeeting: Meeting) {
         () => meetingsApi.get(initialMeeting.id),
         {
             initialData: initialMeeting,
+            // CRITICAL: without this, react-query v3 stamps `dataUpdatedAt`
+            // with Date.now() the moment initialData is registered — so
+            // `dataUpdatedAt > 0` (checked below) becomes true on the very
+            // first render, before ANY fetch has run. Downstream that made
+            // `isDetailResolved` true while the placeholder still had no
+            // summary, which flashed "No summary yet" (with a Generate
+            // button) for the few seconds the real GET /meetings/{id} took
+            // to land — most visible for slim list rows and the AE
+            // drill-down's placeholder meetings, which never carry
+            // summary_json. With `initialDataUpdatedAt: 0`, dataUpdatedAt
+            // stays 0 until a REAL fetch completes (or the unblock
+            // setQueryData below runs), which is what both consumers below
+            // always meant. Staleness is unaffected: staleTime is already 0,
+            // so the mount refetch behaves exactly as before.
+            initialDataUpdatedAt: 0,
             enabled: !isProcessing && canFetchDetail,
         },
     );
@@ -203,8 +218,10 @@ export function useMeetingDetails(initialMeeting: Meeting) {
     // `idle`, which is also not "loading". `dataUpdatedAt` is the only honest
     // signal — react-query stamps it on a completed fetch AND on the
     // `setQueryData` the unblock effect below performs, which are precisely the
-    // two ways real detail data arrives. Ids with no backend row can never
-    // resolve that way, so they count as resolved and render the list row.
+    // two ways real detail data arrives. (initialData itself does NOT count:
+    // `initialDataUpdatedAt: 0` above keeps the mount-time placeholder from
+    // stamping it.) Ids with no backend row can never resolve that way, so they
+    // count as resolved and render the list row.
     const isDetailResolved = !canFetchDetail || dataUpdatedAt > 0;
 
     // Company resolution, deliberately SEPARATE from the detail query above.
@@ -234,9 +251,12 @@ export function useMeetingDetails(initialMeeting: Meeting) {
     // useFloatingDock.ts only persists them locally at call-end (see
     // PendingLiveChatStore.ts). `meetingData` is seeded via `initialData`
     // above and stays truthy even before a real network fetch resolves, so
-    // gate on `dataUpdatedAt > 0` — react-query only sets that after an
-    // actual completed query, which IS the confirmation the backend has
-    // synced this meeting.
+    // gate on `dataUpdatedAt > 0` — with `initialDataUpdatedAt: 0` (see the
+    // query options above) that only happens after an actual completed query,
+    // which IS the confirmation the backend has synced this meeting. (Before
+    // that flag, initialData stamped dataUpdatedAt at mount and this effect
+    // fired prematurely — 404 against a not-yet-mirrored row, retried later
+    // by the 15s sweep, but noisy and racy.)
     useEffect(() => {
         if (isProcessing || dataUpdatedAt === 0 || meetingData.id !== initialMeeting.id) return;
 
