@@ -3,6 +3,7 @@ import { Plus, MessageSquare, Trash2 } from 'lucide-react';
 import { motion } from 'framer-motion';
 import { ChatSessionSidebarProps } from '@/types';
 import { BirdLoader } from '@/features/ui/BirdLoader';
+import { useResolvedTheme } from '@/hooks/useResolvedTheme';
 
 // ============================================
 // Chat Session Sidebar — list of past global-chat
@@ -16,8 +17,11 @@ const ChatSessionSidebar: React.FC<ChatSessionSidebarProps> = ({
     onNewChat,
     onDeleteSession,
 }) => {
+
+    const isLight = useResolvedTheme() === 'light';
+
     return (
-        <div className="w-[220px] shrink-0 border-r border-border-subtle flex flex-col bg-bg-elevated/40">
+        <div className={`w-[220px] shrink-0 border-r border-border-subtle flex flex-col ${isLight ? 'bg-bg-elevated' : 'bg-bg-item-surface'}`}>
             <div className="p-2.5 border-b border-border-subtle">
                 <button
                     onClick={onNewChat}
@@ -48,7 +52,7 @@ const ChatSessionSidebar: React.FC<ChatSessionSidebarProps> = ({
                                 animate={{ opacity: 1 }}
                                 onClick={() => onSelectSession(session.id)}
                                 className={`group w-full flex items-start gap-2 px-2.5 py-2 mb-0.5 rounded-lg text-left transition-colors ${isActive
-                                    ? 'bg-accent-primary/12 text-accent-primary'
+                                    ? isLight ? 'bg-blue-50 text-accent-primary' : 'bg-bg-item-surface text-accent-primary'
                                     : 'text-text-secondary hover:bg-bg-item-surface hover:text-text-primary'
                                     }`}
                             >

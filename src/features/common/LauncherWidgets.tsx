@@ -906,7 +906,7 @@ export const MeetingRow: React.FC<MeetingRowProps> = ({
                         exit={{ opacity: 0, scale: 0.95, y: 4 }}
                         transition={{ duration: 0.1 }}
                         style={{ position: 'fixed', top: menuPos.top, left: menuPos.left }}
-                        className={['w-[100px] backdrop-blur-xl rounded-lg shadow-2xl z-[9999] overflow-hidden border', isLight ? 'bg-bg-elevated border-border-muted shadow-[0_8px_24px_rgba(0,0,0,0.12)]' : 'bg-bg-card/90 border-border-muted'].join(' ')}
+                        className={['w-[100px] rounded-lg shadow-2xl z-[9999] overflow-hidden border', isLight ? 'bg-bg-elevated border-border-muted shadow-[0_8px_24px_rgba(0,0,0,0.12)]' : 'bg-bg-card border-border-muted'].join(' ')}
                         onClick={(e) => e.stopPropagation()}
                         onMouseEnter={onMenuMouseEnter}
                         onMouseLeave={onMenuMouseLeave}

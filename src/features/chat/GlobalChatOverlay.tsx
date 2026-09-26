@@ -58,7 +58,7 @@ const GlobalChatOverlay: React.FC<GlobalChatOverlayProps> = ({ isOpen, onClose, 
                             mass: 0.8
                         }}
                         style={{ transformOrigin: 'center' }}
-                        className={`pointer-events-auto relative w-[960px] h-[82vh] max-w-[calc(100vw-64px)] max-h-[calc(100vh-64px)] rounded-[22px] border border-border-subtle shadow-[0_24px_70px_-12px_rgba(0,0,0,0.5)] overflow-hidden flex ${isLight ? "bg-blue-50/80" : "bg-bg-secondary/95"} backdrop-blur-2xl`}
+                        className={`pointer-events-auto relative w-[960px] h-[82vh] max-w-[calc(100vw-64px)] max-h-[calc(100vh-64px)] rounded-[22px] border border-border-subtle shadow-[0_24px_70px_-12px_rgba(0,0,0,0.5)] overflow-hidden flex ${isLight ? "bg-blue-50" : "bg-bg-secondary"} backdrop-blur-2xl`}
                     >
                         <ChatSessionSidebar
                             sessions={sessions}
@@ -70,7 +70,7 @@ const GlobalChatOverlay: React.FC<GlobalChatOverlayProps> = ({ isOpen, onClose, 
                         />
                         <div className="flex-1 flex flex-col min-w-0">
                             {/* Header */}
-                            <div className="flex items-center justify-between gap-3 px-4 py-3.5 border-b border-border-subtle shrink-0 bg-gradient-to-b from-bg-elevated/60 to-transparent">
+                            <div className={`flex items-center justify-between gap-3 px-4 py-3.5 border-b border-border-subtle shrink-0 ${isLight ? 'bg-bg-elevated' : 'bg-bg-secondary'}`}>
                                 <div className="flex items-center gap-2.5 min-w-0">
                                     <div className="relative shrink-0">
                                         <div className="w-8 h-8 rounded-full bg-accent-primary/15 border border-accent-primary/20 flex items-center justify-center shadow-[0_2px_10px_rgba(37,99,235,0.25)]">
@@ -97,7 +97,7 @@ const GlobalChatOverlay: React.FC<GlobalChatOverlayProps> = ({ isOpen, onClose, 
                                 </div>
                                 <button
                                     onClick={requestClose}
-                                    className="p-1.5 rounded-full hover:bg-bg-item-surface transition-colors group shrink-0"
+                                    className={`p-1.5 rounded-full ${isLight ? 'bg-bg-elevated' : 'hover:bg-bg-item-surface'} transition-colors group shrink-0`}
                                     aria-label="Close chat"
                                 >
                                     <X size={16} className="text-text-tertiary group-hover:text-text-primary transition-colors" />
