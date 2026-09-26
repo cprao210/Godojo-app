@@ -337,6 +337,9 @@ export interface SourceMapEntry {
   start_ms?: number;
   end_ms?: number;
   snippet?: string;
+  /** The exact excerpt of this source the answer's citing sentence(s) drew
+   * on — shown in the hover card. Absent on turns stored before it existed. */
+  quote?: string;
   /** NotebookLM-style enhancements from backend */
   timestamp_label?: string;
   meeting_url?: string;

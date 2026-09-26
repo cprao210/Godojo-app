@@ -5,8 +5,7 @@ import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import { chatMarkdownComponents } from './markdownComponents';
 import { CitationProvider, rehypeCitations, CiteChip } from './citations';
-import SourcesDisplay from './SourcesDisplay';
-import { ChatSources, SourceMapEntry } from '@/types';
+import { SourceMapEntry } from '@/types';
 
 // ============================================
 // Message Components
@@ -28,8 +27,9 @@ export const UserMessage: React.FC<{ content: string }> = ({ content }) => (
 interface AssistantMessageProps {
     content: string;
     isStreaming?: boolean;
-    sources?: ChatSources;
-    /** [n] -> source map from the `source_map` frame (inline chips + hover cards). */
+    /** [n] -> source map from the `source_map` frame: ONLY the entries the
+     * answer cites inline. Sources are shown solely as these inline chips +
+     * hover cards (each with the exact excerpt used) — no separate list. */
     sourceMap?: Record<number, SourceMapEntry>;
     /** Citation indices that failed semantic verification — dim those chips. */
     unverifiedCitations?: number[];
@@ -42,7 +42,7 @@ interface AssistantMessageProps {
     onOpenAsset?: (src: SourceMapEntry) => void;
 }
 
-export const AssistantMessage: React.FC<AssistantMessageProps> = ({ content, isStreaming, sources, sourceMap, unverifiedCitations, rewriting, onOpenMeeting, onOpenAsset }) => {
+export const AssistantMessage: React.FC<AssistantMessageProps> = ({ content, isStreaming, sourceMap, unverifiedCitations, rewriting, onOpenMeeting, onOpenAsset }) => {
     const [copied, setCopied] = useState(false);
 
     // While waiting for the first frame the assistant placeholder has no
@@ -124,7 +124,6 @@ export const AssistantMessage: React.FC<AssistantMessageProps> = ({ content, isS
                             {copied ? <Check size={12} className="text-emerald-500" /> : <Copy size={12} />}
                             {copied ? 'Copied' : 'Copy'}
                         </button>
-                        {sources && <SourcesDisplay sources={sources} onOpenMeeting={onOpenMeeting} onOpenAsset={onOpenAsset} sourceMap={sourceMap} />}
                     </div>
                 )}
             </div>

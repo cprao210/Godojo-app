@@ -228,7 +228,7 @@ describe('chatApi.queryGlobal', () => {
         });
     });
 
-    it('dispatches token, status, source_ids, and rag_answer frames to the matching handlers', async () => {
+    it('dispatches token, status, and rag_answer frames; ignores source_ids (sources are inline chips only)', async () => {
         fetchMock.mockResolvedValueOnce(
             sseResponse([
                 'event: status\ndata: {"status":"searching"}',
@@ -246,10 +246,8 @@ describe('chatApi.queryGlobal', () => {
 
         expect(result.statuses).toEqual(['searching']);
         expect(result.tokens).toEqual(['Hel', 'lo']);
-        expect(result.sources).toEqual({
-            meetings: [{ id: 'm1', title: 'Call A' }],
-            assets: [{ id: 'a1', title: 'Doc A' }],
-        });
+        // No separate source list reaches the UI any more.
+        expect(result.sources).toBeUndefined();
         expect(result.ragAnswer).toEqual({ answer: 'Hello there' });
         expect(result.done).toBe(true);
     });
@@ -492,9 +490,10 @@ describe('chatApi.queryLive', () => {
         expect(onInteractionId).toHaveBeenCalledWith(441);
     });
 
-    it('dispatches a source_ids frame in the live asset_id/kind shape, dropping entries with no asset_id', async () => {
+    it('never fires onSources for a live source_ids frame — sources are inline chips only', async () => {
         fetchMock.mockResolvedValueOnce(sseResponse([
-            'event: source_ids\ndata: {"sources":[{"asset_id":"product_specs-1","title":"orbitly_product_specs.docx","kind":"asset"},{"asset_id":"sales_deck-2","title":"orbitly_sales_deck_meridian.pptx","kind":"asset"},{"title":"no id here","kind":"asset"}],"raw_ids":[],"raw_asset_ids":["product_specs-1","sales_deck-2"]}',
+            'event: source_ids\ndata: {"sources":[{"asset_id":"product_specs-1","title":"orbitly_product_specs.docx","kind":"asset"}],"raw_ids":[],"raw_asset_ids":["product_specs-1"]}',
+            'event: token\ndata: {"chunk":"Page 2 covers specs."}',
             'event: done\ndata: {}',
         ]));
         const result = collectHandlers();
@@ -502,27 +501,30 @@ describe('chatApi.queryLive', () => {
         chatApi.queryLive('what is on page 2', [], [], undefined, result.handlers);
         await result.settled;
 
-        expect(result.sources).toEqual({
-            meetings: [],
-            assets: [
-                { id: 'product_specs-1', title: 'orbitly_product_specs.docx' },
-                { id: 'sales_deck-2', title: 'orbitly_sales_deck_meridian.pptx' },
-            ],
-        });
+        expect(result.sources).toBeUndefined();
+        expect(result.done).toBe(true);
     });
 
-    it('never fires onSources for a live turn whose source_ids frame has no asset_id-bearing entries', async () => {
-        fetchMock.mockResolvedValueOnce(sseResponse([
-            'event: source_ids\ndata: {"sources":[],"raw_ids":[],"raw_asset_ids":[]}',
-            'event: token\ndata: {"chunk":"No sources for this one."}',
-            'event: done\ndata: {}',
-        ]));
+    it('completes the turn on the `done` frame even when the connection stays open', async () => {
+        // The server sends `done` but never closes the socket (a lingering
+        // heartbeat). The turn must still finish — this was the "cursor keeps
+        // blinking, Copy never appears" bug.
+        const body = 'event: token\ndata: {"chunk":"Answer."}\n\nevent: done\ndata: {}\n\n';
+        const stream = new ReadableStream<Uint8Array>({
+            start(controller) {
+                controller.enqueue(new TextEncoder().encode(body));
+                // deliberately never closed
+            },
+        });
+        fetchMock.mockResolvedValueOnce(new Response(stream, { status: 200 }));
         const result = collectHandlers();
 
-        chatApi.queryLive('unrelated question', [], [], undefined, result.handlers);
+        chatApi.queryGlobal('hi', null, [], result.handlers);
         await result.settled;
 
-        expect(result.sources).toEqual({ meetings: [], assets: [] });
+        expect(result.tokens).toEqual(['Answer.']);
+        expect(result.done).toBe(true);
+        expect(result.error).toBeUndefined();
     });
 });
 

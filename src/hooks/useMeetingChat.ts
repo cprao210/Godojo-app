@@ -8,10 +8,9 @@
 import { useState, useEffect, useRef, useCallback } from 'react';
 import { useStreamBuffer } from './useStreamBuffer';
 import { chatApi, statusLabel } from '@/api';
-import { groupSources } from '@/api/chatApi';
 import { indexSourceMap } from '@/features/chat/citations';
 import { posthogAnalytics } from '@/lib/analytics/posthog.service';
-import type { ChatSources, ChatHistoryTurn, MeetingChatMessage, MeetingChatState, StreamHandle, MeetingContext } from '@/types';
+import type { ChatHistoryTurn, MeetingChatMessage, MeetingChatState, StreamHandle, MeetingContext } from '@/types';
 
 export interface UseMeetingChatArgs {
     isOpen: boolean;
@@ -84,7 +83,6 @@ export function useMeetingChat({ isOpen, onClose, onMessagesChange, messages, me
                     id: `${found}-${i}`,
                     role: turn.role,
                     content: turn.content,
-                    sources: turn.sources?.length ? groupSources(turn.sources) : undefined,
                     sourceMap: turn.source_map?.length ? indexSourceMap(turn.source_map) : undefined,
                 }));
                 // Only fill an empty transcript — never clobber turns the
@@ -211,7 +209,6 @@ export function useMeetingChat({ isOpen, onClose, onMessagesChange, messages, me
         }]);
 
         streamBuffer.reset();
-        let sources: ChatSources | undefined;
 
         // history is only consulted by the backend when sessionId is null
         // (first turn of a new session); once a session exists it loads
@@ -222,16 +219,15 @@ export function useMeetingChat({ isOpen, onClose, onMessagesChange, messages, me
             // failed attempt delivered so a retry that comes back without
             // sources/citations can't inherit stale ones.
             onRetry: (attempt, max) => {
-                sources = undefined;
                 setStatusText(`Reconnecting… (${attempt}/${max})`);
                 onMessagesChange(prev => prev.map(msg =>
                     msg.id === assistantMessageId ? { ...msg, sourceMap: undefined } : msg
                 ));
             },
             onSessionCreated: (id) => { sessionIdRef.current = id; setSessionId(id); },
-            onSources: (s) => { sources = s; },
-            // [n] -> source map, sent before the first token: drives inline
-            // citation chips + hover cards.
+            // [n] -> source map, sent before the first token: ONLY the cited
+            // entries (with the exact excerpt each drew on). Sources are shown
+            // solely as these inline chips — there is no separate list.
             onSourceMap: (entries) => {
                 const map = indexSourceMap(entries);
                 onMessagesChange(prev => prev.map(msg =>
@@ -271,19 +267,23 @@ export function useMeetingChat({ isOpen, onClose, onMessagesChange, messages, me
             onRagAnswer: (ragAnswer) => {
                 onMessagesChange(prev => prev.map(msg =>
                     msg.id === assistantMessageId
-                        ? { ...msg, content: ragAnswer.answer, isStreaming: false, rewriting: false, sources }
+                        ? { ...msg, content: ragAnswer.answer, isStreaming: false, rewriting: false }
                         : msg
                 ));
                 setChatState('idle');
                 setStatusText(null);
             },
             onDone: () => {
-                const finalContent = streamBuffer.getBufferedContent();
+                // A late onDone from an older turn must not touch the shared
+                // buffer/refs a newer turn now owns — just stop its cursor.
+                const isCurrentTurn = currentAssistantIdRef.current === assistantMessageId;
+                const finalContent = isCurrentTurn ? streamBuffer.getBufferedContent() : null;
                 onMessagesChange(prev => prev.map(msg =>
                     msg.id === assistantMessageId && msg.isStreaming
-                        ? { ...msg, content: finalContent, isStreaming: false, sources }
+                        ? { ...msg, content: finalContent ?? msg.content, isStreaming: false, rewriting: false }
                         : msg
                 ));
+                if (!isCurrentTurn) return;
                 setChatState('idle');
                 setStatusText(null);
                 streamBuffer.reset();

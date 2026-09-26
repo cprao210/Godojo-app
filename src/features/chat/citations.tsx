@@ -134,8 +134,10 @@ const HoverCard: React.FC<{
     // Hidden until the first measurement so the card never flashes at 0,0.
     const [pos, setPos] = useState<CardPos | null>(null);
 
-    // Use enhanced fields from backend when available, fall back to legacy
-    const previewText = src.preview_text || src.snippet;
+    // `quote` is the exact excerpt of the source the answer drew on (picked
+    // server-side per citing sentence); older turns only carry a snippet.
+    const quote = src.quote;
+    const previewText = quote || src.preview_text || src.snippet;
 
     // Build metadata line: prefer timestamp_label from backend, fall back to formatted start_ms.
     // Live moments already carry "This call, MM:SS" in the title — just the speaker here.
@@ -226,9 +228,15 @@ const HoverCard: React.FC<{
                 <div className="px-3 py-2.5">
                     {where && <div className="mb-1.5 text-[10.5px] uppercase tracking-wide text-text-tertiary">{where}</div>}
                     {previewText && (
-                        <div className="text-[12px] leading-relaxed text-text-secondary whitespace-pre-wrap break-words">
-                            {previewText}
-                        </div>
+                        quote ? (
+                            <blockquote className="border-l-2 border-blue-400/60 pl-2.5 text-[12px] leading-relaxed text-text-secondary whitespace-pre-wrap break-words">
+                                “{quote}”
+                            </blockquote>
+                        ) : (
+                            <div className="text-[12px] leading-relaxed text-text-secondary whitespace-pre-wrap break-words">
+                                {previewText}
+                            </div>
+                        )
                     )}
                 </div>
                 {onOpen && (
@@ -354,7 +362,10 @@ export const CiteChip: React.FC<{
         <>
             {indices.map((i) => {
                 const src = map?.[i];
-                if (!src) return <sup key={i} className="text-text-tertiary">[{i}]</sup>;
+                // No backing source → render nothing: a marker that can't show
+                // its source is never displayed (the backend already drops
+                // these; this guards older stored turns).
+                if (!src) return null;
                 return <CitationPill key={i} index={i} src={src} />;
             })}
         </>

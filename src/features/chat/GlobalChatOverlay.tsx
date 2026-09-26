@@ -112,7 +112,7 @@ const GlobalChatOverlay: React.FC<GlobalChatOverlayProps> = ({ isOpen, onClose, 
                                     {messages.map((msg) => (
                                         msg.role === 'user'
                                             ? <UserMessage key={msg.id} content={msg.content} />
-                                            : <AssistantMessage key={msg.id} content={msg.content} isStreaming={msg.isStreaming} sources={msg.sources} sourceMap={msg.sourceMap} unverifiedCitations={msg.unverifiedCitations} rewriting={msg.rewriting} onOpenMeeting={onOpenMeeting} onOpenAsset={onOpenAsset} />
+                                            : <AssistantMessage key={msg.id} content={msg.content} isStreaming={msg.isStreaming} sourceMap={msg.sourceMap} unverifiedCitations={msg.unverifiedCitations} rewriting={msg.rewriting} onOpenMeeting={onOpenMeeting} onOpenAsset={onOpenAsset} />
                                     ))}
 
                                     {chatState === 'waiting_for_llm' && <TypingIndicator label={statusText ?? undefined} />}
