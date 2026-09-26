@@ -42,6 +42,17 @@ export const INTEL_GPU_VENDOR_ID = '0x8086';
 const WEAK_CPU_THREADS = 4;
 const WEAK_IGPU_RAM_GB = 8;
 
+/** RAM-only threshold for MEMORY-lifecycle behavior (window pre-creation,
+ *  destroy-on-close). Deliberately independent of Performance Mode: RAM
+ *  alone never triggers the reduced VISUAL mode (an 8 GB Apple Silicon Mac
+ *  keeps full fidelity), but it is a valid signal for "don't keep spare
+ *  renderer processes alive" — each hidden window costs real memory. */
+const LOW_MEMORY_RAM_GB = 8;
+
+export function isLowMemoryMachine(totalRamGB: number | null): boolean {
+    return totalRamGB != null && totalRamGB <= LOW_MEMORY_RAM_GB;
+}
+
 export function classifyPerformanceMode(hw: HardwareSnapshot): PerformanceClassification {
     // Facts line — every known value participates, so logs/telemetry carry
     // the full picture even when the decision is OFF.

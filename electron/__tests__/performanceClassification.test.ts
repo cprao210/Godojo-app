@@ -3,6 +3,7 @@ import { describe, expect, it } from 'vitest';
 import {
     INTEL_GPU_VENDOR_ID,
     classifyPerformanceMode,
+    isLowMemoryMachine,
     type HardwareSnapshot,
 } from '../../utils/performanceClassification';
 
@@ -77,5 +78,19 @@ describe('classifyPerformanceMode contract with the user override', () => {
         const off = classifyPerformanceMode(hw());
         expect(off.autoPerformanceMode).toBe(false);
         expect(off.reason).toBeNull();
+    });
+});
+
+describe('isLowMemoryMachine (memory-lifecycle gate, independent of Performance Mode)', () => {
+    it('<= 8 GB → true (the i3 laptop: 8 GB)', () => {
+        expect(isLowMemoryMachine(8)).toBe(true);
+        expect(isLowMemoryMachine(7.5)).toBe(true);
+    });
+    it('> 8 GB → false (high-memory machines keep the pre-warmed fast path)', () => {
+        expect(isLowMemoryMachine(16)).toBe(false);
+        expect(isLowMemoryMachine(8.1)).toBe(false);
+    });
+    it('null → false (fail-safe: keep existing behavior when RAM is unknown)', () => {
+        expect(isLowMemoryMachine(null)).toBe(false);
     });
 });

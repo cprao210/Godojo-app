@@ -1,6 +1,8 @@
 import { BrowserWindow, screen, app } from "electron"
 import { WindowHelper } from "./WindowHelper"
 import path from "node:path"
+import os from "node:os"
+import { isLowMemoryMachine } from "../utils/performanceClassification"
 
 const isDev = process.env.NODE_ENV === "development"
 
@@ -40,6 +42,14 @@ export class SettingsWindowHelper {
 
     constructor() { }
 
+    // Memory-lifecycle gate (RAM-only, deliberately NOT the Performance Mode
+    // signal): on <=8 GB machines each hidden spare renderer costs real RAM
+    // (measured ~751 MB total on the target laptop), so the settings window
+    // skips start-up pre-creation and is destroyed on close instead of
+    // hidden. Trade-off: first open is slightly slower — accepted per the
+    // low-memory playbook. High-memory machines keep the instant-open path.
+    private readonly lowMemory = isLowMemoryMachine(os.totalmem() > 0 ? Math.round((os.totalmem() / (1024 ** 3)) * 10) / 10 : null);
+
     public setIgnoreBlur(ignore: boolean): void {
         this.ignoreBlur = ignore;
     }
@@ -48,6 +58,7 @@ export class SettingsWindowHelper {
      * Pre-create the settings window in the background (hidden) for faster first open
      */
     public preloadWindow(): void {
+        if (this.lowMemory) return // no spare renderer on low-memory machines
         if (!this.settingsWindow || this.settingsWindow.isDestroyed()) {
             // Create window off-screen so it's ready but not visible
             this.createWindow(-10000, -10000, false);
@@ -135,8 +146,17 @@ export class SettingsWindowHelper {
 
     public closeWindow(): void {
         if (this.settingsWindow && !this.settingsWindow.isDestroyed()) {
-            this.settingsWindow.hide()
             this.emitVisibilityChange(false);
+            if (this.lowMemory) {
+                // destroy() reclaims the renderer's memory immediately; the
+                // 'closed' event still fires so any cleanup runs, and the
+                // next showWindow() re-creates the window via createWindow().
+                if (this.opacityTimeout) clearTimeout(this.opacityTimeout);
+                this.settingsWindow.destroy();
+                this.settingsWindow = null as unknown as BrowserWindow;
+            } else {
+                this.settingsWindow.hide()
+            }
         }
     }
 
