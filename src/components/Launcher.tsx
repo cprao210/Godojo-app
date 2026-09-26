@@ -1,8 +1,10 @@
-import React, { useState, useEffect } from 'react';
-import { Zap, Calendar, ArrowRight, ArrowLeft, MoreHorizontal, ChevronRight, Settings, RefreshCw, Ghost, Trash2, Download, DownloadCloud, CheckCircle, AlertCircle, Briefcase, Upload, X, ChevronUp, Sparkles } from 'lucide-react';
+import React, { useState, useEffect, useMemo } from 'react';
+import { Zap, Calendar, ArrowRight, ArrowLeft, MoreHorizontal, ChevronRight, Settings, RefreshCw, Ghost, Trash2, Download, DownloadCloud, CheckCircle, AlertCircle, Briefcase, Upload, X, ChevronUp, Sparkles, Building2 } from 'lucide-react';
 import { generateMeetingPDF } from '../utils/pdfGenerator';
 import ConnectCalendarButton from './ui/ConnectCalendarButton';
 import MeetingDetails from './MeetingDetails';
+import CompanyPage from './CompanyPage';
+import { groupMeetingsByCompany, getMeetingCompany, normalizeCompanyKey, AccountMeeting } from '../utils/accountUtils';
 import SalesBriefPanel from './SalesBriefPanel';
 import TopSearchPill from './TopSearchPill';
 import GlobalChatOverlay from './GlobalChatOverlay';
@@ -87,6 +89,8 @@ const Launcher: React.FC<LauncherProps> = ({ onStartMeeting, onOpenSettings, onP
     const [isDetectable, setIsDetectable] = useState(false);
     const [isMeetingActive, setIsMeetingActive] = useState(false);
     const [selectedMeeting, setSelectedMeeting] = useState<Meeting | null>(null);
+    const [selectedCompanyKey, setSelectedCompanyKey] = useState<string | null>(null);
+    const [listMode, setListMode] = useState<'meetings' | 'companies'>('meetings');
     const [upcomingEvents, setUpcomingEvents] = useState<any[]>([]);
     const [isCalendarConnected, setIsCalendarConnected] = useState(false);
     const [isRefreshing, setIsRefreshing] = useState(false);
@@ -428,9 +432,20 @@ const Launcher: React.FC<LauncherProps> = ({ onStartMeeting, onOpenSettings, onP
     // Notify parent if we are on the main launcher list view
     useEffect(() => {
         if (onPageChange) {
-            onPageChange(!selectedMeeting && !isGlobalChatOpen);
+            onPageChange(!selectedMeeting && !selectedCompanyKey && !isGlobalChatOpen);
         }
-    }, [selectedMeeting, isGlobalChatOpen, onPageChange]);
+    }, [selectedMeeting, selectedCompanyKey, isGlobalChatOpen, onPageChange]);
+
+    // Prospect accounts derived from the company detected in each meeting summary
+    const accounts = useMemo(() => groupMeetingsByCompany(meetings as AccountMeeting[]), [meetings]);
+    const selectedAccount = selectedCompanyKey ? accounts.find(a => a.key === selectedCompanyKey) ?? null : null;
+
+    const handleOpenCompany = (companyName: string) => {
+        setForwardMeeting(null);
+        setSelectedMeeting(null);
+        setSelectedCompanyKey(normalizeCompanyKey(companyName));
+        analytics.trackCommandExecuted('open_company_page');
+    };
 
     const handleOpenMeeting = async (meeting: Meeting) => {
         setForwardMeeting(null); // Clear forward history on new navigation
@@ -465,9 +480,16 @@ const Launcher: React.FC<LauncherProps> = ({ onStartMeeting, onOpenSettings, onP
     };
 
     const handleBack = () => {
+        if (!selectedMeeting) {
+            // On a company page — go back to the launcher
+            setSelectedCompanyKey(null);
+            return;
+        }
         setForwardMeeting(selectedMeeting);
         setSelectedMeeting(null);
     };
+
+    const canGoBack = !!selectedMeeting || !!selectedAccount;
 
     const handleForward = () => {
         if (forwardMeeting) {
@@ -522,10 +544,10 @@ const Launcher: React.FC<LauncherProps> = ({ onStartMeeting, onOpenSettings, onP
 
                     {/* Back Button */}
                     <button
-                        onClick={selectedMeeting ? handleBack : undefined}
-                        disabled={!selectedMeeting}
+                        onClick={canGoBack ? handleBack : undefined}
+                        disabled={!canGoBack}
                         className={`p-1 ml-3 flex items-center justify-center rounded-full transition-all
-                            ${selectedMeeting
+                            ${canGoBack
                                 ? `text-text-secondary hover:text-text-primary ${isLight ? 'hover:bg-bg-item-surface' : 'hover:bg-white/10'}`
                                 : 'text-text-tertiary opacity-30 cursor-default'}`}
                     >
@@ -576,6 +598,7 @@ const Launcher: React.FC<LauncherProps> = ({ onStartMeeting, onOpenSettings, onP
                         onOpenMeeting={(meetingId) => {
                             const meeting = meetings.find(m => m.id === meetingId);
                             if (meeting) {
+                                setSelectedCompanyKey(null);
                                 handleOpenMeeting(meeting);
                                 analytics.trackCommandExecuted('open_meeting_from_search');
                             }
@@ -631,6 +654,20 @@ const Launcher: React.FC<LauncherProps> = ({ onStartMeeting, onOpenSettings, onP
                             transition={{ duration: 0.15 }}
                         >
                             <MeetingDetails meeting={selectedMeeting} />
+                        </motion.div>
+                    ) : selectedAccount ? (
+                        <motion.div
+                            key={`company-${selectedAccount.key}`}
+                            className="flex-1 overflow-hidden"
+                            initial={{ opacity: 0 }}
+                            animate={{ opacity: 1 }}
+                            exit={{ opacity: 0 }}
+                            transition={{ duration: 0.15 }}
+                        >
+                            <CompanyPage
+                                account={selectedAccount}
+                                onOpenMeeting={(m) => handleOpenMeeting(m as Meeting)}
+                            />
                         </motion.div>
                     ) : (
                         <motion.div
@@ -970,8 +1007,27 @@ const Launcher: React.FC<LauncherProps> = ({ onStartMeeting, onOpenSettings, onP
                                                     <Calendar size={14} strokeWidth={2.2} />
                                                 </div>
                                                 <span className="text-[15px] font-semibold text-text-primary tracking-tight">
-                                                    Recent Meetings
+                                                    {listMode === 'meetings' ? 'Recent Meetings' : 'Companies'}
                                                 </span>
+
+                                                {/* Meetings / Companies toggle */}
+                                                <div className="ml-1 flex items-center rounded-lg border border-border-muted bg-bg-item-surface p-0.5">
+                                                    {(['meetings', 'companies'] as const).map(mode => (
+                                                        <button
+                                                            key={mode}
+                                                            onClick={() => setListMode(mode)}
+                                                            className={[
+                                                                "flex items-center gap-1 rounded-md px-2 py-1 text-[11px] font-medium transition-colors",
+                                                                listMode === mode
+                                                                    ? isLight ? "bg-bg-elevated text-text-primary shadow-sm" : "bg-white/[0.08] text-text-primary"
+                                                                    : "text-text-tertiary hover:text-text-secondary",
+                                                            ].join(" ")}
+                                                        >
+                                                            {mode === 'meetings' ? <Calendar size={11} /> : <Building2 size={11} />}
+                                                            {mode === 'meetings' ? 'Meetings' : `Companies${accounts.length ? ` (${accounts.length})` : ''}`}
+                                                        </button>
+                                                    ))}
+                                                </div>
                                             </div>
 
                                             {/* Right-side header actions */}
@@ -1022,8 +1078,60 @@ const Launcher: React.FC<LauncherProps> = ({ onStartMeeting, onOpenSettings, onP
 
                                         </div>
 
-                                        {/* Rows — no outer card, dividers only between rows */}
-                                        {meetings.length === 0 ? (
+                                        {listMode === 'companies' ? (
+                                            accounts.length === 0 ? (
+                                                <div className="py-8 text-center text-sm text-text-tertiary">
+                                                    No companies yet. Companies are detected automatically from your processed sales meetings.
+                                                </div>
+                                            ) : (
+                                                <div className="rounded-xl border border-border-muted overflow-hidden">
+                                                    {accounts.map((a, index) => {
+                                                        const healthColor = a.healthScore >= 75 ? 'text-emerald-400' : a.healthScore >= 50 ? 'text-amber-400' : a.healthScore >= 25 ? 'text-orange-400' : 'text-rose-400';
+                                                        const highRisks = a.risks.filter(r => r.level === 'high').length;
+                                                        return (
+                                                            <div
+                                                                key={a.key}
+                                                                onClick={() => handleOpenCompany(a.name)}
+                                                                className={[
+                                                                    "group flex items-center gap-4 px-5 py-4 cursor-pointer transition-colors bg-bg-sidebar hover:bg-bg-item-surface",
+                                                                    index !== accounts.length - 1 ? "border-b border-border-subtle" : "",
+                                                                ].join(" ")}
+                                                            >
+                                                                <div className={[
+                                                                    "flex h-9 w-9 shrink-0 items-center justify-center rounded-lg bg-blue-500/10 text-[14px] font-bold",
+                                                                    isLight ? "text-accent-primary" : "text-blue-400",
+                                                                ].join(" ")}>
+                                                                    {a.name.charAt(0).toUpperCase()}
+                                                                </div>
+                                                                <div className="flex-1 min-w-0">
+                                                                    <div className="text-[13px] font-semibold truncate leading-tight text-text-primary">{a.name}</div>
+                                                                    <div className="flex items-center gap-1.5 mt-0.5 text-[11px] text-text-tertiary">
+                                                                        <span>{a.stage}</span>
+                                                                        <span className="opacity-40">•</span>
+                                                                        <span>{a.meetings.length} meeting{a.meetings.length !== 1 ? 's' : ''}</span>
+                                                                        {highRisks > 0 && (
+                                                                            <>
+                                                                                <span className="opacity-40">•</span>
+                                                                                <span className="text-rose-400">{highRisks} risk{highRisks !== 1 ? 's' : ''}</span>
+                                                                            </>
+                                                                        )}
+                                                                    </div>
+                                                                </div>
+                                                                <div className="flex items-center gap-4 shrink-0">
+                                                                    <span className="text-[12px] font-medium min-w-[120px] text-right text-text-secondary">
+                                                                        Last touch {getGroupLabel(a.lastTouch)}
+                                                                    </span>
+                                                                    <span className={`font-mono text-[12px] font-semibold px-2.5 py-0.5 rounded-md border border-border-muted bg-bg-item-surface ${healthColor}`}>
+                                                                        {a.healthScore}
+                                                                    </span>
+                                                                    <ChevronRight size={15} className="shrink-0 text-text-tertiary group-hover:text-text-secondary" />
+                                                                </div>
+                                                            </div>
+                                                        );
+                                                    })}
+                                                </div>
+                                            )
+                                        ) : meetings.length === 0 ? (
                                             <div className="py-8 text-center text-sm text-text-tertiary">
                                                 No recent meetings yet.
                                             </div>
@@ -1065,8 +1173,19 @@ const Launcher: React.FC<LauncherProps> = ({ onStartMeeting, onOpenSettings, onP
                                                                 {(() => {
                                                                     const org = (m as any).organizer || (m as any).attendees?.[0]?.displayName || null;
                                                                     const count = (m as any).attendees?.length;
+                                                                    const company = getMeetingCompany(m as AccountMeeting);
                                                                     return (
                                                                         <>
+                                                                            {company && (
+                                                                                <button
+                                                                                    onClick={(e) => { e.stopPropagation(); handleOpenCompany(company); }}
+                                                                                    className="inline-flex items-center gap-1 rounded-md px-1.5 py-px bg-blue-500/10 text-blue-400 hover:bg-blue-500/20 transition-colors max-w-[160px]"
+                                                                                    title={`Open ${company} company page`}
+                                                                                >
+                                                                                    <Building2 size={10} className="shrink-0" />
+                                                                                    <span className="truncate">{company}</span>
+                                                                                </button>
+                                                                            )}
                                                                             {org && <span className="truncate max-w-[160px]">{org}</span>}
                                                                             {org && count && <span className="opacity-40">•</span>}
                                                                             {count && <span>{count} Participant{count !== 1 ? 's' : ''}</span>}
