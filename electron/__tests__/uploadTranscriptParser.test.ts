@@ -136,6 +136,43 @@ describe('parseUploadTranscript — edge cases', () => {
         expect(segments.map(s => s.speaker)).toEqual(['user', 'client']);
     });
 
+    // A label like "Bharathraj A" (first name + a bare middle/last initial)
+    // has a second "word" that's just one capital letter with nothing after
+    // it — the plain Title-case word pattern (capital + one-or-more
+    // lowercase) couldn't match that, so the whole label was rejected and
+    // every one of that speaker's turns got merged into whoever spoke
+    // before them.
+    it('a Title-case name with a bare single-letter initial is a valid label', () => {
+        const convo = [
+            'Bharathraj A (00:00): Hi, Good morning',
+            'Ajay Parulekar (00:05): I look after various change initiatives.',
+            'Bharathraj A (00:12): I think there is a slight network issue.',
+            'Litra Motors (00:26): Yeah.',
+        ].join('\n');
+        const { speakers } = parseUploadTranscript(convo);
+        expect(speakers).toEqual(['Bharathraj A', 'Ajay Parulekar', 'Litra Motors']);
+    });
+
+    // Bracket-timestamp-first lines ("[TS] LABEL: ...") never validated the
+    // label at all, so mixed-case numbered labels ("Speaker 1"/"Speaker 2" —
+    // a very common Zoom/Teams/Otter export shape) always worked there. Every
+    // OTHER format ran isLikelySpeakerLabel(), whose Title-case check didn't
+    // allow a trailing number, so those formats silently merged "Speaker 2"'s
+    // turn into "Speaker 1"'s — leaving only one detected speaker and no
+    // "Which speaker is you?" picker in the upload modal for that format.
+    it('mixed-case numbered labels ("Speaker 1"/"Speaker 2") work in every format, not just [TS]-first', () => {
+        // format 1 — plain "LABEL: text"
+        expect(parseUploadTranscript('Speaker 1: hi\nSpeaker 2: hello').speakers).toEqual(['Speaker 1', 'Speaker 2']);
+        // format 3 — "LABEL [TS]: text"
+        expect(parseUploadTranscript('Speaker 1 [00:01]: hi\nSpeaker 2 [00:05]: hello').speakers).toEqual(['Speaker 1', 'Speaker 2']);
+        // format 4 — "LABEL:" alone, message on the next line
+        expect(parseUploadTranscript('Speaker 1:\nhi\nSpeaker 2:\nhello').speakers).toEqual(['Speaker 1', 'Speaker 2']);
+        // format 6 — "[LABEL] [TS]: text"
+        expect(parseUploadTranscript('[Speaker 1] [00:01]: hi\n[Speaker 2] [00:05]: hello').speakers).toEqual(['Speaker 1', 'Speaker 2']);
+        // format 7 — "LABEL (TS): text"
+        expect(parseUploadTranscript('Speaker 1 (00:01): hi\nSpeaker 2 (00:05): hello').speakers).toEqual(['Speaker 1', 'Speaker 2']);
+    });
+
     it('is case-insensitive for known keywords', () => {
         const { segments } = parseUploadTranscript('rep: hi\nclient: hey');
         expect(segments.map(s => s.speaker)).toEqual(['user', 'client']);

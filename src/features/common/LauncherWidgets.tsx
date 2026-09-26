@@ -1523,7 +1523,7 @@ export const TranscriptUploadModal: React.FC<TranscriptUploadModalProps> = ({
                                                     className={[
                                                         'px-2.5 py-[5px] rounded-lg text-[11.5px] font-medium transition-all active:scale-95 select-none border max-w-[220px] truncate',
                                                         on
-                                                            ? 'border-accent-primary/50 bg-accent-primary/15 text-accent-primary'
+                                                            ? 'border-blue-600 bg-blue-500/10 text-accent-primary'
                                                             : isLight
                                                                 ? 'border-black/10 bg-black/[0.04] text-text-tertiary hover:text-text-secondary'
                                                                 : 'border-white/[0.08] bg-white/[0.04] text-text-tertiary hover:text-text-secondary',

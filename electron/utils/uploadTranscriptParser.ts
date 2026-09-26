@@ -129,8 +129,26 @@ function parseTimestamp(raw: string): number | null {
  * Heuristic that separates a genuine speaker label from prose that merely
  * contains a colon ("Note: ", a sentence fragment, etc.). A label passes
  * when it is a known role keyword, an ALL-CAPS label, or up to three
- * Title-case words ("Alex", "Daniel", "Mr Smith"). Anything longer or
+ * Title-case words optionally followed by a number ("Alex", "Daniel",
+ * "Mr Smith", "Speaker 2", "Participant 10"). A word may also be a bare
+ * single-letter initial ("Bharathraj A", "Priya S."). Anything longer or
  * lowercase is treated as message text (continuation).
+ *
+ * The trailing-number allowance matters because it's the ONLY thing that
+ * used to make mixed-case numbered labels ("Speaker 1" / "Speaker 2" — a
+ * very common shape from Zoom/Teams/Otter-style exports) work: bracket-
+ * timestamp-first lines ("[00:10] Speaker 1: ...", formats 2/5/8) never run
+ * this check at all, so they always accepted them, while every other format
+ * (1, 3, 4, 6, 7) rejected "Speaker 2" as prose and silently merged that
+ * turn into the previous speaker — leaving those formats with only ONE
+ * detected speaker and no "Which speaker is you?" picker.
+ *
+ * The single-letter-initial allowance fixes the same class of bug for a
+ * different common shape: a label like "Bharathraj A" (first name + middle
+ * or last initial) has a second "word" that's just one capital letter,
+ * which the plain Title-case word pattern (capital + one-or-more lowercase)
+ * could never match — so the whole label was rejected and that speaker's
+ * lines were silently merged into whoever spoke before them.
  */
 function isLikelySpeakerLabel(raw: string): boolean {
     const label = normalizeLabel(raw);
@@ -139,7 +157,11 @@ function isLikelySpeakerLabel(raw: string): boolean {
     const words = label.split(' ');
     if (words.length > 3) return false;
     if (/^[A-Z][A-Z .'\-()0-9]*$/.test(label)) return true;                 // CLIENT, SALES PERSON, SPEAKER 2
-    if (/^[A-Z][a-z0-9'\u2019\-]+(?: [A-Z][a-z0-9'\u2019\-]+){0,2}$/.test(label)) return true; // Alex, Daniel, Mr Smith
+    // Each word is either a full Title-case word ("Alex", "Parulekar") or a
+    // bare single-letter initial ("A", "A."); the whole label may end in a
+    // number ("Speaker 2").
+    const TITLE_WORD = String.raw`(?:[A-Z][a-z0-9'\u2019\-]+|[A-Z]\.?)`;
+    if (new RegExp(`^${TITLE_WORD}(?: ${TITLE_WORD}){0,2}(?: \\d+)?$`).test(label)) return true; // Alex, Mr Smith, Bharathraj A, Speaker 2
     return false;
 }
 
