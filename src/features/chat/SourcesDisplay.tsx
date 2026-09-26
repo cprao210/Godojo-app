@@ -32,7 +32,9 @@ const SourcesDisplay: React.FC<{
     onOpenAsset?: (src: SourceMapEntry) => void;
     /** [n] -> source map from the `source_map` frame; powers the index badges. */
     sourceMap?: Record<number, SourceMapEntry>;
-}> = ({ sources, onOpenMeeting, onOpenAsset, sourceMap }) => {
+    /** source index -> the number its inline chip shows (order of first appearance). */
+    labels?: Map<number, number>;
+}> = ({ sources, onOpenMeeting, onOpenAsset, sourceMap, labels }) => {
 
     const { meetings, assets } = sources;
     const totalCount = meetings.length + assets.length;
@@ -43,10 +45,12 @@ const SourcesDisplay: React.FC<{
     // matches this source id — same id the inline chips resolve through.
     const indicesFor = (id: string): number[] => {
         if (!sourceMap) return [];
-        return Object.entries(sourceMap)
+        const idxs = Object.entries(sourceMap)
             .filter(([, e]) => e.id === id)
-            .map(([idx]) => Number(idx))
-            .sort((a, b) => a - b);
+            .map(([idx]) => Number(idx));
+        // Show the numbers the inline chips show; only indices the answer actually cites.
+        const shown = labels ? idxs.filter((i) => labels.has(i)).map((i) => labels.get(i)!) : idxs;
+        return [...new Set(shown)].sort((a, b) => a - b);
     };
 
     // An asset chip is clickable only when its citation entry carries a

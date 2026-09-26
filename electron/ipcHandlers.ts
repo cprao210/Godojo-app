@@ -18,6 +18,7 @@ import * as fs from "fs";
 import { AudioDevices } from "./audio/AudioDevices";
 import { detectTavilyIntent, extractAllowedCompaniesFromAttendees } from "./services/TavilyIntentDetector";
 import { generateCompanyIntel, createTavilySearch, isCachedIntelFresh, INTEL_SCHEMA_VERSION } from "./services/CompanyIntelService";
+import { syncCompanyIntel } from "./utils/backendCompanyIntel";
 import { searchCompany, clearCompanyCache } from "./services/TavilyManager";
 
 import { buildCompanyContextBlock } from './utils/salesBriefUtils';
@@ -2896,6 +2897,8 @@ export function initializeIpcHandlers(appState: AppState): void {
           const parsed = JSON.parse(cachedRaw);
           if (!forceRefresh && isCachedIntelFresh(parsed)) {
             console.log(`[IPC] fetch-company-intel: returning cached intel for "${companyName}"`);
+            // Research cached before the backend sync existed still reaches chat (once per session).
+            void syncCompanyIntel(parsed, domain, { onlyOncePerSession: true });
             return { success: true, intel: parsed, fromCache: true };
           }
           // Only an entry from the CURRENT pipeline may be shown as a fallback
@@ -2947,6 +2950,9 @@ export function initializeIpcHandlers(appState: AppState): void {
         } catch (e) {
           console.warn('[IPC] fetch-company-intel: failed to cache intel:', e);
         }
+        // Global chat's company pack reads it from the backend (research, never call content).
+        // Same bar as the cache: sparse or unverified results are not sent.
+        void syncCompanyIntel(intel, domain);
       }
 
       // appState feeds the chat / follow-up email / post-call summary prompts as

@@ -10,9 +10,10 @@
 // - A rehype (hast) plugin, not remark: hast element nodes render straight
 //   through react-markdown's `components` map, no mdast->hast conversion
 //   gymnastics for custom nodes.
-// - Text inside links (`[label](url)`), inline code, code blocks, and table
-//   cells is skipped — a `[1]` in a table cell is cell content by design (the
-//   backend treats it that way too), and `[n](...)` is a markdown link.
+// - Text inside links (`[label](url)`), inline code and code blocks is skipped
+//   (`[n](...)` is a markdown link). Table cells are NOT skipped: the backend
+//   tells the model to cite at the end of a table row and never strips [n], so
+//   a cell's `[1]` is a citation like any other (it rendered as raw text).
 // - Markers with no map entry (history reloads, fast-path answers with no
 //   source_map) render as plain [n] text — never a dead chip.
 
@@ -28,12 +29,44 @@ import type { SourceMapEntry } from '@/types';
 // definitions out of the match.
 const CITE_RE = /\[(\d{1,2}(?:\s*,\s*\d{1,2})*)\](?![(\w])/g;
 
-/** Tags whose text is never a citation position. td/th: table cells keep [n]
- *  as literal content; a/code: markup, not prose. */
-const SKIP_TAGS = new Set(['a', 'code', 'pre', 'inlineCode', 'td', 'th', 'cite']);
+/** Tags whose text is never a citation position. a/code: markup, not prose. */
+const SKIP_TAGS = new Set(['a', 'code', 'pre', 'inlineCode', 'cite']);
+
+const parseIndices = (group: string): number[] => group.split(',').map((s) => parseInt(s.trim(), 10));
+
+/** Display number per source index: its order of first appearance in the answer (1, 2, 3…).
+ *  The backend's [n] is the index of the context block the model cited, so a one-source answer
+ *  showed "9". A document-order pass (text nodes, same skipped tags) — stable while streaming,
+ *  since text only grows at the end, and identical on reload. */
+function firstAppearanceOrder(tree: any): Map<number, number> {
+    const order = new Map<number, number>();
+    visit(tree, (node: any) => {
+        if (node.type === 'element' && SKIP_TAGS.has(node.tagName)) return SKIP;
+        if (node.type !== 'text' || !/\[\d{1,2}[, \d]*\]/.test(node.value)) return;
+        for (const m of node.value.matchAll(CITE_RE)) {
+            for (const i of parseIndices(m[1])) {
+                if (!order.has(i)) order.set(i, order.size + 1);
+            }
+        }
+    });
+    return order;
+}
+
+/** The same numbering from the raw answer text, for surfaces outside the markdown tree (the
+ *  sources row's index badges). Matches the chips except for markers inside code. */
+export function citationLabels(content: string): Map<number, number> {
+    const order = new Map<number, number>();
+    for (const m of (content || '').matchAll(CITE_RE)) {
+        for (const i of parseIndices(m[1])) {
+            if (!order.has(i)) order.set(i, order.size + 1);
+        }
+    }
+    return order;
+}
 
 export function rehypeCitations() {
     return (tree: any) => {
+        const order = firstAppearanceOrder(tree);
         visit(tree, 'element', (node: any) => {
             if (SKIP_TAGS.has(node.tagName)) return SKIP;
             if (!Array.isArray(node.children) || !node.children.some(
@@ -49,10 +82,13 @@ export function rehypeCitations() {
                 let last = 0;
                 for (const m of child.value.matchAll(CITE_RE)) {
                     if (m.index! > last) out.push({ type: 'text', value: child.value.slice(last, m.index) });
+                    const indices = parseIndices(m[1]);
                     out.push({
                         type: 'element',
                         tagName: 'cite',
-                        properties: { indices: m[1].split(',').map((s: string) => parseInt(s.trim(), 10)) },
+                        // indices: the backend's context-block numbers (the source_map lookup);
+                        // labels: what the chip shows (order of first appearance).
+                        properties: { indices, labels: indices.map((i) => order.get(i) ?? i) },
                         children: [],
                     });
                     last = m.index! + m[0].length;
@@ -256,7 +292,7 @@ const HoverCard: React.FC<{
 
 /** One numbered chip + its hover card. A component of its own (not inlined in
  *  the `indices.map`) so every chip owns its open state and timers. */
-const CitationPill: React.FC<{ index: number; src: SourceMapEntry }> = ({ index, src }) => {
+const CitationPill: React.FC<{ index: number; label: number; src: SourceMapEntry }> = ({ index, label, src }) => {
     const { unverified, onOpenMeeting, onOpenAsset } = useContext(CitationContext);
     const [open, setOpen] = useState(false);
     const anchorRef = useRef<HTMLSpanElement>(null);
@@ -327,7 +363,7 @@ const CitationPill: React.FC<{ index: number; src: SourceMapEntry }> = ({ index,
                     : 'bg-blue-100 dark:bg-blue-900/30 text-blue-600 dark:text-blue-400 hover:bg-blue-200 dark:hover:bg-blue-900/50'
                     } ${isClickable ? 'cursor-pointer' : 'cursor-default'}`}
             >
-                {index}
+                {label}
             </button>
             {open && (
                 <HoverCard
@@ -345,6 +381,7 @@ const CitationPill: React.FC<{ index: number; src: SourceMapEntry }> = ({ index,
 /** react-markdown `components.cite` target — renders NotebookLM-style numbered chips */
 export const CiteChip: React.FC<{
     indices?: number[] | string;
+    labels?: number[] | string;
     node?: any;
 } & React.HTMLAttributes<HTMLElement>> = (props) => {
     // react-markdown routes hast properties through hast-util-to-jsx-runtime,
@@ -352,21 +389,23 @@ export const CiteChip: React.FC<{
     // `indices` arrives as "1 2", not [1, 2]. The original array survives on
     // the hast node; fall back to re-parsing the flattened string when the
     // node isn't handed to us.
-    const raw: unknown = props.node?.properties?.indices ?? props.indices;
-    const indices: number[] = (Array.isArray(raw) ? raw : String(raw ?? '').split(/[\s,]+/))
-        .map((n) => Number(n))
-        .filter((n) => Number.isInteger(n) && n > 0);
+    const toInts = (raw: unknown): number[] =>
+        (Array.isArray(raw) ? raw : String(raw ?? '').split(/[\s,]+/))
+            .map((n) => Number(n))
+            .filter((n) => Number.isInteger(n) && n > 0);
+    const indices = toInts(props.node?.properties?.indices ?? props.indices);
+    const labels = toInts(props.node?.properties?.labels ?? props.labels);
     const { map } = useContext(CitationContext);
 
     return (
         <>
-            {indices.map((i) => {
+            {indices.map((i, k) => {
                 const src = map?.[i];
                 // No backing source → render nothing: a marker that can't show
                 // its source is never displayed (the backend already drops
                 // these; this guards older stored turns).
                 if (!src) return null;
-                return <CitationPill key={i} index={i} src={src} />;
+                return <CitationPill key={i} index={i} label={labels[k] ?? i} src={src} />;
             })}
         </>
     );
