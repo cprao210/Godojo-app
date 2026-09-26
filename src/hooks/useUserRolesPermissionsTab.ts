@@ -9,6 +9,7 @@ import { useEffect, useState } from "react";
 import { tenantsApi } from "@/api";
 import { ApiError } from "@/lib/apiClient";
 import { getFirebaseAuth } from "@/lib/firebase";
+import { markSkipSplashOnNextLoad } from "@/lib/splash";
 import { posthogAnalytics } from "@/lib/analytics/posthog.service";
 import { InvitationAcceptResult, MyPendingInvitation, Tenant } from "@/types";
 
@@ -120,6 +121,11 @@ export function useUserRolesPermissionsTab({ deepLinkInviteToken = null, onDeepL
         // depends on tenant state (Company Context scope/read-only, dashboard
         // visibility, analytics props, etc.) piecemeal. Team creation is rare
         // enough that a reload is an acceptable cost for guaranteed consistency.
+        //
+        // This reload is NOT a hard refresh from the user's point of view: tell
+        // the next page load to skip the startup splash and show the plain
+        // <BirdLoader /> instead (see lib/splash.ts).
+        markSkipSplashOnNextLoad('Setting up your team…');
         window.location.reload();
     };
 
@@ -138,6 +144,9 @@ export function useUserRolesPermissionsTab({ deepLinkInviteToken = null, onDeepL
             // screen (Company Context now scoped to the admin's shared context
             // and read-only, dashboards, etc.) picks up the new membership
             // cleanly instead of relying on each one's own reactive wiring.
+            // Same splash-skip reasoning as handleCreateTeam too: this reload
+            // isn't a hard refresh from the user's point of view.
+            markSkipSplashOnNextLoad('Joining team…');
             window.location.reload();
         } catch (err) {
             setLoadError(err instanceof ApiError ? err.message : 'Failed to load your team.');

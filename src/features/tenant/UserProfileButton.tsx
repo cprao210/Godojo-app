@@ -90,7 +90,7 @@ const UserProfileButton: React.FC<UserProfileButtonProps> = ({
         // This reload is NOT a hard refresh from the user's point of view: tell
         // the next page load to skip the startup splash and show the plain
         // loader instead (see lib/splash.ts).
-        markSkipSplashOnNextLoad();
+        markSkipSplashOnNextLoad('Switching account…');
         if (window.electronAPI?.reloadAllWindows) {
             window.electronAPI.reloadAllWindows();
         } else {

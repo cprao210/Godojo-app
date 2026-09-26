@@ -6,7 +6,7 @@ import { QueryClientProvider } from "react-query";
 // lib — infra / service wrappers
 // ---------------------------------------------------------------------------
 import { queryClient } from "@/lib/queryClient";
-import { skipSplashThisLoad } from "@/lib/splash";
+import { skipSplashThisLoad, skipSplashLabel } from "@/lib/splash";
 import { posthogAnalytics } from "@/lib/analytics/posthog.service";
 import { meetingsApi } from "@/api";
 
@@ -305,7 +305,7 @@ const App: React.FC = () => {
           skipSplashThisLoad ? (
             <div className={`h-full w-full flex flex-col items-center justify-center gap-3 ${isLight ? "bg-white" : "bg-[#000000]"}`}>
               <BirdLoader size={72} />
-              <span className="text-xs text-text-secondary">Switching account…</span>
+              <span className="text-xs text-text-secondary">{skipSplashLabel}</span>
             </div>
           ) : (
             <div className="h-full w-full" />
