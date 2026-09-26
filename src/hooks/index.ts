@@ -62,6 +62,7 @@ import { useSettingsOverlay } from "./useSettingsOverlay";
 import { useSttProviderSettings, STT_PROVIDER_KEY_URLS } from "./useSttProviderSettings";
 import { useCompanyContext, ALLOWED_EXTENSIONS, MAX_FILE_SIZE_BYTES, ASSET_CONFIG, STATUS_BADGE, normalizeContext } from "./useCompanyContext";
 import { useUpdateStatus, formatUpdateSize } from "./useUpdateStatus";
+import type { PerformanceModePreference } from "./usePerformanceMode";
 import { useSystemAudioPermission } from "./useSystemAudioPermission";
 import { useUndetectable } from "./useUndetectable";
 export type { UseUpdateStatusResult } from "./useUpdateStatus";
@@ -153,6 +154,7 @@ export {
     useSettingsOverlay,
     useUpdateStatus,
     formatUpdateSize,
+    PerformanceModePreference,
     useSystemAudioPermission,
     useUndetectable,
     usePerformanceMode,

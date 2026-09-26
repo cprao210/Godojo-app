@@ -37,6 +37,11 @@ import type { PerformanceClassification } from '../../utils/performanceClassific
 export type PerformanceModePreference = 'auto' | 'on' | 'off';
 
 const STORAGE_KEY = 'natively_performanceModePreference';
+/** Same-window broadcast so every usePerformanceMode instance (the app-wide
+ *  gate in main.tsx, the floating dock, and Settings → General) sees a change
+ *  immediately. The cross-window case is covered by the native `storage`
+ *  event below — localStorage only fires that for OTHER documents. */
+const PERF_MODE_CHANGE_EVENT = 'godojo:perf-mode-change';
 
 const readStoredPreference = (): PerformanceModePreference => {
     try {
@@ -55,6 +60,29 @@ export function usePerformanceMode() {
     // that brief window we default to full fidelity (see isPerformanceMode
     // below) rather than flashing the reduced UI on and off.
     const [autoClassification, setAutoClassification] = useState<PerformanceClassification | null>(null);
+
+    // Keep every instance in the SAME window in sync: changing the mode in
+    // Settings → General must flip the floating dock (and vice versa) without
+    // a remount, because both render simultaneously during a call.
+    useEffect(() => {
+        const onLocalChange = (e: Event) => {
+            const next = (e as CustomEvent<PerformanceModePreference>).detail;
+            if (next === 'on' || next === 'off' || next === 'auto') setPreferenceState(next);
+        };
+        // Cross-window (e.g. Settings is its own window in some layouts):
+        // the native storage event fires in every OTHER document.
+        const onStorageChange = (e: StorageEvent) => {
+            if (e.key !== STORAGE_KEY) return;
+            const next = readStoredPreference();
+            setPreferenceState(next);
+        };
+        window.addEventListener(PERF_MODE_CHANGE_EVENT, onLocalChange);
+        window.addEventListener('storage', onStorageChange);
+        return () => {
+            window.removeEventListener(PERF_MODE_CHANGE_EVENT, onLocalChange);
+            window.removeEventListener('storage', onStorageChange);
+        };
+    }, []);
 
     useEffect(() => {
         let cancelled = false;
@@ -89,6 +117,8 @@ export function usePerformanceMode() {
         } catch {
             // ignore — preference just won't persist across restarts
         }
+        // Tell the other instances in this window (dock ⇄ settings ⇄ gate).
+        window.dispatchEvent(new CustomEvent(PERF_MODE_CHANGE_EVENT, { detail: next }));
     };
 
     const isPerformanceMode =
