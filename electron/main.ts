@@ -352,6 +352,7 @@ import { SettingsWindowHelper } from "./SettingsWindowHelper"
 import { ModelSelectorWindowHelper } from "./ModelSelectorWindowHelper"
 import { CropperWindowHelper } from "./CropperWindowHelper"
 import { MeetingPopupWindowHelper } from "./MeetingPopupWindowHelper"
+import { meetingPerformanceSampler } from "./services/MeetingPerformanceSampler"
 import { ScreenshotHelper } from "./ScreenshotHelper"
 import { KeybindManager } from "./services/KeybindManager"
 import { ProcessingHelper } from "./ProcessingHelper"
@@ -3463,6 +3464,9 @@ export class AppState {
 
   public async startMeeting(metadata?: any): Promise<void> {
     console.log('[Main] Starting Meeting...', metadata);
+    // Field diagnostics: 60s process-metric samples for the duration of the
+    // call (natively_debug.log + sampled PostHog perf_sample events).
+    meetingPerformanceSampler.start();
 
     // Idempotency guard: a duplicate call (double-click on Start before the UI
     // switches to overlay mode, a calendar auto-join racing a manual start, an
@@ -3670,6 +3674,7 @@ export class AppState {
 
   public async endMeeting(meetingTypes?: ('discovery' | 'demo' | 'negotiation')[], tenantId?: string | null): Promise<string | null> {
     console.log('[Main] Ending Meeting...');
+    meetingPerformanceSampler.stop();
     this.isMeetingActive = false; // Block new data immediately
     this.isMeetingPaused = false; // Reset pause flag — clean slate for next meeting
     this.broadcastMeetingState();
