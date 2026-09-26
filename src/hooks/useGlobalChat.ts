@@ -390,8 +390,6 @@ export function useGlobalChat({ isOpen, onClose, initialQuery = "" }: UseGlobalC
         const handleClickOutside = (e: MouseEvent) => {
             const target = e.target as HTMLElement;
             if (target.closest("[data-global-chat-fab]")) return;
-            if (chatWindowRef.current && !chatWindowRef.current.contains(target)) requestClose();
-            if (target.closest?.("[data-global-chat-fab]")) return;
             // composedPath + isConnected: picking a company from the chat's suggestion list removes
             // the clicked item before this runs; contains() alone saw it as outside and closed the
             // chat (the app then showed Home). See lib/outsideClick.

@@ -5,7 +5,9 @@
 import React, { useEffect, useRef, useState } from 'react';
 import { Building2, Plus, X } from 'lucide-react';
 import { useCompanySearch } from '@/hooks/useCompanySearch';
+import { isOutsideClick } from '@/lib/outsideClick';
 import type { ChatCompanyPin, Company } from '@/types';
+import { useResolvedTheme } from '@/hooks';
 
 interface SuggestionListProps {
     results: Company[];
@@ -57,12 +59,14 @@ export const CompanyPinChip: React.FC<CompanyPinChipProps> = ({ pinned, onPin, o
     const [highlighted, setHighlighted] = useState(0);
     const { results, loading } = useCompanySearch(open ? term : null);
     const boxRef = useRef<HTMLDivElement>(null);
+    const isLight = useResolvedTheme() !== 'dark';
 
     useEffect(() => setHighlighted(0), [results]);
     useEffect(() => {
         if (!open) return;
         const onDown = (e: MouseEvent) => {
-            if (boxRef.current && !boxRef.current.contains(e.target as Node)) setOpen(false);
+            const path = typeof e.composedPath === 'function' ? e.composedPath() : [];
+            if (isOutsideClick({ path, panel: boxRef.current, target: e.target as Node })) setOpen(false);
         };
         document.addEventListener('mousedown', onDown);
         return () => document.removeEventListener('mousedown', onDown);
@@ -78,7 +82,7 @@ export const CompanyPinChip: React.FC<CompanyPinChipProps> = ({ pinned, onPin, o
         return (
             <div className="flex items-center gap-1.5 px-1 pb-2">
                 <span
-                    className="inline-flex items-center gap-1.5 max-w-full rounded-full border border-accent-primary/30 bg-accent-primary/10 pl-2.5 pr-1 py-0.5 text-[12px] text-text-primary"
+                    className={`inline-flex items-center gap-1.5 max-w-full rounded-full border border-blue-600 ${isLight ? 'bg-blue-300/30' : 'bg-blue-800/30'} pl-2.5 pr-1 py-0.5 text-[12px] text-text-primary`}
                     title={`Every question in this chat is about ${pinned.name}`}
                 >
                     <Building2 size={12} className="shrink-0 text-accent-primary" />
