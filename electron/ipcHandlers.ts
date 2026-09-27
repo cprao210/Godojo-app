@@ -3196,7 +3196,7 @@ export function initializeIpcHandlers(appState: AppState): void {
   // POLL_TIMEOUT_MS is the overall ceiling from upload to terminal state;
   // anything still unresolved past it is failing server-side, not slow.
   const COMPANY_ASSET_UPLOAD_POLL_TIMEOUT_MS = 10 * 60_000;
-  const COMPANY_ASSET_UPLOAD_POLL_INTERVAL_MS = 2_000;
+  const COMPANY_ASSET_UPLOAD_POLL_INTERVAL_MS = 1_000;
   const COMPANY_ASSET_UPLOAD_IN_FLIGHT_STATES = new Set(["queued", "processing", "unknown"]);
 
   safeHandle("company:uploadAssetToBackend", async (event, payload: {
@@ -3258,6 +3258,10 @@ export function initializeIpcHandlers(appState: AppState): void {
       ...form.getHeaders(),
     };
     if (tenantId) uploadHeaders["X-Tenant-Id"] = tenantId;
+    // form-data's own byte length — needed both to give the server a real
+    // Content-Length and to compute a percent below.
+    const contentLength: number = form.getLengthSync();
+    uploadHeaders["Content-Length"] = String(contentLength);
 
     // Plain (non-multipart) headers reused for every status poll.
     const pollHeaders: Record<string, string> = { Authorization: `Bearer ${idToken}` };
@@ -3267,13 +3271,33 @@ export function initializeIpcHandlers(appState: AppState): void {
     // renderer shows percent during 'uploading', then an indeterminate
     // "Indexing on server…" state during 'processing' while this handler
     // polls the job's real status in the background.
-    const sendProgress = (phase: 'uploading' | 'processing', percent: number) => {
+    const sendProgress = (phase: 'uploading' | 'processing', percent: number, label?: string) => {
       try {
         if (!event.sender.isDestroyed()) {
-          event.sender.send('company:upload-progress', { assetId, phase, percent });
+          event.sender.send('company:upload-progress', { assetId, phase, percent, label });
         }
       } catch { /* window gone — progress is best-effort */ }
     };
+
+    // axios's onUploadProgress never fires here: it only instruments a
+    // request body it converts into a stream itself (Buffers/strings with a
+    // known length). `form` is already a stream, so axios's http adapter
+    // just pipes it straight to the request and skips its progress wrapper
+    // entirely — that's why the "uploading" bar never moved. Track bytes
+    // ourselves off the form's own stream instead.
+    let uploadedBytes = 0;
+    form.on("data", (chunk: Buffer) => {
+      uploadedBytes += chunk.length;
+      // Cap below 100 and never report 'processing' from here: that phase
+      // transition — and its own 0-95% stage range — belongs solely to the
+      // status-poll loop below. Sending 'processing'/100 from here raced
+      // with the poll loop's real stage updates, and once the monotonic
+      // guard (added to stop the bar jumping backward) was in place, that
+      // premature 100 permanently blocked every real update after it —
+      // which is why the bar got stuck on "Indexing on server… — 100%".
+      const percent = contentLength ? Math.min(99, Math.round((uploadedBytes / contentLength) * 100)) : 0;
+      sendProgress('uploading', percent);
+    });
 
     const statusUrl = `${BACKEND_URL}/api/v1/intelligence/company-assets/upload/status/${encodeURIComponent(assetId)}`;
 
@@ -3288,12 +3312,6 @@ export function initializeIpcHandlers(appState: AppState): void {
           timeout: COMPANY_ASSET_UPLOAD_POLL_TIMEOUT_MS, // large files can legitimately take a while just to transfer
           maxBodyLength: Infinity,
           maxContentLength: Infinity,
-          onUploadProgress: (e: any) => {
-            const total = e.total ?? fileBuffer.length;
-            const percent = total ? Math.min(100, Math.round((e.loaded / total) * 100)) : 0;
-            if (percent >= 100) sendProgress('processing', 100);
-            else sendProgress('uploading', percent);
-          },
         },
       );
 
@@ -3304,6 +3322,9 @@ export function initializeIpcHandlers(appState: AppState): void {
       let state: string = queuedRes.data?.state ?? "queued";
       let latest: any = queuedRes.data;
       const deadline = Date.now() + COMPANY_ASSET_UPLOAD_POLL_TIMEOUT_MS;
+      // The backend's stage_index only moves forward, but guard here too so a
+      // stray/late poll response can never make the bar visibly step backward.
+      let highestPercentSent = 0;
 
       while (COMPANY_ASSET_UPLOAD_IN_FLIGHT_STATES.has(state)) {
         if (Date.now() > deadline) {
@@ -3314,7 +3335,26 @@ export function initializeIpcHandlers(appState: AppState): void {
             error: "The server is still indexing this document — large PDFs can take a few minutes. Keep the app open and retry Save shortly; the file may already have finished indexing.",
           };
         }
-        sendProgress('processing', 100);
+        // `latest` carries the backend's own pipeline stage (see
+        // _PIPELINE_STAGES in company_assets.py) once at least one poll has
+        // landed. Right after the 202 there's no stage yet, so start at 0 —
+        // NOT a guessed high number, which previously made the bar jump to
+        // 95% and then appear to fall back once the real (lower) stage
+        // percent arrived on the next poll.
+        const rawPercent = typeof latest?.percent === "number" ? latest.percent : 0;
+        // Defensive clamp: `latest` here (on the first iteration) is the raw
+        // 202 response from POST /upload — i.e. "bytes received", not
+        // "indexing done". If that payload's `percent` field is ever >= 100
+        // (or the backend's own stage math is off) while the job is still in
+        // a non-terminal state, trusting it verbatim pins the bar at 100%
+        // immediately: the renderer's monotonic guard (which stops the bar
+        // stepping backward) then rejects every real, lower percent that
+        // arrives afterward, so the bar looks like it "started" at 100 and
+        // never moved. Cap at 95 while still in-flight; only a genuine
+        // terminal state (handled after this loop) reports 100.
+        const safePercent = Math.min(rawPercent, 95);
+        highestPercentSent = Math.max(highestPercentSent, safePercent);
+        sendProgress('processing', highestPercentSent, latest?.stage_label);
         await new Promise((resolve) => setTimeout(resolve, COMPANY_ASSET_UPLOAD_POLL_INTERVAL_MS));
 
         const statusRes = await axios.get(statusUrl, { headers: pollHeaders, timeout: 15_000 });
@@ -3334,8 +3374,15 @@ export function initializeIpcHandlers(appState: AppState): void {
       return { status: state, chunks: latest?.chunks };
 
     } catch (error: any) {
+      // Node's socket-level write timeout throws with a message like
+      // "The write operation timed out" — note "timed out" (two words),
+      // not the single word "timeout". The regex below used to only match
+      // the latter, so this exact error (a stalled write while streaming a
+      // small, perfectly valid file — nothing to do with file size) slipped
+      // past the friendly "still indexing, try Save again" branch and fell
+      // through to the generic "Upload failed" wrapper instead.
       const isTimeout = error?.code === 'ECONNABORTED' || error?.code === 'ETIMEDOUT'
-        || /timeout/i.test(error?.message ?? '');
+        || /timeout|timed\s*out/i.test(error?.message ?? '');
       if (isTimeout) {
         return {
           status: "error",

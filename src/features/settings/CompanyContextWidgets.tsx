@@ -474,7 +474,7 @@ export const KnowledgeBaseSection: React.FC<{
      *  this handler is polling GET /upload/status/{id} for it — indeterminate
      *  here since the job has no client-observable percent, just terminal
      *  state ("indexed" | "empty" | "failed"). */
-    assetProgress?: Record<string, { phase: 'uploading' | 'processing'; percent: number }>;
+    assetProgress?: Record<string, { phase: 'uploading' | 'processing'; percent: number; label?: string }>;
     onUpload: (type: KnowledgeAsset['type']) => void;
     onDelete: (id: string) => void;
     onDeleteAll: (type: KnowledgeAsset['type']) => void;
@@ -624,18 +624,31 @@ export const KnowledgeBaseSection: React.FC<{
                                                     <div className="mt-2">
                                                         <p className={`text-[10px] font-medium mb-1 ${isLight ? 'text-slate-500' : 'text-white/45'}`}>
                                                             {progress.phase === 'processing'
-                                                                ? 'Bytes sent — indexing on server… (large PDFs can take a few minutes)'
+                                                                ? `${progress.label || 'Indexing on server…'} — ${progress.percent}%`
                                                                 : `Uploading to server… ${progress.percent}%`}
                                                         </p>
                                                         <div className={`h-1 overflow-hidden rounded-full ${isLight ? 'bg-slate-200' : 'bg-white/10'}`}>
                                                             <div
-                                                                className={`h-full rounded-full ${progress.phase === 'processing'
-                                                                    ? 'w-full animate-pulse bg-blue-500/60'
-                                                                    : 'bg-blue-500 transition-all duration-300'
+                                                                className={`h-full rounded-full transition-all duration-300 ${progress.phase === 'processing' ? 'bg-blue-500/70' : 'bg-blue-500'
                                                                     }`}
-                                                                style={progress.phase === 'uploading'
-                                                                    ? { width: `${Math.max(progress.percent, 4)}%` }
-                                                                    : undefined}
+                                                                // `progress.percent` is scoped to whichever phase we're in — it
+                                                                // legitimately resets to 0 when 'uploading' flips to
+                                                                // 'processing' (two different meters). Drawing that raw value
+                                                                // straight onto the bar's width made it visibly rocket up
+                                                                // near 100% during the (near-instant, for small files)
+                                                                // upload, then animate back down to 0% the moment indexing
+                                                                // started — a "blink to 100 then reset" flash.
+                                                                // Fold both phases into one always-increasing width instead:
+                                                                // uploading fills the first 15%, processing/indexing fills
+                                                                // the remaining 85%, so the bar only ever moves forward.
+                                                                style={{
+                                                                    width: `${Math.max(
+                                                                        progress.phase === 'processing'
+                                                                            ? 15 + (progress.percent / 100) * 85
+                                                                            : (progress.percent / 100) * 15,
+                                                                        4
+                                                                    )}%`,
+                                                                }}
                                                             />
                                                         </div>
                                                     </div>
@@ -885,4 +898,4 @@ export const SaveBar: React.FC<{
             </div>
         </div>
     );
-};  
+};

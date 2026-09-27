@@ -1535,7 +1535,7 @@ contextBridge.exposeInMainWorld("electronAPI", {
   }) => ipcRenderer.invoke('company:uploadAssetToBackend', payload),
   // Upload progress for the backend commit (main → renderer events). Mirrors
   // onDownloadProgress: returns an unsubscribe function.
-  onCompanyUploadProgress: (callback: (p: { assetId: string; phase: 'uploading' | 'processing'; percent: number }) => void) => {
+  onCompanyUploadProgress: (callback: (p: { assetId: string; phase: 'uploading' | 'processing'; percent: number; label?: string }) => void) => {
     const subscription = (_: any, p: any) => callback(p)
     ipcRenderer.on("company:upload-progress", subscription)
     return () => {
