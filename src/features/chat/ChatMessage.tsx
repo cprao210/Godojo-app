@@ -7,6 +7,7 @@ import { chatMarkdownComponents } from './markdownComponents';
 import { CitationProvider, rehypeCitations, CiteChip } from './citations';
 import { SourceMapEntry } from '@/types';
 import { useResolvedTheme } from '@/hooks/useResolvedTheme';
+import { usePerformanceMode } from '@/hooks';
 
 // ============================================
 // Message Components
@@ -47,6 +48,7 @@ export const AssistantMessage: React.FC<AssistantMessageProps> = ({ content, isS
     const [copied, setCopied] = useState(false);
 
     const isLight = useResolvedTheme() !== 'dark';
+    const { isPerformanceMode } = usePerformanceMode();
 
     // While waiting for the first frame the assistant placeholder has no
     // content yet — render nothing here and let the single TypingIndicator
@@ -111,11 +113,15 @@ export const AssistantMessage: React.FC<AssistantMessageProps> = ({ content, isS
                         </CitationProvider>
                     </div>
                     {isStreaming && (
-                        <motion.span
-                            className="inline-block w-0.5 h-3.5 bg-text-secondary ml-0.5 align-middle"
-                            animate={{ opacity: [1, 0] }}
-                            transition={{ duration: 0.5, repeat: Infinity }}
-                        />
+                        isPerformanceMode ? (
+                            <span className="perf-blink-cursor inline-block w-0.5 h-3.5 bg-text-secondary ml-0.5 align-middle" />
+                        ) : (
+                            <motion.span
+                                className="inline-block w-0.5 h-3.5 bg-text-secondary ml-0.5 align-middle"
+                                animate={{ opacity: [1, 0] }}
+                                transition={{ duration: 0.5, repeat: Infinity }}
+                            />
+                        )
                     )}
                 </div>
                 {!isStreaming && content && (

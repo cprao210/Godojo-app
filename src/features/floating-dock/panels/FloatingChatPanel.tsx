@@ -5,6 +5,7 @@ import ReactMarkdown from 'react-markdown';
 import { guardSession } from '@/lib/firebase';
 import remarkGfm from 'remark-gfm';
 import { useStreamBuffer } from '@/hooks';
+import { usePerformanceMode } from '@/hooks';
 import { chatApi, statusLabel } from '@/api';
 import { chatMarkdownComponents } from '@/features/chat';
 import { CitationProvider, indexSourceMap, rehypeCitations, CiteChip } from '@/features/chat/citations';
@@ -74,33 +75,44 @@ const FilmRollTranscript: React.FC<FilmRollTranscriptProps> = ({ text, speakerLa
     );
 };
 
-const TypingDots: React.FC<{ label?: string }> = ({ label }) => (
-    <div className="flex items-center gap-2 py-2">
-        <div className="flex items-center gap-1">
-            {[0, 1, 2].map(i => (
-                <motion.div
-                    key={i}
-                    className="w-1.5 h-1.5 rounded-full"
-                    style={{ background: 'rgba(255,255,255,0.3)' }}
-                    animate={{ opacity: [0.3, 1, 0.3] }}
-                    transition={{ duration: 0.7, repeat: Infinity, delay: i * 0.15, ease: 'easeInOut' }}
-                />
-            ))}
+const TypingDots: React.FC<{ label?: string }> = ({ label }) => {
+    const { isPerformanceMode } = usePerformanceMode();
+    return (
+        <div className="flex items-center gap-2 py-2">
+            <div className="flex items-center gap-1">
+                {[0, 1, 2].map(i => (
+                    isPerformanceMode ? (
+                        <div
+                            key={i}
+                            className="perf-pulse-dot w-1.5 h-1.5 rounded-full"
+                            style={{ background: 'rgba(255,255,255,0.3)', animationDelay: `${i * 0.15}s`, animationDuration: '0.7s' }}
+                        />
+                    ) : (
+                        <motion.div
+                            key={i}
+                            className="w-1.5 h-1.5 rounded-full"
+                            style={{ background: 'rgba(255,255,255,0.3)' }}
+                            animate={{ opacity: [0.3, 1, 0.3] }}
+                            transition={{ duration: 0.7, repeat: Infinity, delay: i * 0.15, ease: 'easeInOut' }}
+                        />
+                    )
+                ))}
+            </div>
+            {label && (
+                <motion.span
+                    key={label}
+                    initial={{ opacity: 0, y: 2 }}
+                    animate={{ opacity: 1, y: 0 }}
+                    transition={{ duration: 0.15 }}
+                    className="text-[12px]"
+                    style={{ color: 'rgba(255,255,255,0.4)' }}
+                >
+                    {label}
+                </motion.span>
+            )}
         </div>
-        {label && (
-            <motion.span
-                key={label}
-                initial={{ opacity: 0, y: 2 }}
-                animate={{ opacity: 1, y: 0 }}
-                transition={{ duration: 0.15 }}
-                className="text-[12px]"
-                style={{ color: 'rgba(255,255,255,0.4)' }}
-            >
-                {label}
-            </motion.span>
-        )}
-    </div>
-);
+    );
+};
 
 const MessageBubble: React.FC<{ msg: Message }> = ({ msg }) => {
     const [copied, setCopied] = useState(false);

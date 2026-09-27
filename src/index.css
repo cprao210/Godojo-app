@@ -674,6 +674,7 @@ a {
 .dock-panel-hidden * {
   animation-play-state: paused !important;
 }
+
 /* ── Performance Mode (app-wide) ──────────────────────────────────────────────
    Toggled as a class on <html> by the PerformanceModeGate in src/main.tsx —
    one gate per window (launcher, overlay, settings, model selector), so this
@@ -690,4 +691,81 @@ a {
 .perf-mode [class*="backdrop-blur"] {
   backdrop-filter: none !important;
   -webkit-backdrop-filter: none !important;
+}
+
+/* Plain filter-blur decorations (Tailwind's `blur-*`, e.g. ambient glow
+   divs) are a SEPARATE CSS property from backdrop-filter, so the rule above
+   never touched them — they were a real gap: static or animated, they still
+   cost a full-radius blur composite on a software-rendering fallback GPU,
+   which is exactly the hardware class Performance Mode targets. The
+   attribute selector matches on substring, so it also (harmlessly)
+   re-targets backdrop-blur-* elements a second time — filter: none is a
+   no-op there since they use backdrop-filter, not filter. */
+.perf-mode [class*="blur-"] {
+  filter: none !important;
+}
+
+/* ── Performance Mode: CSS-only replacements for decorative framer-motion
+   loops ──────────────────────────────────────────────────────────────────
+   MotionConfig's reducedMotion="always" (see main.tsx) already halts
+   transform/layout animations (x, y, scale, rotate) app-wide for free. But
+   framer-motion deliberately exempts opacity/color animations from that —
+   an accessibility choice, so state changes stay visible even with motion
+   reduced — which means a handful of purely-decorative, opacity-only loops
+   (typing indicators, streaming-text cursors, the sign-in screen's particle
+   field) keep animating even in perf mode. For the ones mounted constantly
+   or shown often, components render one of these plain CSS-driven elements
+   instead of a motion.* one when isPerformanceMode is true — this removes
+   framer-motion's per-element JS/scheduling overhead entirely for that
+   spot, rather than just clamping the values it produces. */
+@keyframes perfPulseOpacity {
+
+  0%,
+  100% {
+    opacity: 0.35;
+  }
+
+  50% {
+    opacity: 1;
+  }
+}
+
+/* Typing-indicator dots (TypingIndicator.tsx, MeetingChatOverlay's local
+   version, FloatingChatPanel's TypingDots). */
+.perf-pulse-dot {
+  animation: perfPulseOpacity 1.1s ease-in-out infinite;
+}
+
+@keyframes perfBlinkOpacity {
+
+  0%,
+  100% {
+    opacity: 1;
+  }
+
+  50% {
+    opacity: 0;
+  }
+}
+
+/* Streaming-response text cursor (ChatMessage.tsx, MeetingChatOverlay.tsx). */
+.perf-blink-cursor {
+  animation: perfBlinkOpacity 1s steps(1, end) infinite;
+}
+
+@keyframes perfFloatParticle {
+
+  0%,
+  100% {
+    opacity: 0.2;
+  }
+
+  50% {
+    opacity: 0.9;
+  }
+}
+
+/* Sign-in screen's decorative floating particles (AuthChrome.tsx). */
+.perf-float-particle {
+  animation: perfFloatParticle 4s ease-in-out infinite;
 }

@@ -7,33 +7,44 @@ import { CitationProvider, rehypeCitations, CiteChip } from '@/features/chat/cit
 import remarkGfm from 'remark-gfm';
 import { chatMarkdownComponents } from '@/features/chat';
 import { useMeetingChat } from '@/hooks';
+import { usePerformanceMode } from '@/hooks';
 import { MeetingChatOverlayProps } from '@/types';
 
 // ============================================
 // Typing Indicator Component
 // ============================================
 
-const TypingIndicator: React.FC<{ label?: string }> = ({ label }) => (
-    <div className="flex items-center py-4">
-        <motion.span
-            className="w-2 h-2 rounded-full bg-accent-primary mr-2.5 shrink-0"
-            animate={{ opacity: [0.35, 1, 0.35] }}
-            transition={{ duration: 1.1, repeat: Infinity, ease: "easeInOut" }}
-        />
-        <AnimatePresence mode="wait">
-            <motion.span
-                key={label ?? 'thinking'}
-                initial={{ opacity: 0, y: 2 }}
-                animate={{ opacity: 1, y: 0 }}
-                exit={{ opacity: 0, y: -2 }}
-                transition={{ duration: 0.15 }}
-                className="text-[13px] text-text-tertiary whitespace-nowrap"
-            >
-                {label ?? 'Thinking…'}
-            </motion.span>
-        </AnimatePresence>
-    </div>
-);
+const TypingIndicator: React.FC<{ label?: string }> = ({ label }) => {
+    const { isPerformanceMode } = usePerformanceMode();
+    return (
+        <div className="flex items-center py-4">
+            {/* framer's reducedMotion (see main.tsx) doesn't stop opacity loops,
+            so Performance Mode renders a plain CSS-animated dot instead —
+            see .perf-pulse-dot in index.css. */}
+            {isPerformanceMode ? (
+                <span className="perf-pulse-dot w-2 h-2 rounded-full bg-accent-primary mr-2.5 shrink-0" />
+            ) : (
+                <motion.span
+                    className="w-2 h-2 rounded-full bg-accent-primary mr-2.5 shrink-0"
+                    animate={{ opacity: [0.35, 1, 0.35] }}
+                    transition={{ duration: 1.1, repeat: Infinity, ease: "easeInOut" }}
+                />
+            )}
+            <AnimatePresence mode="wait">
+                <motion.span
+                    key={label ?? 'thinking'}
+                    initial={{ opacity: 0, y: 2 }}
+                    animate={{ opacity: 1, y: 0 }}
+                    exit={{ opacity: 0, y: -2 }}
+                    transition={{ duration: 0.15 }}
+                    className="text-[13px] text-text-tertiary whitespace-nowrap"
+                >
+                    {label ?? 'Thinking…'}
+                </motion.span>
+            </AnimatePresence>
+        </div>
+    );
+};
 
 // ============================================
 // Message Components
@@ -54,6 +65,7 @@ const UserMessage: React.FC<{ content: string }> = ({ content }) => (
 
 const AssistantMessage: React.FC<{ content: string; isStreaming?: boolean; sourceMap?: Record<number, import('@/types').SourceMapEntry>; unverifiedCitations?: number[]; rewriting?: boolean; onOpenMeeting?: (meetingId: string) => void }> = ({ content, isStreaming, sourceMap, unverifiedCitations, rewriting, onOpenMeeting }) => {
     const [copied, setCopied] = useState(false);
+    const { isPerformanceMode } = usePerformanceMode();
 
     // While waiting for the first frame the assistant placeholder has no
     // content yet — render nothing here and let the single TypingIndicator
@@ -106,11 +118,15 @@ const AssistantMessage: React.FC<{ content: string; isStreaming?: boolean; sourc
                     </CitationProvider>
                 </div>
                 {isStreaming && (
-                    <motion.span
-                        className="inline-block w-0.5 h-4 bg-text-secondary ml-0.5 align-middle"
-                        animate={{ opacity: [1, 0] }}
-                        transition={{ duration: 0.5, repeat: Infinity }}
-                    />
+                    isPerformanceMode ? (
+                        <span className="perf-blink-cursor inline-block w-0.5 h-4 bg-text-secondary ml-0.5 align-middle" />
+                    ) : (
+                        <motion.span
+                            className="inline-block w-0.5 h-4 bg-text-secondary ml-0.5 align-middle"
+                            animate={{ opacity: [1, 0] }}
+                            transition={{ duration: 0.5, repeat: Infinity }}
+                        />
+                    )
                 )}
             </div>
             {!isStreaming && content && (
