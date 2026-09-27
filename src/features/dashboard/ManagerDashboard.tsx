@@ -152,7 +152,9 @@ export const ManagerDashboard: React.FC<ManagerDashboardProps> = ({ isOpen }) =>
                                             <>
                                                 <StatCardSkeleton cardCls={cardCls} isLight={isLight} icon={<Users size={18} className="text-violet-400" />} iconBg="bg-violet-500/15" label="Active AEs" />
                                                 <StatCardSkeleton cardCls={cardCls} isLight={isLight} icon={<Phone size={18} className="text-blue-400" />} iconBg="bg-blue-500/15" label="Total Calls" />
+                                                {/* SCORING DISABLED FOR TESTING (not accurate enough yet) — re-enable by uncommenting.
                                                 <StatCardSkeleton cardCls={cardCls} isLight={isLight} icon={<Target size={18} className="text-emerald-400" />} iconBg="bg-emerald-500/15" label="Team Average Score" />
+                                                */}
                                             </>
                                         ) : (
                                             <>
@@ -170,6 +172,7 @@ export const ManagerDashboard: React.FC<ManagerDashboardProps> = ({ isOpen }) =>
                                                     label="Total Calls"
                                                     value={totalCalls}
                                                 />
+                                                {/* SCORING DISABLED FOR TESTING (not accurate enough yet) — re-enable by uncommenting.
                                                 <StatCard
                                                     cardCls={cardCls}
                                                     icon={<Target size={18} className="text-emerald-400" />}
@@ -177,12 +180,13 @@ export const ManagerDashboard: React.FC<ManagerDashboardProps> = ({ isOpen }) =>
                                                     label="Team Average Score"
                                                     value={teamAvgScore}
                                                 />
+                                                */}
                                             </>
                                         )}
                                     </div>
 
                                     {/* Team score trend + Top objections */}
-                                    <div className="grid grid-cols-1 lg:grid-cols-[1.3fr_1fr] gap-4 mb-4">
+                                    {/* <div className="grid grid-cols-1 lg:grid-cols-[1.3fr_1fr] gap-4 mb-4">
                                         <SectionCard
                                             title={`Team Score – ${periodLabel}`}
                                             subtitle="Rolling average score across all reps"
@@ -214,10 +218,10 @@ export const ManagerDashboard: React.FC<ManagerDashboardProps> = ({ isOpen }) =>
                                                 </p>
                                             )}
                                         </SectionCard>
-                                    </div>
+                                    </div> */}
 
                                     {/* Top performers + Needs coaching */}
-                                    <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
+                                    {/* <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
                                         <SectionCard
                                             title="Top Performers"
                                             icon={<Trophy size={15} className="text-emerald-400" />}
@@ -249,7 +253,7 @@ export const ManagerDashboard: React.FC<ManagerDashboardProps> = ({ isOpen }) =>
                                                 </p>
                                             )}
                                         </SectionCard>
-                                    </div>
+                                    </div> */}
 
                                     {/* All AEs */}
                                     <div className="mt-4">

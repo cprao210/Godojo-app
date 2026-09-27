@@ -49,7 +49,7 @@ const DetailAnalysisAccordion: React.FC<DetailAnalysisAccordionProps> = ({ score
                     <span className={`text-[13px] font-semibold ${isLight ? 'text-slate-700' : 'text-white/70'}`}>
                         Detailed Analysis
                     </span>
-                    {/* Type pills summary — show each detected type with its score */}
+                    {/* Type pills summary — show each detected type (score badge hidden for now) */}
                     <div className="flex gap-1 ml-1">
                         {(Object.values(scorecard.scorecards ?? [])).map(sc => {
                             const COLORS: Record<string, { color: string; bg: string }> = {
@@ -69,16 +69,20 @@ const DetailAnalysisAccordion: React.FC<DetailAnalysisAccordionProps> = ({ score
                                     style={{ color: c.color, background: c.bg }}
                                 >
                                     {LABELS[sc.meetingType] ?? sc.meetingType}
+                                    {/* SCORING DISABLED FOR TESTING (not accurate enough yet) — re-enable by uncommenting.
                                     <span className="opacity-70 font-semibold">{sc.overallScore}</span>
+                                    */}
                                 </span>
                             );
                         })}
                     </div>
                 </div>
                 <div className="flex items-center gap-2">
+                    {/* SCORING DISABLED FOR TESTING (not accurate enough yet) — re-enable by uncommenting.
                     <span className={`text-[11px] font-semibold tabular-nums ${isLight ? 'text-slate-500' : 'text-white/40'}`}>
                         Overall Score: {scorecard.overallWeightedScore}/100
                     </span>
+                    */}
                     <ChevronDown
                         size={14}
                         className={`transition-transform duration-200 ${isLight ? 'text-slate-400' : 'text-white/30'} ${open ? 'rotate-180' : ''}`}
@@ -1535,8 +1539,8 @@ const MeetingDetails: React.FC<MeetingDetailsProps> = ({ meeting: initialMeeting
                     <button
                         onClick={() => setIsChatOpen(true)}
                         className={`pointer-events-auto flex items-center gap-1.5 px-3 py-1.5 rounded-full text-[12px] font-medium backdrop-blur-[24px] backdrop-saturate-[140%] transition-colors ${isLight
-                            ? 'bg-white/80 border border-slate-200 text-slate-600 hover:bg-white shadow-[0_8px_30px_rgba(0,0,0,0.08)]'
-                            : 'bg-white/[0.06] border border-white/20 text-white/70 hover:bg-white/[0.1] shadow-[0_8px_30px_rgb(0,0,0,0.12)]'
+                            ? 'bg-white border border-slate-200 text-slate-600 hover:bg-gray-100 shadow-[0_8px_30px_rgba(0,0,0,0.08)]'
+                            : 'bg-bg-secondary border border-white/20 text-white/70 hover:bg-bg-elevated shadow-[0_8px_30px_rgb(0,0,0,0.12)]'
                             }`}
                     >
                         <MessageSquare size={12} />
@@ -1558,7 +1562,7 @@ const MeetingDetails: React.FC<MeetingDetailsProps> = ({ meeting: initialMeeting
                         }}
                         placeholder="Ask about this meeting..."
                         rows={1}
-                        className={`w-full pl-5 pr-12 py-3 backdrop-blur-[24px] backdrop-saturate-[140%] focus:outline-none transition-shadow duration-200 rounded-3xl text-sm text-text-primary placeholder-text-tertiary/70 resize-none leading-relaxed ${isLight ? 'bg-white/80 border border-slate-200 shadow-[0_8px_30px_rgba(0,0,0,0.08)]' : 'bg-transparent border border-white/20 shadow-[0_8px_30px_rgb(0,0,0,0.12)]'}`}
+                        className={`w-full pl-5 pr-12 py-3 backdrop-blur-[24px] backdrop-saturate-[140%] focus:outline-none transition-shadow duration-200 rounded-3xl text-sm text-text-primary placeholder-text-tertiary/70 resize-none leading-relaxed ${isLight ? 'bg-white border border-slate-200 shadow-[0_8px_30px_rgba(0,0,0,0.08)]' : 'bg-bg-secondary border border-white/20 shadow-[0_8px_30px_rgb(0,0,0,0.12)]'}`}
                         style={{ maxHeight: 120, overflowY: 'auto' }}
                     />
                     {isChatBusy ? (

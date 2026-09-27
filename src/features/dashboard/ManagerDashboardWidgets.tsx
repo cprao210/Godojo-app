@@ -301,7 +301,9 @@ export const RankedRepList: React.FC<RankedRepListProps> = ({ reps, rankTheme, i
                         <p className="text-sm font-semibold text-text-primary truncate">{rep.name}</p>
                         <p className="text-xs text-text-tertiary truncate">{rep.role}</p>
                     </div>
+                    {/* SCORING DISABLED FOR TESTING (not accurate enough yet) — re-enable by uncommenting.
                     <span className="text-sm font-bold text-text-primary tabular-nums">{rep.score}</span>
+                    */}
                 </button>
             );
         })}
@@ -324,7 +326,9 @@ export const AllAEsTable: React.FC<AllAEsTableProps> = ({ aes, isLight, onSelect
         <div className="grid grid-cols-[1fr_80px_180px_20px] gap-4 px-2 pb-2 text-[11px] font-bold text-text-tertiary uppercase tracking-wider border-b border-border-subtle">
             <span>AE</span>
             <span className="text-left">Calls</span>
+            {/* SCORING DISABLED FOR TESTING (not accurate enough yet) — re-enable by uncommenting.
             <span>Score</span>
+            */}
             <span />
         </div>
 
@@ -353,12 +357,15 @@ export const AllAEsTable: React.FC<AllAEsTableProps> = ({ aes, isLight, onSelect
 
                     <span className="text-sm text-text-secondary text-left tabular-nums">{ae.calls}</span>
 
+                    {/* SCORING DISABLED FOR TESTING (not accurate enough yet) — re-enable by uncommenting.
                     <div className="flex items-center gap-2">
                         <div className={`flex-1 h-1.5 rounded-full overflow-hidden ${isLight ? 'bg-slate-100' : 'bg-white/5'}`}>
                             <div className={`h-full rounded-full ${theme.bar}`} style={{ width: `${ae.score}%` }} />
                         </div>
                         <span className="text-sm font-bold text-text-primary tabular-nums w-6 text-right">{ae.score}</span>
                     </div>
+                    */}
+                    <div />
 
                     <ChevronRight size={15} className="text-text-tertiary justify-self-end" />
                 </button>

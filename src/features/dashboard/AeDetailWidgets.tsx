@@ -230,7 +230,9 @@ export const RecentCallsList: React.FC<{ calls: RecentCall[]; isLight: boolean; 
                     <p className="text-sm font-semibold text-text-primary truncate">{call.title}</p>
                     <p className="text-xs text-text-tertiary truncate">{call.meta}</p>
                 </div>
+                {/* SCORING DISABLED FOR TESTING (not accurate enough yet) — re-enable by uncommenting.
                 <span className="text-sm font-bold text-text-primary text-right tabular-nums">{call.score}</span>
+                */}
                 <ChevronRight size={14} className="text-text-tertiary justify-self-end" />
             </button>
         ))}

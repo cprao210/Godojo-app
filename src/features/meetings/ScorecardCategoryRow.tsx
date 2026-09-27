@@ -4,7 +4,8 @@ import { ChevronDown, ChevronUp, CheckCircle2, AlertCircle, Quote } from 'lucide
 import type { ScoreCardCategoryRowProps } from '@/types';
 
 // ─── Category row (compact, expandable) ───────────────────────────────────────
-export const ScorecardCategoryRow: React.FC<ScoreCardCategoryRowProps> = ({ cat, accent, index, isLight }) => {
+export const ScorecardCategoryRow: React.FC<ScoreCardCategoryRowProps> = ({ cat, isLight }) => {
+    // export const ScorecardCategoryRow: React.FC<ScoreCardCategoryRowProps> = ({ cat, accent, index, isLight }) => {
     const [open, setOpen] = useState(false);
     const pct = cat.maxScore > 0 ? Math.round((cat.score / cat.maxScore) * 100) : 0;
     const hasDetail = cat.transcriptEvidence.length > 0 || cat.strengths.length > 0 || cat.improvementAreas.length > 0;
@@ -14,21 +15,23 @@ export const ScorecardCategoryRow: React.FC<ScoreCardCategoryRowProps> = ({ cat,
             onClick={() => hasDetail && setOpen(o => !o)}>
             {/* Main row */}
             <div className="flex items-center gap-3 px-1 py-2.5">
-                {/* Score badge */}
+                {/* SCORING DISABLED FOR TESTING (not accurate enough yet) — re-enable by uncommenting.
                 <span className="text-[10px] font-bold tabular-nums shrink-0 w-8 text-right" style={{ color: accent }}>
                     {pct}%
                 </span>
+                */}
 
                 {/* Name + bar */}
                 <div className="flex-1 min-w-0">
                     <div className="flex items-center justify-between mb-1">
-                        <span className={`text-[11px] font-medium truncate ${isLight ? 'text-slate-700' : 'text-white/70'}`}>
+                        <span className={`text-[11px] pl-2 font-medium truncate ${isLight ? 'text-slate-700' : 'text-white/70'}`}>
                             {cat.categoryName}
                         </span>
-                        <span className={`text-[9.5px] ml-2 shrink-0 ${isLight ? 'text-slate-400' : 'text-white/25'}`}>
+                        {/* <span className={`text-[9.5px] ml-2 shrink-0 ${isLight ? 'text-slate-400' : 'text-white/25'}`}>
                             {cat.weight} pts
-                        </span>
+                        </span> */}
                     </div>
+                    {/* SCORING DISABLED FOR TESTING (not accurate enough yet) — re-enable by uncommenting.
                     <div className={`h-1 rounded-full overflow-hidden ${isLight ? 'bg-slate-100' : 'bg-white/[0.06]'}`}>
                         <motion.div
                             className="h-full rounded-full"
@@ -38,6 +41,7 @@ export const ScorecardCategoryRow: React.FC<ScoreCardCategoryRowProps> = ({ cat,
                             transition={{ duration: 0.6, delay: index * 0.03, ease: [0.33, 1, 0.68, 1] }}
                         />
                     </div>
+                    */}
                 </div>
 
                 {hasDetail && (

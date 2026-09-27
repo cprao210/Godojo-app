@@ -26,7 +26,7 @@ const NAV_ITEMS = [
     { id: 'audio', label: 'Audio', icon: Mic, productionOnly: false },
     { id: 'keybinds', label: 'Keybinds', icon: Keyboard, productionOnly: false },
     { id: 'company-context', label: 'Company Context', icon: Building2, productionOnly: false },
-    { id: 'scoring-criteria', label: 'Scoring Criteria', icon: BarChart2, productionOnly: false },
+    // { id: 'scoring-criteria', label: 'Scoring Criteria', icon: BarChart2, productionOnly: false },
     { id: 'user-roles-permissions', label: 'Roles & Management', icon: Users, productionOnly: false },
     { id: 'updates', label: 'Updates', icon: RefreshCw, productionOnly: true },
     { id: 'about', label: 'About', icon: Info, productionOnly: false },
@@ -215,7 +215,7 @@ const SettingsOverlay: React.FC<SettingsOverlayProps> = ({
                                         </div>
                                     )}
 
-                                    {activeTab === 'scoring-criteria' && <ScoringCriteriaTab />}
+                                    {/* {activeTab === 'scoring-criteria' && <ScoringCriteriaTab />} */}
 
                                     {activeTab === 'user-roles-permissions' && (
                                         <UserRolesPermissionsTab
