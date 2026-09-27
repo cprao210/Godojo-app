@@ -416,7 +416,7 @@ const App: React.FC = () => {
                           over EVERY launcher screen (list, meeting details,
                           Settings, Dashboard, chat) instead of only when the
                           Roles & Permissions tab happens to be opened. */}
-                      <TeamInviteNotification authUser={authUser} suppressed={!!deepLinkInviteToken} />
+                      <TeamInviteNotification authUser={authUser} suppressed={!!deepLinkInviteToken} isAdmin={isAdmin} />
                       {/* Mirror side: when someone accepts OUR team's invitation,
                           notify the owner/admin — in-app toast + native cross-screen
                           notification (same pipeline as Summary Ready). */}
@@ -463,7 +463,7 @@ const App: React.FC = () => {
               <InviteAccountMismatchBanner invitedEmail={inviteMismatchEmail} onDismiss={dismissInviteMismatch} />
             )}
 
-            <AdCampaignToasters
+            {/* <AdCampaignToasters
               visible={isLauncherMainView && !isSettingsOpen}
               activeAd={activeAd}
               dismissAd={dismissAd}
@@ -492,7 +492,7 @@ const App: React.FC = () => {
                 }, 300);
               }}
               onDeactivated={() => setIsPremiumActive(false)}
-            />
+            /> */}
           </>
         )}
       </div>
