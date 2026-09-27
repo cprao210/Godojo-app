@@ -7,12 +7,13 @@
  */
 
 import { useEffect } from "react";
-import { LoaderCircle, X } from "lucide-react";
+import { Ghost, LoaderCircle, X } from "lucide-react";
 import { motion } from "framer-motion";
-import { useResolvedTheme, useSignIn } from '@/hooks';
+import { useResolvedTheme, useSignIn, useUndetectable } from '@/hooks';
 import { SignInProps } from "@/types";
 import { AuthBackground, AuthDecorativeLines, AuthLogo, AuthPageShell } from '@/features/auth';
 import { AuthFormField, PasswordField, fieldVariants, GoogleIcon } from '@/features/auth';
+import { isMac } from '@/../utils/platformUtils';
 import { posthogAnalytics } from "@/lib/analytics/posthog.service";
 
 export const SignIn: React.FC<SignInProps> = ({ bannerMessage, onBannerDismiss }) => {
@@ -32,10 +33,34 @@ export const SignIn: React.FC<SignInProps> = ({ bannerMessage, onBannerDismiss }
     const { togglePasswordVisibility, busy, googleBusy, error, info, hasAnimated } = signInStates;
     const { handleChange, handleGoogle, handleSubmit, handleKeyDown } = signInStates;
 
+    // Ghost Mode is a launcher-window setting (content protection / hidden
+    // from screen capture), not an account setting — it applies to the whole
+    // window, so it's just as relevant before sign-in as after. useUndetectable
+    // already subscribes to the main process's onUndetectableChanged, so
+    // toggling here and toggling later from Settings → General stay in sync.
+    const isGhostMode = useUndetectable();
+    const toggleGhostMode = () => window.electronAPI?.setUndetectable(!isGhostMode);
+
     return (
         <AuthPageShell isLight={isLight}>
             <AuthBackground isLight={isLight} />
             <AuthDecorativeLines isLight={isLight} />
+
+            {/* Ghost Mode toggle — top-left, mirroring the top-right WindowControls
+                strip. macOS reserves that corner for the native traffic lights
+                (WindowControls renders nothing there — see AuthChrome), so the
+                button sits further in on Mac and hugs the edge everywhere else. */}
+            <button
+                onClick={toggleGhostMode}
+                title={isGhostMode ? 'Ghost Mode ON — click to disable' : 'Ghost Mode — click to enable'}
+                className={`no-drag absolute top-2.5 z-20 flex items-center gap-1.5 rounded-full border px-3 py-1.5 text-xs font-medium transition-colors ${isMac ? 'left-20' : 'left-4'} ${isGhostMode
+                    ? (isLight ? 'border-emerald-400/50 bg-emerald-500/10 text-emerald-600' : 'border-emerald-400/30 bg-emerald-400/10 text-emerald-400')
+                    : (isLight ? 'border-slate-200 bg-white/60 text-slate-500 hover:text-slate-800' : 'border-white/10 bg-white/[0.04] text-slate-400 hover:text-white')
+                    }`}
+            >
+                <Ghost size={14} />
+                Ghost Mode {isGhostMode ? 'ON' : 'OFF'}
+            </button>
 
             {/* Content */}
             <div className="relative z-10 flex min-h-screen flex-col items-center justify-center px-4 py-10">
