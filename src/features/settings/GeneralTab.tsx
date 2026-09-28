@@ -256,11 +256,11 @@ const GeneralTab: React.FC<{ overlay: SettingsOverlayHook }> = ({ overlay }) => 
                         <p className="text-xs text-text-secondary">
                             {perfPreference === 'auto'
                                 ? (isPerformanceMode
-                                    ? `Enabled automatically for this device${autoReason ? ` — ${autoReason.toLowerCase()}` : '.'}`
+                                    ? `Enabled automatically for this device${autoReason ? ` — ${autoReason.toLowerCase()}` : ''}. Reduces visual effects and optimized for smoother, faster performance.`
                                     : 'Enabled automatically if needed for this device.')
                                 : perfPreference === 'on'
-                                    ? 'Reduced visual effects for maximum smoothness.'
-                                    : 'Full visual effects.'}
+                                    ? 'Reduces visual effects and optimized for smoother, faster performance.'
+                                    : 'Full visual effects with standard performance and usage.'}
                         </p>
                     </div>
                     <div className="flex items-center gap-1 p-1 rounded-lg border border-border-muted shrink-0 ml-4" role="group" aria-label="Performance Mode">

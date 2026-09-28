@@ -74,20 +74,15 @@ export class EmbeddingPipeline {
     }
 
     private async _doInitialize(config: AppAPIConfig): Promise<void> {
-        // ── Step 1: Eagerly init the local fallback FIRST, independently of the primary.
-        // This guarantees fallbackProvider is set even if the primary throws,
-        // so activateMeetingFallback() is always safe to call.
-        try {
-            const local = new LocalEmbeddingProvider();
-            if (await local.isAvailable()) {
-                this.fallbackProvider = local;
-                console.log(`[EmbeddingPipeline] Local fallback provider ready (${local.dimensions}d)`);
-            } else {
-                console.warn('[EmbeddingPipeline] Local fallback provider unavailable — bundled model may be missing');
-            }
-        } catch (e) {
-            console.warn('[EmbeddingPipeline] Could not initialize local fallback provider:', e);
-        }
+        // ── Step 1: Register the local fallback WITHOUT loading it.
+        // The constructor only records the model path; the worker thread and the
+        // ~90 MB MiniLM model start on the first embed()/isAvailable() call.
+        // Previously this step awaited isAvailable(), which spun up the worker and
+        // loaded the model at every launch even when an OpenAI/Gemini/Ollama
+        // provider was going to be used. fallbackProvider is still always set, so
+        // activateMeetingFallback() stays safe to call; the model now loads only if
+        // the fallback is actually needed (or if the resolver picks local below).
+        this.fallbackProvider = new LocalEmbeddingProvider();
 
         // ── Step 2: Resolve primary provider.
         try {
@@ -129,12 +124,19 @@ export class EmbeddingPipeline {
             // Don't rethrow — if we have a fallback, the pipeline can still function
             // in local-only mode. Callers check isReady() which checks this.provider.
             // Only throw if we also have no fallback at all.
-            if (!this.fallbackProvider) {
+            // The fallback is registered lazily now, so verify it can actually load
+            // before promoting it (this is where a missing bundled model surfaces).
+            let fallbackOk = false;
+            try {
+                fallbackOk = !!this.fallbackProvider && await this.fallbackProvider.isAvailable();
+            } catch { /* treated as unavailable */ }
+            if (!fallbackOk) {
+                this.fallbackProvider = null;
                 throw err;
             }
             console.warn('[EmbeddingPipeline] Falling back to local-only mode for all meetings.');
             // Promote fallback as the primary so isReady() returns true and queueing works.
-            this.provider = this.fallbackProvider;
+            this.provider = this.fallbackProvider!;
             // Persist the fallback provider name so the next launch does not fire a
             // false-positive incompatible-provider warning (e.g. 'openai' vs 'local').
             try {

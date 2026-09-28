@@ -53,6 +53,16 @@ export function isLowMemoryMachine(totalRamGB: number | null): boolean {
     return totalRamGB != null && totalRamGB <= LOW_MEMORY_RAM_GB;
 }
 
+export function readTotalRamGB(totalMemBytes: number): number | null {
+    return totalMemBytes > 0 ? Math.round((totalMemBytes / (1024 ** 3)) * 10) / 10 : null;
+}
+
+/** SYNC, GPU-probe-free "is this a weak machine" check for deferring heavy background work */
+export function isLowEndMachine(hw: Pick<HardwareSnapshot, 'cpuThreads' | 'totalRamGB'>): boolean {
+    return isLowMemoryMachine(hw.totalRamGB)
+        || (hw.cpuThreads != null && hw.cpuThreads <= WEAK_CPU_THREADS);
+}
+
 export function classifyPerformanceMode(hw: HardwareSnapshot): PerformanceClassification {
     // Facts line — every known value participates, so logs/telemetry carry
     // the full picture even when the decision is OFF.

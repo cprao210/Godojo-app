@@ -4,6 +4,8 @@ import { KeybindManager } from "./services/KeybindManager"
 import { startStaticServer } from "./staticServer"
 import { isVerboseLogging } from "./verboseLog"
 import path from "node:path"
+import os from "node:os"
+import { isLowMemoryMachine, readTotalRamGB } from "../utils/performanceClassification"
 
 const isEnvDev = process.env.NODE_ENV === "development"
 const isPackaged = app.isPackaged;
@@ -88,6 +90,8 @@ export class WindowHelper {
   // launcher (i.e. meeting end), so each "Start GoDojo" opens bottom-right,
   // while manual drags mid-meeting (and hide/show toggles) are respected.
   private overlayNeedsReposition: boolean = true
+
+  private readonly deferOverlay: boolean = isLowMemoryMachine(readTotalRamGB(os.totalmem()))
 
   /** True once the overlay renderer has announced itself via `overlay:ready`. */
   private overlayRendererReady: boolean = false
@@ -214,7 +218,7 @@ export class WindowHelper {
     const HEIGHT_JITTER_TOLERANCE_PX = 1
     const widthChanged = Math.abs(newWidth - currentBounds.width) > WIDTH_JITTER_TOLERANCE_PX
     const heightChanged = newHeight > currentBounds.height + HEIGHT_JITTER_TOLERANCE_PX
-        || newHeight < currentBounds.height - HEIGHT_JITTER_TOLERANCE_PX
+      || newHeight < currentBounds.height - HEIGHT_JITTER_TOLERANCE_PX
     if (!widthChanged && !heightChanged) return
 
     // Anchor the TOP edge: keep the window's top edge fixed as its content
@@ -486,7 +490,11 @@ export class WindowHelper {
     // }
 
     // --- 2. Create Overlay Window (Hidden initially) ---
-    this.createOverlayWindow()
+    if (this.deferOverlay) {
+      console.log('[WindowHelper] Low-memory machine — deferring overlay window until a meeting starts')
+    } else {
+      this.createOverlayWindow()
+    }
 
     // --- 3. Startup Sequence ---
     this.launcherWindow.once('ready-to-show', () => {
@@ -624,6 +632,12 @@ export class WindowHelper {
       console.log('[WindowHelper] ensureWindowsReady: app was hidden (Cmd+H) — unhiding so windows can draw')
       app.show()
     }
+  }
+
+  public async ensureOverlayIfDeferred(): Promise<void> {
+    if (!this.deferOverlay) return
+    if (this.overlayWindow && !this.overlayWindow.isDestroyed()) return
+    await this.ensureWindowsReady()   // existing, already rebuilds a missing overlay
   }
 
   /**

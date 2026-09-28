@@ -48,6 +48,7 @@ export interface ElectronAPI {
     hardware: { cpuThreads: number | null; totalRamGB: number | null; gpuVendorId: string | null };
     autoClassification: { autoPerformanceMode: boolean; reason: string | null; summary: string };
   }>
+  setPerformanceModePreference: (preference: 'auto' | 'on' | 'off') => Promise<{ ok: boolean }>
   onToggleExpand: (callback: () => void) => () => void
   onResetView: (callback: () => void) => () => void
   moveWindowLeft: () => Promise<void>

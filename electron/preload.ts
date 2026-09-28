@@ -14,6 +14,7 @@ interface ElectronAPI {
     hardware: { cpuThreads: number | null; totalRamGB: number | null; gpuVendorId: string | null };
     autoClassification: { autoPerformanceMode: boolean; reason: string | null; summary: string };
   }>
+  setPerformanceModePreference: (preference: 'auto' | 'on' | 'off') => Promise<{ ok: boolean }>
   getRecognitionLanguages: () => Promise<Record<string, any>>
   getScreenshots: () => Promise<Array<{ path: string; preview: string }>>
   deleteScreenshot: (
@@ -508,6 +509,8 @@ contextBridge.exposeInMainWorld("electronAPI", {
   updateContentDimensions: (dimensions: { width: number; height: number }) =>
     ipcRenderer.invoke("update-content-dimensions", dimensions),
   getGpuPerformanceStatus: () => ipcRenderer.invoke("get-gpu-performance-status"),
+  setPerformanceModePreference: (preference: 'auto' | 'on' | 'off') =>
+    ipcRenderer.invoke("set-performance-mode-preference", preference),
   getRecognitionLanguages: () => ipcRenderer.invoke("get-recognition-languages"),
   takeScreenshot: () => ipcRenderer.invoke("take-screenshot"),
   takeSelectiveScreenshot: () => ipcRenderer.invoke("take-selective-screenshot"),

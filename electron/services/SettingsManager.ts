@@ -25,6 +25,10 @@ export interface AppSettings {
     // so the Settings toggle reads this instead — see the get-open-at-login
     // handler in ipcHandlers.ts.
     openAtLogin?: boolean;
+    // Mirror of the renderer's Performance Mode preference (usePerformanceMode.ts),
+    // pushed over IPC so MAIN-process work (e.g. LiveRAGIndexer) can honour it too.
+    // Missing means 'auto' — read as `get('performanceModePreference') ?? 'auto'`.
+    performanceModePreference?: 'auto' | 'on' | 'off';
 }
 
 export class SettingsManager {

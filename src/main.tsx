@@ -4,6 +4,7 @@ import { MotionConfig } from "framer-motion";
 
 import App from "./App";
 import { usePerformanceMode } from "./hooks";
+import { resolveCachedPerformanceMode } from "./hooks/usePerformanceMode";
 import "./index.css";
 
 // ---------------------------------------------------------------------------
@@ -135,6 +136,7 @@ const PerformanceModeGate: React.FC<{ children: React.ReactNode }> = ({ children
 applyPlatformAttribute();
 applyWindowAttribute();
 applyCachedTheme();
+try { document.documentElement.classList.toggle("perf-mode", resolveCachedPerformanceMode()); } catch { /* cosmetic only */ }
 syncThemeWithMainProcess();
 void bootFirebaseAuthBridge();
 

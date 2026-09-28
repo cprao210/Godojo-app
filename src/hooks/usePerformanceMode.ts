@@ -53,13 +53,70 @@ const readStoredPreference = (): PerformanceModePreference => {
     return 'auto';
 };
 
+/** Last resolved 'auto' classification, cached so the next launch can apply the
+ *  right root class / initial state on first paint, before the async hardware
+ *  query returns. Stored as JSON of the full PerformanceClassification. */
+const AUTO_CACHE_KEY = 'natively_performanceModeAutoClassification';
+
+/** Validated read of the cached classification. Returns null on ANY problem
+ *  (missing, unparsable, wrong shape, storage unavailable) — callers treat null
+ *  as "unknown", which fails safe to full visual fidelity. */
+const readCachedAutoClassification = (): PerformanceClassification | null => {
+    try {
+        const raw = localStorage.getItem(AUTO_CACHE_KEY);
+        if (!raw) return null;
+        const parsed: unknown = JSON.parse(raw);
+        if (typeof parsed !== 'object' || parsed === null) return null;
+        const c = parsed as Record<string, unknown>;
+        if (typeof c.autoPerformanceMode !== 'boolean') return null;
+        if (c.reason !== null && typeof c.reason !== 'string') return null;
+        if (typeof c.summary !== 'string') return null;
+        return { autoPerformanceMode: c.autoPerformanceMode, reason: c.reason as string | null, summary: c.summary };
+    } catch {
+        return null;
+    }
+};
+
+/** Best-effort write — a failure just means the next launch starts uncached. */
+const writeCachedAutoClassification = (c: PerformanceClassification): void => {
+    try {
+        localStorage.setItem(AUTO_CACHE_KEY, JSON.stringify(c));
+    } catch {
+        // localStorage unavailable — ignore
+    }
+};
+
+/** SYNC, first-paint-safe resolution used by main.tsx: explicit preference wins,
+ *  'auto' uses the cached result of the previous launch's hardware check (false on
+ *  the very first launch — the hook corrects it as soon as the check resolves). */
+export function resolveCachedPerformanceMode(): boolean {
+    const preference = readStoredPreference();
+    if (preference === 'on') return true;
+    if (preference === 'off') return false;
+    return readCachedAutoClassification()?.autoPerformanceMode ?? false;
+}
+
+/** ONE-SHOT async resolution for non-React callers (e.g. analytics init). Same
+ *  precedence as the hook: explicit preference, else the main-process hardware check. */
+export async function resolvePerformanceMode(): Promise<boolean> {
+    const preference = readStoredPreference();
+    if (preference === 'on') return true;
+    if (preference === 'off') return false;
+    try {
+        const status: any = await window.electronAPI?.getGpuPerformanceStatus?.();
+        return !!(status?.autoClassification?.autoPerformanceMode ?? status?.isLowPowerGpu);
+    } catch {
+        return false; // fail safe: full behaviour
+    }
+}
+
 export function usePerformanceMode() {
     const [preference, setPreferenceState] = useState<PerformanceModePreference>(readStoredPreference);
     // Result of the one-time hardware capability check, only consulted when
     // preference === 'auto'. `null` while the check is in flight — during
     // that brief window we default to full fidelity (see isPerformanceMode
     // below) rather than flashing the reduced UI on and off.
-    const [autoClassification, setAutoClassification] = useState<PerformanceClassification | null>(null);
+    const [autoClassification, setAutoClassification] = useState<PerformanceClassification | null>(readCachedAutoClassification);
 
     // Keep every instance in the SAME window in sync: changing the mode in
     // Settings → General must flip the floating dock (and vice versa) without
@@ -98,6 +155,7 @@ export function usePerformanceMode() {
                     summary: '',
                 };
                 setAutoClassification(classification);
+                writeCachedAutoClassification(classification);
                 if (classification.autoPerformanceMode) {
                     console.info(`Performance Mode auto: on — ${classification.reason} (${classification.summary})`);
                 }
@@ -109,6 +167,13 @@ export function usePerformanceMode() {
             });
         return () => { cancelled = true; };
     }, []);
+
+    // Mirror the effective preference into the main process (initial value and every
+    // change) so main-process background work honours it. Fire-and-forget; main
+    // ignores unchanged values.
+    useEffect(() => {
+        window.electronAPI?.setPerformanceModePreference?.(preference)?.catch?.(() => { });
+    }, [preference]);
 
     const setPreference = (next: PerformanceModePreference) => {
         setPreferenceState(next);

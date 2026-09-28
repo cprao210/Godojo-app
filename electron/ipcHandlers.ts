@@ -117,6 +117,18 @@ export function initializeIpcHandlers(appState: AppState): void {
     }
   });
 
+  // Renderer -> main mirror of the Performance Mode preference (see
+  // usePerformanceMode.ts) so main-process background work can honour it too.
+  safeHandle('set-performance-mode-preference', async (_, preference: 'auto' | 'on' | 'off') => {
+    if (preference !== 'auto' && preference !== 'on' && preference !== 'off') return { ok: false };
+    const { SettingsManager } = require('./services/SettingsManager');
+    const settings = SettingsManager.getInstance();
+    if ((settings.get('performanceModePreference') ?? 'auto') !== preference) {
+      settings.set('performanceModePreference', preference);
+    }
+    return { ok: true };
+  });
+
   // Relays renderer-side errors (currently: ErrorBoundary.componentDidCatch,
   // see src/features/common/ErrorBoundary.tsx) into main-process error
   // tracking. The renderer already reports these to PostHog directly via
@@ -316,6 +328,9 @@ export function initializeIpcHandlers(appState: AppState): void {
   });
 
   safeHandle("set-window-mode", async (event, mode: 'launcher' | 'overlay', inactive?: boolean, freshMeetingStart?: boolean) => {
+    // switchToOverlay() hides the launcher AFTER trying to show the overlay,
+    // so a missing (deferred) overlay would leave nothing on screen.
+    if (mode === 'overlay') await appState.getWindowHelper().ensureOverlayIfDeferred();
     appState.getWindowHelper().setWindowMode(mode, inactive, freshMeetingStart);
     return { success: true };
   })
@@ -2078,6 +2093,8 @@ export function initializeIpcHandlers(appState: AppState): void {
 
   safeHandle("start-meeting", async (event, metadata?: any) => {
     try {
+      // must exist and be subscribed BEFORE startMeeting() emits `session-reset` (dropped otherwise)
+      await appState.getWindowHelper().ensureOverlayIfDeferred();
       await appState.startMeeting(metadata);
       if (metadata?.attendees) {
         const selfEmail = metadata.attendees.find((a: any) => a.self)?.email;

@@ -4,6 +4,7 @@
 // for the whole app.
 
 import posthog from 'posthog-js';
+import { resolvePerformanceMode } from '../../hooks/usePerformanceMode';
 
 const POSTHOG_KEY = import.meta.env.VITE_POSTHOG_KEY ?? '';
 const POSTHOG_HOST = import.meta.env.VITE_POSTHOG_HOST ?? 'https://us.i.posthog.com';
@@ -63,7 +64,12 @@ class PostHogService {
                 // code — see PostHog project settings. If no trigger group
                 // exists yet, PostHog defaults to "record everything," so
                 // don't flip this to `false` until that's set up.
-                disable_session_recording: false,
+                // Always initialised OFF, then started below only on machines that are
+                // NOT in Performance Mode. Replay keeps a rolling DOM-mutation buffer
+                // for the whole session, which is real CPU/RAM overhead on a UI that
+                // repaints constantly during a call. Trade-off: weak machines no longer
+                // produce pre-crash replays (errors are still captured).
+                disable_session_recording: true,
                 session_recording: {
                     // Sales calls / meeting notes can contain customer PII —
                     // mask all text inputs by default (form fields, chat
@@ -84,6 +90,10 @@ class PostHogService {
 
             this.initialized = true;
             console.log('[PostHog] Initialized.');
+
+            void resolvePerformanceMode().then((performanceMode) => {
+                if (!performanceMode) posthog.startSessionRecording();
+            }).catch(() => { /* leave replay off if we can't tell */ });
         } catch (error) {
             console.warn('[PostHog] Initialization failed:', error);
         }

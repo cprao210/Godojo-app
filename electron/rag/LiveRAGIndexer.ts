@@ -13,6 +13,10 @@ import { VectorStore } from './VectorStore';
 import { EmbeddingPipeline } from './EmbeddingPipeline';
 
 const INDEXING_INTERVAL_MS = 30_000;  // 30 seconds
+// Performance Mode: the tick can run local (CPU-only, WASM) embedding inference for
+// the whole meeting, competing with audio capture + STT on weak CPUs. Run it 3x less
+// often instead of disabling it, so mid-meeting JIT RAG still works (just staler).
+const PERF_MODE_INDEXING_INTERVAL_MS = 90_000;  // 90 seconds
 const MIN_NEW_SEGMENTS = 3;           // Don't chunk unless we have enough new content
 
 export class LiveRAGIndexer {
@@ -35,8 +39,11 @@ export class LiveRAGIndexer {
     /**
      * Start live indexing for a meeting.
      * Begins a background timer that periodically chunks & embeds new transcript.
+     *
+     * @param performanceMode true when Performance Mode is active — see
+     *   isPerformanceModeActive() in utils/performanceModeMain.ts.
      */
-    start(meetingId: string): void {
+    start(meetingId: string, performanceMode = false): void {
         if (this.isActive) {
             this.stop();
         }
@@ -49,13 +56,14 @@ export class LiveRAGIndexer {
         this.isProcessing = false;
         this.isActive = true;
 
-        console.log(`[LiveRAGIndexer] Started for meeting ${meetingId}`);
+        const intervalMs = performanceMode ? PERF_MODE_INDEXING_INTERVAL_MS : INDEXING_INTERVAL_MS;
+        console.log(`[LiveRAGIndexer] Started for meeting ${meetingId} (interval=${intervalMs}ms, performanceMode=${performanceMode})`);
 
         this.timer = setInterval(() => {
             this.tick().catch(err => {
                 console.error('[LiveRAGIndexer] Tick error:', err);
             });
-        }, INDEXING_INTERVAL_MS);
+        }, intervalMs);
     }
 
     /**

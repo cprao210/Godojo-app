@@ -382,11 +382,11 @@ export const FloatingSettingsPanel: React.FC<FloatingSettingsPanelProps> = ({
                     <p className="text-[11px] mt-2" style={{ color: 'rgba(255,255,255,0.3)' }}>
                         {performanceModePreference === 'auto'
                             ? (isPerformanceMode
-                                ? 'Enabled automatically for this device.'
+                                ? 'Enabled automatically for this device. Reduces visual effects and optimized for smoother, faster performance.'
                                 : 'Enabled automatically if needed for this device.')
                             : performanceModePreference === 'on'
-                                ? 'Reduced visual effects for maximum smoothness.'
-                                : 'Full visual effects.'}
+                                ? 'Reduces visual effects and optimized for smoother, faster performance.'
+                                : 'Full visual effects with standard performance and usage.'}
                     </p>
                 </div>
 

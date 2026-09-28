@@ -2,6 +2,8 @@ import { app, BrowserWindow, Tray, Menu, nativeImage, ipcMain, shell, systemPref
 import path from "path"
 import fs from "fs"
 import { autoUpdater } from "electron-updater"
+import * as nodeOs from "node:os"
+import { isLowEndMachine, readTotalRamGB } from "../utils/performanceClassification"
 
 // ─── Separate userData directories for dev vs. production ──────────────────
 // Electron's default userData folder name comes from app.getName(), which
@@ -420,6 +422,7 @@ try {
 
 import { CredentialsManager } from "./services/CredentialsManager"
 import { SettingsManager } from "./services/SettingsManager"
+import { isPerformanceModeActive } from "./utils/performanceModeMain"
 import { setVerboseLoggingFlag } from "./verboseLog"
 import { ReleaseNotesManager, type ParsedReleaseNotes } from "./update/ReleaseNotesManager"
 import { OllamaManager } from './services/OllamaManager'
@@ -481,6 +484,8 @@ export class AppState {
 
   private hasDebugged: boolean = false
   private isMeetingActive: boolean = false; // Guard for session state leaks
+  /** True on weak hardware: heavy background warmups are postponed from launch to meeting start. */
+  private deferHeavyWarmups: boolean = false;
   private isMeetingPaused: boolean = false; // Pause guard — blocks audio and AI while paused
   private _isQuitting: boolean = false;
   private _verboseLogging: boolean = false;
@@ -700,8 +705,17 @@ export class AppState {
 
     this.setupIntelligenceEvents()
 
-    // Pre-warm the zero-shot intent classifier in background
-    warmupIntentClassifier();
+    // Pre-warm the zero-shot intent classifier in the background — skipped at
+    // launch on <=8 GB RAM or <=4 threads; loads at meeting start instead.
+    this.deferHeavyWarmups = isLowEndMachine({
+      cpuThreads: nodeOs.cpus()?.length || null,
+      totalRamGB: readTotalRamGB(nodeOs.totalmem()),
+    })
+    if (this.deferHeavyWarmups) {
+      console.log('[Main] Low-end hardware — deferring intent classifier warmup to meeting start')
+    } else {
+      warmupIntentClassifier()
+    }
 
     // Setup Ollama IPC
     this.setupOllamaIpcHandlers()
@@ -1885,7 +1899,7 @@ export class AppState {
       return "The update server is busy right now. Please try again in a few minutes."
     }
     const networkHints = ['econnrefused', 'enotfound', 'etimedout', 'eai_again', 'econnreset',
-                          'network', 'timed out', 'timeout', 'offline', 'getaddrinfo', 'socket']
+      'network', 'timed out', 'timeout', 'offline', 'getaddrinfo', 'socket']
     if (status != null || networkHints.some(h => msg.includes(h))) {
       return isDownload
         ? "The update couldn't be downloaded. Please check your internet connection and try again."
@@ -1941,16 +1955,16 @@ export class AppState {
   /** Empties electron-updater's pending-download cache via its own helper
      *  (same object the macOS install path reads .file from), so the next
      *  downloadUpdate() can't short-circuit on a cached file. Dev-only. */
-    private async clearDevUpdateCache(): Promise<void> {
-      try {
-        const updater = autoUpdater as any
-        const helper = updater.downloadedUpdateHelper ?? await updater.getOrCreateDownloadHelper?.()
-        await helper?.clear?.()
-        console.log('[AutoUpdater] Dev mode: cleared cached update — next download starts cold')
-      } catch (e) {
-        console.warn('[AutoUpdater] Dev cache clear failed (non-fatal, download proceeds):', e)
-      }
+  private async clearDevUpdateCache(): Promise<void> {
+    try {
+      const updater = autoUpdater as any
+      const helper = updater.downloadedUpdateHelper ?? await updater.getOrCreateDownloadHelper?.()
+      await helper?.clear?.()
+      console.log('[AutoUpdater] Dev mode: cleared cached update — next download starts cold')
+    } catch (e) {
+      console.warn('[AutoUpdater] Dev cache clear failed (non-fatal, download proceeds):', e)
     }
+  }
 
   // New Property for System Audio & Microphone
   private systemAudioCapture: SystemAudioCapture | null = null;
@@ -3619,6 +3633,7 @@ export class AppState {
     // on — that stamp is what lets main reject a result belonging to the call
     // that just ended.
     this.sendToMeetingSurfaces('session-reset', { meetingGeneration: this._meetingGeneration });
+    if (this.deferHeavyWarmups) warmupIntentClassifier();   // idempotent, fire-and-forget
 
     // ★ ASYNC AUDIO INIT: Return INSTANTLY so the IPC response goes back
     // to the renderer immediately, allowing the UI to switch to overlay
@@ -3712,7 +3727,7 @@ export class AppState {
 
         // Start JIT RAG live indexing
         if (this.ragManager) {
-          this.ragManager.startLiveIndexing('live-meeting-current');
+          this.ragManager.startLiveIndexing('live-meeting-current', isPerformanceModeActive());
         }
 
         if (this._verboseLogging) {
@@ -4147,7 +4162,7 @@ export class AppState {
       //    so all new transcript segments are appended to the existing session,
       //    not a new one. No duplicate meeting ID is created.
       if (this.ragManager) {
-        this.ragManager.startLiveIndexing('live-meeting-current');
+        this.ragManager.startLiveIndexing('live-meeting-current', isPerformanceModeActive());
       }
 
       // 4. Only clear the pause flag after the entire pipeline has successfully restarted.
