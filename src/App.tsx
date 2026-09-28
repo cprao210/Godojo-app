@@ -32,6 +32,7 @@ import { BirdLoader } from "@/features/ui/BirdLoader";
 // components — generic UI kit + shared/common
 // ---------------------------------------------------------------------------
 import { ToastProvider, ToastViewport } from "@/features/ui/toast";
+import { DocumentViewerHost } from "@/features/documents/DocumentViewer";
 import { ModelSelectorWindow, GodojoInterface, Launcher, ErrorBoundary } from "@/features/common";
 import { IncompatibleProviderBanner, AdCampaignToasters, SystemAudioPermissionBanner, GhostGlowOverlay } from "@/features/common";
 import { AudioStatusTray } from "@/features/common";
@@ -238,6 +239,7 @@ const App: React.FC = () => {
             <ToastProvider>
               <SettingsPopup />
               <ToastViewport />
+              <DocumentViewerHost />
             </ToastProvider>
           </QueryClientProvider>
         </div>
@@ -281,6 +283,7 @@ const App: React.FC = () => {
                 <GodojoInterface onEndMeeting={handleEndMeeting} overlayOpacity={overlayOpacity} />
               </div>
               <ToastViewport />
+              <DocumentViewerHost />
             </ToastProvider>
           </QueryClientProvider>
         </div>
@@ -443,6 +446,7 @@ const App: React.FC = () => {
                         )}
                       </AnimatePresence>
                       <ToastViewport />
+                      <DocumentViewerHost />
                     </ToastProvider>
                   </QueryClientProvider>
                 </motion.div>

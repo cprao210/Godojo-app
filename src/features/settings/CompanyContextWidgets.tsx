@@ -1,4 +1,5 @@
 import React, { useState, useRef, useEffect } from 'react';
+import { DocumentDetails } from '@/features/documents/DocumentDetails';
 import {
     Building2, Globe, Layers, FileText, RefreshCw, Trash2,
     AlertCircle, X, BarChart2,
@@ -620,6 +621,9 @@ export const KnowledgeBaseSection: React.FC<{
                                                         </div>
                                                     )}
                                                 </div>
+                                                {!progress && !isUploading && (
+                                                    <DocumentDetails assetId={asset.id} label={asset.label} readOnly={readOnly} />
+                                                )}
                                                 {progress && (
                                                     <div className="mt-2">
                                                         <p className={`text-[10px] font-medium mb-1 ${isLight ? 'text-slate-500' : 'text-white/45'}`}>
