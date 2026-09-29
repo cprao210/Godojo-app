@@ -20,7 +20,9 @@ export const ScorecardCard: React.FC<ScorecardCardProps> = ({ scorecard, isLight
         <div className={`rounded-xl border overflow-hidden ${isLight ? 'border-slate-200 bg-slate-50/60' : 'border-white/[0.07] bg-white/[0.015]'}`}>
             {/* Header — always visible, no toggle */}
             <div className={`flex items-center gap-3 px-4 py-3`}>
+                {/* SCORING DISABLED FOR TESTING (not accurate enough yet) — re-enable by uncommenting.
                 <ScoreRing score={scorecard.overallScore} color={accent.color} size={44} />
+                */}
 
                 <div className="flex-1 min-w-0">
                     <div className="flex items-center gap-2 mb-0.5">
@@ -30,18 +32,20 @@ export const ScorecardCard: React.FC<ScorecardCardProps> = ({ scorecard, isLight
                         >
                             {accent.label}
                         </span>
+                        {/* SCORING DISABLED FOR TESTING (not accurate enough yet) — re-enable by uncommenting.
                         <span className={`text-[10px] ${isLight ? 'text-slate-400' : 'text-white/25'}`}>
                             {scorecard.confidenceScore}% confidence
                         </span>
+                        */}
                     </div>
                     <p className={`text-[11px] leading-snug truncate ${isLight ? 'text-slate-500' : 'text-white/35'}`}>
                         {scorecard.detectedReason}
                     </p>
                 </div>
 
-                <span className={`text-[11px] font-semibold shrink-0 ${isLight ? 'text-slate-600' : 'text-white/50'}`}>
+                {/* <span className={`text-[11px] font-semibold shrink-0 ${isLight ? 'text-slate-600' : 'text-white/50'}`}>
                     {scoreLabel(scorecard.overallScore)}
-                </span>
+                </span> */}
             </div>
 
             {/* Body — always rendered, no AnimatePresence wrapper */}

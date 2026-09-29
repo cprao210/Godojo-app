@@ -1,13 +1,14 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
-import { Brain, Copy, Check, RotateCcw, Send } from 'lucide-react';
+import { Brain, Copy, Check, RotateCcw, Send, Square } from 'lucide-react';
 import ReactMarkdown from 'react-markdown';
 import { guardSession } from '@/lib/firebase';
 import remarkGfm from 'remark-gfm';
 import { useStreamBuffer } from '@/hooks';
+import { usePerformanceMode } from '@/hooks';
 import { chatApi, statusLabel } from '@/api';
 import { chatMarkdownComponents } from '@/features/chat';
-import SourcesDisplay from '@/features/chat/SourcesDisplay';
+import { CitationProvider, indexSourceMap, rehypeCitations, CiteChip } from '@/features/chat/citations';
 import { ChatHistoryTurn, FloatingChatPanelProps, LiveTranscriptSegment, Message, StreamHandle } from '@/types';
 import { getDockSurfaceStyle } from '../dockSurfaceStyle';
 import { posthogAnalytics } from '@/lib/analytics/posthog.service';
@@ -74,33 +75,44 @@ const FilmRollTranscript: React.FC<FilmRollTranscriptProps> = ({ text, speakerLa
     );
 };
 
-const TypingDots: React.FC<{ label?: string }> = ({ label }) => (
-    <div className="flex items-center gap-2 py-2">
-        <div className="flex items-center gap-1">
-            {[0, 1, 2].map(i => (
-                <motion.div
-                    key={i}
-                    className="w-1.5 h-1.5 rounded-full"
-                    style={{ background: 'rgba(255,255,255,0.3)' }}
-                    animate={{ opacity: [0.3, 1, 0.3] }}
-                    transition={{ duration: 0.7, repeat: Infinity, delay: i * 0.15, ease: 'easeInOut' }}
-                />
-            ))}
+const TypingDots: React.FC<{ label?: string }> = ({ label }) => {
+    const { isPerformanceMode } = usePerformanceMode();
+    return (
+        <div className="flex items-center gap-2 py-2">
+            <div className="flex items-center gap-1">
+                {[0, 1, 2].map(i => (
+                    isPerformanceMode ? (
+                        <div
+                            key={i}
+                            className="perf-pulse-dot w-1.5 h-1.5 rounded-full"
+                            style={{ background: 'rgba(255,255,255,0.3)', animationDelay: `${i * 0.15}s`, animationDuration: '0.7s' }}
+                        />
+                    ) : (
+                        <motion.div
+                            key={i}
+                            className="w-1.5 h-1.5 rounded-full"
+                            style={{ background: 'rgba(255,255,255,0.3)' }}
+                            animate={{ opacity: [0.3, 1, 0.3] }}
+                            transition={{ duration: 0.7, repeat: Infinity, delay: i * 0.15, ease: 'easeInOut' }}
+                        />
+                    )
+                ))}
+            </div>
+            {label && (
+                <motion.span
+                    key={label}
+                    initial={{ opacity: 0, y: 2 }}
+                    animate={{ opacity: 1, y: 0 }}
+                    transition={{ duration: 0.15 }}
+                    className="text-[12px]"
+                    style={{ color: 'rgba(255,255,255,0.4)' }}
+                >
+                    {label}
+                </motion.span>
+            )}
         </div>
-        {label && (
-            <motion.span
-                key={label}
-                initial={{ opacity: 0, y: 2 }}
-                animate={{ opacity: 1, y: 0 }}
-                transition={{ duration: 0.15 }}
-                className="text-[12px]"
-                style={{ color: 'rgba(255,255,255,0.4)' }}
-            >
-                {label}
-            </motion.span>
-        )}
-    </div>
-);
+    );
+};
 
 const MessageBubble: React.FC<{ msg: Message }> = ({ msg }) => {
     const [copied, setCopied] = useState(false);
@@ -175,25 +187,29 @@ const MessageBubble: React.FC<{ msg: Message }> = ({ msg }) => {
                         <TypingDots label={msg.status} />
                     ) : (
                         <>
-                            <div className="markdown-content">
-                                <ReactMarkdown remarkPlugins={[remarkGfm]} components={chatMarkdownComponents}>
-                                    {msg.text}
-                                </ReactMarkdown>
+                            {msg.rewriting && (
+                                <div className="mb-2 text-[10px] uppercase tracking-wide text-white/45 animate-pulse">
+                                    Rewriting…
+                                </div>
+                            )}
+                            <div className="markdown-content" style={msg.rewriting ? { opacity: 0.55 } : undefined}>
+                                <CitationProvider
+                                    map={msg.sourceMap}
+                                    unverified={msg.unverifiedCitations}
+                                >
+                                    <ReactMarkdown remarkPlugins={[remarkGfm]} rehypePlugins={[rehypeCitations]} components={{
+                                        ...chatMarkdownComponents,
+                                        cite: CiteChip as any,
+                                    }}>
+                                        {msg.text}
+                                    </ReactMarkdown>
+                                </CitationProvider>
                                 {msg.ragAnswer && (
                                     <div className="mt-2 text-[10px] text-white/35 flex items-center gap-2">
                                         <span>{Math.round(msg.ragAnswer.confidence * 100)}% confidence</span>
                                         {msg.ragAnswer.sourceCount > 0 && (
                                             <span>· {msg.ragAnswer.sourceCount} source{msg.ragAnswer.sourceCount > 1 ? 's' : ''}</span>
                                         )}
-                                    </div>
-                                )}
-                                {msg.sources && (
-                                    <div className="mt-2">
-                                        {/* Live chat has nowhere to route a meeting click from yet
-                                            (no onOpenMeeting wired into FloatingChatPanelProps), and
-                                            live sources are asset-only in practice anyway — plain,
-                                            non-clickable chips. */}
-                                        <SourcesDisplay sources={msg.sources} />
                                     </div>
                                 )}
                             </div>
@@ -236,6 +252,11 @@ export const FloatingChatPanel: React.FC<FloatingChatPanelProps> = React.memo(({
     const streamBuffer = useStreamBuffer();
     const activeStreamRef = useRef<StreamHandle | null>(null);
     const pendingQuestionRef = useRef<string | null>(null);
+    // Tracks the assistant bubble id + accumulated text for whichever turn
+    // is in flight, so stopGeneration() can finalize the right message with
+    // whatever content had already streamed in.
+    const currentAssistantIdRef = useRef<string | null>(null);
+    const currentBufferRef = useRef('');
 
     // Auto-scroll
     useEffect(() => {
@@ -332,9 +353,26 @@ export const FloatingChatPanel: React.FC<FloatingChatPanelProps> = React.memo(({
 
     // }, []);
 
-    // Abort any in-flight stream on unmount (panel switch, meeting end)
+    // Abort any in-flight stream on unmount (panel switch, meeting end) AND
+    // finalize its bubble: streamSSE resolves silently on abort (no onDone),
+    // and the messages live in the parent, so a bare abort would leave the
+    // answer with a permanently blinking cursor and no Copy button.
     useEffect(() => {
-        return () => activeStreamRef.current?.abort();
+        return () => {
+            activeStreamRef.current?.abort();
+            activeStreamRef.current = null;
+            const assistantId = currentAssistantIdRef.current;
+            if (assistantId) {
+                const finalText = currentBufferRef.current;
+                onMessagesChange(prev => prev.map(m =>
+                    m.id === assistantId && m.isStreaming
+                        ? { ...m, text: finalText || m.text, isStreaming: false, status: undefined, rewriting: false }
+                        : m
+                ));
+                currentAssistantIdRef.current = null;
+            }
+        };
+        // eslint-disable-next-line react-hooks/exhaustive-deps
     }, []);
 
     // Auto-resize textarea
@@ -417,6 +455,7 @@ export const FloatingChatPanel: React.FC<FloatingChatPanelProps> = React.memo(({
         setIsProcessing(true);
         const userMessage: Message = { id: `user-${Date.now()}`, role: 'user', text: question };
         const assistantId = `assistant-${Date.now()}`;
+        currentAssistantIdRef.current = assistantId;
         setMessages(prev => [...prev, userMessage, { id: assistantId, role: 'system', text: '', isStreaming: true }]);
 
         const historyBeforeThisTurn = buildHistory(messages);
@@ -425,10 +464,11 @@ export const FloatingChatPanel: React.FC<FloatingChatPanelProps> = React.memo(({
         // no way for a concurrent/overlapping/duplicate call, or leftover
         // state from a prior turn, to reset or overwrite this turn's text.
         let localBuffer = '';
+        currentBufferRef.current = '';
         let rafId: number | null = null;
         const flush = () => {
             rafId = null;
-            setMessages(prev => prev.map(m => m.id === assistantId ? { ...m, text: localBuffer } : m));
+            setMessages(prev => prev.map(m => m.id === assistantId ? { ...m, text: localBuffer, rewriting: false } : m));
         };
 
         activeStreamRef.current = chatApi.queryLive(
@@ -441,39 +481,55 @@ export const FloatingChatPanel: React.FC<FloatingChatPanelProps> = React.memo(({
                     const label = statusLabel(status);
                     setMessages(prev => prev.map(m => m.id === assistantId ? { ...m, status: label } : m));
                 },
+                // Transient failure before any answer text (5xx, dropped
+                // connection, backend `error` frame, empty stream) — chatApi
+                // is about to re-ask. Surface it on the bubble and drop what
+                // the failed attempt delivered: sources render straight off
+                // the message here, so a retry that returns none must not
+                // leave the previous attempt's chips on screen.
+                onRetry: (attempt, max) => {
+                    setMessages(prev => prev.map(m =>
+                        m.id === assistantId
+                            ? { ...m, status: `Reconnecting… (${attempt}/${max})`, sourceMap: undefined }
+                            : m
+                    ));
+                },
                 onInteractionId: (interactionId) => {
                     onInteractionId?.(interactionId);
                 },
-                onSources: (sources) => {
-                    // Nothing to show for a turn with no asset_id-bearing
-                    // sources — leave msg.sources unset so SourcesDisplay
-                    // never mounts for it (redundant with its own
-                    // totalCount===0 guard, but avoids the message-list diff
-                    // churn of setting an empty object on every turn).
-                    if (sources.meetings.length === 0 && sources.assets.length === 0) return;
-                    setMessages(prev => prev.map(m => m.id === assistantId ? { ...m, sources } : m));
+                // [n] -> source map, sent before the first token: ONLY the
+                // cited entries — sources appear solely as inline chips.
+                onSourceMap: (entries) => {
+                    const map = indexSourceMap(entries);
+                    setMessages(prev => prev.map(m => m.id === assistantId ? { ...m, sourceMap: map } : m));
+                },
+                // Post-stream: chips for these indices failed semantic
+                // verification and render dimmed.
+                onSourcesVerified: (_verified, unverified) => {
+                    setMessages(prev => prev.map(m => m.id === assistantId ? { ...m, unverifiedCitations: unverified } : m));
                 },
                 onReset: () => {
-                    // The backend discarded a partial answer. Drop the text we
-                    // have rendered and any frame queued to render it, so the
-                    // replacement replaces rather than appends. Status comes
-                    // back so the rep sees work continuing, not a blank bubble.
+                    // The backend discarded a partial answer. Drop the queued
+                    // frame so the replacement replaces rather than appends,
+                    // but keep the partial text on screen dimmed with a
+                    // 'Rewriting…' badge instead of wiping the bubble —
+                    // mid-call, a vanishing answer reads as a glitch.
                     localBuffer = '';
                     if (rafId !== null) {
                         cancelAnimationFrame(rafId);
                         rafId = null;
                     }
                     setMessages(prev => prev.map(m =>
-                        m.id === assistantId ? { ...m, text: '', status: 'Rewriting…' } : m
+                        m.id === assistantId ? { ...m, rewriting: true, status: 'Rewriting…' } : m
                     ));
                 },
                 onToken: (chunk) => {
                     localBuffer += chunk;
+                    currentBufferRef.current = localBuffer;
                     if (rafId === null) rafId = requestAnimationFrame(flush);
-                    // First token has arrived — clear the status label so the
-                    // dots/status row is replaced by real content, not shown
-                    // alongside it.
-                    setMessages(prev => prev.map(m => (m.id === assistantId && m.status) ? { ...m, status: undefined } : m));
+                    // First token has arrived — clear the status label and
+                    // the rewrite dim so real content replaces both.
+                    setMessages(prev => prev.map(m => (m.id === assistantId && (m.status || m.rewriting)) ? { ...m, status: undefined, rewriting: false } : m));
                 },
                 onRagAnswer: (rag) => {
                     // Structured answer arrives whole — render as a complete
@@ -486,6 +542,7 @@ export const FloatingChatPanel: React.FC<FloatingChatPanelProps> = React.memo(({
                                 text: rag.answer,
                                 isStreaming: false,
                                 status: undefined,
+                                rewriting: false,
                                 ragAnswer: { confidence: rag.confidence ?? 0, sourceCount: rag.sources?.length ?? 0 },
                             }
                             : m
@@ -503,6 +560,7 @@ export const FloatingChatPanel: React.FC<FloatingChatPanelProps> = React.memo(({
                     ));
                     setIsProcessing(false);
                     activeStreamRef.current = null;
+                    currentAssistantIdRef.current = null;
                     if (pendingQuestionRef.current) {
                         const next = pendingQuestionRef.current;
                         pendingQuestionRef.current = null;
@@ -516,9 +574,44 @@ export const FloatingChatPanel: React.FC<FloatingChatPanelProps> = React.memo(({
                     setErrorMessage(error);
                     setIsProcessing(false);
                     activeStreamRef.current = null;
+                    currentAssistantIdRef.current = null;
+                    // Drain the queued question here too, exactly as onDone
+                    // does. An `error` frame used to be followed by an onDone
+                    // that did this; chatApi now guarantees a single terminal
+                    // callback, so without this a question typed while the
+                    // failing turn was in flight would sit in the ref and be
+                    // sent later, after an unrelated turn.
+                    if (pendingQuestionRef.current) {
+                        const next = pendingQuestionRef.current;
+                        pendingQuestionRef.current = null;
+                        setTimeout(() => submitQuestion(next), 50);
+                    }
                 },
             },
         );
+    };
+
+    // chatApi's streamSSE resolves silently on an aborted signal (no onDone /
+    // onError fires — see chatApi.ts), so stopping here does the finalizing
+    // work those callbacks would otherwise have done: commit whatever text
+    // has streamed in so far, drop the streaming cursor, and clear the busy
+    // state so the input re-enables immediately.
+    const stopGeneration = () => {
+        activeStreamRef.current?.abort();
+        activeStreamRef.current = null;
+
+        const assistantId = currentAssistantIdRef.current;
+        if (assistantId) {
+            const finalText = currentBufferRef.current;
+            setMessages(prev => prev.map(m =>
+                m.id === assistantId ? { ...m, text: finalText, isStreaming: false } : m
+            ));
+        }
+
+        currentAssistantIdRef.current = null;
+        currentBufferRef.current = '';
+        setIsProcessing(false);
+        pendingQuestionRef.current = null;
     };
 
     const handleSend = () => {
@@ -697,35 +790,38 @@ export const FloatingChatPanel: React.FC<FloatingChatPanelProps> = React.memo(({
                             scrollbarWidth: 'none',
                         }}
                     />
-                    <motion.button
-                        onClick={handleSend}
-                        whileTap={{ scale: 0.88 }}
-                        disabled={!inputValue.trim() || isProcessing}
-                        className="shrink-0 w-8 h-8 rounded-xl flex items-center justify-center transition-all mb-0.5"
-                        style={{
-                            background: inputValue.trim() && !isProcessing
-                                ? 'rgba(139,92,246,0.85)'
-                                : 'rgba(255,255,255,0.06)',
-                            opacity: isProcessing ? 0.5 : 1,
-                        }}
-                    >
-                        {isProcessing ? (
-                            <motion.div
-                                className="w-3.5 h-3.5 rounded-full border-2 border-t-transparent"
-                                style={{ borderColor: 'rgba(255,255,255,0.4)', borderTopColor: 'transparent' }}
-                                animate={{ rotate: 360 }}
-                                transition={{ duration: 0.8, repeat: Infinity, ease: 'linear' }}
-                            />
-                        ) : (
+                    {isProcessing ? (
+                        <motion.button
+                            onClick={stopGeneration}
+                            whileTap={{ scale: 0.88 }}
+                            className="shrink-0 w-8 h-8 rounded-xl flex items-center justify-center transition-all mb-0.5"
+                            style={{ background: 'rgba(255,255,255,0.1)' }}
+                            aria-label="Stop generating"
+                            title="Stop generating"
+                        >
+                            <Square size={12} fill="#fff" style={{ color: '#fff' }} />
+                        </motion.button>
+                    ) : (
+                        <motion.button
+                            onClick={handleSend}
+                            whileTap={{ scale: 0.88 }}
+                            disabled={!inputValue.trim()}
+                            className="shrink-0 w-8 h-8 rounded-xl flex items-center justify-center transition-all mb-0.5"
+                            style={{
+                                background: inputValue.trim()
+                                    ? 'rgba(139,92,246,0.85)'
+                                    : 'rgba(255,255,255,0.06)',
+                            }}
+                        >
                             <Send
                                 size={14}
                                 style={{ color: inputValue.trim() ? '#fff' : 'rgba(255,255,255,0.2)' }}
                             />
-                        )}
-                    </motion.button>
+                        </motion.button>
+                    )}
                 </div>
                 <p className="text-[10px] text-white/15 text-center mt-1.5 leading-none">
-                    Enter to send · Shift+Enter for new line
+                    {isProcessing ? 'Click stop to cancel the response' : 'Enter to send · Shift+Enter for new line'}
                 </p>
             </div>
         </div>

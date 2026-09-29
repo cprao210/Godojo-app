@@ -144,7 +144,10 @@ export class ModelSelectorWindowHelper {
                 nodeIntegration: false,
                 contextIsolation: true,
                 preload: path.join(__dirname, "preload.js"),
-                backgroundThrottling: false
+                // backgroundThrottling left at its default (true): a hidden
+                // popup has no timers that need full cadence, so letting
+                // Chromium throttle it when hidden is free CPU on low-end
+                // machines. The overlay window is the only one that opts out.
             }
         }
 

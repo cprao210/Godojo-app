@@ -12,9 +12,13 @@ import { GEMINI_FLASH_MODEL } from "./IntelligenceManager"
 import { DatabaseManager } from "./db/DatabaseManager"; // Import Database Manager
 import { SupabaseReadService } from "./db/SupabaseReadService";
 import * as path from "path";
+import * as os from "os";
+import { classifyPerformanceMode } from "../utils/performanceClassification";
 import * as fs from "fs";
 import { AudioDevices } from "./audio/AudioDevices";
 import { detectTavilyIntent, extractAllowedCompaniesFromAttendees } from "./services/TavilyIntentDetector";
+import { generateCompanyIntel, createTavilySearch, isCachedIntelFresh, INTEL_SCHEMA_VERSION } from "./services/CompanyIntelService";
+import { syncCompanyIntel } from "./utils/backendCompanyIntel";
 import { searchCompany, clearCompanyCache } from "./services/TavilyManager";
 
 import { buildCompanyContextBlock } from './utils/salesBriefUtils';
@@ -25,6 +29,9 @@ import {
   hydrateOrchestratorFromContext,
 } from './utils/companyKnowledge';
 import { AuthManager } from './services/AuthManager';
+import { parseUploadTranscript } from './utils/uploadTranscriptParser';
+import { handleUploadAnalysisResult } from './utils/uploadAnalysisBridge';
+import { handleFinalAnalysisV2Result } from './utils/finalAnalysisBridge';
 import { PendingLiveChatStore } from './PendingLiveChatStore';
 import { posthogMain } from './services/PostHogMainService';
 import { tenantContext } from './services/TenantContext';
@@ -50,6 +57,14 @@ export function initializeIpcHandlers(appState: AppState): void {
   // of GPU-composited), which is the main driver of lag/hangs reported on
   // mid-range machines. The renderer uses this once at startup to decide
   // whether to default Performance Mode on. See usePerformanceMode.ts.
+  //
+  // The response also carries a HARDWARE classification (pure fn —
+  // utils/performanceClassification.ts): software fallback alone misses
+  // weak-but-functional GPUs (e.g. Intel UHD that Chromium still composites
+  // with), so auto Performance Mode additionally triggers on <=4 CPU threads
+  // or Intel iGPU + <=8 GB RAM. RAM alone never triggers (an 8 GB Apple
+  // Silicon Mac must keep full fidelity). The user's explicit On/Off choice
+  // still wins — this only feeds the 'auto' preference.
   safeHandle('get-gpu-performance-status', async () => {
     try {
       // Electron types GPUFeatureStatus as a fixed set of known keys, not an
@@ -64,8 +79,35 @@ export function initializeIpcHandlers(appState: AppState): void {
         isSoftwareFallback(status.rasterization) ||
         isSoftwareFallback(status['2d_canvas']);
 
-      console.log("[ipcHandler] isLowPowerGpu", isLowPowerGpu);
-      return { isLowPowerGpu, raw: status };
+      // Hardware facts for the classification. Every fact is
+      // failure-tolerant: unknown (null) never triggers a rule.
+      const cpuThreads = os.cpus()?.length || null;
+      const totalRamGB = os.totalmem() > 0 ? Math.round((os.totalmem() / (1024 ** 3)) * 10) / 10 : null;
+      let gpuVendorId: string | null = null;
+      try {
+        // 'basic' GPUInfo includes the PCI vendorId (e.g. "0x8086" = Intel)
+        // and is cheap; it can be an empty string before GPU collection
+        // completes — treat that as unknown.
+        const gpuInfo = (await app.getGPUInfo('basic')) as { vendorId?: string } | null;
+        gpuVendorId = gpuInfo?.vendorId || null;
+      } catch { /* vendor unknown — classification degrades gracefully */ }
+
+      const classification = classifyPerformanceMode({
+        cpuThreads,
+        totalRamGB,
+        gpuVendorId,
+        isSoftwareRendering: isLowPowerGpu,
+      });
+
+      if (classification.autoPerformanceMode) {
+        console.log(`[ipcHandler] Performance Mode auto: on — ${classification.reason} (${classification.summary})`);
+      }
+      return {
+        isLowPowerGpu,
+        raw: status,
+        hardware: { cpuThreads, totalRamGB, gpuVendorId },
+        autoClassification: classification,
+      };
     } catch (err) {
       // If we can't determine GPU status, don't assume the worst — default
       // to the current (full-fidelity) behavior rather than silently
@@ -73,6 +115,18 @@ export function initializeIpcHandlers(appState: AppState): void {
       console.warn('[ipcHandlers] get-gpu-performance-status failed:', err);
       return { isLowPowerGpu: false, raw: null };
     }
+  });
+
+  // Renderer -> main mirror of the Performance Mode preference (see
+  // usePerformanceMode.ts) so main-process background work can honour it too.
+  safeHandle('set-performance-mode-preference', async (_, preference: 'auto' | 'on' | 'off') => {
+    if (preference !== 'auto' && preference !== 'on' && preference !== 'off') return { ok: false };
+    const { SettingsManager } = require('./services/SettingsManager');
+    const settings = SettingsManager.getInstance();
+    if ((settings.get('performanceModePreference') ?? 'auto') !== preference) {
+      settings.set('performanceModePreference', preference);
+    }
+    return { ok: true };
   });
 
   // Relays renderer-side errors (currently: ErrorBoundary.componentDidCatch,
@@ -274,6 +328,9 @@ export function initializeIpcHandlers(appState: AppState): void {
   });
 
   safeHandle("set-window-mode", async (event, mode: 'launcher' | 'overlay', inactive?: boolean, freshMeetingStart?: boolean) => {
+    // switchToOverlay() hides the launcher AFTER trying to show the overlay,
+    // so a missing (deferred) overlay would leave nothing on screen.
+    if (mode === 'overlay') await appState.getWindowHelper().ensureOverlayIfDeferred();
     appState.getWindowHelper().setWindowMode(mode, inactive, freshMeetingStart);
     return { success: true };
   })
@@ -673,6 +730,18 @@ export function initializeIpcHandlers(appState: AppState): void {
     return { success: true, data: appState.getMeetingGeneration() };
   });
 
+  // The renderer's answer to a 'run-upload-analysis' request. ipcMain.on, not
+  // handle: main is the one waiting on a reply here, not the renderer, so this
+  // is the reply leg of a main→renderer request (same shape as the cropper's).
+  ipcMain.on('upload-analysis-result', (_event, payload) => {
+    handleUploadAnalysisResult(payload);
+  });
+
+  // The overlay's answer to a 'run-final-analysis-v2' request (live analysis v2 end-of-call pass).
+  ipcMain.on('final-analysis-v2-result', (_event, payload) => {
+    handleFinalAnalysisV2Result(payload);
+  });
+
   safeHandle("quit-app", () => {
     app.quit()
   })
@@ -702,7 +771,7 @@ export function initializeIpcHandlers(appState: AppState): void {
     // Production-only, like its siblings check-for-updates / download-update:
     // in dev there is no downloaded update and the fallback path used to
     // app.exit(0), silently killing a dev session from a stray click.
-    if (!app.isPackaged) {
+    if (!app.isPackaged && !appState.isDevUpdatesEnabled()) {
       return { success: false, error: 'Updates are disabled in development builds' }
     }
     // Never tear down a live call to apply an update. The renderer refuses
@@ -729,7 +798,7 @@ export function initializeIpcHandlers(appState: AppState): void {
     // Updates are a production-only feature — electron-updater has no signed/
     // published feed to check against in a dev build, so refuse up front
     // instead of letting it silently no-op or hit a manual fallback.
-    if (!app.isPackaged) {
+    if (!app.isPackaged && !appState.isDevUpdatesEnabled()) {
       console.log('[IPC] check-for-updates ignored: running unpackaged (development)')
       return { success: false, error: 'Updates are disabled in development builds' }
     }
@@ -744,7 +813,7 @@ export function initializeIpcHandlers(appState: AppState): void {
   })
 
   safeHandle("download-update", async () => {
-    if (!app.isPackaged) {
+    if (!app.isPackaged && !appState.isDevUpdatesEnabled()) {
       console.log('[IPC] download-update ignored: running unpackaged (development)')
       return { success: false, error: 'Updates are disabled in development builds' }
     }
@@ -779,7 +848,10 @@ export function initializeIpcHandlers(appState: AppState): void {
   // dev run so it can hide/disable the Updates UI accordingly, without
   // relying on process.env.NODE_ENV (unreliable inside Electron).
   safeHandle("is-app-packaged", async () => {
-    return app.isPackaged
+    // Effective updates-allowed flag, not raw packaging: with the dev test
+    // override (GODOJO_DEV_UPDATES=1) the whole Updates UI must enable in
+    // `npm run dev` exactly like production (see docs/TESTING-UPDATES.md).
+    return app.isPackaged || appState.isDevUpdatesEnabled()
   })
 
   // Window movement handlers
@@ -2021,6 +2093,8 @@ export function initializeIpcHandlers(appState: AppState): void {
 
   safeHandle("start-meeting", async (event, metadata?: any) => {
     try {
+      // must exist and be subscribed BEFORE startMeeting() emits `session-reset` (dropped otherwise)
+      await appState.getWindowHelper().ensureOverlayIfDeferred();
       await appState.startMeeting(metadata);
       if (metadata?.attendees) {
         const selfEmail = metadata.attendees.find((a: any) => a.self)?.email;
@@ -2173,6 +2247,14 @@ export function initializeIpcHandlers(appState: AppState): void {
     return DatabaseManager.getInstance().updateMeetingSummary(id, updates);
   });
 
+  const currentMeetingOrNull = (id: string) => {
+    try {
+      return DatabaseManager.getInstance().getMeetingDetails(id);
+    } catch {
+      return null;
+    }
+  };
+
   safeHandle("regenerate-meeting-summary", async (_, { id }: { id: string }) => {
 
     try {
@@ -2199,11 +2281,14 @@ export function initializeIpcHandlers(appState: AppState): void {
         // }
         return { success: true, meeting: updated };
       }
-      return { success: false };
+      return { success: false, meeting: currentMeetingOrNull(id) };
     } catch (e: any) {
 
       console.error('[ipcHandlers] regenerate-meeting-summary error:', e);
-      return { success: false, error: e?.message || String(e) };
+      // Regenerating can save a new Call Analysis before the summary step fails
+      // (see MeetingPersistence.regenerateSummary) — hand the row back so the UI
+      // shows it instead of waiting for the next page open.
+      return { success: false, error: e?.message || String(e), meeting: currentMeetingOrNull(id) };
 
     }
 
@@ -2223,9 +2308,19 @@ export function initializeIpcHandlers(appState: AppState): void {
     return { success: true };
   });
 
-  safeHandle("upload-transcript", async (_, { text, title, meetingTypes, tenantId }: { text: string; title?: string; meetingTypes?: ('discovery' | 'demo' | 'negotiation')[]; tenantId?: string | null }) => {
+  // The upload modal's "Which speaker is you?" picker: the transcript's speakers and the one
+  // uploadTranscript would pick as the rep if the user picks nothing (name match, else first).
+  safeHandle("upload-transcript-speakers", async (_, text: string) => {
+    const { displayName, email } = AuthManager.getInstance().snapshot();
+    const { speakers, repSpeaker, repSource } = parseUploadTranscript(typeof text === 'string' ? text : '', {
+      repNameHints: [displayName, email],
+    });
+    return { speakers, suggestedRep: repSpeaker, suggestedBy: repSource };
+  });
+
+  safeHandle("upload-transcript", async (_, { text, title, meetingTypes, tenantId, repSpeaker }: { text: string; title?: string; meetingTypes?: ('discovery' | 'demo' | 'negotiation')[]; tenantId?: string | null; repSpeaker?: string | null }) => {
     try {
-      const meetingId = await appState.getIntelligenceManager().uploadTranscript(text, title, meetingTypes, tenantId);
+      const meetingId = await appState.getIntelligenceManager().uploadTranscript(text, title, meetingTypes, tenantId, repSpeaker);
       if (meetingId) return { success: true, meetingId };
       return { success: false, error: 'Transcript too short or could not be parsed' };
     } catch (e) {
@@ -2806,220 +2901,83 @@ export function initializeIpcHandlers(appState: AppState): void {
 
       const { companyName, domain, forceRefresh = false } = payload;
 
-      // ── Persistence: return cached intel unless forceRefresh ─────────────
+      // ── Persistence ───────────────────────────────────────────────────────
+      // Serve the cache only while it is fresh AND was produced by the current
+      // pipeline. Entries written by the old pipeline (no `_schema`) or older
+      // than the TTL are regenerated — they used to be served forever.
       const cacheKey = `company_intel:${(domain || companyName).toLowerCase()}`;
       const db = DatabaseManager.getInstance();
-      if (!forceRefresh) {
-        const cached = db.getAppState(cacheKey);
-        if (cached) {
-          try {
-            const parsed = JSON.parse(cached);
+      let expiredButCurrent: any = null;
+      const cachedRaw = db.getAppState(cacheKey);
+      if (cachedRaw) {
+        try {
+          const parsed = JSON.parse(cachedRaw);
+          if (!forceRefresh && isCachedIntelFresh(parsed)) {
             console.log(`[IPC] fetch-company-intel: returning cached intel for "${companyName}"`);
+            // Research cached before the backend sync existed still reaches chat (once per session).
+            void syncCompanyIntel(parsed, domain, { onlyOncePerSession: true });
             return { success: true, intel: parsed, fromCache: true };
-          } catch {
-            // corrupt cache — fall through to fresh fetch
-            db.deleteAppState(cacheKey);
           }
+          // Only an entry from the CURRENT pipeline may be shown as a fallback
+          // if the refresh fails; older ones may be the wrong data we're replacing.
+          if (parsed?._schema === INTEL_SCHEMA_VERSION) expiredButCurrent = parsed;
+        } catch {
+          // corrupt cache — fall through to fresh fetch
+          db.deleteAppState(cacheKey);
         }
       }
 
-      // Run parallel Tavily searches for different intel categories
-      const tavilySearch = async (query: string, maxResults = 4): Promise<any[]> => {
-        const res = await fetch('https://api.tavily.com/search', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${tavilyApiKey}` },
-          body: JSON.stringify({
-            query,
-            max_results: maxResults,
-            search_depth: 'advanced',   // advanced depth gives higher-quality, more specific results
-            include_answer: true,
-            include_domains: domain ? [domain] : [],  // bias results toward the known domain when available
-          }),
-        });
-        if (!res.ok) throw new Error(`Tavily error: ${res.status}`);
-        const data = await res.json() as any;
-        return data.results || [];
-      };
+      const fallbackToExpired = (error: string) =>
+        expiredButCurrent
+          ? {
+            success: true,
+            fromCache: true,
+            intel: {
+              ...expiredButCurrent,
+              _warnings: [
+                ...(expiredButCurrent._warnings ?? []),
+                `Couldn't refresh (${error}). Showing results saved on ${String(expiredButCurrent._generatedAt).slice(0, 10)}.`,
+              ],
+            },
+          }
+          : { success: false, error };
 
-      // When a domain is known, anchor every query to it so same-name companies
-      // from different industries cannot bleed into the results.
-      const domainAnchor = domain ? `"${domain}"` : `"${companyName}"`;
-      const nameAndDomain = domain ? `"${companyName}" ${domain}` : `"${companyName}"`;
-
-      const linkedinSlug = domain ? domain.split('.')[0] : companyName.toLowerCase().replace(/\s+/g, '-');
-      const linkedinQuery = `site:linkedin.com/company ${linkedinSlug} "${companyName}"`;
-
-      const [overviewResults, fundingResults, newsResults, leadershipResults, competitorResults, linkedinResults] = await Promise.allSettled([
-        tavilySearch(`${nameAndDomain} company overview founded headquarters employees industry`),
-        tavilySearch(`${nameAndDomain} funding valuation investors series revenue`),
-        tavilySearch(`${nameAndDomain} latest news announcements 2024 2025`, 5),
-        tavilySearch(`${nameAndDomain} leadership CEO CRO CMO executive team`),
-        tavilySearch(`${nameAndDomain} competitors alternative products market`, 5),
-        tavilySearch(linkedinQuery, 2),
-      ]);
-
-      const extract = (r: PromiseSettledResult<any[]>) => r.status === 'fulfilled' ? r.value : [];
-
-      // Extract the LinkedIn company URL from results if found
-      const linkedinHits = extract(linkedinResults);
-      const linkedinPageUrl = linkedinHits
-        .map((r: any) => r.url as string)
-        .find((u: string) => u?.includes('linkedin.com/company/')) || null;
-
-      // Aggregate all snippets and pass to LLM for structured extraction
-      const linkedinSnippets = extract(linkedinResults).map((r: any) => r.content || r.snippet || '').filter(Boolean);
-
-      // Format each result as "[SOURCE: url]\ncontent" so the LLM can judge
-      // whether a snippet actually refers to the target company.
-      const formatResults = (results: any[]) =>
-        results
-          .filter((r: any) => (r.content || r.snippet || '').trim())
-          .map((r: any) => `[SOURCE: ${r.url || 'unknown'}]\n${(r.content || r.snippet || '').trim()}`)
-          .join('\n\n');
-
-      const allSnippets = [
-        '=== GENERAL OVERVIEW ===',
-        formatResults(extract(overviewResults)),
-        '=== FUNDING & FINANCIALS ===',
-        formatResults(extract(fundingResults)),
-        '=== RECENT NEWS ===',
-        formatResults(extract(newsResults)),
-        '=== LEADERSHIP ===',
-        formatResults(extract(leadershipResults)),
-        '=== COMPETITORS & MARKET ===',
-        formatResults(extract(competitorResults)),
-        ...(extract(linkedinResults).length
-          ? ['=== LINKEDIN (authoritative for headcount, description, founding year) ===',
-            formatResults(extract(linkedinResults))]
-          : []),
-      ].filter(Boolean).join('\n\n---\n\n');
-
+      // ── Generation ────────────────────────────────────────────────────────
+      // Search + verification live in CompanyIntelService (unit-tested offline).
+      // The model call uses the structured-output entry point: it does NOT get
+      // the chat assistant's persona or the knowledge-mode intercept that
+      // chatWithGemini applied to this extraction before.
       const llmHelper = appState.processingHelper.getLLMHelper();
+      const result = await generateCompanyIntel(
+        { companyName, domain },
+        {
+          search: createTavilySearch(tavilyApiKey),
+          generate: (prompt: string) => llmHelper.generateContentStructured(prompt),
+        },
+      );
+      if (result.success === false) return fallbackToExpired(result.error);
+      const intel = result.intel;
 
-      const extractionPrompt = `You are a company research analyst. Extract structured intelligence ONLY about the specific company identified below. Return ONLY a valid JSON object — no markdown, no explanation.
-
-      TARGET COMPANY: ${companyName}${domain ? `\nTARGET WEBSITE/DOMAIN: ${domain}` : ''}
-      
-      CRITICAL DISAMBIGUATION RULES (read before processing):
-      1. Many companies share similar names. Every data point you extract MUST be verifiable from a snippet whose [SOURCE] URL belongs to ${domain ? `"${domain}"` : `"${companyName}"`} or a known authority (LinkedIn, Crunchbase, Bloomberg, TechCrunch, Reuters, etc.) that explicitly mentions ${companyName}${domain ? ` or ${domain}` : ''}.
-      2. If a snippet's source domain does not match and does not clearly reference the TARGET company by full name, IGNORE that snippet entirely — do not extract from it.
-      3. For "competitors": list only companies that are described as direct competitors TO ${companyName} in the snippets. Do NOT list companies that merely appear in the same snippet by coincidence. If no competitors can be confirmed, return null.
-      4. For "recentNews": include only headlines that are explicitly about ${companyName}${domain ? ` (${domain})` : ''}. If the same company name could refer to multiple organizations, only include news where the snippet's source URL or content confirms it is about the target. If unsure, exclude it — null is better than wrong data.
-      5. Never infer or hallucinate. If a field cannot be directly confirmed from the provided snippets, set it to null.
-      
-      Web search snippets (each prefixed with its source URL):
-      ${allSnippets.slice(0, 10000)}
-      
-      Return this exact JSON structure (use null for unknown fields, never omit a key):
-      {
-        "companyName": string,
-        "website": string | null,
-        "foundedYear": number | null,
-        "companyAge": number | null,
-        "founders": string[] | null,
-        "headquarters": string | null,
-        "employeeCount": string | null,
-        "industry": string | null,
-        "revenue": string | null,
-        "valuation": string | null,
-        "fundingStage": string | null,
-        "latestFundingNews": string | null,
-        "investors": string[] | null,
-        "keyProducts": string[] | null,
-        "competitors": string[] | null,
-        "recentNews": [{ "headline": string, "date": string | null, "source": string | null }] | null,
-        "leadershipChanges": [{ "name": string, "role": string, "date": string | null }] | null,
-        "linkedinUrl": string | null,
-        "businessModel": string | null,
-        "geographicPresence": string[] | null,
-        "topCustomers": string[] | null
-      }
-      
-      ADDITIONAL RULES:
-      - All string[] fields MUST be JSON arrays, never comma-separated strings
-      - "recentNews[].source" should be the domain of the article URL (e.g. "techcrunch.com")
-      - Use null for any field you cannot confirm from the snippets
-      - Do not add keys beyond those listed above`;
-
-      const raw = await llmHelper.chatWithGemini(extractionPrompt, undefined, undefined, false);
-      if (!raw) return { success: false, error: 'LLM extraction failed' };
-
-      // Safely parse JSON — strip markdown fences if present
-      const clean = raw.replace(/```json|```/g, '').trim();
-      let intel: any;
-      try {
-        intel = JSON.parse(clean);
-      } catch {
-        // Try extracting first {...} block
-        const match = clean.match(/\{[\s\S]+\}/);
-        if (match) intel = JSON.parse(match[0]);
-        else return { success: false, error: 'Could not parse company intelligence' };
-      }
-
-      // Prefer the directly-found LinkedIn URL over whatever the LLM extracted
-      if (linkedinPageUrl && (!intel.linkedinUrl || !intel.linkedinUrl.includes('linkedin.com/company/'))) {
-        intel.linkedinUrl = linkedinPageUrl;
-      }
-
-      // Attach raw news snippets for the "Recent News" click-through
-      intel._newsSnippets = extract(newsResults).slice(0, 3).map((r: any) => ({
-        title: r.title,
-        url: r.url,
-        date: r.published_date || null,
-      }));
-
-      // Normalize string[] fields — the LLM occasionally returns a
-      // comma-separated string despite the prompt instruction.  Defensively
-      // coerce every known list field so the renderer never crashes on .map().
-      const LIST_FIELDS = [
-        'founders', 'investors', 'keyProducts', 'competitors',
-        'geographicPresence', 'topCustomers',
-      ] as const;
-
-      for (const field of LIST_FIELDS) {
-        const v = intel[field];
-        if (v === null || v === undefined) {
-          intel[field] = null;
-        } else if (Array.isArray(v)) {
-          // Filter nulls, trim whitespace
-          intel[field] = v
-            .filter((x: any) => typeof x === 'string' && x.trim())
-            .map((x: string) => x.trim());
-          if (intel[field].length === 0) intel[field] = null;
-        } else if (typeof v === 'string' && v.trim()) {
-          // Comma-separated fallback
-          intel[field] = v.split(',').map((s: string) => s.trim()).filter(Boolean);
-          if (intel[field].length === 0) intel[field] = null;
-        } else {
-          intel[field] = null;
+      // Sparse, partial or unverified results are shown (with their warnings)
+      // but not persisted, so the next open retries instead of pinning them.
+      if (result.cacheable) {
+        try {
+          db.setAppState(cacheKey, JSON.stringify(intel));
+          console.log(`[IPC] fetch-company-intel: cached intel for "${companyName}" (key: ${cacheKey})`);
+        } catch (e) {
+          console.warn('[IPC] fetch-company-intel: failed to cache intel:', e);
         }
+        // Global chat's company pack reads it from the backend (research, never call content).
+        // Same bar as the cache: sparse or unverified results are not sent.
+        void syncCompanyIntel(intel, domain);
       }
 
-      // Validate object-array fields — ensure shape is correct or null them
-      if (intel.recentNews !== null && intel.recentNews !== undefined) {
-        if (!Array.isArray(intel.recentNews) ||
-          !intel.recentNews.every((n: any) => typeof n?.headline === 'string')) {
-          intel.recentNews = null;
-        }
-      }
-      if (intel.leadershipChanges !== null && intel.leadershipChanges !== undefined) {
-        if (!Array.isArray(intel.leadershipChanges) ||
-          !intel.leadershipChanges.every((n: any) => typeof n?.name === 'string' && typeof n?.role === 'string')) {
-          intel.leadershipChanges = null;
-        }
-      }
-
-      // Persist intel so re-opening doesn't re-fetch
-      try {
-        db.setAppState(cacheKey, JSON.stringify(intel));
-        console.log(`[IPC] fetch-company-intel: cached intel for "${companyName}" (key: ${cacheKey})`);
-      } catch (e) {
-        console.warn('[IPC] fetch-company-intel: failed to cache intel:', e);
-      }
-
-      // Auto-store in appState so chat assistant can access it immediately without a separate set-company-intel call
-      appState.setCompanyIntel(intel);
-      console.log(`[IPC] fetch-company-intel: auto-stored intel in appState for "${companyName}"`);
+      // appState feeds the chat / follow-up email / post-call summary prompts as
+      // "prospect intelligence". Low-confidence intel (company guessed from a
+      // meeting title, or a name collision) must not reach them — and must not
+      // leave the PREVIOUS company's intel sitting in that slot either.
+      appState.setCompanyIntel(intel._confidence === 'low' ? null : intel);
+      console.log(`[IPC] fetch-company-intel: "${companyName}" → confidence=${intel._confidence}, cacheable=${result.cacheable}`);
 
       return { success: true, intel };
     } catch (error: any) {
@@ -3255,7 +3213,7 @@ export function initializeIpcHandlers(appState: AppState): void {
   // POLL_TIMEOUT_MS is the overall ceiling from upload to terminal state;
   // anything still unresolved past it is failing server-side, not slow.
   const COMPANY_ASSET_UPLOAD_POLL_TIMEOUT_MS = 10 * 60_000;
-  const COMPANY_ASSET_UPLOAD_POLL_INTERVAL_MS = 2_000;
+  const COMPANY_ASSET_UPLOAD_POLL_INTERVAL_MS = 1_000;
   const COMPANY_ASSET_UPLOAD_IN_FLIGHT_STATES = new Set(["queued", "processing", "unknown"]);
 
   safeHandle("company:uploadAssetToBackend", async (event, payload: {
@@ -3317,6 +3275,10 @@ export function initializeIpcHandlers(appState: AppState): void {
       ...form.getHeaders(),
     };
     if (tenantId) uploadHeaders["X-Tenant-Id"] = tenantId;
+    // form-data's own byte length — needed both to give the server a real
+    // Content-Length and to compute a percent below.
+    const contentLength: number = form.getLengthSync();
+    uploadHeaders["Content-Length"] = String(contentLength);
 
     // Plain (non-multipart) headers reused for every status poll.
     const pollHeaders: Record<string, string> = { Authorization: `Bearer ${idToken}` };
@@ -3326,13 +3288,33 @@ export function initializeIpcHandlers(appState: AppState): void {
     // renderer shows percent during 'uploading', then an indeterminate
     // "Indexing on server…" state during 'processing' while this handler
     // polls the job's real status in the background.
-    const sendProgress = (phase: 'uploading' | 'processing', percent: number) => {
+    const sendProgress = (phase: 'uploading' | 'processing', percent: number, label?: string) => {
       try {
         if (!event.sender.isDestroyed()) {
-          event.sender.send('company:upload-progress', { assetId, phase, percent });
+          event.sender.send('company:upload-progress', { assetId, phase, percent, label });
         }
       } catch { /* window gone — progress is best-effort */ }
     };
+
+    // axios's onUploadProgress never fires here: it only instruments a
+    // request body it converts into a stream itself (Buffers/strings with a
+    // known length). `form` is already a stream, so axios's http adapter
+    // just pipes it straight to the request and skips its progress wrapper
+    // entirely — that's why the "uploading" bar never moved. Track bytes
+    // ourselves off the form's own stream instead.
+    let uploadedBytes = 0;
+    form.on("data", (chunk: Buffer) => {
+      uploadedBytes += chunk.length;
+      // Cap below 100 and never report 'processing' from here: that phase
+      // transition — and its own 0-95% stage range — belongs solely to the
+      // status-poll loop below. Sending 'processing'/100 from here raced
+      // with the poll loop's real stage updates, and once the monotonic
+      // guard (added to stop the bar jumping backward) was in place, that
+      // premature 100 permanently blocked every real update after it —
+      // which is why the bar got stuck on "Indexing on server… — 100%".
+      const percent = contentLength ? Math.min(99, Math.round((uploadedBytes / contentLength) * 100)) : 0;
+      sendProgress('uploading', percent);
+    });
 
     const statusUrl = `${BACKEND_URL}/api/v1/intelligence/company-assets/upload/status/${encodeURIComponent(assetId)}`;
 
@@ -3347,12 +3329,6 @@ export function initializeIpcHandlers(appState: AppState): void {
           timeout: COMPANY_ASSET_UPLOAD_POLL_TIMEOUT_MS, // large files can legitimately take a while just to transfer
           maxBodyLength: Infinity,
           maxContentLength: Infinity,
-          onUploadProgress: (e: any) => {
-            const total = e.total ?? fileBuffer.length;
-            const percent = total ? Math.min(100, Math.round((e.loaded / total) * 100)) : 0;
-            if (percent >= 100) sendProgress('processing', 100);
-            else sendProgress('uploading', percent);
-          },
         },
       );
 
@@ -3363,6 +3339,9 @@ export function initializeIpcHandlers(appState: AppState): void {
       let state: string = queuedRes.data?.state ?? "queued";
       let latest: any = queuedRes.data;
       const deadline = Date.now() + COMPANY_ASSET_UPLOAD_POLL_TIMEOUT_MS;
+      // The backend's stage_index only moves forward, but guard here too so a
+      // stray/late poll response can never make the bar visibly step backward.
+      let highestPercentSent = 0;
 
       while (COMPANY_ASSET_UPLOAD_IN_FLIGHT_STATES.has(state)) {
         if (Date.now() > deadline) {
@@ -3373,7 +3352,26 @@ export function initializeIpcHandlers(appState: AppState): void {
             error: "The server is still indexing this document — large PDFs can take a few minutes. Keep the app open and retry Save shortly; the file may already have finished indexing.",
           };
         }
-        sendProgress('processing', 100);
+        // `latest` carries the backend's own pipeline stage (see
+        // _PIPELINE_STAGES in company_assets.py) once at least one poll has
+        // landed. Right after the 202 there's no stage yet, so start at 0 —
+        // NOT a guessed high number, which previously made the bar jump to
+        // 95% and then appear to fall back once the real (lower) stage
+        // percent arrived on the next poll.
+        const rawPercent = typeof latest?.percent === "number" ? latest.percent : 0;
+        // Defensive clamp: `latest` here (on the first iteration) is the raw
+        // 202 response from POST /upload — i.e. "bytes received", not
+        // "indexing done". If that payload's `percent` field is ever >= 100
+        // (or the backend's own stage math is off) while the job is still in
+        // a non-terminal state, trusting it verbatim pins the bar at 100%
+        // immediately: the renderer's monotonic guard (which stops the bar
+        // stepping backward) then rejects every real, lower percent that
+        // arrives afterward, so the bar looks like it "started" at 100 and
+        // never moved. Cap at 95 while still in-flight; only a genuine
+        // terminal state (handled after this loop) reports 100.
+        const safePercent = Math.min(rawPercent, 95);
+        highestPercentSent = Math.max(highestPercentSent, safePercent);
+        sendProgress('processing', highestPercentSent, latest?.stage_label);
         await new Promise((resolve) => setTimeout(resolve, COMPANY_ASSET_UPLOAD_POLL_INTERVAL_MS));
 
         const statusRes = await axios.get(statusUrl, { headers: pollHeaders, timeout: 15_000 });
@@ -3393,8 +3391,15 @@ export function initializeIpcHandlers(appState: AppState): void {
       return { status: state, chunks: latest?.chunks };
 
     } catch (error: any) {
+      // Node's socket-level write timeout throws with a message like
+      // "The write operation timed out" — note "timed out" (two words),
+      // not the single word "timeout". The regex below used to only match
+      // the latter, so this exact error (a stalled write while streaming a
+      // small, perfectly valid file — nothing to do with file size) slipped
+      // past the friendly "still indexing, try Save again" branch and fell
+      // through to the generic "Upload failed" wrapper instead.
       const isTimeout = error?.code === 'ECONNABORTED' || error?.code === 'ETIMEDOUT'
-        || /timeout/i.test(error?.message ?? '');
+        || /timeout|timed\s*out/i.test(error?.message ?? '');
       if (isTimeout) {
         return {
           status: "error",

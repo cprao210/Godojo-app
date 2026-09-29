@@ -23,6 +23,7 @@ import React from "react";
 import { InvitationResponseModal } from "@/features/settings";
 import { useResolvedTheme, useTeamInvitationWatcher } from "@/hooks";
 import { posthogAnalytics } from "@/lib/analytics/posthog.service";
+import { markSkipSplashOnNextLoad } from "@/lib/splash";
 import type { InvitationAcceptResult } from "@/types";
 
 interface TeamInviteNotificationProps {
@@ -31,10 +32,14 @@ interface TeamInviteNotificationProps {
      *  flow — the Roles & Permissions tab already shows the response modal for
      *  that token, so the global popup stands down instead of stacking twice. */
     suppressed?: boolean;
+    /** True once the signed-in user is the tenant owner (e.g. right after
+     *  creating their own team). An admin can't be the target of a pending
+     *  invitation, so the watcher stops polling GET /invitations/me. */
+    isAdmin?: boolean;
 }
 
-export const TeamInviteNotification: React.FC<TeamInviteNotificationProps> = ({ authUser, suppressed = false }) => {
-    const { invitation, dismiss } = useTeamInvitationWatcher(authUser);
+export const TeamInviteNotification: React.FC<TeamInviteNotificationProps> = ({ authUser, suppressed = false, isAdmin = false }) => {
+    const { invitation, dismiss } = useTeamInvitationWatcher(authUser, isAdmin);
     const isLight = useResolvedTheme() === "light";
 
     if (!invitation || suppressed) return null;
@@ -47,6 +52,12 @@ export const TeamInviteNotification: React.FC<TeamInviteNotificationProps> = ({ 
         // Same full-reload the tab performs after accepting: team membership
         // changes what half the app renders (dashboards, company context,
         // roles), and a reload is the only guaranteed-consistent path.
+        //
+        // This reload is NOT a hard refresh from the user's point of view —
+        // tell the next page load to skip the full startup splash and show
+        // the plain <BirdLoader /> ("draw" loader) instead (see lib/splash.ts),
+        // matching the same accept flow in Roles & Permissions.
+        markSkipSplashOnNextLoad('Joining team…');
         window.location.reload();
     };
 

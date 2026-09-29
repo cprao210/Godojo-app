@@ -1,130 +1,152 @@
-// Covers electron/utils/backendRagChunking — the durable backend RAG ingest
-// trigger that replaced the fragile renderer transition-watch effect. The
-// whole point is that a transient failure NEVER permanently drops a meeting's
-// chunks, so these tests pin the queue/retry invariants:
-//   - immediate success clears the queue
-//   - "ingested:false" and thrown errors retry with backoff, then park
-//   - 404 drops (meeting gone), 401 parks without burning retries
-//   - drain clears on success, keeps on failure, gives up after the cap
+// Covers the ordering fix in MeetingPersistence.processAndSaveMeeting: the
+// backend RAG chunking trigger (POST /meetings/:id/chunking) must not fire
+// until the Supabase mirror has actually flushed the transcript batch it
+// just enqueued in saveMeeting() — otherwise the backend routinely finds "no
+// transcript yet" on its very first attempt, which is exactly the race
+// backendRagChunking.ts's retry/durable-queue machinery exists to paper
+// over. See MeetingPersistence.ts's processAndSaveMeeting for the fix.
 //
-// The queue is an in-memory ChunkQueueAdapter and `post`/`sleep` are injected,
-// so nothing touches axios, auth, timers, or a real SQLite file.
+// Every module MeetingPersistence.ts pulls in transitively (LLM SDKs,
+// better-sqlite3, electron itself) is mocked out below; this test only
+// exercises the save -> flush -> chunk-request sequencing, not any
+// LLM/DB/Supabase behaviour.
 
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import {
-    requestBackendChunking,
-    drainChunkQueue,
-    ChunkRequestError,
-    type ChunkQueueAdapter,
-} from '../utils/backendRagChunking';
 
-interface FakeRow { meeting_id: string; tenant_id: string | null; attempts: number; }
+const callOrder: string[] = [];
 
-function makeQueue(seed: FakeRow[] = []): ChunkQueueAdapter & { rows: FakeRow[] } {
-    const rows: FakeRow[] = seed.map(r => ({ ...r }));
-    return {
-        rows,
-        upsertChunkAttempt: (id, tenant) => {
-            const existing = rows.find(r => r.meeting_id === id);
-            if (existing) existing.tenant_id = tenant ?? null;
-            else rows.push({ meeting_id: id, tenant_id: tenant ?? null, attempts: 0 });
-        },
-        bumpChunkAttempt: (id) => { const r = rows.find(x => x.meeting_id === id); if (r) r.attempts += 1; },
-        getChunkAttempts: (id) => rows.find(r => r.meeting_id === id)?.attempts ?? 0,
-        listChunkQueue: () => rows.map(r => ({ ...r })),
-        removeChunkQueueItem: (id) => { const i = rows.findIndex(r => r.meeting_id === id); if (i >= 0) rows.splice(i, 1); },
-    };
+const saveMeeting = vi.fn();
+vi.mock('../db/DatabaseManager', () => ({
+    DatabaseManager: { getInstance: () => ({ saveMeeting, getMeetingScorecard: vi.fn() }) },
+    formatDuration: (_ms: number) => '00:00',
+}));
+
+const flush = vi.fn(async (_timeoutMs?: number) => { callOrder.push('flush'); });
+vi.mock('../db/SupabaseMirrorService', () => ({
+    SupabaseMirrorService: { getInstance: () => ({ flush }) },
+}));
+
+vi.mock('../main', () => ({
+    AppState: { getInstance: () => ({ notifyMeetingSummaryReady: vi.fn() }) },
+}));
+
+vi.mock('electron', () => ({
+    BrowserWindow: { getAllWindows: (): any[] => [] },
+}));
+
+// Everything below is reachable only via static imports at the top of
+// MeetingPersistence.ts, never actually exercised by the short (<=2-turn)
+// transcript this test uses (which deliberately skips the title/summary/
+// scorecard/call-analysis LLM branches) — mocked purely so importing the
+// module under test doesn't pull in real LLM SDKs / sqlite / electron.
+vi.mock('../llm', () => ({
+    GROQ_TITLE_PROMPT: '',
+    GROQ_SUMMARY_JSON_PROMPT: '',
+    verifySummaryAgainstTranscript: vi.fn(),
+    buildCorrectionAddendum: vi.fn(),
+}));
+vi.mock('../utils/salesBriefUtils', () => ({ buildCompanyContextBlock: vi.fn(() => '') }));
+vi.mock('../llm/ScoreCardLLM', () => ({ buildScorecardPrompt: vi.fn() }));
+vi.mock('../scorecardReconciliation', () => ({ reconcileScorecardWithLiveAnalysis: vi.fn((r: any) => r) }));
+vi.mock('../summaryReconciliation', () => ({ reconcileBantMeddicWithLiveAnalysis: vi.fn((s: any) => s) }));
+vi.mock('../services/AuthManager', () => ({ AuthManager: { getInstance: () => ({}) } }));
+vi.mock('../utils/uploadAnalysis', () => ({ buildUploadAnalysisPrompt: vi.fn(), normalizeUploadAnalysis: vi.fn() }));
+vi.mock('../utils/uploadAnalysisBridge', () => ({
+    requestUploadAnalysis: vi.fn(),
+    isLocalUploadAnalysisForced: vi.fn(() => false),
+}));
+vi.mock('../utils/finalAnalysisBridge', () => ({
+    requestFinalAnalysisV2: vi.fn(),
+    isFinalAnalysisV2Enabled: vi.fn(() => false),
+}));
+vi.mock('../utils/callAnalysis', () => ({
+    generateCallAnalysis: vi.fn(),
+    hasUsableCallAnalysis: vi.fn(),
+    meetingTypesForRegenerate: vi.fn(),
+    REGENERATE_ANALYSIS_TIMEOUT_MS: 1000,
+}));
+vi.mock('../SessionTracker', () => ({ SessionTracker: class { } }));
+vi.mock('../LLMHelper', () => ({ LLMHelper: class { } }));
+
+const requestBackendChunking = vi.fn(async (_id: string, _tenant: string | null) => { callOrder.push('chunk'); });
+vi.mock('../utils/backendRagChunking', () => ({ requestBackendChunking }));
+
+import { MeetingPersistence } from '../MeetingPersistence';
+
+// A transcript of exactly 2 turns is short enough that processAndSaveMeeting
+// skips title generation (a title is supplied via metadata anyway), summary
+// generation, and call-analysis generation (all gated on
+// `data.transcript.length > 2`) — isolating this test to just the
+// save -> flush -> chunk-request sequencing under test.
+const SHORT_TRANSCRIPT = [
+    { speaker: 'user', text: 'Hi there', timestamp: 0 },
+    { speaker: 'client', text: 'Hello', timestamp: 1000 },
+];
+
+function callProcessAndSaveMeeting(persistence: MeetingPersistence, meetingId: string, tenantId: string | null) {
+    return (persistence as any).processAndSaveMeeting(
+        { transcript: SHORT_TRANSCRIPT, usage: [], startTime: 0, durationMs: 1000, context: '' },
+        meetingId,
+        { title: 'Test meeting', source: 'upload' },
+        null,        // liveAnalysisData
+        undefined,   // speakerNames
+        null,        // companyIntel
+        undefined,   // hintMeetingTypes
+        tenantId,
+    );
 }
 
-const noSleep = async () => { };
-
-describe('requestBackendChunking', () => {
-    it('clears any stale queue row and stops after one success', async () => {
-        const q = makeQueue([{ meeting_id: 'm1', tenant_id: null, attempts: 0 }]);
-        const post = vi.fn(async () => ({ ingested: true }));
-        await requestBackendChunking('m1', null, { post, sleep: noSleep, queue: q });
-        expect(post).toHaveBeenCalledTimes(1);
-        expect(q.rows).toHaveLength(0);
+describe('MeetingPersistence.processAndSaveMeeting — chunk trigger ordering', () => {
+    beforeEach(() => {
+        callOrder.length = 0;
+        saveMeeting.mockClear();
+        flush.mockClear();
+        requestBackendChunking.mockClear();
     });
 
-    it('retries on ingested:false then parks if every attempt fails', async () => {
-        const q = makeQueue();
-        const post = vi.fn(async () => ({ ingested: false }));
-        await requestBackendChunking('m1', 't9', { post, sleep: noSleep, queue: q });
-        // 3 immediate attempts total (1 + two backoff retries).
-        expect(post).toHaveBeenCalledTimes(3);
-        expect(q.rows.find(r => r.meeting_id === 'm1')?.tenant_id).toBe('t9');
+    it('waits for the Supabase mirror to flush the transcript batch before requesting backend chunking', async () => {
+        const persistence = new MeetingPersistence({} as any, {} as any);
+
+        await callProcessAndSaveMeeting(persistence, 'meeting-1', 'tenant-1');
+
+        // The flush -> chunk-request sequence runs in a fire-and-forget async
+        // IIFE (processAndSaveMeeting doesn't await it, so the toast/list
+        // refresh above it are never delayed) — give the microtask queue a
+        // turn to let it complete before asserting on it.
+        await vi.waitFor(() => expect(requestBackendChunking).toHaveBeenCalled());
+
+        expect(saveMeeting).toHaveBeenCalledTimes(1);
+        expect(flush).toHaveBeenCalledTimes(1);
+        // Generous timeout vs flush()'s own 8s default: an uploaded
+        // transcript's batch can be large, and this must give the mirror a
+        // real chance to land it before falling back to the retry queue.
+        expect(flush).toHaveBeenCalledWith(20_000);
+        expect(requestBackendChunking).toHaveBeenCalledWith('meeting-1', 'tenant-1');
+
+        // The actual regression this test guards: flush must complete
+        // (or at least be awaited) strictly before the chunk request fires.
+        expect(callOrder).toEqual(['flush', 'chunk']);
     });
 
-    it('succeeds on the second attempt and clears the queue (no park)', async () => {
-        const q = makeQueue();
-        let n = 0;
-        const post = vi.fn(async () => { n += 1; return { ingested: n >= 2 }; });
-        await requestBackendChunking('m1', null, { post, sleep: noSleep, queue: q });
-        expect(post).toHaveBeenCalledTimes(2);
-        expect(q.rows).toHaveLength(0);
+    it('still requests chunking even if the mirror flush fails (non-fatal — chunking retry/queue covers it)', async () => {
+        flush.mockRejectedValueOnce(new Error('network down'));
+        const persistence = new MeetingPersistence({} as any, {} as any);
+
+        await callProcessAndSaveMeeting(persistence, 'meeting-2', 'tenant-1');
+
+        await vi.waitFor(() => expect(requestBackendChunking).toHaveBeenCalled());
+
+        expect(flush).toHaveBeenCalledTimes(1);
+        expect(requestBackendChunking).toHaveBeenCalledWith('meeting-2', 'tenant-1');
     });
 
-    it('drops the meeting on 404 without retrying', async () => {
-        const q = makeQueue();
-        const post = vi.fn(async () => { throw new ChunkRequestError('gone', 404); });
-        await requestBackendChunking('m1', null, { post, sleep: noSleep, queue: q });
-        expect(post).toHaveBeenCalledTimes(1);
-        expect(q.rows).toHaveLength(0);
-    });
+    it('passes null tenantId through untouched when no tenant is active', async () => {
+        const persistence = new MeetingPersistence({} as any, {} as any);
 
-    it('parks on 401 without exhausting the immediate retries', async () => {
-        const q = makeQueue();
-        const post = vi.fn(async () => { throw new ChunkRequestError('no token', 401); });
-        await requestBackendChunking('m1', 't1', { post, sleep: noSleep, queue: q });
-        // Returns after the first 401 — the remaining attempts are pointless.
-        expect(post).toHaveBeenCalledTimes(1);
-        expect(q.rows.find(r => r.meeting_id === 'm1')).toBeTruthy();
-    });
+        await callProcessAndSaveMeeting(persistence, 'meeting-3', null);
 
-    it('treats a thrown network error as retryable and parks after retries', async () => {
-        const q = makeQueue();
-        const post = vi.fn(async () => { throw new ChunkRequestError('ECONNRESET'); });
-        await requestBackendChunking('m1', null, { post, sleep: noSleep, queue: q });
-        expect(post).toHaveBeenCalledTimes(3);
-        expect(q.rows).toHaveLength(1);
-    });
-});
+        await vi.waitFor(() => expect(requestBackendChunking).toHaveBeenCalled());
 
-describe('drainChunkQueue', () => {
-    it('removes rows that succeed and keeps failing ones for the next drain', async () => {
-        const q = makeQueue([
-            { meeting_id: 'ok', tenant_id: null, attempts: 0 },
-            { meeting_id: 'bad', tenant_id: null, attempts: 0 },
-        ]);
-        const post = vi.fn(async (id: string) => ({ ingested: id === 'ok' }));
-        await drainChunkQueue({ post, queue: q });
-        expect(q.rows.map(r => r.meeting_id)).toEqual(['bad']);
-        expect(q.rows[0].attempts).toBe(1);
-    });
-
-    it('drops a 404 row and gives up on a row past the attempt cap', async () => {
-        const q = makeQueue([
-            { meeting_id: 'gone', tenant_id: null, attempts: 0 },
-            { meeting_id: 'capped', tenant_id: null, attempts: 14 }, // next bump => 15 => give up
-        ]);
-        const post = vi.fn(async (id: string) => {
-            if (id === 'gone') throw new ChunkRequestError('gone', 404);
-            return { ingested: false };
-        });
-        await drainChunkQueue({ post, queue: q });
-        expect(q.rows).toHaveLength(0);
-    });
-
-    it('stops early on 401 without burning attempts', async () => {
-        const q = makeQueue([
-            { meeting_id: 'a', tenant_id: null, attempts: 2 },
-            { meeting_id: 'b', tenant_id: null, attempts: 3 },
-        ]);
-        const post = vi.fn(async () => { throw new ChunkRequestError('no token', 401); });
-        await drainChunkQueue({ post, queue: q });
-        // Both rows untouched: attempts unchanged, both still queued.
-        expect(q.rows.map(r => r.attempts)).toEqual([2, 3]);
-        expect(post).toHaveBeenCalledTimes(1); // bailed after the first 401
+        expect(requestBackendChunking).toHaveBeenCalledWith('meeting-3', null);
     });
 });

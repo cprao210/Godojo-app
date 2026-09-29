@@ -17,6 +17,12 @@ import { resolveSystemAudioBackend, SCK_BACKEND_PREF_KEY } from "@/lib/systemAud
  * is owned by `useAppLifecycleListeners` (it feeds the post-meeting ad timer) —
  * this hook just flips it on; the listener flips it back off once the backend
  * reports the meeting finished processing.
+ *
+ * NOTE: the post-call company prompt deliberately does NOT flow through this
+ * hook — handleEndMeeting runs in the overlay window's renderer, while the
+ * prompt modal lives in the launcher window. main.ts broadcasts
+ * 'live-call-ended' (meetingId + source + candidate companies) to all
+ * windows; the launcher's App instance owns the decision.
  */
 export function useMeetingSession(
     tenantId: string | null,

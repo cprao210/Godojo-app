@@ -18,6 +18,13 @@
 // Why the queue even with a live trigger: the transcript rows reach Supabase
 // through the mirror's async outbox, so the first attempt can legitimately
 // find "No transcript found"; and a meeting can finish while offline.
+//
+// PostHog instrumentation: every terminal outcome (success, benign drop/defer,
+// or real failure) reports a 'rag_chunking_result' event so ingest health is
+// visible on a dashboard instead of only in main-process logs. A genuine
+// failure — immediate retries exhausted, or the durable queue giving up after
+// MAX_DRAIN_ATTEMPTS — additionally calls captureException so it shows up in
+// PostHog's error tracking, not just as a log line nobody is watching.
 
 const BACKEND_URL = process.env.VITE_API_BASE_URL ?? "http://127.0.0.1:8000";
 
@@ -37,6 +44,56 @@ const MAX_DRAIN_ATTEMPTS = 15;
 
 /** Shape of one queue row (DatabaseManager.listChunkQueue). */
 interface ChunkQueueRow { meeting_id: string; tenant_id: string | null; attempts: number; }
+
+/**
+ * Report one terminal chunking outcome to PostHog. Lazily required (like
+ * every other PostHogMainService call site in this codebase, e.g.
+ * ProcessingHelper.ts) so this file never pulls posthog-node into its
+ * (dependency-free, unit-tested) import graph, and wrapped in try/catch so a
+ * missing/misconfigured client can never affect the actual chunking flow —
+ * this is pure telemetry, best-effort only.
+ */
+function reportChunkResult(props: {
+    meetingId: string;
+    tenantId: string | null;
+    source: 'fresh' | 'drain';
+    success: boolean;
+    attempts: number;
+    reason?: string;
+    latencyMs?: number;
+}): void {
+    try {
+        const { posthogMain } = require('../services/PostHogMainService');
+        posthogMain.capture('rag_chunking_result', {
+            meeting_id: props.meetingId,
+            tenant_id: props.tenantId,
+            source: props.source,
+            success: props.success,
+            attempts: props.attempts,
+            reason: props.reason,
+            latency_ms: props.latencyMs,
+        });
+    } catch (e) {
+        console.warn('[RagChunk] posthog capture failed (non-fatal):', e);
+    }
+}
+
+/**
+ * Report a genuine, unrecovered chunking failure as an exception — meaning
+ * "this meeting has no chunks and nothing is currently going to retry it
+ * again soon" (immediate retries exhausted, or the durable queue gave up
+ * after MAX_DRAIN_ATTEMPTS). NOT used for the benign/expected cases (404
+ * meeting gone, 401 waiting on auth) — those are just capture()d above,
+ * since retrying or dropping them is the correct, non-error outcome.
+ */
+function reportChunkFailure(message: string, extra: Record<string, any>): void {
+    try {
+        const { posthogMain } = require('../services/PostHogMainService');
+        posthogMain.captureException(new Error(message), 'rag-chunking', extra);
+    } catch (e) {
+        console.warn('[RagChunk] posthog captureException failed (non-fatal):', e);
+    }
+}
 
 /**
  * Error shape thrown by postChunkingForMeeting: carries the HTTP status when
@@ -113,6 +170,7 @@ export async function requestBackendChunking(
     const post = opts.post ?? postChunkingForMeeting;
     const sleep = opts.sleep ?? ((ms: number) => new Promise<void>((r) => setTimeout(r, ms)));
     const db = opts.queue ?? defaultQueue();
+    const startedAt = Date.now();
 
     let lastError = 'unknown';
     for (let attempt = 0; attempt <= IMMEDIATE_RETRY_DELAYS_MS.length; attempt++) {
@@ -121,6 +179,10 @@ export async function requestBackendChunking(
             if (res.ingested) {
                 db.removeChunkQueueItem(meetingId);
                 console.log(`[RagChunk] meeting ${meetingId} ingested into backend RAG`);
+                reportChunkResult({
+                    meetingId, tenantId, source: 'fresh', success: true,
+                    attempts: attempt + 1, latencyMs: Date.now() - startedAt,
+                });
                 return;
             }
             lastError = 'ingested=false (transcript not mirrored yet or embeddings degraded)';
@@ -128,16 +190,27 @@ export async function requestBackendChunking(
             const status = err instanceof ChunkRequestError ? err.status : undefined;
             if (status === 404) {
                 // Meeting row is gone on the backend — nothing to chunk ever.
+                // Expected outcome (meeting deleted before it could be
+                // chunked), not a chunking failure — capture only, no exception.
                 console.warn(`[RagChunk] meeting ${meetingId} not found on backend — dropping`);
                 db.removeChunkQueueItem(meetingId);
+                reportChunkResult({
+                    meetingId, tenantId, source: 'fresh', success: false,
+                    attempts: attempt + 1, reason: 'meeting_not_found',
+                });
                 return;
             }
             if (status === 401) {
                 // Signed out (or token not restored): retrying now is pointless
                 // and would burn attempts — park it; the next drain runs once
-                // auth is back.
+                // auth is back. Expected/transient, not a failure — capture
+                // only, no exception.
                 db.upsertChunkAttempt(meetingId, tenantId);
                 console.warn(`[RagChunk] not authenticated for ${meetingId} — queued`);
+                reportChunkResult({
+                    meetingId, tenantId, source: 'fresh', success: false,
+                    attempts: attempt + 1, reason: 'unauthenticated',
+                });
                 return;
             }
             lastError = err?.message ?? String(err);
@@ -147,8 +220,23 @@ export async function requestBackendChunking(
         }
     }
 
+    // All immediate attempts exhausted — parked in the durable queue, but
+    // this is already worth surfacing as a real failure: the common-case
+    // race (mirror not caught up yet) should have cleared within these 3
+    // attempts, so reaching here usually means a real backend/network
+    // problem. Report both the dashboard-visible event and an exception so
+    // it lands in PostHog's error tracking, not just this console.error.
     db.upsertChunkAttempt(meetingId, tenantId);
     console.error(`[RagChunk] immediate retries failed for ${meetingId} (${lastError}) — queued for retry`);
+    const attemptsMade = IMMEDIATE_RETRY_DELAYS_MS.length + 1;
+    reportChunkResult({
+        meetingId, tenantId, source: 'fresh', success: false,
+        attempts: attemptsMade, reason: lastError, latencyMs: Date.now() - startedAt,
+    });
+    reportChunkFailure(
+        `RAG chunking failed after ${attemptsMade} immediate attempts: ${lastError}`,
+        { meetingId, tenantId, attempts: attemptsMade },
+    );
 }
 
 /**
@@ -170,6 +258,7 @@ export async function drainChunkQueue(
     for (const row of pending) {
         let failedReason: string | null = null;
         let succeeded = false;
+        const startedAt = Date.now();
         try {
             const res = await post(row.meeting_id, row.tenant_id);
             if (res.ingested) {
@@ -181,14 +270,24 @@ export async function drainChunkQueue(
             const status = err instanceof ChunkRequestError ? err.status : undefined;
             if (status === 404) {
                 // Meeting row is gone on the backend — nothing to chunk.
+                // Expected outcome, not a failure — capture only.
                 db.removeChunkQueueItem(row.meeting_id);
+                reportChunkResult({
+                    meetingId: row.meeting_id, tenantId: row.tenant_id, source: 'drain',
+                    success: false, attempts: row.attempts + 1, reason: 'meeting_not_found',
+                });
                 continue;
             }
             if (status === 401) {
                 // Signed out again — don't burn attempts, keep everything for
                 // the next drain (also stops this pass early, since a later
-                // row would hit the same wall).
+                // row would hit the same wall). Expected/transient, not a
+                // failure — capture only, no exception.
                 console.warn('[RagChunk] drain deferred — not authenticated');
+                reportChunkResult({
+                    meetingId: row.meeting_id, tenantId: row.tenant_id, source: 'drain',
+                    success: false, attempts: row.attempts + 1, reason: 'unauthenticated',
+                });
                 return;
             }
             failedReason = err?.message ?? String(err);
@@ -197,13 +296,37 @@ export async function drainChunkQueue(
         if (succeeded) {
             db.removeChunkQueueItem(row.meeting_id);
             console.log(`[RagChunk] queued ingest succeeded for ${row.meeting_id}`);
+            reportChunkResult({
+                meetingId: row.meeting_id, tenantId: row.tenant_id, source: 'drain',
+                success: true, attempts: row.attempts + 1, latencyMs: Date.now() - startedAt,
+            });
             continue;
         }
 
         db.bumpChunkAttempt(row.meeting_id, failedReason ?? 'unknown');
-        if (db.getChunkAttempts(row.meeting_id) >= MAX_DRAIN_ATTEMPTS) {
+        const attemptsSoFar = db.getChunkAttempts(row.meeting_id);
+        if (attemptsSoFar >= MAX_DRAIN_ATTEMPTS) {
+            // Real, permanent failure: this meeting will never get chunked —
+            // report both the dashboard event and an exception so it's
+            // visible in PostHog's error tracking, not just this log line.
             console.error(`[RagChunk] giving up on ${row.meeting_id} after ${MAX_DRAIN_ATTEMPTS} drain attempts`);
             db.removeChunkQueueItem(row.meeting_id);
+            reportChunkResult({
+                meetingId: row.meeting_id, tenantId: row.tenant_id, source: 'drain',
+                success: false, attempts: attemptsSoFar, reason: failedReason ?? 'unknown',
+            });
+            reportChunkFailure(
+                `RAG chunking abandoned for meeting ${row.meeting_id} after ${MAX_DRAIN_ATTEMPTS} drain attempts: ${failedReason ?? 'unknown'}`,
+                { meetingId: row.meeting_id, tenantId: row.tenant_id, attempts: attemptsSoFar },
+            );
+        } else {
+            // Still within the retry budget — report the soft failure so the
+            // dashboard reflects current health, but no exception yet (the
+            // next drain will likely retry successfully).
+            reportChunkResult({
+                meetingId: row.meeting_id, tenantId: row.tenant_id, source: 'drain',
+                success: false, attempts: attemptsSoFar, reason: failedReason ?? 'unknown',
+            });
         }
     }
 }

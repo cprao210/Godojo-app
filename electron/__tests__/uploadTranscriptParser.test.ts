@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 
-import { parseUploadTranscript } from '../utils/uploadTranscriptParser';
+import { parseUploadTranscript, resolveRepSpeaker } from '../utils/uploadTranscriptParser';
 
 // ── Format 1 — timestamped transcript ──────────────────────────────────────
 describe('parseUploadTranscript — timestamped format', () => {
@@ -136,6 +136,43 @@ describe('parseUploadTranscript — edge cases', () => {
         expect(segments.map(s => s.speaker)).toEqual(['user', 'client']);
     });
 
+    // A label like "Bharathraj A" (first name + a bare middle/last initial)
+    // has a second "word" that's just one capital letter with nothing after
+    // it — the plain Title-case word pattern (capital + one-or-more
+    // lowercase) couldn't match that, so the whole label was rejected and
+    // every one of that speaker's turns got merged into whoever spoke
+    // before them.
+    it('a Title-case name with a bare single-letter initial is a valid label', () => {
+        const convo = [
+            'Bharathraj A (00:00): Hi, Good morning',
+            'Ajay Parulekar (00:05): I look after various change initiatives.',
+            'Bharathraj A (00:12): I think there is a slight network issue.',
+            'Litra Motors (00:26): Yeah.',
+        ].join('\n');
+        const { speakers } = parseUploadTranscript(convo);
+        expect(speakers).toEqual(['Bharathraj A', 'Ajay Parulekar', 'Litra Motors']);
+    });
+
+    // Bracket-timestamp-first lines ("[TS] LABEL: ...") never validated the
+    // label at all, so mixed-case numbered labels ("Speaker 1"/"Speaker 2" —
+    // a very common Zoom/Teams/Otter export shape) always worked there. Every
+    // OTHER format ran isLikelySpeakerLabel(), whose Title-case check didn't
+    // allow a trailing number, so those formats silently merged "Speaker 2"'s
+    // turn into "Speaker 1"'s — leaving only one detected speaker and no
+    // "Which speaker is you?" picker in the upload modal for that format.
+    it('mixed-case numbered labels ("Speaker 1"/"Speaker 2") work in every format, not just [TS]-first', () => {
+        // format 1 — plain "LABEL: text"
+        expect(parseUploadTranscript('Speaker 1: hi\nSpeaker 2: hello').speakers).toEqual(['Speaker 1', 'Speaker 2']);
+        // format 3 — "LABEL [TS]: text"
+        expect(parseUploadTranscript('Speaker 1 [00:01]: hi\nSpeaker 2 [00:05]: hello').speakers).toEqual(['Speaker 1', 'Speaker 2']);
+        // format 4 — "LABEL:" alone, message on the next line
+        expect(parseUploadTranscript('Speaker 1:\nhi\nSpeaker 2:\nhello').speakers).toEqual(['Speaker 1', 'Speaker 2']);
+        // format 6 — "[LABEL] [TS]: text"
+        expect(parseUploadTranscript('[Speaker 1] [00:01]: hi\n[Speaker 2] [00:05]: hello').speakers).toEqual(['Speaker 1', 'Speaker 2']);
+        // format 7 — "LABEL (TS): text"
+        expect(parseUploadTranscript('Speaker 1 (00:01): hi\nSpeaker 2 (00:05): hello').speakers).toEqual(['Speaker 1', 'Speaker 2']);
+    });
+
     it('is case-insensitive for known keywords', () => {
         const { segments } = parseUploadTranscript('rep: hi\nclient: hey');
         expect(segments.map(s => s.speaker)).toEqual(['user', 'client']);
@@ -160,5 +197,141 @@ describe('parseUploadTranscript — edge cases', () => {
         const { segments } = parseUploadTranscript('CLIENT: hello?\nSALES PERSON: hi there');
         expect(segments.map(s => s.speaker)).toEqual(['user', 'client']);
         expect(segments.map(s => s.displayName)).toEqual(['CLIENT', 'SALES PERSON']);
+    });
+});
+
+// ── Formats 3–8 — the additional label/timestamp shapes ────────────────────
+describe('parseUploadTranscript — additional label/timestamp formats', () => {
+    it('format 3 — "LABEL [TS]: text" (timestamp bracket after the label)', () => {
+        const { segments, durationMs } = parseUploadTranscript('Alex [00:10]: hello there');
+        expect(segments).toEqual([
+            { speaker: 'user', text: 'hello there', timestamp: 10_000, final: true, displayName: 'Alex' },
+        ]);
+        expect(durationMs).toBe(10_000);
+    });
+
+    it('format 4 — "LABEL:" alone, message starts on the next line', () => {
+        const { segments } = parseUploadTranscript('Alex:\nhello there\nDaniel:\nhi back');
+        expect(segments.map(s => [s.displayName, s.text, s.speaker])).toEqual([
+            ['Alex', 'hello there', 'user'],
+            ['Daniel', 'hi back', 'client'],
+        ]);
+    });
+
+    it('format 4 — merges multiple following lines into the same turn', () => {
+        const { segments } = parseUploadTranscript('Alex:\nline one\nline two');
+        expect(segments).toHaveLength(1);
+        expect(segments[0].text).toBe('line one\nline two');
+    });
+
+    it('format 5 — "[TS] [LABEL]: text" (bracketed timestamp + bracketed label)', () => {
+        const { segments, durationMs } = parseUploadTranscript('[00:00:10] [Alex]: hello there');
+        expect(segments).toEqual([
+            { speaker: 'user', text: 'hello there', timestamp: 10_000, final: true, displayName: 'Alex' },
+        ]);
+        expect(durationMs).toBe(10_000);
+    });
+
+    it('format 6 — "[LABEL] [TS]: text" (bracketed label + bracketed timestamp)', () => {
+        const { segments, durationMs } = parseUploadTranscript('[Alex] [00:00:10]: hello there');
+        expect(segments).toEqual([
+            { speaker: 'user', text: 'hello there', timestamp: 10_000, final: true, displayName: 'Alex' },
+        ]);
+        expect(durationMs).toBe(10_000);
+    });
+
+    it('format 7 — "LABEL (TS): text" (parenthesised timestamp)', () => {
+        const { segments, durationMs } = parseUploadTranscript('Alex (00:26): hello there');
+        expect(segments).toEqual([
+            { speaker: 'user', text: 'hello there', timestamp: 26_000, final: true, displayName: 'Alex' },
+        ]);
+        expect(durationMs).toBe(26_000);
+    });
+
+    it('format 8 — "[TS] [LABEL]:" with no trailing text, message on the next line(s)', () => {
+        const { segments, durationMs } = parseUploadTranscript('[00:26] [Alex]:\nhello there\nand more');
+        expect(segments).toHaveLength(1);
+        expect(segments[0].displayName).toBe('Alex');
+        expect(segments[0].timestamp).toBe(26_000);
+        expect(segments[0].text).toBe('hello there\nand more');
+        expect(durationMs).toBe(26_000);
+    });
+
+    it('handles a conversation mixing several of the new formats turn by turn', () => {
+        const convo = [
+            '[00:00:05] [Alex]: Hey Daniel, thanks for joining',
+            '[Daniel] [00:00:08]: Of course',
+            "Alex (00:15): Let's dive in",
+            'Daniel:',
+            'Sounds good to me',
+        ].join('\n');
+        const { segments, durationMs } = parseUploadTranscript(convo);
+        expect(segments.map(s => [s.displayName, s.speaker, s.timestamp, s.text])).toEqual([
+            ['Alex', 'user', 5_000, 'Hey Daniel, thanks for joining'],
+            ['Daniel', 'client', 8_000, 'Of course'],
+            ['Alex', 'user', 15_000, "Let's dive in"],
+            ['Daniel', 'client', 0, 'Sounds good to me'],
+        ]);
+        expect(durationMs).toBe(15_000);
+    });
+});
+// ── Choosing the rep ────────────────────────────────────────────────────────
+// A real upload ("Automating SAP Invoice Processing Discovery") opened with the
+// PROSPECT's "Hi.", so first-speaker-is-the-rep swapped the roles and the v2
+// analysis, which grades only the prospect side, scored 0 BANT/MEDDIC.
+describe('parseUploadTranscript — choosing the rep', () => {
+    const PROSPECT_FIRST = [
+        '[00:00:01] sourish kundu: Hi.',
+        '[00:00:04] Harshpal Rajput: Sorry sir, really sorry for being late.',
+        '[00:00:09] sourish kundu: I am head IT of Link limited, this is our exact requirement.',
+        '[00:00:15] Harshpal Rajput: That can easily happen in Procol.',
+    ].join('\n');
+    const roles = (r: ReturnType<typeof parseUploadTranscript>) => r.segments.map(s => s.speaker);
+
+    it('lists the speakers in order of first appearance', () => {
+        expect(parseUploadTranscript(PROSPECT_FIRST).speakers).toEqual(['sourish kundu', 'Harshpal Rajput']);
+    });
+
+    it('still falls back to the first speaker when nothing else is known', () => {
+        const r = parseUploadTranscript(PROSPECT_FIRST);
+        expect(roles(r)).toEqual(['user', 'client', 'user', 'client']);
+        expect([r.repSpeaker, r.repSource]).toEqual(['sourish kundu', 'first']);
+    });
+
+    it('the picked speaker is the rep, case-insensitively', () => {
+        const r = parseUploadTranscript(PROSPECT_FIRST, { repLabel: 'HARSHPAL RAJPUT' });
+        expect(roles(r)).toEqual(['client', 'user', 'client', 'user']);
+        expect([r.repSpeaker, r.repSource]).toEqual(['Harshpal Rajput', 'picked']);
+    });
+
+    it('a picked label no speaker has is ignored', () => {
+        const r = parseUploadTranscript(PROSPECT_FIRST, { repLabel: 'Someone Else' });
+        expect(r.repSource).toBe('first');
+    });
+
+    it('matches the signed-in user by display name or email', () => {
+        expect(parseUploadTranscript(PROSPECT_FIRST, { repNameHints: ['Harshpal Rajput'] }).repSpeaker).toBe('Harshpal Rajput');
+        const byEmail = parseUploadTranscript(PROSPECT_FIRST, { repNameHints: [null, 'harshpal.rajput@procol.io'] });
+        expect([byEmail.repSpeaker, byEmail.repSource]).toEqual(['Harshpal Rajput', 'name']);
+        expect(roles(byEmail)).toEqual(['client', 'user', 'client', 'user']);
+    });
+
+    it('a first-name-only label matches, a picked label beats the name match', () => {
+        const convo = ['Daniel: hi', 'Alex: hello Daniel'].join('\n');
+        expect(parseUploadTranscript(convo, { repNameHints: ['Alex Moreno'] }).repSpeaker).toBe('Alex');
+        expect(parseUploadTranscript(convo, { repNameHints: ['Alex Moreno'], repLabel: 'Daniel' }).repSpeaker).toBe('Daniel');
+    });
+
+    it('an ambiguous or generic name match falls back to the first speaker', () => {
+        expect(resolveRepSpeaker(['Moreno', 'Alex'], { repNameHints: ['Alex Moreno'] })).toEqual({ label: 'Moreno', source: 'first' });
+        // A partial name overlap is no match: "Alex Kim" is not "Alex Moreno".
+        expect(resolveRepSpeaker(['Dana', 'Alex Kim'], { repNameHints: ['Alex Moreno'] })).toEqual({ label: 'Dana', source: 'first' });
+        expect(resolveRepSpeaker(['CLIENT', 'SALES PERSON'], { repNameHints: ['Alex Moreno', 'alex@x.io'] })).toEqual({ label: 'CLIENT', source: 'first' });
+    });
+
+    it('a transcript with no labels has no rep', () => {
+        const r = parseUploadTranscript('just some text\nand more');
+        expect([r.speakers, r.repSpeaker, r.repSource]).toEqual([[], null, null]);
+        expect(roles(r)).toEqual(['client']);
     });
 });

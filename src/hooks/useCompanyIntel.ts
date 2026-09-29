@@ -1,17 +1,24 @@
-// Data layer for the "Sales Brief" panel: derives a prospect company from a
+// Data layer for the "Sales Brief" panel: derives the prospect company from a
 // calendar event's attendees, fetches Tavily-backed company intelligence for
 // it, and exposes clipboard/URL helpers the panel's UI needs. Kept separate
 // from SalesBriefPanel.tsx so the component only owns rendering.
+//
+// Which companies are candidates (and which domains are "our side" and get
+// excluded) lives in @/lib/companyCandidates — pure, and shared with the
+// meeting-reminder popup. This file only owns the fetch/selection state.
 
-import { useCallback, useEffect, useMemo, useState } from "react";
-import { guardSession } from "@/lib/firebase";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { getFirebaseAuth, guardSession } from "@/lib/firebase";
 import { CompanyIntel, EventLike } from "@/types";
 import { posthogAnalytics } from "@/lib/analytics/posthog.service";
+import {
+    CompanyCandidate,
+    companyNameFromTitle,
+    deriveCompanyCandidates,
+    resolveActiveCompany,
+} from "@/lib/companyCandidates";
 
-const GENERIC_EMAIL_DOMAINS = new Set([
-    "gmail.com", "yahoo.com", "outlook.com", "hotmail.com", "icloud.com",
-    "aol.com", "protonmail.com", "mail.com", "live.com", "me.com", "msn.com",
-]);
+export type { CompanyCandidate };
 
 /** Cycled while a fetch is in flight to show the user what's happening. */
 export const LOADING_STAGES = [
@@ -53,77 +60,6 @@ export function isIntelEmpty(intel: CompanyIntel): boolean {
         !intel.competitors?.length &&
         !intel.recentNews?.length
     );
-}
-
-/** Capitalized company name guessed from a work email's domain, or null for
- * personal/generic providers (gmail, yahoo, etc.) where the domain isn't a company. */
-function companyFromEmail(email: string): string | null {
-    const domain = email.split("@")[1]?.toLowerCase();
-    if (!domain || GENERIC_EMAIL_DOMAINS.has(domain)) return null;
-    const parts = domain.split(".");
-    const slug = parts.length >= 2 ? parts[parts.length - 2] : parts[0];
-    return slug.charAt(0).toUpperCase() + slug.slice(1);
-}
-
-export interface CompanyCandidate {
-    companyName: string;
-    domain: string;
-}
-
-/**
- * Every distinct external company found among attendees, plus a best-effort
- * single fallback (title parsing) when there's no usable attendee data.
- *
- * "External" is determined by each attendee's own `self` flag — set by
- * Google/Zoom to mark which attendee IS the signed-in GoDojo user — NOT by
- * comparing against the calendar event's `organizer` field. `organizer`
- * reflects whoever created the calendar invite, which is very often the
- * *client* for inbound-booked meetings (they send the invite, the rep just
- * accepts it) — using it as "our side" silently flipped internal/external
- * and could research the rep's own company instead of the prospect's.
- * `self` doesn't have that failure mode: it's set per-attendee by the
- * calendar provider itself, independent of who organized the event.
- */
-function deriveCompanyCandidates(eventData: EventLike): {
-    candidates: CompanyCandidate[];
-    titleFallback: { companyName: string | null; domain: undefined };
-} {
-    const attendees = eventData.attendees ?? [];
-    // Prefer the `self` flag (set by the calendar provider itself). Only
-    // fall back to organizer-domain comparison if nothing in the attendee
-    // list has `self` set at all (e.g. older cached events synced before
-    // this field existed) — better than nothing, but self is authoritative
-    // whenever it's present.
-    const hasSelfFlag = attendees.some((a) => a.self);
-    const selfDomain = hasSelfFlag
-        ? attendees.find((a) => a.self)?.email?.split("@")[1]?.toLowerCase() ?? ""
-        : eventData.organizer?.split("@")[1]?.toLowerCase() ?? "";
-
-    const externalAttendees = attendees.filter((a) => {
-        if (hasSelfFlag) return !a.self;
-        const d = a.email?.split("@")[1]?.toLowerCase() ?? "";
-        return d && d !== selfDomain;
-    });
-
-    const candidates: CompanyCandidate[] = [];
-    const seenDomains = new Set<string>();
-    for (const attendee of externalAttendees) {
-        const email = attendee.email;
-        if (!email) continue;
-        const domain = email.split("@")[1];
-        if (!domain || seenDomains.has(domain.toLowerCase())) continue;
-        const name = companyFromEmail(email);
-        if (name) {
-            seenDomains.add(domain.toLowerCase());
-            candidates.push({ companyName: name, domain });
-        }
-    }
-
-    const titleMatch = eventData.title?.match(/(?:with|@|–|-)\s+([A-Z][a-zA-Z0-9\s]+)/);
-    return {
-        candidates,
-        titleFallback: { companyName: titleMatch ? titleMatch[1].trim() : null, domain: undefined },
-    };
 }
 
 /** Formats fetched intel as a shareable plain-text summary. */
@@ -196,6 +132,17 @@ export function openExternalUrl(url: string): void {
     window.open(normalised, "_blank");
 }
 
+/** The signed-in user's email, or null. Read defensively: if Firebase isn't
+ * available this must degrade to the calendar's own `self`/organizer hints,
+ * never break the panel. */
+function currentUserEmail(): string | null {
+    try {
+        return getFirebaseAuth().currentUser?.email ?? null;
+    } catch {
+        return null;
+    }
+}
+
 export function useCompanyIntel(eventData: EventLike) {
     const [intel, setIntel] = useState<CompanyIntel | null>(null);
     const [loading, setLoading] = useState(true);
@@ -205,31 +152,62 @@ export function useCompanyIntel(eventData: EventLike) {
     const [isCopied, setIsCopied] = useState(false);
     const [fromCache, setFromCache] = useState(false);
 
-    const { candidates, titleFallback } = useMemo(() => deriveCompanyCandidates(eventData), [eventData]);
+    // Read once per panel mount — the panel is a short-lived overlay.
+    const [userEmail] = useState(currentUserEmail);
 
-    // Which candidate is currently selected (index into `candidates`), when
-    // there's more than one distinct external company on the invite — e.g.
-    // a group demo with attendees from three different companies. Defaults
-    // to the first candidate; the panel renders a picker when candidates.length > 1.
-    const [selectedIndex, setSelectedIndex] = useState(0);
+    // External companies on the invite, with the user's own domain (and every
+    // teammate on it) already removed.
+    const { candidates } = useMemo(
+        () => deriveCompanyCandidates(eventData, { userEmail }),
+        [eventData, userEmail],
+    );
+    const titleFallbackName = useMemo(() => companyNameFromTitle(eventData.title), [eventData.title]);
 
-    // Reset selection whenever the underlying event changes (new meeting selected).
-    useEffect(() => { setSelectedIndex(0); }, [eventData]);
+    // The user's pick when there is more than one candidate. Stored together
+    // with a signature of the candidate list so a different event (or a
+    // re-derived list) can never inherit a stale index — the selection just
+    // reads as "not chosen yet" and the chooser is shown again.
+    const candidatesKey = candidates.map((c) => c.domain).join("|");
+    const [selection, setSelection] = useState<{ key: string; index: number } | null>(null);
+    const chosenIndex = selection?.key === candidatesKey ? selection.index : null;
 
-    const selected = candidates[selectedIndex];
-    const companyName = selected?.companyName ?? titleFallback.companyName;
-    const domain = selected?.domain ?? titleFallback.domain;
+    // 0 candidates → title guess; 1 → that one; 2+ → NOTHING until the user
+    // picks (awaitingSelection), so no Tavily call is spent on a guess.
+    const { awaitingSelection, selected, companyName, domain } = resolveActiveCompany(
+        candidates,
+        chosenIndex,
+        titleFallbackName,
+    );
+    const selectedIndex = selected ? candidates.indexOf(selected) : null;
+
+    // Only the latest request may write state. Switching company quickly
+    // must not let the slower, older response overwrite the newer one.
+    const requestSeq = useRef(0);
+
+    // Only "busy" once there is actually something to fetch.
+    const busy = loading && !awaitingSelection;
 
     // Cycle the "still working" messages while a fetch is in flight.
     useEffect(() => {
-        if (!loading) return;
+        if (!busy) return;
         const interval = setInterval(() => setLoadingStage((s) => (s + 1) % LOADING_STAGES.length), 1800);
         return () => clearInterval(interval);
-    }, [loading]);
+    }, [busy]);
 
     const fetchIntel = useCallback(async (forceRefresh = false) => {
+        const requestId = ++requestSeq.current;
+        const isCurrent = () => requestId === requestSeq.current;
+
+        // Flip to the loading state synchronously (before any await) so there
+        // is no frame between "company chosen" and "skeleton shown".
+        setLoading(true);
+        setError(null);
+        // Only clear displayed intel on a force-refresh so the previous data
+        // stays visible while the new request is in-flight.
+        if (forceRefresh) setIntel(null);
+
         const sessionActive = await guardSession();
-        if (!sessionActive) return;
+        if (!sessionActive || !isCurrent()) return;
 
         if (!companyName) {
             setError("Could not identify the prospect company from this meeting's attendees.");
@@ -237,14 +215,9 @@ export function useCompanyIntel(eventData: EventLike) {
             return;
         }
 
-        setLoading(true);
-        setError(null);
-        // Only clear displayed intel on a force-refresh so the previous data
-        // stays visible while the new request is in-flight.
-        if (forceRefresh) setIntel(null);
-
         try {
             const creds = await window.electronAPI.getStoredCredentials();
+            if (!isCurrent()) return;
             const tavily = !!creds?.hasTavilyKey;
             setHasTavily(tavily);
 
@@ -255,12 +228,15 @@ export function useCompanyIntel(eventData: EventLike) {
             }
 
             const result = await window.electronAPI?.fetchCompanyIntel({ companyName, domain, forceRefresh });
+            if (!isCurrent()) return;
             if (result.success && result.intel) {
                 setIntel(result.intel);
                 setFromCache(result.fromCache ?? false);
                 // Persist to AppState so the LLM has this context too. Best-effort —
-                // a failure here shouldn't block showing the fetched intel.
-                window.electronAPI?.setCompanyIntel?.(result.intel).catch((e: unknown) =>
+                // a failure here shouldn't block showing the fetched intel. Low-confidence
+                // intel is shown to the user (with its warning) but NOT handed to the LLM
+                // as prospect fact; null also clears any previous company's intel.
+                window.electronAPI?.setCompanyIntel?.(result.intel._confidence === 'low' ? null : result.intel).catch((e: unknown) =>
                     console.warn("[useCompanyIntel] Failed to store company intel:", e),
                 );
             } else {
@@ -269,18 +245,37 @@ export function useCompanyIntel(eventData: EventLike) {
                 posthogAnalytics.trackCompanyInsightsFailed(reason, companyName);
             }
         } catch (e: any) {
+            if (!isCurrent()) return;
             const reason = e?.message || "Unexpected error";
             setError(reason);
             posthogAnalytics.trackCompanyInsightsFailed(reason, companyName);
             posthogAnalytics.trackException(e instanceof Error ? e : new Error(String(e)), "useCompanyIntel.fetchIntel", { companyName, domain });
         } finally {
-            setLoading(false);
+            if (isCurrent()) setLoading(false);
         }
     }, [companyName, domain]);
 
     useEffect(() => {
+        if (awaitingSelection) {
+            // Nothing to generate yet. Invalidate anything still in flight
+            // (e.g. the candidate list just changed) and show the chooser.
+            requestSeq.current += 1;
+            setLoading(false);
+            return;
+        }
         fetchIntel();
-    }, [fetchIntel, selectedIndex]);
+    }, [fetchIntel, awaitingSelection]);
+
+    /** Pick which company to research; triggers a fresh fetch for it. */
+    const selectCandidate = useCallback((index: number) => {
+        // Drop the previous company's data straight away so it can't be
+        // copied or shown under the new company's name while loading.
+        setIntel(null);
+        setError(null);
+        setFromCache(false);
+        setLoading(true);
+        setSelection({ key: candidatesKey, index });
+    }, [candidatesKey]);
 
     const copyToClipboard = useCallback(() => {
         if (!intel) return;
@@ -295,7 +290,8 @@ export function useCompanyIntel(eventData: EventLike) {
 
     return {
         intel,
-        loading,
+        /** False while the chooser is showing — nothing is being fetched then. */
+        loading: busy,
         error,
         loadingStage,
         hasTavily,
@@ -303,12 +299,16 @@ export function useCompanyIntel(eventData: EventLike) {
         fromCache,
         companyName,
         domain,
-        /** All distinct external companies found among attendees — length 1
-         * in the common case, >1 when attendees span multiple companies. */
+        /** External companies found among attendees, our own domain excluded —
+         * length 1 in the common case, >1 when attendees span companies. */
         candidates,
+        /** True when there are several candidates and the user hasn't chosen
+         * one yet: the panel must ask first, and no insights are generated. */
+        awaitingSelection,
+        /** Index of the active candidate, or null while awaiting selection
+         * (or when the company came from the title fallback). */
         selectedIndex,
-        /** Switch which candidate is active; triggers a fresh fetch for it. */
-        selectCandidate: setSelectedIndex,
+        selectCandidate,
         /** Pass `true` to force a fresh lookup (bypasses the backend cache). */
         fetchIntel,
         copyToClipboard,

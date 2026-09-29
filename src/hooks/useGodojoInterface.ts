@@ -20,7 +20,8 @@ import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import { useShortcuts } from "@/hooks";
 import { OVERLAY_OPACITY_DEFAULT } from "@/lib/overlayAppearance";
 import { boundRolling } from "@/lib/rollingTranscript";
-import { CalendarEvent, GodojoInterfaceMessage, GodojoInterfaceProps } from "@/types";
+import { CalendarEvent, GodojoInterfaceMessage, GodojoInterfaceProps, LiveTranscriptEntry } from "@/types";
+import { qualityFields } from "@/lib/liveTranscript";
 
 export function useGodojoInterface({ overlayOpacity = OVERLAY_OPACITY_DEFAULT }: GodojoInterfaceProps) {
     // `overlayOpacity` is accepted for interface compatibility (App.tsx still
@@ -45,7 +46,10 @@ export function useGodojoInterface({ overlayOpacity = OVERLAY_OPACITY_DEFAULT }:
         return stored !== 'false';
     });
     const [isMeetingPaused, setIsMeetingPaused] = useState(false);
-    const liveTranscriptRef = useRef<Array<{ speaker: string; displayName?: string; text: string; timestamp: number; speakerIndex?: number }>>([]);
+    // Finals of the live call. `text` is the display text (English when transcript translation is
+    // on); the optional fields carry what live analysis v2 needs: the ORIGINAL recognized text,
+    // a stable turn id and the suspect-line flag from the main process (transcriptQuality.ts).
+    const liveTranscriptRef = useRef<LiveTranscriptEntry[]>([]);
     // Last diarized far-end speaker index seen on a client FINAL — used to
     // inject a "Speaker n:" marker in the rolling text only when it changes.
     const lastClientSpeakerIndexRef = useRef<number | undefined>(undefined);
@@ -602,6 +606,7 @@ export function useGodojoInterface({ overlayOpacity = OVERLAY_OPACITY_DEFAULT }:
                             displayName: resolvedDisplayName,
                             text: transcript.text,
                             timestamp: Date.now(),
+                            ...qualityFields(transcript),
                         });
                     }
                 } else {
@@ -681,6 +686,7 @@ export function useGodojoInterface({ overlayOpacity = OVERLAY_OPACITY_DEFAULT }:
                         text: transcript.text,
                         timestamp: Date.now(),
                         speakerIndex: transcript.speakerIndex,
+                        ...qualityFields(transcript),
                     });
                 }
 

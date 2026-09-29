@@ -138,7 +138,7 @@ export interface Meeting {
      * verbatim as JSON — kept as an array to match the provider's event feed shape.
      */
     calendarEventMetadata?: any[];
-    source?: 'manual' | 'calendar';
+    source?: 'manual' | 'calendar' | 'upload';
     meetingTypes?: ('discovery' | 'demo' | 'negotiation')[];
     tenantId?: string | null;
 }
@@ -1954,7 +1954,7 @@ export class DatabaseManager {
         }
     }
 
-    public updateMeetingSummary(id: string, updates: { overview?: string, actionItems?: string[], keyPoints?: string[], actionItemsTitle?: string, keyPointsTitle?: string }): boolean {
+    public updateMeetingSummary(id: string, updates: { overview?: string, actionItems?: string[], keyPoints?: string[], actionItemsTitle?: string, keyPointsTitle?: string, liveAnalysis?: import('../../src/types').LiveAnalysisData }): boolean {
         if (!this.db) return false;
 
         try {
@@ -2312,25 +2312,29 @@ export class DatabaseManager {
                 budget: {
                     emoji: '✅',
                     status: 'confirmed',
-                    evidence: 'Alex confirmed ~$85K allocated under sales enablement. Sign-off above $75K needs CFO approval.',
+                    summary: '~$85K is allocated, but anything above $75K still needs CFO sign-off.',
+                    evidence: ['Alex confirmed ~$85K allocated under sales enablement.', 'Sign-off above $75K needs CFO approval.'],
                     suggested_question: 'Is the $85K approved for annual recurring spend, or a one-time budget line?'
                 },
                 authority: {
                     emoji: '⚠️',
                     status: 'partial',
-                    evidence: 'Alex (VP Sales) is the champion, but CFO holds final sign-off above $75K and was not on this call.',
+                    summary: 'The day-to-day owner is engaged, but the person who signs was not on the call.',
+                    evidence: ['Alex (VP Sales) is the champion.', 'CFO holds final sign-off above $75K and was not on this call.'],
                     suggested_question: 'What does the CFO typically need to approve a new vendor at this level?'
                 },
                 need: {
                     emoji: '✅',
                     status: 'confirmed',
-                    evidence: 'Rep ramp of 9–11 months is the core pain. Two reps lost in H1 who never hit quota.',
+                    summary: 'Slow rep ramp is costing them headcount, and they can quantify it.',
+                    evidence: ['Rep ramp of 9–11 months is the core pain.', 'Two reps lost in H1 who never hit quota.'],
                     suggested_question: ''
                 },
                 timeline: {
                     emoji: '✅',
                     status: 'confirmed',
-                    evidence: 'Hard Q3 deadline to show enablement progress to the CRO.',
+                    summary: 'There is a hard Q3 deadline, driven by a commitment to the CRO.',
+                    evidence: ['Hard Q3 deadline to show enablement progress to the CRO.'],
                     suggested_question: 'What needs to happen internally to get a PO approved before Q3 close?'
                 }
             },
@@ -2338,43 +2342,50 @@ export class DatabaseManager {
                 metrics: {
                     emoji: '✅',
                     status: 'confirmed',
-                    evidence: 'Reduce ramp from 9–11 months to under 6. Improve new-rep close rate by 15% within 90 days.',
+                    summary: 'Two quantified targets are on the table: ramp time and new-rep close rate.',
+                    evidence: ['Reduce ramp from 9–11 months to under 6.', 'Improve new-rep close rate by 15% within 90 days.'],
                     suggested_question: ''
                 },
                 economic_buyer: {
                     emoji: '⚠️',
                     status: 'partial',
-                    evidence: `CFO holds final approval above $75K. Alex has not yet briefed them. Described as data-driven and skeptical.`,
+                    summary: 'The economic buyer is identified but has not been engaged yet.',
+                    evidence: ['CFO holds final approval above $75K.', 'Alex has not yet briefed them.', 'Described as data-driven and skeptical.'],
                     suggested_question: `Would it help to include the CFO in a brief intro before the pilot, so they're not reviewing results cold?`
                 },
                 decision_criteria: {
                     emoji: '✅',
                     status: 'confirmed',
-                    evidence: 'Must-haves: live in-call coaching, CRM integration, measurable ramp improvement, SOC 2 compliance.',
+                    summary: 'Four explicit must-haves were named, including a compliance gate.',
+                    evidence: ['Must-haves are live in-call coaching and CRM integration.', 'Measurable ramp improvement is required.', 'SOC 2 compliance is a hard requirement.'],
                     suggested_question: ''
                 },
                 decision_process: {
                     emoji: '⚠️',
                     status: 'partial',
-                    evidence: 'Alex runs the pilot and presents results to CFO. Legal/InfoSec review required. Internal timeline unclear.',
+                    summary: 'The evaluation path is known, but its internal timeline is not.',
+                    evidence: ['Alex runs the pilot and presents results to CFO.', 'Legal/InfoSec review required.', 'Internal timeline unclear.'],
                     suggested_question: 'How long does InfoSec review take, and what can we prepare in advance?'
                 },
                 identify_pain: {
                     emoji: '✅',
                     status: 'confirmed',
-                    evidence: 'Three pains: slow ramp, inconsistent discovery quality, deal slippage from missed objections.',
+                    summary: 'Three distinct pains were named, all tied to rep effectiveness.',
+                    evidence: ['Slow rep ramp.', 'Inconsistent discovery quality.', 'Deal slippage from missed objections.'],
                     suggested_question: ''
                 },
                 champion: {
                     emoji: '⚠️',
                     status: 'partial',
-                    evidence: `Alex is engaged but said "I'll let the pilot results speak for themselves" — not yet committed to selling internally.`,
+                    summary: 'Engaged, but waiting on pilot data rather than advocating internally yet.',
+                    evidence: [`Alex said "I'll let the pilot results speak for themselves".`, 'Not yet committed to selling internally.'],
                     suggested_question: `Beyond the pilot data, what would you need to feel confident recommending this to the CFO?`
                 },
                 competition: {
                     emoji: '✅',
                     status: 'confirmed',
-                    evidence: 'Two post-call analytics tools evaluated and rejected last year for being too slow. GoDojo is the only live tool in consideration.',
+                    summary: 'The competitive field is clear — prior tools were rejected on speed.',
+                    evidence: ['Two post-call analytics tools evaluated and rejected last year for being too slow.', 'GoDojo is the only live tool in consideration.'],
                     suggested_question: ''
                 }
             },

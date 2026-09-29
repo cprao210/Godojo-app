@@ -18,6 +18,10 @@ import { MapPin, NotebookPen, Video, X } from "lucide-react";
 // Imported from the leaf module, not the `@/hooks` barrel.
 import { formatTimeShort } from "@/hooks/useMeetingTimeline";
 import { detectProviderOrOther } from "@/lib/meetingProviderUtils";
+// Pure, dependency-free — the same candidate/"our own domain" logic the Sales
+// Brief uses, so a teammate on the rep's domain is never mistaken for the
+// prospect here either. Leaf module: safe for this window to load.
+import { deriveCompanyCandidates } from "@/lib/companyCandidates";
 import type { CalendarEvent, CompanyIntel } from "@/types";
 
 const PROVIDER_LABELS: Record<string, string> = {
@@ -26,43 +30,6 @@ const PROVIDER_LABELS: Record<string, string> = {
     teams: "Microsoft Teams",
     other: "Online meeting",
 };
-
-const GENERIC_EMAIL_DOMAINS = new Set([
-    "gmail.com", "yahoo.com", "outlook.com", "hotmail.com", "icloud.com",
-    "aol.com", "protonmail.com", "mail.com", "live.com", "me.com", "msn.com",
-]);
-
-/**
- * Pick the prospect company from the attendee list.
- *
- * This mirrors deriveCompanyCandidates() in useCompanyIntel.ts, but is
- * re-implemented here rather than imported: that module pulls in
- * `@/lib/firebase` and the PostHog service, which are exactly the two things
- * this window exists to avoid loading.
- */
-function deriveProspect(event: CalendarEvent): { companyName: string; domain: string } | null {
-    const attendees = event.attendees ?? [];
-    const hasSelfFlag = attendees.some((a: any) => a.self);
-    const selfDomain = (hasSelfFlag
-        ? attendees.find((a: any) => a.self)?.email?.split("@")[1]
-        : event.organizer?.split("@")[1]
-    )?.toLowerCase() ?? "";
-
-    for (const attendee of attendees) {
-        const email: string | undefined = attendee?.email;
-        if (!email) continue;
-        const domain = email.split("@")[1]?.toLowerCase();
-        if (!domain || GENERIC_EMAIL_DOMAINS.has(domain)) continue;
-        if (hasSelfFlag ? attendee.self : domain === selfDomain) continue;
-
-        const bare = domain.split(".")[0];
-        return {
-            companyName: bare.charAt(0).toUpperCase() + bare.slice(1),
-            domain,
-        };
-    }
-    return null;
-}
 
 /** Compose the one-line context blurb from the structured intel record. */
 function blurbFromIntel(intel: CompanyIntel): string | null {
@@ -236,7 +203,9 @@ export default function MeetingPopup() {
     // --- Company blurb, strictly after the card is on screen ---------------
     useEffect(() => {
         if (!event) return;
-        const prospect = deriveProspect(event);
+        // The reminder card has no room to ask, so it takes the company with
+        // the most invitees. (The Sales Brief asks the user when there are several.)
+        const prospect = deriveCompanyCandidates(event).candidates[0];
         if (!prospect) return;
 
         let cancelled = false;
@@ -347,9 +316,32 @@ export default function MeetingPopup() {
 
     if (!event || !timing) return <div className="w-full h-full bg-transparent" />;
 
+    // The card floats in the app's ONLY fully-transparent window on every
+    // platform (the launcher/overlay windows are opaque on Windows — see
+    // WindowHelper: transparent: isMac). On machines where Chromium falls
+    // back to software/degraded GPU compositing (the exact machine class
+    // dockSurfaceStyle.ts anticipates), a backdrop-filter element with a
+    // semi-transparent background inside a transparent window mis-renders:
+    // the card's own background fails to paint and the popup goes almost
+    // fully transparent. GPU-dependent → sporadic users on BOTH Windows and
+    // macOS. Two deterministic rules, same on every platform:
+    //   1. NO backdrop-blur on the card — in a transparent window it only
+    //      ever sampled the transparent body, so it added zero visuals and
+    //      100% of the fragile compositing path.
+    //   2. FULLY OPAQUE panel, no alpha channel at all. This used to be a
+    //      "near-opaque" `/98`/`/97` background, which still has an alpha
+    //      channel — and on the affected GPU/driver combos ANY alpha on top
+    //      of a transparent BrowserWindow can mis-composite (reports kept
+    //      coming in of the card going fully see-through, e.g. a Chrome
+    //      profile switcher bleeding straight through the "Recording starts
+    //      in…" card). Legibility can never depend on how the compositor
+    //      handles layered alpha, so the panel itself now carries zero alpha
+    //      — solid color, full stop. (Same mitigation Performance Mode
+    //      applies to the dock: drop blur, boost opacity — taken here to its
+    //      logical end.)
     const panelClass = isLight
-        ? "bg-[#F3F4F6]/92 border-black/10 shadow-black/10"
-        : "bg-[#1E1E1E]/85 border-white/10 shadow-black/40";
+        ? "bg-[#F3F4F6] border-black/10 shadow-black/10"
+        : "bg-[#1E1E1E] border-white/10 shadow-black/40";
     const chipClass = isLight
         ? "bg-black/5 border-black/10 text-neutral-700"
         : "bg-white/5 border-white/10 text-neutral-300";
@@ -360,7 +352,7 @@ export default function MeetingPopup() {
         <div className="w-full bg-transparent flex flex-col">
             <div
                 ref={cardRef}
-                className={`w-full backdrop-blur-xl border rounded-[18px] shadow-2xl p-4 flex flex-col gap-3 animate-scale-in origin-top-right ${panelClass}`}
+                className={`w-full border rounded-[18px] shadow-2xl p-4 flex flex-col gap-3 animate-scale-in origin-top-right ${panelClass}`}
             >
                 {/* Time + dismiss */}
                 <div className="flex items-start justify-between gap-2">

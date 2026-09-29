@@ -61,6 +61,11 @@ function hasGeneratedContent(m: Pick<Meeting, "summary" | "title">): boolean {
   return hasSummaryText && hasRealTitle;
 }
 
+// Ids already reported by the safety-net warning below. isMeetingProcessing runs
+// on every render / filter / poll tick for every row, so an unguarded warn
+// floods the console with the same ids over and over.
+const warnedStaleFlagIds = new Set<string>();
+
 /**
  * True while a meeting's transcript/summary/scorecard are still being generated.
  *
@@ -82,9 +87,11 @@ export function isMeetingProcessing(m: Pick<Meeting, "isProcessed" | "title">): 
   // guards against a backend bug/race where is_processed never gets flipped
   // to true even after the summary/title/analysis were successfully written.
   if (flaggedAsProcessing && hasGeneratedContent(m as any)) {
-    if (process.env.NODE_ENV !== "production") {
+    const id = (m as any).id ?? "?";
+    if (process.env.NODE_ENV !== "production" && !warnedStaleFlagIds.has(id)) {
+      warnedStaleFlagIds.add(id);
       console.warn(
-        `[meetingMapping] Meeting ${(m as any).id ?? "?"} has generated content but isProcessed is still false — check backend flag-setting logic.`
+        `[meetingMapping] Meeting ${id} has generated content but isProcessed is still false — check backend flag-setting logic.`
       );
     }
     return false;
@@ -139,7 +146,17 @@ export function shouldMergeLocalMeeting(
  */
 export function mergeMeetingCopies(incoming: Meeting, known: Meeting): Meeting {
   if (isMeetingProcessing(incoming) && !isMeetingProcessing(known)) {
-    return { ...incoming, ...known };
+    // Company is backend-only: neither DatabaseManager nor SupabaseReadService
+    // selects company_id, so `known` (usually the local copy) can never supply
+    // it and a blanket spread would blank what the backend row legitimately
+    // has. Field-wise, whichever copy actually knows wins.
+    return {
+      ...incoming,
+      ...known,
+      company: known.company ?? incoming.company ?? null,
+      company_skipped: known.company_skipped ?? incoming.company_skipped,
+      company_candidates: known.company_candidates ?? incoming.company_candidates,
+    };
   }
   return incoming;
 }
@@ -154,6 +171,52 @@ export const byNewestFirst = (a: Meeting, b: Meeting) =>
  * is idempotent and the live-call-ended handler can patch exactly one row.
  */
 export const OPTIMISTIC_LIVE_ID = "optimistic-live-call";
+
+// ─── Meeting-kind identification (Calendar / Quick / Upload) ─────────────────
+// Derived from the row's source + calendar fields; drives the meeting card's
+// badge and the header type filter. Kept here (data layer) so both the
+// LauncherWidgets badge and useLauncher's client-side filter share one rule.
+
+export type MeetingKind = 'calendar' | 'quick' | 'upload';
+
+export function meetingKindOf(m: Meeting): MeetingKind | null {
+  const hasCalendar = !!(m.calendarEventId || m.calendarEventMetadata?.length);
+  // 'upload' beats everything — an uploaded transcript has no live session.
+  if (m.source === 'upload') return 'upload';
+  if (m.source === 'calendar' || hasCalendar) return 'calendar';
+  if (m.source === 'manual') return 'quick';
+  // Backend placeholder rows stamp EVERY live session 'live' and (until the
+  // mirror lands the full row) carry no calendar fields — Quick is the safe
+  // read there; hasCalendar above already rescued calendar-sourced ones.
+  if (m.source === 'live') return 'quick';
+  // Unknown (optimistic placeholders before reconciliation) — no badge
+  // rather than a guess that flips a frame later.
+  return null;
+}
+
+// Lowercased search haystack per meeting — title, summary, company, attendee
+// names/emails, and the raw calendar metadata — computed once per row object
+// (WeakMap) so repeated search/filter passes never re-stringify the metadata.
+// Shared by the header pill's dropdown search and the meetings list filter.
+const meetingSearchTextCache = new WeakMap<Meeting, string>();
+
+export function meetingSearchText(m: Meeting): string {
+  let h = meetingSearchTextCache.get(m);
+  if (h === undefined) {
+    const attendees = ((m as any).attendees ?? []) as Array<{ email?: string; displayName?: string; name?: string }>;
+    h = [
+      m.title ?? '',
+      m.summary ?? '',
+      m.company?.name ?? '',
+      m.company?.domain ?? '',
+      ...attendees.map(a => `${a?.displayName || a?.name || ''} ${a?.email || ''}`),
+      JSON.stringify(m.calendarEventMetadata ?? ''),
+    ].join(' ').toLowerCase();
+    meetingSearchTextCache.set(m, h);
+  }
+  return h;
+}
+
 
 /** Renderer-invented row that no backend/DB list can possibly return yet. */
 export const isOptimisticId = (id: string) => id.startsWith("optimistic-");
@@ -226,7 +289,20 @@ export function mapMeetingRow(row: any): Meeting {
     calendarEventId: row.calendar_event_id ?? undefined,
     calendarEventMetadata: row.calendar_event_metadata ?? undefined,
     source: row.source ?? undefined,
-    isProcessed: row.is_processed === true || row.is_processed === 1,
+    // Meeting → company association (backend-enriched; see
+    // company_resolution.attach_companies). company_skipped only arrives on
+    // detail reads but is defaulted here so prompt-decision logic can treat
+    // list rows uniformly.
+    company: row.company ?? null,
+    company_skipped: row.company_skipped ?? false,
+    company_candidates: Array.isArray(row.company_candidates) ? row.company_candidates : undefined,
+    // Call categories from the scorecard (a meeting can carry several —
+    // demo + negotiation etc.), powering the multi-check category filter.
+    meetingTypes: Array.isArray(row.meeting_types) ? row.meeting_types : undefined,
+    // A row that doesn't carry the column at all (legacy rows, or a list
+    // projection that leaves it out) stays undefined rather than false —
+    // isMeetingProcessing treats only an explicit false as "still processing".
+    isProcessed: row.is_processed == null ? undefined : row.is_processed === true || row.is_processed === 1,
     transcript: [],
     usage: [],
   };

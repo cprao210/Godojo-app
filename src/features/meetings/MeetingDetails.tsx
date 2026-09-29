@@ -1,12 +1,18 @@
 import React, { useEffect, useRef, useState } from 'react';
 import { useResolvedTheme, useMeetingDetails, formatTime, formatTranscriptTimestamp, cleanMarkdown, isSummaryEmpty } from '@/hooks';
 import { hasGeneratedSummary } from '@/lib/meetingLifecycle';
-import { Mail, ChevronDown, ChevronUp, BarChart3, ArrowUp, Copy, Check, TrendingUp, TriangleAlert, MessageSquare } from 'lucide-react';
+import { BANT_ORDER, MEDDICC_ORDER } from '@/lib/bantMeddic';
+import { Mail, ChevronDown, ChevronUp, BarChart3, ArrowUp, Copy, Check, TrendingUp, TriangleAlert, MessageSquare, Building2, Plus, Square } from 'lucide-react';
 import { MessagesSquareIcon, ChartColumnIncreasing, CircleCheck, NotepadText, RefreshCcw, RefreshCw, NotebookPen, ClipboardList } from 'lucide-react';
 import { motion, AnimatePresence } from 'framer-motion';
 
 import { MeetingChatOverlay, FollowUpEmailModal, MeetingScorecardPanel } from '@/features/meetings';
+// Direct-file import (not the barrel): MeetingDetails itself is exported from
+// that barrel, so going through it here would be a self-import cycle.
+import { CompanySelectModal } from '@/features/meetings/CompanyAssociation';
+import { applyCompanyToCaches } from '@/lib/companyAssociation';
 import { chatMarkdownComponents, SourcesDisplay } from '@/features/chat';
+import { CitationProvider, rehypeCitations, CiteChip, indexSourceMap } from '@/features/chat/citations';
 import { EditableTextBlock } from '@/features/common';
 import { posthogAnalytics } from '@/lib/analytics/posthog.service';
 import { IMAGES } from '@/lib/assets';
@@ -43,7 +49,7 @@ const DetailAnalysisAccordion: React.FC<DetailAnalysisAccordionProps> = ({ score
                     <span className={`text-[13px] font-semibold ${isLight ? 'text-slate-700' : 'text-white/70'}`}>
                         Detailed Analysis
                     </span>
-                    {/* Type pills summary — show each detected type with its score */}
+                    {/* Type pills summary — show each detected type (score badge hidden for now) */}
                     <div className="flex gap-1 ml-1">
                         {(Object.values(scorecard.scorecards ?? [])).map(sc => {
                             const COLORS: Record<string, { color: string; bg: string }> = {
@@ -63,16 +69,20 @@ const DetailAnalysisAccordion: React.FC<DetailAnalysisAccordionProps> = ({ score
                                     style={{ color: c.color, background: c.bg }}
                                 >
                                     {LABELS[sc.meetingType] ?? sc.meetingType}
+                                    {/* SCORING DISABLED FOR TESTING (not accurate enough yet) — re-enable by uncommenting.
                                     <span className="opacity-70 font-semibold">{sc.overallScore}</span>
+                                    */}
                                 </span>
                             );
                         })}
                     </div>
                 </div>
                 <div className="flex items-center gap-2">
+                    {/* SCORING DISABLED FOR TESTING (not accurate enough yet) — re-enable by uncommenting.
                     <span className={`text-[11px] font-semibold tabular-nums ${isLight ? 'text-slate-500' : 'text-white/40'}`}>
                         Overall Score: {scorecard.overallWeightedScore}/100
                     </span>
+                    */}
                     <ChevronDown
                         size={14}
                         className={`transition-transform duration-200 ${isLight ? 'text-slate-400' : 'text-white/30'} ${open ? 'rotate-180' : ''}`}
@@ -104,6 +114,34 @@ const DetailAnalysisAccordion: React.FC<DetailAnalysisAccordionProps> = ({ score
  * meeting/live-shaped entries (`{ title, meeting_id }`, often "live" as a
  * placeholder, not a real openable meeting) are dropped. Dedupes on `id`
  * since the same doc commonly appears once per matched chunk. */
+// ── Sales-coach placeholder/gap helpers ─────────────────────────────────────
+// Exact-match placeholder detection for summary coach items. The old PREFIX
+// match ("not ", "no ", "none"…) silently dropped real improvement content
+// ("Not able to identify the champion", "No budget discussion happened") and
+// could hide the Better Execution / Room to Improve sections entirely.
+const SUMMARY_PLACEHOLDERS = new Set([
+    'n/a', 'na', 'none', 'none.', '-', '—', 'unknown', 'not discussed',
+    'not mentioned', 'not applicable', 'nothing', 'nothing.',
+]);
+
+function isPlaceholderSummaryContent(content: string | undefined | null): boolean {
+    if (!content) return true;
+    const normalized = content.trim().toLowerCase().replace(/[.!?]+$/, '').trim();
+    return normalized === '' || SUMMARY_PLACEHOLDERS.has(normalized);
+}
+
+/** Strips a leading "Label:" so placeholder checks test the real content. */
+function stripGapLabel(item: string): string {
+    const colonIndex = item.indexOf(':');
+    return (colonIndex > 0 && colonIndex < 30) ? item.substring(colonIndex + 1).trim() : item;
+}
+
+/** 'economicBuyer' → 'EconomicBuyer' (label-chip casing, matching the
+ * electron-side buildConfirmedWhatIDidRight convention). */
+function titleCaseComponent(key: string): string {
+    return key.charAt(0).toUpperCase() + key.slice(1);
+}
+
 function docSourcesFor(sources: AiInteractionSource[] | undefined) {
     if (!sources?.length) return [];
     const seen = new Set<string>();
@@ -119,6 +157,9 @@ function docSourcesFor(sources: AiInteractionSource[] | undefined) {
 const MeetingDetails: React.FC<MeetingDetailsProps> = ({ meeting: initialMeeting, viewContext }) => {
 
     const isLight = useResolvedTheme() === 'light';
+    // Customer-company chip (view/change) — the modal writes through the
+    // backend, then the meeting query is invalidated so the chip refreshes.
+    const [isCompanyModalOpen, setIsCompanyModalOpen] = useState(false);
     const {
         meeting,
         isProcessing,
@@ -133,6 +174,7 @@ const MeetingDetails: React.FC<MeetingDetailsProps> = ({ meeting: initialMeeting
         aiInteractionsData,
         hasMoreAiInteractions, isLoadingMoreAiInteractions, loadMoreAiInteractions,
         query, setQuery,
+        meetingInputRef,
         isCopied,
         isRegenerating,
         regenError,
@@ -146,6 +188,9 @@ const MeetingDetails: React.FC<MeetingDetailsProps> = ({ meeting: initialMeeting
         transcriptTimesAreRelative,
         handleSubmitQuestion,
         handleInputKeyDown,
+        isChatBusy,
+        handleChatBusyChange,
+        handleStopChatGeneration,
         handleCopy,
         handleTitleSave,
         handleActionItemSave,
@@ -268,6 +313,35 @@ const MeetingDetails: React.FC<MeetingDetailsProps> = ({ meeting: initialMeeting
                                     Follow-up email
                                 </button>
                             </div>
+
+                            {/* Customer company chip — click to change/remove. The
+                                association lives on the backend; AI context for this
+                                meeting resolves through it. */}
+                            <div className="mb-1">
+                                {meeting.company ? (
+                                    <button
+                                        onClick={() => setIsCompanyModalOpen(true)}
+                                        className={`inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-[11.5px] font-medium transition-colors ${isLight
+                                            ? 'bg-emerald-50 border border-emerald-200 text-emerald-700 hover:bg-emerald-100'
+                                            : 'bg-emerald-500/10 border border-emerald-500/25 text-emerald-400 hover:bg-emerald-500/20'
+                                            }`}
+                                    >
+                                        <Building2 size={11} />
+                                        {meeting.company.name}
+                                    </button>
+                                ) : (
+                                    <button
+                                        onClick={() => setIsCompanyModalOpen(true)}
+                                        className={`inline-flex items-center gap-1 px-2.5 py-1 rounded-full text-[11.5px] font-medium border border-dashed transition-colors ${isLight
+                                            ? 'border-slate-300 text-slate-400 hover:text-slate-600 hover:border-slate-400'
+                                            : 'border-border-subtle text-text-tertiary hover:text-text-secondary'
+                                            }`}
+                                    >
+                                        <Plus size={10} />
+                                        Add company
+                                    </button>
+                                )}
+                            </div>
                         </div>
 
                         <FollowUpEmailModal
@@ -276,6 +350,37 @@ const MeetingDetails: React.FC<MeetingDetailsProps> = ({ meeting: initialMeeting
                             meeting={meeting}
                             isLight={isLight}
                         />
+
+                        <AnimatePresence>
+                            {isCompanyModalOpen && (
+                                <CompanySelectModal
+                                    key="company-modal"
+                                    meetingId={meeting.id}
+                                    mode="edit"
+                                    initialCompany={meeting.company ?? null}
+                                    // get_meeting populates company_candidates
+                                    // whenever the event spans 2+ external
+                                    // attendee domains — the backend
+                                    // deliberately doesn't pick for the user.
+                                    // The post-call prompt rendered these; the
+                                    // edit chip never did, so a multi-domain
+                                    // meeting made you type a name the backend
+                                    // had already worked out.
+                                    candidates={meeting.company_candidates ?? undefined}
+                                    isLight={isLight}
+                                    onClose={() => setIsCompanyModalOpen(false)}
+                                    // One helper for all three surfaces so the
+                                    // detail cache, the company poll and the
+                                    // launcher list can't drift apart. The old
+                                    // version never touched ['meetings'], so
+                                    // the card and its search haystack
+                                    // (meetingSearchText reads company.name)
+                                    // stayed stale.
+                                    onSaved={(saved) => applyCompanyToCaches(queryClient, meeting.id, saved)}
+                                    onCleared={() => applyCompanyToCaches(queryClient, meeting.id, null)}
+                                />
+                            )}
+                        </AnimatePresence>
                     </div>
 
                     {/* Tabs + Action buttons row */}
@@ -771,21 +876,11 @@ const MeetingDetails: React.FC<MeetingDetailsProps> = ({ meeting: initialMeeting
                                                                 const content = hasLabel ? item.substring(colonIndex + 1).trim() : item.trim();
                                                                 return { label, content };
                                                             })
-                                                            .filter(({ content }) => {
-                                                                if (!content || content.trim() === '' || content.trim() === '-' || content.trim() === '—') return false;
-                                                                const lower = content.toLowerCase().trim();
-                                                                return (
-                                                                    !lower.startsWith('n/a') &&
-                                                                    !lower.startsWith('not ') &&
-                                                                    !lower.startsWith('none') &&
-                                                                    !lower.startsWith('no ') &&
-                                                                    !lower.startsWith('unknown') &&
-                                                                    !lower.startsWith('not discussed') &&
-                                                                    !lower.startsWith('not mentioned') &&
-                                                                    lower !== '-' &&
-                                                                    lower !== '—'
-                                                                );
-                                                            });
+                                                            // Exact-placeholder matching only — the old prefix
+                                                            // match ("not ", "no ", "none"…) silently dropped
+                                                            // real content like "Not able to identify the
+                                                            // champion" and could hide the whole section.
+                                                            .filter(({ content }) => !isPlaceholderSummaryContent(content));
 
                                                         if (!validBetterItems || validBetterItems.length === 0) return null;
 
@@ -816,29 +911,36 @@ const MeetingDetails: React.FC<MeetingDetailsProps> = ({ meeting: initialMeeting
 
                                                     {/* Missed Completely */}
                                                     {(() => {
-                                                        const validMissedItems = meeting.detailedSummary?.salesCoachReview?.whatIMissedCompletely
-                                                            ?.map(item => {
+                                                        // LLM items first; when they're all placeholders
+                                                        // (or absent — the old generation bug), derive the
+                                                        // section from the RECONCILED bant/meddicc Missing
+                                                        // fields persisted alongside the summary, so
+                                                        // "Room to Improve" shows whenever Call Analysis
+                                                        // shows gaps — including for already-saved meetings.
+                                                        const missedSource = (() => {
+                                                            const llmItems = meeting.detailedSummary?.salesCoachReview?.whatIMissedCompletely ?? [];
+                                                            const substantive = llmItems.filter(item => !isPlaceholderSummaryContent(stripGapLabel(item)));
+                                                            if (substantive.length > 0) return llmItems;
+                                                            const bant = meeting.detailedSummary?.bant ?? {};
+                                                            const meddicc = meeting.detailedSummary?.meddicc ?? {};
+                                                            const derived = [
+                                                                ...MEDDICC_ORDER.filter(k => (meddicc as any)[k]?.status === 'Missing')
+                                                                    .map(k => `MEDDICC ${titleCaseComponent(k)}: ${(meddicc as any)[k]?.detail?.trim() || 'Never addressed in this call — follow up next time.'}`),
+                                                                ...BANT_ORDER.filter(k => (bant as any)[k]?.status === 'Missing')
+                                                                    .map(k => `BANT ${titleCaseComponent(k)}: ${(bant as any)[k]?.detail?.trim() || 'Never addressed in this call — follow up next time.'}`),
+                                                            ];
+                                                            return derived;
+                                                        })();
+
+                                                        const validMissedItems = missedSource
+                                                            .map(item => {
                                                                 const colonIndex = item.indexOf(':');
                                                                 const hasLabel = colonIndex > 0 && colonIndex < 30;
                                                                 const label = hasLabel ? item.substring(0, colonIndex).trim() : null;
                                                                 const content = hasLabel ? item.substring(colonIndex + 1).trim() : item;
                                                                 return { label, content };
                                                             })
-                                                            .filter(({ content }) => {
-                                                                if (!content || content.trim() === '' || content.trim() === '-' || content.trim() === '—') return false;
-                                                                const lower = content.toLowerCase().trim();
-                                                                return (
-                                                                    !lower.startsWith('n/a') &&
-                                                                    !lower.startsWith('not ') &&
-                                                                    !lower.startsWith('none') &&
-                                                                    !lower.startsWith('no ') &&
-                                                                    !lower.startsWith('unknown') &&
-                                                                    !lower.startsWith('not discussed') &&
-                                                                    !lower.startsWith('not mentioned') &&
-                                                                    lower !== '-' &&
-                                                                    lower !== '—'
-                                                                );
-                                                            });
+                                                            .filter(({ content }) => !isPlaceholderSummaryContent(content));
 
                                                         if (!validMissedItems || validMissedItems.length === 0) return null;
 
@@ -854,7 +956,7 @@ const MeetingDetails: React.FC<MeetingDetailsProps> = ({ meeting: initialMeeting
                                                                             {label || '—'}
                                                                         </span>
                                                                         <div className="w-px self-stretch bg-red-500/20 shrink-0" />
-                                                                        <p className="text-sm text-red-300 leading-relaxed">{content}</p>
+                                                                        <p className="text-sm text-red-400 leading-relaxed">{content}</p>
                                                                     </div>
                                                                 ))}
                                                             </div>
@@ -1263,86 +1365,98 @@ const MeetingDetails: React.FC<MeetingDetailsProps> = ({ meeting: initialMeeting
                                     ))
                                 ) : (
                                     <>
-                                    {/* Older Q&A pages in — above the newest exchange the
+                                        {/* Older Q&A pages in — above the newest exchange the
                                         tab auto-scrolls to, hence ChevronUp. Kept visible
                                         while loading (hasMore || isLoadingMore) so it doesn't
                                         flicker out and back between click and refetch. */}
-                                    {(hasMoreAiInteractions || isLoadingMoreAiInteractions) && (aiInteractionsData?.items?.length ?? 0) > 0 && (
-                                        <div className="flex justify-center">
-                                            <button
-                                                type="button"
-                                                onClick={handleAskDojoLoadMore}
-                                                disabled={isLoadingMoreAiInteractions}
-                                                className={[
-                                                    'flex items-center gap-2 rounded-full px-4 py-2 text-[13px] font-medium shadow-lg',
-                                                    'transition-colors disabled:cursor-not-allowed disabled:opacity-60',
-                                                    isLight
-                                                        ? 'bg-white text-slate-700 border border-slate-200 hover:bg-slate-50 shadow-slate-900/10'
-                                                        : 'bg-gray-800 text-white/90 border border-white/10 hover:bg-gray-700 shadow-black/40',
-                                                ].join(' ')}
-                                            >
-                                                {isLoadingMoreAiInteractions
-                                                    ? <RefreshCw size={14} className="animate-spin" />
-                                                    : <ChevronUp size={14} />}
-                                                {isLoadingMoreAiInteractions ? 'Loading…' : 'Load more'}
-                                            </button>
-                                        </div>
-                                    )}
-                                    {(aiInteractionsData?.items ?? []).map((interaction) => (
-                                        <div key={interaction.id} className="space-y-4">
-                                            {/* User Question */}
-                                            {interaction.user_query && (
-                                                <div className="flex justify-end">
-                                                    <div className="bg-accent-primary text-white px-5 py-2.5 rounded-2xl rounded-tr-sm max-w-[80%] text-[15px] leading-relaxed shadow-sm">
-                                                        {interaction.user_query}
-                                                    </div>
-                                                </div>
-                                            )}
-
-                                            {/* AI Answer */}
-                                            {interaction.ai_response && (
-                                                <div className="flex items-start gap-4">
-                                                    <div className="mt-1 w-6 h-6 rounded-full bg-bg-input flex items-center justify-center border border-border-subtle shrink-0">
-                                                        <img src={IMAGES.godojoLogoIcon} alt="AI" className="w-4 h-4 opacity-50 object-contain force-black-icon" />
-                                                    </div>
-                                                    <div>
-                                                        <div className="text-[11px] text-text-tertiary mb-1.5 font-medium">{formatTime(interaction.timestamp)}</div>
-                                                        <div className="text-text-secondary text-[15px] leading-relaxed max-w-none">
-                                                            <ReactMarkdown
-                                                                remarkPlugins={[remarkGfm]}
-                                                                components={{
-                                                                    ...chatMarkdownComponents,
-                                                                    // Ask Dojo tab keeps headings/paragraphs down to plain
-                                                                    // body copy (no bold/large text) unlike the chat overlays.
-                                                                    h1: ({ node, ...props }: any) => <p className="text-[15px] text-text-secondary font-normal leading-relaxed mb-2 whitespace-pre-wrap" {...props} />,
-                                                                    h2: ({ node, ...props }: any) => <p className="text-[15px] text-text-secondary font-normal leading-relaxed mb-2 whitespace-pre-wrap" {...props} />,
-                                                                    h3: ({ node, ...props }: any) => <p className="text-[15px] text-text-secondary font-normal leading-relaxed mb-2 whitespace-pre-wrap" {...props} />,
-                                                                    p: ({ node, ...props }: any) => <p className="text-[15px] text-text-secondary font-normal leading-relaxed mb-2 whitespace-pre-wrap" {...props} />,
-                                                                    ul: ({ node, ...props }: any) => <ul className="list-disc ml-4 mb-2 space-y-1" {...props} />,
-                                                                    ol: ({ node, ...props }: any) => <ol className="list-decimal ml-4 mb-2 space-y-1" {...props} />,
-                                                                    li: ({ node, ...props }: any) => <li className="text-[15px] text-text-secondary font-normal" {...props} />,
-                                                                    strong: ({ node, ...props }: any) => <span className="font-normal text-text-secondary" {...props} />,
-                                                                }}
-                                                            >
-                                                                {cleanMarkdown(interaction.ai_response || '')}
-                                                            </ReactMarkdown>
+                                        {(hasMoreAiInteractions || isLoadingMoreAiInteractions) && (aiInteractionsData?.items?.length ?? 0) > 0 && (
+                                            <div className="flex justify-center">
+                                                <button
+                                                    type="button"
+                                                    onClick={handleAskDojoLoadMore}
+                                                    disabled={isLoadingMoreAiInteractions}
+                                                    className={[
+                                                        'flex items-center gap-2 rounded-full px-4 py-2 text-[13px] font-medium shadow-lg',
+                                                        'transition-colors disabled:cursor-not-allowed disabled:opacity-60',
+                                                        isLight
+                                                            ? 'bg-white text-slate-700 border border-slate-200 hover:bg-slate-50 shadow-slate-900/10'
+                                                            : 'bg-gray-800 text-white/90 border border-white/10 hover:bg-gray-700 shadow-black/40',
+                                                    ].join(' ')}
+                                                >
+                                                    {isLoadingMoreAiInteractions
+                                                        ? <RefreshCw size={14} className="animate-spin" />
+                                                        : <ChevronUp size={14} />}
+                                                    {isLoadingMoreAiInteractions ? 'Loading…' : 'Load more'}
+                                                </button>
+                                            </div>
+                                        )}
+                                        {(aiInteractionsData?.items ?? []).map((interaction) => (
+                                            <div key={interaction.id} className="space-y-4">
+                                                {/* User Question */}
+                                                {interaction.user_query && (
+                                                    <div className="flex justify-end">
+                                                        <div className="bg-accent-primary text-white px-5 py-2.5 rounded-2xl rounded-tr-sm max-w-[80%] text-[15px] leading-relaxed shadow-sm">
+                                                            {interaction.user_query}
                                                         </div>
-                                                        {(() => {
-                                                            const docSources = docSourcesFor(interaction.sources);
-                                                            if (docSources.length === 0) return null;
-                                                            // Same "first chip + +N popover" treatment as Global Chat,
-                                                            // instead of wrapping every source into its own chip.
-                                                            return (
-                                                                <div className="mt-2">
-                                                                    <SourcesDisplay sources={{ meetings: [], assets: docSources }} />
-                                                                </div>
-                                                            );
-                                                        })()}
                                                     </div>
-                                                </div>
-                                            )}
-                                        </div>
-                                    ))}
+                                                )}
+
+                                                {/* AI Answer */}
+                                                {interaction.ai_response && (
+                                                    <div className="flex items-start gap-4">
+                                                        <div className="mt-1 w-6 h-6 rounded-full bg-bg-input flex items-center justify-center border border-border-subtle shrink-0">
+                                                            <img src={IMAGES.godojoLogoIcon} alt="AI" className="w-4 h-4 opacity-50 object-contain force-black-icon" />
+                                                        </div>
+                                                        {/* flex-1 min-w-0: without min-w-0 this flex item can't shrink
+                                                            below its content's intrinsic width, so a wide markdown
+                                                            table (which scrolls fine on its own — see the table
+                                                            wrapper in markdownComponents.tsx) just expands this row
+                                                            instead, pushing the whole panel into horizontal overflow. */}
+                                                        <div className="flex-1 min-w-0">
+                                                            <div className="text-[11px] text-text-tertiary mb-1.5 font-medium">{formatTime(interaction.timestamp)}</div>
+                                                            <div className="text-text-secondary text-[15px] leading-relaxed max-w-none">
+                                                                {/* Same inline-citation design as the chat overlays:
+                                                                [n] markers become hoverable chips backed by the
+                                                                source_map persisted with each interaction. */}
+                                                                <CitationProvider map={indexSourceMap(interaction.source_map ?? [])}>
+                                                                    <ReactMarkdown
+                                                                        remarkPlugins={[remarkGfm]}
+                                                                        rehypePlugins={[rehypeCitations]}
+                                                                        components={{
+                                                                            ...chatMarkdownComponents,
+                                                                            cite: CiteChip as any,
+                                                                            // Ask Dojo tab keeps headings/paragraphs down to plain
+                                                                            // body copy (no bold/large text) unlike the chat overlays.
+                                                                            h1: ({ node, ...props }: any) => <p className="text-[15px] text-text-secondary font-normal leading-relaxed mb-2 whitespace-pre-wrap" {...props} />,
+                                                                            h2: ({ node, ...props }: any) => <p className="text-[15px] text-text-secondary font-normal leading-relaxed mb-2 whitespace-pre-wrap" {...props} />,
+                                                                            h3: ({ node, ...props }: any) => <p className="text-[15px] text-text-secondary font-normal leading-relaxed mb-2 whitespace-pre-wrap" {...props} />,
+                                                                            p: ({ node, ...props }: any) => <p className="text-[15px] text-text-secondary font-normal leading-relaxed mb-2 whitespace-pre-wrap" {...props} />,
+                                                                            ul: ({ node, ...props }: any) => <ul className="list-disc ml-4 mb-2 space-y-1" {...props} />,
+                                                                            ol: ({ node, ...props }: any) => <ol className="list-decimal ml-4 mb-2 space-y-1" {...props} />,
+                                                                            li: ({ node, ...props }: any) => <li className="text-[15px] text-text-secondary font-normal" {...props} />,
+                                                                            strong: ({ node, ...props }: any) => <span className="font-normal text-text-secondary" {...props} />,
+                                                                        }}
+                                                                    >
+                                                                        {cleanMarkdown(interaction.ai_response || '')}
+                                                                    </ReactMarkdown>
+                                                                </CitationProvider>
+                                                            </div>
+                                                            {(() => {
+                                                                const docSources = docSourcesFor(interaction.sources);
+                                                                if (docSources.length === 0) return null;
+                                                                // Same "first chip + +N popover" treatment as Global Chat,
+                                                                // instead of wrapping every source into its own chip.
+                                                                return (
+                                                                    <div className="mt-2">
+                                                                        <SourcesDisplay sources={{ meetings: [], assets: docSources }} />
+                                                                    </div>
+                                                                );
+                                                            })()}
+                                                        </div>
+                                                    </div>
+                                                )}
+                                            </div>
+                                        ))}
                                     </>
                                 )}
                                 {!isLoadingAskDojo && !(aiInteractionsData?.items?.length) && (
@@ -1425,8 +1539,8 @@ const MeetingDetails: React.FC<MeetingDetailsProps> = ({ meeting: initialMeeting
                     <button
                         onClick={() => setIsChatOpen(true)}
                         className={`pointer-events-auto flex items-center gap-1.5 px-3 py-1.5 rounded-full text-[12px] font-medium backdrop-blur-[24px] backdrop-saturate-[140%] transition-colors ${isLight
-                            ? 'bg-white/80 border border-slate-200 text-slate-600 hover:bg-white shadow-[0_8px_30px_rgba(0,0,0,0.08)]'
-                            : 'bg-white/[0.06] border border-white/20 text-white/70 hover:bg-white/[0.1] shadow-[0_8px_30px_rgb(0,0,0,0.12)]'
+                            ? 'bg-white border border-slate-200 text-slate-600 hover:bg-gray-100 shadow-[0_8px_30px_rgba(0,0,0,0.08)]'
+                            : 'bg-bg-secondary border border-white/20 text-white/70 hover:bg-bg-elevated shadow-[0_8px_30px_rgb(0,0,0,0.12)]'
                             }`}
                     >
                         <MessageSquare size={12} />
@@ -1435,9 +1549,9 @@ const MeetingDetails: React.FC<MeetingDetailsProps> = ({ meeting: initialMeeting
                 )}
                 <div className="w-full max-w-[440px] relative group pointer-events-auto">
                     {/* Dark Glass Effect Input (Matching Reference) */}
-                    <input
-                        type="text"
+                    <textarea
                         value={query}
+                        ref={meetingInputRef}
                         onChange={(e) => setQuery(e.target.value)}
                         onKeyDown={handleInputKeyDown}
                         // Clicking/focusing the input opens the panel immediately —
@@ -1447,21 +1561,35 @@ const MeetingDetails: React.FC<MeetingDetailsProps> = ({ meeting: initialMeeting
                             if (!isChatOpen) setIsChatOpen(true);
                         }}
                         placeholder="Ask about this meeting..."
-                        className={`w-full pl-5 pr-12 py-3 backdrop-blur-[24px] backdrop-saturate-[140%] focus:outline-none transition-shadow duration-200 rounded-full text-sm text-text-primary placeholder-text-tertiary/70 ${isLight ? 'bg-white/80 border border-slate-200 shadow-[0_8px_30px_rgba(0,0,0,0.08)]' : 'bg-transparent border border-white/20 shadow-[0_8px_30px_rgb(0,0,0,0.12)]'}`}
+                        rows={1}
+                        className={`w-full pl-5 pr-12 py-3 backdrop-blur-[24px] backdrop-saturate-[140%] focus:outline-none transition-shadow duration-200 rounded-3xl text-sm text-text-primary placeholder-text-tertiary/70 resize-none leading-relaxed ${isLight ? 'bg-white border border-slate-200 shadow-[0_8px_30px_rgba(0,0,0,0.08)]' : 'bg-bg-secondary border border-white/20 shadow-[0_8px_30px_rgb(0,0,0,0.12)]'}`}
+                        style={{ maxHeight: 120, overflowY: 'auto' }}
                     />
-                    <button
-                        onClick={handleSubmitQuestion}
-                        className={`absolute right-2 top-1/2 -translate-y-1/2 p-1.5 rounded-full transition-all duration-200 border border-white/5 ${query.trim() ? 'bg-text-primary text-bg-primary hover:scale-105' : 'bg-bg-item-active text-text-primary hover:bg-bg-item-hover'
-                            }`}
-                    >
-                        <ArrowUp size={16} className="transform rotate-45" />
-                    </button>
+                    {isChatBusy ? (
+                        <button
+                            onClick={handleStopChatGeneration}
+                            className="absolute right-2 bottom-4 p-1.5 rounded-full transition-all duration-200 border border-white/5 bg-bg-item-active text-text-primary hover:bg-bg-item-hover"
+                            aria-label="Stop generating"
+                            title="Stop generating"
+                        >
+                            <Square size={14} fill="currentColor" />
+                        </button>
+                    ) : (
+                        <button
+                            onClick={handleSubmitQuestion}
+                            className={`absolute right-2 bottom-4 p-1.5 rounded-full transition-all duration-200 border border-white/5 ${query.trim() ? 'bg-text-primary text-bg-primary hover:scale-105' : 'bg-bg-item-active text-text-primary hover:bg-bg-item-hover'
+                                }`}
+                        >
+                            <ArrowUp size={16} className="transform rotate-45" />
+                        </button>
+                    )}
                 </div>
             </div>
 
             {/* Chat Overlay */}
             <MeetingChatOverlay
                 isOpen={isChatOpen}
+                onBusyChange={handleChatBusyChange}
                 onClose={() => {
                     setIsChatOpen(false);
                     setQuery('');
@@ -1477,6 +1605,16 @@ const MeetingDetails: React.FC<MeetingDetailsProps> = ({ meeting: initialMeeting
                 initialQuery={pendingQuery}
                 messages={chatMessages}
                 onMessagesChange={setChatMessages}
+                // Ask-Dojo tab goes stale after a chat turn (P1-7). The backend
+                // persists the turn in a background task right around `done`,
+                // so refresh now AND once more after the write has landed —
+                // an immediate-only refetch can race the insert. When the tab
+                // isn't mounted this just marks it stale for its next view.
+                onTurnComplete={() => {
+                    const key = ['ai-interactions', meeting.id];
+                    void queryClient.invalidateQueries(key);
+                    window.setTimeout(() => void queryClient.invalidateQueries(key), 1500);
+                }}
             />
         </div>
     )

@@ -43,8 +43,8 @@ export const AeDetailView: React.FC<AeDetailViewProps> = ({ ae, tenantId, onBack
 
     const AeDetailsStates = useAeDetail({ ae, tenantId });
 
-    const { isLoadingDetail, detailError, displayName, displayRole, displayCalls, displayScore } = AeDetailsStates;
-    const { dimensions, strengthsAndGaps, recentCalls, pagedCalls, callsPage, setCallsPage, callsTotalPages, callsRangeStart, callsRangeEnd } = AeDetailsStates;
+    const { isLoadingDetail, isPaging, detailError, displayName, displayRole, displayCalls, displayScore } = AeDetailsStates;
+    const { dimensions, strengthsAndGaps, recentCalls, pagedCalls, callsPage, setCallsPage, callsTotalPages, callsRangeStart, callsRangeEnd, callsTotal } = AeDetailsStates;
     const { selectedMeeting, setSelectedMeeting, handleSelectCall } = AeDetailsStates;
 
     const cardCls = isLight ? 'bg-white border-slate-200' : 'bg-[#141820] border-border-subtle';
@@ -107,12 +107,14 @@ export const AeDetailView: React.FC<AeDetailViewProps> = ({ ae, tenantId, onBack
                                             </p>
                                         </div>
                                     </div>
+                                    {/* SCORING DISABLED FOR TESTING (not accurate enough yet) — re-enable by uncommenting.
                                     <div className="flex items-center gap-5 shrink-0">
                                         <div className="text-right">
                                             <p className="text-3xl font-bold text-text-primary tabular-nums leading-none">{displayScore}</p>
                                             <p className="text-xs text-text-tertiary mt-1">avg score</p>
                                         </div>
                                     </div>
+                                    */}
                                 </div>
 
                                 {/* Tabs (Overview only, for now) */}
@@ -123,7 +125,7 @@ export const AeDetailView: React.FC<AeDetailViewProps> = ({ ae, tenantId, onBack
                                 </div>
 
                                 {/* Dimension gauge + Strengths/gaps */}
-                                <div className="grid grid-cols-1 lg:grid-cols-[1.1fr_1fr] gap-4 mb-4">
+                                {/* <div className="grid grid-cols-1 gap-4 mb-4">
                                     <div className={`rounded-2xl border p-5 ${cardCls}`}>
                                         <div className="flex items-center gap-1.5 mb-1">
                                             <h3 className="text-sm font-bold text-text-primary">Sales performance by dimension</h3>
@@ -157,7 +159,7 @@ export const AeDetailView: React.FC<AeDetailViewProps> = ({ ae, tenantId, onBack
                                             <StrengthsAndGapsList items={strengthsAndGaps} isLight={isLight} />
                                         )}
                                     </div>
-                                </div>
+                                </div> */}
 
                                 {/* Recent calls */}
                                 <div className={`rounded-2xl border mb-10 p-5 ${cardCls}`}>
@@ -177,8 +179,9 @@ export const AeDetailView: React.FC<AeDetailViewProps> = ({ ae, tenantId, onBack
                                                 totalPages={callsTotalPages}
                                                 rangeStart={callsRangeStart}
                                                 rangeEnd={callsRangeEnd}
-                                                total={recentCalls.length}
+                                                total={callsTotal}
                                                 isLight={isLight}
+                                                isPaging={isPaging}
                                                 onPageChange={setCallsPage}
                                             />
                                         </>

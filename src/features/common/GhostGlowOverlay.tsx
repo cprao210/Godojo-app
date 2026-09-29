@@ -20,10 +20,12 @@ import React from 'react';
 import { AnimatePresence, motion } from 'framer-motion';
 import { useUndetectable } from '@/hooks/useUndetectable';
 import { useResolvedTheme } from '@/hooks/useResolvedTheme';
+import { usePerformanceMode } from '@/hooks';
 
 export const GhostGlowOverlay: React.FC = () => {
     const isUndetectable = useUndetectable();
     const isLight = useResolvedTheme() === 'light';
+    const { isPerformanceMode } = usePerformanceMode();
 
     // Steady frame — always on while active so the state reads unmistakably.
     // Light mode is toned down so it doesn't flood the near-white canvas.
@@ -71,13 +73,25 @@ export const GhostGlowOverlay: React.FC = () => {
                 >
                     {/* Steady frame */}
                     <div className="absolute inset-0 rounded-[11px]" style={{ boxShadow: baseGlow }} />
-                    {/* Breathing accent */}
-                    <motion.div
-                        className="absolute inset-0 rounded-[11px]"
-                        style={{ boxShadow: pulseGlow, willChange: 'opacity' }}
-                        animate={{ opacity: pulseRange }}
-                        transition={{ duration: 3.8, ease: 'easeInOut', repeat: Infinity }}
-                    />
+                    {/* Breathing accent — STATIC in Performance Mode: an
+                        infinite opacity loop over two full-window box-shadows
+                        re-composites the whole launcher every frame for a
+                        purely decorative effect. Framer's reducedMotion does
+                        not stop opacity loops, so perf mode renders the
+                        brighter layer at a fixed mid opacity instead. */}
+                    {isPerformanceMode ? (
+                        <div
+                            className="absolute inset-0 rounded-[11px]"
+                            style={{ boxShadow: pulseGlow, opacity: 0.75 }}
+                        />
+                    ) : (
+                        <motion.div
+                            className="absolute inset-0 rounded-[11px]"
+                            style={{ boxShadow: pulseGlow, willChange: 'opacity' }}
+                            animate={{ opacity: pulseRange }}
+                            transition={{ duration: 3.8, ease: 'easeInOut', repeat: Infinity }}
+                        />
+                    )}
                 </motion.div>
             )}
         </AnimatePresence>

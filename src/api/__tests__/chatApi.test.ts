@@ -18,6 +18,7 @@ vi.mock('@/lib/apiClient', async () => {
 import { chatApi, statusLabel } from '@/api';
 import { groupSources } from '@/api/chatApi';
 import { getAuthHeaders, apiFetch } from '@/lib/apiClient';
+import type { ChatStreamHandlers } from '@/types';
 
 const mockedGetAuthHeaders = vi.mocked(getAuthHeaders);
 const mockedApiFetch = vi.mocked(apiFetch);
@@ -145,6 +146,37 @@ describe('statusLabel', () => {
     });
 });
 
+describe('live source_map (P2-11)', () => {
+    afterEach(() => {
+        vi.unstubAllGlobals();
+    });
+
+    it('passes live_moment entries through to onSourceMap and indexes them for chips', async () => {
+        const { indexSourceMap } = await import('@/features/chat/citations');
+        const fetchMock = vi.fn().mockResolvedValueOnce(sseResponse([
+            'event: source_map\ndata: {"sources":[' +
+                '{"index":1,"id":"live","title":"This call, 02:14","type":"live_moment","speaker":"Linda","timestamp_label":"02:14","snippet":"We need SSO."},' +
+                '{"index":2,"id":"a1","title":"Pricing deck","type":"doc","page":3}' +
+            ']}',
+            'event: token\ndata: {"chunk":"They need SSO [1]."}',
+            'event: done\ndata: {}',
+        ]));
+        vi.stubGlobal('fetch', fetchMock);
+        const { handlers, settled } = collectHandlers();
+        let entries: import('@/types').SourceMapEntry[] = [];
+
+        chatApi.queryLive('what do they need?', [], [], undefined, {
+            ...handlers,
+            onSourceMap: (e) => { entries = e; },
+        });
+        await settled;
+
+        expect(entries.map((e) => e.type)).toEqual(['live_moment', 'doc']);
+        const map = indexSourceMap(entries);
+        expect(map[1]).toMatchObject({ title: 'This call, 02:14', speaker: 'Linda', type: 'live_moment' });
+    });
+});
+
 describe('chatApi.queryGlobal', () => {
     let fetchMock: ReturnType<typeof vi.fn>;
 
@@ -176,6 +208,23 @@ describe('chatApi.queryGlobal', () => {
             query: 'what changed last quarter?',
             session_id: null,
             history: [],
+            citations_inline: true,
+        });
+    });
+
+    it('sends the company pinned to the chat as company_id (and nothing when none is pinned)', async () => {
+        fetchMock.mockResolvedValueOnce(sseResponse(['event: done\ndata: {}']));
+        const { handlers, settled } = collectHandlers();
+
+        chatApi.queryGlobal('how was the call?', 'sess-1', [], handlers, 'company-uuid-1');
+        await settled;
+
+        expect(JSON.parse(fetchMock.mock.calls[0][1].body)).toEqual({
+            query: 'how was the call?',
+            session_id: 'sess-1',
+            history: [],
+            citations_inline: true,
+            company_id: 'company-uuid-1',
         });
     });
 
@@ -191,10 +240,11 @@ describe('chatApi.queryGlobal', () => {
             query: 'follow-up question',
             session_id: 'session-abc',
             history: [],
+            citations_inline: true,
         });
     });
 
-    it('dispatches token, status, source_ids, and rag_answer frames to the matching handlers', async () => {
+    it('dispatches token, status, and rag_answer frames; ignores source_ids (sources are inline chips only)', async () => {
         fetchMock.mockResolvedValueOnce(
             sseResponse([
                 'event: status\ndata: {"status":"searching"}',
@@ -212,10 +262,8 @@ describe('chatApi.queryGlobal', () => {
 
         expect(result.statuses).toEqual(['searching']);
         expect(result.tokens).toEqual(['Hel', 'lo']);
-        expect(result.sources).toEqual({
-            meetings: [{ id: 'm1', title: 'Call A' }],
-            assets: [{ id: 'a1', title: 'Doc A' }],
-        });
+        // No separate source list reaches the UI any more.
+        expect(result.sources).toBeUndefined();
         expect(result.ragAnswer).toEqual({ answer: 'Hello there' });
         expect(result.done).toBe(true);
     });
@@ -405,6 +453,7 @@ describe('chatApi.queryMeeting', () => {
             query: 'what was decided?',
             session_id: null,
             history: [],
+            citations_inline: true,
         });
     });
 });
@@ -457,9 +506,10 @@ describe('chatApi.queryLive', () => {
         expect(onInteractionId).toHaveBeenCalledWith(441);
     });
 
-    it('dispatches a source_ids frame in the live asset_id/kind shape, dropping entries with no asset_id', async () => {
+    it('never fires onSources for a live source_ids frame — sources are inline chips only', async () => {
         fetchMock.mockResolvedValueOnce(sseResponse([
-            'event: source_ids\ndata: {"sources":[{"asset_id":"product_specs-1","title":"orbitly_product_specs.docx","kind":"asset"},{"asset_id":"sales_deck-2","title":"orbitly_sales_deck_meridian.pptx","kind":"asset"},{"title":"no id here","kind":"asset"}],"raw_ids":[],"raw_asset_ids":["product_specs-1","sales_deck-2"]}',
+            'event: source_ids\ndata: {"sources":[{"asset_id":"product_specs-1","title":"orbitly_product_specs.docx","kind":"asset"}],"raw_ids":[],"raw_asset_ids":["product_specs-1"]}',
+            'event: token\ndata: {"chunk":"Page 2 covers specs."}',
             'event: done\ndata: {}',
         ]));
         const result = collectHandlers();
@@ -467,27 +517,30 @@ describe('chatApi.queryLive', () => {
         chatApi.queryLive('what is on page 2', [], [], undefined, result.handlers);
         await result.settled;
 
-        expect(result.sources).toEqual({
-            meetings: [],
-            assets: [
-                { id: 'product_specs-1', title: 'orbitly_product_specs.docx' },
-                { id: 'sales_deck-2', title: 'orbitly_sales_deck_meridian.pptx' },
-            ],
-        });
+        expect(result.sources).toBeUndefined();
+        expect(result.done).toBe(true);
     });
 
-    it('never fires onSources for a live turn whose source_ids frame has no asset_id-bearing entries', async () => {
-        fetchMock.mockResolvedValueOnce(sseResponse([
-            'event: source_ids\ndata: {"sources":[],"raw_ids":[],"raw_asset_ids":[]}',
-            'event: token\ndata: {"chunk":"No sources for this one."}',
-            'event: done\ndata: {}',
-        ]));
+    it('completes the turn on the `done` frame even when the connection stays open', async () => {
+        // The server sends `done` but never closes the socket (a lingering
+        // heartbeat). The turn must still finish — this was the "cursor keeps
+        // blinking, Copy never appears" bug.
+        const body = 'event: token\ndata: {"chunk":"Answer."}\n\nevent: done\ndata: {}\n\n';
+        const stream = new ReadableStream<Uint8Array>({
+            start(controller) {
+                controller.enqueue(new TextEncoder().encode(body));
+                // deliberately never closed
+            },
+        });
+        fetchMock.mockResolvedValueOnce(new Response(stream, { status: 200 }));
         const result = collectHandlers();
 
-        chatApi.queryLive('unrelated question', [], [], undefined, result.handlers);
+        chatApi.queryGlobal('hi', null, [], result.handlers);
         await result.settled;
 
-        expect(result.sources).toEqual({ meetings: [], assets: [] });
+        expect(result.tokens).toEqual(['Answer.']);
+        expect(result.done).toBe(true);
+        expect(result.error).toBeUndefined();
     });
 });
 
@@ -610,5 +663,185 @@ describe('reset frame', () => {
         await result.settled;
 
         expect(result.resets).toBe(0);
+    });
+});
+
+// The backend reports generation failures IN-BAND: HTTP 200, a few `status`
+// frames, then `event: error` followed by `event: done`. That is exactly what
+// the DevTools EventStream tab showed for the failing chat:
+//   status(connected) status(searching) status(connected) status(searching)
+//   status(ranking) error done
+// These frames must go through the same retry path as a 5xx / dropped
+// connection, for all three chat entry points.
+describe('in-band error frames', () => {
+    const ERROR_MESSAGE = 'Something went wrong while generating a response. Please try again.';
+    const errorFrame = `event: error\ndata: {"error": "${ERROR_MESSAGE}"}`;
+    const doneFrame = 'event: done\ndata: {}';
+
+    /** A 200 whose stream fails after the pipeline stages — the screenshot. */
+    const failedAttempt = () =>
+        sseResponse([
+            'event: status\ndata: {"status": "connected"}',
+            'event: status\ndata: {"status": "searching"}',
+            'event: status\ndata: {"status": "ranking"}',
+            errorFrame,
+            doneFrame,
+        ]);
+
+    const goodAttempt = (text = 'Recovered answer') =>
+        sseResponse([`event: token\ndata: {"chunk":"${text}"}`, doneFrame]);
+
+    const callers: [string, (h: ChatStreamHandlers) => unknown][] = [
+        ['queryGlobal', (h) => chatApi.queryGlobal('hi', null, [], h)],
+        ['queryMeeting', (h) => chatApi.queryMeeting('m-1', 'hi', null, [], h)],
+        ['queryLive', (h) => chatApi.queryLive('hi', [], [], undefined, h)],
+    ];
+
+    let fetchMock: ReturnType<typeof vi.fn>;
+
+    beforeEach(() => {
+        fetchMock = vi.fn();
+        vi.stubGlobal('fetch', fetchMock);
+        vi.useFakeTimers(); // skip the 600ms/1.2s/2.4s backoff
+    });
+
+    afterEach(() => {
+        vi.useRealTimers();
+    });
+
+    describe.each(callers)('%s', (_name, call) => {
+        it('retries an error frame that arrives before any content, then completes', async () => {
+            fetchMock.mockImplementationOnce(() => Promise.resolve(failedAttempt()));
+            fetchMock.mockImplementationOnce(() => Promise.resolve(goodAttempt()));
+            const onRetry = vi.fn();
+            const onError = vi.fn();
+            const result = collectHandlers();
+
+            call({ ...result.handlers, onRetry, onError });
+            await vi.runAllTimersAsync();
+            await result.settled;
+
+            expect(onError).not.toHaveBeenCalled();
+            expect(result.done).toBe(true);
+            expect(result.tokens.join('')).toBe('Recovered answer');
+            expect(onRetry).toHaveBeenCalledTimes(1);
+            expect(onRetry).toHaveBeenCalledWith(1, MAX_STREAM_RETRIES);
+            expect(fetchMock).toHaveBeenCalledTimes(2);
+        });
+
+        it('surfaces the backend message once retries are exhausted — onError only, never onDone', async () => {
+            fetchMock.mockImplementation(() => Promise.resolve(failedAttempt()));
+            const onRetry = vi.fn();
+            const onDone = vi.fn();
+            const result = collectHandlers();
+
+            call({ ...result.handlers, onRetry, onDone });
+            await vi.runAllTimersAsync();
+            await result.settled;
+
+            expect(result.error).toBe(ERROR_MESSAGE);
+            expect(onDone).not.toHaveBeenCalled();
+            expect(onRetry).toHaveBeenCalledTimes(MAX_STREAM_RETRIES);
+            expect(fetchMock).toHaveBeenCalledTimes(MAX_STREAM_RETRIES + 1);
+        });
+
+        it('does not retry once answer tokens have streamed, and reports the error exactly once', async () => {
+            fetchMock.mockImplementation(() =>
+                Promise.resolve(sseResponse(['event: token\ndata: {"chunk":"Partial"}', errorFrame, doneFrame])),
+            );
+            const onRetry = vi.fn();
+            const onError = vi.fn();
+            const onDone = vi.fn();
+            const result = collectHandlers();
+
+            call({ ...result.handlers, onRetry, onError, onDone });
+            await vi.runAllTimersAsync();
+
+            expect(onError).toHaveBeenCalledTimes(1);
+            expect(onError).toHaveBeenCalledWith(ERROR_MESSAGE);
+            // The `done` frame that trails the error must not turn into a
+            // second terminal callback (it used to: consumers got onError
+            // then onDone and the latter reset the error state to idle).
+            expect(onDone).not.toHaveBeenCalled();
+            expect(onRetry).not.toHaveBeenCalled();
+            expect(fetchMock).toHaveBeenCalledTimes(1);
+        });
+    });
+
+    it('still retries when a source_ids frame arrived first — sources are not answer text', async () => {
+        fetchMock.mockImplementationOnce(() =>
+            Promise.resolve(sseResponse([
+                'event: source_ids\ndata: {"sources":[{"id":"m1","title":"Call A","type":"meeting"}]}',
+                errorFrame,
+                doneFrame,
+            ])),
+        );
+        fetchMock.mockImplementationOnce(() => Promise.resolve(goodAttempt()));
+        const onRetry = vi.fn();
+        const result = collectHandlers();
+
+        chatApi.queryGlobal('hi', null, [], { ...result.handlers, onRetry });
+        await vi.runAllTimersAsync();
+        await result.settled;
+
+        expect(result.done).toBe(true);
+        expect(result.error).toBeUndefined();
+        expect(onRetry).toHaveBeenCalledTimes(1);
+        expect(fetchMock).toHaveBeenCalledTimes(2);
+    });
+
+    it('does not treat a stream that only delivered sources and then closed silently as a finished answer', async () => {
+        fetchMock.mockImplementationOnce(() =>
+            Promise.resolve(sseResponse([
+                'event: source_ids\ndata: {"sources":[{"id":"m1","title":"Call A","type":"meeting"}]}',
+            ])),
+        );
+        fetchMock.mockImplementationOnce(() => Promise.resolve(goodAttempt()));
+        const onRetry = vi.fn();
+        const result = collectHandlers();
+
+        chatApi.queryGlobal('hi', null, [], { ...result.handlers, onRetry });
+        await vi.runAllTimersAsync();
+        await result.settled;
+
+        expect(result.tokens.join('')).toBe('Recovered answer');
+        expect(onRetry).toHaveBeenCalledTimes(1);
+    });
+
+    it('reuses the session created by a failed first attempt instead of creating a second one', async () => {
+        fetchMock.mockImplementationOnce(() =>
+            Promise.resolve(sseResponse([
+                'event: session_created\ndata: {"session_id":"s-1"}',
+                'event: status\ndata: {"status":"connected"}',
+                errorFrame,
+                doneFrame,
+            ])),
+        );
+        fetchMock.mockImplementationOnce(() => Promise.resolve(goodAttempt()));
+        const onSessionCreated = vi.fn();
+        const result = collectHandlers();
+
+        chatApi.queryGlobal('hi', null, [], { ...result.handlers, onSessionCreated });
+        await vi.runAllTimersAsync();
+        await result.settled;
+
+        const bodies = fetchMock.mock.calls.map(([, init]) => JSON.parse((init as RequestInit).body as string));
+        expect(bodies[0].session_id).toBeNull();
+        expect(bodies[1].session_id).toBe('s-1');
+        expect(onSessionCreated).toHaveBeenCalledTimes(1);
+        expect(onSessionCreated).toHaveBeenCalledWith('s-1');
+    });
+
+    it('never silently drops an error frame that has no payload', async () => {
+        fetchMock.mockImplementation(() => Promise.resolve(sseResponse(['event: error', doneFrame])));
+        const result = collectHandlers();
+
+        chatApi.queryGlobal('hi', null, [], result.handlers);
+        await vi.runAllTimersAsync();
+        await result.settled;
+
+        expect(result.done).toBe(false);
+        expect(result.error).toBe('Something went wrong.');
+        expect(fetchMock).toHaveBeenCalledTimes(MAX_STREAM_RETRIES + 1);
     });
 });

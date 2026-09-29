@@ -187,7 +187,8 @@ describe('objectionsOnlyAnalysis', () => {
         expect(fields).toHaveLength(11);
         for (const field of fields) {
             expect(field.status).toBe('missing');
-            expect(field.evidence).toBe('');
+            // The empty form of the current contract's evidence LIST.
+            expect(field.evidence).toEqual([]);
         }
     });
 
@@ -200,4 +201,22 @@ describe('objectionsOnlyAnalysis', () => {
         expect(a.bant.budget).not.toBe(b.bant.budget);
         expect(a.bant.budget).not.toBe(a.meddic.metrics);
     });
+});
+
+describe('splitRepFollowUps', () => {
+  // The rep's own "let me check and get back to you" is a follow-up they owe, not the
+  // prospect's objection — listing both together read as "it picks the sales person's objections".
+  it('keeps prospect objections and moves the rep follow-ups out, order preserved', async () => {
+    const { splitRepFollowUps, isRepFollowUp } = await import('../objections');
+    const items: any[] = [
+      { quote: 'if it is a little higher we need management approval', type: 'customer_question', owner: 'customer' },
+      { quote: "let me check with the team and get back to you", type: 'ae_deferral', owner: 'ae' },
+      { quote: 'what about vendors forwarding the link?', type: 'customer_question', owner: 'customer' },
+      { quote: 'I will send the security document', owner: 'ae' },
+    ];
+    const { objections, followUps } = splitRepFollowUps(items);
+    expect(objections.map(o => o.quote)).toEqual([items[0].quote, items[2].quote]);
+    expect(followUps.map(o => o.quote)).toEqual([items[1].quote, items[3].quote]);
+    expect(isRepFollowUp(items[0])).toBe(false);
+  });
 });

@@ -260,6 +260,12 @@ export interface ConnectCalendarButtonProps {
 }
 
 // --- src/features/calendar/SalesBriefPanel.tsx ---
+/** Fields of CompanyIntel that can carry a "where did this come from" link. */
+export type CompanyIntelFieldKey =
+  | 'foundedYear' | 'founders' | 'headquarters' | 'employeeCount' | 'industry'
+  | 'revenue' | 'valuation' | 'fundingStage' | 'latestFundingNews' | 'investors'
+  | 'keyProducts' | 'competitors' | 'businessModel' | 'geographicPresence' | 'topCustomers';
+
 export interface CompanyIntel {
   companyName: string;
   website: string | null;
@@ -276,13 +282,27 @@ export interface CompanyIntel {
   investors: string[] | null;
   keyProducts: string[] | null;
   competitors: string[] | null;
-  recentNews: Array<{ headline: string; date: string | null }> | null;
-  leadershipChanges: Array<{ name: string; role: string; date: string | null }> | null;
+  /** `url`/`source` belong to THIS item (the article the headline came from). */
+  recentNews: Array<{ headline: string; date: string | null; url?: string | null; source?: string | null }> | null;
+  /** `url` (when present) is the article that announced the change. */
+  leadershipChanges: Array<{ name: string; role: string; date: string | null; url?: string | null }> | null;
   linkedinUrl: string | null;
   businessModel: string | null;
   geographicPresence: string[] | null;
   topCustomers: string[] | null;
   _newsSnippets?: Array<{ title: string; url: string; date: string | null }>;
+  /** How far to trust this result. `low` = the company was guessed from a
+   * meeting title or the sources described a different company. */
+  _confidence?: 'high' | 'medium' | 'low';
+  /** Plain-language reasons the result may be incomplete or unreliable. */
+  _warnings?: string[];
+  /** The pages the intel was compiled from. */
+  _sources?: Array<{ title: string; url: string; tier: 'site' | 'web' | 'news' | 'linkedin' }>;
+  /** Per-field link to the ONE retrieved page that supports that value, so the
+   * panel can offer "verify this". Only fields with a value AND a supporting
+   * page appear; results cached before this existed simply lack it. */
+  _fieldSources?: Partial<Record<CompanyIntelFieldKey, { url: string; title: string }>>;
+  _generatedAt?: string;
 }
 
 // --- src/features/chat/api/chatApi.ts ---
@@ -294,6 +314,40 @@ export interface SourceRef {
 export interface ChatSources {
   meetings: SourceRef[];
   assets: SourceRef[];
+}
+
+/** One entry of the up-front `source_map` SSE frame: what an inline [n]
+ * citation marker means. Emitted BEFORE the first token so chips can render
+ * while the answer streams. Only fields relevant to the source type are
+ * present — absent keys are omitted, never null. */
+export interface SourceMapEntry {
+  index: number;
+  id: string;
+  title: string;
+  /** 'live_moment': a transcript line of the call in progress — titled
+   * "This call, MM:SS", carries speaker + timestamp_label, never clickable
+   * (no meeting page exists mid-call). */
+  type: 'doc' | 'meeting' | 'live_moment';
+  /** Doc: section heading; meeting summary blocks: 'Key points' etc. */
+  section?: string;
+  page?: number;
+  asset_type?: string;
+  speaker?: string;
+  owner?: string;
+  start_ms?: number;
+  end_ms?: number;
+  snippet?: string;
+  /** The exact excerpt of this source the answer's citing sentence(s) drew
+   * on — shown in the hover card. Absent on turns stored before it existed. */
+  quote?: string;
+  /** NotebookLM-style enhancements from backend */
+  timestamp_label?: string;
+  meeting_url?: string;
+  asset_url?: string;
+  preview_text?: string;
+  /** Resolvable file URL for the asset (system-browser open). Absent today:
+   * company_assets stores no file path, so doc chips fall back to preview. */
+  file_url?: string;
 }
 
 export interface RagAnswer {
@@ -312,6 +366,13 @@ export interface ChatStreamHandlers {
   onRagAnswer?: (answer: RagAnswer) => void;
   /** Fired once, usually before the first token, with the retrieved chunk ids. */
   onSources?: (sources: ChatSources) => void;
+  /** Fired BEFORE the first token with the full [n] -> source mapping so the
+   * renderer can turn inline citation markers into hover chips live. */
+  onSourceMap?: (entries: SourceMapEntry[]) => void;
+  /** Fired once after the final token (inline-citations mode): which cited
+   * indices passed semantic verification and which failed. Failed ones get
+   * dimmed; indices in neither list keep their chip. */
+  onSourcesVerified?: (verified: number[], unverified: number[]) => void;
   /** Fired once, only on a brand-new chat (session_id was null in the
    * request) — the backend just created the session. Store this id and send
    * it as `session_id` on every subsequent turn in this conversation. */
@@ -327,10 +388,15 @@ export interface ChatStreamHandlers {
    * label with `statusLabel()` below. */
   onStatus?: (status: string) => void;
   /** Fired right before an automatic retry attempt, after a transient
-   * failure (network error, 5xx, 429) that happened before any content
-   * streamed back. `attempt` is 1-indexed. Never fires once tokens/an
-   * answer have started rendering — a partial answer is never retried,
-   * since re-sending would duplicate or garble what's already shown. */
+   * failure (network error, 5xx, 429, an in-band `error` frame, or an empty
+   * stream) that happened before any answer text streamed back. `attempt` is
+   * 1-indexed. Never fires once tokens/an answer have started rendering — a
+   * partial answer is never retried, since re-sending would duplicate or
+   * garble what's already shown.
+   *
+   * The retry starts the turn over, so drop anything the failed attempt
+   * delivered that the retry will re-send (sources, source map, status text)
+   * — otherwise a retry that comes back without them leaves stale ones. */
   onRetry?: (attempt: number, maxAttempts: number) => void;
   /** Fired when the backend discards what it has already streamed and starts
    * the answer again — an upstream drop mid-sentence, or a refusal it caught
@@ -345,8 +411,11 @@ export interface ChatStreamHandlers {
    * these across the call and POST them to `chatApi.linkMeetingInteractions`
    * once the call ends and a real meeting_id exists. */
   onInteractionId?: (interactionId: number) => void;
-  /** Fired once the stream has fully closed (after the `done` frame). */
+  /** Fired once the stream has fully closed (after the `done` frame). Never
+   * fires for a turn that ended in `onError`. */
   onDone?: () => void;
+  /** Terminal failure: retries (if any applied) are exhausted or not allowed.
+   * Fires at most once per call and never together with `onDone`. */
   onError: (error: string) => void;
 }
 
@@ -361,6 +430,19 @@ export interface ChatHistoryTurn {
   // chatApi.ts). Only present on assistant turns that answered from RAG
   // context, and can be missing/empty even then — never assume it's there.
   sources?: { id: string; title: string; type: string }[];
+  /** Inline-citation map ([n] → source) persisted at answer time in the
+   * turn's metadata_json — drives chip rendering on session reload. */
+  source_map?: SourceMapEntry[];
+  /** Company pinned to the chat when this turn was answered (assistant turns only). The latest
+   * assistant turn's pin restores the chat's company chip when the session is reopened. */
+  company_pin?: ChatCompanyPin | null;
+}
+
+/** A customer company pinned to a global chat session (chip / @mention): every question in the
+ * session is about it until removed. Sent as `company_id` with each global chat request. */
+export interface ChatCompanyPin {
+  id: string;
+  name: string;
 }
 
 export interface ChatSession {
@@ -390,6 +472,13 @@ export interface GlobalChatMessage {
   content: string;
   isStreaming?: boolean;
   sources?: ChatSources;
+  /** [n] -> source mapping from the `source_map` frame (chips + hover cards). */
+  sourceMap?: Record<number, SourceMapEntry>;
+  /** Citation indices that failed semantic verification — dim those chips. */
+  unverifiedCitations?: number[];
+  /** Backend discarded a partial answer (self-check rewrite, stream failure)
+   * and is re-streaming. Bubble dims with a badge instead of being wiped. */
+  rewriting?: boolean;
 }
 
 export type GlobalChatState = 'idle' | 'waiting_for_llm' | 'streaming_response' | 'error';
@@ -543,21 +632,81 @@ export interface FloatingChatMessage {
    * message is still streaming with no text yet. Cleared once the first
    * token/rag_answer arrives. */
   status?: string;
+  /** [n] -> source mapping from the live `source_map` frame — drives the
+   * inline citation chips + hover cards in the call panel. */
+  sourceMap?: Record<number, SourceMapEntry>;
+  /** Citation indices that failed semantic verification — dim those chips. */
+  unverifiedCitations?: number[];
+  /** Backend discarded a partial answer (refusal retry, brevity regen) and is
+   * re-streaming. The partial text dims with a badge instead of being wiped —
+   * mid-call, a vanishing answer reads as a glitch. */
+  rewriting?: boolean;
 }
 
 // --- src/features/live-analysis/types.ts ---
+/**
+ * A criterion's evidence. A single `string` on rows saved before the backend
+ * moved to a list of statements; `string[]` after. Never read directly — go
+ * through the accessors in src/lib/bantMeddic, which serve both shapes.
+ */
+export type EvidenceValue = string | string[];
+
 export interface BANTField {
   emoji: '✅' | '⚠️' | '❌' | '';
   status: 'confirmed' | 'partial' | 'missing' | '';
-  evidence: string;
+  /**
+   * The VERBATIM transcript span(s) that prove this field, in whatever language
+   * they were spoken. Kept raw — this is the auditable link back to the
+   * transcript, so it is never translated or tidied in place.
+   *
+   * REFERENCE MATERIAL, not the claim: show it where someone is checking the
+   * assessment (the card's Evidence disclosure, clipboard exports, the
+   * scorecard's transcriptEvidence). What a one-line reader shows is `summary`.
+   */
+  evidence: EvidenceValue;
+  /**
+   * LEGACY. On rows saved before `summary` existed, the readable rendering of
+   * the single evidence quote. The backend now fills it with `summary` purely
+   * for older builds (add_legacy_evidence_mirror), so it is never evidence —
+   * read it only through `fieldText`, as a card-body fallback.
+   */
+  evidence_clean?: string;
+  /**
+   * A faithful one-line English rendering of the `evidence` spans — the card
+   * body, and the SOURCE OF TRUTH for every surface that shows one line about
+   * the field. Absent on rows saved before the backend added it, and blanked by
+   * the backend when a guard drops any span it described, so read it through
+   * `fieldSummary`/`fieldText`, which fall back to the evidence.
+   */
+  summary?: string;
   suggested_question?: string;
+  /** Live analysis v2: where each evidence span was said (parallel to `evidence`). */
+  evidence_refs?: EvidenceRef[];
+  /** Live analysis v2: state version that last changed this field. */
+  updated_version?: number;
+}
+
+/** Live analysis v2: the transcript turn an evidence span was copied from. */
+export interface EvidenceRef {
+  turn_id?: string;
+  /** ms since the call started (renderer-relative clock). */
+  t_start_ms?: number;
 }
 
 export interface MEDDICField {
   emoji: '✅' | '⚠️' | '❌' | '';
   status: 'confirmed' | 'partial' | 'missing' | '';
-  evidence: string;
+  /** Verbatim transcript span(s) — see BANTField.evidence. */
+  evidence: EvidenceValue;
+  /** Legacy card-body fallback — see BANTField.evidence_clean. */
+  evidence_clean?: string;
+  /** One-line reading of this criterion — see BANTField.summary. */
+  summary?: string;
   suggested_question?: string;
+  /** See BANTField.evidence_refs. */
+  evidence_refs?: EvidenceRef[];
+  /** See BANTField.updated_version. */
+  updated_version?: number;
 }
 
 export interface Objection {
@@ -581,6 +730,10 @@ export interface Objection {
   /** Client-only: the objection-handler endpoint echoed this quote in `resolved`.
    *  Never sent as input — the client is the owner of this flag. */
   resolved?: boolean;
+  /** End-of-call analysis (v2/end) only: short topic, the rep's verbatim reply, and how it went. */
+  topic?: string;
+  rep_response?: string;
+  handled?: 'resolved' | 'partially' | 'unresolved';
 }
 
 export interface Signal {
@@ -596,6 +749,27 @@ export interface Signal {
 export interface LiveAnalysisTurn {
   speaker: string;
   text: string;
+}
+
+/**
+ * One FINAL of the live call as the renderer holds it (useGodojoInterface's liveTranscriptRef).
+ * `text` is the display text — English when transcript translation is on. The optional fields are
+ * stamped by the main process (electron/services/transcriptQuality.ts) and carried for live
+ * analysis v2: evidence is grounded on `textOriginal`, never on the translation.
+ */
+export interface LiveTranscriptEntry {
+  speaker: string;
+  displayName?: string;
+  text: string;
+  timestamp: number;
+  speakerIndex?: number;
+  textOriginal?: string;
+  turnId?: string;
+  lang?: string;
+  asrSuspect?: boolean;
+  suspectReason?: string;
+  /** Main-process arrival time of the final (ms epoch). */
+  arrivalMs?: number;
 }
 
 export type DealTrigger =
@@ -639,6 +813,8 @@ export interface LiveAnalysisData {
   objections: Objection[];
   signals: Signal[];
   dealOptimizer?: DealOptimizerAlert[];
+  /** 'v2_end' when produced by the end-of-call pass (POST /intelligence/live-analysis/v2/end). */
+  source?: string;
   /**
    * Set by the backend when it ran out of budget and mirrored the previous
    * analysis back instead of producing a new one (HTTP 200, not an error — see
@@ -754,6 +930,10 @@ export interface AiInteractionItem {
   // Optional — plenty of interactions (e.g. the "couldn't find that" case)
   // have no useful sources, or none at all. Never assume present.
   sources?: AiInteractionSource[];
+  // Inline-citation map ([n] → source) persisted at answer time and lifted
+  // to top level by the backend — same shape `source_map` SSE frame and the
+  // session-reload endpoint carry. Drives the hoverable citation chips.
+  source_map?: SourceMapEntry[];
 }
 
 export interface AiInteractionsResponse {
@@ -804,6 +984,10 @@ export interface MeetingChatMessage {
   content: string;
   isStreaming?: boolean;
   sources?: ChatSources;
+  sourceMap?: Record<number, SourceMapEntry>;
+  unverifiedCitations?: number[];
+  /** Backend discarded a partial answer and is re-streaming — dim + badge. */
+  rewriting?: boolean;
 }
 
 export interface MeetingContext {
@@ -944,6 +1128,34 @@ export interface MeetingDetailedSummary {
   [key: string]: any;
 }
 
+export interface CompanyRef {
+  id: string;
+  name: string;
+  domain?: string | null;
+}
+
+// A row in the customer-companies registry (GET/POST /companies). Distinct
+// from the seller's own company-context — this is the customer attached to
+// meetings for AI context.
+export interface Company {
+  id: string;
+  name: string;
+  normalized_name: string;
+  domain: string | null;
+  source: "calendar" | "manual" | "import";
+  created_at?: string;
+  updated_at?: string;
+}
+
+// What the company picker hands back before anything is persisted.
+// `companyId: null` means "create-or-get this name" — the backend's
+// MeetingCompanyAssociate accepts exactly one of company_id / name.
+export interface PickedCompany {
+  companyId: string | null;
+  name: string;
+  domain?: string | null;
+}
+
 export interface Meeting {
   id: string;
   title: string;
@@ -955,6 +1167,16 @@ export interface Meeting {
   calendarEventId?: string;
   calendarEventMetadata?: any[];
   source?: string;
+  // Customer company attached to this meeting (backend resolves via
+  // meetings.company_id). company_skipped records that the user dismissed
+  // the post-call company prompt, so it isn't shown again.
+  company?: CompanyRef | null;
+  company_skipped?: boolean;
+  // When the meeting's attendees span 2+ external domains, the backend
+  // can't pick — these are the candidates the end-of-call prompt offers.
+  company_candidates?: { name: string; domain: string }[] | null;
+  // Call categories from the scorecard (multi — demo + negotiation etc.).
+  meetingTypes?: string[];
   detailedSummary?: MeetingDetailedSummary;
   participants?: { email: string | null; name: string | null; oraganizer: boolean; self: boolean }[];
   transcript?: MeetingTranscriptLine[];
@@ -1356,10 +1578,15 @@ export interface MemberDetailRecentCall {
 
 export interface MemberDetailStrength { title: string; description: string; frequency: string; }
 
+export interface MemberDetailPagination {
+  offset: number; limit: number; has_more: boolean;
+}
+
 export interface MemberDetail {
   user_id: string; name: string; image: string | null; role: TenantRole;
   calls_total: number; avg_score: number; radar_scores: MemberDetailRadarScores;
   weakest_area: string | null; recent_calls: MemberDetailRecentCall[]; strengths: MemberDetailStrength[];
+  pagination: MemberDetailPagination;
 }
 
 export interface MemberSuspended {
@@ -1402,6 +1629,13 @@ export interface ParsedReleaseNotes {
   sections: ReleaseNoteSection[];
   fullBody?: string;
   url?: string;
+  /** Downloadable release files with byte sizes (installer/DMG/AppImage) —
+   * powers the update modal's download-size chip. */
+  assets?: { name: string; size: number }[];
+  /** GitHub release flags — true means internal test build; the update
+   * announce gate refuses to surface such releases to users. */
+  isPrerelease?: boolean;
+  isDraft?: boolean;
 }
 
 // --- src/lib/apiClient.ts ---
@@ -1489,6 +1723,9 @@ export interface GlobalChatOverlayProps {
    * single-source chip under an assistant answer. Omit to render the chip
    * as plain (non-clickable) text instead. */
   onOpenMeeting?: (meetingId: string) => void;
+  /** Opens a cited company-asset document (resolvable file_url from the
+   * backend). Omitting it leaves doc chips on the preview-card fallback. */
+  onOpenAsset?: (src: SourceMapEntry) => void;
 }
 
 export interface ChatSessionSidebarProps {
@@ -1748,6 +1985,15 @@ export interface Message {
    * message is still streaming with no text yet. Cleared once the first
    * token/rag_answer arrives. */
   status?: string;
+  /** [n] -> source mapping from the live `source_map` frame — drives the
+   * inline citation chips + hover cards in the call panel. */
+  sourceMap?: Record<number, SourceMapEntry>;
+  /** Citation indices that failed semantic verification — dim those chips. */
+  unverifiedCitations?: number[];
+  /** Backend discarded a partial answer (refusal retry, brevity regen) and is
+   * re-streaming. The partial text dims with a badge instead of being wiped —
+   * mid-call, a vanishing answer reads as a glitch. */
+  rewriting?: boolean;
 }
 
 export interface FloatingChatPanelProps {
@@ -1804,6 +2050,10 @@ export interface FloatingIntelligencePanelProps {
   onMeetingTypesChange: (types: MeetingType[]) => void;
   /** See usePerformanceMode.ts — drops backdrop-filter blur when true. */
   isPerformanceMode?: boolean;
+  /** Live analysis v2: see LiveAnalysisContentProps.changedFields. */
+  changedFields?: Record<string, string>;
+  /** Live analysis v2: see LiveAnalysisContentProps.onFieldFeedback. */
+  onFieldFeedback?: (path: string, value: 1 | -1) => void;
 }
 
 // --- src/features/floating-dock/panels/FloatingSettingsPanel.tsx ---
@@ -1851,8 +2101,19 @@ export interface SectionToggleProps {
 
 export interface FieldRowProps {
   label: string;
-  field: { status: string; evidence: string; emoji?: string; suggested_question?: string };
+  /**
+   * The wire-shape field, straight off liveAnalysis. Read it through the
+   * accessors in src/lib/bantMeddic — never `.evidence` directly: it is a
+   * `string` on rows saved before the list contract and `string[]` after.
+   */
+  field: BANTField;   // MEDDICField is structurally identical
   themed?: boolean;
+  /** Live analysis v2 (overlay only): "bant.budget"-style path, for feedback + highlight. */
+  path?: string;
+  /** Live analysis v2: how the latest tick changed this field, if it did. */
+  changeKind?: string;
+  /** Live analysis v2: rep 👍/👎 on this field. */
+  onFeedback?: (path: string, value: 1 | -1) => void;
   isLight?: boolean;
 }
 
@@ -1865,6 +2126,10 @@ export interface LiveAnalysisContentProps {
   calledFromAnalysisTab?: boolean;
   /** When set (overlay context), renders only the active tab section — fully expanded, no accordion. */
   activeTab?: 'meddicc' | 'bant' | 'signals' | 'objections' | 'deal_optimizer';
+  /** Live analysis v2: field path → change kind for fields the latest tick changed. */
+  changedFields?: Record<string, string>;
+  /** Live analysis v2: rep 👍/👎 on a field ("meddic.metrics"). */
+  onFieldFeedback?: (path: string, value: 1 | -1) => void;
 }
 
 // --- src/features/meetings/components/FollowUpEmailModal.tsx ---
@@ -1888,6 +2153,15 @@ export interface MeetingChatOverlayProps {
    * single-source chip under an assistant answer. Omit to render the chip
    * as plain (non-clickable) text instead. */
   onOpenMeeting?: (meetingId: string) => void;
+  /** Fired whenever the overlay's own streaming state changes, so the
+   * ask-bar input (rendered by the parent, outside this overlay) can show
+   * a stop button and call it to cancel the in-flight generation. `stop`
+   * is null whenever isBusy is false. */
+  onBusyChange?: (isBusy: boolean, stop: (() => void) | null) => void;
+  /** Fired after a chat turn completes successfully — the parent refreshes
+   * the Ask-Dojo tab (['ai-interactions', meetingId]) so the new turn shows
+   * without a manual reload (P1-7). */
+  onTurnComplete?: () => void;
 }
 
 // --- src/features/meetings/components/MeetingDetails.tsx ---
@@ -2198,6 +2472,15 @@ export interface UpdateModalProps {
   downloadProgress: number;
   status: 'idle' | 'checking' | 'downloading' | 'ready' | 'error' | 'instructions';
   errorMessage?: string | null;
+  /** Theme flag — the modal matches the app theme (Invitation-Modal styling). */
+  isLight: boolean;
+  /** Full package size (bytes) of this platform's artifact, or null. */
+  downloadSizeBytes?: number | null;
+  /** ACTUAL bytes this download transfers (delta size on Windows) — known
+   *  once downloading; the modal prefers it over downloadSizeBytes. */
+  downloadTotalBytes?: number | null;
+  /** Bytes transferred so far in the in-flight download. */
+  downloadTransferredBytes?: number | null;
   /** Quit + install a downloaded update. The guarded path (refuses while a
    *  meeting is active or in dev) — the modal must never call
    *  restartAndInstall directly. */

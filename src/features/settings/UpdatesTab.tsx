@@ -1,6 +1,6 @@
 import React from 'react';
 import { RefreshCw, CheckCircle2, Download, AlertCircle, Sparkles, ExternalLink } from 'lucide-react';
-import { UseUpdateStatusResult } from '@/hooks';
+import { UseUpdateStatusResult, formatUpdateSize } from '@/hooks';
 import { releasesPageUrl } from '@/../utils/updateFeed';
 
 interface UpdatesTabProps {
@@ -37,6 +37,7 @@ const UpdatesTab: React.FC<UpdatesTabProps> = ({ updateStatus: shared }) => {
         downloadProgress,
         errorMessage,
         lastCheckedAt,
+        downloadSizeBytes,
         checkForUpdates,
         startInstall,
         installUpdate,
@@ -153,9 +154,14 @@ const UpdatesTab: React.FC<UpdatesTabProps> = ({ updateStatus: shared }) => {
             {errorMessage && (
                 <div className="bg-red-500/5 border border-red-500/20 rounded-xl p-4 flex items-start gap-3">
                     <AlertCircle size={16} className="text-red-400 mt-0.5 shrink-0" />
-                    <div>
+                    <div className="min-w-0">
                         <h5 className="text-sm font-medium text-text-primary">Couldn't check for updates</h5>
-                        <p className="text-xs text-text-secondary mt-1 leading-relaxed">{errorMessage}</p>
+                        {/* Sanitized in the main process; break-words + clamp is
+                            defense-in-depth so no error string can stretch the
+                            settings panel horizontally. */}
+                        <p className="text-xs text-text-secondary mt-1 leading-relaxed break-words overflow-hidden">
+                            {errorMessage}
+                        </p>
                     </div>
                 </div>
             )}
@@ -198,8 +204,15 @@ const UpdatesTab: React.FC<UpdatesTabProps> = ({ updateStatus: shared }) => {
             {/* What's new / changelog for the pending update */}
             {(isUpdateAvailable || status === 'ready') && (
                 <div>
-                    <h4 className="text-xs font-bold text-text-tertiary uppercase tracking-wider mb-2 px-1">
-                        What's new{latestVersionLabel ? ` in ${latestVersionLabel}` : ''}
+                    <h4 className="text-xs font-bold text-text-tertiary uppercase tracking-wider mb-2 px-1 flex items-center gap-2">
+                        <span>
+                            What's new{latestVersionLabel ? ` in ${latestVersionLabel}` : ''}
+                        </span>
+                        {formatUpdateSize(downloadSizeBytes) && (
+                            <span className="normal-case tracking-normal font-semibold text-blue-400">
+                                · {formatUpdateSize(downloadSizeBytes)} download
+                            </span>
+                        )}
                     </h4>
                     <div className="bg-bg-item-surface rounded-xl border border-border-subtle p-5 space-y-4">
                         {parsedNotes?.summary && (

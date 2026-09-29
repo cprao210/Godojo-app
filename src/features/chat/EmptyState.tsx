@@ -31,7 +31,7 @@ const EmptyState: React.FC<{ onPick: (text: string) => void }> = ({ onPick }) =>
                 <button
                     key={i}
                     onClick={() => onPick(s.label)}
-                    className="flex items-center gap-2.5 text-left px-3.5 py-2.5 rounded-xl bg-bg-item-surface hover:bg-bg-item-active text-[12.5px] text-text-secondary hover:text-text-primary transition-colors"
+                    className="flex items-center gap-2.5 text-left px-3.5 py-2.5 rounded-xl bg-bg-elevated hover:bg-bg-item-active text-[12.5px] text-text-secondary hover:text-text-primary transition-colors"
                 >
                     <s.icon size={14} className="text-text-tertiary shrink-0" />
                     <span className="truncate">{s.label}</span>

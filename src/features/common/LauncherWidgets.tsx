@@ -11,16 +11,22 @@ import {
     Zap, Calendar, ArrowRight, ArrowLeft, MoreHorizontal, ChevronRight,
     Settings, RefreshCw, Ghost, Trash2, Download, DownloadCloud, CheckCircle,
     AlertCircle, Briefcase, Upload, X, ChevronUp, ChevronDown,
+    Radio, Mic, FileUp, Building2, Search, Check,
+    Timer, Info,
 } from 'lucide-react';
 import { TopSearchPill, WindowControls } from '@/features/common';
 import { ConnectCalendarButton } from '@/features/calendar';
 import { UserProfileButton } from '@/features/tenant';
+// Direct-file import (not the meetings barrel): the meetings barrel imports
+// from features/common, so a barrel→barrel import here would be a cycle.
+import { CompanyPickerField } from '@/features/meetings/CompanyAssociation';
+import type { PickedCompany } from '@/types';
 import { generateMeetingPDF } from '@/../utils/pdfGenerator';
 import { isMac } from '@/../utils/platformUtils';
 import { posthogAnalytics } from '@/lib/analytics/posthog.service';
 import { Meeting } from '@/types';
 import { IMAGES } from '@/lib/assets';
-import { isMeetingProcessing } from '@/api/meetingMapping';
+import { isMeetingProcessing, meetingKindOf, type MeetingKind as MeetingKindType } from '@/api/meetingMapping';
 import { getGroupLabel, formatTime, formatDurationPill, UPLOAD_MEETING_TYPE_OPTIONS } from '@/hooks/useLauncher';
 
 // ─────────────────────────────────────────────────────────────────────────
@@ -526,9 +532,21 @@ interface RecentMeetingsHeaderProps {
     onOpenUpload: () => void;
     /** Background refetch over rows that are already on screen. */
     isRefreshing?: boolean;
+    /** Total for the active client-side filters — the "(N)" in the title.
+    Search/type/date live in the header pill (meetingFilterStore). */
+    meetingsTotal?: number | null;
 }
 
-export const RecentMeetingsHeader: React.FC<RecentMeetingsHeaderProps> = ({ isLight, isMeetingsExpanded, onToggleExpand, onOpenUpload, isRefreshing = false }) => (
+const MEETING_FILTER_SELECT_CLS = (isLight: boolean) => [
+    'text-[11px] font-medium rounded-lg px-2 py-1.5 border transition-colors cursor-pointer focus:outline-none',
+    isLight
+        ? 'text-text-secondary border-border-muted bg-bg-elevated hover:border-border-muted'
+        : 'text-text-tertiary border-border-muted bg-bg-item-surface hover:border-white/[0.14]',
+].join(' ');
+
+export const RecentMeetingsHeader: React.FC<RecentMeetingsHeaderProps> = ({
+    isLight, isMeetingsExpanded, onToggleExpand, onOpenUpload, isRefreshing = false, meetingsTotal,
+}) => (
     <div className="flex items-center justify-between mb-3">
         <div className="flex items-center gap-2.5">
             <div className={[
@@ -537,9 +555,19 @@ export const RecentMeetingsHeader: React.FC<RecentMeetingsHeaderProps> = ({ isLi
             ].join(' ')}>
                 <Calendar size={14} strokeWidth={2.2} />
             </div>
-            <span className="text-[15px] font-semibold text-text-primary tracking-tight">
+            <span className="text-[15px] font-semibold text-text-primary tracking-tight whitespace-nowrap">
                 My Meetings
             </span>
+            {/* Total for the active client-side filters (owned by the header
+            pill's search) — null (first load) renders nothing, not a wrong 0. */}
+            {meetingsTotal != null && (
+                <span className={[
+                    'px-1.5 py-0.5 rounded-md text-[11px] font-semibold tabular-nums',
+                    isLight ? 'bg-accent-muted text-accent-primary' : 'bg-blue-500/10 text-blue-400',
+                ].join(' ')}>
+                    {meetingsTotal}
+                </span>
+            )}
             {/* Refetch happening over already-rendered rows: a quiet inline hint,
                 never a skeleton — the visible rows are still valid. */}
             <AnimatePresence>
@@ -549,7 +577,7 @@ export const RecentMeetingsHeader: React.FC<RecentMeetingsHeaderProps> = ({ isLi
                         animate={{ opacity: 1, x: 0 }}
                         exit={{ opacity: 0, x: -4 }}
                         transition={{ duration: 0.15 }}
-                        className={['flex items-center gap-1 text-[11px] font-medium', isLight ? 'text-text-tertiary' : 'text-text-tertiary'].join(' ')}
+                        className="flex items-center gap-1 text-[11px] font-medium text-text-tertiary"
                         role="status"
                         aria-label="Updating meetings"
                     >
@@ -607,10 +635,41 @@ export const RecentMeetingsHeader: React.FC<RecentMeetingsHeaderProps> = ({ isLi
 );
 
 // ─────────────────────────────────────────────────────────────────────────
-// A single meeting row + its right-click-free hover context menu
-// (Export as PDF / Delete). Kept as one row component so the list below
-// can stay a plain `.map`.
-// ─────────────────────────────────────────────────────────────────────────
+
+const MEETING_KIND_META: Record<MeetingKindType, {
+    label: string;
+    tileIcon: React.ElementType;
+    tileCls: (isLight: boolean) => string;
+    pillCls: (isLight: boolean) => string;
+}> = {
+    // Calendar-scheduled meeting recorded live.
+    calendar: {
+        label: 'Calendar',
+        tileIcon: Calendar,
+        tileCls: (isLight) => isLight ? 'bg-blue-500/10 text-accent-primary' : 'bg-blue-500/10 text-blue-400',
+        pillCls: (isLight) => isLight
+            ? 'bg-blue-50 border-blue-200 text-blue-600'
+            : 'bg-blue-500/10 border-blue-500/25 text-blue-400',
+    },
+    // Quick recording started manually — no calendar event behind it.
+    quick: {
+        label: 'Quick',
+        tileIcon: Timer,
+        tileCls: (isLight) => isLight ? 'bg-amber-500/10 text-amber-600' : 'bg-amber-500/10 text-amber-400',
+        pillCls: (isLight) => isLight
+            ? 'bg-amber-50 border-amber-200 text-amber-600'
+            : 'bg-amber-500/10 border-amber-500/25 text-amber-400',
+    },
+    // Transcript pasted into the upload modal — never recorded live.
+    upload: {
+        label: 'Upload',
+        tileIcon: Upload,
+        tileCls: (isLight) => isLight ? 'bg-violet-500/10 text-violet-600' : 'bg-violet-500/10 text-violet-400',
+        pillCls: (isLight) => isLight
+            ? 'bg-violet-50 border-violet-200 text-violet-600'
+            : 'bg-violet-500/10 border-violet-500/25 text-violet-400',
+    },
+};
 
 interface MeetingRowProps {
     meeting: Meeting;
@@ -637,6 +696,13 @@ export const MeetingRow: React.FC<MeetingRowProps> = ({
     // title === 'Processing...' check rendered it as finished while its summary
     // was still being generated.
     const isProcessing = isMeetingProcessing(m);
+    // How this meeting came into existence — Live (calendar-scheduled),
+    // Quick (manual recording) or Upload (pasted transcript). Drives the
+    // tile icon + label pill; null (unknown, e.g. optimistic placeholder)
+    // renders neither rather than guessing.
+    const kind = meetingKindOf(m);
+    const KindTileIcon = kind ? MEETING_KIND_META[kind].tileIcon : Calendar;
+    const kindMeta = kind ? MEETING_KIND_META[kind] : null;
 
     // The Export/Delete menu used to be an in-flow `absolute` child of this
     // row, but MeetingsList wraps every row in `overflow-hidden` (needed
@@ -702,31 +768,43 @@ export const MeetingRow: React.FC<MeetingRowProps> = ({
             // do that.
             style={!isLast ? { borderBottomColor: isLight ? '#E2E8F0' : '#191D23' } : undefined}
         >
-            {/* Left: Icon */}
+            {/* Left: Icon — tinted + glyph per meeting kind (spinner wins
+            while processing) */}
             <div className={[
-                'flex h-9 w-9 shrink-0 items-center justify-center rounded-lg bg-blue-500/10',
-                isLight ? 'text-accent-primary' : 'text-blue-400',
+                'flex h-9 w-9 shrink-0 items-center justify-center rounded-lg',
+                !isProcessing && kindMeta
+                    ? kindMeta.tileCls(isLight)
+                    : `bg-blue-500/10 ${isLight ? 'text-accent-primary' : 'text-blue-400'}`,
             ].join(' ')}>
                 {isProcessing
                     ? <RefreshCw size={15} className="animate-spin text-blue-500" />
-                    : <Calendar size={15} strokeWidth={2} />
+                    : <KindTileIcon size={15} strokeWidth={2} />
                 }
             </div>
 
             {/* Center: Title + subtitle */}
             <div className="flex-1 min-w-0">
                 <div className={[
-                    'text-[13px] font-semibold truncate leading-tight',
+                    'text-[13px] font-semibold leading-normal flex items-center gap-1.5 min-w-0',
                     isProcessing
                         ? 'text-text-secondary animate-pulse'
                         : 'text-text-primary',
                 ].join(' ')}>
+                    {/* Kind badge — icon+label identifying Live / Quick / Upload */}
+                    {kindMeta && (
+                        <span className={[
+                            'shrink-0 inline-flex items-center gap-0.5 px-1.5 py-[1px] rounded border text-[10px] font-semibold leading-none',
+                            kindMeta.pillCls(isLight),
+                        ].join(' ')}>
+                            {kindMeta.label}
+                        </span>
+                    )}
                     {/* The real title appears only once processing has actually
                     finished. A calendar event's title (and an upload's typed
                     title) are known up front, but showing them early made a row
                     look done — and any source disagreement about is_processed
                     then read as the title appearing, vanishing, reappearing. */}
-                    {isProcessing ? 'Processing meeting' : m.title}
+                    <span className="truncate">{isProcessing ? 'Processing meeting' : m.title}</span>
                 </div>
                 <div className="flex items-center gap-1.5 mt-0.5 text-[11px] text-text-tertiary">
                     {isProcessing ? (
@@ -748,6 +826,23 @@ export const MeetingRow: React.FC<MeetingRowProps> = ({
                                 {org && count && <span className="opacity-40">•</span>}
                                 {count && <span>{count} Participant{count !== 1 ? 's' : ''}</span>}
                                 {!org && !count && <span>{formatTime(m.date)}</span>}
+                                {/* Customer company — the same association the
+                                MeetingDetails chip shows, surfaced on the card
+                                so no open-and-inspect is needed. */}
+                                {m.company?.name && (
+                                    <span
+                                        className={[
+                                            'shrink-0 inline-flex items-center gap-0.5 px-1.5 py-[1px] rounded border text-[10px] font-semibold leading-none max-w-[140px]',
+                                            isLight
+                                                ? 'bg-emerald-50 border-emerald-200 text-emerald-700'
+                                                : 'bg-emerald-500/10 border-emerald-500/25 text-emerald-400',
+                                        ].join(' ')}
+                                        title={m.company.domain || m.company.name}
+                                    >
+                                        <Building2 size={9} className="shrink-0" />
+                                        <span className="truncate">{m.company.name}</span>
+                                    </span>
+                                )}
                             </>
                         );
                     })()}
@@ -811,7 +906,7 @@ export const MeetingRow: React.FC<MeetingRowProps> = ({
                         exit={{ opacity: 0, scale: 0.95, y: 4 }}
                         transition={{ duration: 0.1 }}
                         style={{ position: 'fixed', top: menuPos.top, left: menuPos.left }}
-                        className={['w-[100px] backdrop-blur-xl rounded-lg shadow-2xl z-[9999] overflow-hidden border', isLight ? 'bg-bg-elevated border-border-muted shadow-[0_8px_24px_rgba(0,0,0,0.12)]' : 'bg-bg-card/90 border-border-muted'].join(' ')}
+                        className={['w-[100px] rounded-lg shadow-2xl z-[9999] overflow-hidden border', isLight ? 'bg-bg-elevated border-border-muted shadow-[0_8px_24px_rgba(0,0,0,0.12)]' : 'bg-bg-card border-border-muted'].join(' ')}
                         onClick={(e) => e.stopPropagation()}
                         onMouseEnter={onMenuMouseEnter}
                         onMouseLeave={onMenuMouseLeave}
@@ -1200,6 +1295,16 @@ interface TranscriptUploadModalProps {
     setUploadText: (v: string) => void;
     uploadMeetingTypes: ('discovery' | 'demo' | 'negotiation')[];
     setUploadMeetingTypes: React.Dispatch<React.SetStateAction<('discovery' | 'demo' | 'negotiation')[]>>;
+    uploadCompany: PickedCompany | null;
+    setUploadCompany: (v: PickedCompany | null) => void;
+    uploadCompanyDraft: string;
+    setUploadCompanyDraft: (v: string) => void;
+    /** Speakers found in the pasted transcript, in order of appearance. */
+    uploadSpeakers: string[];
+    /** The speaker treated as the rep ("you"); everyone else is the prospect side. */
+    uploadRepSpeaker: string | null;
+    uploadRepSource: 'picked' | 'name' | 'first' | null;
+    onPickRepSpeaker: (label: string) => void;
     uploadError: string | null;
     isUploading: boolean;
     onClose: () => void;
@@ -1208,7 +1313,10 @@ interface TranscriptUploadModalProps {
 
 export const TranscriptUploadModal: React.FC<TranscriptUploadModalProps> = ({
     isOpen, isLight, uploadTitle, setUploadTitle, uploadText, setUploadText,
-    uploadMeetingTypes, setUploadMeetingTypes, uploadError, isUploading, onClose, onSubmit,
+    uploadMeetingTypes, setUploadMeetingTypes, uploadCompany, setUploadCompany,
+    uploadCompanyDraft, setUploadCompanyDraft,
+    uploadSpeakers, uploadRepSpeaker, uploadRepSource, onPickRepSpeaker,
+    uploadError, isUploading, onClose, onSubmit,
 }) => (
     <AnimatePresence>
         {isOpen && (
@@ -1232,20 +1340,22 @@ export const TranscriptUploadModal: React.FC<TranscriptUploadModalProps> = ({
                     className="fixed inset-0 z-[101] flex items-center justify-center p-4 pointer-events-none"
                 >
                     <div className={[
-                        'relative w-full max-w-[580px] rounded-2xl shadow-2xl overflow-hidden pointer-events-auto',
+                        // NO overflow-hidden — the company picker's dropdown
+                        // must be able to extend past the panel bounds.
+                        'relative w-full max-w-[580px] rounded-2xl shadow-2xl pointer-events-auto',
                         isLight
                             ? 'bg-bg-elevated border border-border-muted shadow-[0_20px_60px_rgba(0,0,0,0.15)]'
                             : 'bg-bg-secondary border border-border-muted shadow-[0_20px_60px_rgba(0,0,0,0.5)] ring-1 ring-white/[0.04]',
                     ].join(' ')}>
 
                         {/* Header */}
-                        <div className={['flex items-center justify-between px-4 py-3 border-b', isLight ? 'border-border-subtle' : 'border-border-muted'].join(' ')}>
+                        <div className={['flex items-center justify-between px-4 py-3 border-b rounded-t-2xl', isLight ? 'border-border-subtle' : 'border-border-muted'].join(' ')}>
                             <div className="flex items-center gap-2">
                                 <div className={['flex h-[26px] w-[26px] items-center justify-center rounded-lg', isLight ? 'bg-blue-400/15 text-accent-primary' : 'bg-blue-400/15 text-blue-400'].join(' ')}>
                                     <Upload size={12} strokeWidth={2.2} />
                                 </div>
                                 <div>
-                                    <p className="text-[13px] font-semibold text-text-primary leading-tight">Upload Transcript</p>
+                                    <p className="text-[13px] font-semibold text-text-primary leading-normal">Upload Transcript</p>
                                     <p className="text-[11px] text-text-tertiary leading-tight">Paste a transcript to generate a full sales analysis</p>
                                 </div>
                             </div>
@@ -1277,6 +1387,26 @@ export const TranscriptUploadModal: React.FC<TranscriptUploadModalProps> = ({
                                             : 'bg-bg-input border border-border-muted placeholder-text-tertiary focus:border-white/20 focus:ring-0',
                                     ].join(' ')}
                                 />
+                            </div>
+
+                            {/* Company (optional) — answered here so an uploaded
+                                transcript never needs the post-call prompt */}
+                            <div>
+                                <label className="text-[10px] font-medium text-text-tertiary uppercase tracking-wider mb-1 block">
+                                    Company <span className="normal-case tracking-normal font-normal opacity-60">(optional)</span>
+                                </label>
+                                <CompanyPickerField
+                                    isLight={isLight}
+                                    value={uploadCompany}
+                                    onChange={setUploadCompany}
+                                    onDraftChange={setUploadCompanyDraft}
+                                    placeholder="Search or enter the customer's company…"
+                                />
+                                <p className="text-[10px] text-text-tertiary mt-1">
+                                    {uploadCompanyDraft.trim() && !uploadCompany
+                                        ? `“${uploadCompanyDraft.trim()}” will be created and linked on submit`
+                                        : 'Gives the analysis and Ask Dojo the right customer context'}
+                                </p>
                             </div>
 
                             {/* Meeting Type */}
@@ -1331,18 +1461,41 @@ export const TranscriptUploadModal: React.FC<TranscriptUploadModalProps> = ({
                             {/* Transcript textarea */}
                             <div>
                                 <div className="flex items-baseline justify-between mb-1">
-                                    <label className="text-[10px] font-medium text-text-tertiary uppercase tracking-wider">
-                                        Transcript
-                                    </label>
+                                    <div className="flex items-center gap-1.5">
+                                        <label className="text-[10px] font-medium text-text-tertiary uppercase tracking-wider">
+                                            Transcript
+                                        </label>
+                                        {/* Info tooltip — lists every supported paste format so people
+                                            don't have to guess or trial-and-error their transcript's
+                                            shape before it will parse correctly. */}
+                                        <div className="group/format-help relative flex items-center">
+                                            <Info size={11} className="text-text-tertiary hover:text-text-secondary cursor-help transition-colors" />
+                                            <div className="pointer-events-none absolute bottom-[calc(100%+8px)] left-1/2 -translate-x-1/2 w-max max-w-[300px] rounded-lg bg-bg-elevated border border-border-subtle px-3 py-2.5 text-[11px] leading-relaxed text-text-secondary opacity-0 scale-95 transition-all duration-150 group-hover/format-help:opacity-100 group-hover/format-help:scale-100 shadow-lg z-10">
+                                                <p className="font-semibold text-text-primary mb-1.5">8 supported formats</p>
+                                                <ul className="space-y-1 font-mono text-[10.5px]">
+                                                    <li>Alex: hello...</li>
+                                                    <li>[00:10] Alex: hello...</li>
+                                                    <li>Alex [00:10]: hello...</li>
+                                                    <li>Alex:<br />hello...</li>
+                                                    <li>[00:00:10] [Alex]: hello...</li>
+                                                    <li>[Alex] [00:00:10]: hello...</li>
+                                                    <li>Alex (00:26): hello...</li>
+                                                    <li>[00:26] [Alex]:<br />hello...</li>
+                                                </ul>
+                                                <p className="mt-1.5 text-text-tertiary">Timestamps are optional — with or without them, name and speaker labels are detected automatically.</p>
+                                            </div>
+                                        </div>
+                                    </div>
                                     <span className="text-[10px] text-text-tertiary">
-                                        {uploadText.split('\n').filter(l => l.trim()).length} lines · Supports [timestamp] SPEAKER: text format
+                                        {uploadText.split('\n').filter(l => l.trim()).length} lines · 8 formats supported
                                     </span>
                                 </div>
                                 <textarea
                                     value={uploadText}
                                     onChange={e => setUploadText(e.target.value)}
-                                    placeholder={`Paste transcript here. Supported formats:\n\n[00:00:12] SALES PERSON: Hello, thanks for joining...\nCLIENT: Happy to be here...\n\nor plain speaker labels without timestamps:\nAlex: Thanks for making time, Daniel...\nDaniel: Yeah, dispatch is our biggest headache...`}
+                                    placeholder={`Paste transcript here — 8 formats supported, e.g.:\n\nAlex: Hello, thanks for joining...\n[00:00:12] SALES PERSON: Hello, thanks for joining...\nAlex [00:10]: Hello, thanks for joining...\nAlex (00:26): Hello, thanks for joining...\n\nHover the ⓘ above for the full list, including multi-line turns.`}
                                     rows={9}
+                                    title="Supports 8 transcript formats — hover the info icon above the textarea for the full list"
                                     className={[
                                         'w-full rounded-[10px] px-3 py-2.5 text-[12px] text-text-primary focus:outline-none transition-colors resize-none font-mono leading-relaxed',
                                         isLight
@@ -1351,6 +1504,46 @@ export const TranscriptUploadModal: React.FC<TranscriptUploadModalProps> = ({
                                     ].join(' ')}
                                 />
                             </div>
+
+                            {/* Which speaker is you — only the OTHER speakers are graded
+                                for BANT/MEDDIC, so a wrong pick scores the call as empty. */}
+                            {uploadSpeakers.length >= 2 && (
+                                <div>
+                                    <label className="text-[10px] font-medium text-text-tertiary uppercase tracking-wider mb-1.5 block">
+                                        Which speaker is you?
+                                    </label>
+                                    <div className="flex items-center gap-1.5 flex-wrap">
+                                        {uploadSpeakers.map(label => {
+                                            const on = label === uploadRepSpeaker;
+                                            return (
+                                                <button
+                                                    key={label}
+                                                    type="button"
+                                                    onClick={() => onPickRepSpeaker(label)}
+                                                    className={[
+                                                        'px-2.5 py-[5px] rounded-lg text-[11.5px] font-medium transition-all active:scale-95 select-none border max-w-[220px] truncate',
+                                                        on
+                                                            ? 'border-blue-600 bg-blue-500/10 text-accent-primary'
+                                                            : isLight
+                                                                ? 'border-black/10 bg-black/[0.04] text-text-tertiary hover:text-text-secondary'
+                                                                : 'border-white/[0.08] bg-white/[0.04] text-text-tertiary hover:text-text-secondary',
+                                                    ].join(' ')}
+                                                    title={label}
+                                                >
+                                                    {label}
+                                                </button>
+                                            );
+                                        })}
+                                    </div>
+                                    <p className="text-[10px] text-text-tertiary mt-1">
+                                        {uploadRepSource === 'name'
+                                            ? 'Matched to your account name — pick yourself if that’s wrong'
+                                            : uploadRepSource === 'first'
+                                                ? 'Defaulted to the first speaker — pick yourself if that’s wrong'
+                                                : 'Everyone else is analysed as the prospect side'}
+                                    </p>
+                                </div>
+                            )}
 
                             {uploadError && (
                                 <div className={['flex items-center gap-2 text-[12px] rounded-lg px-3 py-2 border', isLight ? 'text-red-600 bg-red-50 border-red-200' : 'text-red-400 bg-red-500/10 border-red-500/20'].join(' ')}>
@@ -1361,7 +1554,7 @@ export const TranscriptUploadModal: React.FC<TranscriptUploadModalProps> = ({
                         </div>
 
                         {/* Footer */}
-                        <div className={['flex items-center justify-between px-4 py-2.5 border-t', isLight ? 'border-border-subtle bg-bg-primary/40' : 'border-border-muted bg-bg-item-surface/50'].join(' ')}>
+                        <div className={['flex items-center justify-between px-4 py-2.5 border-t rounded-b-2xl', isLight ? 'border-border-subtle bg-bg-primary/40' : 'border-border-muted bg-bg-item-surface/50'].join(' ')}>
                             <p className="text-[11px] text-text-tertiary">
                                 {uploadText.trim() ? `${uploadText.trim().length.toLocaleString()} characters` : 'No transcript pasted yet'}
                             </p>
@@ -1397,6 +1590,58 @@ export const TranscriptUploadModal: React.FC<TranscriptUploadModalProps> = ({
                     </div>
                 </motion.div>
             </>
+        )}
+    </AnimatePresence>
+);
+
+// ─────────────────────────────────────────────────────────────────────────
+// Company-link failure notice.
+//
+// The upload → company association is deferred (it can only run once the
+// meeting row reaches the backend), so its failure lands long after the modal
+// closed. Previously a console.warn — the user just saw a meeting with no
+// company and no explanation. The entry also stays queued, so this is a
+// convenience retry, not the only one.
+// ─────────────────────────────────────────────────────────────────────────
+
+export const CompanyLinkFailureNotice: React.FC<{
+    isLight: boolean;
+    companyName: string | null;
+    onRetry: () => void;
+    onDismiss: () => void;
+}> = ({ isLight, companyName, onRetry, onDismiss }) => (
+    <AnimatePresence>
+        {companyName && (
+            <motion.div
+                initial={{ opacity: 0, y: 12 }}
+                animate={{ opacity: 1, y: 0 }}
+                exit={{ opacity: 0, y: 12 }}
+                transition={{ duration: 0.18 }}
+                className={[
+                    'fixed bottom-4 left-1/2 -translate-x-1/2 z-[95] flex items-center gap-3',
+                    'rounded-xl border px-3.5 py-2.5 shadow-xl',
+                    isLight
+                        ? 'bg-white border-amber-200 text-slate-700'
+                        : 'bg-bg-secondary border-amber-500/25 text-text-primary',
+                ].join(' ')}
+            >
+                <span className="text-[12.5px]">
+                    Couldn’t link <span className="font-semibold">{companyName}</span> to that meeting.
+                </span>
+                <button
+                    onClick={onRetry}
+                    className="px-2.5 py-1 rounded-lg text-[12px] font-semibold text-white bg-accent-primary hover:bg-blue-500 transition-colors"
+                >
+                    Retry
+                </button>
+                <button
+                    onClick={onDismiss}
+                    className="p-1 rounded-full text-text-tertiary hover:text-text-primary transition-colors"
+                    aria-label="Dismiss"
+                >
+                    <X size={12} />
+                </button>
+            </motion.div>
         )}
     </AnimatePresence>
 );

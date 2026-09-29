@@ -255,12 +255,12 @@ export class RAGManager {
      * Start JIT indexing for a live meeting.
      * Call when a meeting session begins.
      */
-    startLiveIndexing(meetingId: string): void {
+    startLiveIndexing(meetingId: string, performanceMode = false): void {
         if (!this.embeddingPipeline.isReady()) {
             console.log('[RAGManager] Embedding pipeline not ready, skipping live indexing');
             return;
         }
-        
+
         // Ensure meeting row exists in DB to satisfy foreign key constraints for chunks
         try {
             this.db.prepare(`
@@ -271,7 +271,7 @@ export class RAGManager {
             console.warn('[RAGManager] Failed to create transient meeting row for live indexing', e);
         }
 
-        this.liveIndexer.start(meetingId);
+        this.liveIndexer.start(meetingId, performanceMode);
     }
 
     /**
@@ -308,7 +308,7 @@ export class RAGManager {
     deleteMeetingData(meetingId: string): void {
         // 1. Delete from vector store (chunks and summaries)
         this.vectorStore.deleteChunksForMeeting(meetingId);
-        
+
         // 2. Clear embedding queue for this meeting to prevent "Chunk not found" errors on re-processing
         try {
             const info = this.db.prepare('DELETE FROM embedding_queue WHERE meeting_id = ?').run(meetingId);
@@ -318,7 +318,7 @@ export class RAGManager {
         } catch (e) {
             console.warn(`[RAGManager] Failed to clear embedding_queue for meeting ${meetingId}`, e);
         }
-        
+
         // 3. Clean up transient meeting row if it was a live session
         try {
             if (meetingId === 'live-meeting-current') {
@@ -456,7 +456,7 @@ export class RAGManager {
 
         console.log(`[RAGManager] Re-indexing ${count} incompatible meetings for ${providerName} pipeline...`);
         const affectedMeetingIds = this.vectorStore.deleteEmbeddingsForMeetings(providerName);
-        
+
         for (const meetingId of affectedMeetingIds) {
             // Queue the re-embedding background jobs
             await this.embeddingPipeline.queueMeeting(meetingId);

@@ -4,6 +4,7 @@ import { useCompanyIntel, hasValue, pickValue, isIntelEmpty, openExternalUrl, LO
 import { useFirebaseAuth } from './useFirebaseAuth';
 import { useLiveAnalysis } from './useLiveAnalysis';
 import { useMeetingSession } from './useMeetingSession';
+import { useUploadAnalysisBridge } from './useUploadAnalysisBridge';
 import { useOverlayOpacity } from './useOverlayOpacity';
 import { useResolvedTheme } from "./useResolvedTheme";
 import { useShortcuts } from "./useShortcuts";
@@ -61,7 +62,8 @@ import { useTranscriptVisibility } from "./useTranscriptVisibility";
 import { useSettingsOverlay } from "./useSettingsOverlay";
 import { useSttProviderSettings, STT_PROVIDER_KEY_URLS } from "./useSttProviderSettings";
 import { useCompanyContext, ALLOWED_EXTENSIONS, MAX_FILE_SIZE_BYTES, ASSET_CONFIG, STATUS_BADGE, normalizeContext } from "./useCompanyContext";
-import { useUpdateStatus } from "./useUpdateStatus";
+import { useUpdateStatus, formatUpdateSize } from "./useUpdateStatus";
+import type { PerformanceModePreference } from "./usePerformanceMode";
 import { useSystemAudioPermission } from "./useSystemAudioPermission";
 import { useUndetectable } from "./useUndetectable";
 export type { UseUpdateStatusResult } from "./useUpdateStatus";
@@ -79,6 +81,7 @@ export {
     useFirebaseAuth,
     useLiveAnalysis,
     useMeetingSession,
+    useUploadAnalysisBridge,
     useOverlayOpacity,
     useResolvedTheme,
     useShortcuts,
@@ -152,6 +155,8 @@ export {
     useTranscriptVisibility,
     useSettingsOverlay,
     useUpdateStatus,
+    formatUpdateSize,
+    PerformanceModePreference,
     useSystemAudioPermission,
     useUndetectable,
     usePerformanceMode,

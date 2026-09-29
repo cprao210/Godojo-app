@@ -4,6 +4,7 @@
 
 import { MeetingType, CategoryConfig, ScoringCriteriaSettings, LiveAnalysisData } from '../../src/types';
 import { resolveEffectiveScorecardConfig } from "../../src/lib/utils"
+import { fieldText, type EvidenceBearing } from '../../src/lib/bantMeddic'
 
 function buildCategoryBlock(cat: CategoryConfig): string {
     return `    "${cat.key}": {
@@ -52,9 +53,17 @@ function buildGroundingBlock(live: LiveAnalysisData | null): string {
     if (!live) return '';
 
     const fieldLines = (
-        entries: [string, { status?: string; evidence?: string } | undefined][]
+        entries: [string, ({ status?: string } & EvidenceBearing) | undefined][]
     ) => entries
-        .map(([label, f]) => `          - ${label}: ${f?.status || 'missing'}${clip(f?.evidence) ? ` — "${clip(f?.evidence)}"` : ''}`)
+        .map(([label, f]) => {
+            // The field's own assessment, not its quotes: this block is
+            // explicitly token-constrained, and the summary is the densest
+            // grounding available. It is also the backend's readable rendering,
+            // so a non-English call's grounding block is in the same language
+            // as the scorecard the model has to write.
+            const assessment = clip(fieldText(f));
+            return `          - ${label}: ${f?.status || 'missing'}${assessment ? ` — "${assessment}"` : ''}`;
+        })
         .join('\n');
 
     const bant = fieldLines([
@@ -94,7 +103,7 @@ ${signalLines}
         Scoring these: confirmed = full marks for that component, partial = half,
         missing = zero. Objection handling scores off the list above only —
         "NONE" means zero, not a pass. Buying-intent scores off the positive
-        signals above only. Quote the evidence above rather than hunting for
+        signals above only. Use the assessments above rather than hunting for
         your own.
 `;
 }

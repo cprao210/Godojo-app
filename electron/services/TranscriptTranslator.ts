@@ -48,7 +48,30 @@ const SYSTEM_PROMPT = [
     '- Preserve the speaker\'s tone and register; do not summarize, expand, or answer.',
     '- If the input is already entirely English, repeat it back verbatim.',
     '- Transcripts are fragments: translate incomplete sentences as-is without completing them.',
+    '- When the message has a "Line to translate:" section, translate ONLY that line. The',
+    '  "Previous lines" above it are context for pronouns, names and domain words — never',
+    '  translate, repeat or answer them.',
 ].join('\n');
+
+/** How many previous lines of the call a translation may see as context. */
+export const TRANSLATE_CONTEXT_LINES = 3;
+
+/**
+ * The user message for one translation. With context, the model sees the previous few lines of
+ * the call (in their original script) so a fragment like "go to the oil" is read against what was
+ * actually being discussed instead of in isolation.
+ */
+export function buildTranslateMessage(text: string, context: string[] = []): string {
+    const ctx = context.map(c => c.trim()).filter(Boolean).slice(-TRANSLATE_CONTEXT_LINES);
+    if (ctx.length === 0) return text;
+    return [
+        'Previous lines (context only, do not translate):',
+        ...ctx.map(c => `- ${c}`),
+        '',
+        'Line to translate:',
+        text,
+    ].join('\n');
+}
 
 type TranslateProvider = 'groq' | 'gemini' | 'openai' | 'claude';
 
@@ -114,8 +137,12 @@ export class TranscriptTranslator {
     /**
      * Translate to English, or return `text` unchanged when translation is
      * unnecessary, unavailable, too slow, or failing. Never throws.
+     *
+     * `context` = the previous few lines of the call in their ORIGINAL script, used only to read
+     * this line correctly (see buildTranslateMessage). The translation is display text: the
+     * original always travels alongside it and is what live analysis grounds evidence on.
      */
-    public async translate(text: string): Promise<string> {
+    public async translate(text: string, context: string[] = []): Promise<string> {
         const trimmed = text.trim();
         if (!trimmed || !hasNonLatinScript(trimmed)) return text;
 
@@ -130,7 +157,9 @@ export class TranscriptTranslator {
         if (!provider) return text;
 
         try {
-            const translated = await this.withTimeout(this.callProvider(provider, trimmed));
+            const translated = await this.withTimeout(
+                this.callProvider(provider, buildTranslateMessage(trimmed, context)),
+            );
             const clean = this.sanitize(translated);
             if (!clean) return text;
 

@@ -48,8 +48,8 @@ export const SettingsSaveToast: React.FC<SettingsSaveToastProps> = ({ isLight })
                         'fixed bottom-[4rem] left-1/2 -translate-x-1/2 z-[600]',
                         'flex items-center gap-2.5 pl-3.5 pr-4 py-2.5 rounded-2xl backdrop-blur-xl saturate-[180%] ring-1 ring-black/10',
                         isLight
-                            ? 'bg-bg-elevated/95 border border-border-muted shadow-[0_8px_32px_rgba(0,0,0,0.15),inset_0_1px_0_rgba(255,255,255,0.9)]'
-                            : 'bg-bg-card/85 border border-border-subtle shadow-[0_30px_70px_-20px_rgba(0,0,0,0.6),inset_0_1px_0_rgba(255,255,255,0.06)]',
+                            ? 'bg-bg-elevated border border-border-muted shadow-[0_8px_32px_rgba(0,0,0,0.15),inset_0_1px_0_rgba(255,255,255,0.9)]'
+                            : 'bg-bg-card border border-border-subtle shadow-[0_30px_70px_-20px_rgba(0,0,0,0.6),inset_0_1px_0_rgba(255,255,255,0.06)]',
                     ].join(' ')}
                     role="status"
                     aria-live="polite"

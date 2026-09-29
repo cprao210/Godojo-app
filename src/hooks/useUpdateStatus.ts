@@ -7,6 +7,11 @@ export type UpdateStatus = 'idle' | 'checking' | 'downloading' | 'ready' | 'erro
 export interface UpdateInfo {
     version: string;
     parsedNotes?: ParsedReleaseNotes | null;
+    /** Byte size of this platform's update artifact, from the GitHub release
+     *  assets (NSIS exe / DMG / AppImage). The FULL package size — on Windows
+     *  the differential (blockmap) download usually transfers much less, and
+     *  once downloading, `downloadTotalBytes` carries the ACTUAL bytes. */
+    downloadSizeBytes?: number | null;
     [key: string]: any;
 }
 
@@ -19,6 +24,15 @@ export interface UseUpdateStatusResult {
     downloadProgress: number;
     errorMessage: string | null;
     lastCheckedAt: Date | null;
+    /** Full package size of the pending update (bytes), or null if the asset
+     *  list couldn't be fetched. Display with formatUpdateSize(). */
+    downloadSizeBytes: number | null;
+    /** ACTUAL bytes this download will transfer (from electron-updater's
+     *  progress events). On Windows differential updates this is the delta
+     *  size — much smaller than downloadSizeBytes. Null until downloading. */
+    downloadTotalBytes: number | null;
+    /** Bytes transferred so far in the in-flight download. */
+    downloadTransferredBytes: number | null;
     /** Arch of the pending macOS manual download ('arm64' | 'x64') — used to
      *  render the expected DMG filename in the manual-install instructions. */
     instructionsArch: 'arm64' | 'x64' | null;
@@ -44,6 +58,15 @@ export interface UseUpdateStatusResult {
 // give us for free the way quitAndInstall's auto-restart does on Windows/Linux.
 export const PENDING_MANUAL_UPDATE_KEY = 'godojo_pending_manual_update_version';
 
+/** 1234567 → "1.2 MB"; 441_000_000 → "441 MB"; small values → KB. */
+export function formatUpdateSize(bytes: number | null | undefined): string | null {
+    if (bytes == null || !Number.isFinite(bytes) || bytes <= 0) return null;
+    if (bytes < 1024 * 1024) return `${Math.max(1, Math.round(bytes / 1024))} KB`;
+    const mb = bytes / (1024 * 1024);
+    // One decimal only while it adds information (9.4 MB), plain integer after (441 MB)
+    return mb < 100 ? `${mb.toFixed(1).replace(/\.0$/, '')} MB` : `${Math.round(mb)} MB`;
+}
+
 /**
  * Single source of truth for update state, backed by the electron-updater
  * IPC events wired up in electron/main.ts (setupAutoUpdater). Both the
@@ -61,6 +84,9 @@ export function useUpdateStatus(): UseUpdateStatusResult {
     const [lastCheckedAt, setLastCheckedAt] = useState<Date | null>(null);
     const [instructionsArch, setInstructionsArch] = useState<'arm64' | 'x64' | null>(null);
     const [isPackaged, setIsPackaged] = useState(false);
+    const [downloadSizeBytes, setDownloadSizeBytes] = useState<number | null>(null);
+    const [downloadTotalBytes, setDownloadTotalBytes] = useState<number | null>(null);
+    const [downloadTransferredBytes, setDownloadTransferredBytes] = useState<number | null>(null);
 
     // Guards against setting 'checking' -> stuck forever if a checking-for-update
     // event fires but no available/not-available follow-up ever arrives.
@@ -86,7 +112,14 @@ export function useUpdateStatus(): UseUpdateStatusResult {
             setErrorMessage(null);
             if (checkingTimeoutRef.current) clearTimeout(checkingTimeoutRef.current);
             checkingTimeoutRef.current = setTimeout(() => {
-                setStatus(prev => (prev === 'checking' ? 'idle' : prev));
+                // A check that never resolves (no available/not-available/error
+                // follow-up) — previously this silently flipped back to 'idle',
+                // which read as "the button spun forever and nothing happened".
+                // Surface a friendly error instead; a late-arriving result
+                // still recovers (the available/not-available handlers clear
+                // the error and set the real state).
+                setStatus(prev => (prev === 'checking' ? 'error' : prev));
+                setErrorMessage(prev => prev ?? "We couldn't check for the latest version right now. Please try again later.");
             }, 20000);
         });
 
@@ -99,6 +132,9 @@ export function useUpdateStatus(): UseUpdateStatusResult {
             // A newly announced update starts a fresh lifecycle — never carry
             // the previous download's progress into it.
             setDownloadProgress(0);
+            setDownloadSizeBytes(info?.downloadSizeBytes ?? null);
+            setDownloadTotalBytes(null);
+            setDownloadTransferredBytes(null);
             if (info?.parsedNotes) setParsedNotes(info.parsedNotes);
             // A check result must never clobber an in-flight download or an
             // update that's already downloaded and waiting to install.
@@ -109,6 +145,10 @@ export function useUpdateStatus(): UseUpdateStatusResult {
             if (checkingTimeoutRef.current) clearTimeout(checkingTimeoutRef.current);
             setIsUpdateAvailable(false);
             setLastCheckedAt(new Date());
+            // A completed check is a clean result — never let a previous
+            // failure's error text linger next to an "Up to date" state
+            // (this used to leave the Updates tab's error card stuck).
+            setErrorMessage(null);
             // Same protection as update-available above: a re-check that comes
             // back "up to date" must not erase an already-downloaded install.
             setStatus(prev => (prev === 'downloading' || prev === 'ready' || prev === 'instructions' ? prev : 'idle'));
@@ -117,6 +157,14 @@ export function useUpdateStatus(): UseUpdateStatusResult {
         const unsubProgress = window.electronAPI.onDownloadProgress((progressObj: any) => {
             setStatus('downloading');
             setDownloadProgress(progressObj.percent);
+            // Actual transfer size — for Windows differential (blockmap)
+            // downloads this total IS the delta size, not the full installer.
+            if (typeof progressObj?.total === 'number' && progressObj.total > 0) {
+                setDownloadTotalBytes(progressObj.total);
+            }
+            if (typeof progressObj?.transferred === 'number') {
+                setDownloadTransferredBytes(progressObj.transferred);
+            }
         });
 
         const unsubDownloaded = window.electronAPI.onUpdateDownloaded((info: UpdateInfo) => {
@@ -158,9 +206,12 @@ export function useUpdateStatus(): UseUpdateStatusResult {
         setErrorMessage(null);
         try {
             await window.electronAPI.checkForUpdates();
-        } catch (err: any) {
+        } catch {
+            // IPC-level failure only (the main process sanitizes every real
+            // update error before broadcast) — never surface a raw transport
+            // error to the user.
             setStatus('error');
-            setErrorMessage(err?.message || 'Update check failed');
+            setErrorMessage("We couldn't check for the latest version right now. Please try again later.");
         }
     }, [isPackaged]);
 
@@ -236,6 +287,9 @@ export function useUpdateStatus(): UseUpdateStatusResult {
         errorMessage,
         lastCheckedAt,
         instructionsArch,
+        downloadSizeBytes,
+        downloadTotalBytes,
+        downloadTransferredBytes,
         checkForUpdates,
         startInstall,
         installUpdate,

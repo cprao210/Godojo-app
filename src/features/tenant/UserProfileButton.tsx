@@ -4,6 +4,8 @@ import { useResolvedTheme } from '@/hooks';
 import { isMac } from '@/../utils/platformUtils';
 import { loadUserProfile } from '@/features/settings';
 import { switchToAccount } from '@/lib/firebase';
+import { markSkipSplashOnNextLoad } from '@/lib/splash';
+import { BirdLoader } from '@/features/ui/BirdLoader';
 import { MenuItem, UserProfileButtonProps } from '@/types';
 import { createPortal } from 'react-dom';
 
@@ -84,6 +86,11 @@ const UserProfileButton: React.FC<UserProfileButtonProps> = ({
         // after the switch. Safe to reload them all because we refused above
         // if a meeting was active. Falls back to the single-window reload on an
         // older preload that doesn't expose the new channel yet.
+        //
+        // This reload is NOT a hard refresh from the user's point of view: tell
+        // the next page load to skip the startup splash and show the plain
+        // loader instead (see lib/splash.ts).
+        markSkipSplashOnNextLoad('Switching account…');
         if (window.electronAPI?.reloadAllWindows) {
             window.electronAPI.reloadAllWindows();
         } else {
@@ -155,7 +162,7 @@ const UserProfileButton: React.FC<UserProfileButtonProps> = ({
                 >
                     {switchingUid ? (
                         <>
-                            <div className={`h-5 w-5 animate-spin rounded-full border-2 border-t-transparent ${isLight ? 'border-gray-400' : 'border-gray-600'}`} />
+                            <BirdLoader size={72} />
                             <span className="text-xs text-text-secondary">Switching account…</span>
                         </>
                     ) : (

@@ -94,6 +94,7 @@ export const MeetingScorecardPanel: React.FC<MeetingScorecardPanelProps> = ({
                                 style={{ background: isActive ? accent.color : 'currentColor', opacity: isActive ? 1 : 0.4 }}
                             />
                             {accent.label}
+                            {/* SCORING DISABLED FOR TESTING (not accurate enough yet) — re-enable by uncommenting.
                             <span
                                 className="ml-0.5 text-[9px] tabular-nums font-bold px-1 py-0.5 rounded"
                                 style={{
@@ -104,6 +105,7 @@ export const MeetingScorecardPanel: React.FC<MeetingScorecardPanelProps> = ({
                             >
                                 {sc.overallScore}
                             </span>
+                            */}
                         </button>
                     );
                 })}

@@ -247,7 +247,7 @@ export class IntelligenceManager extends EventEmitter {
     // Meeting Lifecycle (delegates to persistence)
     // ============================================
 
-    async stopMeeting(meetingTypes?: ('discovery' | 'demo' | 'negotiation')[], tenantId?: string | null): Promise<string | null> {
+    async stopMeeting(meetingTypes?: ('discovery' | 'demo' | 'negotiation')[], tenantId?: string | null): Promise<{ meetingId: string | null; source: string; candidates: { name: string; domain: string }[] } | null> {
         return this.persistence.stopMeeting(meetingTypes, tenantId);
     }
 
@@ -276,8 +276,8 @@ export class IntelligenceManager extends EventEmitter {
         return this.persistence.regenerateSummary(meetingId);
     }
 
-    async uploadTranscript(rawText: string, title?: string, meetingTypes?: ('discovery' | 'demo' | 'negotiation')[], tenantId?: string | null): Promise<string | null> {
-        return this.persistence.uploadTranscript(rawText, title, meetingTypes, tenantId);
+    async uploadTranscript(rawText: string, title?: string, meetingTypes?: ('discovery' | 'demo' | 'negotiation')[], tenantId?: string | null, repSpeaker?: string | null): Promise<string | null> {
+        return this.persistence.uploadTranscript(rawText, title, meetingTypes, tenantId, repSpeaker);
     }
 
     async recoverUnprocessedMeetings(): Promise<void> {

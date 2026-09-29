@@ -59,10 +59,15 @@ export const tenantsApi = {
         ),
 
     // 5b. GET /tenants/:tenant_id/members/:user_id — single-member drill-down
-    // (radar scores, strengths, recent calls) backing AeDetailView.
-    getMember: (tenantId: string, userId: string): Promise<MemberDetail> =>
+    // (radar scores, strengths, recent calls) backing AeDetailView. recent_calls
+    // is server-paginated: meetingOffset skips into the list, meetingLimit caps
+    // the page; the response carries calls_total + pagination.has_more.
+    getMember: (tenantId: string, userId: string, pagination: { meetingOffset?: number; meetingLimit?: number } = {}): Promise<MemberDetail> =>
         apiFetch<MemberDetail>(
-            `/tenants/${tenantId}/members/${userId}`,
+            `/tenants/${tenantId}/members/${userId}${toQueryString({
+                meeting_offset: pagination.meetingOffset,
+                meeting_limit: pagination.meetingLimit,
+            })}`,
             { headers: { "x-tenant-id": tenantId } },
         ),
 

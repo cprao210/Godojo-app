@@ -20,13 +20,13 @@ import { posthogAnalytics } from '@/lib/analytics/posthog.service';
 // below. Kept as data so the nav list itself stays a simple `.map()`.
 const NAV_ITEMS = [
     { id: 'general', label: 'General', icon: Monitor, productionOnly: false },
-    { id: 'user-profile', label: 'User Profile', icon: User, productionOnly: false },
+    // { id: 'user-profile', label: 'User Profile', icon: User, productionOnly: false },
     { id: 'ai-providers', label: 'AI Providers', icon: FlaskConical, productionOnly: false },
     { id: 'calendar', label: 'Calendar', icon: Calendar, productionOnly: false },
     { id: 'audio', label: 'Audio', icon: Mic, productionOnly: false },
-    { id: 'keybinds', label: 'Keybinds', icon: Keyboard, productionOnly: false },
+    // { id: 'keybinds', label: 'Keybinds', icon: Keyboard, productionOnly: false },
     { id: 'company-context', label: 'Company Context', icon: Building2, productionOnly: false },
-    { id: 'scoring-criteria', label: 'Scoring Criteria', icon: BarChart2, productionOnly: false },
+    // { id: 'scoring-criteria', label: 'Scoring Criteria', icon: BarChart2, productionOnly: false },
     { id: 'user-roles-permissions', label: 'Roles & Management', icon: Users, productionOnly: false },
     { id: 'updates', label: 'Updates', icon: RefreshCw, productionOnly: true },
     { id: 'about', label: 'About', icon: Info, productionOnly: false },
@@ -114,7 +114,7 @@ const SettingsOverlay: React.FC<SettingsOverlayProps> = ({
                     // top-6 leaves the header visible above; bottom-12 (= the audio
                     // status footer's h-12) does the same for the footer, which now
                     // renders at the App root at z-[200] — above this z-50 overlay.
-                    className={`fixed top-6 bottom-12 inset-x-0 z-50 transition-colors duration-150 ${opacity.isPreviewingOpacity ? 'bg-transparent backdrop-blur-none' : isLight ? 'bg-[#F8FAFC]' : 'bg-bg-main'}`}
+                    className={`fixed top-8 bottom-12 inset-x-0 z-50 transition-colors duration-150 ${opacity.isPreviewingOpacity ? 'bg-transparent backdrop-blur-none' : isLight ? 'bg-[#F8FAFC]' : 'bg-bg-main'}`}
                 >
                     <motion.div
                         id="settings-panel-wrapper"
@@ -152,13 +152,13 @@ const SettingsOverlay: React.FC<SettingsOverlayProps> = ({
                                     </nav>
                                 </div>
 
-                                <div className={`mt-auto p-6 border-t ${isLight ? 'border-slate-200/70' : 'border-border-subtle'}`}>
-                                    <button
+                                <div className={`mt-auto p-3 border-t ${isLight ? 'border-slate-200/70' : 'border-border-subtle'}`}>
+                                    {/* <button
                                         onClick={() => window.electronAPI.quitApp()}
                                         className="w-full text-left px-3 py-2 rounded-lg text-sm font-medium text-red-400 hover:bg-red-500/10 transition-colors flex items-center gap-3"
                                     >
                                         <LogOut size={16} /> Quit GoDojo
-                                    </button>
+                                    </button> */}
                                     <button onClick={onClose} className="group mt-2 w-full text-left px-3 py-2 rounded-lg text-sm font-medium text-text-secondary hover:text-text-primary hover:bg-bg-item-active/50 transition-colors flex items-center gap-3">
                                         <ArrowLeft size={16} className="group-hover:text-accent-primary transition-colors" /> Back to GoDojo
                                     </button>
@@ -170,7 +170,7 @@ const SettingsOverlay: React.FC<SettingsOverlayProps> = ({
                                 <div className="max-w-5xl mx-auto px-10 py-10">
                                     {activeTab === 'general' && <GeneralTab overlay={overlay} />}
 
-                                    {activeTab === 'user-profile' && <UserProfileTab isLight={isLight} />}
+                                    {/* {activeTab === 'user-profile' && <UserProfileTab isLight={isLight} />} */}
 
                                     {activeTab === 'ai-providers' && (
                                         <AIProvidersSettings
@@ -185,7 +185,7 @@ const SettingsOverlay: React.FC<SettingsOverlayProps> = ({
                                         />
                                     )}
 
-                                    {activeTab === 'keybinds' && <KeybindsTab overlay={overlay} />}
+                                    {/* {activeTab === 'keybinds' && <KeybindsTab overlay={overlay} />} */}
 
                                     {activeTab === 'audio' && <AudioTab overlay={overlay} />}
 
@@ -215,7 +215,7 @@ const SettingsOverlay: React.FC<SettingsOverlayProps> = ({
                                         </div>
                                     )}
 
-                                    {activeTab === 'scoring-criteria' && <ScoringCriteriaTab />}
+                                    {/* {activeTab === 'scoring-criteria' && <ScoringCriteriaTab />} */}
 
                                     {activeTab === 'user-roles-permissions' && (
                                         <UserRolesPermissionsTab

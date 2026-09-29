@@ -127,7 +127,11 @@ const ACTIVE_LEVEL = 0.03;
 // Frame budget. A 16px level meter is indistinguishable at 30fps from 60, and
 // Performance Mode (software compositing) halves it again.
 const FRAME_MS = 1000 / 30;
-const FRAME_MS_PERF = 1000 / 15;
+// Performance Mode now runs at the same 10 FPS as OS reduced-motion — on a
+// weak iGPU the wave is pure decoration and 15 FPS measurably still cost
+// frame budget during screen share. The loop also parks itself after idle
+// (no levels → park) and rAF is suspended natively while the page is
+// hidden, so nothing burns frames when the dock/overlay isn't on screen.
 const FRAME_MS_REDUCED = 100;
 
 // Ignore absurd deltas after a tab stall / resume so the meter eases in rather
@@ -313,7 +317,7 @@ export const AudioWaveIndicator: React.FC<AudioWaveIndicatorProps> = ({
 
     useEffect(() => {
         const a = anim.current;
-        const frameMs = reducedMotion ? FRAME_MS_REDUCED : isPerformanceMode ? FRAME_MS_PERF : FRAME_MS;
+        const frameMs = (reducedMotion || isPerformanceMode) ? FRAME_MS_REDUCED : FRAME_MS;
         // `filter` invalidates the element's paint, so an audio-reactive glow is
         // the single most expensive thing here. First casualty on a weak GPU.
         const enableGlow = !isPerformanceMode && !reducedMotion;

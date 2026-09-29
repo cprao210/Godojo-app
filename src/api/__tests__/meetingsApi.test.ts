@@ -304,3 +304,33 @@ describe('meetingsApi — transcript upload is IPC-only', () => {
         expect((meetingsApi as any).uploadTranscript).toBeUndefined();
     });
 });
+describe('meetingsApi.setCompany', () => {
+    beforeEach(() => mockedApiFetch.mockClear());
+
+    it('PUTs an existing company_id to the association route', async () => {
+        await meetingsApi.setCompany('m1', { company_id: 'c1' });
+        expect(mockedApiFetch.mock.calls[0][0]).toBe('/meetings/m1/company');
+        expect((mockedApiFetch.mock.calls[0][1] as RequestInit).method).toBe('PUT');
+        expect(bodyOfCall()).toEqual({ company_id: 'c1' });
+    });
+
+    it('PUTs a name (create-or-get path) with optional domain', async () => {
+        await meetingsApi.setCompany('m1', { name: 'Acme', domain: 'acme.com' });
+        expect(bodyOfCall()).toEqual({ name: 'Acme', domain: 'acme.com' });
+    });
+});
+
+describe('meetingsApi.clearCompany', () => {
+    beforeEach(() => mockedApiFetch.mockClear());
+
+    it('DELETEs the association route without a query by default', async () => {
+        await meetingsApi.clearCompany('m1');
+        expect(mockedApiFetch.mock.calls[0][0]).toBe('/meetings/m1/company');
+        expect((mockedApiFetch.mock.calls[0][1] as RequestInit).method).toBe('DELETE');
+    });
+
+    it('passes skipped=true so the post-call prompt never reappears', async () => {
+        await meetingsApi.clearCompany('m1', true);
+        expect(mockedApiFetch.mock.calls[0][0]).toBe('/meetings/m1/company?skipped=true');
+    });
+});

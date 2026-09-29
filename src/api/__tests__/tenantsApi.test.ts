@@ -79,10 +79,21 @@ describe('tenantsApi.listInvitations', () => {
 describe('tenantsApi.getMember', () => {
     beforeEach(() => mockedApiFetch.mockClear());
 
-    it('fetches the member detail with the tenant header', async () => {
+    it('fetches the member detail with the tenant header and no query params by default', async () => {
         await tenantsApi.getMember('t1', 'u1');
         expect(mockedApiFetch.mock.calls[0][0]).toBe('/tenants/t1/members/u1');
         expect((mockedApiFetch.mock.calls[0][1] as RequestInit).headers).toEqual({ 'x-tenant-id': 't1' });
+    });
+
+    it('passes meeting_offset/meeting_limit as query params when pagination is requested', async () => {
+        await tenantsApi.getMember('t1', 'u1', { meetingOffset: 20, meetingLimit: 10 });
+        expect(mockedApiFetch.mock.calls[0][0]).toBe('/tenants/t1/members/u1?meeting_offset=20&meeting_limit=10');
+        expect((mockedApiFetch.mock.calls[0][1] as RequestInit).headers).toEqual({ 'x-tenant-id': 't1' });
+    });
+
+    it('omits meeting_offset when only a limit is given (backend defaults offset to 0)', async () => {
+        await tenantsApi.getMember('t1', 'u1', { meetingLimit: 10 });
+        expect(mockedApiFetch.mock.calls[0][0]).toBe('/tenants/t1/members/u1?meeting_limit=10');
     });
 });
 

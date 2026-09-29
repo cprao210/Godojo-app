@@ -1,7 +1,10 @@
 import React from "react";
 import ReactDOM from "react-dom/client";
+import { MotionConfig } from "framer-motion";
 
 import App from "./App";
+import { usePerformanceMode } from "./hooks";
+import { resolveCachedPerformanceMode } from "./hooks/usePerformanceMode";
 import "./index.css";
 
 // ---------------------------------------------------------------------------
@@ -91,12 +94,49 @@ async function bootFirebaseAuthBridge(): Promise<void> {
 }
 
 // ---------------------------------------------------------------------------
+// Performance Mode gate (app-wide, every window)
+// ---------------------------------------------------------------------------
+
+/**
+ * Single wiring point for app-wide Performance Mode — every window's renderer
+ * boots through this file, so each window (launcher, overlay, settings,
+ * model selector) gets exactly one gate:
+ *
+ *   1. Toggles a root-level `.perf-mode` class on <html>. The centralized
+ *      rules in index.css (e.g. killing backdrop-filter blur app-wide) key
+ *      off it — including for portaled modals, which live under <html> too.
+ *   2. Wraps the tree in framer-motion's MotionConfig with
+ *      reducedMotion="always" while perf mode is active, so decorative
+ *      transform/layout animations are skipped engine-side. Functionally
+ *      required loaders (spinners) are CSS-based and unaffected.
+ *
+ * The decision itself (weak hardware auto-detection + explicit user
+ * override) lives in usePerformanceMode; the dock additionally keeps its own
+ * instance for getDockSurfaceStyle's opacity boost — same inputs, same
+ * answer, no drift.
+ */
+const PerformanceModeGate: React.FC<{ children: React.ReactNode }> = ({ children }) => {
+  const { isPerformanceMode } = usePerformanceMode();
+
+  React.useEffect(() => {
+    document.documentElement.classList.toggle("perf-mode", isPerformanceMode);
+  }, [isPerformanceMode]);
+
+  return (
+    <MotionConfig reducedMotion={isPerformanceMode ? "always" : "user"}>
+      {children}
+    </MotionConfig>
+  );
+};
+
+// ---------------------------------------------------------------------------
 // Boot sequence
 // ---------------------------------------------------------------------------
 
 applyPlatformAttribute();
 applyWindowAttribute();
 applyCachedTheme();
+try { document.documentElement.classList.toggle("perf-mode", resolveCachedPerformanceMode()); } catch { /* cosmetic only */ }
 syncThemeWithMainProcess();
 void bootFirebaseAuthBridge();
 
@@ -106,6 +146,8 @@ void bootFirebaseAuthBridge();
 
 ReactDOM.createRoot(document.getElementById("root")!).render(
   <React.StrictMode>
-    <App />
+    <PerformanceModeGate>
+      <App />
+    </PerformanceModeGate>
   </React.StrictMode>
 );

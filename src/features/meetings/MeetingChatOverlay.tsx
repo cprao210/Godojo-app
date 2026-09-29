@@ -1,38 +1,50 @@
-import React, { useState } from 'react';
-import { X, Copy, Check, FileText, ExternalLink } from 'lucide-react';
+import React, { useEffect, useState } from 'react';
+import { X, Copy, Check } from 'lucide-react';
 import { motion, AnimatePresence } from 'framer-motion';
 import { IMAGES } from '@/lib/assets';
 import ReactMarkdown from 'react-markdown';
+import { CitationProvider, rehypeCitations, CiteChip } from '@/features/chat/citations';
 import remarkGfm from 'remark-gfm';
 import { chatMarkdownComponents } from '@/features/chat';
 import { useMeetingChat } from '@/hooks';
-import { ChatSources, MeetingChatOverlayProps } from '@/types';
+import { usePerformanceMode } from '@/hooks';
+import { MeetingChatOverlayProps } from '@/types';
 
 // ============================================
 // Typing Indicator Component
 // ============================================
 
-const TypingIndicator: React.FC<{ label?: string }> = ({ label }) => (
-    <div className="flex items-center py-4">
-        <motion.span
-            className="w-2 h-2 rounded-full bg-accent-primary mr-2.5 shrink-0"
-            animate={{ opacity: [0.35, 1, 0.35] }}
-            transition={{ duration: 1.1, repeat: Infinity, ease: "easeInOut" }}
-        />
-        <AnimatePresence mode="wait">
-            <motion.span
-                key={label ?? 'thinking'}
-                initial={{ opacity: 0, y: 2 }}
-                animate={{ opacity: 1, y: 0 }}
-                exit={{ opacity: 0, y: -2 }}
-                transition={{ duration: 0.15 }}
-                className="text-[13px] text-text-tertiary whitespace-nowrap"
-            >
-                {label ?? 'Thinking…'}
-            </motion.span>
-        </AnimatePresence>
-    </div>
-);
+const TypingIndicator: React.FC<{ label?: string }> = ({ label }) => {
+    const { isPerformanceMode } = usePerformanceMode();
+    return (
+        <div className="flex items-center py-4">
+            {/* framer's reducedMotion (see main.tsx) doesn't stop opacity loops,
+            so Performance Mode renders a plain CSS-animated dot instead —
+            see .perf-pulse-dot in index.css. */}
+            {isPerformanceMode ? (
+                <span className="perf-pulse-dot w-2 h-2 rounded-full bg-accent-primary mr-2.5 shrink-0" />
+            ) : (
+                <motion.span
+                    className="w-2 h-2 rounded-full bg-accent-primary mr-2.5 shrink-0"
+                    animate={{ opacity: [0.35, 1, 0.35] }}
+                    transition={{ duration: 1.1, repeat: Infinity, ease: "easeInOut" }}
+                />
+            )}
+            <AnimatePresence mode="wait">
+                <motion.span
+                    key={label ?? 'thinking'}
+                    initial={{ opacity: 0, y: 2 }}
+                    animate={{ opacity: 1, y: 0 }}
+                    exit={{ opacity: 0, y: -2 }}
+                    transition={{ duration: 0.15 }}
+                    className="text-[13px] text-text-tertiary whitespace-nowrap"
+                >
+                    {label ?? 'Thinking…'}
+                </motion.span>
+            </AnimatePresence>
+        </div>
+    );
+};
 
 // ============================================
 // Message Components
@@ -51,56 +63,9 @@ const UserMessage: React.FC<{ content: string }> = ({ content }) => (
     </motion.div>
 );
 
-// ============================================
-// Sources Display
-// ============================================
-// Renders retrieved meeting sources under an assistant message, mirroring the
-// "Sources" affordance of most RAG chat apps:
-//  - Nothing rendered at all if there are no sources.
-//  - Exactly one meeting source: shown as a clickable chip (opens that meeting).
-//  - Multiple meeting sources: shown as plain (non-clickable) text —
-//    "Title of First +N" — since there's no single obvious place to navigate.
-// Asset sources (company knowledge base docs) are counted but not clickable,
-// since there's no meeting to open for them.
-const SourcesDisplay: React.FC<{ sources: ChatSources; onOpenMeeting?: (meetingId: string) => void }> = ({ sources, onOpenMeeting }) => {
-    const { meetings, assets } = sources;
-    const totalCount = meetings.length + assets.length;
-    if (totalCount === 0) return null;
-
-    // Single meeting, no assets → clickable chip with the real title.
-    if (meetings.length === 1 && assets.length === 0) {
-        const meeting = meetings[0];
-        const isClickable = !!onOpenMeeting;
-        const Tag: any = isClickable ? 'button' : 'span';
-        return (
-            <Tag
-                {...(isClickable ? { onClick: () => onOpenMeeting!(meeting.id) } : {})}
-                className={`flex items-center gap-1.5 text-[13px] text-text-tertiary max-w-[280px] ${isClickable ? 'hover:text-text-secondary hover:underline transition-colors cursor-pointer' : ''}`}
-                title={meeting.title}
-            >
-                <FileText size={13} className="shrink-0" />
-                <span className="truncate">{meeting.title}</span>
-                {isClickable && <ExternalLink size={11} className="shrink-0" />}
-            </Tag>
-        );
-    }
-
-    // Multiple sources (any mix of meetings/assets) → plain text summary,
-    // "First Title +N" — not clickable, since there's no single destination.
-    const firstTitle = meetings[0]?.title ?? assets[0]?.title ?? '';
-    const extraCount = totalCount - 1;
-    return (
-        <span className="flex items-center gap-1.5 text-[13px] text-text-tertiary max-w-[320px]" title={[...meetings, ...assets].map(s => s.title).join(', ')}>
-            <FileText size={13} className="shrink-0" />
-            <span className="truncate">
-                {firstTitle}{extraCount > 0 ? ` +${extraCount}` : ''}
-            </span>
-        </span>
-    );
-};
-
-const AssistantMessage: React.FC<{ content: string; isStreaming?: boolean; sources?: ChatSources; onOpenMeeting?: (meetingId: string) => void }> = ({ content, isStreaming, sources, onOpenMeeting }) => {
+const AssistantMessage: React.FC<{ content: string; isStreaming?: boolean; sourceMap?: Record<number, import('@/types').SourceMapEntry>; unverifiedCitations?: number[]; rewriting?: boolean; onOpenMeeting?: (meetingId: string) => void }> = ({ content, isStreaming, sourceMap, unverifiedCitations, rewriting, onOpenMeeting }) => {
     const [copied, setCopied] = useState(false);
+    const { isPerformanceMode } = usePerformanceMode();
 
     // While waiting for the first frame the assistant placeholder has no
     // content yet — render nothing here and let the single TypingIndicator
@@ -126,23 +91,42 @@ const AssistantMessage: React.FC<{ content: string; isStreaming?: boolean; sourc
             transition={{ duration: 0.15 }}
             className="flex flex-col items-start mb-6"
         >
-            <div className="text-text-primary text-[15px] leading-relaxed max-w-[85%]">
+            <div className="text-text-primary text-[15px] leading-relaxed max-w-[85%] transition-opacity" style={rewriting ? { opacity: 0.55 } : undefined}>
+                {rewriting && (
+                    <div className="mb-1.5 text-[10px] uppercase tracking-wide text-text-tertiary animate-pulse">
+                        Rewriting…
+                    </div>
+                )}
                 <div className="markdown-content">
-                    <ReactMarkdown
-                        // See ChatMessage.tsx: math parsing is disabled app-wide
-                        // so currency never renders as inline LaTeX.
-                        remarkPlugins={[remarkGfm]}
-                        components={chatMarkdownComponents}
+                    <CitationProvider
+                        map={sourceMap}
+                        unverified={unverifiedCitations}
+                        onOpenMeeting={onOpenMeeting}
                     >
-                        {content}
-                    </ReactMarkdown>
+                        <ReactMarkdown
+                            // See ChatMessage.tsx: math parsing is disabled app-wide
+                            // so currency never renders as inline LaTeX.
+                            remarkPlugins={[remarkGfm]}
+                            rehypePlugins={[rehypeCitations]}
+                            components={{
+                                ...chatMarkdownComponents,
+                                cite: CiteChip as any,
+                            }}
+                        >
+                            {content}
+                        </ReactMarkdown>
+                    </CitationProvider>
                 </div>
                 {isStreaming && (
-                    <motion.span
-                        className="inline-block w-0.5 h-4 bg-text-secondary ml-0.5 align-middle"
-                        animate={{ opacity: [1, 0] }}
-                        transition={{ duration: 0.5, repeat: Infinity }}
-                    />
+                    isPerformanceMode ? (
+                        <span className="perf-blink-cursor inline-block w-0.5 h-4 bg-text-secondary ml-0.5 align-middle" />
+                    ) : (
+                        <motion.span
+                            className="inline-block w-0.5 h-4 bg-text-secondary ml-0.5 align-middle"
+                            animate={{ opacity: [1, 0] }}
+                            transition={{ duration: 0.5, repeat: Infinity }}
+                        />
+                    )
                 )}
             </div>
             {!isStreaming && content && (
@@ -154,7 +138,6 @@ const AssistantMessage: React.FC<{ content: string; isStreaming?: boolean; sourc
                         {copied ? <Check size={14} className="text-emerald-500" /> : <Copy size={14} />}
                         {copied ? 'Copied' : 'Copy message'}
                     </button>
-                    {sources && <SourcesDisplay sources={sources} onOpenMeeting={onOpenMeeting} />}
                 </div>
             )}
         </motion.div>
@@ -173,6 +156,8 @@ const MeetingChatOverlay: React.FC<MeetingChatOverlayProps> = ({
     meetingContext,
     initialQuery,
     onOpenMeeting,
+    onBusyChange,
+    onTurnComplete,
 }) => {
     const {
         chatState,
@@ -182,7 +167,21 @@ const MeetingChatOverlay: React.FC<MeetingChatOverlayProps> = ({
         chatWindowRef,
         handleBackdropClick,
         handleClose,
-    } = useMeetingChat({ isOpen, onClose, onMessagesChange, messages, meetingContext, initialQuery });
+        isBusy,
+        stopGeneration,
+    } = useMeetingChat({ isOpen, onClose, onMessagesChange, messages, meetingContext, initialQuery, onTurnComplete });
+
+    // Report streaming state up to the parent — the ask-bar input (and its
+    // send/stop button) lives outside this overlay in MeetingDetails, so it
+    // needs a way to know when to show "stop" and what to call.
+    useEffect(() => {
+        onBusyChange?.(isBusy, isBusy ? stopGeneration : null);
+        // eslint-disable-next-line react-hooks/exhaustive-deps
+    }, [isBusy]);
+
+    // Make sure the parent doesn't keep a stale stop handle once this
+    // overlay unmounts (e.g. navigating away from the meeting).
+    useEffect(() => () => onBusyChange?.(false, null), []);
 
     return (
         <AnimatePresence>
@@ -235,8 +234,7 @@ const MeetingChatOverlay: React.FC<MeetingChatOverlayProps> = ({
                         <div className="flex-1 overflow-y-auto px-6 py-4 pb-32 custom-scrollbar">
                             {messages.map((msg) => (
                                 msg.role === 'user'
-                                    ? <UserMessage key={msg.id} content={msg.content} />
-                                    : <AssistantMessage key={msg.id} content={msg.content} isStreaming={msg.isStreaming} sources={msg.sources} onOpenMeeting={onOpenMeeting} />
+                                    ? <UserMessage key={msg.id} content={msg.content} /> : <AssistantMessage key={msg.id} content={msg.content} isStreaming={msg.isStreaming} sourceMap={msg.sourceMap} unverifiedCitations={msg.unverifiedCitations} rewriting={msg.rewriting} onOpenMeeting={onOpenMeeting} />
                             ))}
 
                             {chatState === 'waiting_for_llm' && <TypingIndicator label={statusText ?? undefined} />}

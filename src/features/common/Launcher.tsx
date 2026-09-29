@@ -20,8 +20,8 @@ import { MeetingDetails, MeetingTimeline, NextMeetingDetails, NextMeetingEmptySt
 import { GlobalChatOverlay, FloatingChatButton } from '@/features/chat';
 import { useLauncher } from '@/hooks';
 import { LauncherHeader, GhostModeToggle, RefreshButton, StartMeetingButton, OllamaPullBadge } from './LauncherWidgets';
-import { CalendarConnectCard, RecentMeetingsHeader, MeetingsList, RefreshToast, TranscriptUploadModal, LoadMoreMeetingsButton } from './LauncherWidgets';
-import { LauncherProps, Meeting } from '@/types';
+import { CalendarConnectCard, RecentMeetingsHeader, MeetingsList, RefreshToast, TranscriptUploadModal, LoadMoreMeetingsButton, CompanyLinkFailureNotice } from './LauncherWidgets';
+import { LauncherProps, Meeting, SourceMapEntry } from '@/types';
 import { posthogAnalytics } from '@/lib/analytics/posthog.service';
 
 const Launcher: React.FC<LauncherProps> = ({ onStartMeeting, onOpenSettings, onCloseSettings, onOpenManagerDashboard, onCloseManagerDashboard, isManagerDashboardOpen = false, isSettingsOpen = false, onPageChange, ollamaPullStatus = 'idle', ollamaPullPercent = 0, ollamaPullMessage = '', authUser, onSignOut }) => {
@@ -29,13 +29,16 @@ const Launcher: React.FC<LauncherProps> = ({ onStartMeeting, onOpenSettings, onC
     const launcherStates = useLauncher({ onStartMeeting, onPageChange, ollamaPullStatus, authUser });
     const { isLight, meetings, deleteMutation, upcomingEvents, isCalendarConnected, handleCalendarConnected, handleCalendarDisconnected } = launcherStates;
     const { isMeetingsLoading, isMeetingsRefreshing } = launcherStates;
-    const { hasMoreMeetings, isLoadingMoreMeetings, loadMoreMeetings } = launcherStates;
+    const { visibleMeetings, hasMoreMeetings, isLoadingMoreMeetings, loadMoreMeetings } = launcherStates;
     const { focusedMeeting, focusedMeetingId, setFocusedMeetingId, getMeetingStartText } = launcherStates;
     const { isDetectable, toggleDetectable, isRefreshing, handleRefresh, isMeetingActive, onStartMeetingClick } = launcherStates;
     const { showNotification, effectiveName, selectedMeeting, forwardMeeting, handleOpenMeeting, handleBack, handleForward } = launcherStates;
     const { activeMenuId, setActiveMenuId, setMenuEntered, menuEntered, isMeetingsExpanded, setIsMeetingsExpanded } = launcherStates;
     const { isUploadOpen, setIsUploadOpen, uploadText, setUploadText, uploadTitle, setUploadTitle } = launcherStates;
-    const { isUploading, uploadMeetingTypes, setUploadMeetingTypes, uploadError, handleUploadTranscript } = launcherStates;
+    const { meetingsTotal } = launcherStates;
+    const { isUploading, uploadMeetingTypes, setUploadMeetingTypes, uploadCompany, setUploadCompany, uploadError, handleUploadTranscript } = launcherStates;
+    const { uploadCompanyDraft, setUploadCompanyDraft, companyLinkFailure, retryCompanyLink, dismissCompanyLinkFailure } = launcherStates;
+    const { uploadSpeakers, uploadRepSpeaker, uploadRepSource, pickUploadRepSpeaker } = launcherStates;
     const { salesBriefEvent, setSalesBriefEvent, isGlobalChatOpen, setIsGlobalChatOpen, submittedGlobalQuery, setSubmittedGlobalQuery } = launcherStates;
 
     // ─── Floating "Load more" button visibility ─────────────────────────────
@@ -59,6 +62,18 @@ const Launcher: React.FC<LauncherProps> = ({ onStartMeeting, onOpenSettings, onC
         if (isSettingsOpen) onCloseSettings?.();
         if (isManagerDashboardOpen) onCloseManagerDashboard?.();
         handleOpenMeeting(meeting);
+    };
+
+    // Doc citation chips: open the cited company asset. Only a resolvable
+    // file_url (system-browser open) is actionable today — the app-relative
+    // asset_url route doesn't exist in this Electron app, and CiteChip falls
+    // back to its pinned preview card when no resolvable URL applies.
+    const handleOpenAsset = (src: SourceMapEntry) => {
+        if (src.file_url) {
+            window.open(src.file_url, '_blank');
+            return;
+        }
+        console.warn('[Launcher] Asset citation has no resolvable file_url:', src.id, src.asset_url);
     };
 
     useEffect(() => {
@@ -262,11 +277,12 @@ const Launcher: React.FC<LauncherProps> = ({ onStartMeeting, onOpenSettings, onC
                                             onToggleExpand={() => setIsMeetingsExpanded(prev => !prev)}
                                             onOpenUpload={() => setIsUploadOpen(true)}
                                             isRefreshing={isMeetingsRefreshing}
+                                            meetingsTotal={meetingsTotal}
                                         />
 
                                         {/* Rows — no outer card, dividers only between rows */}
                                         <MeetingsList
-                                            meetings={meetings}
+                                            meetings={visibleMeetings}
                                             isLight={isLight}
                                             isLoading={isMeetingsLoading}
                                             isLoadingMore={isLoadingMoreMeetings}
@@ -330,6 +346,7 @@ const Launcher: React.FC<LauncherProps> = ({ onStartMeeting, onOpenSettings, onC
                         handleOpenMeeting(meeting);
                     }
                 }}
+                onOpenAsset={handleOpenAsset}
             />
             {/* Sales Brief Panel */}
             <AnimatePresence>
@@ -351,10 +368,26 @@ const Launcher: React.FC<LauncherProps> = ({ onStartMeeting, onOpenSettings, onC
                 setUploadText={setUploadText}
                 uploadMeetingTypes={uploadMeetingTypes}
                 setUploadMeetingTypes={setUploadMeetingTypes}
+                uploadCompany={uploadCompany}
+                setUploadCompany={setUploadCompany}
+                uploadCompanyDraft={uploadCompanyDraft}
+                setUploadCompanyDraft={setUploadCompanyDraft}
+                uploadSpeakers={uploadSpeakers}
+                uploadRepSpeaker={uploadRepSpeaker}
+                uploadRepSource={uploadRepSource}
+                onPickRepSpeaker={pickUploadRepSpeaker}
                 uploadError={uploadError}
                 isUploading={isUploading}
-                onClose={() => setIsUploadOpen(false)}
+                onClose={() => { setIsUploadOpen(false); setUploadCompany(null); setUploadCompanyDraft(''); }}
                 onSubmit={handleUploadTranscript}
+            />
+
+            {/* Deferred company-association failure (upload flow) */}
+            <CompanyLinkFailureNotice
+                isLight={isLight}
+                companyName={companyLinkFailure?.company.name ?? null}
+                onRetry={retryCompanyLink}
+                onDismiss={dismissCompanyLinkFailure}
             />
 
         </div>

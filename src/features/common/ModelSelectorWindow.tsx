@@ -1,6 +1,6 @@
 import { useResolvedTheme } from '@/hooks/useResolvedTheme';
 import { useModelSelectorWindow } from '@/hooks';
-import { Loader2 } from 'lucide-react';
+import { BirdLoader } from '@/features/ui/BirdLoader';
 import ModelOptionRow from '@/features/common/ModelOptionRow';
 
 // ============================================
@@ -23,9 +23,9 @@ const ModelSelectorWindow = () => {
             <div className={`w-[140px] h-[200px] backdrop-blur-md border rounded-[16px] overflow-hidden shadow-2xl p-2 flex flex-col animate-scale-in origin-top-left ${panelClass}`}>
 
                 {isLoading ? (
-                    <div className={`flex items-center justify-center py-4 ${isLight ? 'text-slate-400' : 'text-slate-500'}`}>
-                        <Loader2 className="w-4 h-4 animate-spin mr-2" />
-                        <span className="text-xs">Loading models...</span>
+                    <div className={`flex-1 flex flex-col items-center justify-center gap-2 ${isLight ? 'text-slate-400' : 'text-slate-500'}`}>
+                        <BirdLoader size={44} label="Loading models" />
+                        <span className="text-xs">Loading models…</span>
                     </div>
                 ) : (
                     <div className="flex-1 overflow-y-auto scrollbar-hide flex flex-col gap-0.5">

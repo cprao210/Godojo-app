@@ -18,10 +18,17 @@
 // can never show a different confirmed count than the live Call Analysis tab.
 // Only fields that legitimately require transcript reasoning (overview,
 // dealStatus, whatICouldHaveDoneBetter, whatIMissedCompletely,
-// nextCallPlaybook, keyPoints, actionItems) are left for the LLM.
+// nextCallPlaybook, keyPoints, actionItems) are left for the LLM — EXCEPT
+// that whatIMissedCompletely gets a deterministic fallback (see
+// buildMissingWhatIMissed): the LLM is under a strict "only truly missed,
+// do NOT pad" instruction and can legitimately return nothing, which used to
+// hide the "Room to Improve" section entirely even while Call Analysis
+// showed Missing/Partial fields. The fallback derives it from the same
+// reconciled statuses so the two views can never disagree in the other
+// direction either.
 
 import { LiveAnalysisData } from '../src/types';
-import { BANT_ORDER, MEDDICC_ORDER } from '../src/lib/bantMeddic';
+import { BANT_ORDER, MEDDICC_ORDER, fieldText, type EvidenceBearing } from '../src/lib/bantMeddic';
 
 const toComponentName = (camelKey: string): string => camelKey.charAt(0).toUpperCase() + camelKey.slice(1);
 
@@ -39,6 +46,41 @@ export function buildConfirmedWhatIDidRight(
 
     return [...meddiccItems, ...bantItems];
 }
+
+/**
+ * True placeholder strings the summary LLM emits for "nothing to report"
+ * (exact match only — a PREFIX match would swallow real content like
+ * "Not able to identify the champion" or "No budget discussion happened").
+ */
+const PLACEHOLDER_CONTENT = new Set([
+    'n/a', 'na', 'none', 'none.', '-', '—', 'unknown', 'not discussed',
+    'not mentioned', 'not applicable', 'nothing', 'nothing.',
+]);
+
+export function isPlaceholderSummaryItem(content: string | undefined | null): boolean {
+    if (!content) return true;
+    const normalized = content.trim().toLowerCase().replace(/[.!?]+$/, '').trim();
+    return normalized === '' || PLACEHOLDER_CONTENT.has(normalized);
+}
+
+/** Mirrors buildConfirmedWhatIDidRight for the gap side: every field the
+ * reconciled statuses mark Missing becomes a "Room to Improve" item. The
+ * default detail deliberately avoids placeholder-looking prefixes so the
+ * renderer's filters can never swallow it. */
+export function buildMissingWhatIMissed(
+    bant: Record<string, { status: string; detail: string }>,
+    meddicc: Record<string, { status: string; detail: string }>,
+): string[] {
+    const meddiccItems = MEDDICC_ORDER
+        .filter((key) => meddicc[key]?.status === 'Missing')
+        .map((key) => `MEDDICC ${toComponentName(key)}: ${meddicc[key]?.detail?.trim() || 'Never addressed in this call — follow up next time.'}`);
+
+    const bantItems = BANT_ORDER
+        .filter((key) => bant[key]?.status === 'Missing')
+        .map((key) => `BANT ${toComponentName(key)}: ${bant[key]?.detail?.trim() || 'Never addressed in this call — follow up next time.'}`);
+
+    return [...meddiccItems, ...bantItems];
+}
 export const STATUS_MAP: Record<string, string> = {
     confirmed: 'Clear',
     partial: 'Partial',
@@ -53,9 +95,13 @@ export function reconcileBantMeddicWithLiveAnalysis(
 
     if (!liveAnalysis) return summaryData; // nothing to reconcile against — leave LLM output as-is
 
-    const field = (f: { status: string; evidence: string } | undefined) => ({
+    // `detail` is the one line read by people (Summary tab, PDF, exports), so
+    // it takes the backend's own assessment of the field — see fieldText. This
+    // must stay identical to toCanonicalField in src/lib/bantMeddic: it is the
+    // same mapping, mirrored here for the main process.
+    const field = (f: ({ status: string } & EvidenceBearing) | undefined) => ({
         status: STATUS_MAP[f?.status ?? ''] ?? 'Missing',
-        detail: f?.evidence || '',
+        detail: fieldText(f),
     });
 
     const reconciledBant = {
@@ -91,6 +137,13 @@ export function reconcileBantMeddicWithLiveAnalysis(
         salesCoachReview: {
             ...summaryData?.salesCoachReview,
             whatIDidRight: buildConfirmedWhatIDidRight(reconciledBant, reconciledMeddicc),
+            // LLM's own missed-items win when substantive; placeholder/empty
+            // output falls back to the deterministic Missing-field list so
+            // "Room to Improve" can't hide while Call Analysis shows gaps.
+            whatIMissedCompletely: (summaryData?.salesCoachReview?.whatIMissedCompletely ?? [])
+                .some((item: string) => !isPlaceholderSummaryItem(item))
+                ? summaryData.salesCoachReview.whatIMissedCompletely
+                : buildMissingWhatIMissed(reconciledBant, reconciledMeddicc),
         },
     };
 }

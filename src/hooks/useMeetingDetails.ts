@@ -14,15 +14,16 @@
  *
  * MeetingDetails.tsx (and its tab components) just render what this returns.
  */
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useQuery, useMutation, useQueryClient } from 'react-query';
 import { meetingsApi, chatApi } from '@/api';
 import { isMeetingProcessing } from '@/api/meetingMapping';
 import { guardSession } from '@/lib/firebase';
-import type { Meeting, MeetingTranscriptLine, MeetingScorecardResult, LiveAnalysisData } from '@/types';
-import { normalizeBant, normalizeMeddicc, confirmedOnly, BANT_ORDER, MEDDICC_ORDER } from '@/lib/bantMeddic';
+import type { CompanyRef, Meeting, MeetingTranscriptLine, MeetingScorecardResult, LiveAnalysisData } from '@/types';
+import { normalizeBant, normalizeMeddicc, confirmedOnly, fieldEvidenceList, fieldSummary, fieldText, BANT_ORDER, MEDDICC_ORDER } from '@/lib/bantMeddic';
 import { deriveProcessingStage, hasGeneratedSummary, PROCESSING_STALL_TIMEOUT_MS } from '@/lib/meetingLifecycle';
 import { classifyLLMError } from '@/lib/utils';
+import { splitRepFollowUps } from '@/lib/objections';
 import { posthogAnalytics } from '@/lib/analytics/posthog.service';
 
 export const formatTime = (ms: number) => {
@@ -192,6 +193,21 @@ export function useMeetingDetails(initialMeeting: Meeting) {
         () => meetingsApi.get(initialMeeting.id),
         {
             initialData: initialMeeting,
+            // CRITICAL: without this, react-query v3 stamps `dataUpdatedAt`
+            // with Date.now() the moment initialData is registered — so
+            // `dataUpdatedAt > 0` (checked below) becomes true on the very
+            // first render, before ANY fetch has run. Downstream that made
+            // `isDetailResolved` true while the placeholder still had no
+            // summary, which flashed "No summary yet" (with a Generate
+            // button) for the few seconds the real GET /meetings/{id} took
+            // to land — most visible for slim list rows and the AE
+            // drill-down's placeholder meetings, which never carry
+            // summary_json. With `initialDataUpdatedAt: 0`, dataUpdatedAt
+            // stays 0 until a REAL fetch completes (or the unblock
+            // setQueryData below runs), which is what both consumers below
+            // always meant. Staleness is unaffected: staleTime is already 0,
+            // so the mount refetch behaves exactly as before.
+            initialDataUpdatedAt: 0,
             enabled: !isProcessing && canFetchDetail,
         },
     );
@@ -203,18 +219,45 @@ export function useMeetingDetails(initialMeeting: Meeting) {
     // `idle`, which is also not "loading". `dataUpdatedAt` is the only honest
     // signal — react-query stamps it on a completed fetch AND on the
     // `setQueryData` the unblock effect below performs, which are precisely the
-    // two ways real detail data arrives. Ids with no backend row can never
-    // resolve that way, so they count as resolved and render the list row.
+    // two ways real detail data arrives. (initialData itself does NOT count:
+    // `initialDataUpdatedAt: 0` above keeps the mount-time placeholder from
+    // stamping it.) Ids with no backend row can never resolve that way, so they
+    // count as resolved and render the list row.
     const isDetailResolved = !canFetchDetail || dataUpdatedAt > 0;
+
+    // Company resolution, deliberately SEPARATE from the detail query above.
+    //
+    // Two reasons the chip could otherwise never show an association:
+    //  1. the detail query is `enabled: !isProcessing`, so for the whole
+    //     processing window the view renders the stale list-row prop, and
+    //  2. every local/IPC read (DatabaseManager, SupabaseReadService) omits
+    //     `company` — neither selects company_id — so unblockFromLocal can't
+    //     supply it either.
+    // The backend (attach_companies) is the only source, and for an uploaded
+    // transcript the association is written asynchronously AFTER the row
+    // syncs, so this polls until it resolves rather than reading once.
+    const { data: resolvedCompany } = useQuery<CompanyRef | null>(
+        ["meeting-company", initialMeeting.id],
+        async () => (await meetingsApi.get(initialMeeting.id)).company ?? null,
+        {
+            enabled: canFetchDetail && !meetingData.company,
+            retry: 2,
+            refetchInterval: (data) => (data ? false : 15_000),
+            refetchOnWindowFocus: true,
+        },
+    );
 
     // /chat/live interaction_ids collected during the live call can't be
     // linked to a meeting until the backend actually has that meeting row —
     // useFloatingDock.ts only persists them locally at call-end (see
     // PendingLiveChatStore.ts). `meetingData` is seeded via `initialData`
     // above and stays truthy even before a real network fetch resolves, so
-    // gate on `dataUpdatedAt > 0` — react-query only sets that after an
-    // actual completed query, which IS the confirmation the backend has
-    // synced this meeting.
+    // gate on `dataUpdatedAt > 0` — with `initialDataUpdatedAt: 0` (see the
+    // query options above) that only happens after an actual completed query,
+    // which IS the confirmation the backend has synced this meeting. (Before
+    // that flag, initialData stamped dataUpdatedAt at mount and this effect
+    // fired prematurely — 404 against a not-yet-mirrored row, retried later
+    // by the 15s sweep, but noisy and racy.)
     useEffect(() => {
         if (isProcessing || dataUpdatedAt === 0 || meetingData.id !== initialMeeting.id) return;
 
@@ -232,6 +275,21 @@ export function useMeetingDetails(initialMeeting: Meeting) {
             }
         })();
     }, [isProcessing, dataUpdatedAt, meetingData.id, initialMeeting.id]);
+
+    // A meeting opened while its backend row was still mirroring has a detail
+    // cache seeded from the list row (no company). When the mirror lands —
+    // and, for uploads, when the deferred association is written just after —
+    // re-read rather than waiting for the next mount.
+    useEffect(() => {
+        if (!canFetchDetail) return;
+        const off = window.electronAPI?.onMeetingBackendReady?.(({ meetingId }) => {
+            if (meetingId !== initialMeeting.id) return;
+            void queryClient.invalidateQueries(meetingKey);
+            void queryClient.invalidateQueries(["meeting-company", initialMeeting.id]);
+        });
+        return () => { off?.(); };
+        // eslint-disable-next-line react-hooks/exhaustive-deps
+    }, [canFetchDetail, initialMeeting.id]);
 
     // The HTTP transcript depends on the Supabase mirror having already synced this
     // meeting's transcript rows — fire-and-forget, and can lag behind (or, for some
@@ -292,11 +350,17 @@ export function useMeetingDetails(initialMeeting: Meeting) {
     // reach the UI. This does NOT change which source is picked — that logic
     // above is untouched — it only cleans the result of whichever one wins.
     const meeting: Meeting = useMemo(
-        () =>
-            localTranscript && localTranscript.length > 0
-                ? { ...meetingData, transcript: dedupeTranscript(localTranscript) }
-                : { ...meetingData, transcript: dedupeTranscript(meetingData.transcript) },
-        [meetingData, localTranscript]
+        () => {
+            const base =
+                localTranscript && localTranscript.length > 0
+                    ? { ...meetingData, transcript: dedupeTranscript(localTranscript) }
+                    : { ...meetingData, transcript: dedupeTranscript(meetingData.transcript) };
+            // Only ever FILLS a gap — a company already on meetingData (the
+            // canonical detail read, or the optimistic paint after an edit)
+            // always wins over the poll's copy.
+            return base.company ? base : { ...base, company: resolvedCompany ?? null };
+        },
+        [meetingData, localTranscript, resolvedCompany]
     );
 
     // Drives the Transcript tab's own skeleton — deliberately NOT the same
@@ -447,6 +511,7 @@ export function useMeetingDetails(initialMeeting: Meeting) {
         ? isLoadingAiInteractions || (aiInteractionsUpdatedAt === 0 && !aiInteractionsError)
         : isProcessing;
     const [query, setQuery] = useState('');
+    const meetingInputRef = useRef<HTMLTextAreaElement>(null);
     const [isCopied, setIsCopied] = useState(false);
     const [isRegenerating, setIsRegenerating] = useState(false);
     const [regenError, setRegenError] = useState<string | null>(null);
@@ -455,6 +520,18 @@ export function useMeetingDetails(initialMeeting: Meeting) {
     const [pendingQuery, setPendingQuery] = useState<{ text: string; id: number } | null>(null);
     const [chatMessages, setChatMessages] = useState<import('@/types').MeetingChatMessage[]>([]);
     const [isTalktimeOpen, setIsTalktimeOpen] = useState(false);
+    // Mirrors MeetingChatOverlay's own streaming state (reported via its
+    // onBusyChange prop) so the ask-bar input rendered here can swap its
+    // send button for a stop button and cancel the in-flight generation.
+    const [isChatBusy, setIsChatBusy] = useState(false);
+    const stopChatGenerationRef = useRef<(() => void) | null>(null);
+    const handleChatBusyChange = useCallback((busy: boolean, stop: (() => void) | null) => {
+        setIsChatBusy(busy);
+        stopChatGenerationRef.current = stop;
+    }, []);
+    const handleStopChatGeneration = useCallback(() => {
+        stopChatGenerationRef.current?.();
+    }, []);
 
     // ─── What is this meeting actually doing, and what may be painted yet? ────
     //
@@ -540,6 +617,14 @@ export function useMeetingDetails(initialMeeting: Meeting) {
         }
         return false;
     }, [meeting.transcript]);
+
+    // Auto-resize textarea
+    useEffect(() => {
+        const el = meetingInputRef.current;
+        if (!el) return;
+        el.style.height = 'auto';
+        el.style.height = `${Math.min(el.scrollHeight, 96)}px`; // max ~4 lines
+    }, [query]);
 
     // Speaking Balance calls getSpeakerDisplayName('user'/'client') with no
     // per-segment displayName (there's no single segment to derive one from
@@ -653,7 +738,17 @@ export function useMeetingDetails(initialMeeting: Meeting) {
             try {
                 const details = await window.electronAPI?.getMeetingDetails?.(initialMeeting.id);
                 if (details && !isMeetingProcessing(details)) {
-                    queryClient.setQueryData<Meeting>(meetingKey, (prev) => ({ ...(prev ?? initialMeeting), ...details }));
+                    queryClient.setQueryData<Meeting>(meetingKey, (prev) => {
+                        const base = prev ?? initialMeeting;
+                        return {
+                            ...base,
+                            ...details,
+                            // The local/mirror read has NO company column — letting
+                            // it through would blank an association we already hold.
+                            company: (details as Meeting).company ?? base.company ?? null,
+                            company_skipped: (details as Meeting).company_skipped ?? base.company_skipped,
+                        };
+                    });
                     setIsProcessing(false);
                     void queryClient.invalidateQueries(scorecardKey);
                 }
@@ -674,11 +769,20 @@ export function useMeetingDetails(initialMeeting: Meeting) {
         const isHttpResultComplete = (m: Meeting) =>
             !!m.isProcessed && (m.transcript?.length ?? 0) > 0 && !!m.detailedSummary?.scorecard;
 
+        // GET /meetings/:id is canonical for `company`, EXCEPT while an async
+        // association (upload flow) is still in flight — then it legitimately
+        // returns null and would erase a chip we just painted. Keep whichever
+        // copy actually has one.
+        const withKnownCompany = (updated: Meeting): Meeting => {
+            const prev = queryClient.getQueryData<Meeting>(meetingKey);
+            return updated.company ? updated : { ...updated, company: prev?.company ?? null };
+        };
+
         const checkViaHttpThenLocal = () =>
             meetingsApi.get(initialMeeting.id)
                 .then((updated) => {
                     if (updated && isHttpResultComplete(updated)) {
-                        queryClient.setQueryData<Meeting>(meetingKey, updated);
+                        queryClient.setQueryData<Meeting>(meetingKey, withKnownCompany(updated));
                         setIsProcessing(false);
                         void queryClient.invalidateQueries(scorecardKey);
                     } else {
@@ -686,7 +790,7 @@ export function useMeetingDetails(initialMeeting: Meeting) {
                             // Still stop showing the "processing" skeleton — the
                             // summary IS ready — but let unblockFromLocal fill in
                             // the transcript/scorecard from the reliable local copy.
-                            queryClient.setQueryData<Meeting>(meetingKey, updated);
+                            queryClient.setQueryData<Meeting>(meetingKey, withKnownCompany(updated));
                         }
                         void unblockFromLocal();
                     }
@@ -723,6 +827,11 @@ export function useMeetingDetails(initialMeeting: Meeting) {
     };
 
     const handleInputKeyDown = (e: React.KeyboardEvent) => {
+        // Shift+Enter inserts a newline — let the textarea handle it
+        // natively instead of submitting.
+        if (e.key === 'Enter' && e.shiftKey) {
+            return;
+        }
         if (e.key === 'Enter' && query.trim()) {
             e.preventDefault();
             handleSubmitQuestion();
@@ -851,11 +960,17 @@ ${formatNextCallPlaybook() || '  None'}
             const la = meeting.detailedSummary.liveAnalysis;
             const sections: string[] = [];
 
-            // Helper to format a field
+            // Helper to format a field: the assessment on the status line, then
+            // the supporting statements indented beneath it. An export is
+            // exactly where the reference material belongs — someone pasting
+            // this into a CRM wants the claim AND what it rests on.
             const formatField = (label: string, field: any) => {
                 if (!field || !field.status) return '';
                 const statusIcon = field.status === 'confirmed' ? '✅' : field.status === 'partial' ? '⚠️' : '❌';
-                return `  ${statusIcon} ${label}: ${field.status.toUpperCase()} - ${field.evidence || 'Not mentioned'}`;
+                const head = `  ${statusIcon} ${label}: ${field.status.toUpperCase()} - ${fieldText(field) || 'Not mentioned'}`;
+                // Only when the assessment isn't itself the evidence (old rows).
+                const refs = fieldSummary(field) ? fieldEvidenceList(field) : [];
+                return refs.length ? [head, ...refs.map(r => `      • ${r}`)].join('\n') : head;
             };
 
             // MEDDIC Section
@@ -908,13 +1023,23 @@ ${formatNextCallPlaybook() || '  None'}
             }
 
             // Objections Section
-            if (la.objections && la.objections.length > 0) {
-                sections.push(`OBJECTIONS (${la.objections.length})`);
+            // The prospect's objections, then the rep's own follow-ups — never mixed.
+            const { objections: prospectObjections, followUps: repFollowUps } =
+                splitRepFollowUps(la.objections || []);
+            if (prospectObjections.length > 0) {
+                sections.push(`OBJECTIONS (${prospectObjections.length})`);
                 sections.push(`${'─'.repeat(40)}`);
-                la.objections.forEach((obj, idx) => {
-                    const typeLabel = obj.type === 'ae_deferral' ? 'Follow-up' : 'Question';
-                    sections.push(`  ${idx + 1}. [${typeLabel}] "${obj.quote}"`);
-                    sections.push(`     Owner: ${obj.owner}`);
+                prospectObjections.forEach((obj, idx) => {
+                    sections.push(`  ${idx + 1}. "${obj.quote}"`);
+                    if (obj.rep_response) sections.push(`     Rep: "${obj.rep_response}"`);
+                    sections.push('');
+                });
+            }
+            if (repFollowUps.length > 0) {
+                sections.push(`YOUR FOLLOW-UPS (${repFollowUps.length})`);
+                sections.push(`${'─'.repeat(40)}`);
+                repFollowUps.forEach((obj, idx) => {
+                    sections.push(`  ${idx + 1}. "${obj.quote}"`);
                     sections.push('');
                 });
             }
@@ -968,6 +1093,18 @@ ${formatNextCallPlaybook() || '  None'}
                 // locally-served scorecard so the panel shows the fresh result.
                 void queryClient.invalidateQueries(scorecardKey);
             } else {
+                // The summary step failed, but regenerating may already have saved a
+                // new Call Analysis (a meeting that had none) — show it now.
+                const savedAnalysis = result?.meeting?.detailedSummary?.liveAnalysis;
+                if (savedAnalysis && !meeting.detailedSummary?.liveAnalysis) {
+                    queryClient.setQueryData<Meeting>(meetingKey, (prev) => {
+                        const base = prev ?? meeting;
+                        return {
+                            ...base,
+                            detailedSummary: { ...(base.detailedSummary ?? { actionItems: [], keyPoints: [] }), liveAnalysis: savedAnalysis },
+                        };
+                    });
+                }
                 // `result.error` now carries the real provider error (e.g. Gemini
                 // "429 RESOURCE_EXHAUSTED" / Groq rate-limit text) instead of being
                 // swallowed to a bare `false` — classify it into something the user
@@ -1024,6 +1161,10 @@ ${formatNextCallPlaybook() || '  None'}
         transcriptTimesAreRelative,
         handleSubmitQuestion,
         handleInputKeyDown,
+        meetingInputRef,
+        isChatBusy,
+        handleChatBusyChange,
+        handleStopChatGeneration,
         handleCopy,
         handleTitleSave,
         handleActionItemSave,

@@ -25,6 +25,9 @@ export const MAX_FILE_SIZE_BYTES = 5 * 1024 * 1024; // 5 MB
 export interface AssetUploadProgress {
     phase: 'uploading' | 'processing';
     percent: number;
+    /** Human-readable backend pipeline step (e.g. "Generating embeddings"),
+     *  set once 'processing' has polled the job status at least once. */
+    label?: string;
 }
 
 export const ASSET_CONFIG: Record<KnowledgeAsset['type'], {
@@ -149,14 +152,23 @@ export const useCompanyContext = ({
     useEffect(() => {
         const unsubscribe = window.electronAPI?.onCompanyUploadProgress?.((p) => {
             if (!p?.assetId) return;
-            setAssetProgress(prev => (
+            setAssetProgress(prev => {
                 // Only track assets whose commit is currently in flight —
                 // stale events from an aborted/failed Save must not resurrect
                 // a bar that has no promise left to clear it.
-                prev[p.assetId]
-                    ? { ...prev, [p.assetId]: { phase: p.phase, percent: p.percent ?? 0 } }
-                    : prev
-            ));
+                const current = prev[p.assetId];
+                if (!current) return prev;
+                const incoming = { phase: p.phase, percent: p.percent ?? 0, label: p.label };
+                // A phase change (uploading -> processing) legitimately resets
+                // the number — that's a different meter, not a regression. But
+                // two events in the SAME phase must only move forward: a lower
+                // percent there would read as the bar breaking, so ignore it
+                // rather than let a late/out-of-order poll snap it backward.
+                if (incoming.phase === current.phase && incoming.percent < current.percent) {
+                    return prev;
+                }
+                return { ...prev, [p.assetId]: incoming };
+            });
         });
         return () => unsubscribe?.();
     }, []);

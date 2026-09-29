@@ -18,6 +18,11 @@
 // invitation has a new token and therefore re-surfaces immediately. Accepting
 // or declining deletes it from the server's pending list, so it never returns
 // either way.
+//
+// Once the user becomes an admin (owner of their own tenant — e.g. right
+// after creating a team), polling stops entirely: an admin owns the tenant
+// and can never be the recipient of a pending invitation, so continuing to
+// hit GET /invitations/me every tick would just be wasted requests.
 
 import { useCallback, useEffect, useRef, useState } from "react";
 import { tenantsApi } from "@/api";
@@ -31,7 +36,7 @@ interface WatcherUser {
     displayName?: string | null;
 }
 
-export function useTeamInvitationWatcher(authUser: WatcherUser | null) {
+export function useTeamInvitationWatcher(authUser: WatcherUser | null, isAdmin: boolean = false) {
     const [invitation, setInvitation] = useState<MyPendingInvitation | null>(null);
     const dismissedTokensRef = useRef<Set<string>>(new Set());
     const inFlightRef = useRef(false);
@@ -59,6 +64,16 @@ export function useTeamInvitationWatcher(authUser: WatcherUser | null) {
             setInvitation(null);
             return;
         }
+        // Once the signed-in user is an admin (e.g. they just created their own
+        // team), there is nothing left for this watcher to do: an admin is the
+        // tenant owner and can't be the target of a pending invitation, so
+        // polling GET /invitations/me forever afterward is pure waste. Stop
+        // the interval and drop any invitation/popup that might still be
+        // showing from before the promotion.
+        if (isAdmin) {
+            setInvitation(null);
+            return;
+        }
         void check();
         const id = setInterval(() => { void check(); }, INVITATION_POLL_MS);
         const onVisible = () => {
@@ -72,7 +87,7 @@ export function useTeamInvitationWatcher(authUser: WatcherUser | null) {
             document.removeEventListener("visibilitychange", onVisible);
             window.removeEventListener("focus", onFocus);
         };
-    }, [userKey, check]);
+    }, [userKey, isAdmin, check]);
 
     /** Silence this invitation for the rest of the session (close without deciding). */
     const dismiss = useCallback((token: string) => {

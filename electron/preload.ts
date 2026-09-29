@@ -1,5 +1,5 @@
 import { contextBridge, ipcRenderer } from "electron"
-import { LiveAnalysisData } from "../src/types"
+import { LiveAnalysisData, LiveAnalysisTurn } from "../src/types"
 import { CalendarEvent } from "services/CalendarManager"
 
 // Types for the exposed Electron API
@@ -8,7 +8,13 @@ interface ElectronAPI {
     width: number
     height: number
   }) => Promise<void>
-  getGpuPerformanceStatus: () => Promise<{ isLowPowerGpu: boolean; raw: Record<string, string> | null }>
+  getGpuPerformanceStatus: () => Promise<{
+    isLowPowerGpu: boolean;
+    raw: Record<string, string> | null;
+    hardware: { cpuThreads: number | null; totalRamGB: number | null; gpuVendorId: string | null };
+    autoClassification: { autoPerformanceMode: boolean; reason: string | null; summary: string };
+  }>
+  setPerformanceModePreference: (preference: 'auto' | 'on' | 'off') => Promise<{ ok: boolean }>
   getRecognitionLanguages: () => Promise<Record<string, any>>
   getScreenshots: () => Promise<Array<{ path: string; preview: string }>>
   deleteScreenshot: (
@@ -172,8 +178,35 @@ interface ElectronAPI {
   setLiveAnalysisInFlight: (inFlight: boolean, generation?: number | null) => Promise<{ success: boolean }>;
   /** Generation of the call that is live right now — see liveAnalysisRouting.ts. */
   getMeetingGeneration: () => Promise<{ success: boolean; data?: number }>;
+  /**
+   * Main asks this window to run the call analysis for an uploaded transcript.
+   * The live-analysis API is renderer-only (apiClient owns the Firebase token),
+   * so main cannot call it itself — see useUploadAnalysisBridge.
+   */
+  onRunUploadAnalysis: (
+    callback: (request: { requestId: string; turns: LiveAnalysisTurn[]; meetingTypes: ('discovery' | 'demo' | 'negotiation')[] }) => void,
+  ) => () => void;
+  /** The answer to one onRunUploadAnalysis request. */
+  respondUploadAnalysis: (
+    requestId: string,
+    result: { ok: boolean; data?: LiveAnalysisData | null; error?: string },
+  ) => void;
+  /**
+   * Main asks the overlay for the live analysis v2 end-of-call pass (POST /v2/end) — the overlay
+   * holds the signed state and the original-text transcript. Answered by useFloatingDock.
+   */
+  onRunFinalAnalysisV2: (
+    callback: (request: { requestId: string; meetingTypes: ('discovery' | 'demo' | 'negotiation')[] }) => void,
+  ) => () => void;
+  /** The answer to one onRunFinalAnalysisV2 request. */
+  respondFinalAnalysisV2: (
+    requestId: string,
+    result: { ok: boolean; data?: LiveAnalysisData | null; error?: string },
+  ) => void;
   regenerateMeetingSummary: (id: string) => Promise<{ success: boolean; meeting?: any; error?: string }>
-  uploadTranscript: (text: string, title?: string, meetingTypes?: ('discovery' | 'demo' | 'negotiation')[], tenantId?: string | null) => Promise<{ success: boolean; meetingId?: string; error?: string }>
+  uploadTranscript: (text: string, title?: string, meetingTypes?: ('discovery' | 'demo' | 'negotiation')[], tenantId?: string | null, repSpeaker?: string | null) => Promise<{ success: boolean; meetingId?: string; error?: string }>
+  /** The pasted transcript's speakers and the rep uploadTranscript would pick by default ('name' = matched the signed-in user). */
+  getUploadTranscriptSpeakers: (text: string) => Promise<{ speakers: string[]; suggestedRep: string | null; suggestedBy: 'picked' | 'name' | 'first' | null }>
   updateMeetingSummary: (id: string, updates: { overview?: string, actionItems?: string[], keyPoints?: string[], actionItemsTitle?: string, keyPointsTitle?: string }) => Promise<boolean>
   onMeetingsUpdated: (callback: () => void) => () => void
   getDisplayName: (role: 'user' | 'client' | 'assistant') => Promise<string>;
@@ -476,6 +509,8 @@ contextBridge.exposeInMainWorld("electronAPI", {
   updateContentDimensions: (dimensions: { width: number; height: number }) =>
     ipcRenderer.invoke("update-content-dimensions", dimensions),
   getGpuPerformanceStatus: () => ipcRenderer.invoke("get-gpu-performance-status"),
+  setPerformanceModePreference: (preference: 'auto' | 'on' | 'off') =>
+    ipcRenderer.invoke("set-performance-mode-preference", preference),
   getRecognitionLanguages: () => ipcRenderer.invoke("get-recognition-languages"),
   takeScreenshot: () => ipcRenderer.invoke("take-screenshot"),
   takeSelectiveScreenshot: () => ipcRenderer.invoke("take-selective-screenshot"),
@@ -655,10 +690,22 @@ contextBridge.exposeInMainWorld("electronAPI", {
   // Fired once, exactly when endMeeting() resolves the real meetingId for
   // the call that just ended — race-free alternative to inferring "the
   // current meeting" from getRecentMeetings()[0] (see main.ts#endMeeting).
-  onLiveCallEnded: (callback: (data: { meetingId: string }) => void) => {
-    const subscription = (_: any, data: { meetingId: string }) => callback(data);
+  // source + candidates feed the launcher's end-of-call company prompt.
+  onLiveCallEnded: (callback: (data: { meetingId: string; source?: string; candidates?: { name: string; domain: string }[] }) => void) => {
+    const subscription = (_: any, data: { meetingId: string; source?: string; candidates?: { name: string; domain: string }[] }) => callback(data);
     ipcRenderer.on('live-call-ended', subscription);
     return () => { ipcRenderer.removeListener('live-call-ended', subscription); };
+  },
+  // Fired once the SupabaseMirrorService outbox actually lands this meeting's
+  // row in Supabase — the moment GET /meetings/:id on the FastAPI backend
+  // (same Postgres instance) stops 404ing for it. Distinct from, and always
+  // AFTER, 'live-call-ended' (which fires right after the local SQLite
+  // placeholder save, before the row is synced). Use this to gate anything
+  // that needs the backend row to exist, e.g. the post-call company prompt.
+  onMeetingBackendReady: (callback: (data: { meetingId: string }) => void) => {
+    const subscription = (_: any, data: { meetingId: string }) => callback(data);
+    ipcRenderer.on('meeting-backend-ready', subscription);
+    return () => { ipcRenderer.removeListener('meeting-backend-ready', subscription); };
   },
   onMeetingCompleted: (callback: () => void) => {
     const subscription = () => callback();
@@ -766,7 +813,7 @@ contextBridge.exposeInMainWorld("electronAPI", {
   getOutputRoute: () => ipcRenderer.invoke("get-output-route"),
 
   // Native Audio Service Events
-  onNativeAudioTranscript: (callback: (transcript: { speaker: string; displayName?: string; text: string; timestamp?: number; final: boolean; confidence?: number; speakerIndex?: number; retract?: boolean }) => void) => {
+  onNativeAudioTranscript: (callback: (transcript: { speaker: string; displayName?: string; text: string; timestamp?: number; final: boolean; confidence?: number; speakerIndex?: number; retract?: boolean; textOriginal?: string; turnId?: string; lang?: string; asrSuspect?: boolean; suspectReason?: string; arrivalMs?: number }) => void) => {
     const subscription = (_: any, data: any) => callback(data)
     ipcRenderer.on("native-audio-transcript", subscription)
     return () => {
@@ -924,7 +971,8 @@ contextBridge.exposeInMainWorld("electronAPI", {
   updateMeetingTitle: (id: string, title: string) => ipcRenderer.invoke("update-meeting-title", { id, title }),
   updateMeetingSummary: (id: string, updates: any) => ipcRenderer.invoke("update-meeting-summary", { id, updates }),
   regenerateMeetingSummary: (id: string) => ipcRenderer.invoke('regenerate-meeting-summary', { id }),
-  uploadTranscript: (text: string, title?: string, meetingTypes?: ('discovery' | 'demo' | 'negotiation')[], tenantId?: string | null) => ipcRenderer.invoke('upload-transcript', { text, title, meetingTypes, tenantId }),
+  uploadTranscript: (text: string, title?: string, meetingTypes?: ('discovery' | 'demo' | 'negotiation')[], tenantId?: string | null, repSpeaker?: string | null) => ipcRenderer.invoke('upload-transcript', { text, title, meetingTypes, tenantId, repSpeaker }),
+  getUploadTranscriptSpeakers: (text: string) => ipcRenderer.invoke('upload-transcript-speakers', text),
   deleteMeeting: (id: string) => ipcRenderer.invoke("delete-meeting", id),
 
   onMeetingsUpdated: (callback: () => void) => {
@@ -940,6 +988,21 @@ contextBridge.exposeInMainWorld("electronAPI", {
   setLiveAnalysisInFlight: (inFlight: boolean, generation?: number | null) =>
     ipcRenderer.invoke("set-live-analysis-in-flight", inFlight, generation ?? null),
   getMeetingGeneration: () => ipcRenderer.invoke("get-meeting-generation"),
+
+  onRunUploadAnalysis: (callback: (request: any) => void) => {
+    const subscription = (_: any, request: any) => callback(request);
+    ipcRenderer.on('run-upload-analysis', subscription);
+    return () => { ipcRenderer.removeListener('run-upload-analysis', subscription); };
+  },
+  respondUploadAnalysis: (requestId: string, result: { ok: boolean; data?: any; error?: string }) =>
+    ipcRenderer.send('upload-analysis-result', { requestId, ...result }),
+  onRunFinalAnalysisV2: (callback: (request: any) => void) => {
+    const subscription = (_: any, request: any) => callback(request);
+    ipcRenderer.on('run-final-analysis-v2', subscription);
+    return () => { ipcRenderer.removeListener('run-final-analysis-v2', subscription); };
+  },
+  respondFinalAnalysisV2: (requestId: string, result: { ok: boolean; data?: any; error?: string }) =>
+    ipcRenderer.send('final-analysis-v2-result', { requestId, ...result }),
 
   // Window Mode
   setWindowMode: (mode: 'launcher' | 'overlay', inactive?: boolean, freshMeetingStart?: boolean) =>
@@ -1475,7 +1538,7 @@ contextBridge.exposeInMainWorld("electronAPI", {
   }) => ipcRenderer.invoke('company:uploadAssetToBackend', payload),
   // Upload progress for the backend commit (main → renderer events). Mirrors
   // onDownloadProgress: returns an unsubscribe function.
-  onCompanyUploadProgress: (callback: (p: { assetId: string; phase: 'uploading' | 'processing'; percent: number }) => void) => {
+  onCompanyUploadProgress: (callback: (p: { assetId: string; phase: 'uploading' | 'processing'; percent: number; label?: string }) => void) => {
     const subscription = (_: any, p: any) => callback(p)
     ipcRenderer.on("company:upload-progress", subscription)
     return () => {

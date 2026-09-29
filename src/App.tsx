@@ -1,4 +1,4 @@
-import React, { useEffect, useState } from "react";
+import React, { useCallback, useEffect, useRef, useState } from "react";
 import { AnimatePresence, motion } from "framer-motion";
 import { QueryClientProvider } from "react-query";
 
@@ -6,21 +6,26 @@ import { QueryClientProvider } from "react-query";
 // lib — infra / service wrappers
 // ---------------------------------------------------------------------------
 import { queryClient } from "@/lib/queryClient";
+import { skipSplashThisLoad, skipSplashLabel } from "@/lib/splash";
 import { posthogAnalytics } from "@/lib/analytics/posthog.service";
+import { meetingsApi } from "@/api";
 
 // ---------------------------------------------------------------------------
 // hooks — core app logic, extracted out of App.tsx
 // ---------------------------------------------------------------------------
-import { useWindowRoute, useFirebaseAuth, useTenant, useAutoOpenDashboardForAdmins } from "@/hooks";
-import { useTeamInvite, useOverlayOpacity, useAppLifecycleListeners, useMeetingSession } from "@/hooks";
+import { useResolvedTheme, useWindowRoute, useFirebaseAuth, useTenant, useAutoOpenDashboardForAdmins } from "@/hooks";
+import { useTeamInvite, useOverlayOpacity, useAppLifecycleListeners, useMeetingSession, useUploadAnalysisBridge } from "@/hooks";
 
 // ---------------------------------------------------------------------------
 // features
 // ---------------------------------------------------------------------------
 import { ManagerDashboard } from "@/features/dashboard";
+import { CompanySelectModal } from "@/features/meetings";
+import { applyCompanyToCaches } from "@/lib/companyAssociation";
 import { InviteAccountMismatchBanner, TeamInviteNotification, InviteAcceptedNotifier } from "@/features/tenant";
 import { SettingsPopup, SettingsOverlay } from "@/features/settings"; // Keeping for legacy/specific window support if needed
 import { StartupSequence } from "@/features/onboarding";
+import { BirdLoader } from "@/features/ui/BirdLoader";
 // import UpdateBanner from "../features/updates/UpdateBanner";
 
 // ---------------------------------------------------------------------------
@@ -73,6 +78,12 @@ const App: React.FC = () => {
     return () => unsubscribeMeetingCompleted?.();
   }, [isLauncherWindow]);
 
+  // Uploaded transcripts are analysed by the live-analysis API, which only
+  // exists in this process (apiClient owns the Firebase token). Main sends the
+  // turns here while it processes the meeting; the launcher gate keeps exactly
+  // one window answering, the same way meeting-completed is gated above.
+  useUploadAnalysisBridge(isLauncherWindow);
+
   // Tell main this window's IPC listeners are live. `session-reset` — the
   // floating dock's only "a call started" signal — is fire-and-forget, so a
   // meeting started with no user interaction (the calendar reminder popup,
@@ -96,10 +107,94 @@ const App: React.FC = () => {
   const { hasProfile, isPremiumActive, setIsPremiumActive, isProcessingMeeting, setIsProcessingMeeting } = AppLifecycleStates;
   const { lastMeetingEndTime, appStartTime, ollamaPull, incompatibleWarning, dismissIncompatibleWarning, reindexIncompatibleMeetings } = AppLifecycleStates;
 
+  // Post-call company prompt — part of the meeting lifecycle, fired the
+  // moment the call ends (NOT after AI processing). The end-meeting decision
+  // MUST live in this (launcher) window: the end button runs in the overlay
+  // window's renderer, so React state set there can never render a modal
+  // here. main.ts broadcasts 'live-call-ended' with the session source and
+  // attendee-domain candidates; we then check the backend association (a
+  // single external domain was already auto-linked at start) and show the
+  // picker only when the meeting is still company-less and wasn't skipped.
+  // Uploads are answered inside the upload modal and never prompted.
+  //
+  // 'live-call-ended' fires the instant the LOCAL SQLite placeholder is
+  // saved — well before the meeting row is synced to the backend (see
+  // MeetingPersistence.stopMeeting / SupabaseMirrorService's outbox). A GET
+  // /meetings/:id fired right off that event races the sync and 404s more
+  // often than not, which is why the prompt used to only "sometimes" show.
+  // So: stash the live-call-ended payload, then wait for the dedicated
+  // 'meeting-backend-ready' signal (fired once the row actually lands in
+  // Supabase) before checking. A timeout is kept as a last-resort fallback
+  // only, in case that event is somehow missed — without it, a lost signal
+  // would silently suppress the prompt forever instead of just being slow.
+  const [companyPromptMeetingId, setCompanyPromptMeetingId] = useState<string | null>(null);
+  const [companyPromptCandidates, setCompanyPromptCandidates] = useState<{ name: string; domain: string }[]>([]);
+  const isLight = useResolvedTheme() === 'light';
+  const pendingCompanyCheckRef = useRef<{ meetingId: string; candidates: { name: string; domain: string }[] } | null>(null);
+
+  const checkAndShowCompanyPrompt = useCallback(async (
+    meetingId: string,
+    candidates: { name: string; domain: string }[],
+  ) => {
+    try {
+      const meeting = await meetingsApi.get(meetingId);
+      if (meeting.company || meeting.company_skipped) return;
+      setCompanyPromptCandidates(candidates);
+      setCompanyPromptMeetingId(meetingId);
+    } catch {
+      // Lookup failed — skip the prompt; the MeetingDetails chip is the
+      // recovery path. A company prompt must never block the post-call flow.
+    }
+  }, []);
+
+  useEffect(() => {
+    if (isOverlayWindow) return; // no room for a modal in the 430px dock
+
+    const offEnded = window.electronAPI?.onLiveCallEnded?.((payload) => {
+      const meetingId = payload?.meetingId;
+      if (!meetingId || payload?.source === 'upload') return;
+      const candidates = payload.candidates ?? [];
+      pendingCompanyCheckRef.current = { meetingId, candidates };
+
+      // Fallback only — normally 'meeting-backend-ready' below resolves
+      // this well before 20s.
+      setTimeout(() => {
+        const pending = pendingCompanyCheckRef.current;
+        if (pending?.meetingId !== meetingId) return; // already handled
+        pendingCompanyCheckRef.current = null;
+        void checkAndShowCompanyPrompt(pending.meetingId, pending.candidates);
+      }, 20000);
+    });
+
+    const offReady = window.electronAPI?.onMeetingBackendReady?.(({ meetingId }) => {
+      const pending = pendingCompanyCheckRef.current;
+      if (!meetingId || pending?.meetingId !== meetingId) return; // not the one we're waiting on
+      pendingCompanyCheckRef.current = null;
+      void checkAndShowCompanyPrompt(meetingId, pending.candidates);
+    });
+
+    return () => { offEnded?.(); offReady?.(); };
+  }, [isOverlayWindow, checkAndShowCompanyPrompt]);
+
   const { handleStartMeeting, handleEndMeeting, showPermissionTray, setShowPermissionTray, proceedWithMeeting } = useMeetingSession(tenantId, setIsProcessingMeeting);
 
   // --- Local UI state ----------------------------------------------------
-  const [showStartup, setShowStartup] = useState(true);
+  // Splash policy: the full-screen splash plays ONLY on (a) app start / hard
+  // refresh and (b) sign-in. It starts armed on every page load, except the
+  // reload that finishes an account switch (lib/splash.ts), which goes straight
+  // to the app behind the plain loader. Everywhere else the app shows <BirdLoader />
+  // inline, instantly, with no splash.
+  const [showStartup, setShowStartup] = useState(!skipSplashThisLoad);
+  // Re-arm whenever the user is signed out (sign-out, expired session, "add
+  // another account", pending email verification) so the NEXT sign-in plays
+  // the splash again. Without this it only ever played once per page load.
+  useEffect(() => {
+    if (authChecked && !authUser) setShowStartup(true);
+  }, [authChecked, authUser]);
+  // Has the splash been on screen during this page load? Decides whether the
+  // main view fades in after it (splash hand-over) or renders in place.
+  const splashShownRef = useRef(false);
+  if (showStartup && authUser) splashShownRef.current = true;
   const [isSettingsOpen, setIsSettingsOpen] = useState(false);
   const [isManagerDashboardOpen, setIsManagerDashboardOpen] = useState(false);
   const [settingsInitialTab, setSettingsInitialTab] = useState("general");
@@ -204,7 +299,17 @@ const App: React.FC = () => {
             launcher. The SignIn component triggers onIdTokenChanged on success, which
             updates `authUser` below and unmounts itself. */}
         {!authChecked ? (
-          <div className="h-full w-full" />
+          // Normal boot: stay blank — the splash (or SignIn) follows immediately.
+          // Account-switch reload: no splash is coming, so show the same loader
+          // the switch cover was showing to make the reload seamless.
+          skipSplashThisLoad ? (
+            <div className={`h-full w-full flex flex-col items-center justify-center gap-3 ${isLight ? "bg-white" : "bg-[#000000]"}`}>
+              <BirdLoader size={72} />
+              <span className="text-xs text-text-secondary">{skipSplashLabel}</span>
+            </div>
+          ) : (
+            <div className="h-full w-full" />
+          )
         ) : pendingVerificationUser ? (
           <QueryClientProvider client={queryClient}>
             <ToastProvider>
@@ -243,7 +348,11 @@ const App: React.FC = () => {
                 <motion.div
                   key="main"
                   className="h-full w-full"
-                  initial={{ opacity: 0, scale: 0.98, y: 15 }} // "Linear" style entry: slightly down and scaled down
+                  // After the splash: "Linear" style entry (slightly down and scaled down).
+                  // After an account-switch reload there is no splash to hand over
+                  // from, and fading in from the black root would flash — render
+                  // in place instead.
+                  initial={skipSplashThisLoad && !splashShownRef.current ? false : { opacity: 0, scale: 0.98, y: 15 }}
                   animate={{ opacity: 1, scale: 1, y: 0 }} // Slide up and snap to place
                   transition={{
                     duration: 0.8,
@@ -307,11 +416,32 @@ const App: React.FC = () => {
                           over EVERY launcher screen (list, meeting details,
                           Settings, Dashboard, chat) instead of only when the
                           Roles & Permissions tab happens to be opened. */}
-                      <TeamInviteNotification authUser={authUser} suppressed={!!deepLinkInviteToken} />
+                      <TeamInviteNotification authUser={authUser} suppressed={!!deepLinkInviteToken} isAdmin={isAdmin} />
                       {/* Mirror side: when someone accepts OUR team's invitation,
                           notify the owner/admin — in-app toast + native cross-screen
                           notification (same pipeline as Summary Ready). */}
                       <InviteAcceptedNotifier tenant={tenant} isAdmin={isAdmin} />
+                      {/* Post-call company prompt (quick meetings only) —
+                          skippable; Skip records company_skipped so the same
+                          meeting never asks again. */}
+                      <AnimatePresence>
+                        {companyPromptMeetingId && (
+                          <CompanySelectModal
+                            key={companyPromptMeetingId}
+                            meetingId={companyPromptMeetingId}
+                            mode="post-call"
+                            candidates={companyPromptCandidates}
+                            isLight={isLight}
+                            onClose={() => setCompanyPromptMeetingId(null)}
+                            // Optimistic patch + invalidate. Invalidating alone
+                            // meant a Meeting Details view opened immediately
+                            // after showed "Add company" until the refetch
+                            // resolved.
+                            onSaved={(saved) => applyCompanyToCaches(queryClient, companyPromptMeetingId, saved)}
+                            onCleared={() => applyCompanyToCaches(queryClient, companyPromptMeetingId, null)}
+                          />
+                        )}
+                      </AnimatePresence>
                       <ToastViewport />
                     </ToastProvider>
                   </QueryClientProvider>
@@ -333,7 +463,7 @@ const App: React.FC = () => {
               <InviteAccountMismatchBanner invitedEmail={inviteMismatchEmail} onDismiss={dismissInviteMismatch} />
             )}
 
-            <AdCampaignToasters
+            {/* <AdCampaignToasters
               visible={isLauncherMainView && !isSettingsOpen}
               activeAd={activeAd}
               dismissAd={dismissAd}
@@ -362,7 +492,7 @@ const App: React.FC = () => {
                 }, 300);
               }}
               onDeactivated={() => setIsPremiumActive(false)}
-            />
+            /> */}
           </>
         )}
       </div>

@@ -2,7 +2,7 @@
 // (see meetingMapping.ts); writes return the raw backend response (mutations
 // invalidate + refetch, so the shape isn't relied on).
 
-import { AiInteractionsResponse, EndMeetingResponse, Meeting, MeetingStateResponse } from "@/types";
+import { AiInteractionsResponse, CompanyRef, EndMeetingResponse, Meeting, MeetingStateResponse } from "@/types";
 import { MeetingType, PauseMeetingResponse, ResumeMeetingResponse, StartMeetingRequest, StartMeetingResponse } from "@/types";
 import { SubmitTranscriptResponse, TranscriptSegmentInput } from "@/types";
 import { apiFetch } from "@/lib/apiClient";
@@ -14,14 +14,42 @@ import {
   shouldMergeLocalMeeting,
 } from "@/api/meetingMapping";
 
+export interface MeetingListParams {
+  limit?: number;
+  offset?: number;
+  // Card-shape rows (no summary_json) for building the client-side index —
+  // the launcher fetches the FULL corpus with this once, then all
+  // search/filter/count happen in memory with zero API calls.
+  slim?: boolean;
+  // Server-side search (unused by the launcher's client-side filter, kept
+  // for targeted queries): title, attendee names/emails, company name/domain.
+  search?: string;
+  source?: 'manual' | 'calendar' | 'upload';
+  // Epoch-ms bounds on start_time.
+  dateFrom?: number;
+  dateTo?: number;
+}
+
+function meetingListQuery(params?: MeetingListParams): string {
+  if (!params) return "";
+  const qs = new URLSearchParams();
+  if (params.limit) qs.set("limit", String(params.limit));
+  if (params.offset) qs.set("offset", String(params.offset));
+  if (params.slim) qs.set("slim", "true");
+  if (params.search?.trim()) qs.set("search", params.search.trim());
+  if (params.source) qs.set("source", params.source);
+  if (params.dateFrom) qs.set("start_after", String(params.dateFrom));
+  if (params.dateTo) qs.set("start_before", String(params.dateTo));
+  const s = qs.toString();
+  return s ? `?${s}` : "";
+}
+
 export const meetingsApi = {
   // `limit` mirrors the backend's own query param (GET /meetings?limit=N) —
-  // it returns the N most recent meetings, not a page at some offset. "Load
-  // more" in the UI works by re-requesting with a larger limit rather than
-  // paging with an offset, since the backend doesn't expose one.
-  list: async (params?: { limit?: number }): Promise<Meeting[]> => {
-    const query = params?.limit ? `?limit=${params.limit}` : "";
-    const rows = await apiFetch<any[]>(`/meetings${query}`);
+  // it returns the N most recent meetings, not a page at some offset. The
+  // launcher fetches the full corpus by looping slim pages (see useLauncher).
+  list: async (params?: MeetingListParams): Promise<Meeting[]> => {
+    const rows = await apiFetch<any[]>(`/meetings${meetingListQuery(params)}`);
     // Dedupe by id (defensive — preserves the renderer's previous IPC-side dedup).
     const seen = new Set<string>();
     let backendMeetings = (rows ?? []).map(mapMeetingRow).filter((m) => {
@@ -161,4 +189,25 @@ export const meetingsApi = {
   // processAndSaveMeeting pipeline live meetings use: summary, call analysis,
   // scorecard, mirror + chunking. A future backend that can run the LLM
   // pipeline itself ("Phase 2") would add the route here and re-point the modal.
+
+  // ── Meeting → company association ─────────────────────────────────────────
+  // The backend is the single source of truth for the customer company on a
+  // meeting (companies registry + meetings.company_id). Either link an
+  // existing company from the picker, or send a name to create-or-get it
+  // (the "new company" path). Clears company_skipped on success.
+  setCompany: (
+    meetingId: string,
+    body: { company_id?: string; name?: string; domain?: string },
+  ): Promise<CompanyRef> =>
+    apiFetch<CompanyRef>(`/meetings/${meetingId}/company`, {
+      method: "PUT",
+      body: JSON.stringify(body),
+    }),
+
+  // Unlink — or with skipped=true, only record that the user dismissed the
+  // post-call prompt so it isn't shown again for this meeting.
+  clearCompany: (meetingId: string, skipped = false): Promise<void> =>
+    apiFetch<void>(`/meetings/${meetingId}/company${skipped ? "?skipped=true" : ""}`, {
+      method: "DELETE",
+    }),
 };

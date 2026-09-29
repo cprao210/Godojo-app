@@ -10,6 +10,7 @@ import { X, RotateCcw, Check, Copy } from 'lucide-react';
 import { motion, AnimatePresence } from 'framer-motion';
 import type { FollowUpEmailModalProps } from '@/types';
 import { useFollowUpEmail } from '@/hooks';
+import { BirdLoader } from '@/features/ui/BirdLoader';
 import { EmailPreview } from './EmailPreview';
 
 const FollowUpEmailModal: React.FC<FollowUpEmailModalProps> = ({ isOpen, onClose, meeting, isLight = false }) => {
@@ -112,12 +113,7 @@ const FollowUpEmailModal: React.FC<FollowUpEmailModalProps> = ({ isOpen, onClose
                                 {isGenerating ? (
                                     <div className={`absolute inset-0 flex items-center justify-center z-10 backdrop-blur-[2px] ${isLight ? 'bg-white/70' : 'bg-bg-elevated/50'}`}>
                                         <div className="flex flex-col items-center gap-4">
-                                            <div className="relative">
-                                                <div className="w-10 h-10 border-2 rounded-full animate-spin border-border-muted border-t-accent-primary" />
-                                                <div className="absolute inset-0 flex items-center justify-center">
-                                                    <div className="w-2 h-2 rounded-full animate-pulse bg-accent-primary" />
-                                                </div>
-                                            </div>
+                                            <BirdLoader size={64} label="Drafting follow-up email" />
                                             <span className="text-xs font-medium animate-pulse text-text-tertiary">
                                                 Drafting perfect follow-up...
                                             </span>
