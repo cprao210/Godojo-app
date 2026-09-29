@@ -52,6 +52,58 @@ export const normalizeQuote = (quote: string): string =>
 /** Backend cap: ObjectionRequest.open_objections has max_length=25. */
 export const MAX_OPEN_OBJECTIONS = 25;
 
+// ── Precision caps ───────────────────────────────────────────────────────────
+// One call ended with 80 "objections" on the panel, none of them pushback, several of them the
+// same line said again with different filler. The backend now gates what it returns
+// (godojo-apis app/agents/objection/gate.py); these bound what the client keeps regardless.
+
+/** Open items on the panel. Beyond this the oldest open ones are dropped — a real call does not
+ *  carry fifteen live objections, and this keeps every open quote inside what the backend sees. */
+export const MAX_ACTIVE_OBJECTIONS = 15;
+/** Prospect objections accepted from one tick (the rep's own follow-ups don't count). */
+export const MAX_NEW_PER_TICK = 2;
+/** Objections the saved meeting holds when the live list is shorter — the end-of-call pass may
+ *  add what the live watcher missed up to this many (see `keepLiveAddMissed`). */
+export const MAX_SAVED_OBJECTIONS = 10;
+
+const wordsOf = (quote: string): Set<string> =>
+  new Set((quote.toLowerCase().match(/[\p{L}\p{N}']+/gu) ?? []));
+
+/**
+ * Same words, not same concern: Jaccard overlap of the two quotes' word sets. "how many modules
+ * do we have" said four times with different filler hashes to four ids, so exact-id dedupe let
+ * all four through. Unicode-aware so a Hindi quote isn't reduced to its English loanwords.
+ */
+export const isNearDuplicate = (a: string, b: string, threshold = 0.6): boolean => {
+  const wa = wordsOf(a);
+  const wb = wordsOf(b);
+  if (wa.size === 0 || wb.size === 0) return false;
+  let shared = 0;
+  for (const w of wa) if (wb.has(w)) shared++;
+  return shared / (wa.size + wb.size - shared) >= threshold;
+};
+
+/**
+ * Same moment of the call, allowing for a different span: most of the shorter quote's words are in
+ * the longer one. The end-of-call pass re-quotes a live objection or signal with more (or less) of
+ * the turn around it, so equality — or Jaccard, which a longer span dilutes — would miss it.
+ */
+export const quotesOverlap = (a: string, b: string, min = 0.7): boolean => {
+  const wa = wordsOf(a);
+  const wb = wordsOf(b);
+  const small = Math.min(wa.size, wb.size);
+  if (small === 0) return false;
+  let shared = 0;
+  for (const w of wa) if (wb.has(w)) shared++;
+  return shared >= Math.min(3, small) && shared / small >= min;
+};
+
+/** Keep the newest `max` open items; resolved ones stay (they are history, not noise). */
+const capActive = (list: Objection[], max = MAX_ACTIVE_OBJECTIONS): Objection[] => {
+  let open = 0;
+  return list.filter((o) => o.resolved || ++open <= max);
+};
+
 /**
  * Apply one delta to the client-owned list.
  *
@@ -73,24 +125,35 @@ export const mergeObjectionDelta = (
   const knownIds = new Set(current.map((o) => o.id ?? stableId(o.quote)));
   const seen = new Set<string>();
   const fresh: Objection[] = [];
+  let freshProspect = 0;
   for (const obj of incoming) {
     if (!obj?.quote?.trim()) continue;
     const id = obj.id ?? stableId(obj.quote);
     if (knownIds.has(id) || seen.has(id)) continue;
+    // Against EVERY tracked item, not only the open quotes the backend was shown.
+    if ([...fresh, ...current].some((o) => isNearDuplicate(o.quote, obj.quote))) continue;
+    if (!isRepFollowUp(obj)) {
+      if (freshProspect >= MAX_NEW_PER_TICK) continue;
+      freshProspect++;
+    }
     seen.add(id);
     fresh.push({ ...obj, id });
   }
 
-  const merged = [...fresh, ...current];
-  if (resolvedQuotes.length === 0) return merged;
-
-  const resolvedKeys = new Set(resolvedQuotes.map(normalizeQuote));
-  return merged.map((obj) =>
-    !obj.resolved && resolvedKeys.has(normalizeQuote(obj.quote))
-      ? { ...obj, resolved: true }
-      : obj,
-  );
+  let merged = [...fresh, ...current];
+  if (resolvedQuotes.length > 0) {
+    const resolvedKeys = new Set(resolvedQuotes.map(normalizeQuote));
+    merged = merged.map((obj) =>
+      !obj.resolved && resolvedKeys.has(normalizeQuote(obj.quote))
+        ? { ...obj, resolved: true }
+        : obj,
+    );
+  }
+  // Nothing new and nothing resolved: hand back the same array so callers can skip a render.
+  if (fresh.length === 0 && resolvedQuotes.length === 0) return current;
+  return capActive(merged);
 };
+
 
 /**
  * An item the REP owns — their own "let me check and get back to you" (`ae_deferral`) — is a

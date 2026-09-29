@@ -6,14 +6,18 @@ import {
     EMPTY_VIEW,
     endResponseToAnalysis,
     formatCallTime,
+    keepLiveAddMissed,
+    liveObjectionsForEnd,
+    MAX_SAVED_SIGNALS,
     shouldTickV2,
     stateToAnalysis,
     V2_MIN_TICK_MS,
     V2State,
 } from '@/lib/liveAnalysisV2';
+import { MAX_SAVED_OBJECTIONS, objectionsOnlyAnalysis } from '@/lib/objections';
 import { SSEParser, parseFrame } from '@/lib/sse';
 import { mergeDealAlerts } from '@/lib/dealAlerts';
-import type { LiveTranscriptEntry } from '@/types';
+import type { LiveAnalysisData, LiveTranscriptEntry, Objection, Signal } from '@/types';
 
 const field = (status: 'confirmed' | 'partial' | 'missing' = 'missing', evidence: string[] = []) => ({
     emoji: status === 'confirmed' ? '✅' : status === 'partial' ? '⚠️' : '❌',
@@ -228,5 +232,88 @@ describe('end of call', () => {
             { turn_id: 'u_00001', role: 'seller', text: 'How many guards?', t_start_ms: 1000 },
             { turn_id: 'u_00002', role: 'prospect', text: 'About 1200.', t_start_ms: 6000 },
         ]);
+    });
+});
+
+// The saved meeting showed different objections and buying signals from the live panel the rep had
+// just watched: the end-of-call pass re-picked both lists from scratch.
+describe('keepLiveAddMissed', () => {
+    const obj = (quote: string, extra: Partial<Objection> = {}): Objection => ({
+        type: 'customer_question', quote, owner: 'customer', status: 'open', ...extra,
+    });
+    const sig = (quote: string, extra: Partial<Signal> = {}): Signal => ({
+        quote, signal_type: ['buying_intent'], ask_now: '', intensity: 'high', category: 'positive', ...extra,
+    });
+    const finalWith = (objections: Objection[], signals: Signal[]): LiveAnalysisData =>
+        ({ ...objectionsOnlyAnalysis(objections), signals, source: 'v2_end' });
+
+    it('keeps every live item in live order, graded by its end-pass match, then adds the missed ones', () => {
+        const live = {
+            objections: [obj('Can you do better on the price?', { suggested_answer: 'live answer' }), obj('We already use Freshworks.')],
+            signals: [sig('If the pilot works we roll out to all sites')],
+        };
+        const final = finalWith(
+            [
+                obj('PatrolKart quoted us forty rupees. Can you do better on the price?',
+                    { handled: 'partially', rep_response: 'Let us look at penalties.', topic: 'price', suggested_answer: 'end answer' }),
+                obj('I need my CFO to sign off before we commit.', { handled: 'unresolved' }),
+            ],
+            [sig('Can we start the pilot next week?', { ask_now: 'Book the kickoff.' }),
+             sig('If the pilot works, we roll out to all sites.', { ask_now: 'Agree success criteria.' })],
+        );
+        const out = keepLiveAddMissed(final, live);
+
+        expect(out.objections.map(o => o.quote)).toEqual([
+            'Can you do better on the price?', 'We already use Freshworks.', 'I need my CFO to sign off before we commit.',
+        ]);
+        expect(out.objections[0]).toMatchObject({ handled: 'partially', rep_response: 'Let us look at penalties.', suggested_answer: 'live answer' });
+        expect(out.objections[1].handled).toBeUndefined();          // no match — shown as it was live
+        expect(out.signals.map(s => s.quote)).toEqual([
+            'If the pilot works we roll out to all sites', 'Can we start the pilot next week?',
+        ]);
+        expect(out.signals[0].ask_now).toBe('Agree success criteria.'); // live had none
+    });
+
+    it('never contradicts the panel: a live-resolved objection is not shown as unresolved', () => {
+        const out = keepLiveAddMissed(
+            finalWith([obj('That price is too high for us.', { handled: 'unresolved' })], []),
+            { objections: [obj('That price is too high for us.', { resolved: true })], signals: [] },
+        );
+        expect(out.objections).toHaveLength(1);
+        expect(out.objections[0].resolved).toBe(true);
+        expect(out.objections[0].handled).toBeUndefined();
+    });
+
+    it('adds missed items only up to the cap, and never cuts a live one', () => {
+        const many = Array.from({ length: 12 }, (_, i) => obj(`distinct live concern ${i} about topic ${i * 7}`));
+        const extra = obj('a missed worry about onboarding time for new sites');
+        const out = keepLiveAddMissed(finalWith([extra], []), { objections: many, signals: [] });
+        expect(out.objections).toHaveLength(12);                     // all live, no room for extras
+        expect(MAX_SAVED_OBJECTIONS).toBeLessThan(12);
+
+        const few = keepLiveAddMissed(
+            finalWith([], [
+                'We want to start the pilot next week', 'Our CFO already approved the budget',
+                'Can you send the contract today', 'The whole team loved the demo',
+                'We plan to roll out to every site', 'I will champion this internally',
+                'Procurement is ready when you are', 'Let us book the kickoff call',
+                'We are replacing the old vendor soon', 'Integration timeline works for us',
+            ].map(q => sig(q))),
+            { objections: [], signals: [sig('only live signal here today')] },
+        );
+        expect(few.signals).toHaveLength(MAX_SAVED_SIGNALS);
+        expect(few.signals[0].quote).toBe('only live signal here today');
+    });
+
+    it('is the end pass unchanged when nothing was live (an uploaded call)', () => {
+        const final = finalWith([obj('That price is too high for us.')], [sig('Can we start the pilot next week?')]);
+        expect(keepLiveAddMissed(final, { objections: [], signals: [] })).toEqual(final);
+    });
+
+    it('sends the live objections as quote + type, capped', () => {
+        const live = Array.from({ length: 40 }, (_, i) => obj(`q${i}`, { suggested_answer: 'x', category: 'y' }));
+        const sent = liveObjectionsForEnd([obj('  '), ...live]);
+        expect(sent).toHaveLength(30);
+        expect(sent[0]).toEqual({ quote: 'q0', type: 'customer_question' });
     });
 });

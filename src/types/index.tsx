@@ -826,6 +826,9 @@ export interface LiveAnalysisData {
    * ignores it if it rides back inside `previous_analysis`.
    */
   degraded?: boolean;
+  /** Objection detection was switched off for this call — 'internal': every invitee was on our
+   *  own domain. The Objections tab says so instead of showing an empty list. */
+  objectionDetectionOff?: 'internal';
 }
 
 // --- src/features/meetings/api/meetingsApi.ts ---
