@@ -5,6 +5,7 @@
 import { SessionTracker, TranscriptSegment } from './SessionTracker';
 import { LLMHelper } from './LLMHelper';
 import { DatabaseManager, Meeting, formatDuration } from './db/DatabaseManager';
+import { SupabaseMirrorService } from './db/SupabaseMirrorService';
 import { GROQ_TITLE_PROMPT, GROQ_SUMMARY_JSON_PROMPT, verifySummaryAgainstTranscript, buildCorrectionAddendum } from './llm';
 import { BANTField, LiveAnalysisData, MEDDICField, MeetingScorecardResult } from '../src/types';
 import { AppState } from './main';
@@ -16,7 +17,7 @@ import { hasMultipleClientSpeakers, resolveSpeakerDisplayName, buildSpeakerRoste
 import { parseUploadTranscript } from './utils/uploadTranscriptParser';
 import { AuthManager } from './services/AuthManager';
 import { deriveCompanyCandidates } from '../utils/companyDomainShared';
-import { buildUploadAnalysisPrompt, normalizeUploadAnalysis } from './utils/uploadAnalysis';
+import { buildUploadAnalysisPrompt, clipForLocalAnalysis, normalizeUploadAnalysis } from './utils/uploadAnalysis';
 import { requestUploadAnalysis, isLocalUploadAnalysisForced } from './utils/uploadAnalysisBridge';
 import { requestFinalAnalysisV2, isFinalAnalysisV2Enabled } from './utils/finalAnalysisBridge';
 import {
@@ -592,16 +593,24 @@ export class MeetingPersistence {
                     requestUploadAnalysis(turns, types, backendTimeoutMs ? { timeoutMs: backendTimeoutMs } : {}),
                 runLocal: async (isNegotiation) => {
                     const analysisPrompt = buildUploadAnalysisPrompt(isNegotiation);
+                    const { text: analysisInput, truncated } = clipForLocalAnalysis(transcriptText);
+                    if (truncated) {
+                        console.warn(
+                            `[MeetingPersistence] Local call analysis reads only ${truncated.analyzedChars} of ` +
+                            `${truncated.totalChars} transcript chars — the result will be marked truncated`,
+                        );
+                    }
                     const analysisRaw = await this.llmHelper.generateMeetingSummary(
                         analysisPrompt,
-                        transcriptText.substring(0, 12000),
+                        analysisInput,
                         analysisPrompt,
                     );
                     if (!analysisRaw) return null;
                     const jsonMatch = analysisRaw.match(/```json\n([\s\S]*?)\n```/) || [null, analysisRaw];
                     const jsonStr = (jsonMatch[1] || analysisRaw).trim();
                     try {
-                        return normalizeUploadAnalysis(JSON.parse(jsonStr), isNegotiation);
+                        const analysis = normalizeUploadAnalysis(JSON.parse(jsonStr), isNegotiation);
+                        return truncated ? { ...analysis, truncated } : analysis;
                     } catch (e) {
                         console.warn('[MeetingPersistence] Failed to parse call analysis JSON:', e);
                         return null;
@@ -841,29 +850,43 @@ export class MeetingPersistence {
         // non-confirmed fields, catalogue-valid signal types, stableId stamps),
         // so it stays usable with no network, no auth, or an exhausted backend
         // budget — and is pinned on by NATIVELY_UPLOAD_ANALYSIS_LOCAL=1.
+        //
+        // Its own try/catch: generateCallAnalysisFor is documented not to throw,
+        // but a throw here used to escape processAndSaveMeeting entirely — the
+        // meeting was never saved and chunking was never requested. A failed
+        // analysis must cost the analysis, not the meeting.
         if (!liveAnalysisData && data.transcript.length > 2) {
-            // Backend first, local analyser as the fallback — shared with
-            // regenerateSummary, see ./utils/callAnalysis.
-            liveAnalysisData = await this.generateCallAnalysisFor(
-                humanSegments,
-                hintMeetingTypes ?? [],
-                rosterBlock + fullTranscriptText,
-            );
+            try {
+                // Backend first, local analyser as the fallback — shared with
+                // regenerateSummary, see ./utils/callAnalysis.
+                liveAnalysisData = await this.generateCallAnalysisFor(
+                    humanSegments,
+                    hintMeetingTypes ?? [],
+                    rosterBlock + fullTranscriptText,
+                );
 
-            // Call Analysis exists only now on the upload/recovery path — the
-            // reconciliation inside the summary step above ran while
-            // liveAnalysisData was still null (its no-op early-return) and was
-            // never re-applied. Re-run it here, for whichever producer won, so
-            // the summary's BANT/MEDDIC — and, via buildConfirmedWhatIDidRight,
-            // the Sales Self-Analysis "What I did right" list — can never
-            // disagree with the call analysis. This is the same guarantee
-            // finalizeScorecard() gives the scorecard: the analysis is the
-            // single source of truth for every surface.
-            if (liveAnalysisData) {
-                summaryData = reconcileBantMeddicWithLiveAnalysis(summaryData, liveAnalysisData);
+                // Call Analysis exists only now on the upload/recovery path — the
+                // reconciliation inside the summary step above ran while
+                // liveAnalysisData was still null (its no-op early-return) and was
+                // never re-applied. Re-run it here, for whichever producer won, so
+                // the summary's BANT/MEDDIC — and, via buildConfirmedWhatIDidRight,
+                // the Sales Self-Analysis "What I did right" list — can never
+                // disagree with the call analysis. This is the same guarantee
+                // finalizeScorecard() gives the scorecard: the analysis is the
+                // single source of truth for every surface.
+                if (liveAnalysisData) {
+                    summaryData = reconcileBantMeddicWithLiveAnalysis(summaryData, liveAnalysisData);
+                }
+            } catch (e) {
+                console.error('[MeetingPersistence] Call analysis failed (non-fatal, saving without it):', e);
             }
         }
 
+        // Set once the meeting + transcript are in SQLite (and queued for the
+        // Supabase mirror). Backend chunking needs only the transcript, so the
+        // finally below requests it whenever this is true — whatever failed
+        // around it (summary, score, analysis, the UI notifications).
+        let savedLocally = false;
         try {
 
             let detailedSummary = { ...summaryData };
@@ -878,12 +901,18 @@ export class MeetingPersistence {
             // `liveAnalysisData` is final on every path (the upload/recovery path
             // generates it just above). When the transcript was too short to
             // score, the draft is the null outcome and this is a no-op.
-            const { scorecardResult, persisted: scorecardPersisted } =
-                this.finalizeScorecard(meetingId, await scorecardDraft, liveAnalysisData);
+            //
+            // A scorecard failure must not stop the meeting from being saved.
+            try {
+                const { scorecardResult, persisted: scorecardPersisted } =
+                    this.finalizeScorecard(meetingId, await scorecardDraft, liveAnalysisData);
 
-            if (scorecardResult && !scorecardPersisted) {
-                // DB write failed — fall back to embedding it in summary_json so the UI still gets data
-                detailedSummary = { ...detailedSummary, scorecard: scorecardResult } as any;
+                if (scorecardResult && !scorecardPersisted) {
+                    // DB write failed — fall back to embedding it in summary_json so the UI still gets data
+                    detailedSummary = { ...detailedSummary, scorecard: scorecardResult } as any;
+                }
+            } catch (e) {
+                console.error('[MeetingPersistence] Scorecard finalization failed (non-fatal, saving without it):', e);
             }
 
             // Use the speaker names snapshot captured BEFORE session.reset() was called.
@@ -939,6 +968,7 @@ export class MeetingPersistence {
             };
 
             DatabaseManager.getInstance().saveMeeting(meetingData, data.startTime, data.endTime ?? (data.startTime + data.durationMs), data.totalPausedMs ?? 0);
+            savedLocally = true;
 
             // Metadata was already snapshotted before session.reset() — nothing to clear here.
 
@@ -965,45 +995,53 @@ export class MeetingPersistence {
             // been persisted — not just "processing kicked off".
             AppState.getInstance()?.notifyMeetingSummaryReady?.(title);
 
-            // Kick backend RAG ingest now that the meeting + transcript are
-            // committed locally (chat/Ask-Dojo read only from backend
-            // meeting_chunks). Fire-and-forget from the caller's perspective —
-            // wrapped in its own async IIFE so nothing here can throw into the
-            // meeting-save catch below or delay the UI notifications above.
-            //
-            // Wait for the Supabase mirror to actually land the transcript
-            // batch first. saveMeeting() above only ENQUEUED it (the mirror is
-            // async-by-design so local writes never block on network), so
-            // without this the chunking POST would routinely race the mirror
-            // and get "No transcript found" on its very first attempt —
-            // exactly the case requestBackendChunking's retry/queue logic
-            // exists to paper over. Flushing here doesn't remove the need for
-            // that retry logic (offline, slow network, backend hiccups are
-            // still possible), it just means the common case succeeds on the
-            // first try instead of needing 5s–30s of backoff.
-            //
-            // Timeout is generous (20s, vs flush()'s 8s default) because an
-            // upload's transcript batch can be large (comment above notes up
-            // to ~1500 turns) and 'transcripts' now shares PRIORITY_TABLES
-            // with 'meetings' (see SupabaseMirrorService) so it isn't stuck
-            // behind unrelated meetings' ai_interactions/chunks batches. If
-            // the flush still times out, requestBackendChunking's own
-            // retry/durable-queue logic takes over exactly as before.
-            void (async () => {
-                try {
-                    const { SupabaseMirrorService } = require('./db/SupabaseMirrorService');
-                    await SupabaseMirrorService.getInstance().flush(20_000);
-                } catch (e) {
-                    console.warn('[MeetingPersistence] mirror flush before chunk trigger failed (non-fatal, chunking retries will cover it):', e);
-                }
-                await requestBackendChunking(meetingId, tenantId ?? null).catch(
-                    (e) => console.error('[MeetingPersistence] backend chunk trigger failed:', e),
-                );
-            })();
-
         } catch (error) {
             console.error('[MeetingPersistence] Failed to save meeting:', error);
+        } finally {
+            if (savedLocally) {
+                this.triggerBackendChunking(meetingId, tenantId ?? null);
+            } else {
+                console.warn(`[MeetingPersistence] Meeting ${meetingId} was not saved locally — backend chunking not requested`);
+            }
         }
+    }
+
+    /**
+     * Kick backend RAG ingest now that the meeting + transcript are committed
+     * locally (chat/Ask-Dojo read only from backend meeting_chunks). Called from
+     * processAndSaveMeeting's `finally`, so it never depends on the summary,
+     * score or call analysis having worked. Fire-and-forget: it never throws
+     * and never delays the caller.
+     */
+    private triggerBackendChunking(meetingId: string, tenantId: string | null): void {
+        // Wait for the Supabase mirror to actually land the transcript
+        // batch first. saveMeeting() only ENQUEUED it (the mirror is
+        // async-by-design so local writes never block on network), so
+        // without this the chunking POST would routinely race the mirror
+        // and get "No transcript found" on its very first attempt —
+        // exactly the case requestBackendChunking's retry/queue logic
+        // exists to paper over. Flushing here doesn't remove the need for
+        // that retry logic (offline, slow network, backend hiccups are
+        // still possible), it just means the common case succeeds on the
+        // first try instead of needing 5s–30s of backoff.
+        //
+        // Timeout is generous (20s, vs flush()'s 8s default) because an
+        // upload's transcript batch can be large (comment above notes up
+        // to ~1500 turns) and 'transcripts' now shares PRIORITY_TABLES
+        // with 'meetings' (see SupabaseMirrorService) so it isn't stuck
+        // behind unrelated meetings' ai_interactions/chunks batches. If
+        // the flush still times out, requestBackendChunking's own
+        // retry/durable-queue logic takes over exactly as before.
+        void (async () => {
+            try {
+                await SupabaseMirrorService.getInstance().flush(20_000);
+            } catch (e) {
+                console.warn('[MeetingPersistence] mirror flush before chunk trigger failed (non-fatal, chunking retries will cover it):', e);
+            }
+            await requestBackendChunking(meetingId, tenantId).catch(
+                (e) => console.error('[MeetingPersistence] backend chunk trigger failed:', e),
+            );
+        })();
     }
 
     /**
@@ -1157,7 +1195,6 @@ export class MeetingPersistence {
 
         // Mirror to Supabase — no-op if unauthenticated, non-fatal on failure
         try {
-            const { SupabaseMirrorService } = require('./db/SupabaseMirrorService');
             SupabaseMirrorService.getInstance().upsertRow('meeting_scorecards', {
                 meeting_id: meetingId,
                 overall_score: scorecardResult.overallWeightedScore ?? 0,

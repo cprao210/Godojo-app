@@ -832,6 +832,10 @@ export interface LiveAnalysisData {
   /** Objection detection was switched off for this call — 'internal': every invitee was on our
    *  own domain. The Objections tab says so instead of showing an empty list. */
   objectionDetectionOff?: 'internal';
+  /** Set when the desktop's local fallback analyser only read the start of the transcript
+   *  (see LOCAL_ANALYSIS_MAX_CHARS in electron/utils/uploadAnalysis.ts): the analysis covers
+   *  `analyzedChars` of `totalChars`, so anything later in the call is missing from it. */
+  truncated?: { analyzedChars: number; totalChars: number };
 }
 
 // --- src/features/meetings/api/meetingsApi.ts ---

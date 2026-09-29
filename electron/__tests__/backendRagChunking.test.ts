@@ -16,8 +16,16 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 const callOrder: string[] = [];
 
 const saveMeeting = vi.fn();
+const getMeetingScorecard = vi.fn();
 vi.mock('../db/DatabaseManager', () => ({
-    DatabaseManager: { getInstance: () => ({ saveMeeting, getMeetingScorecard: vi.fn() }) },
+    DatabaseManager: {
+        getInstance: () => ({
+            saveMeeting,
+            getMeetingScorecard,
+            getScoringCriteria: vi.fn(() => null),
+            saveMeetingScorecard: vi.fn(),
+        }),
+    },
     formatDuration: (_ms: number) => '00:00',
 }));
 
@@ -26,8 +34,9 @@ vi.mock('../db/SupabaseMirrorService', () => ({
     SupabaseMirrorService: { getInstance: () => ({ flush }) },
 }));
 
+const notifyMeetingSummaryReady = vi.fn();
 vi.mock('../main', () => ({
-    AppState: { getInstance: () => ({ notifyMeetingSummaryReady: vi.fn() }) },
+    AppState: { getInstance: () => ({ notifyMeetingSummaryReady }) },
 }));
 
 vi.mock('electron', () => ({
@@ -50,7 +59,12 @@ vi.mock('../llm/ScoreCardLLM', () => ({ buildScorecardPrompt: vi.fn() }));
 vi.mock('../scorecardReconciliation', () => ({ reconcileScorecardWithLiveAnalysis: vi.fn((r: any) => r) }));
 vi.mock('../summaryReconciliation', () => ({ reconcileBantMeddicWithLiveAnalysis: vi.fn((s: any) => s) }));
 vi.mock('../services/AuthManager', () => ({ AuthManager: { getInstance: () => ({}) } }));
-vi.mock('../utils/uploadAnalysis', () => ({ buildUploadAnalysisPrompt: vi.fn(), normalizeUploadAnalysis: vi.fn() }));
+// The real clipForLocalAnalysis, so the long-transcript test below sees the real clip.
+vi.mock('../utils/uploadAnalysis', async (importOriginal) => ({
+    clipForLocalAnalysis: (await importOriginal<typeof import('../utils/uploadAnalysis')>()).clipForLocalAnalysis,
+    buildUploadAnalysisPrompt: vi.fn(() => 'analysis prompt'),
+    normalizeUploadAnalysis: vi.fn(() => ({ bant: {}, meddic: {}, objections: [], signals: [] })),
+}));
 vi.mock('../utils/uploadAnalysisBridge', () => ({
     requestUploadAnalysis: vi.fn(),
     isLocalUploadAnalysisForced: vi.fn(() => false),
@@ -59,8 +73,9 @@ vi.mock('../utils/finalAnalysisBridge', () => ({
     requestFinalAnalysisV2: vi.fn(),
     isFinalAnalysisV2Enabled: vi.fn(() => false),
 }));
+const generateCallAnalysis = vi.fn();
 vi.mock('../utils/callAnalysis', () => ({
-    generateCallAnalysis: vi.fn(),
+    generateCallAnalysis: (...args: any[]) => generateCallAnalysis(...args),
     hasUsableCallAnalysis: vi.fn(),
     meetingTypesForRegenerate: vi.fn(),
     REGENERATE_ANALYSIS_TIMEOUT_MS: 1000,
@@ -69,9 +84,14 @@ vi.mock('../SessionTracker', () => ({ SessionTracker: class { } }));
 vi.mock('../LLMHelper', () => ({ LLMHelper: class { } }));
 
 const requestBackendChunking = vi.fn(async (_id: string, _tenant: string | null) => { callOrder.push('chunk'); });
-vi.mock('../utils/backendRagChunking', () => ({ requestBackendChunking }));
+vi.mock('../utils/backendRagChunking', () => ({
+    requestBackendChunking: (id: string, tenant: string | null) => requestBackendChunking(id, tenant),
+}));
 
 import { MeetingPersistence } from '../MeetingPersistence';
+
+// processAndSaveMeeting falls back to the session's speaker map when no names are passed.
+const SESSION: any = { getSpeakerNameMap: () => ({ user: 'Me', client: 'Them' }) };
 
 // A transcript of exactly 2 turns is short enough that processAndSaveMeeting
 // skips title generation (a title is supplied via metadata anyway), summary
@@ -105,7 +125,7 @@ describe('MeetingPersistence.processAndSaveMeeting — chunk trigger ordering', 
     });
 
     it('waits for the Supabase mirror to flush the transcript batch before requesting backend chunking', async () => {
-        const persistence = new MeetingPersistence({} as any, {} as any);
+        const persistence = new MeetingPersistence(SESSION, {} as any);
 
         await callProcessAndSaveMeeting(persistence, 'meeting-1', 'tenant-1');
 
@@ -130,7 +150,7 @@ describe('MeetingPersistence.processAndSaveMeeting — chunk trigger ordering', 
 
     it('still requests chunking even if the mirror flush fails (non-fatal — chunking retry/queue covers it)', async () => {
         flush.mockRejectedValueOnce(new Error('network down'));
-        const persistence = new MeetingPersistence({} as any, {} as any);
+        const persistence = new MeetingPersistence(SESSION, {} as any);
 
         await callProcessAndSaveMeeting(persistence, 'meeting-2', 'tenant-1');
 
@@ -141,12 +161,120 @@ describe('MeetingPersistence.processAndSaveMeeting — chunk trigger ordering', 
     });
 
     it('passes null tenantId through untouched when no tenant is active', async () => {
-        const persistence = new MeetingPersistence({} as any, {} as any);
+        const persistence = new MeetingPersistence(SESSION, {} as any);
 
         await callProcessAndSaveMeeting(persistence, 'meeting-3', null);
 
         await vi.waitFor(() => expect(requestBackendChunking).toHaveBeenCalled());
 
         expect(requestBackendChunking).toHaveBeenCalledWith('meeting-3', null);
+    });
+});
+// Chunking needs only the transcript. Once the meeting is saved locally it must be
+// requested whatever else failed — summary, score, call analysis or the UI notifications
+// after the save. Before this, a throw from the call-analysis step escaped
+// processAndSaveMeeting, so the meeting was never saved and never chunked.
+describe('MeetingPersistence.processAndSaveMeeting — chunking survives failed steps', () => {
+    // > 2 turns, so the title/summary/scorecard/call-analysis branches all run.
+    const LONG_TRANSCRIPT = Array.from({ length: 300 }, (_, i) => ({
+        speaker: i % 2 ? 'client' : 'user',
+        text: `Turn ${i}: we covered budget, timeline and who signs off on the rollout.`,
+        timestamp: i * 1000,
+    }));
+
+    function run(llmHelper: any, meetingId: string) {
+        return (new MeetingPersistence(SESSION, llmHelper) as any).processAndSaveMeeting(
+            { transcript: LONG_TRANSCRIPT, usage: [], startTime: 0, durationMs: 1000, context: '' },
+            meetingId,
+            { title: 'Test meeting', source: 'upload' },
+            null, undefined, null, undefined, 'tenant-1',
+        );
+    }
+
+    const failingLlm = () => ({ generateMeetingSummary: vi.fn().mockRejectedValue(new Error('all providers down')) });
+
+    beforeEach(() => {
+        callOrder.length = 0;
+        saveMeeting.mockReset();
+        flush.mockClear();
+        requestBackendChunking.mockClear();
+        generateCallAnalysis.mockReset();
+        getMeetingScorecard.mockReset();
+        notifyMeetingSummaryReady.mockReset();
+    });
+
+    it('saves and requests chunking when call analysis throws', async () => {
+        generateCallAnalysis.mockRejectedValue(new Error('analysis exploded'));
+        await run(failingLlm(), 'm-analysis');
+
+        await vi.waitFor(() => expect(requestBackendChunking).toHaveBeenCalledWith('m-analysis', 'tenant-1'));
+        expect(saveMeeting).toHaveBeenCalledTimes(1);
+    });
+
+    it('saves and requests chunking when summary and score generation throw', async () => {
+        generateCallAnalysis.mockResolvedValue({ analysis: null, producer: null });
+        const llm = failingLlm();
+        await run(llm, 'm-summary');
+
+        await vi.waitFor(() => expect(requestBackendChunking).toHaveBeenCalledWith('m-summary', 'tenant-1'));
+        expect(llm.generateMeetingSummary).toHaveBeenCalled();
+        expect(saveMeeting).toHaveBeenCalledTimes(1);
+    });
+
+    it('saves and requests chunking when scorecard finalization throws', async () => {
+        generateCallAnalysis.mockResolvedValue({ analysis: null, producer: null });
+        getMeetingScorecard.mockImplementation(() => { throw new Error('sqlite busy'); });
+        const llm = {
+            generateMeetingSummary: vi.fn(async (_p: string, _c: string, _g: string, task?: string) => {
+                if (task === 'meeting_score') {
+                    return JSON.stringify({ detectedTypes: ['demo'], overallWeightedScore: 7, scorecards: {} });
+                }
+                throw new Error('no summary today');
+            }),
+        };
+        await run(llm, 'm-score');
+
+        await vi.waitFor(() => expect(requestBackendChunking).toHaveBeenCalledWith('m-score', 'tenant-1'));
+        expect(saveMeeting).toHaveBeenCalledTimes(1);
+    });
+
+    it('still requests chunking when a step after the save throws', async () => {
+        generateCallAnalysis.mockResolvedValue({ analysis: null, producer: null });
+        notifyMeetingSummaryReady.mockImplementation(() => { throw new Error('toast window failed'); });
+        await run(failingLlm(), 'm-toast');
+
+        await vi.waitFor(() => expect(requestBackendChunking).toHaveBeenCalledWith('m-toast', 'tenant-1'));
+    });
+
+    it('does not request chunking when the meeting was never saved locally', async () => {
+        generateCallAnalysis.mockResolvedValue({ analysis: null, producer: null });
+        saveMeeting.mockImplementation(() => { throw new Error('disk full'); });
+        await run(failingLlm(), 'm-unsaved');
+
+        // Let any stray fire-and-forget work settle before asserting it never happened.
+        await new Promise(r => setTimeout(r, 20));
+        expect(requestBackendChunking).not.toHaveBeenCalled();
+    });
+
+    it('marks a local fallback analysis over a clipped transcript as truncated', async () => {
+        // Backend unavailable → the real flow runs the local analyser; mimic that here.
+        generateCallAnalysis.mockImplementation(async (_turns: any, _types: any, deps: any) =>
+            ({ analysis: await deps.runLocal(false), producer: 'local' }));
+        const llm = {
+            generateMeetingSummary: vi.fn(async (_p: string, _c: string, _g: string, task?: string) => {
+                if (task === undefined) return '{"bant":{}}'; // the local analysis call
+                throw new Error('no summary today');
+            }),
+        };
+        await run(llm, 'm-truncated');
+
+        await vi.waitFor(() => expect(saveMeeting).toHaveBeenCalledTimes(1));
+        const analysisCall = llm.generateMeetingSummary.mock.calls.find(c => c[3] === undefined)!;
+        expect(analysisCall[1].length).toBeLessThanOrEqual(12_000);
+
+        const saved = saveMeeting.mock.calls[0][0];
+        const truncated = saved.detailedSummary.liveAnalysis.truncated;
+        expect(truncated.analyzedChars).toBe(analysisCall[1].length);
+        expect(truncated.totalChars).toBeGreaterThan(12_000);
     });
 });
