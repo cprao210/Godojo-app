@@ -345,6 +345,9 @@ export interface SourceMapEntry {
   meeting_url?: string;
   asset_url?: string;
   preview_text?: string;
+  /** Highlight boxes for the quoted lines on the cited PDF page: page-relative 0..1
+   * [x0, y0, x1, y1], top-left origin. Digital PDFs indexed at pipeline v4+ only. */
+  bbox?: { page: number; bbox: [number, number, number, number] }[];
   /** Resolvable file URL for the asset (system-browser open). Absent today:
    * company_assets stores no file path, so doc chips fall back to preview. */
   file_url?: string;
@@ -1319,6 +1322,11 @@ export interface KnowledgeAsset {
   status: 'mapped' | 'processing' | 'need_update';
   lastUpdated?: string;
   filePath?: string;
+  /** Staged upload only (not saved yet): base64 bytes held in the draft until Save commits them.
+   *  Lets the viewer preview the file before the server has a copy. */
+  fileData?: string;
+  fileName?: string;
+  mimeType?: string;
 }
 
 // --- src/api/intelligenceApi.ts ---

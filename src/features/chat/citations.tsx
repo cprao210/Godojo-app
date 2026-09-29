@@ -23,6 +23,7 @@ import React, {
 import { createPortal } from 'react-dom';
 import { visit, SKIP } from 'unist-util-visit';
 import type { SourceMapEntry } from '@/types';
+import { openDocumentViewer } from '@/features/documents/DocumentViewer';
 
 // Digit-only bracket groups, comma lists allowed: [1] [1, 2] [10,11].
 // Negative lookahead keeps markdown links ([text](url)) and reference-style
@@ -281,7 +282,7 @@ const HoverCard: React.FC<{
                         onClick={onOpen}
                         className="sticky bottom-0 block w-full px-3 py-2 text-left border-t border-border-subtle bg-bg-elevated text-[12px] text-blue-400 hover:text-blue-300 hover:bg-bg-hover transition-colors cursor-pointer"
                     >
-                        View source
+                        {src.type === 'doc' ? (src.page ? `Open page ${src.page}` : 'Open document') : 'View source'}
                     </button>
                 )}
             </div>
@@ -334,18 +335,12 @@ const CitationPill: React.FC<{ index: number; label: number; src: SourceMapEntry
             onOpenMeeting(src.id, src.start_ms);
             return;
         }
-        // Doc citations: open the real file when a resolvable URL exists.
-        // The app-relative asset_url (/assets/{id}#page=n) has no route in
-        // this Electron app yet — without file_url, just make sure the preview
-        // card is showing (covers click/tap devices) instead of a dead click.
-        // TODO: in-app asset viewer routed by asset_url.
+        // Doc citations: the in-app viewer opens the stored original at the cited page with the
+        // quoted lines highlighted (DocumentViewer). A surface may take over via onOpenAsset.
         if (src.type === 'doc') {
-            if (onOpenAsset && src.file_url) {
-                hideNow();
-                onOpenAsset(src);
-                return;
-            }
-            show();
+            hideNow();
+            if (onOpenAsset) onOpenAsset(src);
+            else openDocumentViewer(src);
         }
     };
 
