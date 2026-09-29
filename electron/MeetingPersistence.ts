@@ -707,14 +707,14 @@ export class MeetingPersistence {
         // draft object) — the .catch is belt-and-braces so a future throw before
         // its first await can't surface as an unhandled rejection while we're
         // off awaiting the summary.
-        const scorecardDraft: Promise<ScorecardDraft> =
-            data.transcript.length > 2
-                ? this.generateScorecardDraft(rosterBlock + fullTranscriptText, hintMeetingTypes ?? null, liveAnalysisData ?? null)
-                    .catch((err): ScorecardDraft => {
-                        console.warn('[MeetingPersistence] Scorecard generation threw (non-fatal):', err);
-                        return { scorecardResult: null, customScoringCriteria: null };
-                    })
-                : Promise.resolve({ scorecardResult: null, customScoringCriteria: null });
+        // const scorecardDraft: Promise<ScorecardDraft> =
+        //     data.transcript.length > 2
+        //         ? this.generateScorecardDraft(rosterBlock + fullTranscriptText, hintMeetingTypes ?? null, liveAnalysisData ?? null)
+        //             .catch((err): ScorecardDraft => {
+        //                 console.warn('[MeetingPersistence] Scorecard generation threw (non-fatal):', err);
+        //                 return { scorecardResult: null, customScoringCriteria: null };
+        //             })
+        //         : Promise.resolve({ scorecardResult: null, customScoringCriteria: null });
 
         try {
             // Generate Title (only if not set by calendar)
@@ -878,13 +878,13 @@ export class MeetingPersistence {
             // `liveAnalysisData` is final on every path (the upload/recovery path
             // generates it just above). When the transcript was too short to
             // score, the draft is the null outcome and this is a no-op.
-            const { scorecardResult, persisted: scorecardPersisted } =
-                this.finalizeScorecard(meetingId, await scorecardDraft, liveAnalysisData);
+            // const { scorecardResult, persisted: scorecardPersisted } =
+            //     this.finalizeScorecard(meetingId, await scorecardDraft, liveAnalysisData);
 
-            if (scorecardResult && !scorecardPersisted) {
-                // DB write failed — fall back to embedding it in summary_json so the UI still gets data
-                detailedSummary = { ...detailedSummary, scorecard: scorecardResult } as any;
-            }
+            // if (scorecardResult && !scorecardPersisted) {
+            // DB write failed — fall back to embedding it in summary_json so the UI still gets data
+            // detailedSummary = { ...detailedSummary, scorecard: scorecardResult } as any;
+            // }
 
             // Use the speaker names snapshot captured BEFORE session.reset() was called.
             // Do NOT call this.session.getSpeakerNameMap() here — the session is already

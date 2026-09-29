@@ -1,5 +1,11 @@
 import { LiveAnalysisData } from '@/types';
 import jsPDF from 'jspdf';
+import {
+    createSpeakerLabeler,
+    formatTranscriptTime,
+    isHiddenSpeaker,
+    transcriptTimesAreRelative,
+} from '@/lib/transcriptLabels';
 
 interface ScoredCategory {
     categoryName: string;
@@ -21,6 +27,7 @@ interface MeetingScorecardResult {
     scorecards: MeetingScorecard[];
     overallWeightedScore: number;
 }
+
 type BantMeddicField = { status: string; detail: string } | Record<string, any>;
 
 interface Meeting {
@@ -40,7 +47,7 @@ interface Meeting {
         leadName?: string;
         company?: string;
 
-        speakerNames?: { user: string; client: string };
+        speakerNames?: { user: string; client: string; clientDiarized?: string };
         liveAnalysis?: LiveAnalysisData;
         scorecard?: MeetingScorecardResult;
 
@@ -95,6 +102,8 @@ interface Meeting {
     };
     transcript?: Array<{
         speaker: string;
+        displayName?: string;
+        speakerIndex?: number | null;
         text: string;
         timestamp: number;
     }>;
@@ -146,30 +155,30 @@ export const generateMeetingPDF = (meeting: Meeting) => {
     addVerticalSpace(10);
 
     // --- Meeting Score ---
-    const scorecardResult = meeting.detailedSummary?.scorecard;
-    if (scorecardResult && scorecardResult.scorecards?.length > 0) {
-        addText('Meeting Score', 14, true, '#000000');
-        addVerticalSpace(2);
-        addText(`Overall: ${Math.round(scorecardResult.overallWeightedScore)}/100`, 12, true, '#1d4ed8');
-        addVerticalSpace(4);
+    // const scorecardResult = meeting.detailedSummary?.scorecard;
+    // if (scorecardResult && scorecardResult.scorecards?.length > 0) {
+    //     addText('Meeting Score', 14, true, '#000000');
+    //     addVerticalSpace(2);
+    //     addText(`Overall: ${Math.round(scorecardResult.overallWeightedScore)}/100`, 12, true, '#1d4ed8');
+    //     addVerticalSpace(4);
 
-        scorecardResult.scorecards.forEach((sc) => {
-            addText(`${sc.meetingType.charAt(0).toUpperCase()}${sc.meetingType.slice(1)} — ${Math.round(sc.overallScore)}/100`, 11, true, '#111111');
-            sc.categoryBreakdown.forEach((cat) => {
-                addText(`  ${cat.categoryName}: ${cat.score}/${cat.maxScore} (weight ${cat.weight}%)`, 10, false, '#333333');
-            });
-            if (sc.topStrengths?.length) {
-                addText('  Top strengths:', 10, true, '#333333');
-                sc.topStrengths.forEach((s) => addText(`    • ${s}`, 9, false, '#444444'));
-            }
-            if (sc.coachingRecommendations?.length) {
-                addText('  Coaching recommendations:', 10, true, '#333333');
-                sc.coachingRecommendations.forEach((s) => addText(`    • ${s}`, 9, false, '#444444'));
-            }
-            addVerticalSpace(4);
-        });
-        addVerticalSpace(4);
-    }
+    //     scorecardResult.scorecards.forEach((sc) => {
+    //         addText(`${sc.meetingType.charAt(0).toUpperCase()}${sc.meetingType.slice(1)} — ${Math.round(sc.overallScore)}/100`, 11, true, '#111111');
+    //         sc.categoryBreakdown.forEach((cat) => {
+    //             addText(`  ${cat.categoryName}: ${cat.score}/${cat.maxScore} (weight ${cat.weight}%)`, 10, false, '#333333');
+    //         });
+    //         if (sc.topStrengths?.length) {
+    //             addText('  Top strengths:', 10, true, '#333333');
+    //             sc.topStrengths.forEach((s) => addText(`    • ${s}`, 9, false, '#444444'));
+    //         }
+    //         if (sc.coachingRecommendations?.length) {
+    //             addText('  Coaching recommendations:', 10, true, '#333333');
+    //             sc.coachingRecommendations.forEach((s) => addText(`    • ${s}`, 9, false, '#444444'));
+    //         }
+    //         addVerticalSpace(4);
+    //     });
+    //     addVerticalSpace(4);
+    // }
 
     // --- Summary ---
     if (meeting.summary) {
@@ -232,14 +241,20 @@ export const generateMeetingPDF = (meeting: Meeting) => {
     }
 
     // --- Transcript ---
-    if (meeting.transcript && meeting.transcript.length > 0) {
+    // Labels and times come from lib/transcriptLabels — the same code as the Transcript tab in
+    // Meeting Details — so names (resolved / diarized "· Speaker N") and timestamps match it.
+    const visibleTranscript = (meeting.transcript || []).filter((entry) => !isHiddenSpeaker(entry.speaker));
+    if (visibleTranscript.length > 0) {
+        const speakerLabel = createSpeakerLabeler(meeting.transcript, meeting.detailedSummary?.speakerNames);
+        const relativeTimes = transcriptTimesAreRelative(meeting.transcript);
+
         addText('Transcript', 14, true, '#000000');
         addVerticalSpace(2);
 
-        meeting.transcript.forEach(entry => {
-            const timeStr = new Date(entry.timestamp).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' });
+        visibleTranscript.forEach(entry => {
+            const timeStr = formatTranscriptTime(entry.timestamp, relativeTimes);
             // Speaker line
-            addText(`${entry.speaker} [${timeStr}]`, 10, true, '#444444');
+            addText(`${speakerLabel(entry.speaker, entry.displayName, entry.speakerIndex)} [${timeStr}]`, 10, true, '#444444');
             // Text line
             addText(entry.text, 10, false, '#333333');
             addVerticalSpace(2);

@@ -25,27 +25,11 @@ import { deriveProcessingStage, hasGeneratedSummary, PROCESSING_STALL_TIMEOUT_MS
 import { classifyLLMError } from '@/lib/utils';
 import { splitRepFollowUps } from '@/lib/objections';
 import { posthogAnalytics } from '@/lib/analytics/posthog.service';
+import { createSpeakerLabeler, formatTime, formatTranscriptTimestamp, transcriptTimesAreRelative as computeTranscriptTimesAreRelative } from '@/lib/transcriptLabels';
 
-export const formatTime = (ms: number) => {
-    const date = new Date(ms);
-    return date.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }).toLowerCase();
-};
-
-/**
- * Transcript row timestamp. Live-call segments carry absolute epoch ms (the
- * renderer formats those as wall-clock times); uploaded transcripts carry
- * RELATIVE ms since the call start ("12s", "1:15") — a transcript where any
- * positive timestamp is far below the epoch floor is the latter. Without this
- * split, an uploaded "[00:00:12]" rendered as a wall-clock time near midnight.
- */
-export const formatTranscriptTimestamp = (ms: number, relative: boolean): string => {
-    if (!relative) return formatTime(ms);
-    const totalSec = Math.floor(ms / 1000);
-    if (totalSec < 60) return `${totalSec}s`;
-    const m = Math.floor(totalSec / 60);
-    const s = totalSec % 60;
-    return `${m}:${String(s).padStart(2, '0')}`;
-};
+// Label/time formatting lives in lib/transcriptLabels so the PDF export renders transcripts
+// identically to the Transcript tab. Re-exported here for existing importers (@/hooks).
+export { formatTime, formatTranscriptTimestamp };
 
 export const cleanMarkdown = (content: string) => {
     if (!content) return '';
@@ -604,20 +588,6 @@ export function useMeetingDetails(initialMeeting: Meeting) {
     const speakerNames = (meeting.detailedSummary as any)?.speakerNames as
         { user: string; client: string; clientDiarized?: string } | undefined;
 
-    // Diarization: suffix far-end labels only when 2+ distinct speaker indices
-    // were recorded for this meeting — 1:1 calls render exactly as before.
-    const hasMultipleClientSpeakers = useMemo(() => {
-        const seen = new Set<number>();
-        for (const seg of meeting.transcript || []) {
-            const idx = (seg as any).speakerIndex;
-            if (idx !== undefined && idx !== null && seg.speaker !== 'user') {
-                seen.add(idx);
-                if (seen.size >= 2) return true;
-            }
-        }
-        return false;
-    }, [meeting.transcript]);
-
     // Auto-resize textarea
     useEffect(() => {
         const el = meetingInputRef.current;
@@ -626,99 +596,20 @@ export function useMeetingDetails(initialMeeting: Meeting) {
         el.style.height = `${Math.min(el.scrollHeight, 96)}px`; // max ~4 lines
     }, [query]);
 
-    // Speaking Balance calls getSpeakerDisplayName('user'/'client') with no
-    // per-segment displayName (there's no single segment to derive one from
-    // for an aggregate stat), so without this it fell back straight past
-    // step 1 to speakerNames — which lags/is empty in some meetings even
-    // though individual transcript segments already carry a live-resolved
-    // displayName (e.g. "Nikhilbarot"). That's what produced the mismatch:
-    // transcript bubbles showed the resolved name while Speaking Balance sat
-    // on the generic "You"/"Other Party" fallback. Scanning the transcript
-    // once for the first non-generic displayName per role gives Speaking
-    // Balance the same answer the transcript itself is already showing.
-    const liveDisplayNames = useMemo(() => {
-        let user: string | undefined;
-        let client: string | undefined;
-        for (const seg of meeting.transcript || []) {
-            const raw = (seg as any).displayName as string | undefined;
-            if (!raw || raw === 'Me' || raw === 'Them') continue;
-            // Diarized rows carry a "· Speaker N" suffix; the aggregate stats
-            // need the BASE name only, so strip it before selecting a first
-            // non-generic per-role label. Without this, Speaking Balance would
-            // show "Raksham · Speaker 1" as the whole client-side aggregate.
-            const suffixIdx = raw.indexOf(' · Speaker ');
-            const name = suffixIdx === -1 ? raw : raw.slice(0, suffixIdx);
-            if (seg.speaker === 'user' && !user) user = name;
-            if ((seg.speaker === 'client' || seg.speaker === 'interviewer') && !client) client = name;
-            if (user && client) break;
-        }
-        return { user, client };
-    }, [meeting.transcript]);
+    // Same labelling the PDF export uses (lib/transcriptLabels) — one implementation, so the two
+    // can't drift. Speaking Balance calls it with no per-segment displayName; the labeler falls back
+    // to the live-resolved names found in the transcript.
+    const getSpeakerDisplayName = useMemo(
+        () => createSpeakerLabeler(meeting.transcript as any, speakerNames),
+        [meeting.transcript, speakerNames]
+    );
 
     // See formatTranscriptTimestamp — epoch ms is ~1.7e12, so a transcript
     // whose positive timestamps are all under a few decades is relative.
     const transcriptTimesAreRelative = useMemo(
-        () => (meeting.transcript || []).some(t => t.timestamp > 0 && t.timestamp < 1e11),
+        () => computeTranscriptTimesAreRelative(meeting.transcript),
         [meeting.transcript]
     );
-
-    // "Morgan (Raksham)" style labels embed the company in parentheses — the
-    // diarized base is the company part alone, matching SessionTracker's
-    // clientDiarized rule for 1-attendee-with-company meetings.
-    const companyFromLabel = (label?: string): string | undefined => {
-        if (!label) return undefined;
-        const m = label.match(/\(([^)]+)\)\s*$/);
-        return m?.[1]?.trim() || undefined;
-    };
-
-    const getSpeakerDisplayName = (speaker: string, displayName?: string, speakerIndex?: number): string => {
-        // Normalize legacy "Me"/"Them" stamps so old meetings render the same
-        // "You" / "Other Party" wording as new ones.
-        if (displayName === 'Me') displayName = undefined;
-        if (displayName === 'Them') displayName = undefined;
-        // Diarization first for far-end turns: when 2+ distinct client voices
-        // were recorded, the per-segment displayName is only meaningful if it
-        // already carries the "· Speaker N" suffix. Rows saved before that
-        // stamping existed (or via a source that flattened every client turn
-        // onto the plain name) must still re-derive the label — otherwise the
-        // plain stamp shadows the suffix and the tab loses the attribution the
-        // live call showed. Manual rename sets clientDiarized to the typed
-        // value, so the explicit override still wins here.
-        if (
-            (speaker === 'client' || speaker === 'interviewer') &&
-            hasMultipleClientSpeakers &&
-            speakerIndex !== undefined &&
-            speakerIndex !== null &&
-            !displayName?.includes(' · Speaker ')
-        ) {
-            const diarizedBase =
-                speakerNames?.clientDiarized ||
-                companyFromLabel(displayName) ||
-                'Other Party';
-            return `${diarizedBase} · Speaker ${speakerIndex + 1}`;
-        }
-        // 1. An explicit per-segment displayName (passed by the transcript
-        //    view) wins — it's the ground truth for that exact turn.
-        if (displayName) return displayName;
-        // 2. No segment displayName was passed in (e.g. Speaking Balance,
-        //    which shows one name per role rather than per turn) — fall back
-        //    to whatever live-resolved name the transcript itself used (base,
-        //    suffix stripped — see liveDisplayNames above), so this never
-        //    disagrees with what's rendered just below it.
-        if (speaker === 'user' && liveDisplayNames.user) return liveDisplayNames.user;
-        if ((speaker === 'client' || speaker === 'interviewer') && liveDisplayNames.client) {
-            return liveDisplayNames.client;
-        }
-        // 3. Use resolved calendar names saved in detailedSummary.speakerNames.
-        //    These are set by SessionTracker (e.g. "Nikhilbarot", "Salesforce").
-        //    Fall back to "You" / "Other Party" only when no calendar data was resolved.
-        if (speaker === 'user') return speakerNames?.user || 'You';
-        if (speaker === 'client' || speaker === "interviewer") {
-            return speakerNames?.client || 'Other Party';
-        }
-        if (speaker === 'assistant') return 'Assistant';
-        return speaker;
-    };
 
     useEffect(() => {
         if (!isProcessing) return;

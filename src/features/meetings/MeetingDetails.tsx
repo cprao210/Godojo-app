@@ -696,7 +696,7 @@ const MeetingDetails: React.FC<MeetingDetailsProps> = ({ meeting: initialMeeting
                                         </section>}
 
                                         {/* ── Detail Analysis accordion ── */}
-                                        {scorecard && meeting.detailedSummary && !isSummaryEmpty(meeting.detailedSummary) && (
+                                        {/* {scorecard && meeting.detailedSummary && !isSummaryEmpty(meeting.detailedSummary) && (
                                             <div className='mb-7'>
 
                                                 <DetailAnalysisAccordion
@@ -704,7 +704,7 @@ const MeetingDetails: React.FC<MeetingDetailsProps> = ({ meeting: initialMeeting
                                                     isLight={isLight}
                                                 />
                                             </div>
-                                        )}
+                                        )} */}
 
                                         {meeting.detailedSummary && !isSummaryEmpty(meeting.detailedSummary) && meeting.detailedSummary?.salesCoachReview !== undefined ?
                                             <>
