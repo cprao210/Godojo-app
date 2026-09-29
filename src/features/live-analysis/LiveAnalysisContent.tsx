@@ -526,15 +526,17 @@ export const LiveAnalysisContent: React.FC<LiveAnalysisContentProps> = React.mem
                     <div className="flex items-center justify-between gap-1.5 mt-1">
                         <div className="flex items-center gap-1.5 min-w-0">
                             <span className={`text-[9px] font-bold uppercase tracking-wider px-1.5 py-0.5 rounded border ${tagClass}`}>
+                                {/* "Objection", not "Open question": the panel lists pushback only,
+                                    and calling it a question made it read like a Q&A log. */}
                                 {obj.type === 'ae_deferral'
-                                    ? 'Follow up'
+                                    ? 'Follow-up'
                                     : obj.handled === 'resolved'
                                         ? 'Resolved'
                                         : obj.handled === 'partially'
                                             ? 'Partly answered'
                                             : obj.handled === 'unresolved'
                                                 ? 'Unresolved'
-                                                : 'Open question'}
+                                                : 'Objection'}
                             </span>
                             {obj.topic && !obj.category_label && (
                                 <span className={`text-[9px] truncate ${ownerClass}`}>{obj.topic}</span>
@@ -940,7 +942,11 @@ export const LiveAnalysisContent: React.FC<LiveAnalysisContentProps> = React.mem
                     if (analysisData.objections.length === 0) {
                         return (
                             <div className="flex flex-col items-center justify-center h-full py-16 gap-2">
-                                <p className="text-[12px] text-white/30">Listening for objections…</p>
+                                <p className="text-[12px] text-white/30">
+                                    {analysisData.objectionDetectionOff === 'internal'
+                                        ? 'Objection detection is off for internal meetings.'
+                                        : 'Listening for objections…'}
+                                </p>
                             </div>
                         );
                     }
@@ -1122,7 +1128,7 @@ export const LiveAnalysisContent: React.FC<LiveAnalysisContentProps> = React.mem
             )}
 
             {/* ── Objections ────────────────────────────────────────────────── */}
-            {analysisData.objections.length > 0 && hideBar !== 'Objections' && (
+            {(analysisData.objections.length > 0 || analysisData.objectionDetectionOff === 'internal') && hideBar !== 'Objections' && (
                 <>
                     <SectionToggle
                         icon={<CheckSquare size={13} />}
@@ -1133,6 +1139,11 @@ export const LiveAnalysisContent: React.FC<LiveAnalysisContentProps> = React.mem
                         isLight={isLight}
                     >
                         <div className="space-y-2 mt-1">
+                            {analysisData.objectionDetectionOff === 'internal' && analysisData.objections.length === 0 && (
+                                <p className={`px-1 py-1 text-[11px] ${calledFromAnalysisTab && isLight ? 'text-slate-500' : 'text-white/30'}`}>
+                                    Objection detection is off for internal meetings.
+                                </p>
+                            )}
                             <AnimatePresence initial={false}>
                                 {activeObjections.map(renderObjectionCard)}
                             </AnimatePresence>

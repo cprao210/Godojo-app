@@ -146,6 +146,42 @@ export function deriveCompanyCandidates(
     return { candidates, internalDomains: [...internal] };
 }
 
+/**
+ * True when the calendar invite shows an internal meeting: every attendee other than the user
+ * is on the user's own company domain. Objection detection is off for those — in a team review
+ * of our own product every colleague on system audio is labelled PROSPECT, and one such call
+ * ended with 80 "objections".
+ *
+ * Conservative on purpose — false whenever it can't tell: no event, no known user domain, a
+ * consumer domain (gmail.com says nothing about who is a colleague), or no other attendee with
+ * an email (an ad-hoc call whose prospect never got the invite).
+ */
+export function isInternalMeeting(
+    event: EventLike | null | undefined,
+    opts: { userEmail?: string | null } = {},
+): boolean {
+    const attendees = event?.attendees ?? [];
+    const userEmail = (opts.userEmail ?? "").trim().toLowerCase();
+    const anchor = emailDomain(userEmail) ?? emailDomain(attendees.find((a) => a.self)?.email);
+    if (!anchor) return false;
+    const ours = registrableDomain(anchor);
+    if (isGenericOrSystemDomain(anchor, ours)) return false;
+
+    let others = 0;
+    for (const a of attendees) {
+        const email = (a.email ?? "").trim().toLowerCase();
+        if (a.self || (userEmail && email === userEmail)) continue;
+        const domain = emailDomain(email);
+        if (!domain) continue;
+        const root = registrableDomain(domain);
+        // Meeting rooms and subscribed calendars are not people.
+        if (domain === CALENDAR_SYSTEM_DOMAIN_SUFFIX || domain.endsWith(`.${CALENDAR_SYSTEM_DOMAIN_SUFFIX}`)) continue;
+        if (root !== ours) return false;
+        others++;
+    }
+    return others > 0;
+}
+
 export interface ActiveCompany {
     /** More than one external company and none chosen yet: the caller must
      * ask the user and must NOT start generating anything. */
