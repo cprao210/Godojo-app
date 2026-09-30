@@ -447,7 +447,7 @@ jobs:
           # Baked into the packaged app's app-update.yml: this build only ever looks for updates in
           # ITS OWN channel + OS folder on R2 (a test build never sees production, and vice versa).
           UPDATE_FEED_URL: ${{ secrets.R2_PUBLIC_BASE_URL }}/${{ needs.resolve-platform.outputs.channel }}/windows
-        run: npx electron-builder --win --publish never -c.publish.url="$UPDATE_FEED_URL"
+        run: npx electron-builder --win --publish never "-c.publish.url=$env:UPDATE_FEED_URL"
 
       - name: Upload Windows artifacts
         uses: actions/upload-artifact@v4
