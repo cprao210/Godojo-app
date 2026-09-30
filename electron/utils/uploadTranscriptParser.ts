@@ -17,6 +17,17 @@
 //      hello...                            starting on the following line(s)
 // Timestamps accept H:MM:SS or MM:SS in any of the bracket/paren shapes above.
 //
+// How a line is recognised (one rule, whatever the shape above):
+//   [optional "[TS]"] LABEL [optional "[TS]" or "(TS)"] ":" [message]
+// i.e. the label is EVERYTHING before the first colon that is followed by whitespace or the end
+// of the line (so the colons inside "00:26" and "https://x" never end a label), minus any
+// timestamp. The label may be any length and hold any characters — "Rahul Shah BUL BUL BRAND
+// QUALITY COLORS & ADDITIVES (00:03): Hello." is the speaker "Rahul Shah BUL BUL BRAND QUALITY
+// COLORS & ADDITIVES". Nothing after the colon = the message starts on the next line(s).
+// A timestamp next to the colon is proof of a label; without one, a label must ALSO look like a
+// name or a role (see isAcceptableLabel), so an ordinary sentence that happens to contain
+// "word: word" inside a multi-line message stays part of that message.
+//
 // Contract with MeetingPersistence.uploadTranscript:
 //   • `speaker` is the internal role: exactly ONE label is the sales person /
 //     microphone user ('user'), every other speaker is client-side ('client').
@@ -79,26 +90,26 @@ const KNOWN_ROLE_LABELS = new Set([
     'CLIENT', 'CUSTOMER', 'BUYER', 'PROSPECT', 'THEM', 'LEAD', 'CPO', 'INTERVIEWER',
 ]);
 
-// Formats 2, 5, 8 — "[00:00:12] LABEL: text" / "[00:12] LABEL: text", where
-// LABEL may itself be bracketed ("[Alex]") and text may be empty (format 8,
-// with the message continuing on the next line(s)). H:MM:SS or MM:SS.
-const BRACKET_LINE = /^\[\s*(\d{1,2}(?::\d{1,2}){1,2})\s*\]\s*([^:\n]{1,60}):\s*(.*)$/;
+const TS = String.raw`\d{1,2}(?::\d{1,2}){1,2}`;
 
-// Formats 3, 6 — "LABEL [00:00:12]: text" / "[LABEL] [00:00:12]: text" —
-// the timestamp bracket comes after the label instead of before it.
-const LABEL_THEN_BRACKET_TS = /^(\[[^\]\n]{1,60}\]|[A-Za-z][A-Za-z0-9 .'\u2019\-]{0,59}?)\s*\[\s*(\d{1,2}(?::\d{1,2}){1,2})\s*\]\s*:\s*(.*)$/;
+// One pattern for every shape (formats 1-8). Groups:
+//   1  leading "[TS]" / "(TS)"                     (formats 2, 5, 8)
+//   2  the label — lazily, up to the first colon that ends it
+//   3  trailing "[TS]" / "(TS)" right after label  (formats 3, 6, 7)
+//   4  the message (absent/empty → it starts on the next line: formats 4, 8)
+// The colon must be followed by whitespace or the end of the line, which is what keeps the colons
+// in "00:26" and "https://acme.com" from ever being taken as the end of a label.
+const LABEL_LINE = new RegExp(
+    String.raw`^(?:[\[(]\s*(${TS})\s*[\])]\s*)?([^\s:].*?)(?:\s*[\[(]\s*(${TS})\s*[\])])?\s*:(?:\s+(.*))?$`,
+    'u',
+);
 
-// Format 7 — "LABEL (00:26): text" — parenthesised timestamp after the label.
-const LABEL_THEN_PAREN_TS = /^([A-Za-z][A-Za-z0-9 .'\u2019\-]{0,59}?)\s*\(\s*(\d{1,2}(?::\d{1,2}){1,2})\s*\)\s*:\s*(.*)$/;
+// Longest label we will accept. Generous on purpose (long company names are common) — it only
+// stops a whole run-on paragraph with a stray colon from being read as a name.
+const MAX_LABEL_CHARS = 200;
 
-// Format 1 — "LABEL: text" — label starts with a letter; a colon must be
-// followed by whitespace so URLs ("https://x") and inline colons never look
-// like labels.
-const PLAIN_LINE = /^([A-Za-z][A-Za-z0-9 .'\u2019\-()]{0,59}?):\s+(.+)$/;
-
-// Format 4 — "LABEL:" alone on its line, nothing (or only whitespace) after
-// the colon — the message text starts on the following line(s).
-const LABEL_ONLY_LINE = /^([A-Za-z][A-Za-z0-9 .'\u2019\-()]{0,59}?):\s*$/;
+// Lowercase joiners that may sit inside a name without breaking it ("Bank of America").
+const NAME_JOINERS = new Set(['of', 'and', 'the', 'for', 'de', 'del', 'la', 'le', 'da', 'do', 'dos', 'van', 'von', 'der', 'bin', 'bint', 'al', 'el', 'y', 'e']);
 
 const normalizeLabel = (raw: string): string => raw.trim().replace(/\s+/g, ' ');
 
@@ -167,6 +178,41 @@ function isLikelySpeakerLabel(raw: string): boolean {
 
 const labelKey = (label: string): string => normalizeLabel(label).toUpperCase();
 
+/**
+ * A label of any length that reads like a NAME rather than a sentence: every word starts with a
+ * capital letter, a digit, a symbol ("&", "(") or a script without case (Devanagari, CJK), or is a
+ * joiner such as "of"/"and". So "Rahul Shah BUL BUL BRAND QUALITY COLORS & ADDITIVES" passes, but
+ * "and then the next few words that look like a sentence" does not. No word-count limit.
+ */
+function looksLikeName(label: string): boolean {
+    if (/[?!;]/.test(label)) return false;
+    return label.split(' ').every(w => !/^\p{Ll}/u.test(w) || NAME_JOINERS.has(w));
+}
+
+interface LabelMatch {
+    label: string;
+    /** ms; 0 when the timestamp is absent or unparseable. */
+    timestamp: number;
+    /** A timestamp sat next to the colon — proof this line starts a turn. */
+    hasTimestamp: boolean;
+    text: string;
+}
+
+/** Splits one trimmed line into label / timestamp / text, or null when it has no "label:" shape. */
+function matchLabelLine(line: string): LabelMatch | null {
+    const m = line.match(LABEL_LINE);
+    if (!m) return null;
+    const label = normalizeLabel(stripLabelWrapping(m[2]));
+    if (!label || label.length > MAX_LABEL_CHARS) return null;
+    const tsRaw = m[1] ?? m[3];
+    return {
+        label,
+        timestamp: tsRaw ? (parseTimestamp(tsRaw.trim()) ?? 0) : 0,
+        hasTimestamp: tsRaw !== undefined,
+        text: (m[4] ?? '').trim(),
+    };
+}
+
 /** Lowercase name tokens: "Sourish Kundu" / "sourish.kundu@x.com" → ['sourish', 'kundu']. */
 function nameTokens(raw: string): string[] {
     const local = raw.includes('@') ? raw.slice(0, raw.indexOf('@')) : raw;
@@ -222,66 +268,34 @@ export function parseUploadTranscript(rawText: string, opts: ParseUploadOptions 
         segments.push(seg);
     };
 
-    for (const rawLine of (rawText || '').split(/\r?\n/)) {
-        const line = rawLine.trim();
-        if (!line) continue;
+    const lines = (rawText || '').split(/\r?\n/).map(l => l.trim()).filter(Boolean);
+    const matches = lines.map(matchLabelLine);
 
-        // Formats 2, 5, 8 — "[TS] LABEL: text" (label may be bracketed;
-        // text may be empty when the message continues on later lines).
-        const bracketFirst = line.match(BRACKET_LINE);
-        if (bracketFirst) {
-            const ts = parseTimestamp(bracketFirst[1].trim()) ?? 0;
-            if (ts > 0) timestampsSeen.push(ts);
-            const label = normalizeLabel(stripLabelWrapping(bracketFirst[2]));
-            const text = bracketFirst[3].trim();
-            if (!label) {
-                // Bracket + text but no recognisable label — keep the timestamp
-                // (it still anchors this line) but leave the speaker unlabelled.
-                push('client', text, ts);
-            } else {
-                push(roleForLabel(label), text, ts, label);
-            }
-            continue;
+    // A label with no timestamp beside it is only trusted when it looks like a name or role — or
+    // when the same label opens several turns, which no sentence fragment does ("john: hi" in a
+    // lowercase Slack paste). Counted up front so the first occurrence is judged the same as the rest.
+    const timestampFreeCounts = new Map<string, number>();
+    for (const m of matches) {
+        if (m && !m.hasTimestamp) {
+            const key = labelKey(m.label);
+            timestampFreeCounts.set(key, (timestampFreeCounts.get(key) ?? 0) + 1);
         }
+    }
+    const isAcceptableLabel = (m: LabelMatch): boolean => {
+        if (m.hasTimestamp) return !/[?!]/.test(m.label);
+        return (
+            isLikelySpeakerLabel(m.label) ||
+            looksLikeName(m.label) ||
+            ((timestampFreeCounts.get(labelKey(m.label)) ?? 0) >= 2 && m.label.split(' ').length <= 8 && !/[?!]/.test(m.label))
+        );
+    };
 
-        // Formats 3, 6 — "LABEL [TS]: text" / "[LABEL] [TS]: text".
-        const labelBracketTs = line.match(LABEL_THEN_BRACKET_TS);
-        if (labelBracketTs) {
-            const label = normalizeLabel(stripLabelWrapping(labelBracketTs[1]));
-            if (isLikelySpeakerLabel(label)) {
-                const ts = parseTimestamp(labelBracketTs[2].trim()) ?? 0;
-                if (ts > 0) timestampsSeen.push(ts);
-                push(roleForLabel(label), labelBracketTs[3].trim(), ts, label);
-                continue;
-            }
-        }
-
-        // Format 7 — "LABEL (TS): text".
-        const labelParenTs = line.match(LABEL_THEN_PAREN_TS);
-        if (labelParenTs) {
-            const label = normalizeLabel(labelParenTs[1]);
-            if (isLikelySpeakerLabel(label)) {
-                const ts = parseTimestamp(labelParenTs[2].trim()) ?? 0;
-                if (ts > 0) timestampsSeen.push(ts);
-                push(roleForLabel(label), labelParenTs[3].trim(), ts, label);
-                continue;
-            }
-        }
-
-        // Format 1 — "LABEL: text" on a single line.
-        const plain = line.match(PLAIN_LINE);
-        if (plain && isLikelySpeakerLabel(plain[1])) {
-            const label = normalizeLabel(plain[1]);
-            push(roleForLabel(label), plain[2].trim(), 0, label);
-            continue;
-        }
-
-        // Format 4 — "LABEL:" alone; the message starts on the next line(s).
-        const labelOnly = line.match(LABEL_ONLY_LINE);
-        if (labelOnly && isLikelySpeakerLabel(labelOnly[1])) {
-            const label = normalizeLabel(labelOnly[1]);
-            push(roleForLabel(label), '', 0, label);
-            continue;
+    lines.forEach((line, i) => {
+        const m = matches[i];
+        if (m && isAcceptableLabel(m)) {
+            if (m.timestamp > 0) timestampsSeen.push(m.timestamp);
+            push(roleForLabel(m.label), m.text, m.timestamp, m.label);
+            return;
         }
 
         // Continuation of the previous speaker's message (multi-line turns,
@@ -294,7 +308,7 @@ export function parseUploadTranscript(rawText: string, opts: ParseUploadOptions 
             // so the renderer's "Other Party" fallback is the honest result.
             push('client', line, 0);
         }
-    }
+    });
 
     let durationMs: number | null = null;
     if (timestampsSeen.length > 0) {
