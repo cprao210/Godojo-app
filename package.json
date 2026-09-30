@@ -168,14 +168,11 @@
       "deleteAppDataOnUninstall": true,
       "artifactName": "GoDojo.AI-Setup-${version}.${ext}"
     },
-    "publish": [
-      {
-        "provider": "github",
-        "owner": "cprao210",
-        "repo": "Godojo-app",
-        "releaseType": "release"
-      }
-    ]
+    "publish": {
+      "provider": "generic",
+      "url": "https://updates.invalid/set-by-ci/production",
+      "channel": "latest"
+    }
   },
   "keywords": [],
   "author": "GoDojo AI",

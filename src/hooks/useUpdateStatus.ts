@@ -1,13 +1,14 @@
 import { useEffect, useRef, useState, useCallback } from 'react';
 import { ParsedReleaseNotes } from '@/types';
 import { macDmgDownloadUrl } from '@/../utils/updateFeed';
+import { API_BASE } from '@/lib/apiClient';
 
 export type UpdateStatus = 'idle' | 'checking' | 'downloading' | 'ready' | 'error' | 'instructions';
 
 export interface UpdateInfo {
     version: string;
     parsedNotes?: ParsedReleaseNotes | null;
-    /** Byte size of this platform's update artifact, from the GitHub release
+    /** Byte size of this platform's update artifact, from the update feed (latest*.yml)
      *  assets (NSIS exe / DMG / AppImage). The FULL package size — on Windows
      *  the differential (blockmap) download usually transfers much less, and
      *  once downloading, `downloadTotalBytes` carries the ACTUAL bytes. */
@@ -232,7 +233,7 @@ export function useUpdateStatus(): UseUpdateStatusResult {
                     if (!version) throw new Error('No update version known');
                     setInstructionsArch(dmgSuffix);
                     localStorage.setItem(PENDING_MANUAL_UPDATE_KEY, version.replace(/^v/, ''));
-                    window.electronAPI.openExternal(macDmgDownloadUrl(version, dmgSuffix));
+                    window.electronAPI.openExternal(macDmgDownloadUrl(API_BASE, dmgSuffix));
                     setStatus('instructions');
                 })
                 .catch((err) => {
