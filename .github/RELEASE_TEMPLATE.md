@@ -24,6 +24,16 @@ Short one-line description of the release.
 - Dependency updates
 - Refactored updater logic
 
+## ⬇️ Downloads
+
+Installers are no longer attached to this GitHub release — download them here (these links always serve the current production version):
+
+- **Windows:** https://sales-ai-backend-227692500877.us-central1.run.app/download/windows
+- **macOS (Apple Silicon):** https://sales-ai-backend-227692500877.us-central1.run.app/download/macos?arch=arm64
+- **macOS (Intel):** https://sales-ai-backend-227692500877.us-central1.run.app/download/macos?arch=x64
+
+Installed copies of GoDojo AI update themselves from the same infrastructure.
+
 ## 🍎 macOS Installation (Unsigned Build)
 
 This build is not notarized or signed with an Apple Developer certificate, so macOS Gatekeeper will report **"GoDojo AI.app is damaged and can't be opened"** the first time you try to launch it. The app is **not** actually damaged — this is Gatekeeper's default response to any unsigned, unnotarized app, and clearing the quarantine flag below resolves it.

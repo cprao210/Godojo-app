@@ -16,13 +16,14 @@ if (isMainThread) {
     // Worker has no Electron context, so load the .node binary directly by path
     const { platform, arch } = process;
     const map = {
-      win32:  { x64: 'index.win32-x64-msvc.node' },
+      win32: { x64: 'index.win32-x64-msvc.node' },
       darwin: { x64: 'index.darwin-x64.node', arm64: 'index.darwin-arm64.node' },
-      linux:  { x64: 'index.linux-x64-gnu.node', arm64: 'index.linux-arm64-gnu.node' },
+      linux: { x64: 'index.linux-x64-gnu.node', arm64: 'index.linux-arm64-gnu.node' },
     };
     const binary = map[platform]?.[arch] ?? `index.${platform}-${arch}.node`;
-    const NativeModule = require(path.join(__dirname, 'native-module', binary));
-    // Verify the module actually exports the expected surface
+
+    // Verify the module actually exports the expected
+    const NativeModule = require(path.join(__dirname, '..', 'native-module', binary));
     if (typeof NativeModule.SystemAudioCapture !== 'function') {
       throw new Error('SystemAudioCapture export missing from native binding');
     }

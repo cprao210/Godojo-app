@@ -168,14 +168,11 @@
       "deleteAppDataOnUninstall": true,
       "artifactName": "GoDojo.AI-Setup-${version}.${ext}"
     },
-    "publish": [
-      {
-        "provider": "github",
-        "owner": "cprao210",
-        "repo": "Godojo-app",
-        "releaseType": "release"
-      }
-    ]
+    "publish": {
+      "provider": "generic",
+      "url": "https://updates.invalid/set-by-ci/production",
+      "channel": "latest"
+    }
   },
   "keywords": [],
   "author": "GoDojo AI",
@@ -193,7 +190,6 @@
     "@types/react": "^18.3.12",
     "@types/react-dom": "^18.3.1",
     "@types/react-syntax-highlighter": "^15.5.13",
-    "@types/screenshot-desktop": "^1.12.3",
     "@types/uuid": "^9.0.8",
     "@types/ws": "^8.18.1",
     "@typescript-eslint/eslint-plugin": "^8.14.0",
@@ -220,18 +216,12 @@
     "@anthropic-ai/sdk": "^0.74.0",
     "@bany/curl-to-json": "^1.2.10",
     "@deepgram/sdk": "^5.3.0",
-    "@elevenlabs/client": "^0.15.1",
-    "@elevenlabs/elevenlabs-js": "^2.39.0",
     "@google-cloud/speech": "^7.2.1",
     "@google/genai": "^1.44.0",
     "@grpc/grpc-js": "^1.14.3",
     "@grpc/proto-loader": "^0.8.0",
-    "@radix-ui/react-dialog": "^1.1.2",
     "@radix-ui/react-toast": "^1.2.2",
     "@supabase/supabase-js": "^2.45.4",
-    "@tavily/core": "^0.7.2",
-    "@types/keytar": "^4.4.0",
-    "@types/three": "^0.182.0",
     "@xenova/transformers": "^2.17.2",
     "axios": "^1.7.7",
     "better-sqlite3": "12.6.2",
@@ -248,15 +238,14 @@
     "jspdf": "^4.0.0",
     "jszip": "^3.10.1",
     "katex": "^0.16.27",
-    "keytar": "^7.9.0",
     "lucide-react": "^0.460.0",
     "mammoth": "^1.12.0",
     "openai": "^6.22.0",
     "pdf-parse": "^2.4.5",
+    "pdfjs-dist": "^4.10.38",
     "posthog-js": "^1.415.2",
     "posthog-node": "^5.48.1",
     "react": "^18.3.1",
-    "react-code-blocks": "^0.1.6",
     "react-dom": "^18.3.1",
     "react-icons": "^5.3.0",
     "react-markdown": "^10.1.0",
@@ -265,14 +254,10 @@
     "rehype-katex": "^7.0.1",
     "remark-gfm": "^4.0.1",
     "remark-math": "^6.0.0",
-    "screenshot-desktop": "^1.15.0",
     "sharp": "^0.33.5",
     "sqlite-vec": "^0.1.7-alpha.2",
-    "sqlite3": "^5.1.7",
     "tailwind-merge": "^2.5.4",
-    "tap": "^21.5.0",
     "tesseract.js": "^5.0.5",
-    "three": "^0.182.0",
     "tree-kill": "^1.2.2",
     "uuid": "^11.0.3",
     "ws": "^8.20.1"

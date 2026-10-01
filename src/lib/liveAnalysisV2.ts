@@ -17,7 +17,7 @@ import type {
     Objection,
     Signal,
 } from '@/types';
-import { stableId } from '@/lib/objections';
+import { MAX_SAVED_OBJECTIONS, quotesOverlap, stableId } from '@/lib/objections';
 
 // ── wire types ───────────────────────────────────────────────────────────────
 
@@ -108,6 +108,8 @@ export interface V2EndRequest {
     meeting_types: string[];
     turns: V2Turn[];
     persist?: boolean;
+    /** What the live panel showed, for the pass to grade (the live signals ride in `state`). */
+    live_objections?: Array<{ quote: string; type: Objection['type'] }>;
 }
 
 export interface V2EndObjection extends Omit<Objection, 'id' | 'resolved'> {
@@ -346,7 +348,8 @@ export function formatCallTime(ms?: number): string {
 
 /**
  * Project a /v2/end response onto `LiveAnalysisData`. BANT/MEDDIC come from the final signed
- * state; signals are the CONSOLIDATED final list (not the live stream's running list); objections
+ * state; signals are the CONSOLIDATED final list (a live call then puts the live list back in
+ * front of it — `keepLiveAddMissed`); objections
  * are the final pass's, with a stable id and `resolved` set for the ones the rep closed on the
  * call — the existing objection cards collapse those into the Resolved group.
  */
@@ -367,6 +370,85 @@ export function endResponseToAnalysis(
             ? finalSignals.map(({ turn_id: _t, t_start_ms: _s, id: _i, ...sig }) => sig)
             : base.signals,
         source: res.analysis?.source || 'v2_end',
+    };
+}
+
+// ── live list + what the end-of-call pass adds ─────────────────────────────
+
+/** Signals the saved meeting holds when the live list is shorter (the end pass's own cap). */
+export const MAX_SAVED_SIGNALS = 8;
+/** Backend cap: EndRequest.live_objections max_length. */
+export const MAX_LIVE_OBJECTIONS_SENT = 30;
+
+/** The live objections as the end-of-call request carries them. */
+export function liveObjectionsForEnd(live: Objection[]): NonNullable<V2EndRequest['live_objections']> {
+    return live
+        .filter(o => o.quote?.trim())
+        .slice(0, MAX_LIVE_OBJECTIONS_SENT)
+        .map(o => ({ quote: o.quote, type: o.type }));
+}
+
+/** Every live item, in live order, graded by its end-pass match; then end-pass items that match
+ *  nothing, while the list is under `max` (never cutting a live item). */
+function mergeByQuote<T extends { quote: string }>(
+    live: T[],
+    final: T[],
+    max: number,
+    grade: (liveItem: T, graded: T) => T,
+): T[] {
+    const taken = new Set<number>();
+    const out = live.map(item => {
+        const i = final.findIndex((f, idx) => !taken.has(idx) && quotesOverlap(item.quote, f.quote));
+        if (i < 0) return item;
+        taken.add(i);
+        return grade(item, final[i]);
+    });
+    const cap = Math.max(max, live.length);
+    final.forEach((f, idx) => {
+        if (taken.has(idx) || out.length >= cap) return;
+        if (out.some(o => quotesOverlap(o.quote, f.quote))) return;
+        out.push(f);
+    });
+    return out;
+}
+
+const gradeObjection = (liveObj: Objection, graded: Objection): Objection => {
+    const resolved = liveObj.resolved === true || graded.handled === 'resolved';
+    // A grade that contradicts the panel ("unresolved" on one the rep saw close) is left off
+    // rather than shown next to it.
+    const handled = liveObj.resolved === true && graded.handled === 'unresolved' ? undefined : graded.handled;
+    return {
+        ...liveObj,
+        ...(handled ? { handled } : {}),
+        ...(graded.rep_response ? { rep_response: graded.rep_response } : {}),
+        ...(!liveObj.topic && graded.topic ? { topic: graded.topic } : {}),
+        ...(!liveObj.category && graded.category
+            ? { category: graded.category, category_label: graded.category_label }
+            : {}),
+        suggested_answer: liveObj.suggested_answer || graded.suggested_answer,
+        ...(resolved ? { resolved: true } : {}),
+    };
+};
+
+const gradeSignal = (liveSignal: Signal, graded: Signal): Signal =>
+    liveSignal.ask_now?.trim() ? liveSignal : { ...liveSignal, ask_now: graded.ask_now };
+
+/**
+ * The saved meeting's objections and buying signals: EVERY item the rep saw on the live panel,
+ * graded by the end-of-call pass (how each objection was handled, the rep's reply), followed by
+ * what that pass found beyond them. The pass used to re-pick both lists from scratch, so the
+ * meeting page disagreed with the panel the rep had just watched.
+ *
+ * Uploaded calls have no live lists, and get the end pass's lists unchanged.
+ */
+export function keepLiveAddMissed(
+    final: LiveAnalysisData,
+    live: { objections: Objection[]; signals: Signal[] },
+): LiveAnalysisData {
+    return {
+        ...final,
+        objections: mergeByQuote(live.objections, final.objections, MAX_SAVED_OBJECTIONS, gradeObjection),
+        signals: mergeByQuote(live.signals, final.signals, MAX_SAVED_SIGNALS, gradeSignal),
     };
 }
 

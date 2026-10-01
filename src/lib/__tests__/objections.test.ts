@@ -11,6 +11,10 @@ import {
     openQuotes,
     shouldTick,
     objectionsOnlyAnalysis,
+    isNearDuplicate,
+    quotesOverlap,
+    MAX_ACTIVE_OBJECTIONS,
+    MAX_NEW_PER_TICK,
     MAX_OPEN_OBJECTIONS,
     OBJECTION_SETTLE_MS,
     OBJECTION_MIN_GAP_MS,
@@ -219,4 +223,67 @@ describe('splitRepFollowUps', () => {
     expect(followUps.map(o => o.quote)).toEqual([items[1].quote, items[3].quote]);
     expect(isRepFollowUp(items[0])).toBe(false);
   });
+});
+
+// One call ended with 80 "objections" on the panel — several of them one line said again with
+// different filler, which exact-id dedupe let through every time.
+describe('precision caps', () => {
+    it('drops a same-words repeat of anything already tracked, open or resolved', () => {
+        const current = [
+            { ...objection('how many modules do we have?'), id: stableId('how many modules do we have?') },
+            { ...objection('that is well above our budget'), id: 'r', resolved: true },
+        ];
+        const merged = mergeObjectionDelta(current, {
+            new: [objection('so how many modules do we have'), objection('honestly that is well above our budget')],
+            resolved: [],
+        });
+        expect(merged).toBe(current);
+    });
+
+    it('treats a Hindi quote by its words, not just its English loanwords', () => {
+        expect(isNearDuplicate('अगर उनके पास app नहीं होगा', 'app')).toBe(false);
+        expect(isNearDuplicate('अगर उनके पास app नहीं होगा', 'तो अगर उनके पास app नहीं होगा')).toBe(true);
+    });
+
+    it(`accepts at most ${MAX_NEW_PER_TICK} prospect objections per tick, follow-ups aside`, () => {
+        const merged = mergeObjectionDelta([], {
+            new: [
+                objection('price is too high'),
+                objection('we already use a competitor'),
+                objection('I need my CFO to sign off'),
+                objection('I will send the SOC 2 report', { type: 'ae_deferral', owner: 'ae' }),
+            ],
+            resolved: [],
+        });
+        expect(merged.map(o => o.quote)).toEqual([
+            'price is too high', 'we already use a competitor', 'I will send the SOC 2 report',
+        ]);
+    });
+
+    it(`keeps the newest ${MAX_ACTIVE_OBJECTIONS} open items and every resolved one`, () => {
+        const current = Array.from({ length: MAX_ACTIVE_OBJECTIONS }, (_, i) => ({
+            ...objection(`distinct concern number ${i} about topic ${i}`), id: `o${i}`,
+        }));
+        current.push({ ...objection('an old resolved concern'), id: 'res', resolved: true });
+        const merged = mergeObjectionDelta(current, { new: [objection('a brand new pricing worry')], resolved: [] });
+        const open = merged.filter(o => !o.resolved);
+        expect(open).toHaveLength(MAX_ACTIVE_OBJECTIONS);
+        expect(open[0].quote).toBe('a brand new pricing worry');
+        expect(open.some(o => o.id === `o${MAX_ACTIVE_OBJECTIONS - 1}`)).toBe(false); // the oldest went
+        expect(merged.some(o => o.id === 'res')).toBe(true);
+    });
+});
+
+describe('quotesOverlap', () => {
+    it('matches the same moment quoted with more of the turn around it', () => {
+        expect(quotesOverlap(
+            'Can you do better on the price?',
+            'PatrolKart quoted us forty rupees per guard. Can you do better on the price?',
+        )).toBe(true);
+    });
+
+    it('does not match different concerns that share a few words', () => {
+        expect(quotesOverlap('the price is too high for us', 'we already use a competitor for us')).toBe(false);
+        expect(quotesOverlap('', 'anything')).toBe(false);
+    });
 });

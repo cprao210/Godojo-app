@@ -41,6 +41,28 @@ type QualStatus = 'confirmed' | 'partial' | 'missing';
 const BANT_KEYS = ['budget', 'authority', 'need', 'timeline'] as const;
 const MEDDIC_KEYS = ['metrics', 'economic_buyer', 'decision_criteria', 'decision_process', 'identify_pain', 'champion', 'competition'] as const;
 
+// ── Input clip ───────────────────────────────────────────────────────────────
+
+/** The local analyser sends one request, so it only reads this much of the transcript. */
+export const LOCAL_ANALYSIS_MAX_CHARS = 12_000;
+
+/**
+ * The part of `transcriptText` the local analyser reads: all of it when it fits, else
+ * the first LOCAL_ANALYSIS_MAX_CHARS cut back to the last whole line (so the model never
+ * sees half a turn). `truncated` is set whenever anything was dropped — on an 85k-char
+ * upload that is ~85% of the call, which the analysis must say rather than hide.
+ */
+export function clipForLocalAnalysis(transcriptText: string): {
+    text: string;
+    truncated?: { analyzedChars: number; totalChars: number };
+} {
+    if (transcriptText.length <= LOCAL_ANALYSIS_MAX_CHARS) return { text: transcriptText };
+    const head = transcriptText.slice(0, LOCAL_ANALYSIS_MAX_CHARS);
+    const lastNewline = head.lastIndexOf('\n');
+    const text = lastNewline > 0 ? head.slice(0, lastNewline) : head;
+    return { text, truncated: { analyzedChars: text.length, totalChars: transcriptText.length } };
+}
+
 // ── Prompt ───────────────────────────────────────────────────────────────────
 
 /**

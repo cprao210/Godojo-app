@@ -275,6 +275,107 @@ describe('parseUploadTranscript — additional label/timestamp formats', () => {
         expect(durationMs).toBe(15_000);
     });
 });
+// ── Long / free-form labels ────────────────────────────────────────────────
+// A colleague's upload ("Name (00:03): text") detected NO speakers: the prospect's label was a
+// company-style name — "Rahul Shah BUL BUL BRAND QUALITY COLORS & ADDITIVES" — which the old
+// "up to three Title-case words" rule rejected (10 words, an "&", ALL-CAPS words mixed with
+// Title-case ones), so every one of his turns was glued onto the previous speaker.
+describe('parseUploadTranscript — long labels (everything before the colon is the label)', () => {
+    const LONG = 'Rahul Shah BUL BUL BRAND QUALITY COLORS & ADDITIVES';
+
+    it('parses a very long label with a parenthesised timestamp', () => {
+        const { segments, speakers } = parseUploadTranscript([
+            'Bharathraj A (00:00): Hi. Good afternoon.',
+            `${LONG} (00:03): Hello.`,
+            'Bharathraj A (00:03): Hi. How are you?',
+        ].join('\n'));
+        expect(speakers).toEqual(['Bharathraj A', LONG]);
+        expect(segments.map(s => [s.displayName, s.text, s.timestamp])).toEqual([
+            ['Bharathraj A', 'Hi. Good afternoon.', 0],
+            [LONG, 'Hello.', 3_000],
+            ['Bharathraj A', 'Hi. How are you?', 3_000],
+        ]);
+    });
+
+    it.each([
+        ['LABEL (TS): text', `${LONG} (00:26): hello there`, 26_000, 'hello there'],
+        ['LABEL [TS]: text', `${LONG} [00:26]: hello there`, 26_000, 'hello there'],
+        ['[TS] LABEL: text', `[00:26] ${LONG}: hello there`, 26_000, 'hello there'],
+        ['[TS] [LABEL]: text', `[00:00:26] [${LONG}]: hello there`, 26_000, 'hello there'],
+        ['[LABEL] [TS]: text', `[${LONG}] [00:00:26]: hello there`, 26_000, 'hello there'],
+        ['LABEL: text (no timestamp)', `${LONG}: hello there`, 0, 'hello there'],
+    ])('long label, %s', (_name, line, ts, text) => {
+        const { segments } = parseUploadTranscript(line);
+        expect(segments).toHaveLength(1);
+        expect(segments[0]).toMatchObject({ displayName: LONG, timestamp: ts, text });
+    });
+
+    it.each([
+        ['LABEL (TS):', `${LONG} (00:26):`],
+        ['LABEL [TS]:', `${LONG} [00:26]:`],
+        ['[TS] LABEL:', `[00:26] ${LONG}:`],
+        ['[TS] [LABEL]:', `[00:26] [${LONG}]:`],
+        ['LABEL:', `${LONG}:`],
+    ])('long label, %s with the message on the next lines', (_name, first) => {
+        const { segments, speakers } = parseUploadTranscript(`Alex (00:01): hi\n${first}\nline one\nline two`);
+        expect(speakers).toEqual(['Alex', LONG]);
+        expect(segments).toHaveLength(2);
+        expect(segments[1].displayName).toBe(LONG);
+        expect(segments[1].text).toBe('line one\nline two');
+    });
+
+    it('takes the FIRST colon that ends a label — later colons stay in the message', () => {
+        const { segments } = parseUploadTranscript(`${LONG} (00:05): the plan is: pay by 10:30 and see https://acme.com:8080`);
+        expect(segments).toHaveLength(1);
+        expect(segments[0].displayName).toBe(LONG);
+        expect(segments[0].text).toBe('the plan is: pay by 10:30 and see https://acme.com:8080');
+    });
+
+    it('labels with punctuation, digits and non-Latin scripts', () => {
+        const { speakers } = parseUploadTranscript([
+            'Priya S. (00:01): hi',
+            "O'Brien & Sons Pvt. Ltd. (00:02): hello",
+            'Team A/B - Sales (00:03): hey',
+            'राहुल शाह (00:04): नमस्ते',
+            'José Núñez (00:05): hola',
+        ].join('\n'));
+        expect(speakers).toEqual(['Priya S.', "O'Brien & Sons Pvt. Ltd.", 'Team A/B - Sales', 'राहुल शाह', 'José Núñez']);
+    });
+
+    it('still keeps prose with a colon inside a timestamp-less multi-line message', () => {
+        const { segments } = parseUploadTranscript([
+            `${LONG}:`,
+            'here is what we need from you: the invoices and the GRN copies',
+            'One more thing: send the LR scan',
+            'Alex: sure',
+        ].join('\n'));
+        // lowercase-led fragment stays in the message; "One more thing" has lowercase words too.
+        expect(segments.map(s => s.displayName)).toEqual([LONG, 'Alex']);
+        expect(segments[0].text).toContain('the invoices and the GRN copies');
+        expect(segments[0].text).toContain('One more thing: send the LR scan');
+    });
+
+    it('trusts a lowercase label when it opens several turns', () => {
+        const { speakers } = parseUploadTranscript('john doe: hi\nmary: hello\njohn doe: so\nmary: yes');
+        expect(speakers).toEqual(['john doe', 'mary']);
+    });
+
+    it('parses the pasted Procol discovery call: two speakers, every turn attributed', () => {
+        const convo = [
+            'Bharathraj A (00:00): Hi. Good afternoon.',
+            `${LONG} (00:03): Hello.`,
+            `${LONG} (08:26): So where my company started in 1951, we manufacture pigments.`,
+            'Bharathraj A (10:33): Also you mentioned that there are certain challenges.',
+            `${LONG} (10:39): Right now what happens is mismatches do happen.`,
+            'Bharathraj A (28:56): Thank you, sir.',
+        ].join('\n');
+        const r = parseUploadTranscript(convo, { repLabel: 'Bharathraj A' });
+        expect(r.speakers).toEqual(['Bharathraj A', LONG]);
+        expect(r.segments).toHaveLength(6);
+        expect(r.segments.map(s => s.speaker)).toEqual(['user', 'client', 'client', 'user', 'client', 'user']);
+        expect(r.durationMs).toBe((28 * 60 + 56) * 1000);
+    });
+});
 // ── Choosing the rep ────────────────────────────────────────────────────────
 // A real upload ("Automating SAP Invoice Processing Discovery") opened with the
 // PROSPECT's "Hi.", so first-speaker-is-the-rep swapped the roles and the v2

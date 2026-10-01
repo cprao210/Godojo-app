@@ -1562,7 +1562,12 @@ export class AppState {
       if (this.isDevUpdatesEnabled()) {
         downloadSizeBytes = await this.fetchDevFeedInstallerSize()
       } else {
-        downloadSizeBytes = this.platformReleaseAssetSize(notes?.assets ?? [], info.version)
+        // Feed first: latest*.yml (served from R2) lists every file with its byte size, so the
+        // size no longer depends on a GitHub release carrying binaries. GitHub assets remain
+        // only as a fallback for feeds that omit sizes.
+        downloadSizeBytes =
+          this.updateFeedFileSize(info as { files?: { url: string; size?: number }[] })
+          ?? this.platformReleaseAssetSize(notes?.assets ?? [], info.version)
       }
       this.broadcast("update-available", {
         ...info,
@@ -1588,7 +1593,7 @@ export class AppState {
       // by a too-late update-not-available, and the update modal pops open
       // with a technical 404 for what is really a valid "up to date" state.
       if (this.isNoReleaseAvailableError(err)) {
-        console.log('[AutoUpdater] No published release found on GitHub — treating as up to date')
+        console.log('[AutoUpdater] No published release found on the update feed — treating as up to date')
         this.updateOpPhase = 'idle'
         this.broadcast('update-not-available', { version: app.getVersion() })
         return
@@ -1671,7 +1676,7 @@ export class AppState {
       this.scheduleAutoUpdateCheck(AppState.UPDATE_CHECK_INTERVAL_MS);
     } catch (err: any) {
       if (this.isNoReleaseAvailableError(err)) {
-        console.log('[AutoUpdater] No published release found on GitHub — treating as up to date');
+        console.log('[AutoUpdater] No published release found on the update feed — treating as up to date');
         this.broadcast('update-not-available', { version: app.getVersion() });
         this.autoCheckFailures = 0;
         this.scheduleAutoUpdateCheck(AppState.UPDATE_CHECK_INTERVAL_MS);
@@ -1788,8 +1793,32 @@ export class AppState {
   }
 
   /**
+   * Byte size of THIS platform's update artifact from the update feed itself
+   * (`files[]` of latest.yml / latest-mac.yml / latest-linux.yml on R2). Same picking rules
+   * as platformReleaseAssetSize below; null when the feed carries no usable size.
+   */
+  private updateFeedFileSize(info: { files?: { url: string; size?: number }[] }): number | null {
+    const files = (info.files ?? []).filter(f => f && typeof f.url === 'string' && (f.size ?? 0) > 0)
+    if (!files.length) return null
+    const pick = (pred: (url: string) => boolean): number | null => {
+      const hit = files.find(f => pred(f.url))
+      return hit ? (hit.size as number) : null
+    }
+    if (process.platform === 'win32') {
+      return pick(u => /setup.*\.exe$/i.test(u)) ?? pick(u => u.toLowerCase().endsWith('.exe'))
+    }
+    if (process.platform === 'darwin') {
+      const arch = process.arch === 'arm64' ? 'arm64' : 'x64'
+      return pick(u => new RegExp(`-${arch}\\.dmg$`, 'i').test(u))
+        ?? pick(u => u.toLowerCase().endsWith('.dmg'))
+        ?? pick(u => new RegExp(`-${arch}\\.zip$`, 'i').test(u))
+    }
+    return pick(u => u.toLowerCase().endsWith('.appimage'))
+  }
+
+  /**
    * Byte size of THIS platform's update artifact, picked from the GitHub
-   * release assets. Windows matches the NSIS setup exe (what electron-updater
+   * release assets (fallback — see updateFeedFileSize). Windows matches the NSIS setup exe (what electron-updater
    * downloads; with differential/blockmap download only the changed blocks
    * transfer, and the live progress total then reflects the smaller delta —
    * both are exposed and the UI prefers actual transferred bytes once known).
@@ -1855,7 +1884,7 @@ export class AppState {
       // releases, or before the first one is published. That's not a real
       // failure, it just means there's nothing to update to yet.
       if (this.isNoReleaseAvailableError(err)) {
-        console.log("[AutoUpdater] No published release found on GitHub — treating as up to date")
+        console.log("[AutoUpdater] No published release found on the update feed — treating as up to date")
         this.broadcast("update-not-available", { version: app.getVersion() })
         return
       }
@@ -1906,7 +1935,7 @@ export class AppState {
         : "We couldn't check for updates right now. Please check your internet connection and try again."
     }
     return isDownload
-      ? "The update couldn't be downloaded. Please try again, or download it from the releases page."
+      ? "The update couldn't be downloaded. Please try again, or download it from the download page."
       : "We couldn't check for the latest version right now. Please try again later."
   }
 
@@ -1918,11 +1947,11 @@ export class AppState {
     // installable file for those package types, so nothing ever downloads
     // and no error ever fires. Tell the user up front instead.
     if (process.platform === 'linux' && !process.env.APPIMAGE) {
-      this.broadcast('update-error', "Updates aren't supported for the .deb install. Please download the new version from the releases page.")
+      this.broadcast('update-error', "Updates aren't supported for the .deb install. Please download the new version from the download page.")
       return
     }
     if (process.platform === 'win32' && process.env.PORTABLE_EXECUTABLE_DIR) {
-      this.broadcast('update-error', "The portable version can't update itself. Please download the installer from the releases page.")
+      this.broadcast('update-error', "The portable version can't update itself. Please download the installer from the download page.")
       return
     }
     // Errors during download are surfaced via autoUpdater.on("error") which
@@ -4904,8 +4933,8 @@ export class AppState {
     // Potential paths for tray icon
     const templatePath = path.join(resourcesPath, 'assets', 'iconTemplate.png');
     const defaultIconPath = app.isPackaged
-      ? path.join(resourcesPath, 'src/components/icon.png')
-      : path.join(app.getAppPath(), 'src/components/icon.png');
+      ? path.join(resourcesPath, 'assets/icon.png')
+      : path.join(app.getAppPath(), 'assets/icon.png');
 
     let iconToUse = defaultIconPath;
 
@@ -4915,8 +4944,8 @@ export class AppState {
         iconToUse = templatePath;
         console.log('[Tray] Using template icon:', templatePath);
       } else {
-        // Also check src/components for dev
-        const devTemplatePath = path.join(app.getAppPath(), 'src/components/iconTemplate.png');
+        // Also check assets/ for dev
+        const devTemplatePath = path.join(app.getAppPath(), 'assets/iconTemplate.png');
         if (require('fs').existsSync(devTemplatePath)) {
           iconToUse = devTemplatePath;
           console.log('[Tray] Using dev template icon:', devTemplatePath);

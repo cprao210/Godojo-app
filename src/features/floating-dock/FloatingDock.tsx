@@ -57,7 +57,7 @@ export const FloatingDock: React.FC<FloatingDockProps> = ({
     onRequestOverlayResize,
 }) => {
 
-    const floatingDockStates = useFloatingDock({ transcriptRef, isMeetingPaused, companyIntel });
+    const floatingDockStates = useFloatingDock({ transcriptRef, isMeetingPaused, companyIntel, calendarEventMetadata });
     const { isPerformanceMode, preference: performanceModePreference, setPreference: setPerformanceModePreference } = usePerformanceMode();
     // Live wave-indicator levels are NOT read here. They used to arrive as
     // component state (useLiveAudioLevels), which put a ~20Hz-per-channel feed at

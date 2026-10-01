@@ -41,6 +41,7 @@ interface OllamaResponse {
 import { MODEL_CATALOG, isAutoId, detectProvider } from '../utils/modelCatalogShared';
 import type { CatalogProvider } from '../utils/modelCatalogShared';
 import { ModelCatalog } from './services/ModelCatalog';
+import { backendFallbackTimeoutMs } from './utils/backendFallbackTimeout';
 
 const GEMINI_FLASH_MODEL = MODEL_CATALOG.gemini.seeds.fast[0]
 const GEMINI_PRO_MODEL = MODEL_CATALOG.gemini.seeds.capable[0]
@@ -3586,14 +3587,15 @@ export class LLMHelper {
       throw new Error('No auth token available — cannot call backend LLM fallback');
     }
 
-    console.log(`[LLMHelper] ⚠️ All direct providers exhausted. Calling backend fallback for task='${task}'...`);
+    const timeoutMs = backendFallbackTimeoutMs(context.length);
+    console.log(`[LLMHelper] ⚠️ All direct providers exhausted. Calling backend fallback for task='${task}' (context=${context.length} chars, timeout=${timeoutMs}ms)...`);
     const response = await this.withTimeout(
       axios.post(
         `${BACKEND_URL}/api/v1/llm/fallback/generate`,
         { task, context, custom_prompt: customPrompt ?? null },
         { headers: { Authorization: `Bearer ${token}` } },
       ),
-      60000,
+      timeoutMs,
       `Backend Fallback (${task})`,
     );
 
