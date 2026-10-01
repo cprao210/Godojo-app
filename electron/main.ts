@@ -4933,8 +4933,8 @@ export class AppState {
     // Potential paths for tray icon
     const templatePath = path.join(resourcesPath, 'assets', 'iconTemplate.png');
     const defaultIconPath = app.isPackaged
-      ? path.join(resourcesPath, 'src/components/icon.png')
-      : path.join(app.getAppPath(), 'src/components/icon.png');
+      ? path.join(resourcesPath, 'assets/icon.png')
+      : path.join(app.getAppPath(), 'assets/icon.png');
 
     let iconToUse = defaultIconPath;
 
@@ -4944,8 +4944,8 @@ export class AppState {
         iconToUse = templatePath;
         console.log('[Tray] Using template icon:', templatePath);
       } else {
-        // Also check src/components for dev
-        const devTemplatePath = path.join(app.getAppPath(), 'src/components/iconTemplate.png');
+        // Also check assets/ for dev
+        const devTemplatePath = path.join(app.getAppPath(), 'assets/iconTemplate.png');
         if (require('fs').existsSync(devTemplatePath)) {
           iconToUse = devTemplatePath;
           console.log('[Tray] Using dev template icon:', devTemplatePath);
