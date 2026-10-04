@@ -2544,7 +2544,7 @@ Provide only the answer, nothing else.`;
     //                                                     {(() => {
     //                                                         const m = currentModel;
     //                                                         if (m.startsWith('ollama-')) return m.replace('ollama-', '');
-    //                                                         if (m === 'gemini-3.1-flash-lite-preview') return 'Gemini 3.1 Flash';
+    //                                                         if (m === 'gemini-3.1-flash-lite') return 'Gemini 3.1 Flash';
     //                                                         if (m === 'gemini-3.1-pro-preview') return 'Gemini 3.1 Pro';
     //                                                         if (m === 'llama-3.3-70b-versatile') return 'Groq Llama 3.3';
     //                                                         if (m === 'gpt-5.4') return 'GPT 5.4';

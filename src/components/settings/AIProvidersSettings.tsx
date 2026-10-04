@@ -123,7 +123,7 @@ export const AIProvidersSettings: React.FC<AIProvidersSettingsTypes> = ({ tavily
     const [isRefreshingOllama, setIsRefreshingOllama] = useState(false);
 
     // --- Default Model ---
-    const [defaultModel, setDefaultModel] = useState<string>('gemini-3.1-flash-lite-preview');
+    const [defaultModel, setDefaultModel] = useState<string>('gemini-3.1-flash-lite');
     const [fastResponseMode, setFastResponseMode] = useState(false);
 
     // --- Dynamic Model Discovery ---

@@ -177,7 +177,10 @@ export class CredentialsManager {
         return this.credentials.aiResponseLanguage || 'English';
     }
     public getDefaultModel(): string {
-        return this.credentials.defaultModel || 'gemini-3.1-flash-lite-preview';
+        const saved = this.credentials.defaultModel;
+        // The preview ID was shut down on 2026-05-25; migrate saved settings to the GA model.
+        if (saved === 'gemini-3.1-flash-lite-preview') return 'gemini-3.1-flash-lite';
+        return saved || 'gemini-3.1-flash-lite';
     }
 
     public getAllCredentials(): StoredCredentials {

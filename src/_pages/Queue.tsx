@@ -41,7 +41,7 @@ const Queue: React.FC<QueueProps> = ({ setView }) => {
   const chatInputRef = useRef<HTMLInputElement>(null)
 
   const [isSettingsOpen, setIsSettingsOpen] = useState(false)
-  const [currentModel, setCurrentModel] = useState<string>('gemini-3.1-flash-lite-preview')
+  const [currentModel, setCurrentModel] = useState<string>('gemini-3.1-flash-lite')
 
   const barRef = useRef<HTMLDivElement>(null)
 

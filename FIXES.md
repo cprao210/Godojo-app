@@ -155,6 +155,6 @@ Full priority chain: OpenAI → Claude → Gemini Pro → Gemini Flash → Groq 
 
 ### Remaining Risks
 1. **`OPENAI_MODEL = "gpt-5.4"`**: Now drives the `generateWithOpenai` fallback path as the baseline. Confirmed valid per OpenAI API docs.
-2. **`gemini-3.1-pro-preview` and `gemini-3.1-flash-lite-preview`**: These model IDs are used in `generateContentStructured`. If Gemini releases these under different names, both Pro and Flash attempts will fail. The Groq/Ollama fallbacks will still catch it.
+2. **`gemini-3.1-pro-preview` and `gemini-3.1-flash-lite`**: These model IDs are used in `generateContentStructured`. If Gemini releases these under different names, both Pro and Flash attempts will fail. The Groq/Ollama fallbacks will still catch it.
 3. **Issue #90 timing**: The `setTimeout(..., 0)` before calling `handleWhatToSay` relies on React flushing state before the next microtask. In React 18 with concurrent mode, this may occasionally miss if the render is deferred. A more robust solution would use `useLayoutEffect` or a `useCallback` ref pattern, but this pattern matches the existing codebase style.
 4. **Issue #89 on Windows**: The `setOpacity(0)` flash-prevention is applied universally, but Windows has its own opacity-shield path for content protection. The new `setOpacity(0)` call in `hideMainWindow` runs before the Windows path too — this is harmless (the Windows show path already manages opacity independently) but worth noting.

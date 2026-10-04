@@ -247,7 +247,7 @@ export const ModelSelector: React.FC<ModelSelectorProps> = ({ currentModel, onSe
         if (custom) return custom.name;
         // Built-in display names
         const names: Record<string, string> = {
-            'gemini-3.1-flash-lite-preview': 'Gemini 3.1 Flash',
+            'gemini-3.1-flash-lite': 'Gemini 3.1 Flash',
             'gemini-3.1-pro-preview': 'Gemini 3.1 Pro',
             'llama-3.3-70b-versatile': 'Groq Llama 3.3',
             'gpt-5.4': 'GPT 5.4',
