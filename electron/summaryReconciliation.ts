@@ -9,43 +9,22 @@
 // from liveAnalysisData, so the Summary tab and the Call Analysis tab can
 // never disagree on BANT/MEDDIC status or evidence.
 
-// salesCoachReview.whatIDidRight's BANT/MEDDICC-labelled items are reconciled
-// the same way (see buildConfirmedWhatIDidRight below): the LLM was previously
-// free to cherry-pick up to 6 "wins" from the transcript on its own judgment,
-// which routinely disagreed with the Confirmed set shown in Call Analysis.
-// Those items are now derived deterministically from the same
-// liveAnalysis-backed bant/meddicc objects below, so "Sales Self-Analysis"
-// can never show a different confirmed count than the live Call Analysis tab.
-// Only fields that legitimately require transcript reasoning (overview,
-// dealStatus, whatICouldHaveDoneBetter, whatIMissedCompletely,
-// nextCallPlaybook, keyPoints, actionItems) are left for the LLM — EXCEPT
+// salesCoachReview.whatIDidRight is NOT reconciled from the framework fields:
+// it holds the LLM's film-review highlight objects (time/skill/moment/why)
+// about the rep's own behavior, and framework coverage is Call Analysis's
+// job. Only fields that legitimately require transcript reasoning (overview,
+// dealStatus, whatIDidRight, whatICouldHaveDoneBetter, nextCallPlaybook,
+// keyPoints, actionItems) are left for the LLM — EXCEPT
 // that whatIMissedCompletely gets a deterministic fallback (see
 // buildMissingWhatIMissed): the LLM is under a strict "only truly missed,
-// do NOT pad" instruction and can legitimately return nothing, which used to
-// hide the "Room to Improve" section entirely even while Call Analysis
-// showed Missing/Partial fields. The fallback derives it from the same
-// reconciled statuses so the two views can never disagree in the other
-// direction either.
+// do NOT pad" instruction and can legitimately return nothing, so the
+// fallback derives it from the reconciled statuses to keep the two views
+// consistent in that direction.
 
 import { LiveAnalysisData } from '../src/types';
 import { BANT_ORDER, MEDDICC_ORDER, fieldText, type EvidenceBearing } from '../src/lib/bantMeddic';
 
 const toComponentName = (camelKey: string): string => camelKey.charAt(0).toUpperCase() + camelKey.slice(1);
-
-export function buildConfirmedWhatIDidRight(
-    bant: Record<string, { status: string; detail: string }>,
-    meddicc: Record<string, { status: string; detail: string }>,
-): string[] {
-    const meddiccItems = MEDDICC_ORDER
-        .filter((key) => meddicc[key]?.status === 'Clear')
-        .map((key) => `MEDDICC ${toComponentName(key)}: ${meddicc[key].detail}`);
-
-    const bantItems = BANT_ORDER
-        .filter((key) => bant[key]?.status === 'Clear')
-        .map((key) => `BANT ${toComponentName(key)}: ${bant[key].detail}`);
-
-    return [...meddiccItems, ...bantItems];
-}
 
 /**
  * True placeholder strings the summary LLM emits for "nothing to report"
@@ -63,7 +42,7 @@ export function isPlaceholderSummaryItem(content: string | undefined | null): bo
     return normalized === '' || PLACEHOLDER_CONTENT.has(normalized);
 }
 
-/** Mirrors buildConfirmedWhatIDidRight for the gap side: every field the
+/** Gap-side derivation: every field the
  * reconciled statuses mark Missing becomes a "Room to Improve" item. The
  * default detail deliberately avoids placeholder-looking prefixes so the
  * renderer's filters can never swallow it. */
@@ -87,6 +66,30 @@ export const STATUS_MAP: Record<string, string> = {
     missing: 'Missing',
     '': 'Missing',
 };
+
+/**
+ * Open loops = the customer's still-unresolved questions/concerns/objections,
+ * taken straight from the live analysis's objection list. The live analysis is
+ * the source of truth here (not the LLM's summary output): entries the rep
+ * resolved during the call — `resolved`, or graded `handled: 'resolved'` by
+ * the v2 end pass — are excluded, as are placeholder concerns. `suggestedAnswer`
+ * rides along from the analysis's own suggested_answer when present.
+ */
+export function deriveOpenLoopsFromLiveAnalysis(
+    liveAnalysis: LiveAnalysisData,
+): Array<{ concern: string; suggestedAnswer?: string }> {
+    return (liveAnalysis.objections ?? [])
+        .filter((o) => !o.resolved && o.handled !== 'resolved')
+        .map((o): { concern: string; suggestedAnswer?: string } | null => {
+            const concern = (o.quote ?? '').trim();
+            if (!concern || isPlaceholderSummaryItem(concern)) return null;
+            const answer = (o.suggested_answer ?? '').trim();
+            return answer && !isPlaceholderSummaryItem(answer)
+                ? { concern, suggestedAnswer: answer }
+                : { concern };
+        })
+        .filter((l): l is { concern: string; suggestedAnswer?: string } => l !== null);
+}
 
 export function reconcileBantMeddicWithLiveAnalysis(
     summaryData: any,
@@ -130,16 +133,34 @@ export function reconcileBantMeddicWithLiveAnalysis(
                 .map((k) => k),
     };
 
+    // openLoops are derived deterministically from the live analysis's
+    // unresolved objections (see deriveOpenLoopsFromLiveAnalysis) — the LLM's
+    // own openLoops output, if any, is replaced so the summary can never
+    // disagree with the objection list it is grounded on. When every objection
+    // was resolved, the key is removed rather than left holding fabricated
+    // entries. Everything else about the merge stays additive: fields the
+    // reconciler doesn't own (nextCallPlaybook, promises, demoReview,
+    // stakeholders, negotiation, keyPoints, actionItems, unknown props) pass
+    // through the spread untouched.
+    const { openLoops: _llmOpenLoops, ...rest } = summaryData ?? {};
+    const openLoops = deriveOpenLoopsFromLiveAnalysis(liveAnalysis);
+
     return {
-        ...summaryData,
+        ...rest,
+        ...(openLoops.length ? { openLoops } : {}),
         bant: reconciledBant,
         meddicc: reconciledMeddicc,
         salesCoachReview: {
             ...summaryData?.salesCoachReview,
-            whatIDidRight: buildConfirmedWhatIDidRight(reconciledBant, reconciledMeddicc),
+            // whatIDidRight is NOT overwritten: it holds the LLM's film-review
+            // highlight objects (time/skill/moment/why) about the rep's own
+            // behavior. Framework coverage belongs to bant/meddicc above and
+            // the Call Analysis tab — deriving "wins" from Confirmed fields
+            // here produced framework-labelled deal facts, exactly what the
+            // Coach's notes column was redesigned away from.
             // LLM's own missed-items win when substantive; placeholder/empty
             // output falls back to the deterministic Missing-field list so
-            // "Room to Improve" can't hide while Call Analysis shows gaps.
+            // gaps can't hide while Call Analysis shows them.
             whatIMissedCompletely: (summaryData?.salesCoachReview?.whatIMissedCompletely ?? [])
                 .some((item: string) => !isPlaceholderSummaryItem(item))
                 ? summaryData.salesCoachReview.whatIMissedCompletely

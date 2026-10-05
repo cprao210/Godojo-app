@@ -7,12 +7,14 @@ import { LLMHelper } from './LLMHelper';
 import { DatabaseManager, Meeting, formatDuration } from './db/DatabaseManager';
 import { SupabaseMirrorService } from './db/SupabaseMirrorService';
 import { GROQ_TITLE_PROMPT, GROQ_SUMMARY_JSON_PROMPT, verifySummaryAgainstTranscript, buildCorrectionAddendum } from './llm';
-import { BANTField, LiveAnalysisData, MEDDICField, MeetingScorecardResult } from '../src/types';
+import { buildSummaryPrompt, buildCoachCallTypeSection, BANT_MEDDICC_OUTPUT_SCHEMA } from './llm/summaryPrompt';
+import { LiveAnalysisData, MeetingScorecardResult } from '../src/types';
 import { AppState } from './main';
-import { buildCompanyContextBlock } from '../electron/utils/salesBriefUtils';
 import { buildScorecardPrompt } from './llm/ScoreCardLLM';
 import { reconcileScorecardWithLiveAnalysis } from './scorecardReconciliation';
 import { reconcileBantMeddicWithLiveAnalysis } from './summaryReconciliation';
+import { sanitizeCoachSummary, clearForeignCoachBlocks } from './utils/coachSummaryData';
+import { resolveCoachCallType } from './utils/coachCallType';
 import { hasMultipleClientSpeakers, resolveSpeakerDisplayName, buildSpeakerRoster, formatSpeakerRosterBlock, transcriptTurnLabel, SpeakerNameMapLike } from './utils/speakerLabels';
 import { parseUploadTranscript } from './utils/uploadTranscriptParser';
 import { AuthManager } from './services/AuthManager';
@@ -65,251 +67,6 @@ const SUMMARY_MAX_ATTEMPTS = 3;
 // BANT/MEDDIC + Sales Self-Analysis reconciliation lives in
 // ./summaryReconciliation (pure, unit-tested); see reconcileBantMeddicWithLiveAnalysis
 // usage below for why it must run against the FINAL live analysis on every path.
-
-const buildSummaryPrompt = (liveAnalysis?: LiveAnalysisData | null, companyIntel?: Record<string, any> | null): string => {
-
-    // ── With live analysis: structured data is the authoritative BANT/MEDDIC source ──
-    // The live analysis is the already-distilled output of the entire call, built
-    // incrementally from every prospect turn. Re-deriving BANT/MEDDIC from the raw
-    // transcript is redundant and wastes tokens. Instead:
-    //   • BANT/MEDDIC  → copy directly from live analysis; only override with clear
-    //                    transcript evidence that contradicts or upgrades a field.
-    //   • Overview, dealStatus, followUpEmail, salesCoachReview, nextCallPlaybook
-    //     → derive from the full transcript as normal.
-    if (liveAnalysis) {
-        const objectionsBlock = liveAnalysis.objections.length > 0
-            ? liveAnalysis.objections.map(o => `  - [${o.type}] ${o.quote} (${o.status})`).join('\n')
-            : '  None captured';
-
-        const signalsBlock = liveAnalysis.signals.length > 0
-            ? liveAnalysis.signals.slice(0, 8).map(s => `  - [${s.category}/${s.intensity}] ${s.quote}`).join('\n')
-            : '  None captured';
-
-        // One grounding line per criterion: `status | assessment`, with the
-        // supporting statements demoted to a labelled reference block beneath.
-        // The assessment is what becomes `detail`; the references are raw
-        // material for the transcript-derived sections, never for `detail`.
-        const PAD = ' '.repeat(12);
-        const fieldBlock = (label: string, pad: number, f: MEDDICField | BANTField | undefined): string => {
-            const head = `${PAD}- ${(label + ':').padEnd(pad)} ${f?.status || 'missing'} | ${fieldText(f) || 'No assessment'}`;
-            // Only when the assessment isn't itself the evidence: on a row saved
-            // before summaries existed, fieldText already IS the evidence, and a
-            // reference block would just repeat the same text back at the model.
-            const refs = fieldSummary(f) ? fieldEvidenceList(f) : [];
-            if (refs.length === 0) return head;
-            return [head, ...refs.map((r, i) => `${PAD}      ${i === 0 ? '(reference)' : '           '} "${r}"`)].join('\n');
-        };
-
-        const companySection = buildCompanyContextBlock(companyIntel ?? null);
-        return `You are an expert B2B sales analyst. A sales call just ended. Generate a structured post-call summary. Return ONLY valid JSON (no markdown code blocks, no commentary).
-            ${companySection ? `\n${companySection}\nUse the company intelligence above to enrich your analysis — recognise their known products, competitors, and business model in the transcript.\n` : ''} Generate a structured post-call summary. Return ONLY valid JSON (no markdown code blocks, no commentary).
-
-            ═══════════════════════════════════════
-            LIVE ANALYSIS — AUTHORITATIVE BANT + MEDDIC DATA
-            ═══════════════════════════════════════
-            The following was captured in real-time across the full call. It is the primary source
-            of truth for BANT and MEDDIC fields. Copy these values directly into your output.
-            Only upgrade a status (e.g. partial → confirmed) if the transcript contains explicit,
-            unambiguous new evidence. Never downgrade without a clear contradiction in the transcript.
-
-            BANT:
-${fieldBlock('Budget', 10, liveAnalysis.bant.budget)}
-${fieldBlock('Authority', 10, liveAnalysis.bant.authority)}
-${fieldBlock('Need', 10, liveAnalysis.bant.need)}
-${fieldBlock('Timeline', 10, liveAnalysis.bant.timeline)}
-
-            MEDDIC:
-${fieldBlock('Metrics', 18, liveAnalysis.meddic.metrics)}
-${fieldBlock('Economic Buyer', 18, liveAnalysis.meddic.economic_buyer)}
-${fieldBlock('Decision Criteria', 18, liveAnalysis.meddic.decision_criteria)}
-${fieldBlock('Decision Process', 18, liveAnalysis.meddic.decision_process)}
-${fieldBlock('Identify Pain', 18, liveAnalysis.meddic.identify_pain)}
-${fieldBlock('Champion', 18, liveAnalysis.meddic.champion)}
-${fieldBlock('Competition', 18, liveAnalysis.meddic.competition)}
-
-            Status mapping for the output fields below: confirmed → Clear | partial → Partial | missing → Missing
-            The text after the status is the ASSESSMENT for that criterion — it maps verbatim to the
-            "detail" field in the output. (It is the backend's own rendering, so it is already in the
-            summary's language.) The indented "(reference)" lines are the supporting statements behind
-            that assessment: draw on them for overview, keyPoints and nextCallPlaybook, but NEVER copy
-            them into a "detail" field.
-
-            Objections captured during the call (${liveAnalysis.objections.length}):
-            ${objectionsBlock}
-
-            Key signals captured during the call (${liveAnalysis.signals.length} total, top 8 shown):
-            ${signalsBlock}
-
-            ═══════════════════════════════════════
-            YOUR TASK (use the FULL TRANSCRIPT for these sections only):
-            ═══════════════════════════════════════
-            Use the full transcript to write:
-            • overview        — 2-3 sentence summary of what was covered and deal status
-            • dealStatus      — current deal stage + one-line summary
-            • leadName/company — extract from the transcript
-            • salesCoachReview — reference actual call moments, not generic advice
-            • nextCallPlaybook — questions that target the weakest BANT/MEDDIC areas above
-            • keyPoints / actionItems
-
-            For BANT and MEDDIC in the output: use the live analysis values above as-is.
-            Map status: confirmed→Clear, partial→Partial, missing→Missing.
-            Use the assessment string verbatim as the "detail" field — not the "(reference)" quotes.
-
-            {
-                "overview": "2-3 sentence summary of what the call covered and the current deal status",
-
-                "dealStatus": {
-                    "stage": "one of: Discovery / Qualification / Demo / Proposal / Negotiation / Closed Won / Closed Lost / Unknown",
-                    "summary": "1 sentence on where the deal stands right now"
-                },
-
-                "bant": {
-                    "budget":    { "status": "Clear | Partial | Missing", "detail": "copy the assessment from live analysis above — only override if transcript shows a clear change" },
-                    "authority": { "status": "Clear | Partial | Missing", "detail": "copy the assessment from live analysis above — only override if transcript shows a clear change" },
-                    "need":      { "status": "Clear | Partial | Missing", "detail": "copy the assessment from live analysis above — only override if transcript shows a clear change" },
-                    "timeline":  { "status": "Clear | Partial | Missing", "detail": "copy the assessment from live analysis above — only override if transcript shows a clear change" }
-                },
-
-                "meddicc": {
-                    "metrics":          { "status": "Clear | Partial | Missing", "detail": "copy the assessment from live analysis above" },
-                    "economicBuyer":    { "status": "Clear | Partial | Missing", "detail": "copy the assessment from live analysis above" },
-                    "decisionCriteria": { "status": "Clear | Partial | Missing", "detail": "copy the assessment from live analysis above" },
-                    "decisionProcess":  { "status": "Clear | Partial | Missing", "detail": "copy the assessment from live analysis above" },
-                    "identifyPain":     { "status": "Clear | Partial | Missing", "detail": "copy the assessment from live analysis above" },
-                    "champion":         { "status": "Clear | Partial | Missing", "detail": "copy the assessment from live analysis above" },
-                    "competition":      { "status": "Clear | Partial | Missing", "detail": "copy the assessment from live analysis above" },
-                    "gaps": ["list of MEDDICC components that are Missing or Partial — these need follow-up"]
-                },
-
-                "leadName": "extract prospect full name from transcript — first name + last name if mentioned, else null",
-                "company": "extract company/organization name from transcript, else null",
-
-                "salesCoachReview": {
-                    "whatIDidRight": [
-                        "MEDDICC [ComponentName]: [what the rep did well]",
-                        "BANT [ComponentName]: [BANT win]"
-                    ],
-                    "whatICouldHaveDoneBetter": [
-                        "Should have pushed harder on [specific topic from call] — ask: [exact question]",
-                        "Missed opportunity to [specific action] when prospect said [trigger phrase from transcript]"
-                    ],
-                    "whatIMissedCompletely": [
-                        "Identify Champion: [specific gap]",
-                        "Metrics: [specific metric never asked about]",
-                        "Authority: [specific authority gap]",
-                        "Process: [specific process skipped]",
-                        "Pain: [specific pain never addressed]"
-                    ]
-                },
-
-                "nextCallPlaybook": {
-                    "openingRecap": "2-3 sentences to open the next call recapping where things stand",
-                    "questionsToAsk": ["5 high-value questions to fill the biggest BANT/MEDDIC gaps identified above"],
-                    "valueAndROI": {
-                        "quantitative": ["2-3 measurable ROI points to reinforce"],
-                        "qualitative": ["2-3 strategic or emotional value points to reinforce"]
-                    }
-                },
-
-                "keyPoints": ["4-6 bullets — top things to know about this deal right now"],
-                "actionItems": ["specific next steps with owners if mentioned, or implied follow-ups"]
-            }
-
-            RULES:
-            - Do NOT invent information not in the transcript
-            - BANT/MEDDIC: use live analysis values verbatim unless the transcript clearly contradicts them
-            - Sales coach review must reference actual call moments — not generic advice
-            - Next call questions must target the weakest BANT/MEDDIC areas from the live analysis above
-            - Return ONLY valid JSON — no markdown, no code blocks, no explanation
-            - leadName and company: extract from transcript introductions. Return null if not found.
-            - salesCoachReview.whatIMissedCompletely: EVERY item MUST start with a gap category: Identify Champion: | Metrics: | Authority: | Process: | Pain: | Timeline: | Budget:
-            - salesCoachReview.whatIDidRight: EVERY item MUST start with a framework label: "MEDDICC Metrics:", "BANT Budget:", etc. Return ONLY items where something genuinely happened. Min 2, max 6.
-            - salesCoachReview.whatIDidRight: group MEDDICC items first, then BANT items.
-            - salesCoachReview.whatIMissedCompletely: items MUST follow this strict label sequence: Identify Champion, Metrics, Authority, Process, Pain.
-            - Reference specific moments, names, numbers from the transcript — never be generic
-        `;
-    }
-
-    // ── Without live analysis: derive everything from the full transcript ─────────
-    return `You are an expert B2B sales analyst. A sales call just ended. Analyze the full transcript and generate a structured post-call summary. Return ONLY valid JSON (no markdown code blocks, no commentary).
-
-        {
-            "overview": "2-3 sentence summary of what the call covered and the current deal status",
-
-            "dealStatus": {
-                "stage": "one of: Discovery / Qualification / Demo / Proposal / Negotiation / Closed Won / Closed Lost / Unknown",
-                "summary": "1 sentence on where the deal stands right now"
-            },
-
-            "bant": {
-                "budget":    { "status": "Clear | Partial | Missing", "detail": "what was said or implied about budget" },
-                "authority": { "status": "Clear | Partial | Missing", "detail": "who the decision maker is and their level of involvement" },
-                "need":      { "status": "Clear | Partial | Missing", "detail": "what pain or need was uncovered" },
-                "timeline":  { "status": "Clear | Partial | Missing", "detail": "when they want to move or what the urgency is" }
-            },
-
-            "meddicc": {
-                "metrics":          { "status": "Clear | Partial | Missing", "detail": "quantifiable business impact discussed" },
-                "economicBuyer":    { "status": "Clear | Partial | Missing", "detail": "who controls the budget and were they involved" },
-                "decisionCriteria": { "status": "Clear | Partial | Missing", "detail": "what criteria will be used to evaluate and choose" },
-                "decisionProcess":  { "status": "Clear | Partial | Missing", "detail": "what steps does their buying process follow" },
-                "identifyPain":     { "status": "Clear | Partial | Missing", "detail": "specific pain points uncovered and their business impact" },
-                "champion":         { "status": "Clear | Partial | Missing", "detail": "who internally will advocate for this solution" },
-                "competition":      { "status": "Clear | Partial | Missing", "detail": "any competitors or alternatives mentioned" },
-                "gaps": ["list of MEDDICC components that are Missing or Partial — these need follow-up"]
-            },
-
-            "leadName": "extract prospect full name from transcript — first name + last name if mentioned, else null",
-            "company": "extract company/organization name from transcript, else null",
-
-            "salesCoachReview": {
-                "whatIDidRight": [
-                    "MEDDICC [ComponentName]: [what the rep did well]",
-                    "BANT [ComponentName]: [BANT win]"
-                ],
-                "whatICouldHaveDoneBetter": [
-                    "Should have pushed harder on [specific topic from call] — ask: [exact question]",
-                    "Missed opportunity to [specific action] when prospect said [trigger phrase from transcript]"
-                ],
-                "whatIMissedCompletely": [
-                    "Identify Champion: [specific gap]",
-                    "Metrics: [specific metric never asked about]",
-                    "Authority: [specific authority gap]",
-                    "Process: [specific process skipped]",
-                    "Pain: [specific pain never addressed]"
-                ]
-            },
-
-            "nextCallPlaybook": {
-                "openingRecap": "2-3 sentences to open the next call recapping where things stand",
-                "questionsToAsk": ["5 high-value questions to fill the biggest gaps from this call — focus on Missing MEDDICC/BANT components"],
-                "valueAndROI": {
-                    "quantitative": ["2-3 measurable ROI points to reinforce"],
-                    "qualitative": ["2-3 strategic or emotional value points to reinforce"]
-                }
-            },
-
-            "keyPoints": ["4-6 bullets — top things to know about this deal right now"],
-            "actionItems": ["specific next steps with owners if mentioned, or implied follow-ups"]
-        }
-
-        RULES:
-        - Do NOT invent information not in the transcript
-        - Use "Missing" for any BANT/MEDDICC field with no evidence at all
-        - Use "Partial" if mentioned but incomplete or vague
-        - Use "Clear" only if explicitly confirmed with specifics
-        - Sales coach review must reference actual call moments — not generic advice
-        - Next call questions must target the weakest BANT/MEDDICC areas from this call
-        - Return ONLY valid JSON — no markdown, no code blocks, no explanation
-        - leadName and company: extract from transcript introductions or conversation. Return null if not found.
-        - salesCoachReview.whatIMissedCompletely: EVERY item MUST start with a gap category: Identify Champion: | Metrics: | Authority: | Process: | Pain: | Timeline: | Budget:
-        - Reference specific moments, names, numbers from the transcript — never be generic
-        - salesCoachReview.whatIDidRight: EVERY item MUST start with a framework label followed by the component name: e.g. "MEDDICC Metrics:", "MEDDICC Champion:", "BANT Budget:", "BANT Timeline:"
-        - salesCoachReview.whatIDidRight: return ONLY items where something genuinely happened in the call — do NOT pad with generic or empty items. Minimum 2, maximum 6.
-        - salesCoachReview.whatIDidRight: group MEDDICC items first, then BANT items.
-        - salesCoachReview.whatIMissedCompletely: items MUST follow this strict label sequence: Identify Champion, Metrics, Authority, Process, Pain. Never randomize the order.
-    `;
-};
 
 /** The signed-in user's name and email — what an uploaded transcript's rep label is matched against. */
 function uploadRepNameHints(): Array<string | null> {
@@ -743,6 +500,11 @@ export class MeetingPersistence {
             // Generate Structured Summary
             if (data.transcript.length > 2) {
 
+                // The kind of call this was (discovery/demo/negotiation) drives
+                // which coaching sections the prompt asks for. Explicit rep
+                // selection wins; with none, discovery is the default.
+                const coachCallType = resolveCoachCallType(hintMeetingTypes);
+
                 // Build a compact Groq-compatible system prompt that includes live analysis grounding.
                 // Groq has a lower token budget, so we pass only the status+assessment lines —
                 // fieldText, never the raw evidence list (which would interpolate as "a,b").
@@ -750,13 +512,25 @@ export class MeetingPersistence {
                 LIVE ANALYSIS REFERENCE (captured during the call):
                 BANT: Budget=${liveAnalysisData.bant.budget.status}|${fieldText(liveAnalysisData.bant.budget)}, Authority=${liveAnalysisData.bant.authority.status}|${fieldText(liveAnalysisData.bant.authority)}, Need=${liveAnalysisData.bant.need.status}|${fieldText(liveAnalysisData.bant.need)}, Timeline=${liveAnalysisData.bant.timeline.status}|${fieldText(liveAnalysisData.bant.timeline)}
                 MEDDIC: Metrics=${liveAnalysisData.meddic.metrics.status}|${fieldText(liveAnalysisData.meddic.metrics)}, EconBuyer=${liveAnalysisData.meddic.economic_buyer.status}|${fieldText(liveAnalysisData.meddic.economic_buyer)}, Pain=${liveAnalysisData.meddic.identify_pain.status}|${fieldText(liveAnalysisData.meddic.identify_pain)}, Champion=${liveAnalysisData.meddic.champion.status}|${fieldText(liveAnalysisData.meddic.champion)}
-                Use this as your grounding anchor. Map statuses: confirmed→Clear, partial→Partial, missing→Missing. Use the assessment text verbatim in "detail" fields where available.
+                Use this as your grounding anchor for overview, keyPoints, salesCoachReview and nextCallPlaybook. Do NOT include bant/meddicc in your output — the application fills them from this data.
                 ` : '';
-                const groqSummaryPrompt = liveAnalysisGroqBlock
-                    ? GROQ_SUMMARY_JSON_PROMPT + '\n\n' + liveAnalysisGroqBlock
-                    : GROQ_SUMMARY_JSON_PROMPT;
+                // BANT/MEDDIC output schema goes to Groq ONLY when no live
+                // analysis exists (upload/recovery): the LLM-derived values are
+                // then the last-resort fallback for when call analysis (backend
+                // endpoint → local electron analyser) fails entirely. With live
+                // analysis, reconciliation overwrites these fields in code —
+                // asking the token-constrained Groq model to echo them is pure
+                // waste (and a 413 risk).
+                const groqBantMeddiccBlock = liveAnalysisData ? '' : `\n\nDerive BANT/MEDDIC from the transcript (fallback when call analysis is unavailable):\n${BANT_MEDDICC_OUTPUT_SCHEMA}`;
+                // Same output contract as the main prompt: base Groq schema +
+                // (no-analysis BANT/MEDDIC fallback schema) + live-analysis
+                // grounding + the call-type coaching section.
+                const groqSummaryPrompt = GROQ_SUMMARY_JSON_PROMPT
+                    + groqBantMeddiccBlock
+                    + (liveAnalysisGroqBlock ? `\n\n${liveAnalysisGroqBlock}` : '')
+                    + '\n\n' + buildCoachCallTypeSection(coachCallType);
 
-                const baseSummaryPrompt = buildSummaryPrompt(liveAnalysisData, companyIntel);
+                const baseSummaryPrompt = buildSummaryPrompt(liveAnalysisData, companyIntel, coachCallType);
 
                 // Generate -> verify -> (if low confidence) regenerate with the
                 // specific flagged issues fed back in, up to SUMMARY_MAX_ATTEMPTS.
@@ -822,10 +596,16 @@ export class MeetingPersistence {
                     if (bestConfidence >= 0 && bestConfidence < SUMMARY_CONFIDENCE_THRESHOLD) {
                         console.warn(`[MeetingPersistence] Accepting summary below confidence threshold after ${SUMMARY_MAX_ATTEMPTS} attempts (best score: ${bestConfidence})`);
                     }
+                    // Drop fabricated/placeholder coaching entries, strip
+                    // call-type blocks that don't belong to this call type, and
+                    // stamp the resolved type for future consumers/regeneration.
+                    // See ./utils/coachSummaryData.
+                    const sanitized = sanitizeCoachSummary(bestParsedSummary, coachCallType);
+                    sanitized.coachCallType = coachCallType;
                     // Guarantee BANT/MEDDIC in the summary matches live
                     // analysis exactly — see reconcileBantMeddicWithLiveAnalysis
                     // for why the prompt instruction alone isn't enough.
-                    summaryData = reconcileBantMeddicWithLiveAnalysis({ ...summaryData, ...bestParsedSummary }, liveAnalysisData);
+                    summaryData = reconcileBantMeddicWithLiveAnalysis({ ...summaryData, ...sanitized }, liveAnalysisData);
                 }
             } else {
                 console.log("Transcript too short for summary generation.");
@@ -869,11 +649,12 @@ export class MeetingPersistence {
                 // reconciliation inside the summary step above ran while
                 // liveAnalysisData was still null (its no-op early-return) and was
                 // never re-applied. Re-run it here, for whichever producer won, so
-                // the summary's BANT/MEDDIC — and, via buildConfirmedWhatIDidRight,
-                // the Sales Self-Analysis "What I did right" list — can never
-                // disagree with the call analysis. This is the same guarantee
-                // finalizeScorecard() gives the scorecard: the analysis is the
-                // single source of truth for every surface.
+                // the summary's BANT/MEDDIC can never disagree with the call
+                // analysis. This is the same guarantee finalizeScorecard() gives
+                // the scorecard: the analysis is the single source of truth for
+                // every surface. (salesCoachReview.whatIDidRight survives this
+                // pass — it holds film-review highlights about the rep, not
+                // framework coverage.)
                 if (liveAnalysisData) {
                     summaryData = reconcileBantMeddicWithLiveAnalysis(summaryData, liveAnalysisData);
                 }
@@ -1300,10 +1081,20 @@ export class MeetingPersistence {
                     DatabaseManager.getInstance().updateMeetingSummary(meetingId, { liveAnalysis: generatedLiveAnalysis });
                 }
             }
-            const groqSummaryPrompt = GROQ_SUMMARY_JSON_PROMPT;
+            // Resolve the call type again from existing meeting data so a
+            // regeneration produces the same call-type-aware structure as the
+            // initial save: explicit rep selection (where stored) > the type
+            // stamped on the previous summary > scorecard detection > discovery.
+            const coachCallType = resolveCoachCallType(
+                meeting.meetingTypes,
+                (meeting.detailedSummary as any)?.coachCallType,
+                DatabaseManager.getInstance().getMeetingScorecard(meetingId)?.detectedTypes,
+                (meeting.detailedSummary as any)?.scorecard?.detectedTypes,
+            );
+            const groqSummaryPrompt = GROQ_SUMMARY_JSON_PROMPT + '\n\n' + buildCoachCallTypeSection(coachCallType);
 
             const generatedSummary = await this.llmHelper.generateMeetingSummary(
-                buildSummaryPrompt(existingLiveAnalysis),
+                buildSummaryPrompt(existingLiveAnalysis, null, coachCallType),
                 fullRegenerateContext,
                 groqSummaryPrompt,
                 'summary'
@@ -1314,13 +1105,25 @@ export class MeetingPersistence {
             const jsonMatch = generatedSummary.match(/```json\n([\s\S]*?)\n```/) || [null, generatedSummary];
             const jsonStr = (jsonMatch[1] || generatedSummary).trim();
             let summaryData = JSON.parse(jsonStr);
+            // Drop fabricated/placeholder coaching entries and type-mismatched
+            // blocks, and stamp the resolved call type — same as the initial save.
+            summaryData = sanitizeCoachSummary(summaryData, coachCallType);
+            summaryData.coachCallType = coachCallType;
             // Same guarantee as the initial save path — regenerating must not
             // let BANT/MEDDIC drift from the meeting's stored live analysis.
             summaryData = reconcileBantMeddicWithLiveAnalysis(summaryData, existingLiveAnalysis);
             // Never let the summary JSON carry a stray liveAnalysis key over the real one.
             delete summaryData.liveAnalysis;
 
-            DatabaseManager.getInstance().updateMeetingSummary(meetingId, summaryData);
+            // updateMeetingSummary merge-keeps keys the new summary doesn't
+            // carry, so explicitly blank out type-specific blocks the resolved
+            // call type no longer owns (undefined is dropped by JSON.stringify,
+            // removing the stored key) — e.g. a demo regeneration over an old
+            // negotiation summary must not keep a stale "negotiation" block.
+            DatabaseManager.getInstance().updateMeetingSummary(meetingId, {
+                ...summaryData,
+                ...clearForeignCoachBlocks(coachCallType),
+            });
             console.log(
                 `[MeetingPersistence] Regenerated summary for meeting ${meetingId}` +
                 (generatedLiveAnalysis ? ' (with a new call analysis)' : ''),

@@ -17,6 +17,10 @@
  *     transcript window it was sent, or is it a degraded mirror to be retried?
  */
 
+// Type-only + pure-helper imports keep this module free of runtime dependencies.
+import type { CoachQuestion } from '../types';
+import { filledCoachQuestions } from './coachSummary';
+
 // ─── Final analysis at end of call ──────────────────────────────────────────
 
 export type FinalAnalysisAction =
@@ -273,29 +277,51 @@ export function hasGeneratedSummary(
             overview?: string;
             keyPoints?: string[];
             actionItems?: string[];
-            dealStatus?: { stage?: string; summary?: string };
             salesCoachReview?: {
-                whatIDidRight?: string[];
+                // whatIDidRight: "Label: content" strings (old summaries) or
+                // film-review highlight objects (new summaries).
+                whatIDidRight?: (string | { moment?: string; why?: string })[];
                 whatICouldHaveDoneBetter?: string[];
                 whatIMissedCompletely?: string[];
             };
-            nextCallPlaybook?: { openingRecap?: string; questionsToAsk?: string[] };
+            // questionsToAsk: plain strings (old summaries) or { question, gap? } objects.
+            nextCallPlaybook?: {
+                callGoal?: string;
+                openingRecap?: string;
+                questionsToAsk?: CoachQuestion[];
+                valueAndROI?: { quantitative?: string[]; qualitative?: string[] };
+            };
+            openLoops?: unknown[];
+            promises?: unknown[];
+            demoReview?: { reactions?: unknown[]; successCriteria?: unknown[] };
+            negotiation?: { terms?: unknown[]; trades?: unknown[]; limit?: string; pathToSignature?: unknown[] };
         }
         | null
         | undefined,
 ): boolean {
     if (!ds) return false;
-    const filled = (arr?: string[]) => Array.isArray(arr) && arr.some((s) => s?.trim());
+    const filled = (arr?: (string | { moment?: string; why?: string })[]) =>
+        Array.isArray(arr) && arr.some((s) =>
+            typeof s === 'string' ? !!s?.trim() : !!(s && (s.moment || s.why)));
+    // dealStatus was dropped from the generation contract — emptiness is now
+    // judged on the fields the Coach tab actually renders, including the
+    // call-type blocks (a demo/negotiation meeting whose only content is its
+    // type panel is NOT an empty summary).
     return (
         !!ds.overview?.trim() ||
         filled(ds.keyPoints) ||
         filled(ds.actionItems) ||
-        !!ds.dealStatus?.stage?.trim() ||
-        !!ds.dealStatus?.summary?.trim() ||
         filled(ds.salesCoachReview?.whatIDidRight) ||
         filled(ds.salesCoachReview?.whatICouldHaveDoneBetter) ||
         filled(ds.salesCoachReview?.whatIMissedCompletely) ||
+        !!ds.nextCallPlaybook?.callGoal?.trim() ||
         !!ds.nextCallPlaybook?.openingRecap?.trim() ||
-        filled(ds.nextCallPlaybook?.questionsToAsk)
+        filledCoachQuestions(ds.nextCallPlaybook?.questionsToAsk) ||
+        !!(ds.nextCallPlaybook?.valueAndROI?.quantitative?.length || ds.nextCallPlaybook?.valueAndROI?.qualitative?.length) ||
+        !!ds.openLoops?.length ||
+        !!ds.promises?.length ||
+        !!ds.demoReview?.reactions?.length ||
+        !!ds.demoReview?.successCriteria?.length ||
+        !!(ds.negotiation?.terms?.length || ds.negotiation?.trades?.length || ds.negotiation?.limit?.trim() || ds.negotiation?.pathToSignature?.length)
     );
 }

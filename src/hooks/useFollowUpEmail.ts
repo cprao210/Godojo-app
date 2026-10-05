@@ -21,7 +21,6 @@ export function useFollowUpEmail(isOpen: boolean, meeting: Meeting) {
     const [emailBody, setEmailBody] = useState('');
     const [isCopied, setIsCopied] = useState(false);
     const [isGenerating, setIsGenerating] = useState(false);
-    const [hasGeneratedOnce, setHasGeneratedOnce] = useState(false);
     const [isEditMode, setIsEditMode] = useState(false);
     const [isRegeneratedEmail, setIsRegeneratedEmail] = useState(false);
 
@@ -105,56 +104,14 @@ export function useFollowUpEmail(isOpen: boolean, meeting: Meeting) {
     // ── Main generator ─────────────────────────────────────────────────────────
 
     const generateEmail = async (rName?: string, sName?: string) => {
-        const prebuilt = meeting.detailedSummary?.followUpEmail;
+        // Always generated on demand — the summary JSON no longer carries a
+        // prebuilt followUpEmail (dropped from the generation contract to
+        // save tokens); this LLM call owns the email end-to-end.
         const resolvedRecipient = resolveRecipientName(rName);
         const resolvedSender = resolveSenderName(sName);
         const company = resolveCompany();
 
-        // ── Path A: use prebuilt data from the post-call LLM ──────────────────
-        if (prebuilt && !hasGeneratedOnce) {
-            if (prebuilt.subject) setSubject(prebuilt.subject);
-
-            let bodyContent = '';
-
-            if (prebuilt.fullEmail?.trim()) {
-                // fullEmail exists — strip any greeting/sign-off the LLM may have
-                // included so we can re-wrap consistently with resolved names.
-                bodyContent = prebuilt.fullEmail
-                    .replace(/^(dear|hi|hello|hey)[^,\n]*[,\n]\s*/i, '')  // strip existing greeting
-                    // Sign-off: match from the last occurrence of a closing phrase to end,
-                    // using a non-greedy line-anchored pattern so body content is never eaten
-                    .replace(/\n(warm regards|sincerely|best regards|best|thank you|regards|cheers)[^\n]*(\n[\s\S]*)?$/i, '')
-                    .trim();
-            } else if (prebuilt.sections) {
-                // No fullEmail — build the body from structured sections.
-                const sections = prebuilt.sections;
-                const lines: string[] = [];
-
-                if (sections.whatWeDiscussed?.length)
-                    lines.push(`WHAT WE DISCUSSED\n${sections.whatWeDiscussed.map((s: string) => `• ${s}`).join('\n')}`);
-                if (sections.whatIsTheNeed?.length)
-                    lines.push(`WHAT IS THE NEED\n${sections.whatIsTheNeed.map((s: string) => `• ${s}`).join('\n')}`);
-                if (sections.scopeOfImprovement?.length)
-                    lines.push(`SCOPE OF IMPROVEMENT\n${sections.scopeOfImprovement.map((s: string) => `• ${s}`).join('\n')}`);
-                if (sections.whatYouWillAchieveAfterTransformation?.length)
-                    lines.push(`WHAT YOU WILL ACHIEVE\n${sections.whatYouWillAchieveAfterTransformation.map((s: string) => `• ${s}`).join('\n')}`);
-                if (sections.nextSteps?.length)
-                    lines.push(`NEXT STEPS\n${sections.nextSteps.map((s: string) => `• ${s}`).join('\n')}`);
-
-                bodyContent = lines.join('\n\n');
-            }
-
-            // Always wrap with greeting + sign-off regardless of which path was used
-            setEmailBody(wrapWithGreetingAndSignoff(
-                bodyContent || `I wanted to follow up on our conversation about ${company}.`,
-                resolvedRecipient,
-                resolvedSender
-            ));
-            setHasGeneratedOnce(true);
-            return;
-        }
-
-        // ── Path B: generate via LLM (no prebuilt data, or forced regeneration) ─
+        // ── Generate via LLM ───────────────────────────────────────────────────
         setIsGenerating(true);
         try {
             const ds = meeting.detailedSummary;
@@ -216,7 +173,6 @@ export function useFollowUpEmail(isOpen: boolean, meeting: Meeting) {
                     .trim();
 
                 setEmailBody(wrapWithGreetingAndSignoff(body, resolvedRecipient, resolvedSender, true));
-                setHasGeneratedOnce(true);
                 setIsRegeneratedEmail(true);
             }
         } catch (error) {

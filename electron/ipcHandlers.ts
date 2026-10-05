@@ -3617,9 +3617,6 @@ export function initializeIpcHandlers(appState: AppState): void {
       const geminiPrompt = `${llmHelper.applyLanguageInstruction(FOLLOWUP_EMAIL_PROMPT)}\n\nMEETING DETAILS:\n${enrichedContext}`;
       const groqPrompt = `${llmHelper.applyLanguageInstruction(GROQ_FOLLOWUP_EMAIL_PROMPT)}\n\nMEETING DETAILS:\n${enrichedContext}`;
 
-      console.log("=> generate follow-up email (geminiPrompt): ", geminiPrompt);
-      console.log("=> generate follow-up email (groqPrompt): ", groqPrompt);
-
       // Use chatWithGemini with alternateGroqMessage for fallback
       try {
         const emailBody = await llmHelper.chatWithGemini(geminiPrompt, undefined, undefined, true, groqPrompt);

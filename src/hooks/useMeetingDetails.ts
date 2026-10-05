@@ -19,13 +19,14 @@ import { useQuery, useMutation, useQueryClient } from 'react-query';
 import { meetingsApi, chatApi } from '@/api';
 import { isMeetingProcessing } from '@/api/meetingMapping';
 import { guardSession } from '@/lib/firebase';
-import type { CompanyRef, Meeting, MeetingTranscriptLine, MeetingScorecardResult, LiveAnalysisData } from '@/types';
-import { normalizeBant, normalizeMeddicc, confirmedOnly, fieldEvidenceList, fieldSummary, fieldText, BANT_ORDER, MEDDICC_ORDER } from '@/lib/bantMeddic';
+import type { CompanyRef, Meeting, MeetingTranscriptLine, MeetingScorecardResult } from '@/types';
+import { fieldEvidenceList, fieldSummary, fieldText } from '@/lib/bantMeddic';
 import { deriveProcessingStage, hasGeneratedSummary, PROCESSING_STALL_TIMEOUT_MS } from '@/lib/meetingLifecycle';
+import { filledCoachQuestions, coachQuestionText, coachPromises, parseCoachNoteItem, /* parseCoachHighlight, */ callInvolves, type ParsedCoachNote } from '@/lib/coachSummary';
 import { classifyLLMError } from '@/lib/utils';
 import { splitRepFollowUps } from '@/lib/objections';
 import { posthogAnalytics } from '@/lib/analytics/posthog.service';
-import { createSpeakerLabeler, formatTime, formatTranscriptTimestamp, transcriptTimesAreRelative as computeTranscriptTimesAreRelative } from '@/lib/transcriptLabels';
+import { createSpeakerLabeler, formatTime, formatTranscriptForCopy, formatTranscriptTimestamp, transcriptTimesAreRelative as computeTranscriptTimesAreRelative } from '@/lib/transcriptLabels';
 
 // Label/time formatting lives in lib/transcriptLabels so the PDF export renders transcripts
 // identically to the Transcript tab. Re-exported here for existing importers (@/hooks).
@@ -46,13 +47,18 @@ export function isSummaryEmpty(ds: NonNullable<Meeting['detailedSummary']>): boo
         !ds.overview?.trim() &&
         !hasContent(ds.keyPoints) &&
         !hasContent(ds.actionItems) &&
-        !ds.dealStatus?.stage?.trim() &&
-        !ds.dealStatus?.summary?.trim() &&
-        !ds.salesCoachReview?.whatIDidRight?.some(s => s?.trim()) &&
+        !ds.salesCoachReview?.whatIDidRight?.some(s => typeof s === 'string' ? s?.trim() : !!(s && (s.moment || s.why))) &&
         !ds.salesCoachReview?.whatICouldHaveDoneBetter?.some(s => s?.trim()) &&
         !ds.salesCoachReview?.whatIMissedCompletely?.some(s => s?.trim()) &&
+        !ds.nextCallPlaybook?.callGoal?.trim() &&
         !ds.nextCallPlaybook?.openingRecap?.trim() &&
-        !ds.nextCallPlaybook?.questionsToAsk?.some(s => s?.trim())
+        !filledCoachQuestions(ds.nextCallPlaybook?.questionsToAsk) &&
+        !(ds.nextCallPlaybook?.valueAndROI?.quantitative?.length || ds.nextCallPlaybook?.valueAndROI?.qualitative?.length) &&
+        !ds.openLoops?.length &&
+        !ds.promises?.length &&
+        !ds.demoReview?.reactions?.length &&
+        !ds.demoReview?.successCriteria?.length &&
+        !(ds.negotiation?.terms?.length || ds.negotiation?.trades?.length || ds.negotiation?.limit?.trim() || ds.negotiation?.pathToSignature?.length)
     );
 }
 
@@ -717,6 +723,17 @@ export function useMeetingDetails(initialMeeting: Meeting) {
         }
     };
 
+    /** Opens the Ask Dojo chat with a caller-supplied prompt — used by the
+     *  Game Plan's "Practice with Dojo" buttons. Same path as the ask bar. */
+    const handlePracticeWithDojo = (prompt: string) => {
+        const text = prompt.trim();
+        if (!text) return;
+        setPendingQuery({ text, id: Date.now() });
+        if (!isChatOpen) {
+            setIsChatOpen(true);
+        }
+    };
+
     const handleInputKeyDown = (e: React.KeyboardEvent) => {
         // Shift+Enter inserts a newline — let the textarea handle it
         // natively instead of submitting.
@@ -733,114 +750,159 @@ export function useMeetingDetails(initialMeeting: Meeting) {
         let textToCopy = '';
 
         if (activeTab === 'summary' && meeting.detailedSummary) {
+            // Mirrors the Coach tab layout: Call Summary, the type panels
+            // (demo/negotiation, when those types are involved), the fixed
+            // Game Plan, Coach's notes, and legacy Action Items.
             const ds = meeting.detailedSummary;
+            const parts: string[] = [];
 
-            const formatList = (arr?: string[]) =>
-                arr && arr.length ? arr.map(i => `  • ${i}`).join('\n') : '  None';
+            parts.push([
+                meeting.title.toUpperCase(),
+                new Date(meeting.date).toLocaleDateString('en-US', { weekday: 'long', month: 'long', day: 'numeric', year: 'numeric' }),
+            ].join('\n'));
 
-            const la = (ds as any).liveAnalysis as LiveAnalysisData | undefined;
-            const normalizedBant = normalizeBant(la?.bant);
-            const normalizedMeddicc = normalizeMeddicc(la?.meddic);
+            // ── Call Summary ──
+            if (ds.keyPoints?.length) {
+                parts.push(['CALL SUMMARY', ...ds.keyPoints.map(p => `  • ${p}`)].join('\n'));
+            }
 
-            const formatBANT = () => {
-                const rows = confirmedOnly(normalizedBant, BANT_ORDER)
-                    .map(({ label, detail }) => `  ✅ ${label}: ${detail}`)
-                    .join('\n');
-                return rows || '  None confirmed yet';
-            };
+            const involvesDemo = callInvolves('demo', ds, meeting.meetingTypes, scorecard?.detectedTypes);
+            const involvesNegotiation = callInvolves('negotiation', ds, meeting.meetingTypes, scorecard?.detectedTypes);
 
-            const formatMEDDICC = () => {
-                const rows = confirmedOnly(normalizedMeddicc, MEDDICC_ORDER)
-                    .map(({ label, detail }) => `  ✅ ${label}: ${detail}`)
-                    .join('\n');
-                return rows || '  None confirmed yet';
-            };
+            // ── Follow up on the demo ──
+            if (involvesDemo) {
+                const demoParts: string[] = [];
+                const reactions = (ds.demoReview?.reactions ?? []).filter(r => r?.feature?.trim() && r?.quote?.trim());
+                if (reactions.length) {
+                    demoParts.push('  HOW IT LANDED');
+                    demoParts.push(...reactions.map(r => {
+                        const attribution = [r.speaker?.trim(), r.timestamp?.trim()].filter(Boolean).join(' · ');
+                        const verdict = r.verdict === 'landed' ? ' [LANDED]' : r.verdict === 'follow_up' ? ' [FOLLOW UP]' : '';
+                        return `    • ${r.feature}: "${r.quote.trim()}"${attribution ? ` — ${attribution}` : ''}${verdict}`;
+                    }));
+                }
+                const demoLoops = (ds.openLoops ?? []).filter(l => l?.concern?.trim());
+                if (demoLoops.length) {
+                    demoParts.push('  ANSWER WHAT YOU OWE THEM');
+                    for (const l of demoLoops) {
+                        demoParts.push(`    They asked: "${l.concern.trim()}"`);
+                        if (l.suggestedAnswer?.trim()) demoParts.push(`    Try saying: "${l.suggestedAnswer.trim()}"`);
+                    }
+                }
+                const criteria = (ds.demoReview?.successCriteria ?? []).filter(c => c?.metric?.trim() && c?.target?.trim());
+                if (criteria.length) {
+                    demoParts.push('  AGREE HOW THE PILOT IS JUDGED');
+                    demoParts.push(...criteria.map(c =>
+                        `    • ${c.target} — ${c.metric}${c.owner?.trim() ? ` (${c.owner.trim()}'s metric)` : ''}`));
+                }
+                if (demoParts.length) parts.push(['FOLLOW UP ON THE DEMO', ...demoParts].join('\n'));
+            }
 
-            const formatSalesCoachReview = () => {
-                if (!ds.salesCoachReview) return '';
+            // ── Move the deal to signature ──
+            if (involvesNegotiation) {
+                const negParts: string[] = [];
+                const terms = (ds.negotiation?.terms ?? []).filter(t => t?.term?.trim() && (t.theyAsked?.trim() || t.youOffered?.trim()));
+                if (terms.length) {
+                    negParts.push('  WHERE THE TERMS STAND');
+                    for (const t of terms) {
+                        const statusLabel =
+                            t.status === 'agreed' ? ' [AGREED]'
+                                : t.status === 'open' ? ' [OPEN]'
+                                    : t.status === 'leaning' ? ' [LEANING YES]'
+                                        : t.status === 'must_have' ? ' [MUST HAVE]'
+                                            : '';
+                        negParts.push(`    • ${t.term}${statusLabel}`);
+                        if (t.theyAsked?.trim()) negParts.push(`        They asked: ${t.theyAsked.trim()}`);
+                        if (t.youOffered?.trim()) negParts.push(`        You offered: ${t.youOffered.trim()}`);
+                    }
+                }
+                const trades = (ds.negotiation?.trades ?? []).filter(t => t?.give?.trim() && t?.get?.trim());
+                const limit = ds.negotiation?.limit?.trim();
+                if (trades.length || limit) {
+                    negParts.push('  TRADES TO OFFER');
+                    negParts.push(...trades.map(t => `    • If you give: ${t.give}\n      Ask for: ${t.get}`));
+                    if (limit) negParts.push(`    Your limit: ${limit}`);
+                }
+                const path = (ds.negotiation?.pathToSignature ?? []).filter(s => s?.step?.trim());
+                if (path.length) {
+                    negParts.push('  PATH TO SIGNATURE');
+                    negParts.push(...path.map(s =>
+                        `    • ${[s.date?.trim(), s.step.trim(), s.owner?.trim()].filter(Boolean).join(' — ')}`));
+                }
+                if (negParts.length) parts.push(['MOVE THE DEAL TO SIGNATURE', ...negParts].join('\n'));
+            }
 
-                const sections = [
-                    { label: '✅ WHAT I DID RIGHT', items: ds.salesCoachReview.whatIDidRight },
-                    { label: '⚠️ WHAT I COULD HAVE DONE BETTER', items: ds.salesCoachReview.whatICouldHaveDoneBetter },
-                    { label: '❌ WHAT I MISSED COMPLETELY', items: ds.salesCoachReview.whatIMissedCompletely },
+            // ── Your game plan for the next call (fixed structure) ──
+            const playbook = ds.nextCallPlaybook;
+            const goal = playbook?.callGoal?.trim();
+            const recap = playbook?.openingRecap?.trim();
+            const questions = (playbook?.questionsToAsk ?? [])
+                .map(q => ({
+                    text: coachQuestionText(q).trim(),
+                    gap: (typeof q === 'string' ? '' : q?.gap?.trim() ?? '') || null,
+                }))
+                .filter(q => q.text);
+            const loops = (ds.openLoops ?? []).filter(l => l?.concern?.trim());
+            const quant = (playbook?.valueAndROI?.quantitative ?? []).map(s => s?.trim() ?? '').filter(Boolean);
+            const qual = (playbook?.valueAndROI?.qualitative ?? []).map(s => s?.trim() ?? '').filter(Boolean);
+            const promises = coachPromises(ds);
+
+            if (goal || recap || questions.length || loops.length || quant.length || qual.length || promises.length) {
+                const planParts: string[] = [];
+                if (goal) {
+                    const closes = Array.from(new Set(questions.map(q => q.gap).filter(Boolean))) as string[];
+                    planParts.push(`  YOUR GOAL FOR THE CALL\n    ${goal}${closes.length ? `\n    Closes: ${closes.join(', ')}` : ''}`);
+                }
+                planParts.push(`  1. OPEN WITH — a 30-second recap in their words\n${recap ? `    "${recap}"` : '    (no recap captured)'}`);
+                planParts.push(`  2. ASK THESE — each one closes a gap in the deal${questions.length
+                    ? '\n' + questions.map(q => `    • ${q.gap ? `[${q.gap}] ` : ''}${q.text}`).join('\n')
+                    : '\n    (none captured)'}`);
+                planParts.push(`  3. CLOSE THE OPEN LOOPS — concerns they raised that aren't settled yet${loops.length
+                    ? '\n' + loops.map(l =>
+                        `    They asked: "${l.concern.trim()}"${l.suggestedAnswer?.trim() ? `\n    Try saying: "${l.suggestedAnswer.trim()}"` : ''}`).join('\n')
+                    : '\n    (none — all settled)'}`);
+                const valueLines = [
+                    ...(quant.length ? ['    In numbers:', ...quant.map(v => `      • ${v}`)] : []),
+                    ...(qual.length ? ['    In their words:', ...qual.map(v => `      • ${v}`)] : []),
                 ];
+                planParts.push(`  4. REINFORCE THE VALUE — numbers they already agreed with${valueLines.length ? '\n' + valueLines.join('\n') : '\n    (none captured)'}`);
+                planParts.push(`  5. PROMISES YOU MADE${promises.length
+                    ? '\n' + promises.map(p =>
+                        `    • ${p.text}${p.owner?.trim() ? ` (${p.owner.trim()})` : ''}${p.dueDate?.trim() ? ` — due ${p.dueDate.trim()}` : ''}`).join('\n')
+                    : '\n    (none made)'}`);
+                parts.push(['YOUR GAME PLAN FOR THE NEXT CALL', ...planParts].join('\n'));
+            }
 
-                return sections
-                    .map(({ label, items }) => {
-                        if (!items || items.length === 0) return null;
-                        return `  ${label}\n${items.map(item => `    • ${item}`).join('\n')}`;
-                    })
-                    .filter(Boolean)
-                    .join('\n\n');
+            // ── Coach's notes ──
+            const formatCoachNote = (n: ParsedCoachNote): string => {
+                const stamp = n.time ? `[${n.time}] ` : '';
+                const lines = [`    • ${stamp}${n.label ? `[${n.label}] ` : ''}${n.content || n.quote || ''}`];
+                if (n.content && n.quote) lines.push(`        Try saying: "${n.quote}"`);
+                return lines.join('\n');
             };
+            // REPLAY (disabled): "Replay these moments" is hidden from the copied text for now.
+            // const keepDoing = (ds.salesCoachReview?.whatIDidRight ?? [])
+            //     .map(parseCoachHighlight).filter((n): n is ParsedCoachNote => n !== null);
+            const tryNextTime = (ds.salesCoachReview?.whatICouldHaveDoneBetter ?? [])
+                .map(parseCoachNoteItem).filter((n): n is ParsedCoachNote => n !== null);
+            if (tryNextTime.length) {
+                const notes: string[] = [];
+                // REPLAY (disabled): if (keepDoing.length) notes.push('  REPLAY THESE MOMENTS\n' + keepDoing.map(formatCoachNote).join('\n'));
+                notes.push('  TRY NEXT TIME\n' + tryNextTime.map(formatCoachNote).join('\n'));
+                parts.push(["COACH'S NOTES", ...notes].join('\n'));
+            }
 
-            const formatNextCallPlaybook = () => {
-                if (!ds.nextCallPlaybook) return '';
+            // ── Legacy meetings keep their editable Action Items section ──
+            if (ds.salesCoachReview === undefined && ds.actionItems?.length) {
+                parts.push(['ACTION ITEMS', ...ds.actionItems.map(i => `  • ${i}`)].join('\n'));
+            }
 
-                const parts: string[] = [];
-
-                if (ds.nextCallPlaybook.openingRecap) {
-                    parts.push(`  OPENING RECAP:\n    ${ds.nextCallPlaybook.openingRecap}`);
-                }
-
-                if (ds.nextCallPlaybook.questionsToAsk?.length) {
-                    parts.push(`  CRITICAL GAP QUESTIONS:\n${ds.nextCallPlaybook.questionsToAsk.map(q => `    • "${q}"`).join('\n')}`);
-                }
-
-                if (ds.nextCallPlaybook.valueAndROI) {
-                    const roi = ds.nextCallPlaybook.valueAndROI;
-                    const roiParts: string[] = [];
-
-                    if (roi.quantitative?.length) {
-                        roiParts.push(`    Quantitative:\n${roi.quantitative.map(q => `      • ${q}`).join('\n')}`);
-                    }
-                    if (roi.qualitative?.length) {
-                        roiParts.push(`    Qualitative:\n${roi.qualitative.map(q => `      • ${q}`).join('\n')}`);
-                    }
-                    if (roiParts.length) {
-                        parts.push(`  VALUE & ROI:\n${roiParts.join('\n')}`);
-                    }
-                }
-
-                return parts.join('\n\n');
-            };
-
-            textToCopy = `
-${meeting.title.toUpperCase()}
-${new Date(meeting.date).toLocaleDateString()}
-
-OVERVIEW
-${ds.overview || 'No overview available.'}
-
-KEY POINTS
-${formatList(ds.keyPoints)}
-
-ACTION ITEMS
-${formatList(ds.actionItems)}
-
-BANT
-${formatBANT()}
-
-MEDDICC
-${formatMEDDICC()}
-
-DEAL STATUS
-  Stage: ${ds.dealStatus?.stage || 'Unknown'}
-  ${ds.dealStatus?.summary || ''}
-
-SALES COACH REVIEW
-${formatSalesCoachReview() || '  None'}
-
-NEXT CALL PLAYBOOK
-${formatNextCallPlaybook() || '  None'}
-            `
-                .trim();
+            textToCopy = parts.join('\n\n').trim();
 
         } else if (activeTab === 'transcript' && meeting.transcript) {
-            textToCopy = meeting.transcript
-                .filter(t => !['system', 'ai', 'assistant', 'model'].includes(t.speaker?.toLowerCase()))
-                .map(t => `[${formatTime(t.timestamp)}] ${getSpeakerDisplayName(t.speaker, t.displayName, (t as any).speakerIndex)}: ${t.text}`)
-                .join('\n');
+            // Same "Label (MM:SS): text" shape the Upload Transcript parser reads (format 7),
+            // for uploaded AND live-call transcripts — see formatTranscriptForCopy.
+            textToCopy = formatTranscriptForCopy(meeting.transcript as any, speakerNames);
 
         } else if (activeTab === 'usage' && meeting.usage) {
             textToCopy = meeting.usage
@@ -1051,6 +1113,7 @@ ${formatNextCallPlaybook() || '  None'}
         getSpeakerDisplayName,
         transcriptTimesAreRelative,
         handleSubmitQuestion,
+        handlePracticeWithDojo,
         handleInputKeyDown,
         meetingInputRef,
         isChatBusy,

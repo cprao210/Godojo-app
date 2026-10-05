@@ -1074,12 +1074,110 @@ export interface MeetingUsageEntry {
   items?: string[];
 }
 
+// --- Coach-ready summary additions (call-type-aware data layer) ---
+// All of these are optional and additive: summaries saved before this layer
+// existed simply don't have them, and every consumer must tolerate their
+// absence. See docs/ and electron/llm/summaryPrompt.ts for generation.
+
+/** The kind of call the meeting was, resolved from explicit/detected meeting
+ *  types (negotiation > demo > discovery). Distinct from dealStatus.stage. */
+export type CoachCallType = 'discovery' | 'demo' | 'negotiation';
+
+/** questionsToAsk entry. Old summaries store plain strings — do NOT rewrite
+ *  them; new summaries store { question, gap? } objects. Support both. */
+export type CoachQuestion =
+  | string
+  | {
+      question: string;
+      gap?: string;
+    };
+
+export type DemoReaction = {
+  feature: string;
+  verdict: 'landed' | 'follow_up';
+  quote: string;
+  speaker: string;
+  timestamp?: string;
+};
+
+export type DemoSuccessCriterion = {
+  metric: string;
+  target: string;
+  owner?: string;
+};
+
+export type CoachStakeholder = {
+  name: string;
+  role: string;
+  stance: 'champion' | 'needs_answer' | 'not_met';
+  note?: string;
+};
+
+export type NegotiationTerm = {
+  term: string;
+  theyAsked: string;
+  youOffered: string;
+  status: 'agreed' | 'open' | 'leaning' | 'must_have';
+};
+
+export type NegotiationTrade = {
+  give: string;
+  get: string;
+};
+
+export type NegotiationPathStep = {
+  date?: string;
+  step: string;
+  owner?: string;
+};
+
+export type CoachOpenLoop = {
+  concern: string;
+  suggestedAnswer?: string;
+};
+
+export type CoachDemoReview = {
+  reactions?: DemoReaction[];
+  successCriteria?: DemoSuccessCriterion[];
+};
+
+export type CoachNegotiation = {
+  terms?: NegotiationTerm[];
+  trades?: NegotiationTrade[];
+  limit?: string;
+  pathToSignature?: NegotiationPathStep[];
+};
+
+export type CoachPromise = {
+  text: string;
+  owner?: string;
+  dueDate?: string;
+};
+
+/** whatIDidRight entry. Old summaries store "Label: content" strings — do
+ *  NOT rewrite them; new summaries store film-review highlight objects
+ *  (time/skill/moment/why) describing the rep's own behavior. */
+export type CoachHighlight = {
+    /** Transcript timecode of the moment ("04:55"), when known. */
+    time?: string;
+    /** Conversation skill area — "Questioning", "Objection handling"… */
+    skill: string;
+    /** What the REP said or did at that moment (rep behavior, not deal facts). */
+    moment: string;
+    /** Why it worked — the thing to repeat next time. */
+    why: string;
+};
+
 export interface MeetingDetailedSummary {
   overview?: string;
   actionItems: string[];
   keyPoints: string[];
   actionItemsTitle?: string;
   keyPointsTitle?: string;
+
+  /** Resolved call type this summary was generated against (stamped by the
+   *  generator, never by the LLM). Absent on pre-coach summaries. */
+  coachCallType?: CoachCallType;
 
   leadName?: string;
   company?: string;
@@ -1121,18 +1219,40 @@ export interface MeetingDetailedSummary {
     fullEmail?: string;
   };
   salesCoachReview?: {
-    whatIDidRight?: string[];
+    whatIDidRight?: (string | CoachHighlight)[];
     whatICouldHaveDoneBetter?: string[];
     whatIMissedCompletely?: string[];
   };
   nextCallPlaybook?: {
+    callGoal?: string;
     openingRecap?: string;
-    questionsToAsk?: string[];
+    questionsToAsk?: CoachQuestion[];
     valueAndROI?: {
       quantitative?: string[];
       qualitative?: string[];
     };
   };
+
+  /** Customer questions/concerns/objections still unresolved after the call.
+   *  Derived from the live analysis's objection list (unresolved entries only)
+   *  during reconciliation — see summaryReconciliation.ts. */
+  openLoops?: CoachOpenLoop[];
+
+  /** Demo-call review: how each demonstrated feature landed + pilot success
+   *  criteria. Only generated for demo calls. */
+  demoReview?: CoachDemoReview;
+
+  /** Stakeholders identified in the conversation (demo + negotiation calls). */
+  stakeholders?: CoachStakeholder[];
+
+  /** Negotiation-call data. `limit` is only ever present when the rep
+   *  explicitly stated a walk-away point on the call. */
+  negotiation?: CoachNegotiation;
+
+  /** Structured commitments (rep promises / agreed follow-ups) with owners
+   *  and due dates when established. Complements — never replaces — the
+   *  plain-string actionItems list. */
+  promises?: CoachPromise[];
 
   // Tolerate extra summary keys (e.g. speakerNames) read via casts.
   [key: string]: any;

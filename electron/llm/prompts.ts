@@ -928,67 +928,25 @@ export const GROQ_SUMMARY_JSON_PROMPT = `You are a B2B sales call analyst. Retur
 
 {
   "overview": "2-3 sentence call summary and deal status",
-  "dealStatus": { 
-    "stage": "Discovery|Qualification|Demo|Proposal|Negotiation|Closed Won|Closed Lost|Unknown", 
-    "summary": "1 sentence on where the deal stands" 
-  },
-  "bant": {
-    "budget": { "status": "Clear|Partial|Missing", "detail": "what was said or implied about budget" },
-    "authority": { "status": "Clear|Partial|Missing", "detail": "who the decision maker is" },
-    "need": { "status": "Clear|Partial|Missing", "detail": "what pain or need was uncovered" },
-    "timeline": { "status": "Clear|Partial|Missing", "detail": "when they want to move" }
-  },
-  "meddicc": {
-    "metrics": { "status": "Clear|Partial|Missing", "detail": "quantifiable business impact discussed" },
-    "economicBuyer": { "status": "Clear|Partial|Missing", "detail": "who controls the budget" },
-    "decisionCriteria": { "status": "Clear|Partial|Missing", "detail": "evaluation criteria" },
-    "decisionProcess": { "status": "Clear|Partial|Missing", "detail": "buying process steps" },
-    "identifyPain": { "status": "Clear|Partial|Missing", "detail": "specific pain points and business impact" },
-    "champion": { "status": "Clear|Partial|Missing", "detail": "internal advocate identified" },
-    "competition": { "status": "Clear|Partial|Missing", "detail": "competitors or alternatives mentioned" },
-    "gaps": ["MEDDICC components that are Missing or Partial — these need follow-up"]
-  },
-  "followUpEmail": {
-    "subject": "specific email subject line",
-    "sections": {
-      "whatWeDiscussed": ["3-4 bullets of key discussion points"],
-      "currentProcess": "1-2 sentences on their current state/workflow",
-      "scopeOfImprovement": ["2-3 bullets on identified gaps or problems"],
-      "howOurSolutionHelps": ["2-3 bullets on how the solution addresses their specific pain"],
-      "expectedBusinessImpact": ["2-3 bullets on quantitative and qualitative ROI"],
-      "nextSteps": ["specific agreed next steps with owners and timelines if mentioned"]
-    }
-  },
   "leadName": "extract prospect full name from transcript — first name + last name if mentioned, else null",
   "company": "extract company/organization name from transcript, else null",
   "salesCoachReview": {
     "whatIDidRight": [
-      "MEDDICC Metrics: [specific win — e.g. Quantified cost of manual mapping at $15k/mo using implication question]",
-      "MEDDICC EconomicBuyer: [specific win — e.g. Identified Sarah Chen (CFO) as budget owner early in conversation]",
-      "BANT Budget: [specific win — e.g. Confirmed budget allocated for Operational Efficiency in FY24]",
-      "BANT Timeline: [specific win — e.g. Solidified Dec 15th as hard deadline for system parity]"
+      { "time": "the moment's real transcript timestamp (mm:ss)", "skill": "the conversation skill area — Questioning / Discovery / Objection handling / Value presentation / Listening / Communication / Next steps", "moment": "what the REP said or did at that moment", "why": "why it worked — the thing to repeat next time" }
     ],
     "whatICouldHaveDoneBetter": [
-      "Should have pushed harder on [specific topic] — ask: [exact question]",
-      "Missed opportunity to [specific action] when prospect said [trigger phrase]",
-      "Over-explained [topic] instead of focusing on business outcome",
-      "Didn't ask for [specific thing] during [moment in call]",
-      "Talked over prospect when they mentioned [topic] — should have probed deeper"
-    ],
-    "whatIMissedCompletely": [
-      "Identify Champion: [specific gap about champion identification]",
-      "Metrics: [specific metric that was never asked about]",
-      "Authority: [specific authority/stakeholder gap]",
-      "Process: [specific process that was skipped]",
-      "Pain: [specific pain point that was never addressed]"
+      "Skill Area: what was missed or could have been handled better, plus exactly how to do it better next time — name the moment, the replacement behaviour, and a suggested script in double quotes (always include one) (e.g. \"Value presentation: Answered the pricing pushback with a feature list — next time anchor to their stated problem first: “You said vendor delays cost you two weeks in June — here is how that goes away.”\")"
     ]
   },
   "nextCallPlaybook": {
+    "callGoal": "one concise sentence — the single most important outcome to secure on the next call, grounded in the current deal situation",
     "openingRecap": "2-3 sentences to open next call recapping where things stand",
-    "questionsToAsk": ["5 high-value questions targeting weakest BANT/MEDDICC areas from this call"],
-    "valueAndROI": { 
-      "quantitative": ["2-3 measurable ROI points to reinforce"], 
-      "qualitative": ["2-3 strategic or emotional value points to reinforce"] 
+    "questionsToAsk": [
+      { "question": "a high-value question targeting the weakest BANT/MEDDICC areas from this call", "gap": "the specific BANT or MEDDICC component this question addresses (e.g. \\"Economic Buyer\\", \\"Metrics\\", \\"Budget\\") — omit \\"gap\\" when the link is unclear" }
+    ],
+    "valueAndROI": {
+      "quantitative": ["2-3 measurable ROI points to reinforce"],
+      "qualitative": ["2-3 strategic or emotional value points to reinforce"]
     }
   },
   "keyPoints": ["4-6 bullets — top things to know about this deal right now"],
@@ -998,12 +956,14 @@ export const GROQ_SUMMARY_JSON_PROMPT = `You are a B2B sales call analyst. Retur
 CRITICAL RULES — follow exactly:
 - Missing = no evidence at all. Partial = mentioned but vague. Clear = explicitly confirmed with specifics.
 - Do NOT invent information not in the transcript — reference actual moments, names, numbers.
-- followUpEmail tone: simple, clear, no jargon, client-friendly.
 - leadName and company: extract from transcript introductions. Return null if not found.
-- salesCoachReview.whatIDidRight: EVERY item MUST start with framework label + component name in this format: "MEDDICC ComponentName:" or "BANT ComponentName:" — e.g. "MEDDICC Metrics:", "MEDDICC EconomicBuyer:", "BANT Budget:", "BANT Timeline:". Group ALL MEDDICC items first, then BANT items. Return ONLY items grounded in actual transcript moments — minimum 2, maximum 6. Do NOT pad with generic items.
-- salesCoachReview.whatIMissedCompletely: Only include components that were NEVER raised, asked about, or referenced at any point in the call — zero evidence in the transcript. Use labels: "Identify Champion:", "Metrics:", "Authority:", "Process:", "Pain:". Never change the order. If a component was touched (even briefly or poorly), it belongs in whatICouldHaveDoneBetter instead. Maximum 3 items — if fewer than 2 qualify as truly missed, return only those that do; do NOT pad.
-- salesCoachReview.whatICouldHaveDoneBetter: Include both (a) moments where execution was poor, AND (b) MEDDICC/BANT components that were touched but not explored deeply enough — reference the specific moment and add the missed follow-up question. Format these as: "Metrics: Asked about cost but never quantified ROI — should have asked: [exact question]".
-- salesCoachReview.whatICouldHaveDoneBetter: reference specific moments from the transcript — not generic coaching advice.
+- salesCoachReview evaluates the OVERALL quality of the sales conversation — communication and clarity, questioning technique, discovery depth, objection handling, value presentation, listening and acknowledgment, talk-time balance, agenda and next-step control. It is NOT a BANT/MEDDICC coverage check (that is scored separately in Call Analysis) — never use BANT or MEDDICC component names as labels or content here.
+- salesCoachReview.whatICouldHaveDoneBetter: EVERY item MUST start with a short skill-area label (1-3 words) followed by ":" — e.g. "Questioning:", "Discovery:", "Objection handling:", "Value presentation:", "Listening:", "Communication:", "Next steps:". The label becomes a chip in the UI.
+- salesCoachReview.whatIDidRight: 2-3 film-review HIGHLIGHT OBJECTS (time/skill/moment/why) about the REP's own behavior — moments a coach would replay: buying behavior caught live, an objection answered cleanly, silence held after price, the buyer's tempo read correctly. "moment"/"why" describe what THE REP said or did — never the prospect's attributes and never deal facts (if it could sit in the discovery findings, it does not belong here). NEVER use BANT/MEDDICC component names (Budget, Authority, Need, Timeline, Metrics, EconomicBuyer, DecisionCriteria, DecisionProcess, IdentifyPain, Champion, Competition) as the skill or anywhere in these items — framework coverage is scored separately in Call Analysis. No two items may describe the same moment. "time" must be the moment's actual transcript timestamp. No flattery, no padding.
+- salesCoachReview.whatICouldHaveDoneBetter: list EVERY genuine improvement opportunity the transcript supports — be thorough, most important first, with no fixed count and no minimum. Include a point ONLY when you can name the real moment it came from (what the rep actually said or did, or the specific opening they missed) and the replacement behaviour. Never pad the list, never repeat the same point in different words, and never invent a moment, customer statement or number just to add another item. A call that was executed cleanly should return few items, or an empty array.
+- salesCoachReview.whatICouldHaveDoneBetter: every item must be practical — (1) the specific moment, (2) what to do differently next time, (3) a suggested script in double quotes — the exact words the rep could say next time (shown to the rep as a copyable "Try saying" suggestion). Include a script for EVERY item. The script is recommended new wording, not a claim about what happened, so write it even though it was not said on the call — but build it from the customer's real situation (their own terms, problem and numbers) and never put figures or facts in it that the call did not support. Use double quotes ONLY around that one script; cite anything the customer actually said with single quotes or paraphrase it. Never generic advice. Reference specific moments from the transcript.
+- Do NOT output "whatIMissedCompletely" — anything truly missed belongs in whatICouldHaveDoneBetter.
+- questionsToAsk: use the object format { "question", "gap" } — "gap" names the specific BANT or MEDDICC component the question addresses; omit "gap" when the link is unclear.
 - Return ONLY valid JSON — no markdown, no code blocks, no explanation.`;
 
 /**
@@ -1025,8 +985,21 @@ Return ONLY valid JSON — no markdown, no commentary — in exactly this shape:
 RULES:
 - confidence reflects what fraction of the summary's factual claims (names, numbers, statuses, quotes, commitments, next steps) are directly supported by the transcript. 100 = fully grounded, 0 = mostly invented.
 - Flag ANY of the following as an issue: a name, company, number, date, or quote that does not appear in the transcript; a BANT/MEDDICC status marked Clear/Confirmed without explicit supporting evidence; an action item or next step that was not actually agreed to; a salesCoachReview claim referencing a moment that didn't happen.
+- Also verify the coaching fields when present in the summary JSON:
+  • salesCoachReview — items must reference moments that actually happened; labels must be conversation skill areas (Questioning, Discovery, Objection handling, Value presentation, Listening, Communication, Next steps), NOT BANT/MEDDICC component names; whatICouldHaveDoneBetter items must include practical next-time guidance, not just the criticism, and a quoted suggested script (recommended new wording — do NOT flag the script as unsupported merely because it was not said on the call; flag it only if it states a fact, figure or customer statement the transcript does not support); whatIDidRight entries are objects with time/skill/moment/why describing the rep's OWN behavior — flag entries about the prospect or deal instead, framework-component skills, duplicated moments, or a "time" that does not match the moment in the transcript; flag any suggested script that fabricates customer statements.
+  • nextCallPlaybook.callGoal — must follow from the deal situation in the transcript; flag invented goals.
+  • nextCallPlaybook.questionsToAsk — each "question" must be answerable from the call context and each "gap" must plausibly map to the BANT/MEDDICC component it names; flag wrong gap mappings.
+  • openLoops.concern — must be a question/concern/objection the customer actually raised; flag invented concerns, concerns the rep already resolved during the call, and ungrounded "suggestedAnswer" values.
+  • promises — "text" must be a commitment actually made on the call (not a generic recommendation); flag any "owner" or "dueDate" that was not explicitly stated.
+  • demoReview.reactions — "quote" must appear VERBATIM in the transcript, "speaker" must match who said it, and "verdict" must match the reaction's actual sentiment (silence/politeness is not "landed"); flag invented features or reactions.
+  • demoReview.successCriteria — metric/target/owner must have been discussed; flag invented pilot targets or numbers.
+  • negotiation.terms — "theyAsked"/"youOffered" must match what each side said; flag any status "agreed" without explicit mutual confirmation (a proposal is NOT an agreement).
+  • negotiation.trades — must have been actually discussed; flag invented concessions.
+  • negotiation.limit — must be the rep's EXPLICITLY stated walk-away point; flag ANY limit inferred from pricing, discounts, objections, or strategy.
+  • negotiation.pathToSignature — flag any date or owner not stated in the call, and any step not grounded in the conversation.
+- Flag optional fields filled with placeholder values ("N/A", "Unknown", "Not discussed") — those should have been omitted entirely, not populated.
 - Do not flag reasonable paraphrasing or summarization — only flag information that is fabricated, contradicted, or has no basis in the transcript.
-- Be specific: each issue's "field" should point to the exact JSON key (e.g. "bant.budget.detail", "keyPoints[2]", "salesCoachReview.whatIDidRight[0]").
+- Be specific: each issue's "field" should point to the exact JSON key (e.g. "bant.budget.detail", "keyPoints[2]", "salesCoachReview.whatIDidRight[0]", "demoReview.reactions[1].quote", "negotiation.limit").
 - If everything is well-grounded, return "confidence": 100 and "issues": [].
 - Return ONLY the JSON object, nothing else.`;
 

@@ -100,18 +100,28 @@ export interface Meeting {
             fullEmail?: string;
         };
         salesCoachReview?: {
-            whatIDidRight?: string[];
+            whatIDidRight?: (string | { time?: string; skill: string; moment: string; why: string })[];
             whatICouldHaveDoneBetter?: string[];
             whatIMissedCompletely?: string[];
         };
         nextCallPlaybook?: {
+            callGoal?: string;
             openingRecap?: string;
-            questionsToAsk?: string[];
+            // Plain strings (old summaries) or { question, gap? } objects (new).
+            questionsToAsk?: import('../../src/types').CoachQuestion[];
             valueAndROI?: {
                 quantitative?: string[];
                 qualitative?: string[];
             };
         };
+
+        // Coach-ready fields (all optional — absent on pre-coach summaries).
+        coachCallType?: import('../../src/types').CoachCallType;
+        openLoops?: import('../../src/types').CoachOpenLoop[];
+        demoReview?: import('../../src/types').CoachDemoReview;
+        stakeholders?: import('../../src/types').CoachStakeholder[];
+        negotiation?: import('../../src/types').CoachNegotiation;
+        promises?: import('../../src/types').CoachPromise[];
     };
     participants?: { email: string | null, name: string | null, oraganizer: boolean, self: boolean }[];
     transcript?: Array<{
@@ -1954,7 +1964,12 @@ export class DatabaseManager {
         }
     }
 
-    public updateMeetingSummary(id: string, updates: { overview?: string, actionItems?: string[], keyPoints?: string[], actionItemsTitle?: string, keyPointsTitle?: string, liveAnalysis?: import('../../src/types').LiveAnalysisData }): boolean {
+    /** Read-merge-write of the stored detailedSummary (shallow spread — keys
+     *  not present in `updates` survive, which is what keeps user edits like
+     *  section titles across regenerations). Accepts any subset of the
+     *  detailed summary, including the optional coach-ready fields; passing a
+     *  key with value `undefined` removes it from the stored JSON. */
+    public updateMeetingSummary(id: string, updates: Partial<import('../../src/types').MeetingDetailedSummary>): boolean {
         if (!this.db) return false;
 
         try {

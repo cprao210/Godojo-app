@@ -16,7 +16,7 @@ const FloatingChatButton: React.FC<FloatingChatButtonProps> = ({ isOpen, onClick
         <div data-global-chat-fab className="group fixed bottom-6 right-6 z-[360] no-drag flex flex-col w-[50px] items-end gap-3">
             {/* Tooltip card — mirrors the app's glass surfaces, shows the keyboard shortcut */}
             {!isOpen && (
-                <div className="pointer-events-none opacity-0 translate-y-1 group-hover:opacity-100 group-hover:translate-y-0 transition-all duration-200 flex items-center gap-2 pl-3 pr-2 py-1.5 rounded-full bg-bg-elevated/95 backdrop-blur-xl border border-border-muted shadow-[0_8px_24px_rgba(0,0,0,0.25)]">
+                <div className="pointer-events-none opacity-0 translate-y-1 group-hover:opacity-100 group-hover:translate-y-0 transition-all duration-200 flex items-center gap-2 pl-3 pr-2 py-1.5 rounded-full bg-bg-elevated backdrop-blur-xl border border-border-muted shadow-[0_8px_24px_rgba(0,0,0,0.25)]">
                     <span className="text-[12px] font-medium text-text-primary whitespace-nowrap">{label}</span>
                     <span className="flex items-center gap-0.5">
                         {shortcutKeys.map((k) => (

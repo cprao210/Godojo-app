@@ -1,8 +1,8 @@
 import { describe, expect, it } from 'vitest';
 
 import {
-    buildConfirmedWhatIDidRight,
     buildMissingWhatIMissed,
+    deriveOpenLoopsFromLiveAnalysis,
     isPlaceholderSummaryItem,
     reconcileBantMeddicWithLiveAnalysis,
 } from '../summaryReconciliation';
@@ -81,16 +81,17 @@ const MIXED: any = {
 };
 
 describe('reconcileBantMeddicWithLiveAnalysis', () => {
-    it('all-confirmed call analysis → summary BANT/MEDDIC all Clear and 11 self-analysis wins', () => {
+    it('all-confirmed call analysis → BANT/MEDDIC all Clear, film-review highlights survive', () => {
+        const highlights = [
+            { time: '08:26', skill: 'Listening', moment: 'let the buyer walk through all three pain points', why: 'the volunteered context became the discovery' },
+            { time: '16:44', skill: 'Next steps', moment: 'asked for a specific implementation timeline', why: 'surfaced the seven-day urgency' },
+        ];
         const llmSummary = {
             actionItems: ['send proposal'],
             keyPoints: ['strong interest'],
             overview: 'Discovery with Daniel.',
             salesCoachReview: {
-                // The LLM's conservative, capped cherry-pick — this is what
-                // made Sales Self-Analysis disagree with the fully-confirmed
-                // Call Analysis.
-                whatIDidRight: ['BANT Need: uncovered dispatch pain', 'MEDDICC Metrics: ROI discussed'],
+                whatIDidRight: highlights,
                 whatIMissedCompletely: ['Process: never asked about eval steps'],
             },
             meddicc: { gaps: ['decision_process'] },
@@ -102,26 +103,21 @@ describe('reconcileBantMeddicWithLiveAnalysis', () => {
         expect(out.meddicc.champion).toEqual({ status: 'Clear', detail: 'Daniel will advocate internally' });
         // LLM's gap list survives (it is genuinely a summarization task)…
         expect(out.meddicc.gaps).toEqual(['decision_process']);
-        // …but the wins list is rebuilt from the confirmed set: 7 MEDDICC
-        // first, then 4 BANT.
-        expect(out.salesCoachReview.whatIDidRight).toHaveLength(11);
-        expect(out.salesCoachReview.whatIDidRight[0]).toBe('MEDDICC Metrics: cut scheduling time by 40%');
-        expect(out.salesCoachReview.whatIDidRight[6]).toBe('MEDDICC Competition: also looking at CompetitorX');
-        expect(out.salesCoachReview.whatIDidRight[7]).toBe('BANT Budget: Budget of 200k approved');
-        expect(out.salesCoachReview.whatIDidRight[10]).toBe('BANT Timeline: we want to go live next quarter');
+        // …and the film-review highlights pass through untouched — the
+        // reconciler no longer rebuilds this list from Confirmed fields.
+        expect(out.salesCoachReview.whatIDidRight).toEqual(highlights);
         // Other LLM-authored fields are untouched.
         expect(out.salesCoachReview.whatIMissedCompletely).toHaveLength(1);
         expect(out.overview).toBe('Discovery with Daniel.');
         expect(out.keyPoints).toEqual(['strong interest']);
     });
 
-    it('partial/missing metrics downgrade self-analysis to the confirmed subset', () => {
-        const out = reconcileBantMeddicWithLiveAnalysis({}, MIXED);
-        // confirmed in MIXED: bant.budget, bant.need, meddic.metrics,
-        // meddic.decision_process, meddic.identify_pain → 5 wins, not 11.
-        expect(out.salesCoachReview.whatIDidRight).toHaveLength(5);
+    it('partial/missing metrics reconcile BANT/MEDDIC but leave highlights untouched', () => {
+        const highlights = [{ skill: 'Questioning', moment: 'layered the deadline follow-up', why: 'uncovered the real driver' }];
+        const out = reconcileBantMeddicWithLiveAnalysis({ salesCoachReview: { whatIDidRight: highlights } }, MIXED);
         expect(out.bant.timeline.status).toBe('Missing');
         expect(out.meddicc.decisionCriteria.status).toBe('Missing');
+        expect(out.salesCoachReview.whatIDidRight).toEqual(highlights);
     });
 
     it('derives gaps from non-confirmed fields when the LLM omitted them', () => {
@@ -141,16 +137,6 @@ describe('reconcileBantMeddicWithLiveAnalysis', () => {
         const twice = reconcileBantMeddicWithLiveAnalysis(once, ALL_CONFIRMED);
         expect(twice.bant).toEqual(once.bant);
         expect(twice.salesCoachReview.whatIDidRight).toEqual(once.salesCoachReview.whatIDidRight);
-    });
-});
-
-describe('buildConfirmedWhatIDidRight', () => {
-    it('empty details still render labelled items from the confirmed set', () => {
-        const items = buildConfirmedWhatIDidRight(
-            { budget: { status: 'Clear', detail: '' } } as any,
-            {}
-        );
-        expect(items).toEqual(['BANT Budget: ']);
     });
 });
 
@@ -215,6 +201,106 @@ describe('isPlaceholderSummaryItem', () => {
         expect(isPlaceholderSummaryItem('Not able to identify the champion')).toBe(false);
         expect(isPlaceholderSummaryItem('No budget discussion happened')).toBe(false);
         expect(isPlaceholderSummaryItem('None of the pain points were explored')).toBe(false);
+    });
+});
+
+// ── Coach-ready fields: open loops + additive merge ─────────────────────────
+
+const WITH_OBJECTIONS: any = {
+    ...MIXED,
+    objections: [
+        { type: 'customer_question', quote: 'How does pricing work at scale?', owner: 'customer', status: 'open', suggested_answer: 'Tiered from 500 seats.' },
+        // Deferred by the rep — still an open loop.
+        { type: 'ae_deferral', quote: 'Can you integrate with our HR system?', owner: 'ae', status: 'deferred' },
+        // Resolved during the call (client-owned flag) — must NOT loop.
+        { type: 'customer_question', quote: 'Is support included?', owner: 'customer', status: 'open', resolved: true, suggested_answer: 'Yes, 24/7.' },
+        // Graded resolved by the v2 end pass — must NOT loop.
+        { type: 'customer_question', quote: 'Does it work offline?', owner: 'customer', status: 'open', handled: 'resolved' },
+        // Graded partially/unresolved by the v2 end pass — still open.
+        { type: 'customer_question', quote: 'What about data migration?', owner: 'customer', status: 'open', handled: 'partially', suggested_answer: 'We offer migration services.' },
+    ],
+};
+
+describe('deriveOpenLoopsFromLiveAnalysis', () => {
+    it('keeps open + deferred objections and excludes resolved ones', () => {
+        const loops = deriveOpenLoopsFromLiveAnalysis(WITH_OBJECTIONS);
+        expect(loops.map((l) => l.concern)).toEqual([
+            'How does pricing work at scale?',
+            'Can you integrate with our HR system?',
+            'What about data migration?',
+        ]);
+    });
+
+    it('carries the analysis suggested answer when present', () => {
+        const loops = deriveOpenLoopsFromLiveAnalysis(WITH_OBJECTIONS);
+        expect(loops[0].suggestedAnswer).toBe('Tiered from 500 seats.');
+        expect(loops[1].suggestedAnswer).toBeUndefined();
+        expect(loops[2].suggestedAnswer).toBe('We offer migration services.');
+    });
+
+    it('returns [] when every objection was resolved', () => {
+        expect(
+            deriveOpenLoopsFromLiveAnalysis({ ...MIXED, objections: WITH_OBJECTIONS.objections.slice(2, 4) }),
+        ).toEqual([]);
+    });
+});
+
+describe('reconcileBantMeddicWithLiveAnalysis — coach-ready fields', () => {
+    it('derives openLoops from the live analysis, replacing LLM-authored ones', () => {
+        const out = reconcileBantMeddicWithLiveAnalysis(
+            { openLoops: [{ concern: 'Invented concern that never came up' }] },
+            WITH_OBJECTIONS,
+        );
+        expect(out.openLoops).toEqual(deriveOpenLoopsFromLiveAnalysis(WITH_OBJECTIONS));
+        expect(out.openLoops).toHaveLength(3);
+    });
+
+    it('removes openLoops entirely when every objection was resolved', () => {
+        const out = reconcileBantMeddicWithLiveAnalysis(
+            { openLoops: [{ concern: 'stale' }] },
+            { ...MIXED, objections: WITH_OBJECTIONS.objections.slice(2, 4) },
+        );
+        expect('openLoops' in out).toBe(false);
+    });
+
+    it('preserves every other summary field through the merge (additive, not rebuilt)', () => {
+        const summary = {
+            overview: 'Demo call.',
+            keyPoints: ['reporting landed'],
+            actionItems: ['send pilot plan'],
+            actionItemsTitle: 'Follow-ups',
+            nextCallPlaybook: {
+                callGoal: 'Confirm pilot criteria.',
+                openingRecap: 'Last time we saw…',
+                questionsToAsk: [
+                    { question: 'Who signs?', gap: 'Economic Buyer' },
+                    'old-style plain string question',
+                ],
+                valueAndROI: { quantitative: ['5 hours saved'], qualitative: ['less risk'] },
+            },
+            openLoops: [{ concern: 'replaced by derivation' }],
+            demoReview: { reactions: [{ feature: 'Reports', verdict: 'landed', quote: 'love it', speaker: 'Dana' }] },
+            stakeholders: [{ name: 'Dana', role: 'Ops', stance: 'champion' }],
+            negotiation: { limit: 'no lower than 8%' },
+            promises: [{ text: 'Send the security docs', owner: 'rep', dueDate: 'Friday' }],
+            someFutureField: { anything: true },
+        };
+        const out = reconcileBantMeddicWithLiveAnalysis(summary, WITH_OBJECTIONS);
+        expect(out.overview).toBe('Demo call.');
+        expect(out.keyPoints).toEqual(summary.keyPoints);
+        expect(out.actionItems).toEqual(summary.actionItems);
+        expect(out.actionItemsTitle).toBe('Follow-ups');
+        expect(out.nextCallPlaybook).toEqual(summary.nextCallPlaybook);
+        expect(out.demoReview).toEqual(summary.demoReview);
+        expect(out.stakeholders).toEqual(summary.stakeholders);
+        expect(out.negotiation).toEqual(summary.negotiation);
+        expect(out.promises).toEqual(summary.promises);
+        expect(out.someFutureField).toEqual({ anything: true });
+    });
+
+    it('leaves LLM-authored openLoops untouched when there is no live analysis', () => {
+        const llm = { openLoops: [{ concern: 'from transcript alone' }], actionItems: [] as string[], keyPoints: [] as string[] };
+        expect(reconcileBantMeddicWithLiveAnalysis(llm, null)).toBe(llm);
     });
 });
 
@@ -283,10 +369,15 @@ describe('reconcileBantMeddicWithLiveAnalysis — summary is the source of truth
         });
     });
 
-    it('carries the assessment into the Self-Analysis line', () => {
-        const out = reconcileBantMeddicWithLiveAnalysis({}, WITH_SUMMARY);
-        expect(out.salesCoachReview.whatIDidRight).toEqual([
-            'BANT Need: Adding sites needs approvals. Monthly changes hurt.',
-        ]);
+    it('carries the assessment into bant and leaves film-review highlights alone', () => {
+        const highlights = [{ time: '10:39', skill: 'Questioning', moment: 'probed the mismatch flow', why: 'uncovered the real workflow' }];
+        const out = reconcileBantMeddicWithLiveAnalysis({ salesCoachReview: { whatIDidRight: highlights } }, WITH_SUMMARY);
+        expect(out.bant.need).toEqual({
+            status: 'Clear',
+            detail: 'Adding sites needs approvals. Monthly changes hurt.',
+        });
+        // The reconciler no longer rebuilds whatIDidRight from Confirmed
+        // fields — the LLM's film-review highlights pass through untouched.
+        expect(out.salesCoachReview.whatIDidRight).toEqual(highlights);
     });
 });
