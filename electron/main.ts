@@ -4,6 +4,21 @@ import fs from "fs"
 import { autoUpdater } from "electron-updater"
 import * as nodeOs from "node:os"
 import { isLowEndMachine, readTotalRamGB } from "../utils/performanceClassification"
+import { onLLMUsage } from "./utils/llmUsageBus"
+
+// LLM usage observability: forward every summary/regenerate/followup-email
+// usage payload to the renderer (dev-only usage chip consumes it there; the
+// PostHog capture happens in the bus itself). Broadcast to all windows —
+// no coupling to window lifecycle.
+onLLMUsage((payload) => {
+  try {
+    for (const win of BrowserWindow.getAllWindows()) {
+      if (!win.isDestroyed()) win.webContents.send("llm-usage", payload)
+    }
+  } catch (e) {
+    console.warn("[main] llm-usage broadcast failed:", e)
+  }
+})
 
 // ─── Separate userData directories for dev vs. production ──────────────────
 // Electron's default userData folder name comes from app.getName(), which

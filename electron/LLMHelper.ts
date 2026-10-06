@@ -22,6 +22,7 @@ import axios from 'axios';
 import { createProviderRateLimiters, RateLimiter } from './services/RateLimiter';
 import { AuthManager } from './services/AuthManager';
 import { posthogMain } from './services/PostHogMainService';
+import type { LLMUsageCall } from './utils/llmUsageBus';
 const execAsync = promisify(exec);
 
 // FastAPI backend base URL — same env var/default used by ipcHandlers.ts for
@@ -563,6 +564,11 @@ export class LLMHelper {
   /**
    * Generate content using the currently selected model
    */
+  // Last Gemini response's usage metadata, stashed by generateContent so
+  // generateMeetingSummary can report real token counts for Flash calls
+  // (the wrapper only returns the text).
+  private _lastGeminiUsage: { model: string; usageMetadata?: any } | null = null;
+
   private async generateContent(contents: any[], modelIdOverride?: string): Promise<string> {
     if (!this.client) throw new Error("Gemini client not initialized")
 
@@ -582,6 +588,8 @@ export class LLMHelper {
 
       // Debug: log full response structure
       // console.log(`[LLMHelper] Full response:`, JSON.stringify(response, null, 2).substring(0, 500))
+
+      this._lastGeminiUsage = { model: targetModel, usageMetadata: (response as any).usageMetadata };
 
       const candidate = response.candidates?.[0];
       if (!candidate) {
@@ -1242,9 +1250,13 @@ export class LLMHelper {
    * Used for structured JSON output tasks (resume/JD/company research).
    * NOTE: Does NOT mutate this.geminiModel — calls Gemini Pro directly to avoid race conditions.
    */
-  public async generateContentStructured(message: string): Promise<string> {
+  public async generateContentStructured(message: string, usageSink?: (call: LLMUsageCall) => void): Promise<string> {
     type ProviderAttempt = { name: string; execute: () => Promise<string> };
     const providers: ProviderAttempt[] = [];
+    // Provider-reported token usage (Gemini `usageMetadata`) of the attempt that is
+    // currently executing — reset before each attempt so a failed provider's numbers
+    // can never be attributed to the one that finally answers.
+    let reportedUsage: { promptTokenCount?: number; candidatesTokenCount?: number } | null = null;
 
     // Priority 1: OpenAI
     if (this.openaiClient) {
@@ -1268,6 +1280,7 @@ export class LLMHelper {
               contents: [{ role: 'user', parts: [{ text: message }] }],
               config: { maxOutputTokens: MAX_TOKENS_STRUCTURED, temperature: 0.4 }
             });
+            reportedUsage = (res as any).usageMetadata ?? null;
             const candidate = res.candidates?.[0];
             if (!candidate) return '';
             if (res.text) return res.text;
@@ -1289,6 +1302,7 @@ export class LLMHelper {
               contents: [{ role: 'user', parts: [{ text: message }] }],
               config: { maxOutputTokens: MAX_TOKENS_STRUCTURED, temperature: 0.4 }
             });
+            reportedUsage = (res as any).usageMetadata ?? null;
             const candidate = res.candidates?.[0];
             if (!candidate) return '';
             if (res.text) return res.text;
@@ -1363,9 +1377,25 @@ export class LLMHelper {
       for (const provider of providers) {
         try {
           console.log(`[LLMHelper] 🧠 Structured generation: trying ${provider.name}...`);
+          reportedUsage = null;
           const result = await provider.execute();
           if (result && result.trim().length > 0) {
             console.log(`[LLMHelper] ✅ Structured generation succeeded with ${provider.name}`);
+            // Observability: real counts where the provider reports them (the
+            // inline Gemini Pro/Flash calls above), chars/4 estimates for the
+            // rest of the chain; provider/model parsed from the provider's
+            // display name ("Groq (llama-3.3-70b) fallback").
+            try {
+              const um = reportedUsage;
+              const hasReal = typeof um?.promptTokenCount === 'number' && typeof um?.candidatesTokenCount === 'number';
+              usageSink?.({
+                provider: provider.name.replace(/\s*\([^)]*\).*$/, '').trim(),
+                model: provider.name.match(/\(([^)]+)\)/)?.[1] ?? null,
+                inputTokens: hasReal ? um!.promptTokenCount! : Math.ceil(message.length / 4),
+                outputTokens: hasReal ? um!.candidatesTokenCount! : Math.ceil(result.length / 4),
+                estimated: !hasReal,
+              });
+            } catch { /* reporting must never break generation */ }
             return result;
           }
           console.warn(`[LLMHelper] ⚠️ ${provider.name} returned empty response`);
@@ -3627,6 +3657,7 @@ export class LLMHelper {
     context: string,
     groqSystemPromptRaw?: string,
     task: 'summary' | 'followup_email' | 'meeting_score' | 'title' = 'summary',
+    usageSink?: (call: LLMUsageCall) => void,
   ): Promise<string> {
     console.log(`[LLMHelper] generateMeetingSummary called. Context length: ${context.length}`);
 
@@ -3648,6 +3679,13 @@ export class LLMHelper {
     const tokenCount = estimateTokens(context);
     console.log(`[LLMHelper] Estimated tokens: ${tokenCount}`);
 
+    // Observability: report provider/model/token usage for whichever call wins
+    // (see utils/llmUsageBus). Real usage where the provider reports it,
+    // chars/4 estimates otherwise — never allowed to throw.
+    const sinkUsage = (call: LLMUsageCall) => {
+      try { usageSink?.(call); } catch { /* reporting must never break generation */ }
+    };
+
     // ATTEMPT 0: Custom Provider (highest priority — user explicitly chose this)
     if (this.customProvider || this.activeCurlProvider) {
       try {
@@ -3666,6 +3704,13 @@ export class LLMHelper {
         if (text.trim().length > 0) {
           console.log(`[LLMHelper] ✅ Custom provider summary generated successfully.`);
           this.trackLLMSource(task, 'electron_native', this.customProvider?.name || 'custom_curl');
+          sinkUsage({
+            provider: `custom:${this.customProvider?.name || 'custom_curl'}`,
+            model: null,
+            inputTokens: estimateTokens(`${systemPrompt}\n${context}`),
+            outputTokens: estimateTokens(text),
+            estimated: true,
+          });
           return this.processResponse(text);
         }
       } catch (e: any) {
@@ -3697,6 +3742,14 @@ export class LLMHelper {
         if (text.trim().length > 0) {
           console.log(`[LLMHelper] ✅ Groq summary generated successfully.`);
           this.trackLLMSource(task, 'electron_native', 'groq');
+          const usage = (response as any).usage;
+          sinkUsage({
+            provider: 'groq',
+            model: GROQ_MODEL,
+            inputTokens: usage?.prompt_tokens ?? estimateTokens(`${groqPrompt}\n${context}`),
+            outputTokens: usage?.completion_tokens ?? estimateTokens(text),
+            estimated: !usage,
+          });
           return this.processResponse(text);
         }
       } catch (e: any) {
@@ -3723,6 +3776,14 @@ export class LLMHelper {
         if (text.trim().length > 0) {
           console.log(`[LLMHelper] ✅ Gemini Flash summary generated successfully (Attempt ${attempt}).`);
           this.trackLLMSource(task, 'electron_native', 'gemini_flash');
+          const um = this._lastGeminiUsage?.usageMetadata;
+          sinkUsage({
+            provider: 'gemini_flash',
+            model: this._lastGeminiUsage?.model ?? GEMINI_FLASH_MODEL,
+            inputTokens: um?.promptTokenCount ?? estimateTokens(`${systemPrompt}\n${context}`),
+            outputTokens: um?.candidatesTokenCount ?? estimateTokens(text),
+            estimated: !um,
+          });
           return this.processResponse(text);
         }
       } catch (e: any) {
@@ -3760,6 +3821,14 @@ export class LLMHelper {
           if (text.trim().length > 0) {
             console.log(`[LLMHelper] ✅ Gemini Pro summary generated successfully.`);
             this.trackLLMSource(task, 'electron_native', 'gemini_pro');
+            const um = (response as any).usageMetadata;
+            sinkUsage({
+              provider: 'gemini_pro',
+              model: GEMINI_PRO_MODEL,
+              inputTokens: um?.promptTokenCount ?? estimateTokens(`${systemPrompt}\n${context}`),
+              outputTokens: um?.candidatesTokenCount ?? estimateTokens(text),
+              estimated: !um,
+            });
             return this.processResponse(text);
           }
         } catch (e: any) {
@@ -3778,6 +3847,13 @@ export class LLMHelper {
     // ATTEMPT 4: Backend fallback (FastAPI, own credentials — last resort)
     try {
       const text = await this.callBackendFallback(task, context, systemPrompt);
+      sinkUsage({
+        provider: 'backend_fallback',
+        model: null,
+        inputTokens: estimateTokens(`${systemPrompt}\n${context}`),
+        outputTokens: estimateTokens(text),
+        estimated: true,
+      });
       return this.processResponse(text);
     } catch (e: any) {
       console.warn(`[LLMHelper] ⚠️ Backend fallback also failed: ${e.message}`);

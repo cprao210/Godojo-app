@@ -6,6 +6,7 @@ import { Star, ChevronRight, AlertCircle, WifiOff, Trophy, Zap, GitBranch, Brief
 import { useResolvedTheme, useCompanyIntel, hasValue, pickValue, isIntelEmpty, openExternalUrl, LOADING_STAGES } from '@/hooks';
 import { SalesBriefPanelProps, CompanyIntel, CompanyIntelFieldKey } from '@/types';
 import type { CompanyCandidate } from '@/lib/companyCandidates';
+import LLMUsageChip from './LLMUsageChip';
 
 interface SkeletonProps {
     w?: string;
@@ -392,7 +393,7 @@ const SalesBriefPanel: React.FC<SalesBriefPanelProps> = ({ eventData, onClose })
     const isLight = useResolvedTheme() === 'light';
     const companyIntelStates = useCompanyIntel(eventData);
     const { intel, loading, error, loadingStage, isCopied } = companyIntelStates;
-    const { fromCache, companyName, fetchIntel, copyToClipboard } = companyIntelStates;
+    const { fromCache, companyName, domain, fetchIntel, copyToClipboard } = companyIntelStates;
     const { candidates, selectedIndex, selectCandidate, awaitingSelection } = companyIntelStates;
     const [pickerOpen, setPickerOpen] = React.useState(false);
 
@@ -449,6 +450,14 @@ const SalesBriefPanel: React.FC<SalesBriefPanelProps> = ({ eventData, onClose })
                     </div>
 
                     <div className="flex items-center gap-1.5">
+                        {/* DEV-ONLY: token usage behind this company's research
+                            generation (hover for details). Renders nothing in
+                            production and nothing while a cached brief shows. */}
+                        <LLMUsageChip
+                            meetingId={`company:${(domain || companyName || '').toLowerCase()}`}
+                            kinds={['company_insights']}
+                            isLight={isLight}
+                        />
                         {intel && (
                             <>
                                 <button

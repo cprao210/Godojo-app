@@ -15,6 +15,7 @@ import CoachNotes from './CoachNotes';
 import HowDemoLanded from './HowDemoLanded';
 import WhereTermsStand from './WhereTermsStand';
 import CoachSectionNav from './CoachSectionNav';
+import LLMUsageChip from './LLMUsageChip';
 import { CompanySelectModal } from '@/features/meetings/CompanyAssociation';
 import { applyCompanyToCaches } from '@/lib/companyAssociation';
 import { generateMeetingPDF } from '@/../utils/pdfGenerator';
@@ -434,6 +435,15 @@ const MeetingDetails: React.FC<MeetingDetailsProps> = ({ meeting: initialMeeting
 
                             {/* Right column: action buttons */}
                             <div className="shrink-0 flex items-center gap-2">
+
+                                {/* DEV-ONLY: LLM token usage behind the latest
+                                    summary generation/regeneration (hover for
+                                    details). Renders nothing in production. */}
+                                <LLMUsageChip
+                                    meetingId={meeting.id}
+                                    kinds={['summary_initial', 'summary_regenerate']}
+                                    isLight={isLight}
+                                />
 
                                 {/* Regenerate */}
                                 <button

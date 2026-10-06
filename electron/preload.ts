@@ -983,6 +983,17 @@ contextBridge.exposeInMainWorld("electronAPI", {
     }
   },
 
+  // LLM usage observability (summary/regenerate/followup email): provider,
+  // model and input/output token counts per generation. Consumed by the
+  // dev-only usage chip in the renderer.
+  onLLMUsage: (callback: (payload: any) => void) => {
+    const subscription = (_event: any, payload: any) => callback(payload)
+    ipcRenderer.on("llm-usage", subscription)
+    return () => {
+      ipcRenderer.removeListener("llm-usage", subscription)
+    }
+  },
+
   updateLiveAnalysis: (data: LiveAnalysisData, generation?: number | null) =>
     ipcRenderer.invoke("update-live-analysis", data, generation ?? null),
   setLiveAnalysisInFlight: (inFlight: boolean, generation?: number | null) =>

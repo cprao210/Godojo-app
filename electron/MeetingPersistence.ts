@@ -8,6 +8,7 @@ import { DatabaseManager, Meeting, formatDuration } from './db/DatabaseManager';
 import { SupabaseMirrorService } from './db/SupabaseMirrorService';
 import { GROQ_TITLE_PROMPT, GROQ_SUMMARY_JSON_PROMPT, verifySummaryAgainstTranscript, buildCorrectionAddendum } from './llm';
 import { buildSummaryPrompt, buildCoachCallTypeSection, BANT_MEDDICC_OUTPUT_SCHEMA } from './llm/summaryPrompt';
+import { emitLLMUsage, type LLMUsageCall } from './utils/llmUsageBus';
 import { LiveAnalysisData, MeetingScorecardResult } from '../src/types';
 import { AppState } from './main';
 import { buildScorecardPrompt } from './llm/ScoreCardLLM';
@@ -538,12 +539,22 @@ export class MeetingPersistence {
                 let bestParsedSummary: any = null;
                 let bestConfidence = -1;
 
+                // Observability: collect provider/model/token usage for every
+                // LLM call behind this summary (see utils/llmUsageBus — PostHog
+                // + the renderer's dev-only usage chip).
+                const usageCalls: LLMUsageCall[] = [];
+                const usageSink = (call: LLMUsageCall) => usageCalls.push(call);
+                const summaryStartedAt = Date.now();
+                let attemptsUsed = 0;
+
                 for (let attempt = 1; attempt <= SUMMARY_MAX_ATTEMPTS; attempt++) {
+                    attemptsUsed = attempt;
                     const generatedSummary = await this.llmHelper.generateMeetingSummary(
                         baseSummaryPrompt + correctionAddendum,
                         rosterBlock + fullTranscriptText,
                         groqSummaryPrompt + correctionAddendum,
-                        'summary'
+                        'summary',
+                        usageSink
                     );
                     if (!generatedSummary) break;
 
@@ -606,6 +617,24 @@ export class MeetingPersistence {
                     // analysis exactly — see reconcileBantMeddicWithLiveAnalysis
                     // for why the prompt instruction alone isn't enough.
                     summaryData = reconcileBantMeddicWithLiveAnalysis({ ...summaryData, ...sanitized }, liveAnalysisData);
+                }
+
+                // Report token usage for the whole generation (even a failed
+                // one consumed the calls it made). Emitted after the loop so
+                // attempts + best confidence ride along.
+                if (usageCalls.length > 0) {
+                    emitLLMUsage({
+                        meetingId,
+                        kind: 'summary_initial',
+                        calls: usageCalls,
+                        totalInputTokens: usageCalls.reduce((n, c) => n + c.inputTokens, 0),
+                        totalOutputTokens: usageCalls.reduce((n, c) => n + c.outputTokens, 0),
+                        attempts: attemptsUsed,
+                        confidence: bestConfidence >= 0 ? bestConfidence : null,
+                        durationMs: Date.now() - summaryStartedAt,
+                        callType: coachCallType,
+                        at: Date.now(),
+                    });
                 }
             } else {
                 console.log("Transcript too short for summary generation.");
@@ -1093,12 +1122,31 @@ export class MeetingPersistence {
             );
             const groqSummaryPrompt = GROQ_SUMMARY_JSON_PROMPT + '\n\n' + buildCoachCallTypeSection(coachCallType);
 
+            // Observability: usage for this regeneration (utils/llmUsageBus).
+            const regenUsage: LLMUsageCall[] = [];
+            const regenStartedAt = Date.now();
             const generatedSummary = await this.llmHelper.generateMeetingSummary(
                 buildSummaryPrompt(existingLiveAnalysis, null, coachCallType),
                 fullRegenerateContext,
                 groqSummaryPrompt,
-                'summary'
+                'summary',
+                (call) => regenUsage.push(call)
             );
+
+            if (regenUsage.length > 0) {
+                emitLLMUsage({
+                    meetingId,
+                    kind: 'summary_regenerate',
+                    calls: regenUsage,
+                    totalInputTokens: regenUsage.reduce((n, c) => n + c.inputTokens, 0),
+                    totalOutputTokens: regenUsage.reduce((n, c) => n + c.outputTokens, 0),
+                    attempts: 1,
+                    confidence: null,
+                    durationMs: Date.now() - regenStartedAt,
+                    callType: coachCallType,
+                    at: Date.now(),
+                });
+            }
 
             if (!generatedSummary) return false;
 

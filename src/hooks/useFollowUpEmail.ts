@@ -117,6 +117,7 @@ export function useFollowUpEmail(isOpen: boolean, meeting: Meeting) {
             const ds = meeting.detailedSummary;
             const input = {
                 meeting_type: 'meeting' as const,
+                meeting_id: meeting.id, // usage analytics attribution (electron IPC)
                 title: meeting.title,
                 date: meeting.date,
 

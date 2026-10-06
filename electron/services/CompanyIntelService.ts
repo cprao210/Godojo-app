@@ -150,6 +150,15 @@ export interface IntelDeps {
 
 // ── Tavily client (with retry + timeout) ────────────────────────────────────
 
+/** Outcome of one logical Tavily search (all retries included). */
+export interface TavilySearchReport {
+    searchDepth: 'basic' | 'advanced';
+    /** true when a response was received */
+    ok: boolean;
+    /** HTTP attempts made (1 = no retry) */
+    attempts: number;
+}
+
 class TavilyHttpError extends Error {
     constructor(readonly status: number) {
         super(`Tavily error: ${status}`);
@@ -166,12 +175,21 @@ class TavilyHttpError extends Error {
  */
 export function createTavilySearch(
     apiKey: string,
-    opts: { fetchImpl?: typeof fetch; sleep?: (ms: number) => Promise<void> } = {},
+    opts: {
+        fetchImpl?: typeof fetch;
+        sleep?: (ms: number) => Promise<void>;
+        /** Usage observability: called once per logical search (after retries) with its
+         * outcome, so the caller can tally searches / retries / credits. Never throws into the search. */
+        onSearch?: (info: TavilySearchReport) => void;
+    } = {},
 ): SearchFn {
     const doFetch = opts.fetchImpl ?? fetch;
     const sleep = opts.sleep ?? ((ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms)));
 
     return async (req) => {
+        const report = (ok: boolean, attempts: number) => {
+            try { opts.onSearch?.({ searchDepth: req.searchDepth, ok, attempts }); } catch { /* reporting must never break a search */ }
+        };
         const body: Record<string, unknown> = {
             query: req.query,
             max_results: req.maxResults,
@@ -195,16 +213,18 @@ export function createTavilySearch(
                 });
                 if (res.ok) {
                     const data = (await res.json()) as { results?: TavilyResult[] };
+                    report(true, attempt + 1);
                     return Array.isArray(data.results) ? data.results : [];
                 }
                 const err = new TavilyHttpError(res.status);
                 if (res.status !== 429 && res.status < 500) throw err; // bad key / bad request: retrying can't help
                 lastError = err;
             } catch (e) {
-                if (e instanceof TavilyHttpError && e.status !== 429 && e.status < 500) throw e;
+                if (e instanceof TavilyHttpError && e.status !== 429 && e.status < 500) { report(false, attempt + 1); throw e; }
                 lastError = e; // network error / timeout / 429 / 5xx → retry
             }
         }
+        report(false, TAVILY_RETRY_DELAYS_MS.length + 1);
         throw lastError instanceof Error ? lastError : new Error('Tavily request failed');
     };
 }

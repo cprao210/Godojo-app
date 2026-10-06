@@ -722,6 +722,42 @@ describe('createTavilySearch', () => {
         expect(fetchImpl).toHaveBeenCalledTimes(1);
     });
 
+    it('reports each logical search once: depth, outcome and HTTP attempts', async () => {
+        const reports: Array<{ searchDepth: string; ok: boolean; attempts: number }> = [];
+        const fetchImpl = vi.fn()
+            .mockResolvedValueOnce(json(200)) // advanced: first try
+            .mockResolvedValueOnce(json(429)) // basic: retried once, then ok
+            .mockResolvedValueOnce(json(200))
+            .mockResolvedValueOnce(json(401)); // bad key: no retry
+        const search = createTavilySearch('key', {
+            fetchImpl: fetchImpl as unknown as typeof fetch,
+            sleep: async () => { },
+            onSearch: (r) => reports.push(r),
+        });
+
+        await search({ query: 'a', searchDepth: 'advanced', maxResults: 1 });
+        await search({ query: 'b', searchDepth: 'basic', maxResults: 1 });
+        await expect(search({ query: 'c', searchDepth: 'basic', maxResults: 1 })).rejects.toThrow('401');
+
+        expect(reports).toEqual([
+            { searchDepth: 'advanced', ok: true, attempts: 1 },
+            { searchDepth: 'basic', ok: true, attempts: 2 },
+            { searchDepth: 'basic', ok: false, attempts: 1 },
+        ]);
+    });
+
+    it('reports a failed search after exhausting every retry, and survives a throwing reporter', async () => {
+        const reports: Array<{ searchDepth: string; ok: boolean; attempts: number }> = [];
+        const fetchImpl = vi.fn(async () => { throw new TypeError('fetch failed'); });
+        const search = createTavilySearch('key', {
+            fetchImpl: fetchImpl as unknown as typeof fetch,
+            sleep: async () => { },
+            onSearch: (r) => { reports.push(r); throw new Error('reporter bug'); },
+        });
+        await expect(search({ query: 'q', searchDepth: 'basic', maxResults: 1 })).rejects.toThrow('fetch failed');
+        expect(reports).toEqual([{ searchDepth: 'basic', ok: false, attempts: 3 }]);
+    });
+
     it('retries network errors, then gives up with the last error', async () => {
         const fetchImpl = vi.fn(async () => { throw new TypeError('fetch failed'); });
         const search = createTavilySearch('key', { fetchImpl: fetchImpl as unknown as typeof fetch, sleep: async () => { } });

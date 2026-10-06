@@ -37,6 +37,39 @@ export type ApiKeyProviderName =
  */
 export type ApiKeySourceName = 'user' | 'backend_fallback' | 'env_bundled' | 'none'
 
+/** LLM usage observability — mirrors electron/utils/llmUsageBus.ts. */
+export interface LLMUsageCallInfo {
+  provider: string
+  model?: string | null
+  inputTokens: number
+  outputTokens: number
+  /** true when counts are chars/4 estimates rather than provider-reported usage */
+  estimated: boolean
+}
+
+export interface LLMUsagePayload {
+  meetingId: string
+  kind: 'summary_initial' | 'summary_regenerate' | 'followup_email' | 'company_insights' | 'sales_brief'
+  calls: LLMUsageCallInfo[]
+  totalInputTokens: number
+  totalOutputTokens: number
+  attempts?: number
+  confidence?: number | null
+  durationMs?: number
+  callType?: string | null
+  company?: string | null
+  /** Tavily web-search usage behind this generation (company insights); credits are estimated. */
+  tavily?: {
+    searches: number
+    advanced: number
+    basic: number
+    failed: number
+    retries: number
+    creditsEstimated: number
+  }
+  at: number
+}
+
 export interface ElectronAPI {
   // ===========================================================================
   // Window Management
@@ -433,6 +466,10 @@ export interface ElectronAPI {
   getUploadTranscriptSpeakers: (text: string) => Promise<{ speakers: string[]; suggestedRep: string | null; suggestedBy: 'picked' | 'name' | 'first' | null }>
   deleteMeeting: (id: string) => Promise<boolean>
   onMeetingsUpdated: (callback: () => void) => () => void
+
+  /** LLM usage observability — see electron/utils/llmUsageBus.ts. */
+  onLLMUsage: (callback: (payload: LLMUsagePayload) => void) => () => void
+
 
   /**
    * Main asks this window to run the call analysis for an uploaded transcript,

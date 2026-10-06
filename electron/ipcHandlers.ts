@@ -22,6 +22,7 @@ import { syncCompanyIntel } from "./utils/backendCompanyIntel";
 import { searchCompany, clearCompanyCache } from "./services/TavilyManager";
 
 import { buildCompanyContextBlock } from './utils/salesBriefUtils';
+import { emitLLMUsage, type LLMUsageCall } from './utils/llmUsageBus';
 import { RECOGNITION_LANGUAGES, AI_RESPONSE_LANGUAGES } from "./config/languages"
 import { LiveAnalysisData } from "../src/types";
 import {
@@ -2849,35 +2850,79 @@ export function initializeIpcHandlers(appState: AppState): void {
       const myStreamId = ++_salesBriefStreamId;
       let fullResponse = '';
 
-      // 3. Try streaming first (fastest path)
+      // Observability: token usage behind this brief (utils/llmUsageBus — PostHog
+      // 'llm_generation_usage' + the renderer's dev-only usage chip). streamChat and
+      // chatWithGemini don't surface provider usage, so counts are chars/4 estimates.
+      // Cache hits above return early and consume no LLM calls, so nothing is emitted.
+      const briefUsage: LLMUsageCall[] = [];
+      const briefStartedAt = Date.now();
+      const estTokens = (text: string) => Math.ceil(text.length / 4);
+      const recordStreamUsage = () => {
+        if (!fullResponse) return; // nothing was produced — nothing to attribute
+        briefUsage.push({
+          provider: `${llmHelper.getCurrentProvider()} (stream)`,
+          model: llmHelper.getCurrentModel(),
+          inputTokens: estTokens(`${SALES_MEETING_BRIEF_PROMPT}\n${userMessage}`),
+          outputTokens: estTokens(fullResponse),
+          estimated: true,
+        });
+      };
+
       try {
-        const stream = llmHelper.streamChat(userMessage, undefined, undefined, SALES_MEETING_BRIEF_PROMPT, true);
+        // 3. Try streaming first (fastest path)
+        try {
+          const stream = llmHelper.streamChat(userMessage, undefined, undefined, SALES_MEETING_BRIEF_PROMPT, true);
 
-        for await (const token of stream) {
-          if (_salesBriefStreamId !== myStreamId) return null;
-          event.sender.send('sales-brief-stream-token', token);
-          fullResponse += token;
-        }
-      } catch (streamErr: any) {
-        console.warn('[IPC] Sales brief stream failed, falling back to non-streaming:', streamErr.message);
+          for await (const token of stream) {
+            if (_salesBriefStreamId !== myStreamId) { recordStreamUsage(); return null; } // superseded — still report what was spent
+            event.sender.send('sales-brief-stream-token', token);
+            fullResponse += token;
+          }
+          recordStreamUsage();
+        } catch (streamErr: any) {
+          console.warn('[IPC] Sales brief stream failed, falling back to non-streaming:', streamErr.message);
+          recordStreamUsage(); // partial output from a stream that died mid-way
 
-        // 4. Fallback: chatWithGemini has full retry + provider rotation (handles 503)
-        if (_salesBriefStreamId === myStreamId && !fullResponse) {
-          const geminiPrompt = `${SALES_MEETING_BRIEF_PROMPT}\n\n${userMessage}`;
-          const groqPrompt = `${GROQ_SALES_MEETING_BRIEF_PROMPT}\n\n${userMessage}`;
-          const result = await llmHelper.chatWithGemini(geminiPrompt, undefined, undefined, true, groqPrompt);
-          if (result && _salesBriefStreamId === myStreamId) {
-            event.sender.send('sales-brief-stream-token', result);
-            fullResponse = result;
+          // 4. Fallback: chatWithGemini has full retry + provider rotation (handles 503)
+          if (_salesBriefStreamId === myStreamId && !fullResponse) {
+            const geminiPrompt = `${SALES_MEETING_BRIEF_PROMPT}\n\n${userMessage}`;
+            const groqPrompt = `${GROQ_SALES_MEETING_BRIEF_PROMPT}\n\n${userMessage}`;
+            const result = await llmHelper.chatWithGemini(geminiPrompt, undefined, undefined, true, groqPrompt);
+            if (result) {
+              briefUsage.push({
+                provider: 'electron_native (gemini→groq)',
+                model: null,
+                inputTokens: estTokens(geminiPrompt),
+                outputTokens: estTokens(result),
+                estimated: true,
+              });
+            }
+            if (result && _salesBriefStreamId === myStreamId) {
+              event.sender.send('sales-brief-stream-token', result);
+              fullResponse = result;
+            }
           }
         }
-      }
 
-      if (_salesBriefStreamId === myStreamId) {
-        event.sender.send('sales-brief-stream-done');
-        if (fullResponse.trim()) salesBriefCache.set(eventId, fullResponse);
+        if (_salesBriefStreamId === myStreamId) {
+          event.sender.send('sales-brief-stream-done');
+          if (fullResponse.trim()) salesBriefCache.set(eventId, fullResponse);
+        }
+        return { success: true };
+      } finally {
+        // Runs on success, error and superseded streams alike — tokens were spent either way.
+        if (briefUsage.length > 0) {
+          emitLLMUsage({
+            meetingId: String(eventId ?? 'sales_brief:unknown'),
+            kind: 'sales_brief',
+            calls: briefUsage,
+            totalInputTokens: briefUsage.reduce((n, c) => n + c.inputTokens, 0),
+            totalOutputTokens: briefUsage.reduce((n, c) => n + c.outputTokens, 0),
+            durationMs: Date.now() - briefStartedAt,
+            at: Date.now(),
+          });
+        }
       }
-      return { success: true };
     } catch (error: any) {
       console.error('[IPC] Error streaming sales brief:', error);
       event.sender.send('sales-brief-stream-error', error.message || 'Unknown error');
@@ -2948,13 +2993,51 @@ export function initializeIpcHandlers(appState: AppState): void {
       // the chat assistant's persona or the knowledge-mode intercept that
       // chatWithGemini applied to this extraction before.
       const llmHelper = appState.processingHelper.getLLMHelper();
-      const result = await generateCompanyIntel(
-        { companyName, domain },
-        {
-          search: createTavilySearch(tavilyApiKey),
-          generate: (prompt: string) => llmHelper.generateContentStructured(prompt),
-        },
-      );
+      // Observability: token usage behind this research run (utils/llmUsageBus
+      // — PostHog + the renderer's dev-only usage chip). Cached responses
+      // above return early and consume no LLM calls, so nothing is emitted.
+      // Reported in a `finally` below so a failed/rejected run is counted too.
+      const intelUsage: LLMUsageCall[] = [];
+      // Tavily web-search tally (credits estimated: basic = 1, advanced = 2, per answered request).
+      const tavilyTally = { searches: 0, advanced: 0, basic: 0, failed: 0, retries: 0, creditsEstimated: 0 };
+      const intelStartedAt = Date.now();
+      const emitIntelUsage = () => {
+        // Searches that returned nothing usable end the run before any LLM call — their
+        // Tavily credits were still spent, so report those too.
+        if (intelUsage.length === 0 && tavilyTally.searches === 0) return;
+        emitLLMUsage({
+          meetingId: `company:${(domain || companyName).toLowerCase()}`,
+          kind: 'company_insights',
+          calls: intelUsage,
+          totalInputTokens: intelUsage.reduce((n, c) => n + c.inputTokens, 0),
+          totalOutputTokens: intelUsage.reduce((n, c) => n + c.outputTokens, 0),
+          durationMs: Date.now() - intelStartedAt,
+          company: companyName,
+          tavily: tavilyTally.searches > 0 ? { ...tavilyTally } : undefined,
+          at: Date.now(),
+        });
+      };
+      let result: Awaited<ReturnType<typeof generateCompanyIntel>>;
+      try {
+        result = await generateCompanyIntel(
+          { companyName, domain },
+          {
+            search: createTavilySearch(tavilyApiKey, {
+              onSearch: ({ searchDepth, ok, attempts }) => {
+                tavilyTally.searches += 1;
+                tavilyTally.retries += Math.max(0, attempts - 1);
+                if (!ok) { tavilyTally.failed += 1; return; }
+                if (searchDepth === 'advanced') { tavilyTally.advanced += 1; tavilyTally.creditsEstimated += 2; }
+                else { tavilyTally.basic += 1; tavilyTally.creditsEstimated += 1; }
+              },
+            }),
+            generate: (prompt: string) => llmHelper.generateContentStructured(prompt, (call) => intelUsage.push(call)),
+          },
+        );
+      } finally {
+        // Also when research throws or is rejected after the model calls: those tokens were spent.
+        emitIntelUsage();
+      }
       if (result.success === false) return fallbackToExpired(result.error);
       const intel = result.intel;
 
@@ -3618,6 +3701,8 @@ export function initializeIpcHandlers(appState: AppState): void {
       const groqPrompt = `${llmHelper.applyLanguageInstruction(GROQ_FOLLOWUP_EMAIL_PROMPT)}\n\nMEETING DETAILS:\n${enrichedContext}`;
 
       // Use chatWithGemini with alternateGroqMessage for fallback
+      const usageStartedAt = Date.now();
+      const estTokens = (text: string) => Math.ceil(text.length / 4);
       try {
         const emailBody = await llmHelper.chatWithGemini(geminiPrompt, undefined, undefined, true, groqPrompt);
         if (!emailBody || !emailBody.trim()) {
@@ -3626,6 +3711,22 @@ export function initializeIpcHandlers(appState: AppState): void {
         posthogMain.capture('llm_generation_source', {
           task: 'followup_email',
           source: 'electron_native',
+        });
+        // chatWithGemini doesn't surface provider usage — estimated counts.
+        emitLLMUsage({
+          meetingId: input?.meeting_id ?? 'unknown',
+          kind: 'followup_email',
+          calls: [{
+            provider: 'electron_native (gemini→groq)',
+            model: null,
+            inputTokens: estTokens(`${geminiPrompt}\n${enrichedContext}`),
+            outputTokens: estTokens(emailBody),
+            estimated: true,
+          }],
+          totalInputTokens: estTokens(`${geminiPrompt}\n${enrichedContext}`),
+          totalOutputTokens: estTokens(emailBody),
+          durationMs: Date.now() - usageStartedAt,
+          at: Date.now(),
         });
         return emailBody;
       } catch (directError: any) {
@@ -3648,6 +3749,21 @@ export function initializeIpcHandlers(appState: AppState): void {
           task: 'followup_email',
           source: 'backend_fallback',
           provider: data?.provider_order?.[0] ?? null,
+        });
+        emitLLMUsage({
+          meetingId: input?.meeting_id ?? 'unknown',
+          kind: 'followup_email',
+          calls: [{
+            provider: 'backend_fallback',
+            model: data?.provider_order?.[0] ?? null,
+            inputTokens: estTokens(`${FOLLOWUP_EMAIL_PROMPT}\n${enrichedContext}`),
+            outputTokens: estTokens(String(data?.text ?? '')),
+            estimated: true,
+          }],
+          totalInputTokens: estTokens(`${FOLLOWUP_EMAIL_PROMPT}\n${enrichedContext}`),
+          totalOutputTokens: estTokens(String(data?.text ?? '')),
+          durationMs: Date.now() - usageStartedAt,
+          at: Date.now(),
         });
         return data.text;
       }
