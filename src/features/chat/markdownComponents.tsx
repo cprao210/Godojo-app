@@ -36,16 +36,15 @@ export const chatMarkdownComponents = {
     strong: ({ node, ...props }: any) => <strong className="font-semibold" {...props} />,
 
     table: ({ node, ...props }: any) => (
-        // `overflow-x-auto` on this wrapper only actually scrolls if the table
-        // inside it is allowed to grow past the wrapper's width. The table
-        // element itself must NOT be `w-full` (width: 100%) — that forces the
-        // browser to compress every column to fit, which is exactly why wide
-        // tables were cramped instead of scrolling. `min-w-full` keeps narrow
-        // tables stretching to fill the space (unchanged visual behavior for
-        // small tables) while letting wide ones grow naturally beyond the
-        // container, which is what actually triggers this wrapper's scrollbar.
+        // Cells wrap (`td` is `whitespace-normal`), so the table fits the
+        // bubble and a long Detail cell is read without scrolling sideways:
+        // with `nowrap` cells one quoted sentence made the table three bubbles
+        // wide. `w-full table-auto` lets the browser share the width by
+        // content; headers stay on one line, which keeps short columns (Call,
+        // Company) from collapsing. `overflow-x-auto` remains the fallback for
+        // a table with too many columns to fit even when wrapped.
         <div className="my-3 max-w-full overflow-x-auto rounded-lg border border-border-subtle">
-            <table className="min-w-full border-collapse text-[13px]" {...props} />
+            <table className="w-full table-auto border-collapse text-[13px]" {...props} />
         </div>
     ),
     thead: ({ node, ...props }: any) => (
@@ -65,7 +64,7 @@ export const chatMarkdownComponents = {
     ),
     td: ({ node, ...props }: any) => (
         <td
-            className="border border-border-subtle px-3 py-2 align-top text-text-secondary whitespace-nowrap"
+            className="border border-border-subtle px-3 py-2 align-top text-text-secondary whitespace-normal break-words"
             {...props}
         />
     ),
