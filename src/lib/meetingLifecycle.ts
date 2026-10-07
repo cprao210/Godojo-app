@@ -176,13 +176,11 @@ export function shouldAdvanceCursor(
 
 // ─── Post-meeting processing stages ─────────────────────────────────────────
 
-export type ProcessingStage = 'analyzing' | 'validating' | 'finalizing' | 'ready' | 'stalled';
+export type ProcessingStage = 'processing' | 'finalizing' | 'ready' | 'stalled';
 
 export interface ProcessingStageInput {
     /** Row exists but `is_processed = 0` — background processing is running. */
     isProcessing: boolean;
-    /** A row landed in `meeting_scorecards`. Written as soon as scoring finishes. */
-    hasScorecard: boolean;
     /** Has the meeting-detail read actually completed (not just "not loading")? */
     isDetailResolved: boolean;
     /** Processing has been running far longer than it ever legitimately takes. */
@@ -198,17 +196,11 @@ export interface ProcessingStageView {
 /**
  * Map observable state onto a stage.
  *
- * The real order of events in MeetingPersistence.processAndSaveMeeting is:
- * placeholder row saved (with the full transcript) → scorecard and title/summary
- * generation start concurrently → the scorecard row is persisted as soon as it
- * is ready → the summary runs a generate → verify → regenerate loop → the final
- * save flips `is_processed` to 1.
- *
- * So the scorecard row appearing while `is_processed` is still 0 is a genuine
- * signal that the remaining wait is the summary's verification loop. That is
- * the entire basis for splitting "analyzing" from "validating" — there is no
- * per-attempt progress event from main, and inventing one would be exactly the
- * fake animation state this is meant to avoid.
+ * What `processing` actually consists of (analysis, title, summary generate →
+ * verify, final save) is reported live by main — see lib/postMeetingProgress and
+ * PostMeetingProcessingLoader. This function only decides which broad stage the
+ * view is in; it deliberately carries no per-step guesswork. Scorecard generation
+ * is disabled, so there is no scorecard-derived stage either.
  */
 export function deriveProcessingStage(input: ProcessingStageInput): ProcessingStageView {
     if (input.isStalled) {
@@ -219,17 +211,11 @@ export function deriveProcessingStage(input: ProcessingStageInput): ProcessingSt
         };
     }
     if (input.isProcessing) {
-        return input.hasScorecard
-            ? {
-                stage: 'validating',
-                label: 'Validating summary',
-                detail: 'Checking every claim against the transcript.',
-            }
-            : {
-                stage: 'analyzing',
-                label: 'Analyzing transcript',
-                detail: 'Scoring the call and drafting the summary.',
-            };
+        return {
+            stage: 'processing',
+            label: 'Processing your meeting',
+            detail: 'The summary is being generated in the background.',
+        };
     }
     if (!input.isDetailResolved) {
         return {

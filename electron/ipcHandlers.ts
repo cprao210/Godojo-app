@@ -10,6 +10,7 @@ import {
 } from './utils/macPermissions';
 import { GEMINI_FLASH_MODEL } from "./IntelligenceManager"
 import { DatabaseManager } from "./db/DatabaseManager"; // Import Database Manager
+import { getMeetingProcessingSnapshot } from "./utils/meetingProcessingProgress";
 import { SupabaseReadService } from "./db/SupabaseReadService";
 import * as path from "path";
 import * as os from "os";
@@ -2238,6 +2239,14 @@ export function initializeIpcHandlers(appState: AppState): void {
       }
     }
     return DatabaseManager.getInstance().getMeetingDetails(id);
+  });
+
+  // Live post-meeting processing steps (analysis → title → summary → save).
+  // Its own channel, deliberately NOT part of get-meeting-details: that read is
+  // about meeting content, this is about what main is doing right now. Returns
+  // null when nothing is being processed for this meeting.
+  safeHandle("get-meeting-processing-progress", async (_, id: string) => {
+    return getMeetingProcessingSnapshot(id);
   });
 
   safeHandle("update-meeting-title", async (_, { id, title }: { id: string; title: string }) => {

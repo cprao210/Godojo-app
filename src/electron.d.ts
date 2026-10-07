@@ -466,6 +466,8 @@ export interface ElectronAPI {
   getUploadTranscriptSpeakers: (text: string) => Promise<{ speakers: string[]; suggestedRep: string | null; suggestedBy: 'picked' | 'name' | 'first' | null }>
   deleteMeeting: (id: string) => Promise<boolean>
   onMeetingsUpdated: (callback: () => void) => () => void
+  getMeetingProcessingProgress: (id: string) => Promise<import('@/lib/postMeetingProgress').MeetingProcessingSnapshot | null>
+  onMeetingProcessingProgress: (callback: (snapshot: import('@/lib/postMeetingProgress').MeetingProcessingSnapshot) => void) => () => void
 
   /** LLM usage observability — see electron/utils/llmUsageBus.ts. */
   onLLMUsage: (callback: (payload: LLMUsagePayload) => void) => () => void

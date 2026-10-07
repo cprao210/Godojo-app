@@ -262,7 +262,7 @@ export const GhostModeToggle: React.FC<GhostModeToggleProps> = ({ isDetectable, 
         <button
             onClick={onToggle}
             className={[
-                'relative flex items-center gap-2 rounded-xl px-3 py-2 border transition-all duration-200 select-none cursor-pointer',
+                'relative flex h-9 items-center gap-2 rounded-xl px-3 border transition-all duration-200 select-none cursor-pointer',
                 !isDetectable
                     ? isLight
                         ? 'bg-blue-50 border-blue-200 text-blue-700 shadow-[0_0_12px_-2px_rgba(59,130,246,0.2)]'
@@ -282,15 +282,18 @@ export const GhostModeToggle: React.FC<GhostModeToggleProps> = ({ isDetectable, 
             ) : (
                 <Ghost size={14} strokeWidth={2} className="shrink-0" />
             )}
-            <span className="text-[12px] font-medium leading-none whitespace-nowrap">
-                {!isDetectable ? 'Ghost On' : 'Ghost Off'}
+            {/* Both labels share one grid cell, so the pill always takes the width of the longer
+                one ("Ghost Off") and the Refresh / Start buttons beside it don't shift on toggle. */}
+            <span className="inline-grid text-[12px] font-medium leading-none whitespace-nowrap">
+                <span aria-hidden="true" className="invisible col-start-1 row-start-1">Ghost Off</span>
+                <span className="col-start-1 row-start-1">{!isDetectable ? 'Ghost On' : 'Ghost Off'}</span>
             </span>
             <div className={[
                 'w-7 h-3.5 rounded-full relative transition-colors duration-200 shrink-0',
                 !isDetectable ? 'bg-accent-primary' : isLight ? 'bg-bg-toggle-switch' : 'bg-white/15',
             ].join(' ')}>
                 <div className={[
-                    'absolute top-[1.5px] w-[10px] h-[10px] rounded-full bg-white shadow-sm transition-all duration-200',
+                    'absolute top-[2px] w-[10px] h-[10px] rounded-full bg-white shadow-sm transition-all duration-200',
                     !isDetectable ? 'left-[16px]' : 'left-[2px]',
                 ].join(' ')} />
             </div>

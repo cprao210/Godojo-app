@@ -61,38 +61,31 @@ describe('decideFinalAnalysis', () => {
 
 const processing = (over: Partial<ProcessingStageInput> = {}): ProcessingStageInput => ({
     isProcessing: true,
-    hasScorecard: false,
     isDetailResolved: false,
     isStalled: false,
     ...over,
 });
 
 describe('deriveProcessingStage', () => {
-    it('reports analyzing while nothing has been persisted yet', () => {
-        expect(deriveProcessingStage(processing()).stage).toBe('analyzing');
-    });
-
-    it('advances to validating once the scorecard row lands', () => {
-        // Real signal: scoring finished, so the remaining wait is the summary's
-        // generate → verify loop.
-        expect(deriveProcessingStage(processing({ hasScorecard: true })).stage).toBe('validating');
+    it('reports processing while the background run is in flight', () => {
+        expect(deriveProcessingStage(processing()).stage).toBe('processing');
     });
 
     it('reports finalizing once processing is done but the detail read has not landed', () => {
         // This is the gap that used to paint the score before the summary.
-        expect(deriveProcessingStage(processing({ isProcessing: false, hasScorecard: true })).stage)
+        expect(deriveProcessingStage(processing({ isProcessing: false })).stage)
             .toBe('finalizing');
     });
 
     it('is ready only when processing finished AND the detail read resolved', () => {
         expect(
-            deriveProcessingStage(processing({ isProcessing: false, hasScorecard: true, isDetailResolved: true })).stage,
+            deriveProcessingStage(processing({ isProcessing: false, isDetailResolved: true })).stage,
         ).toBe('ready');
     });
 
     it('stops promising a summary that is never coming', () => {
         // Overrides every other stage — a crashed run must not spin forever.
-        const view = deriveProcessingStage(processing({ isStalled: true, hasScorecard: true }));
+        const view = deriveProcessingStage(processing({ isStalled: true }));
         expect(view.stage).toBe('stalled');
         expect(view.detail).toMatch(/regenerate/i);
     });

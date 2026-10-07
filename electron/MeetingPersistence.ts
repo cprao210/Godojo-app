@@ -32,6 +32,13 @@ import {
 } from './utils/callAnalysis';
 import { fieldEvidenceList, fieldSummary, fieldText } from '../src/lib/bantMeddic';
 import { requestBackendChunking } from './utils/backendRagChunking';
+import {
+    beginMeetingProcessing,
+    startProcessingStep,
+    setProcessingStepDetail,
+    completeProcessingSteps,
+    endMeetingProcessing,
+} from './utils/meetingProcessingProgress';
 
 const crypto = require('crypto');
 
@@ -222,7 +229,17 @@ export class MeetingPersistence {
             console.error("Failed to save placeholder", e);
         }
 
-        // 4. Background processing (title/summary/scorecard + final save) —
+        // Report the REAL background steps to the renderer (own IPC channel — see
+        // utils/meetingProcessingProgress). Only steps that will actually run are
+        // planned, mirroring the conditions in processAndSaveMeeting.
+        beginMeetingProcessing(meetingId, [
+            'liveAnalysis',
+            ...(metadataSnapshot?.title ? [] : ['title' as const]),
+            ...(snapshot.transcript.length > 2 ? ['summary' as const] : []),
+            'save',
+        ]);
+
+        // 4. Background processing (title/summary + final save) —
         // deferred behind the analysis-settle wait. This wait used to sit in
         // AppState.endMeeting IN FRONT of this entire method, which held the
         // placeholder save (and with it the transcript's availability in
@@ -243,6 +260,7 @@ export class MeetingPersistence {
                 // is still being written) and is what the summary is grounded on. Any
                 // failure falls back to the settle-wait + live snapshot below.
                 let analysisForSummary = liveAnalysisData;
+                startProcessingStep(meetingId, 'liveAnalysis', 'Running the end-of-call analysis.');
                 const finalV2 = isFinalAnalysisV2Enabled()
                     ? await this.runFinalAnalysisV2(meetingId, meetingTypes)
                     : null;
@@ -253,6 +271,7 @@ export class MeetingPersistence {
                     await appState?.waitForLiveAnalysisToSettle?.(FINAL_ANALYSIS_MAX_WAIT_MS);
                     appState?.recordPendingLiveAnalysis?.(meetingId);
                 }
+                completeProcessingSteps(meetingId, 'liveAnalysis');
                 await this.processAndSaveMeeting(
                     snapshot,
                     meetingId,
@@ -265,6 +284,9 @@ export class MeetingPersistence {
                 );
             } catch (err) {
                 console.error('[MeetingPersistence] Background processing failed:', err);
+                // processAndSaveMeeting's own finally ends tracking; this covers a
+                // throw BEFORE it ran (final analysis) so no snapshot is leaked.
+                endMeetingProcessing(meetingId, false);
             }
         })();
 
@@ -483,9 +505,21 @@ export class MeetingPersistence {
         //             })
         //         : Promise.resolve({ scorecardResult: null, customScoringCriteria: null });
 
+        // Idempotent: the live path already began tracking in stopMeeting (with a
+        // 'liveAnalysis' step); uploads / re-processing begin here. Listed in execution
+        // order — for them the transcript analysis runs AFTER the summary. A live
+        // meeting that ends up needing it gets the step inserted when it starts.
+        beginMeetingProcessing(meetingId, [
+            ...(!metadata || !metadata.title ? ['title' as const] : []),
+            ...(data.transcript.length > 2 ? ['summary' as const] : []),
+            ...(!liveAnalysisData && data.transcript.length > 2 ? ['analysis' as const] : []),
+            'save',
+        ]);
+
         try {
             // Generate Title (only if not set by calendar)
             if (!metadata || !metadata.title) {
+                startProcessingStep(meetingId, 'title', 'Naming the meeting from the conversation.');
                 const titlePrompt = `Generate a concise 3-6 word title for this meeting context. Output ONLY the title text. Do not use quotes or conversational filler.`;
                 const groqTitlePrompt = GROQ_TITLE_PROMPT;
 
@@ -496,6 +530,7 @@ export class MeetingPersistence {
 
                 const generatedTitle = await this.llmHelper.generateMeetingSummary(titlePrompt, titleContext, groqTitlePrompt, 'title');
                 if (generatedTitle) title = generatedTitle.replace(/[\"*]/g, '').trim();
+                completeProcessingSteps(meetingId, 'title');
             }
 
             // Generate Structured Summary
@@ -547,8 +582,22 @@ export class MeetingPersistence {
                 const summaryStartedAt = Date.now();
                 let attemptsUsed = 0;
 
+                // Each attempt is two real LLM round-trips (draft, then verify).
+                const attemptFraction = (attempt: number, verifying: boolean) =>
+                    ((attempt - 1) * 2 + (verifying ? 1 : 0)) / (SUMMARY_MAX_ATTEMPTS * 2);
+                const attemptSuffix = (attempt: number) =>
+                    attempt > 1 ? ` · attempt ${attempt} of ${SUMMARY_MAX_ATTEMPTS}` : '';
+
                 for (let attempt = 1; attempt <= SUMMARY_MAX_ATTEMPTS; attempt++) {
                     attemptsUsed = attempt;
+                    const draftDetail = attempt > 1
+                        ? 'Rewriting to fix issues found while verifying'
+                        : 'Drafting key points, action items and coaching notes';
+                    if (attempt === 1) {
+                        startProcessingStep(meetingId, 'summary', draftDetail, attemptFraction(attempt, false));
+                    } else {
+                        setProcessingStepDetail(meetingId, 'summary', draftDetail + attemptSuffix(attempt), attemptFraction(attempt, false));
+                    }
                     const generatedSummary = await this.llmHelper.generateMeetingSummary(
                         baseSummaryPrompt + correctionAddendum,
                         rosterBlock + fullTranscriptText,
@@ -576,6 +625,7 @@ export class MeetingPersistence {
 
                     let confidence = 0;
                     try {
+                        setProcessingStepDetail(meetingId, 'summary', 'Verifying every claim against the transcript' + attemptSuffix(attempt), attemptFraction(attempt, true));
                         const verification = await verifySummaryAgainstTranscript(this.llmHelper, rosterBlock + fullTranscriptText, jsonStr);
                         confidence = verification.confidence;
                         console.log(`[MeetingPersistence] Summary attempt ${attempt}/${SUMMARY_MAX_ATTEMPTS} grounding confidence: ${confidence} (${verification.issues.length} issue(s))`);
@@ -642,6 +692,8 @@ export class MeetingPersistence {
         } catch (e) {
             console.error("Error generating meeting metadata", e);
         }
+        // Success or a non-fatal failure — either way these are no longer running.
+        completeProcessingSteps(meetingId, 'title', 'summary');
 
         // Generate call analysis for uploaded transcripts (no live analysis available).
         //
@@ -665,6 +717,7 @@ export class MeetingPersistence {
         // meeting was never saved and chunking was never requested. A failed
         // analysis must cost the analysis, not the meeting.
         if (!liveAnalysisData && data.transcript.length > 2) {
+            startProcessingStep(meetingId, 'analysis'); // detail: STEP_META.analysis.idleDetail
             try {
                 // Backend first, local analyser as the fallback — shared with
                 // regenerateSummary, see ./utils/callAnalysis.
@@ -690,6 +743,7 @@ export class MeetingPersistence {
             } catch (e) {
                 console.error('[MeetingPersistence] Call analysis failed (non-fatal, saving without it):', e);
             }
+            completeProcessingSteps(meetingId, 'analysis');
         }
 
         // Set once the meeting + transcript are in SQLite (and queued for the
@@ -698,6 +752,7 @@ export class MeetingPersistence {
         // around it (summary, score, analysis, the UI notifications).
         let savedLocally = false;
         try {
+            startProcessingStep(meetingId, 'save', 'Writing the finished summary to your meeting.');
 
             let detailedSummary = { ...summaryData };
             if (liveAnalysisData) {
@@ -802,6 +857,9 @@ export class MeetingPersistence {
         } catch (error) {
             console.error('[MeetingPersistence] Failed to save meeting:', error);
         } finally {
+            // After the 'meetings-updated' broadcast above, so the renderer's
+            // "finished" event never beats the row it will read.
+            endMeetingProcessing(meetingId, savedLocally);
             if (savedLocally) {
                 this.triggerBackendChunking(meetingId, tenantId ?? null);
             } else {

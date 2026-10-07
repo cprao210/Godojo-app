@@ -15,6 +15,9 @@ import CoachNotes from './CoachNotes';
 import HowDemoLanded from './HowDemoLanded';
 import WhereTermsStand from './WhereTermsStand';
 import CoachSectionNav from './CoachSectionNav';
+import PostMeetingProcessingLoader from './PostMeetingProcessingLoader';
+import MeetingSummarySkeleton from './MeetingSummarySkeleton';
+import CallAnalysisSkeleton from './CallAnalysisSkeleton';
 import LLMUsageChip from './LLMUsageChip';
 import { CompanySelectModal } from '@/features/meetings/CompanyAssociation';
 import { applyCompanyToCaches } from '@/lib/companyAssociation';
@@ -146,6 +149,7 @@ const MeetingDetails: React.FC<MeetingDetailsProps> = ({ meeting: initialMeeting
         isLoadingTranscript,
         scorecard,
         processingStage,
+        processingProgress,
         isSummaryReady,
         isAnalysisReady,
         isLoadingAskDojo,
@@ -578,33 +582,30 @@ const MeetingDetails: React.FC<MeetingDetailsProps> = ({ meeting: initialMeeting
                                             animate={{ opacity: 1 }}
                                             transition={{ duration: 0.3 }}
                                         >
-                                            {/* Stage banner — skip it for the plain "still fetching over
-                                            HTTP" case (stage 'finalizing'), that one's near-instant.
-                                            Every other label maps to work main has genuinely not
-                                            finished yet, so it's safe to name. */}
-                                            {(isRegenerating || isProcessing) && (
+                                            {/* Regenerating keeps its simple banner. */}
+                                            {isRegenerating && (
                                                 <div className="flex items-center gap-3 mb-6 p-3 rounded-xl bg-blue-500/10 border border-blue-500/20">
-                                                    <motion.div
-                                                        animate={{ rotate: 360 }}
-                                                        transition={{ duration: 1.2, repeat: Infinity, ease: 'linear' }}
-                                                    >
-                                                        <RefreshCw size={13} className="text-blue-400 shrink-0" />
-                                                    </motion.div>
+                                                    <RefreshCw size={13} className="text-blue-400 shrink-0 animate-spin" />
                                                     <p className="text-xs text-blue-400 font-medium">
-                                                        {isRegenerating
-                                                            ? 'Regenerating summary — this may take 15-30 seconds...'
-                                                            : `${processingStage.label} — ${processingStage.detail}`
-                                                        }
+                                                        Regenerating summary — this may take 15-30 seconds...
                                                     </p>
                                                 </div>
                                             )}
 
-                                            <Skeleton className='h-[200px] w-full mb-3' />
-                                            <div className='flex gap-3'>
-                                                <Skeleton className='h-[400px] w-full mb-3' />
-                                                <Skeleton className='h-[400px] w-full mb-3' />
-                                            </div>
-                                            <Skeleton className='h-[200px] w-full mb-3' />
+                                            {/* Two distinct placeholders, never mixed:
+                                            - still processing  -> the real background steps
+                                              reported by main (own IPC channel; no GET-by-id)
+                                            - already processed -> layout-matching skeleton
+                                              while GET /meetings/:id is in flight */}
+                                            {isProcessing && !isRegenerating ? (
+                                                <PostMeetingProcessingLoader
+                                                    snapshot={processingProgress}
+                                                    fallbackStartedAt={new Date(initialMeeting.date).getTime()}
+                                                    isLight={isLight}
+                                                />
+                                            ) : (
+                                                <MeetingSummarySkeleton isLight={isLight} />
+                                            )}
                                         </motion.div>
                                         :
                                         <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }}>
@@ -1273,18 +1274,18 @@ const MeetingDetails: React.FC<MeetingDetailsProps> = ({ meeting: initialMeeting
                                     processing, which is how this tab used to claim "No live
                                     analysis captured" for a meeting that has some. */}
                                     {!isAnalysisReady ? (
-                                        <div className="space-y-3">
-                                            {isProcessing && (
-                                                <p className={`text-xs font-medium mb-1 ${isLight ? 'text-slate-500' : 'text-white/40'}`}>
-                                                    {processingStage.label} — {processingStage.detail}
-                                                </p>
-                                            )}
-                                            <Skeleton className="h-32 w-full" />
-                                            <div className="flex gap-3">
-                                                <Skeleton className="h-40 w-full" />
-                                                <Skeleton className="h-40 w-full" />
-                                            </div>
-                                        </div>
+                                        // Same split as the Summary tab: still processing -> the
+                                        // real background steps; processed -> layout-matching
+                                        // skeleton while GET /meetings/:id is in flight.
+                                        isProcessing ? (
+                                            <PostMeetingProcessingLoader
+                                                snapshot={processingProgress}
+                                                fallbackStartedAt={new Date(initialMeeting.date).getTime()}
+                                                isLight={isLight}
+                                            />
+                                        ) : (
+                                            <CallAnalysisSkeleton isLight={isLight} />
+                                        )
                                     ) : meeting.detailedSummary?.liveAnalysis ? (
                                         <>
                                             {/* <div className={`rounded-2xl mb-4 overflow-hidden ${isLight ? 'transparent' : 'bg-[#0d0d0f]'}`}>

@@ -19,6 +19,7 @@ import { useQuery, useMutation, useQueryClient } from 'react-query';
 import { meetingsApi, chatApi } from '@/api';
 import { isMeetingProcessing } from '@/api/meetingMapping';
 import { guardSession } from '@/lib/firebase';
+import { useMeetingProcessingProgress } from '@/hooks/useMeetingProcessingProgress';
 import type { CompanyRef, Meeting, MeetingTranscriptLine, MeetingScorecardResult } from '@/types';
 import { fieldEvidenceList, fieldSummary, fieldText } from '@/lib/bantMeddic';
 import { deriveProcessingStage, hasGeneratedSummary, PROCESSING_STALL_TIMEOUT_MS } from '@/lib/meetingLifecycle';
@@ -383,14 +384,11 @@ export function useMeetingDetails(initialMeeting: Meeting) {
             return res?.success ? (res.data ?? null) : null;
         },
         {
-            // Deliberately NOT gated on `!isProcessing` any more. processAndSaveMeeting
-            // persists the scorecard row as soon as scoring finishes, while the summary
-            // is still in its generate → verify loop — so this row appearing while
-            // `is_processed` is still 0 is the one real, observable signal of which half
-            // of the background work is left. Polling for it is what lets the UI say
-            // "Validating summary" honestly instead of animating a fake stage.
+            // One local read — no polling. Scorecard generation is disabled in
+            // processAndSaveMeeting, so no row can appear mid-processing; this only
+            // serves legacy meetings that were scored before. Processing progress
+            // comes from main's own step reports (useMeetingProcessingProgress).
             enabled: scorecardEnabled,
-            refetchInterval: isProcessing ? 2500 : false,
         },
     );
     // Prefer the dedicated-table scorecard; the summary_json-embedded blob is only the
@@ -560,11 +558,18 @@ export function useMeetingDetails(initialMeeting: Meeting) {
         () =>
             deriveProcessingStage({
                 isProcessing,
-                hasScorecard: !!scorecard,
                 isDetailResolved: isDetailResolved && isScorecardResolved,
                 isStalled: isProcessingStalled,
             }),
-        [isProcessing, scorecard, isDetailResolved, isScorecardResolved, isProcessingStalled],
+        [isProcessing, isDetailResolved, isScorecardResolved, isProcessingStalled],
+    );
+
+    // What main is REALLY doing right now (analysis → title → summary → save).
+    // Own IPC channel, independent of every meeting-details read. Only listens
+    // while the meeting is processing and not stalled.
+    const processingProgress = useMeetingProcessingProgress(
+        initialMeeting.id,
+        isProcessing && !isProcessingStalled,
     );
 
     // The single gate for the Summary tab AND the score accordion inside it, so
@@ -631,10 +636,32 @@ export function useMeetingDetails(initialMeeting: Meeting) {
         // silently miss an event that already fired, leaving isProcessing stuck
         // true forever and permanently disabling the transcript/scorecard queries
         // above. So check immediately on mount too, not only on a future event
-        const unblockFromLocal = async () => {
+        //
+        // Reads the LOCAL row (SQLite, authoritative for a meeting processed on
+        // this device) — not GET /meetings/:id. The detail endpoint is for opening
+        // finished meetings; the processing view must not depend on it, and the
+        // placeholder shown for it must not appear here. Returns what it found so
+        // the caller only falls back to HTTP when this device has no row at all
+        // (a meeting processing on another device).
+        const unblockFromLocal = async (): Promise<'finished' | 'processing' | 'missing'> => {
             try {
-                const details = await window.electronAPI?.getMeetingDetails?.(initialMeeting.id);
-                if (details && !isMeetingProcessing(details)) {
+                const details = window.electronAPI?.getMeetingDetailsLocal
+                    ? await window.electronAPI.getMeetingDetailsLocal(initialMeeting.id)
+                    : await window.electronAPI?.getMeetingDetails?.(initialMeeting.id);
+                if (!details) return 'missing';
+                // Only unblock on POSITIVE proof the summary finished: the row is
+                // explicitly flagged processed, or real summary prose exists.
+                // `!isMeetingProcessing` alone is not proof — a row whose
+                // isProcessed is missing (or whose placeholder carries a real
+                // calendar title) reads as "not processing" while the summary is
+                // still being generated, which dropped the loader after a few
+                // seconds and painted "Summary data is empty".
+                const hasFinished =
+                    !!details &&
+                    !isMeetingProcessing(details) &&
+                    ((details as Meeting).isProcessed === true ||
+                        hasGeneratedSummary((details as Meeting).detailedSummary));
+                if (details && hasFinished) {
                     queryClient.setQueryData<Meeting>(meetingKey, (prev) => {
                         const base = prev ?? initialMeeting;
                         return {
@@ -648,9 +675,12 @@ export function useMeetingDetails(initialMeeting: Meeting) {
                     });
                     setIsProcessing(false);
                     void queryClient.invalidateQueries(scorecardKey);
+                    return 'finished';
                 }
+                return 'processing';
             } catch (e) {
                 console.log("[ERROR: Local getMeetingDetails fallback]: ", e);
+                return 'processing';
             }
         };
 
@@ -663,8 +693,10 @@ export function useMeetingDetails(initialMeeting: Meeting) {
         // landed in Supabase yet. Trusting isProcessed alone here was skipping
         // unblockFromLocal() even when updated.transcript was still empty,
         // permanently missing the transcript/scorecard tabs for that view.
+        // (No scorecard requirement: scorecard generation is disabled, so waiting for
+        // one would mean this never reported complete.)
         const isHttpResultComplete = (m: Meeting) =>
-            !!m.isProcessed && (m.transcript?.length ?? 0) > 0 && !!m.detailedSummary?.scorecard;
+            !!m.isProcessed && (m.transcript?.length ?? 0) > 0;
 
         // GET /meetings/:id is canonical for `company`, EXCEPT while an async
         // association (upload flow) is still in flight — then it legitimately
@@ -694,21 +726,18 @@ export function useMeetingDetails(initialMeeting: Meeting) {
                 })
                 .catch(() => void unblockFromLocal());
 
-        if (canUseHttp) {
-            void checkViaHttpThenLocal();
-        } else {
-            void unblockFromLocal();
-        }
+        // Local first. HTTP is only the fallback for "no local row" — never the
+        // driver of the processing view.
+        const check = () => {
+            void unblockFromLocal().then((result) => {
+                if (result === 'missing' && canUseHttp) void checkViaHttpThenLocal();
+            });
+        };
+        check();
 
         if (!window.electronAPI?.onMeetingsUpdated) return;
 
-        const unsubscribe = window.electronAPI.onMeetingsUpdated(() => {
-            if (canUseHttp) {
-                void checkViaHttpThenLocal();
-            } else {
-                void unblockFromLocal();
-            }
-        });
+        const unsubscribe = window.electronAPI.onMeetingsUpdated(check);
 
         return () => unsubscribe();
     }, [isProcessing, initialMeeting.id]);
@@ -1092,6 +1121,7 @@ export function useMeetingDetails(initialMeeting: Meeting) {
         scorecard,
         // Lifecycle-derived render gates (see the block above).
         processingStage,
+        processingProgress,
         isProcessingStalled,
         isSummaryReady,
         isAnalysisReady,

@@ -209,6 +209,8 @@ interface ElectronAPI {
   getUploadTranscriptSpeakers: (text: string) => Promise<{ speakers: string[]; suggestedRep: string | null; suggestedBy: 'picked' | 'name' | 'first' | null }>
   updateMeetingSummary: (id: string, updates: { overview?: string, actionItems?: string[], keyPoints?: string[], actionItemsTitle?: string, keyPointsTitle?: string }) => Promise<boolean>
   onMeetingsUpdated: (callback: () => void) => () => void
+  getMeetingProcessingProgress: (id: string) => Promise<import('../src/lib/postMeetingProgress').MeetingProcessingSnapshot | null>
+  onMeetingProcessingProgress: (callback: (snapshot: import('../src/lib/postMeetingProgress').MeetingProcessingSnapshot) => void) => () => void
   getDisplayName: (role: 'user' | 'client' | 'assistant') => Promise<string>;
   getSpeakerNames: () => Promise<{ user: string; client: string }>;
 
@@ -980,6 +982,17 @@ contextBridge.exposeInMainWorld("electronAPI", {
     ipcRenderer.on("meetings-updated", subscription)
     return () => {
       ipcRenderer.removeListener("meetings-updated", subscription)
+    }
+  },
+
+  // Real post-meeting processing steps. Own channel — independent of the
+  // meeting-details read path.
+  getMeetingProcessingProgress: (id: string) => ipcRenderer.invoke("get-meeting-processing-progress", id),
+  onMeetingProcessingProgress: (callback: (snapshot: any) => void) => {
+    const subscription = (_event: any, snapshot: any) => callback(snapshot)
+    ipcRenderer.on("meeting-processing-progress", subscription)
+    return () => {
+      ipcRenderer.removeListener("meeting-processing-progress", subscription)
     }
   },
 

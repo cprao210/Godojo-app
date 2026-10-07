@@ -2135,6 +2135,9 @@ export class DatabaseManager {
             calendarEventId: meetingRow.calendar_event_id,
             calendarEventMetadata: meetingRow.calendar_event_metadata ? JSON.parse(meetingRow.calendar_event_metadata) : undefined,
             source: meetingRow.source,
+            // Without this the renderer cannot tell a still-processing row from a
+            // finished one and unblocks the loader early.
+            isProcessed: meetingRow.is_processed === 1 || meetingRow.is_processed === true,
             transcript: transcript,
             usage: usage
         };
