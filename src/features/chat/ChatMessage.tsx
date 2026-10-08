@@ -4,6 +4,7 @@ import { motion } from 'framer-motion';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import { chatMarkdownComponents } from './markdownComponents';
+import { ensureTableSpacing } from './markdownTables';
 import { CitationProvider, rehypeCitations, CiteChip } from './citations';
 import { SourceMapEntry } from '@/types';
 import { useResolvedTheme } from '@/hooks/useResolvedTheme';
@@ -157,7 +158,28 @@ export const AssistantMessage: React.FC<AssistantMessageProps> = ({ content, isS
                             unverifiedCitations={unverifiedCitations}
                             onOpenMeeting={onOpenMeeting}
                             onOpenAsset={onOpenAsset}
+<<<<<<< Updated upstream
                         />
+=======
+                        >
+                            <ReactMarkdown
+                                // No math plugin here on purpose: sales answers are
+                                // dense with currency ("$204,000 and $173,400"),
+                                // which remark-math/KaTeX happily parses as an
+                                // inline $…$ equation — the mixed-font artifact in
+                                // pricing answers. All other markdown surfaces in
+                                // the app render plain GFM; stay consistent.
+                                remarkPlugins={[remarkGfm]}
+                                rehypePlugins={[rehypeCitations]}
+                                components={{
+                                    ...chatMarkdownComponents,
+                                    cite: CiteChip as any,
+                                }}
+                            >
+                                {ensureTableSpacing(content)}
+                            </ReactMarkdown>
+                        </CitationProvider>
+>>>>>>> Stashed changes
                     </div>
                     {isStreaming && (
                         isPerformanceMode ? (

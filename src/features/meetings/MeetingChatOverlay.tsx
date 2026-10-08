@@ -2,7 +2,15 @@ import React, { useEffect, useState } from 'react';
 import { X, Copy, Check } from 'lucide-react';
 import { motion, AnimatePresence } from 'framer-motion';
 import { IMAGES } from '@/lib/assets';
+<<<<<<< Updated upstream
 import { ChatMarkdownBody } from '@/features/chat/ChatMessage';
+=======
+import ReactMarkdown from 'react-markdown';
+import { CitationProvider, rehypeCitations, CiteChip } from '@/features/chat/citations';
+import remarkGfm from 'remark-gfm';
+import { chatMarkdownComponents } from '@/features/chat';
+import { ensureTableSpacing } from '@/features/chat/markdownTables';
+>>>>>>> Stashed changes
 import { useMeetingChat } from '@/hooks';
 import { usePerformanceMode } from '@/hooks';
 import { MeetingChatOverlayProps } from '@/types';
@@ -102,7 +110,24 @@ const AssistantMessage: React.FC<{ content: string; isStreaming?: boolean; sourc
                         sourceMap={sourceMap}
                         unverifiedCitations={unverifiedCitations}
                         onOpenMeeting={onOpenMeeting}
+<<<<<<< Updated upstream
                     />
+=======
+                    >
+                        <ReactMarkdown
+                            // See ChatMessage.tsx: math parsing is disabled app-wide
+                            // so currency never renders as inline LaTeX.
+                            remarkPlugins={[remarkGfm]}
+                            rehypePlugins={[rehypeCitations]}
+                            components={{
+                                ...chatMarkdownComponents,
+                                cite: CiteChip as any,
+                            }}
+                        >
+                            {ensureTableSpacing(content)}
+                        </ReactMarkdown>
+                    </CitationProvider>
+>>>>>>> Stashed changes
                 </div>
                 {isStreaming && (
                     isPerformanceMode ? (

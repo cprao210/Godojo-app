@@ -128,8 +128,9 @@ describe('groupSources', () => {
 
 describe('statusLabel', () => {
     it('maps known status values to their labels', () => {
-        expect(statusLabel('connected')).toBe('Connecting…');
+        expect(statusLabel('connected')).toBe('Understanding your question…');
         expect(statusLabel('searching')).toBe('Searching meetings…');
+        expect(statusLabel('reading_calls')).toBe('Reading your calls…');
         expect(statusLabel('generating')).toBe('Generating response…');
     });
 
