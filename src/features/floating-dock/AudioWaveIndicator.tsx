@@ -571,7 +571,7 @@ export const AudioWaveIndicator: React.FC<AudioWaveIndicatorProps> = ({
                             height: dotSize,
                             backgroundColor: micColor,
                             boxShadow: `0 0 ${dotSize}px ${rgba(micRgb, 0.5)}`,
-                            animation: reducedMotion
+                            animation: (reducedMotion || isPerformanceMode)
                                 ? undefined
                                 : `audio-wave-idle-breathe 2.2s ease-in-out ${i * 0.18}s infinite`,
                         }}

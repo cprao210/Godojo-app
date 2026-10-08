@@ -693,6 +693,15 @@ a {
   -webkit-backdrop-filter: none !important;
 }
 
+/* The launcher's search pill gets its glass from a custom class rather than a
+   Tailwind backdrop-blur-* one, so the selector above never matched it. It
+   sits on the launcher's own opaque background, so nothing is lost visually. */
+.perf-mode .overlay-pill-surface,
+.perf-mode .overlay-shell-surface {
+  backdrop-filter: none !important;
+  -webkit-backdrop-filter: none !important;
+}
+
 /* Plain filter-blur decorations (Tailwind's `blur-*`, e.g. ambient glow
    divs) are a SEPARATE CSS property from backdrop-filter, so the rule above
    never touched them — they were a real gap: static or animated, they still

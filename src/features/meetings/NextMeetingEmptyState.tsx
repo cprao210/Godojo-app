@@ -2,12 +2,18 @@ import React from 'react';
 import { motion } from 'framer-motion';
 import { Calendar, Play, Plus } from 'lucide-react';
 import { posthogAnalytics } from '@/lib/analytics/posthog.service';
+import { usePerformanceMode } from '@/hooks';
 
 // ─────────────────────────────────────────────────────────────────
 // EMPTY STATE CARD (no upcoming meeting)
 // ─────────────────────────────────────────────────────────────────
 
 export function NextMeetingEmptyState({ isLight, onStart }: { isLight: boolean; onStart: () => void }) {
+    // Performance Mode freezes the endless dot pulse and icon float. This card
+    // is the default home screen, so those loops would otherwise keep the
+    // compositor busy (a CPU core under software rendering) the whole time
+    // the app sits idle. Opacity loops are not stopped by reducedMotion.
+    const { isPerformanceMode } = usePerformanceMode();
     return (
         <motion.div
             initial={{ opacity: 0, y: 12 }}
@@ -40,13 +46,13 @@ export function NextMeetingEmptyState({ isLight, onStart }: { isLight: boolean; 
                     <motion.span key={i}
                         className={["absolute h-1 w-1 rounded-full", isLight ? "bg-blue-500" : "bg-blue-400"].join(" ")}
                         style={{ left: p.x, top: p.y }}
-                        animate={{ opacity: [0.2, 1, 0.2], scale: [0.6, 1.2, 0.6] }}
-                        transition={{ duration: 2.4, repeat: Infinity, delay: p.d, ease: "easeInOut" }}
+                        animate={isPerformanceMode ? { opacity: 0.6, scale: 1 } : { opacity: [0.2, 1, 0.2], scale: [0.6, 1.2, 0.6] }}
+                        transition={isPerformanceMode ? { duration: 0 } : { duration: 2.4, repeat: Infinity, delay: p.d, ease: "easeInOut" }}
                     />
                 ))}
                 <motion.div
-                    animate={{ y: [0, -3, 0] }}
-                    transition={{ duration: 3.5, repeat: Infinity, ease: "easeInOut" }}
+                    animate={isPerformanceMode ? { y: 0 } : { y: [0, -3, 0] }}
+                    transition={isPerformanceMode ? { duration: 0 } : { duration: 3.5, repeat: Infinity, ease: "easeInOut" }}
                     className="relative flex h-14 w-14 items-center justify-center rounded-xl bg-gradient-to-br from-blue-400 via-blue-500 to-blue-700 shadow-[0_10px_28px_-8px_rgba(59,130,246,0.7)]"
                 >
                     <Calendar className="h-7 w-7 text-white" strokeWidth={2.2} />

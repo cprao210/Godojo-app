@@ -2,6 +2,7 @@ import React from 'react';
 import { MessageCircle, X } from 'lucide-react';
 import { motion, AnimatePresence } from 'framer-motion';
 import { isMac } from '@/../utils/platformUtils';
+import { usePerformanceMode } from '@/hooks';
 import { FloatingChatButtonProps } from '@/types';
 
 // Bottom-right floating action button that toggles the Global Chat widget.
@@ -10,6 +11,7 @@ import { FloatingChatButtonProps } from '@/types';
 // separate assistant, not part of meeting search.
 const FloatingChatButton: React.FC<FloatingChatButtonProps> = ({ isOpen, onClick, label = 'Ask AI' }) => {
 
+    const { isPerformanceMode } = usePerformanceMode();
     const shortcutKeys = isMac ? ['⌘', 'Space'] : ['Ctrl', 'Space'];
 
     return (
@@ -40,8 +42,15 @@ const FloatingChatButton: React.FC<FloatingChatButtonProps> = ({ isOpen, onClick
                 className="relative w-14 h-14 rounded-full flex items-center justify-center focus:outline-none"
                 aria-label={isOpen ? 'Close chat' : label}
             >
-                {/* Idle breathing glow — subtle, invites the first click, hidden once open */}
-                {!isOpen && (
+                {/* Idle breathing glow — subtle, invites the first click, hidden once open.
+                    Performance Mode shows it static: an endless loop keeps the
+                    compositor drawing 60 frames a second on the home screen,
+                    which on a software-rendering machine costs about a full
+                    CPU core in the GPU process while the app sits idle. */}
+                {!isOpen && isPerformanceMode && (
+                    <span className="absolute inset-0 rounded-full bg-blue-500/20" />
+                )}
+                {!isOpen && !isPerformanceMode && (
                     <motion.span
                         className="absolute inset-0 rounded-full bg-blue-500/35 blur-[2px]"
                         animate={{ scale: [1, 1.28, 1], opacity: [0.45, 0, 0.45] }}

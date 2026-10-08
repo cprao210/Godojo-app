@@ -157,6 +157,10 @@ const Launcher: React.FC<LauncherProps> = ({ onStartMeeting, onOpenSettings, onC
                                     opacity: isMeetingsExpanded ? 0.45 : 1,
                                     filter: isMeetingsExpanded ? 'blur(1.5px)' : 'blur(0px)',
                                     y: isMeetingsExpanded ? -6 : 0,
+                                    // Even blur(0px) makes Chromium paint this whole
+                                    // section into a separate filter surface; drop the
+                                    // filter once collapsed so the resting state is plain.
+                                    transitionEnd: isMeetingsExpanded ? undefined : { filter: 'none' },
                                 }}
                                 transition={{ duration: 0.42, ease: [0.32, 0.72, 0, 1] }}
                             >
