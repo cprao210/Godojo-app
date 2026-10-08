@@ -62,8 +62,8 @@
         "to": "assets/"
       },
       {
-        "from": "assets/natively.icns",
-        "to": "natively.icns"
+        "from": "assets/godojo.icns",
+        "to": "godojo.icns"
       },
       {
         "from": "resources/models/",
@@ -92,7 +92,7 @@
           ]
         }
       ],
-      "icon": "assets/natively.icns",
+      "icon": "assets/godojo.icns",
       "identity": null,
       "hardenedRuntime": true,
       "entitlements": "assets/entitlements.mac.plist",

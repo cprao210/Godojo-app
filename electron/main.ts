@@ -5330,8 +5330,8 @@ export class AppState {
         appName = "Godojo.ai";
         if (isMac) {
           iconPath = app.isPackaged
-            ? path.join(process.resourcesPath, "natively.icns")
-            : path.join(app.getAppPath(), "assets/natively.icns");
+            ? path.join(process.resourcesPath, "godojo.icns")
+            : path.join(app.getAppPath(), "assets/godojo.icns");
         } else if (isWin) {
           iconPath = app.isPackaged
             ? path.join(process.resourcesPath, "assets/icons/win/icon.ico")
