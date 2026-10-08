@@ -163,6 +163,9 @@ export interface ElectronAPI {
   // ===========================================================================
   setOpenAtLogin: (open: boolean) => Promise<{ success: boolean; error?: string }>
   getOpenAtLogin: () => Promise<boolean>
+  /** Title-bar ✕ keeps GoDojo running in the background (true) or quits (false); null = not chosen yet. */
+  getCloseToBackground: () => Promise<boolean | null>
+  setCloseToBackground: (keepRunning: boolean) => Promise<{ success: boolean }>
   /** Native cross-screen toast (same pipeline as pause/resume/summary toasts). */
   showAppNotification: (title: string, message: string) => Promise<{ success: boolean; error?: string }>
   getVerboseLogging: () => Promise<boolean>

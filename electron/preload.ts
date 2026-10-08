@@ -750,6 +750,8 @@ contextBridge.exposeInMainWorld("electronAPI", {
   getOverlayMousePassthrough: () => ipcRenderer.invoke("get-overlay-mouse-passthrough"),
   setOpenAtLogin: (open: boolean) => ipcRenderer.invoke("set-open-at-login", open),
   getOpenAtLogin: () => ipcRenderer.invoke("get-open-at-login"),
+  getCloseToBackground: () => ipcRenderer.invoke("get-close-to-background"),
+  setCloseToBackground: (keepRunning: boolean) => ipcRenderer.invoke("set-close-to-background", keepRunning),
   showAppNotification: (title: string, message: string) => ipcRenderer.invoke("show-app-notification", { title, message }),
   setDisguise: (mode: 'terminal' | 'settings' | 'activity' | 'none') => ipcRenderer.invoke("set-disguise", mode),
   getDisguise: () => ipcRenderer.invoke("get-disguise"),

@@ -43,6 +43,10 @@ const userDataDirName = app.isPackaged ? 'godojo-ai' : 'godojo-ai-dev';
 app.setPath('userData', path.join(app.getPath('appData'), userDataDirName));
 console.log(`[Main] userData path: ${app.getPath('userData')} (isPackaged=${app.isPackaged})`);
 
+// Must load before AppState renames the app / changes its AUMID (disguise):
+// it captures the login-item registry name at import. See utils/loginItem.ts.
+import { applyOpenAtLogin } from "./utils/loginItem"
+
 // Load app-level config (Supabase, Google/Zoom OAuth client credentials, Firebase).
 // In dev this reads the repo-root `.env`. In a packaged build it reads the `.env`
 // shipped via `extraResources` (written by CI from GitHub Actions secrets — see
@@ -5530,11 +5534,7 @@ async function initializeApp() {
   if (app.isPackaged) {
     const sm = SettingsManager.getInstance();
     if (!sm.get('openAtLoginDefaultApplied')) {
-      app.setLoginItemSettings({
-        openAtLogin: true,
-        openAsHidden: false,
-        path: app.getPath('exe'),
-      });
+      applyOpenAtLogin(true);
       sm.set('openAtLoginDefaultApplied', true);
       // Record the registration the Settings toggle reads back — the OS
       // getter misreports false in packaged builds, which made this default
@@ -5548,13 +5548,16 @@ async function initializeApp() {
       // misreporting OS getter, and the toggle showed OFF while auto-launch
       // kept working. Re-assert once; after this the record exists, and any
       // later user toggle persists through set-open-at-login untouched.
-      app.setLoginItemSettings({
-        openAtLogin: true,
-        openAsHidden: false,
-        path: app.getPath('exe'),
-      });
+      applyOpenAtLogin(true);
       sm.set('openAtLogin', true);
       console.log('[Main] Backfilled openAtLogin=true for upgraded install');
+    } else {
+      // Reconcile the OS with the user's recorded choice on every launch.
+      // Repairs installs where the toggle was turned OFF but, because of the
+      // registry-name mismatch fixed in utils/loginItem.ts, the original
+      // 'electron.app.GoDojo AI' entry was never removed — so GoDojo kept
+      // opening at login. Idempotent, a few registry writes.
+      applyOpenAtLogin(sm.get('openAtLogin') === true);
     }
   }
 

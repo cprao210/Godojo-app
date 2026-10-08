@@ -25,6 +25,11 @@ export interface AppSettings {
     // so the Settings toggle reads this instead — see the get-open-at-login
     // handler in ipcHandlers.ts.
     openAtLogin?: boolean;
+    // What the launcher's title-bar ✕ does on Windows/Linux. true = hide and
+    // keep running in the background (meeting reminders keep working);
+    // false = fully quit. Missing = not chosen yet: the first ✕ asks once.
+    // Alt+F4 / taskbar close always keep running regardless.
+    closeToBackground?: boolean;
     // Mirror of the renderer's Performance Mode preference (usePerformanceMode.ts),
     // pushed over IPC so MAIN-process work (e.g. LiveRAGIndexer) can honour it too.
     // Missing means 'auto' — read as `get('performanceModePreference') ?? 'auto'`.

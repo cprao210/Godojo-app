@@ -939,16 +939,29 @@ export function initializeIpcHandlers(appState: AppState): void {
   })
 
   safeHandle("set-open-at-login", async (_, openAtLogin: boolean) => {
-    app.setLoginItemSettings({
-      openAtLogin,
-      openAsHidden: false,
-      path: app.getPath('exe') // Explicitly point to executable for production reliability
-    });
+    // Same registry name as the startup registration — see utils/loginItem.ts
+    // for why a bare setLoginItemSettings() here could never turn it off.
+    const { applyOpenAtLogin } = require('./utils/loginItem');
+    applyOpenAtLogin(!!openAtLogin);
     // Remember what we registered. The OS getter below is unreliable in
     // packaged builds, so the persisted value is what the Settings toggle
     // actually reflects.
     const { SettingsManager } = require('./services/SettingsManager');
     SettingsManager.getInstance().set('openAtLogin', openAtLogin);
+    return { success: true };
+  });
+
+  // Title-bar ✕ behaviour (Windows/Linux): keep running in the background vs
+  // quit. null = not chosen yet (the first ✕ asks). See WindowHelper.closeWindow.
+  safeHandle("get-close-to-background", async () => {
+    const { SettingsManager } = require('./services/SettingsManager');
+    const v = SettingsManager.getInstance().get('closeToBackground');
+    return typeof v === 'boolean' ? v : null;
+  });
+
+  safeHandle("set-close-to-background", async (_, keepRunning: boolean) => {
+    const { SettingsManager } = require('./services/SettingsManager');
+    SettingsManager.getInstance().set('closeToBackground', !!keepRunning);
     return { success: true };
   });
 
@@ -964,11 +977,8 @@ export function initializeIpcHandlers(appState: AppState): void {
     const { SettingsManager } = require('./services/SettingsManager');
     const persisted = SettingsManager.getInstance().get('openAtLogin');
     if (typeof persisted === 'boolean') return persisted;
-    try {
-      return app.getLoginItemSettings({ path: app.getPath('exe') }).openAtLogin;
-    } catch {
-      return false;
-    }
+    const { readOsOpenAtLogin } = require('./utils/loginItem');
+    return readOsOpenAtLogin();
   });
 
   // Generic native toast for renderer-side watchers (invite-accepted, etc.) —
