@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import {
     beginMeetingProcessing,
     completeProcessingSteps,
@@ -6,6 +6,7 @@ import {
     getMeetingProcessingSnapshot,
     setProcessingStepDetail,
     startProcessingStep,
+    waitForMeetingProcessingEnd,
 } from '../utils/meetingProcessingProgress';
 
 describe('meetingProcessingProgress registry', () => {
@@ -53,5 +54,34 @@ describe('meetingProcessingProgress registry', () => {
         expect(snap.steps.map(s => s.id)).toEqual(['transcript', 'liveAnalysis', 'summary', 'analysis', 'save']);
         expect(snap.steps.find(s => s.id === 'analysis')?.status).toBe('active');
         endMeetingProcessing('m4', false);
+    });
+});
+describe('waitForMeetingProcessingEnd', () => {
+    it('resolves immediately when the meeting is not being processed', async () => {
+        await expect(waitForMeetingProcessingEnd('never-started', 60_000)).resolves.toBeUndefined();
+    });
+
+    it('resolves when processing ends (saved or not)', async () => {
+        beginMeetingProcessing('w1', ['save']);
+        let done = false;
+        const p = waitForMeetingProcessingEnd('w1', 60_000).then(() => { done = true; });
+        await Promise.resolve();
+        expect(done).toBe(false);
+        endMeetingProcessing('w1', false);
+        await p;
+        expect(done).toBe(true);
+    });
+
+    it('resolves after the timeout if processing never ends', async () => {
+        vi.useFakeTimers();
+        try {
+            beginMeetingProcessing('w2', ['save']);
+            const p = waitForMeetingProcessingEnd('w2', 5_000);
+            await vi.advanceTimersByTimeAsync(5_000);
+            await expect(p).resolves.toBeUndefined();
+        } finally {
+            endMeetingProcessing('w2', false);
+            vi.useRealTimers();
+        }
     });
 });

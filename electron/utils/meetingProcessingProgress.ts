@@ -77,6 +77,35 @@ export function endMeetingProcessing(meetingId: string, saved: boolean): void {
     if (!cur) return;
     broadcast(finishSnapshot(cur, saved, Date.now()));
     active.delete(meetingId);
+    const waiters = endWaiters.get(meetingId);
+    endWaiters.delete(meetingId);
+    waiters?.forEach((resolve) => resolve());
+}
+
+const endWaiters = new Map<string, Array<() => void>>();
+
+/**
+ * Resolves when this meeting's background processing ends (saved or not), at
+ * once if it is not being processed, or after `timeoutMs` as a safety net so
+ * a caller is never stranded. Never rejects. Used to run follow-up work
+ * (local RAG indexing) AFTER the summary instead of on top of it.
+ */
+export function waitForMeetingProcessingEnd(meetingId: string, timeoutMs: number): Promise<void> {
+    if (!active.has(meetingId)) return Promise.resolve();
+    return new Promise<void>((resolve) => {
+        let done = false;
+        const finish = () => {
+            if (done) return;
+            done = true;
+            clearTimeout(timer);
+            resolve();
+        };
+        const timer = setTimeout(finish, timeoutMs);
+        (timer as any).unref?.();
+        const list = endWaiters.get(meetingId) ?? [];
+        list.push(finish);
+        endWaiters.set(meetingId, list);
+    });
 }
 
 export function getMeetingProcessingSnapshot(meetingId: string): MeetingProcessingSnapshot | null {

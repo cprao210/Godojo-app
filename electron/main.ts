@@ -5,6 +5,7 @@ import { autoUpdater } from "electron-updater"
 import * as nodeOs from "node:os"
 import { isLowEndMachine, isLowMemoryMachine, readTotalRamGB } from "../utils/performanceClassification"
 import { releaseDeferredStartupTasks, scheduleDeferredStartupTask } from "./utils/deferredStartup"
+import { waitForMeetingProcessingEnd } from "./utils/meetingProcessingProgress"
 import { onLLMUsage } from "./utils/llmUsageBus"
 
 // LLM usage observability: forward every summary/regenerate/followup-email
@@ -504,6 +505,8 @@ export class AppState {
   private deferHeavyWarmups: boolean = false;
   /** Low-end only: intent-model warmup this long after meeting start. */
   private static readonly LOW_END_INTENT_WARMUP_DELAY_MS = 45_000;
+  /** Upper bound on waiting for the summary before indexing a finished meeting. */
+  private static readonly POST_MEETING_RAG_MAX_WAIT_MS = 10 * 60_000;
   private isMeetingPaused: boolean = false; // Pause guard — blocks audio and AI while paused
   private _isQuitting: boolean = false;
   private _verboseLogging: boolean = false;
@@ -3910,41 +3913,46 @@ export class AppState {
     void this._flushPendingSttResync();
 
     // ─── Background post-processing ──────────────────────────────────────────
-    // These are the previously blocking operations that caused the stop-button
-    // delay. They are pure background tasks with no UI dependency:
-    //   • stopLiveIndexing flushes the JIT RAG live stream
-    //   • processCompletedMeetingForRAG embeds the full meeting into the vector store
-    //   • deleteMeetingData cleans up provisional JIT chunks
-    // Chain them sequentially in the background so ordering is preserved,
-    // but the IPC call returns immediately and the UI transitions without delay.
+    // Pure background tasks with no UI dependency, chained so ordering holds
+    // while the IPC call returns immediately:
+    //   1. stop live indexing WITHOUT the final embed pass — the provisional
+    //      'live-meeting-current' chunks are discarded next, so embedding the
+    //      tail was wasted work in the busiest second of the call's end;
+    //   2. delete those provisional chunks right away (nothing queries them
+    //      once live indexing stops — query-live-meeting requires it active),
+    //      before a quickly-started next meeting could reuse the session key;
+    //   3. wait for the summary pipeline to finish, THEN index the finished
+    //      meeting. Running it immediately stacked chunking + embedding on top
+    //      of the summary LLM calls and DB saves — and it never saw the
+    //      summary, which processCompletedMeetingForRAG folds into the index
+    //      when present.
     const ragManager = this.ragManager;
+    const discardLiveChunks = async () => {
+      if (!ragManager) return;
+      await ragManager.stopLiveIndexing({ flush: false });
+      console.log('[Main] Live RAG indexing stopped.');
+      // Guard: if a new meeting has already started, 'live-meeting-current'
+      // now belongs to that session — leave it alone.
+      if (!this.isMeetingActive) {
+        ragManager.deleteMeetingData('live-meeting-current');
+        console.log('[Main] JIT RAG provisional chunks cleaned up.');
+      } else {
+        console.log('[Main] New meeting started during cleanup — skipping live-meeting-current deletion.');
+      }
+    };
     if (meetingId) {
       (async () => {
         try {
-          if (ragManager) {
-            await ragManager.stopLiveIndexing();
-            console.log('[Main] Live RAG indexing stopped.');
-          }
+          await discardLiveChunks();
+          await waitForMeetingProcessingEnd(meetingId, AppState.POST_MEETING_RAG_MAX_WAIT_MS);
           await this.processCompletedMeetingForRAG(meetingId);
-          // Guard: only delete live-meeting-current provisional chunks if no new
-          // meeting has started while we were processing. If a new meeting IS active,
-          // 'live-meeting-current' now belongs to that session — leave it alone.
-          if (ragManager && !this.isMeetingActive) {
-            ragManager.deleteMeetingData('live-meeting-current');
-            console.log('[Main] JIT RAG provisional chunks cleaned up.');
-          } else if (this.isMeetingActive) {
-            console.log('[Main] New meeting started during cleanup — skipping live-meeting-current deletion.');
-          }
         } catch (err) {
           console.error('[Main] Background post-meeting RAG processing failed:', err);
         }
       })();
     } else {
-      // Meeting was too short — still flush the live indexer and clean up
-      if (ragManager) {
-        ragManager.stopLiveIndexing().catch(() => { });
-        if (!this.isMeetingActive) ragManager.deleteMeetingData('live-meeting-current');
-      }
+      // Meeting was too short — nothing to index; just discard the live chunks
+      discardLiveChunks().catch(() => { });
     }
     // ─────────────────────────────────────────────────────────────────────────
 

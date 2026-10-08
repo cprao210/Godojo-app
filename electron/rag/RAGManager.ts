@@ -288,8 +288,8 @@ export class RAGManager {
      * NOTE: The post-meeting processMeeting() will later replace JIT chunks
      * with the complete, properly indexed version.
      */
-    async stopLiveIndexing(): Promise<void> {
-        await this.liveIndexer.stop();
+    async stopLiveIndexing(options?: { flush?: boolean }): Promise<void> {
+        await this.liveIndexer.stop(options);
     }
 
     /**

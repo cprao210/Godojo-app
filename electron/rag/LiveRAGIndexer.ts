@@ -30,6 +30,8 @@ export class LiveRAGIndexer {
     private indexedChunkCount = 0;    // Total chunks with embeddings
     private isProcessing = false;     // Guard against concurrent ticks
     private isActive = false;
+    /** The tick currently running, so stop() can wait for it to finish writing. */
+    private inFlightTick: Promise<void> | null = null;
 
     constructor(vectorStore: VectorStore, embeddingPipeline: EmbeddingPipeline) {
         this.vectorStore = vectorStore;
@@ -60,10 +62,20 @@ export class LiveRAGIndexer {
         console.log(`[LiveRAGIndexer] Started for meeting ${meetingId} (interval=${intervalMs}ms, performanceMode=${performanceMode})`);
 
         this.timer = setInterval(() => {
-            this.tick().catch(err => {
+            this.trackedTick().catch(err => {
                 console.error('[LiveRAGIndexer] Tick error:', err);
             });
         }, intervalMs);
+    }
+
+    /** Run a tick, or join the one already running. */
+    private trackedTick(): Promise<void> {
+        if (this.inFlightTick) return this.inFlightTick;
+        const p = this.tick().finally(() => {
+            if (this.inFlightTick === p) this.inFlightTick = null;
+        });
+        this.inFlightTick = p;
+        return p;
     }
 
     /**
@@ -157,20 +169,31 @@ export class LiveRAGIndexer {
     }
 
     /**
-     * Stop live indexing. Flushes any remaining segments.
+     * Stop live indexing.
+     *
+     * flush (default true): chunk + embed any remaining segments first — used
+     * on pause, where the JIT chunks keep serving live chat after resume.
+     * flush false: skip that final pass — used when the meeting ENDS, because
+     * the provisional 'live-meeting-current' chunks are deleted right after
+     * and the finished meeting is re-indexed in full, so the final embed was
+     * pure wasted CPU/network at the busiest moment.
+     * Either way, a tick already in flight is awaited, so nothing is written
+     * for this meeting after stop() resolves.
      */
-    async stop(): Promise<void> {
+    async stop(options: { flush?: boolean } = {}): Promise<void> {
         if (!this.isActive) return;
+        const flush = options.flush ?? true;
 
-        console.log(`[LiveRAGIndexer] Stopping for meeting ${this.meetingId}`);
+        console.log(`[LiveRAGIndexer] Stopping for meeting ${this.meetingId}${flush ? '' : ' (no final flush)'}`);
 
         if (this.timer) {
             clearInterval(this.timer);
             this.timer = null;
         }
 
+        if (this.inFlightTick) await this.inFlightTick.catch(() => { });
         // Final flush — process any remaining segments
-        await this.tick();
+        if (flush) await this.trackedTick();
 
         const meetingId = this.meetingId;
         this.isActive = false;
