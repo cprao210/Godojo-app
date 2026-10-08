@@ -24,7 +24,9 @@ function newestSourceMtime() {
     }
   };
   visit(path.join(nativeModulePath, 'src'));
-  for (const file of ['Cargo.toml', 'Cargo.lock', 'build.rs']) {
+  // .cargo/config.toml carries rustflags (e.g. Windows +crt-static), so a
+  // change there must also invalidate the prebuilt artifact.
+  for (const file of ['Cargo.toml', 'Cargo.lock', 'build.rs', path.join('.cargo', 'config.toml')]) {
     const full = path.join(nativeModulePath, file);
     if (fs.existsSync(full)) newest = Math.max(newest, fs.statSync(full).mtimeMs);
   }
