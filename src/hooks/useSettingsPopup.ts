@@ -204,11 +204,6 @@ export function useSettingsPopup() {
         }
     };
 
-    const openDonateLink = () => {
-        // @ts-ignore
-        window.electronAPI?.openExternal('https://buymeacoffee.com/evinjohnn');
-    };
-
     return {
         // theme + shortcuts
         isLightTheme,
@@ -230,6 +225,5 @@ export function useSettingsPopup() {
         toggleTranscript,
         toggleInterviewMode,
         toggleProfileMode,
-        openDonateLink,
     };
 }

@@ -375,11 +375,6 @@ interface ElectronAPI {
   // Global shortcut events (stealth: fired even when window is not focused)
   onGlobalShortcut: (callback: (data: { action: string }) => void) => () => void
 
-  // Donation API
-  getDonationStatus: () => Promise<{ shouldShow: boolean; hasDonated: boolean; lifetimeShows: number }>;
-  markDonationToastShown: () => Promise<{ success: boolean }>;
-  setDonationComplete: () => Promise<{ success: boolean }>;
-
   // Profile Engine API
   profileUploadResume: (filePath: string) => Promise<{ success: boolean; error?: string }>;
   profileGetStatus: () => Promise<{ hasProfile: boolean; profileMode: boolean; name?: string; role?: string; totalExperienceYears?: number }>;
@@ -1532,11 +1527,6 @@ contextBridge.exposeInMainWorld("electronAPI", {
       ipcRenderer.removeListener('global-shortcut', subscription)
     }
   },
-
-  // Donation API
-  getDonationStatus: () => ipcRenderer.invoke("get-donation-status"),
-  markDonationToastShown: () => ipcRenderer.invoke("mark-donation-toast-shown"),
-  setDonationComplete: () => ipcRenderer.invoke('set-donation-complete'),
 
   // Profile Engine API
   profileUploadResume: (filePath: string) => ipcRenderer.invoke('profile:upload-resume', filePath),

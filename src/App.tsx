@@ -36,7 +36,6 @@ import { DocumentViewerHost } from "@/features/documents/DocumentViewer";
 import { ModelSelectorWindow, GodojoInterface, Launcher, ErrorBoundary } from "@/features/common";
 import { IncompatibleProviderBanner, AdCampaignToasters, SystemAudioPermissionBanner, GhostGlowOverlay } from "@/features/common";
 import { AudioStatusTray } from "@/features/common";
-// import { SupportToaster } from "@/features/common";
 
 // ---------------------------------------------------------------------------
 // pages
@@ -461,7 +460,6 @@ const App: React.FC = () => {
             />
 
             <UpdateBanner />
-            {/* <SupportToaster /> */}
 
             {inviteMismatchEmail && (
               <InviteAccountMismatchBanner invitedEmail={inviteMismatchEmail} onDismiss={dismissInviteMismatch} />

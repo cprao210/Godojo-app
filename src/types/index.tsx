@@ -1962,11 +1962,6 @@ export interface GodojoInterfaceProps {
   overlayOpacity?: number;
 }
 
-// --- src/features/common/SupportToaster.tsx ---
-export interface SupportToasterProps {
-  className?: string;
-}
-
 // --- src/features/common/TopSearchPill.tsx ---
 export interface TopSearchPillProps {
   meetings: Meeting[];

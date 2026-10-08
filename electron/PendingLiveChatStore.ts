@@ -13,7 +13,7 @@ import Store from 'electron-store';
 // point meetingsApi.get() succeeding is itself proof the backend has the row.
 //
 // electron-store (not the SQLite DB) because this is disposable bookkeeping,
-// not meeting content — same rationale as DonationManager's use of it.
+// not meeting content.
 interface PendingLiveChatState {
     // meetingId -> interaction_ids collected during that call, not yet linked
     pending: Record<string, number[]>;

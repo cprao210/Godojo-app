@@ -642,13 +642,6 @@ export interface ElectronAPI {
   getAppVersion: () => Promise<string>
 
   // ===========================================================================
-  // Donation
-  // ===========================================================================
-  getDonationStatus: () => Promise<{ shouldShow: boolean; hasDonated: boolean; lifetimeShows: number }>
-  markDonationToastShown: () => Promise<{ success: boolean }>
-  setDonationComplete: () => Promise<{ success: boolean }>
-
-  // ===========================================================================
   // Keybind Management
   // ===========================================================================
   getKeybinds: () => Promise<Array<{ id: string; label: string; accelerator: string; isGlobal: boolean; defaultAccelerator: string }>>
