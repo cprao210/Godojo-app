@@ -5782,6 +5782,9 @@ async function initializeApp() {
 
   appState.createWindow()
 
+  // Launch-time perf samples (15 s / 60 s / 180 s) for "slow to open" reports.
+  meetingPerformanceSampler.startStartupSampling()
+
   // If a deep link arrived before the window existed (cold start), deliver
   // it now that the renderer is up and listening.
   const mainWindowForDeepLink = appState.getMainWindow();
