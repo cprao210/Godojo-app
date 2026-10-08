@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useCallback, useRef, useState } from 'react';
 import { Copy, Check, Sparkles } from 'lucide-react';
 import { motion } from 'framer-motion';
 import ReactMarkdown from 'react-markdown';
@@ -8,6 +8,69 @@ import { CitationProvider, rehypeCitations, CiteChip } from './citations';
 import { SourceMapEntry } from '@/types';
 import { useResolvedTheme } from '@/hooks/useResolvedTheme';
 import { usePerformanceMode } from '@/hooks';
+
+// ============================================
+// Markdown body (memoized)
+// ============================================
+
+// Module-level so their identity never changes between renders.
+// No math plugin here on purpose: sales answers are dense with currency
+// ("$204,000 and $173,400"), which remark-math/KaTeX happily parses as an
+// inline $…$ equation — the mixed-font artifact in pricing answers. All other
+// markdown surfaces in the app render plain GFM; stay consistent.
+const REMARK_PLUGINS = [remarkGfm];
+const REHYPE_PLUGINS = [rehypeCitations];
+const MARKDOWN_COMPONENTS = { ...chatMarkdownComponents, cite: CiteChip as any };
+
+interface ChatMarkdownBodyProps {
+    content: string;
+    sourceMap?: Record<number, SourceMapEntry>;
+    unverifiedCitations?: number[];
+    onOpenMeeting?: (meetingId: string) => void;
+    onOpenAsset?: (src: SourceMapEntry) => void;
+}
+
+const MarkdownBodyInner: React.FC<ChatMarkdownBodyProps> = ({ content, sourceMap, unverifiedCitations, onOpenMeeting, onOpenAsset }) => (
+    <CitationProvider
+        map={sourceMap}
+        unverified={unverifiedCitations}
+        onOpenMeeting={onOpenMeeting}
+        onOpenAsset={onOpenAsset}
+    >
+        <ReactMarkdown remarkPlugins={REMARK_PLUGINS} rehypePlugins={REHYPE_PLUGINS} components={MARKDOWN_COMPONENTS}>
+            {content}
+        </ReactMarkdown>
+    </CitationProvider>
+);
+const MemoMarkdownBody = React.memo(MarkdownBodyInner);
+
+/**
+ * Markdown + citations for one chat answer, re-parsed ONLY when that answer's
+ * own content / sources / verification change.
+ *
+ * WHY: chat lists re-render on every streamed flush (and the in-call chat on
+ * every live-transcript update), and each re-render used to re-run
+ * react-markdown + remark-gfm + the citation plugin for EVERY message in the
+ * conversation — work that grows with the conversation and shows up as jank
+ * on low-end CPUs. Callers often pass freshly-created callbacks; those are
+ * routed through a ref to stable wrappers so they can't defeat the memo,
+ * while clicks still reach the latest callback.
+ */
+export const ChatMarkdownBody: React.FC<ChatMarkdownBodyProps> = ({ onOpenMeeting, onOpenAsset, ...rest }) => {
+    const callbacks = useRef({ onOpenMeeting, onOpenAsset });
+    callbacks.current = { onOpenMeeting, onOpenAsset };
+    const openMeeting = useCallback((id: string) => callbacks.current.onOpenMeeting?.(id), []);
+    const openAsset = useCallback((src: SourceMapEntry) => callbacks.current.onOpenAsset?.(src), []);
+    return (
+        <MemoMarkdownBody
+            {...rest}
+            // Keep "no handler" distinguishable: CitationProvider/CiteChip fall
+            // back to preview cards when a handler is absent.
+            onOpenMeeting={onOpenMeeting ? openMeeting : undefined}
+            onOpenAsset={onOpenAsset ? openAsset : undefined}
+        />
+    );
+};
 
 // ============================================
 // Message Components
@@ -88,29 +151,13 @@ export const AssistantMessage: React.FC<AssistantMessageProps> = ({ content, isS
                         auto, turning this box into a scroll container that clips
                         the citation hover cards escaping above the first line. */}
                     <div className="markdown-content min-w-0 max-w-full overflow-x-clip">
-                        <CitationProvider
-                            map={sourceMap}
-                            unverified={unverifiedCitations}
+                        <ChatMarkdownBody
+                            content={content}
+                            sourceMap={sourceMap}
+                            unverifiedCitations={unverifiedCitations}
                             onOpenMeeting={onOpenMeeting}
                             onOpenAsset={onOpenAsset}
-                        >
-                            <ReactMarkdown
-                                // No math plugin here on purpose: sales answers are
-                                // dense with currency ("$204,000 and $173,400"),
-                                // which remark-math/KaTeX happily parses as an
-                                // inline $…$ equation — the mixed-font artifact in
-                                // pricing answers. All other markdown surfaces in
-                                // the app render plain GFM; stay consistent.
-                                remarkPlugins={[remarkGfm]}
-                                rehypePlugins={[rehypeCitations]}
-                                components={{
-                                    ...chatMarkdownComponents,
-                                    cite: CiteChip as any,
-                                }}
-                            >
-                                {content}
-                            </ReactMarkdown>
-                        </CitationProvider>
+                        />
                     </div>
                     {isStreaming && (
                         isPerformanceMode ? (

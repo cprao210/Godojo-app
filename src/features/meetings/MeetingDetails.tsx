@@ -3,7 +3,8 @@ import { useResolvedTheme, useMeetingDetails, formatTime, formatTranscriptTimest
 import { hasGeneratedSummary } from '@/lib/meetingLifecycle';
 import { coachQuestionText } from '@/lib/coachSummary';
 import { formatDurationHuman } from '@/lib/transcriptLabels';
-import { Mail, ChevronDown, ChevronUp, BarChart3, ArrowUp, Copy, Check, TrendingUp, TriangleAlert, MessageSquare, Building2, Plus, Square, Download } from 'lucide-react';
+import { Mail, ChevronDown, ChevronUp, BarChart3, ArrowUp, Copy, Check, TrendingUp, TriangleAlert, MessageSquare, Building2, Plus, Download } from 'lucide-react';
+import { AskDojoInput } from './AskDojoInput';
 import { MessagesSquareIcon, NotepadText, RefreshCcw, RefreshCw, NotebookPen, ClipboardList } from 'lucide-react';
 import { motion, AnimatePresence } from 'framer-motion';
 
@@ -157,7 +158,6 @@ const MeetingDetails: React.FC<MeetingDetailsProps> = ({ meeting: initialMeeting
         activeTab, setActiveTab,
         aiInteractionsData,
         hasMoreAiInteractions, isLoadingMoreAiInteractions, loadMoreAiInteractions,
-        query, setQuery,
         meetingInputRef,
         isCopied,
         isRegenerating,
@@ -172,7 +172,6 @@ const MeetingDetails: React.FC<MeetingDetailsProps> = ({ meeting: initialMeeting
         transcriptTimesAreRelative,
         handleSubmitQuestion,
         handlePracticeWithDojo,
-        handleInputKeyDown,
         isChatBusy,
         handleChatBusyChange,
         handleStopChatGeneration,
@@ -186,6 +185,8 @@ const MeetingDetails: React.FC<MeetingDetailsProps> = ({ meeting: initialMeeting
         queryClient,
         meetingKey,
     } = useMeetingDetails(initialMeeting);
+    // Clears the ask bar (which owns its own text) when the chat closes.
+    const [askResetSignal, setAskResetSignal] = useState(0);
 
     // Fires once per mount, independent of activeTab — matches "no matter
     // of what tab is selected" in the spec. Re-fires if the user backs out
@@ -1013,9 +1014,8 @@ const MeetingDetails: React.FC<MeetingDetailsProps> = ({ meeting: initialMeeting
                                                     <div className="space-y-6">
                                                         {(() => {
                                                             const filteredTranscript = meeting.transcript?.filter(entry => {
-                                                                const isHidden = ['system', 'ai', 'assistant', 'model'].includes(entry.speaker?.toLowerCase());
-                                                                if (isHidden) console.log('Filtered out:', entry);
-                                                                return !isHidden;
+                                                                // (No console.log here: this runs on every render of the page.)
+                                                                return !['system', 'ai', 'assistant', 'model'].includes(entry.speaker?.toLowerCase());
                                                             }) || [];
 
                                                             if (filteredTranscript.length === 0) {
@@ -1371,43 +1371,16 @@ const MeetingDetails: React.FC<MeetingDetailsProps> = ({ meeting: initialMeeting
                         {chatMessages.length} {chatMessages.length === 1 ? 'message' : 'messages'} · View conversation
                     </button>
                 )}
-                <div className="w-full max-w-[440px] relative group pointer-events-auto">
-                    {/* Dark Glass Effect Input (Matching Reference) */}
-                    <textarea
-                        value={query}
-                        ref={meetingInputRef}
-                        onChange={(e) => setQuery(e.target.value)}
-                        onKeyDown={handleInputKeyDown}
-                        // Clicking/focusing the input opens the panel immediately —
-                        // if there's existing history it's visible right away,
-                        // without first having to type and submit a new question.
-                        onFocus={() => {
-                            if (!isChatOpen) setIsChatOpen(true);
-                        }}
-                        placeholder="Ask about this meeting..."
-                        rows={1}
-                        className={`w-full pl-5 pr-12 py-3 backdrop-blur-[24px] backdrop-saturate-[140%] focus:outline-none transition-shadow duration-200 rounded-3xl text-sm text-text-primary placeholder-text-tertiary/70 resize-none leading-relaxed ${isLight ? 'bg-white border border-slate-200 shadow-[0_8px_30px_rgba(0,0,0,0.08)]' : 'bg-bg-secondary border border-white/20 shadow-[0_8px_30px_rgb(0,0,0,0.12)]'}`}
-                        style={{ maxHeight: 120, overflowY: 'auto' }}
-                    />
-                    {isChatBusy ? (
-                        <button
-                            onClick={handleStopChatGeneration}
-                            className="absolute right-2 bottom-4 p-1.5 rounded-full transition-all duration-200 border border-white/5 bg-bg-item-active text-text-primary hover:bg-bg-item-hover"
-                            aria-label="Stop generating"
-                            title="Stop generating"
-                        >
-                            <Square size={14} fill="currentColor" />
-                        </button>
-                    ) : (
-                        <button
-                            onClick={handleSubmitQuestion}
-                            className={`absolute right-2 bottom-4 p-1.5 rounded-full transition-all duration-200 border border-white/5 ${query.trim() ? 'bg-text-primary text-bg-primary hover:scale-105' : 'bg-bg-item-active text-text-primary hover:bg-bg-item-hover'
-                                }`}
-                        >
-                            <ArrowUp size={16} className="transform rotate-45" />
-                        </button>
-                    )}
-                </div>
+                <AskDojoInput
+                    inputRef={meetingInputRef}
+                    isLight={isLight}
+                    isChatOpen={isChatOpen}
+                    isChatBusy={isChatBusy}
+                    onSubmit={handleSubmitQuestion}
+                    onOpenChat={() => setIsChatOpen(true)}
+                    onStop={handleStopChatGeneration}
+                    resetSignal={askResetSignal}
+                />
             </div>
 
             {/* Chat Overlay */}
@@ -1416,7 +1389,7 @@ const MeetingDetails: React.FC<MeetingDetailsProps> = ({ meeting: initialMeeting
                 onBusyChange={handleChatBusyChange}
                 onClose={() => {
                     setIsChatOpen(false);
-                    setQuery('');
+                    setAskResetSignal(n => n + 1);
                 }}
                 meetingContext={{
                     id: meeting.id,  // Required for RAG queries

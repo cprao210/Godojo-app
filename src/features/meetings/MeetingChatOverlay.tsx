@@ -2,10 +2,7 @@ import React, { useEffect, useState } from 'react';
 import { X, Copy, Check } from 'lucide-react';
 import { motion, AnimatePresence } from 'framer-motion';
 import { IMAGES } from '@/lib/assets';
-import ReactMarkdown from 'react-markdown';
-import { CitationProvider, rehypeCitations, CiteChip } from '@/features/chat/citations';
-import remarkGfm from 'remark-gfm';
-import { chatMarkdownComponents } from '@/features/chat';
+import { ChatMarkdownBody } from '@/features/chat/ChatMessage';
 import { useMeetingChat } from '@/hooks';
 import { usePerformanceMode } from '@/hooks';
 import { MeetingChatOverlayProps } from '@/types';
@@ -98,24 +95,14 @@ const AssistantMessage: React.FC<{ content: string; isStreaming?: boolean; sourc
                     </div>
                 )}
                 <div className="markdown-content">
-                    <CitationProvider
-                        map={sourceMap}
-                        unverified={unverifiedCitations}
+                    {/* Shared memoized body (see ChatMessage.tsx): re-parsed only
+                        when this answer changes, not on every streamed flush. */}
+                    <ChatMarkdownBody
+                        content={content}
+                        sourceMap={sourceMap}
+                        unverifiedCitations={unverifiedCitations}
                         onOpenMeeting={onOpenMeeting}
-                    >
-                        <ReactMarkdown
-                            // See ChatMessage.tsx: math parsing is disabled app-wide
-                            // so currency never renders as inline LaTeX.
-                            remarkPlugins={[remarkGfm]}
-                            rehypePlugins={[rehypeCitations]}
-                            components={{
-                                ...chatMarkdownComponents,
-                                cite: CiteChip as any,
-                            }}
-                        >
-                            {content}
-                        </ReactMarkdown>
-                    </CitationProvider>
+                    />
                 </div>
                 {isStreaming && (
                     isPerformanceMode ? (

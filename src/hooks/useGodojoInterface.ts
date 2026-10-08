@@ -555,7 +555,8 @@ export function useGodojoInterface({ overlayOpacity = OVERLAY_OPACITY_DEFAULT }:
         cleanups.push(window.electronAPI.onNativeAudioTranscript((transcript) => {
             // When Answer button is active, capture USER transcripts for voice input
             // Use ref to avoid stale closure issue
-            console.log(transcript, '[Transcript Event]');
+            // (No per-event console.log: this fires 10+/s for the whole call, and
+            // logging every payload object kept DevTools/console busy for nothing.)
 
             // Retraction: the main process dropped an echo final whose partial
             // was already displayed — remove that pending partial everywhere.

@@ -498,7 +498,10 @@ export function useMeetingDetails(initialMeeting: Meeting) {
     const isLoadingAskDojo = askDojoEnabled
         ? isLoadingAiInteractions || (aiInteractionsUpdatedAt === 0 && !aiInteractionsError)
         : isProcessing;
-    const [query, setQuery] = useState('');
+    // The ask bar's text lives in AskDojoInput (local state), not here: this
+    // hook drives the whole MeetingDetails page, so holding it here re-rendered
+    // the entire page — full transcript and every AI answer's markdown — on
+    // every keystroke.
     const meetingInputRef = useRef<HTMLTextAreaElement>(null);
     const [isCopied, setIsCopied] = useState(false);
     const [isRegenerating, setIsRegenerating] = useState(false);
@@ -598,14 +601,6 @@ export function useMeetingDetails(initialMeeting: Meeting) {
 
     const speakerNames = (meeting.detailedSummary as any)?.speakerNames as
         { user: string; client: string; clientDiarized?: string } | undefined;
-
-    // Auto-resize textarea
-    useEffect(() => {
-        const el = meetingInputRef.current;
-        if (!el) return;
-        el.style.height = 'auto';
-        el.style.height = `${Math.min(el.scrollHeight, 96)}px`; // max ~4 lines
-    }, [query]);
 
     // Same labelling the PDF export uses (lib/transcriptLabels) — one implementation, so the two
     // can't drift. Speaking Balance calls it with no per-segment displayName; the labeler falls back
@@ -742,14 +737,16 @@ export function useMeetingDetails(initialMeeting: Meeting) {
         return () => unsubscribe();
     }, [isProcessing, initialMeeting.id]);
 
-    const handleSubmitQuestion = () => {
-        if (query.trim()) {
-            setPendingQuery({ text: query.trim(), id: Date.now() });
-            if (!isChatOpen) {
-                setIsChatOpen(true);
-            }
-            setQuery('');
+    /** Ask bar submit. Returns true when the question was accepted, so the
+     *  input (which owns the text) knows to clear itself. */
+    const handleSubmitQuestion = (text: string): boolean => {
+        const trimmed = text.trim();
+        if (!trimmed) return false;
+        setPendingQuery({ text: trimmed, id: Date.now() });
+        if (!isChatOpen) {
+            setIsChatOpen(true);
         }
+        return true;
     };
 
     /** Opens the Ask Dojo chat with a caller-supplied prompt — used by the
@@ -760,18 +757,6 @@ export function useMeetingDetails(initialMeeting: Meeting) {
         setPendingQuery({ text, id: Date.now() });
         if (!isChatOpen) {
             setIsChatOpen(true);
-        }
-    };
-
-    const handleInputKeyDown = (e: React.KeyboardEvent) => {
-        // Shift+Enter inserts a newline — let the textarea handle it
-        // natively instead of submitting.
-        if (e.key === 'Enter' && e.shiftKey) {
-            return;
-        }
-        if (e.key === 'Enter' && query.trim()) {
-            e.preventDefault();
-            handleSubmitQuestion();
         }
     };
 
@@ -1130,7 +1115,6 @@ export function useMeetingDetails(initialMeeting: Meeting) {
         activeTab, setActiveTab,
         aiInteractionsData, isLoadingAiInteractions,
         hasMoreAiInteractions, isLoadingMoreAiInteractions, loadMoreAiInteractions,
-        query, setQuery,
         isCopied,
         isRegenerating,
         regenError,
@@ -1144,7 +1128,6 @@ export function useMeetingDetails(initialMeeting: Meeting) {
         transcriptTimesAreRelative,
         handleSubmitQuestion,
         handlePracticeWithDojo,
-        handleInputKeyDown,
         meetingInputRef,
         isChatBusy,
         handleChatBusyChange,

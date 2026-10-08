@@ -1,14 +1,12 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
 import { Brain, Copy, Check, RotateCcw, Send, Square } from 'lucide-react';
-import ReactMarkdown from 'react-markdown';
 import { guardSession } from '@/lib/firebase';
-import remarkGfm from 'remark-gfm';
 import { useStreamBuffer } from '@/hooks';
 import { usePerformanceMode } from '@/hooks';
 import { chatApi, statusLabel } from '@/api';
-import { chatMarkdownComponents } from '@/features/chat';
-import { CitationProvider, indexSourceMap, rehypeCitations, CiteChip } from '@/features/chat/citations';
+import { ChatMarkdownBody } from '@/features/chat/ChatMessage';
+import { indexSourceMap } from '@/features/chat/citations';
 import { ChatHistoryTurn, FloatingChatPanelProps, LiveTranscriptSegment, Message, StreamHandle } from '@/types';
 import { getDockSurfaceStyle } from '../dockSurfaceStyle';
 import { posthogAnalytics } from '@/lib/analytics/posthog.service';
@@ -114,7 +112,11 @@ const TypingDots: React.FC<{ label?: string }> = ({ label }) => {
     );
 };
 
-const MessageBubble: React.FC<{ msg: Message }> = ({ msg }) => {
+// Memoized: the panel re-renders on every live-transcript update (it receives
+// the rolling transcript as props), and every one of those used to re-render
+// and re-parse every bubble. Message updates replace only the changed message
+// object (prev.map(... ? {...m} : m)), so untouched bubbles skip render.
+const MessageBubble: React.FC<{ msg: Message }> = React.memo(({ msg }) => {
     const [copied, setCopied] = useState(false);
 
     const handleCopy = async () => {
@@ -193,17 +195,11 @@ const MessageBubble: React.FC<{ msg: Message }> = ({ msg }) => {
                                 </div>
                             )}
                             <div className="markdown-content" style={msg.rewriting ? { opacity: 0.55 } : undefined}>
-                                <CitationProvider
-                                    map={msg.sourceMap}
-                                    unverified={msg.unverifiedCitations}
-                                >
-                                    <ReactMarkdown remarkPlugins={[remarkGfm]} rehypePlugins={[rehypeCitations]} components={{
-                                        ...chatMarkdownComponents,
-                                        cite: CiteChip as any,
-                                    }}>
-                                        {msg.text}
-                                    </ReactMarkdown>
-                                </CitationProvider>
+                                <ChatMarkdownBody
+                                    content={msg.text}
+                                    sourceMap={msg.sourceMap}
+                                    unverifiedCitations={msg.unverifiedCitations}
+                                />
                                 {msg.ragAnswer && (
                                     <div className="mt-2 text-[10px] text-white/35 flex items-center gap-2">
                                         <span>{Math.round(msg.ragAnswer.confidence * 100)}% confidence</span>
@@ -231,7 +227,7 @@ const MessageBubble: React.FC<{ msg: Message }> = ({ msg }) => {
             </div>
         </motion.div>
     );
-};
+});
 
 // Memoized: this panel stays mounted for the rest of the call once it has been
 // opened once (so chat history survives a panel switch), which means every
@@ -258,9 +254,12 @@ export const FloatingChatPanel: React.FC<FloatingChatPanelProps> = React.memo(({
     const currentAssistantIdRef = useRef<string | null>(null);
     const currentBufferRef = useRef('');
 
-    // Auto-scroll
+    // Auto-scroll. While an answer streams this runs on every flush (~60/s);
+    // restarting a smooth-scroll animation each time kept the compositor busy,
+    // so jump instantly during streaming and animate only for discrete adds.
     useEffect(() => {
-        messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
+        const streaming = messages.some(m => m.isStreaming);
+        messagesEndRef.current?.scrollIntoView({ behavior: streaming ? 'auto' : 'smooth' });
     }, [messages]);
 
     // Stream event listeners
@@ -466,6 +465,10 @@ export const FloatingChatPanel: React.FC<FloatingChatPanelProps> = React.memo(({
         let localBuffer = '';
         currentBufferRef.current = '';
         let rafId: number | null = null;
+        // The status label / rewrite dim only needs clearing once per stream
+        // phase. Doing it on EVERY token rebuilt the messages array (a new
+        // array even when nothing changed) and re-rendered the panel per token.
+        let statusCleared = false;
         const flush = () => {
             rafId = null;
             setMessages(prev => prev.map(m => m.id === assistantId ? { ...m, text: localBuffer, rewriting: false } : m));
@@ -478,6 +481,7 @@ export const FloatingChatPanel: React.FC<FloatingChatPanelProps> = React.memo(({
             calendarEventMetadata,
             {
                 onStatus: (status) => {
+                    statusCleared = false;
                     const label = statusLabel(status);
                     setMessages(prev => prev.map(m => m.id === assistantId ? { ...m, status: label } : m));
                 },
@@ -488,6 +492,7 @@ export const FloatingChatPanel: React.FC<FloatingChatPanelProps> = React.memo(({
                 // the message here, so a retry that returns none must not
                 // leave the previous attempt's chips on screen.
                 onRetry: (attempt, max) => {
+                    statusCleared = false;
                     setMessages(prev => prev.map(m =>
                         m.id === assistantId
                             ? { ...m, status: `Reconnecting… (${attempt}/${max})`, sourceMap: undefined }
@@ -515,6 +520,7 @@ export const FloatingChatPanel: React.FC<FloatingChatPanelProps> = React.memo(({
                     // 'Rewriting…' badge instead of wiping the bubble —
                     // mid-call, a vanishing answer reads as a glitch.
                     localBuffer = '';
+                    statusCleared = false;
                     if (rafId !== null) {
                         cancelAnimationFrame(rafId);
                         rafId = null;
@@ -529,7 +535,10 @@ export const FloatingChatPanel: React.FC<FloatingChatPanelProps> = React.memo(({
                     if (rafId === null) rafId = requestAnimationFrame(flush);
                     // First token has arrived — clear the status label and
                     // the rewrite dim so real content replaces both.
-                    setMessages(prev => prev.map(m => (m.id === assistantId && (m.status || m.rewriting)) ? { ...m, status: undefined, rewriting: false } : m));
+                    if (!statusCleared) {
+                        statusCleared = true;
+                        setMessages(prev => prev.map(m => (m.id === assistantId && (m.status || m.rewriting)) ? { ...m, status: undefined, rewriting: false } : m));
+                    }
                 },
                 onRagAnswer: (rag) => {
                     // Structured answer arrives whole — render as a complete
