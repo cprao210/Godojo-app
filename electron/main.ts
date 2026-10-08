@@ -200,7 +200,7 @@ let _logFile: string | null = null;
 const getLogFile = (): string | null => {
   if (_logFile) return _logFile;
   try {
-    _logFile = path.join(app.getPath('documents'), 'natively_debug.log');
+    _logFile = path.join(app.getPath('documents'), 'godojo_debug.log');
     return _logFile;
   } catch {
     // app.ready not yet fired — return null, logToFile will skip silently
@@ -1468,7 +1468,7 @@ export class AppState {
    *    its OWN read-only connection to that path.
    *  - cold start: AppState is constructed before any renderer exists, so
    *    AuthManager.getUid() is still null and DatabaseManager has resolved to
-   *    natively-anon.db. Until this runs, RAG and knowledge index into the anon
+   *    godojo-anon.db. Until this runs, RAG and knowledge index into the anon
    *    file for the entire session even for a normally signed-in user.
    *
    * Re-running initializeRAGManager() also re-hydrates the orchestrator from
@@ -1496,7 +1496,7 @@ export class AppState {
   }
 
   // Echo pipeline mode for the native gate ('legacy' | 'phase1' | 'full_duplex').
-  // Persisted in CredentialsManager; NATIVELY_ECHO_MODE env var wins for field debugging.
+  // Persisted in CredentialsManager; GODOJO_ECHO_MODE env var wins for field debugging.
   private _echoMode(): string {
     try {
       const { CredentialsManager } = require('./services/CredentialsManager');
@@ -1790,7 +1790,7 @@ export class AppState {
     // Workaround: Open the folder containing the downloaded update so user can install manually
     if (process.platform === 'darwin') {
       try {
-        // Get the downloaded update file path (e.g., .../Natively-1.0.9-mac.zip)
+        // Get the downloaded update file path (e.g., .../GoDojo.AI-1.0.9-mac.zip)
         const updateFile = (autoUpdater as any).downloadedUpdateHelper?.file
         console.log('[AutoUpdater] Downloaded update file:', updateFile)
 
@@ -3620,7 +3620,7 @@ export class AppState {
   public async startMeeting(metadata?: any): Promise<void> {
     console.log('[Main] Starting Meeting...', metadata);
     // Field diagnostics: 60s process-metric samples for the duration of the
-    // call (natively_debug.log + sampled PostHog perf_sample events).
+    // call (godojo_debug.log + sampled PostHog perf_sample events).
     meetingPerformanceSampler.start();
 
     // Idempotency guard: a duplicate call (double-click on Start before the UI
@@ -5193,10 +5193,10 @@ export class AppState {
         }
 
         if (settled) {
-          // Capture whether Natively is currently the frontmost app BEFORE
+          // Capture whether GoDojo is currently the frontmost app BEFORE
           // dock.hide() — that call triggers an implicit macOS app-deactivation
           // which shifts keyboard focus to the next frontmost app (Chrome, etc.).
-          const nativelyWasFocused =
+          const godojoWasFocused =
             targetFocusWindow != null &&
             !targetFocusWindow.isDestroyed() &&
             targetFocusWindow.isFocused();
@@ -5205,12 +5205,12 @@ export class AppState {
           app.dock.hide();
           this.hideTray();
 
-          // If Natively was the focused window when the user toggled stealth,
+          // If GoDojo was the focused window when the user toggled stealth,
           // restore focus to our window after dock.hide() so macOS does not
           // hand control to Chrome / whatever is behind us.
           // We use win.focus() (not app.focus()) to avoid the heavy-handed
           // [NSApp activateIgnoringOtherApps:YES] side-effect.
-          if (nativelyWasFocused && targetFocusWindow && !targetFocusWindow.isDestroyed()) {
+          if (godojoWasFocused && targetFocusWindow && !targetFocusWindow.isDestroyed()) {
             targetFocusWindow.focus();
           }
         } else {
@@ -5363,7 +5363,7 @@ export class AppState {
     // 3. Update App User Model ID (Windows Taskbar grouping)
     if (isWin) {
       // Use unique AUMID per disguise to avoid grouping with the real app
-      app.setAppUserModelId(`com.natively.assistant.${mode}`);
+      app.setAppUserModelId(`com.godojo.assistant.${mode}`);
     }
 
     // 4. Update Icons

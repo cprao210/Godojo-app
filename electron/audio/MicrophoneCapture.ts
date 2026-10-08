@@ -45,7 +45,7 @@ export interface MicrophoneCaptureOptions {
      *   'legacy'      — original hard mute (SPEAKER_ACTIVE + warmup)
      *   'phase1'      — headphone bypass + short RMS-driven gate
      *   'full_duplex' — delay-aligned AEC3 + convergence-tracked soft gate (default)
-     * Overrides the NATIVELY_ECHO_MODE env var when set.
+     * Overrides the GODOJO_ECHO_MODE env var when set.
      */
     echoMode?: string;
     /**

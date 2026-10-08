@@ -254,9 +254,9 @@ jobs:
           npm run build:electron
 
       - name: Build native Rust module (x64 + arm64)
-        # NATIVELY_BUILD_ALL_MAC_ARCHES=1 tells build-native.js to compile both arches
+        # GODOJO_BUILD_ALL_MAC_ARCHES=1 tells build-native.js to compile both arches
         env:
-          NATIVELY_BUILD_ALL_MAC_ARCHES: "1"
+          GODOJO_BUILD_ALL_MAC_ARCHES: "1"
         run: |
           start=$(date +%s)
           npm run build:native

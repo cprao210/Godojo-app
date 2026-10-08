@@ -15,6 +15,7 @@
 //      in the sibling repo) let the test and the real code drift apart.
 
 import { app, desktopCapturer, systemPreferences } from 'electron';
+import { readEnv } from './env';
 
 export type MacScreenCaptureStatus = 'granted' | 'denied' | 'not-determined' | 'restricted';
 
@@ -79,17 +80,17 @@ export const SILENCE_PEAK_TO_PEAK_THRESHOLD = 100;
  * capture as 'granted' on every `npm run app:dev` launch regardless of real TCC
  * state, which makes the dominant production failure mode ("permissions look
  * granted but nothing transcribes") invisible while developing. Set
- * NATIVELY_DEV_BYPASS_SCREEN_TCC=1 for a frictionless local loop.
+ * GODOJO_DEV_BYPASS_SCREEN_TCC=1 (legacy NATIVELY_ name also accepted) for a frictionless local loop.
  */
 export function isDevTccBypassEnabled(): boolean {
-  return !app.isPackaged && process.env.NATIVELY_DEV_BYPASS_SCREEN_TCC === '1';
+  return !app.isPackaged && readEnv('DEV_BYPASS_SCREEN_TCC') === '1';
 }
 
 export function getMacScreenCaptureStatus(): MacScreenCaptureStatus {
   if (process.platform !== 'darwin') return 'granted';
 
   if (isDevTccBypassEnabled()) {
-    console.log('[Permissions] Dev TCC bypass enabled (NATIVELY_DEV_BYPASS_SCREEN_TCC=1) — reporting screen capture as granted');
+    console.log('[Permissions] Dev TCC bypass enabled (GODOJO_DEV_BYPASS_SCREEN_TCC=1) — reporting screen capture as granted');
     return 'granted';
   }
 

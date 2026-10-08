@@ -530,7 +530,7 @@ contextBridge.exposeInMainWorld("electronAPI", {
 
   // DEV-ONLY: local half of "Delete My Account". No confirm dialog (the
   // caller has already confirmed and completed the server-side deletion) —
-  // wipes natively.db + cached session/credentials and relaunches.
+  // wipes the user's DB file + cached session/credentials and relaunches.
   wipeLocalAccountData: (scope?: 'local' | 'full-delete') => ipcRenderer.invoke('dev:wipe-local-account-data', scope),
 
   // Event listeners

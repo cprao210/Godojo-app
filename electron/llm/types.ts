@@ -1,5 +1,5 @@
 // electron/llm/types.ts
-// Shared types for the Natively LLM system
+// Shared types for the GoDojo LLM system
 
 import { GoogleGenAI } from "@google/genai";
 

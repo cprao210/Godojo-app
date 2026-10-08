@@ -75,7 +75,7 @@ export function useMeetingSession(
                 return;
             }
 
-            localStorage.setItem("natively_last_meeting_start", Date.now().toString());
+            localStorage.setItem("godojo_last_meeting_start", Date.now().toString());
             const inputDeviceId = localStorage.getItem("preferredInputDeviceId");
             // One resolver shared with the Settings toggle, so what the toggle
             // shows is what the meeting runs (see src/lib/systemAudioBackend.ts).
@@ -134,14 +134,14 @@ export function useMeetingSession(
 
         // Check profile toaster threshold before firing endMeeting — we don't want
         // to wait for the IPC to resolve before switching back to launcher.
-        const startStr = localStorage.getItem("natively_last_meeting_start");
+        const startStr = localStorage.getItem("godojo_last_meeting_start");
         if (startStr) {
             const duration = Date.now() - parseInt(startStr, 10);
             const threshold = import.meta.env.DEV ? 10000 : 180000;
             if (duration >= threshold) {
-                localStorage.setItem("natively_show_profile_toaster", "true");
+                localStorage.setItem("godojo_show_profile_toaster", "true");
             }
-            localStorage.removeItem("natively_last_meeting_start");
+            localStorage.removeItem("godojo_last_meeting_start");
         }
 
         // Fire endMeeting without awaiting — the backend saves the placeholder and

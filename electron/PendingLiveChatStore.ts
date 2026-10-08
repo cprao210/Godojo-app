@@ -1,4 +1,7 @@
 import Store from 'electron-store';
+import { app } from 'electron';
+import fs from 'fs';
+import path from 'path';
 
 // /chat/live returns an interaction_id per turn, but has no real meeting_id
 // to attach to at query time — the meeting isn't persisted to the BACKEND
@@ -24,8 +27,17 @@ export class PendingLiveChatStore {
     private store: Store<PendingLiveChatState>;
 
     private constructor() {
+        // Renamed from 'natively-pending-live-chat' — carry over any links
+        // still waiting from before the update (best-effort; worst case a
+        // pending Ask-Dojo link is simply not attached to its meeting).
+        try {
+            const dir = app.getPath('userData');
+            const legacy = path.join(dir, 'natively-pending-live-chat.json');
+            const current = path.join(dir, 'godojo-pending-live-chat.json');
+            if (fs.existsSync(legacy) && !fs.existsSync(current)) fs.renameSync(legacy, current);
+        } catch { /* best-effort */ }
         this.store = new Store<PendingLiveChatState>({
-            name: 'natively-pending-live-chat',
+            name: 'godojo-pending-live-chat',
             defaults: { pending: {} },
         });
     }

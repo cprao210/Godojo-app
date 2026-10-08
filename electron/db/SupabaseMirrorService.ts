@@ -752,7 +752,7 @@ export class SupabaseMirrorService extends EventEmitter {
     static getSupabaseSchemaSql(): string {
         return `
 -- ============================================================
--- Natively Mirror Schema for Supabase (Mode A + Firebase Auth + RLS)
+-- GoDojo Mirror Schema for Supabase (Mode A + Firebase Auth + RLS)
 -- Run this once in the Supabase SQL editor.
 --
 -- Prerequisites in Supabase Dashboard:

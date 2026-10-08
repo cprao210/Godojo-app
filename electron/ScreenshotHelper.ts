@@ -15,7 +15,7 @@ import { getMacScreenCaptureStatus, isDevTccBypassEnabled } from "./utils/macPer
  * Screenshots and system audio are gated by the SAME TCC service, so they must
  * agree about its state. They previously did not: this file bypassed the check
  * on every unpackaged build while main.ts required an explicit
- * NATIVELY_DEV_BYPASS_SCREEN_TCC=1 opt-in, so in dev the two subsystems
+ * GODOJO_DEV_BYPASS_SCREEN_TCC=1 opt-in, so in dev the two subsystems
  * disagreed about whether the permission existed. Both now read the same
  * predicate.
  *

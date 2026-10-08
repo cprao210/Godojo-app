@@ -56,7 +56,7 @@ export class RAGManager {
     /**
      * Release resources held by the RAG pipeline before the app shuts down or
      * wipes its data directory. Critically, this terminates the vector-search
-     * worker, which holds its OWN read-only connection to natively.db — on
+     * worker, which holds its OWN read-only connection to the user's DB file — on
      * Windows that open handle keeps the DB file locked, so failing to release
      * it here makes a userData wipe delete only part of the folder.
      */

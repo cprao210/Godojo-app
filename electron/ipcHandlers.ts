@@ -302,7 +302,7 @@ export function initializeIpcHandlers(appState: AppState): void {
       } else if (
         overlayWin && !overlayWin.isDestroyed() && overlayWin.webContents.id === senderWebContents.id
       ) {
-        // NativelyInterface logic - Resize ONLY the overlay window using dedicated method
+        // GodojoInterface logic - Resize ONLY the overlay window using dedicated method
         appState.getWindowHelper().setOverlayDimensions(width, height)
       } else if (
         launcherWin && !launcherWin.isDestroyed() && launcherWin.webContents.id === senderWebContents.id
@@ -1973,7 +1973,7 @@ export function initializeIpcHandlers(appState: AppState): void {
       // Close the selector window if open
       appState.modelSelectorWindowHelper.hideWindow();
 
-      // Broadcast to all windows so NativelyInterface can update its selector (session-only update)
+      // Broadcast to all windows so GodojoInterface can update its selector (session-only update)
       BrowserWindow.getAllWindows().forEach(win => {
         if (!win.isDestroyed()) {
           win.webContents.send('model-changed', modelId);
@@ -2004,7 +2004,7 @@ export function initializeIpcHandlers(appState: AppState): void {
       // Close the selector window if open
       appState.modelSelectorWindowHelper.hideWindow();
 
-      // Broadcast to all windows so NativelyInterface can update its selector
+      // Broadcast to all windows so GodojoInterface can update its selector
       BrowserWindow.getAllWindows().forEach(win => {
         if (!win.isDestroyed()) {
           win.webContents.send('model-changed', modelId);
@@ -3782,7 +3782,7 @@ export function initializeIpcHandlers(appState: AppState): void {
   safeHandle("set-company-intel", async (_, intel: Record<string, any> | null) => {
     try {
       appState.setCompanyIntel(intel);
-      // Broadcast to all renderer windows so NativelyInterface can update its state
+      // Broadcast to all renderer windows so GodojoInterface can update its state
       const { BrowserWindow } = require('electron');
       BrowserWindow.getAllWindows().forEach((win: any) => {
         win.webContents.send('company-intel-updated', intel);
@@ -4708,7 +4708,7 @@ export function initializeIpcHandlers(appState: AppState): void {
 
   // Used by 'dev:wipe-local-account-data': deletes this install's entire
   // userData directory itself — credentials.enc,
-  // settings.json, natively.db (+ its -wal/-shm files and Supabase mirror
+  // settings.json, the user's DB file (+ its -wal/-shm files and Supabase mirror
   // queue), cached auth session, the persist:google-auth partition, and
   // the godojo-ai/godojo-ai-dev folder that contains them (depending on
   // isPackaged) — then relaunches. Electron recreates an empty userData
@@ -4719,10 +4719,10 @@ export function initializeIpcHandlers(appState: AppState): void {
   async function wipeLocalUserDataAndRelaunch(logPrefix: string): Promise<{ success: boolean; error?: string }> {
     try {
       // Release the RAG vector-search worker's read-only connection to
-      // natively.db FIRST. That worker (electron/rag/vectorSearchWorker.ts)
+      // the user's DB file FIRST. That worker (electron/rag/vectorSearchWorker.ts)
       // opens its OWN sqlite handle, separate from DatabaseManager's — and on
-      // Windows an open handle keeps natively.db (+ its -wal/-shm) locked. If
-      // it isn't released, the rmSync below deletes files up to natively.db,
+      // Windows an open handle keeps the DB file (+ its -wal/-shm) locked. If
+      // it isn't released, the rmSync below deletes files up to the DB file,
       // then throws EPERM and leaves the godojo-ai/godojo-ai-dev folder
       // half-wiped (exactly the "files in use" you can only remove after
       // quitting the app).
@@ -4733,7 +4733,7 @@ export function initializeIpcHandlers(appState: AppState): void {
       }
 
       // Release the sqlite file handle before touching userData — on
-      // Windows the delete below fails (or leaves natively.db behind)
+      // Windows the delete below fails (or leaves the DB file behind)
       // if it's still open.
       try { DatabaseManager.getInstance().close(); } catch (e) {
         console.warn(`[ipc] ${logPrefix}: DatabaseManager.close() failed (continuing):`, e);
@@ -4826,7 +4826,7 @@ export function initializeIpcHandlers(appState: AppState): void {
         console.warn(`[ipc] ${logPrefix}: RAGManager.destroy() failed (continuing):`, e);
       }
 
-      // 2. Delete ONLY this user's DB files (natively-<uid>.db + -wal/-shm).
+      // 2. Delete ONLY this user's DB files (godojo-<uid>.db + -wal/-shm).
       try { DatabaseManager.getInstance().deleteCurrentUserDatabaseFiles(); } catch (e) {
         console.warn(`[ipc] ${logPrefix}: DB file delete failed (continuing):`, e);
       }
@@ -4868,7 +4868,7 @@ export function initializeIpcHandlers(appState: AppState): void {
   // a full reset this does NOT show its own confirm dialog — the
   // account deletion the user just confirmed is already irreversible by
   // the time this runs, and a second native prompt here would just leave
-  // local data behind (stale natively.db, cached session) if they misread
+  // local data behind (stale DB file, cached session) if they misread
   // it as a fresh, cancellable action.
   safeHandle('dev:wipe-local-account-data', async (_event, scope?: 'local' | 'full-delete') => {
     // Both "Local Record" and the local half of "Delete All" must affect ONLY

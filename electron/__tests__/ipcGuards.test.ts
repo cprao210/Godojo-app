@@ -10,7 +10,7 @@ function simulateGuard(userDataDir: string, filePath: string): { allowed: boolea
   return { allowed, resolved };
 }
 
-const MOCK_USER_DATA_DIR = '/Users/testuser/Library/Application Support/natively';
+const MOCK_USER_DATA_DIR = '/Users/testuser/Library/Application Support/godojo-ai';
 
 const PROJECT_ROOT = path.resolve(__dirname, '..', '..');
 const handlersSource = fs.readFileSync(path.join(PROJECT_ROOT, 'electron', 'ipcHandlers.ts'), 'utf8');

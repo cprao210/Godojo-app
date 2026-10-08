@@ -710,7 +710,7 @@ export class MeetingPersistence {
         // meeting-type hint, NO QUOTE = NO STATUS, ask-this only for
         // non-confirmed fields, catalogue-valid signal types, stableId stamps),
         // so it stays usable with no network, no auth, or an exhausted backend
-        // budget — and is pinned on by NATIVELY_UPLOAD_ANALYSIS_LOCAL=1.
+        // budget — and is pinned on by GODOJO_UPLOAD_ANALYSIS_LOCAL=1.
         //
         // Its own try/catch: generateCallAnalysisFor is documented not to throw,
         // but a throw here used to escape processAndSaveMeeting entirely — the

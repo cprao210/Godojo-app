@@ -4,9 +4,11 @@ const os = require('os');
 const path = require('path');
 
 const nativeModulePath = path.join(__dirname, '..', 'native-module');
-const buildAllMacTargets = process.env.NATIVELY_BUILD_ALL_MAC_ARCHES === '1';
-const forceNativeBuild = process.env.NATIVELY_FORCE_NATIVE_BUILD === '1';
-const skipNativeBuild = process.env.NATIVELY_SKIP_NATIVE_BUILD === '1';
+// GODOJO_* flags; the legacy NATIVELY_* names (pre-rebrand) are still accepted.
+const envFlag = (name) => (process.env[`GODOJO_${name}`] ?? process.env[`NATIVELY_${name}`]) === '1';
+const buildAllMacTargets = envFlag('BUILD_ALL_MAC_ARCHES');
+const forceNativeBuild = envFlag('FORCE_NATIVE_BUILD');
+const skipNativeBuild = envFlag('SKIP_NATIVE_BUILD');
 
 /** Newest mtime among the inputs that actually affect the compiled artifact. */
 function newestSourceMtime() {
@@ -157,7 +159,7 @@ if (os.platform() === 'darwin') {
   }
 
   if (skipNativeBuild && prebuiltExists) {
-    console.log(`[build-native] NATIVELY_SKIP_NATIVE_BUILD=1 — using ${prebuilt} as-is (may not match src/).`);
+    console.log(`[build-native] GODOJO_SKIP_NATIVE_BUILD=1 — using ${prebuilt} as-is (may not match src/).`);
   } else if (upToDate) {
     console.log(`[build-native] ${prebuilt} is newer than native-module/src — skipping Rust compilation.`);
   } else {
@@ -175,7 +177,7 @@ if (os.platform() === 'darwin') {
       // Do NOT fall back to the stale artifact: shipping a binary that does not
       // match src/ is the failure mode this check exists to prevent.
       console.error('[build-native] Rust compilation failed. Install the Rust MSVC toolchain (https://rustup.rs) and retry.');
-      console.error('[build-native] To build against the committed binary anyway, re-run with NATIVELY_SKIP_NATIVE_BUILD=1.');
+      console.error('[build-native] To build against the committed binary anyway, re-run with GODOJO_SKIP_NATIVE_BUILD=1.');
       throw err;
     }
 

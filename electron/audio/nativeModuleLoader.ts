@@ -1,4 +1,5 @@
 import path from 'path';
+import { mirrorGodojoEnvForNativeModule } from '../utils/env';
 
 export interface AudioDeviceInfo {
   id: string;
@@ -48,7 +49,7 @@ export interface NativeModule {
    * Optional — present in .node binaries built after the native log bridge
    * was added. Registers a JS sink for native diagnostic lines (println!-style
    * logging in the speaker backends) that would otherwise never reach
-   * natively_debug.log in a packaged build, since raw addon stdout/stderr is
+   * godojo_debug.log in a packaged build, since raw addon stdout/stderr is
    * not captured there the way console.log is. loadNativeModule() wires this
    * up once, right after the binary loads.
    */
@@ -60,7 +61,7 @@ export interface NativeModule {
    * Wired from setVerboseLoggingFlag (electron/verboseLog.ts).
    */
   setNativeVerboseLogging?: (enabled: boolean) => void;
-  /** Optional — effective native verbose state, including the NATIVELY_VERBOSE override. */
+  /** Optional — effective native verbose state, including the GODOJO_VERBOSE override. */
   getNativeVerboseLogging?: () => boolean;
   SystemAudioCapture: new (
     deviceId?: string | null,
@@ -146,6 +147,10 @@ let cached: NativeModule | null | undefined = undefined;
 export function loadNativeModule(): NativeModule | null {
     if (cached !== undefined) return cached;
 
+    // The Rust side reads its env flags under the legacy NATIVELY_* names;
+    // make GODOJO_* flags visible to it before it loads (see utils/env).
+    mirrorGodojoEnvForNativeModule();
+
     // Lazily import app to avoid "Cannot use require of electron module" errors
     // when this module is accidentally imported in a renderer or worker context.
     let appPath: string;
@@ -180,7 +185,7 @@ export function loadNativeModule(): NativeModule | null {
             cached = mod;
             console.log(`[nativeModuleLoader] Loaded ${binary} from: ${filePath}`);
             // Route native diagnostic lines (CoreAudioTap/SpeakerInput/etc.)
-            // through the JS logger so they land in natively_debug.log in a
+            // through the JS logger so they land in godojo_debug.log in a
             // packaged build. Optional: older binaries built before this
             // bridge existed simply don't have the method.
             try {

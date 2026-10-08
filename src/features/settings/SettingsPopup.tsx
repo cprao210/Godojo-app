@@ -160,7 +160,7 @@ const SettingsPopup: React.FC = () => {
 
                     <div className={`h-px my-0.5 mx-2 ${dividerClass}`} />
 
-                    {/* Show/Hide Natively */}
+                    {/* Show/Hide GoDojo */}
                     <ShortcutRow
                         icon={<MessageSquare className={`w-3.5 h-3.5 transition-colors ${iconInactiveClass}`} />}
                         label="Show/Hide"

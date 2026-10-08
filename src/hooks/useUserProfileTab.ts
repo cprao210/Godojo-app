@@ -67,7 +67,7 @@ export function loadUserProfile(): UserProfileData {
     }
 
     // No saved profile yet — seed from Firebase auth user.
-    const savedPhone = uid ? (localStorage.getItem(`natively_signup_phone_${uid}`) ?? "") : "";
+    const savedPhone = uid ? (localStorage.getItem(`godojo_signup_phone_${uid}`) ?? "") : "";
 
     return {
         displayName: firebaseUser?.displayName ?? "",
@@ -108,7 +108,7 @@ export function useUserProfileTab() {
         if (!firebaseUser) return;
 
         const uid = firebaseUser.uid;
-        const savedPhone = localStorage.getItem(`natively_signup_phone_${uid}`) ?? "";
+        const savedPhone = localStorage.getItem(`godojo_signup_phone_${uid}`) ?? "";
 
         setProfile((prev) => ({
             ...prev,

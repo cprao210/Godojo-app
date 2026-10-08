@@ -291,7 +291,7 @@ parentPort.on('message', (message: WorkerMessage) => {
                 // the OS releases the underlying file lock. worker.terminate()
                 // alone does NOT guarantee better-sqlite3's native handle is
                 // freed (its C++ destructor may never run on an abrupt thread
-                // kill), which on Windows keeps natively.db locked and makes a
+                // kill), which on Windows keeps the DB file locked and makes a
                 // subsequent userData wipe fail half-way. See VectorStore.destroy().
                 const { requestId } = message;
                 for (const db of dbCache.values()) {

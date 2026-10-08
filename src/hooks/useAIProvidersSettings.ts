@@ -408,7 +408,7 @@ function useDefaultModelSettings(hasGroqKey: boolean) {
             // @ts-ignore
             return window.electronAPI.onGroqFastTextChanged((enabled: boolean) => {
                 setFastResponseMode(enabled);
-                localStorage.setItem("natively_groq_fast_text", String(enabled));
+                localStorage.setItem("godojo_groq_fast_text", String(enabled));
             });
         }
     }, []);
@@ -426,7 +426,7 @@ function useDefaultModelSettings(hasGroqKey: boolean) {
         }
         const newState = !fastResponseMode;
         setFastResponseMode(newState);
-        localStorage.setItem("natively_groq_fast_text", String(newState));
+        localStorage.setItem("godojo_groq_fast_text", String(newState));
         // @ts-ignore
         await window.electronAPI?.setGroqFastTextMode(newState);
     }, [fastResponseMode, hasGroqKey]);
@@ -435,7 +435,7 @@ function useDefaultModelSettings(hasGroqKey: boolean) {
     useEffect(() => {
         if (!hasGroqKey && fastResponseMode) {
             setFastResponseMode(false);
-            localStorage.setItem("natively_groq_fast_text", "false");
+            localStorage.setItem("godojo_groq_fast_text", "false");
             // @ts-ignore
             window.electronAPI?.setGroqFastTextMode(false);
         }

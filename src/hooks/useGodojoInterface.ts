@@ -42,7 +42,7 @@ export function useGodojoInterface({ overlayOpacity = OVERLAY_OPACITY_DEFAULT }:
     const [manualTranscript, setManualTranscript] = useState('');
     const manualTranscriptRef = useRef<string>('');
     const [showTranscript, setShowTranscript] = useState(() => {
-        const stored = localStorage.getItem('natively_interviewer_transcript');
+        const stored = localStorage.getItem('godojo_interviewer_transcript');
         return stored !== 'false';
     });
     const [isMeetingPaused, setIsMeetingPaused] = useState(false);
@@ -154,7 +154,7 @@ export function useGodojoInterface({ overlayOpacity = OVERLAY_OPACITY_DEFAULT }:
     // Sync transcript setting
     useEffect(() => {
         const handleStorage = () => {
-            const stored = localStorage.getItem('natively_interviewer_transcript');
+            const stored = localStorage.getItem('godojo_interviewer_transcript');
             setShowTranscript(stored !== 'false');
         };
         window.addEventListener('storage', handleStorage);
@@ -188,7 +188,7 @@ export function useGodojoInterface({ overlayOpacity = OVERLAY_OPACITY_DEFAULT }:
     // Settings State with Persistence
     const [isUndetectable, setIsUndetectable] = useState(false);
     const [hideChatHidesWidget, setHideChatHidesWidget] = useState(() => {
-        const stored = localStorage.getItem('natively_hideChatHidesWidget');
+        const stored = localStorage.getItem('godojo_hideChatHidesWidget');
         return stored ? stored === 'true' : true;
     });
 
@@ -265,8 +265,8 @@ export function useGodojoInterface({ overlayOpacity = OVERLAY_OPACITY_DEFAULT }:
 
     // Persist Settings
     useEffect(() => {
-        localStorage.setItem('natively_undetectable', String(isUndetectable));
-        localStorage.setItem('natively_hideChatHidesWidget', String(hideChatHidesWidget));
+        localStorage.setItem('godojo_undetectable', String(isUndetectable));
+        localStorage.setItem('godojo_hideChatHidesWidget', String(hideChatHidesWidget));
     }, [isUndetectable, hideChatHidesWidget]);
 
     // Mouse Passthrough State

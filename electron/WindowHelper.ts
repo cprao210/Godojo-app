@@ -1044,7 +1044,7 @@ export class WindowHelper {
     if (this.isWindowVisible) {
       this.hideMainWindow()
     } else {
-      // Always show without stealing focus — Natively is a ghost overlay.
+      // Always show without stealing focus — GoDojo is a ghost overlay.
       // The user is in another app; show the window on top but leave OS focus alone.
       // They can click the window to focus it if they need to type.
       this.showMainWindow(true)

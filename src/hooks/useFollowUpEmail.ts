@@ -34,7 +34,7 @@ export function useFollowUpEmail(isOpen: boolean, meeting: Meeting) {
         const cleanTitle = meeting.title.replace(/["*]/g, '').trim();
         setSubject(`Follow up - ${cleanTitle}`);
 
-        const storedName = localStorage.getItem('natively_user_name');
+        const storedName = localStorage.getItem('godojo_user_name');
         if (storedName) setSenderName(storedName);
 
         let loadedRecipientEmail = '';

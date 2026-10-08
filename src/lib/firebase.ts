@@ -310,7 +310,7 @@ export async function signUpWithEmailExtended(args: {
 
     try {
         if (phoneNumber) {
-            localStorage.setItem(`natively_signup_phone_${user.uid}`, phoneNumber);
+            localStorage.setItem(`godojo_signup_phone_${user.uid}`, phoneNumber);
         }
     } catch (_) {
         // localStorage unavailable — fine, this is best-effort metadata.

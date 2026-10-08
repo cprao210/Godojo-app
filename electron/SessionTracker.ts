@@ -459,7 +459,7 @@ export class SessionTracker {
     addAssistantMessage(text: string): void {
         console.log(`[SessionTracker] addAssistantMessage called with:`, text.substring(0, 50));
 
-        // Natively-style filtering
+        // Filtering
         if (!text) return;
 
         const cleanText = text.trim();

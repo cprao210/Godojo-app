@@ -123,7 +123,7 @@ export class VectorStore {
             // Ask the worker to close its cached read-only DB connections
             // BEFORE terminating. worker.terminate() abruptly kills the thread
             // and does not reliably run better-sqlite3's native destructor, so
-            // on Windows the worker's open handle to natively.db would survive
+            // on Windows the worker's open handle to the DB file would survive
             // and keep the file locked — breaking any userData wipe/delete.
             // Bounded by a short race so a wedged worker can't stall shutdown.
             try {

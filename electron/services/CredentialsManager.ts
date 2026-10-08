@@ -7,6 +7,7 @@ import { app, safeStorage } from 'electron';
 import fs from 'fs';
 import path from 'path';
 import crypto from 'crypto';
+import { readEnv } from '../utils/env';
 
 const BACKEND_URL = process.env.VITE_API_BASE_URL ?? "http://127.0.0.1:8000";
 
@@ -742,7 +743,7 @@ export class CredentialsManager {
      * 'phase1' (hard gate + headphone bypass) and 'legacy' remain as rollbacks.
      */
     public getEchoPipelineMode(): string {
-        return process.env.NATIVELY_ECHO_MODE || this.credentials.echoPipelineMode || 'full_duplex';
+        return readEnv('ECHO_MODE') || this.credentials.echoPipelineMode || 'full_duplex';
     }
 
     public setEchoPipelineMode(mode: string): void {

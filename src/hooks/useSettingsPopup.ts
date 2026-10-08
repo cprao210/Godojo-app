@@ -17,7 +17,7 @@ export function useSettingsPopup() {
 
     const [isUndetectable, setIsUndetectable] = useState(false);
     const [useGroqFastText, setUseGroqFastText] = useState(() => {
-        return localStorage.getItem('natively_groq_fast_text') === 'true';
+        return localStorage.getItem('godojo_groq_fast_text') === 'true';
     });
     const [profileMode, setProfileMode] = useState(false);
     const [hasProfile, setHasProfile] = useState(false);
@@ -86,7 +86,7 @@ export function useSettingsPopup() {
         if (window.electronAPI?.onUndetectableChanged) {
             const unsubscribe = window.electronAPI.onUndetectableChanged((newState: boolean) => {
                 setIsUndetectable(newState);
-                localStorage.setItem('natively_undetectable', String(newState));
+                localStorage.setItem('godojo_undetectable', String(newState));
             });
             return () => unsubscribe();
         }
@@ -97,7 +97,7 @@ export function useSettingsPopup() {
         if (window.electronAPI?.onGroqFastTextChanged) {
             const unsubscribe = window.electronAPI.onGroqFastTextChanged((enabled: boolean) => {
                 setUseGroqFastText(enabled);
-                localStorage.setItem('natively_groq_fast_text', String(enabled));
+                localStorage.setItem('godojo_groq_fast_text', String(enabled));
             });
             return () => unsubscribe();
         }
@@ -119,7 +119,7 @@ export function useSettingsPopup() {
             return;
         }
 
-        localStorage.setItem('natively_groq_fast_text', String(useGroqFastText));
+        localStorage.setItem('godojo_groq_fast_text', String(useGroqFastText));
         try {
             // @ts-ignore - electronAPI not typed in this file yet
             window.electronAPI?.invoke('set-groq-fast-text-mode', useGroqFastText);
@@ -172,7 +172,7 @@ export function useSettingsPopup() {
     const toggleUndetectable = () => {
         const newState = !isUndetectable;
         setIsUndetectable(newState);
-        localStorage.setItem('natively_undetectable', String(newState));
+        localStorage.setItem('godojo_undetectable', String(newState));
         window.electronAPI?.setUndetectable(newState);
     };
 
