@@ -223,15 +223,33 @@ export class LLMHelper {
    * Triggers initial model discovery and starts background scheduler.
    */
   public async initModelVersionManager(): Promise<void> {
-    this.modelVersionManager.setApiKeys({
+    // Coalesce overlapping calls with the same keys: at boot,
+    // loadStoredCredentials() reaches this twice back-to-back (once via the
+    // key sync, once directly), which ran two concurrent discoveries. A call
+    // with DIFFERENT keys (e.g. fallback keys arriving) waits for the
+    // in-flight run, then runs again so discovery sees the new keys.
+    const keys = {
       openai: this.openaiApiKey,
       gemini: this.apiKey,
       claude: this.claudeApiKey,
       groq: this.groqApiKey,
+    };
+    const fingerprint = JSON.stringify(keys);
+    const inFlight = this.mvmInit;
+    if (inFlight && inFlight.fingerprint === fingerprint) return inFlight.promise;
+
+    const promise = (async () => {
+      if (inFlight) await inFlight.promise.catch(() => { });
+      this.modelVersionManager.setApiKeys(keys);
+      await this.modelVersionManager.initialize();
+      console.log(this.modelVersionManager.getSummary());
+    })().finally(() => {
+      if (this.mvmInit?.promise === promise) this.mvmInit = null;
     });
-    await this.modelVersionManager.initialize();
-    console.log(this.modelVersionManager.getSummary());
+    this.mvmInit = { fingerprint, promise };
+    return promise;
   }
+  private mvmInit: { fingerprint: string; promise: Promise<void> } | null = null;
 
   /**
    * Scrub all API keys from memory to minimize exposure window.

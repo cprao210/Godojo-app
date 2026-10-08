@@ -3,7 +3,8 @@ import path from "path"
 import fs from "fs"
 import { autoUpdater } from "electron-updater"
 import * as nodeOs from "node:os"
-import { isLowEndMachine, readTotalRamGB } from "../utils/performanceClassification"
+import { isLowEndMachine, isLowMemoryMachine, readTotalRamGB } from "../utils/performanceClassification"
+import { releaseDeferredStartupTasks, scheduleDeferredStartupTask } from "./utils/deferredStartup"
 import { onLLMUsage } from "./utils/llmUsageBus"
 
 // LLM usage observability: forward every summary/regenerate/followup-email
@@ -571,8 +572,20 @@ export class AppState {
     this.cropperWindowHelper.setContentProtection(this.isUndetectable);
     this.meetingPopupWindowHelper.setContentProtection(this.isUndetectable);
 
+    // The cropper pre-creation is a full hidden renderer (whole app bundle,
+    // spanning every display), so it no longer competes with the launcher:
+    //   - <=8 GB RAM: not pre-created at all — showCropper() creates it on
+    //     first use (the same cold path Linux always takes) and then keeps it
+    //     hidden for reuse. Same rule as the overlay/settings/popup windows.
+    //   - otherwise: pre-created via the deferred startup queue, so later
+    //     screenshots are still instant. If the user screenshots first,
+    //     preload() sees the live window and does nothing.
     if (process.platform === 'win32' || process.platform === 'darwin') {
-      this.cropperWindowHelper.preload();
+      if (isLowMemoryMachine(readTotalRamGB(nodeOs.totalmem()))) {
+        console.log('[Main] Low-memory machine — cropper window will be created on first use');
+      } else {
+        scheduleDeferredStartupTask('cropper-preload', () => this.cropperWindowHelper.preload());
+      }
     }
 
     // Initialize KeybindManager
@@ -5534,11 +5547,14 @@ async function initializeApp() {
   // (24h TTL). This is what lets auto model selection and retirement healing
   // track provider catalog changes (Groq Aug-2026, Gemini May-2026) without
   // another code change. Fire-and-forget — seeds cover the gap until it lands.
+  // The instance is still constructed here (it opens the local DB, which the
+  // mirror wiring below relies on); only the network refresh is deferred off
+  // the launch path — the seeds cover the extra seconds exactly as they cover
+  // a slow network today.
   try {
     const { ModelCatalog } = require('./services/ModelCatalog');
-    ModelCatalog.getInstance().refreshAll().catch((e: any) => {
-      console.warn('[Main] Model catalog refresh failed (non-fatal):', e);
-    });
+    const catalog = ModelCatalog.getInstance();
+    scheduleDeferredStartupTask('model-catalog-refresh', () => catalog.refreshAll());
   } catch (e) {
     console.warn('[Main] Model catalog wiring failed (non-fatal):', e);
   }
@@ -5606,17 +5622,29 @@ async function initializeApp() {
       // checkpoints progress in app_state ('supabase_backfill_done') so it's a
       // no-op after the first successful run. Must wait for a Firebase session
       // because every upsert is RLS-scoped on auth.jwt() -> 'sub'.
+      //
+      // Both this and the sync audit below run through the deferred startup
+      // queue (after the launcher is up, one at a time), and both resolve the
+      // DB handle when they RUN. Capturing `sqliteDb` here was a bug: it is
+      // the anonymous DB opened at boot, and AuthManager.setSession() calls
+      // DatabaseManager.switchUser() — which closes that handle — before
+      // 'signed-in' fires, so both jobs ran against a closed connection.
+      const liveDb = () => DatabaseManager.getInstance().getDb();
       try {
         const { SupabaseBackfill } = require('./db/SupabaseBackfill');
         const { AuthManager } = require('./services/AuthManager');
         const auth = AuthManager.getInstance();
 
         const runBackfillOnce = () => {
-          // Fire-and-forget; SupabaseBackfill.run handles its own errors and
-          // re-checkpoints, so a transient failure just means we'll resume on
-          // the next launch.
-          SupabaseBackfill.run(sqliteDb).catch((err: any) => {
-            console.warn('[Main] SupabaseBackfill.run failed (non-fatal):', err);
+          // SupabaseBackfill.run handles its own errors and re-checkpoints, so
+          // a transient failure just means we'll resume on the next launch.
+          scheduleDeferredStartupTask('supabase-backfill', async () => {
+            const db = liveDb();
+            if (!db) {
+              console.warn('[Main] SupabaseBackfill skipped — no open DB');
+              return;
+            }
+            await SupabaseBackfill.run(db);
           });
         };
 
@@ -5633,15 +5661,20 @@ async function initializeApp() {
 
       // Gap detection: compare local SQLite IDs against Supabase and re-queue
       // any rows that never made it (silent outbox failures, pre-credentials
-      // writes, etc.). Runs concurrently with the backfill; fire-and-forget.
+      // writes, etc.). Queued after the backfill, so it diffs post-backfill.
       try {
         const { SupabaseSyncAudit } = require('./db/SupabaseSyncAudit');
         const { AuthManager } = require('./services/AuthManager');
         const auth = AuthManager.getInstance();
 
         const runAuditOnce = () => {
-          SupabaseSyncAudit.run(sqliteDb).catch((err: any) => {
-            console.warn('[Main] SupabaseSyncAudit.run failed (non-fatal):', err);
+          scheduleDeferredStartupTask('supabase-sync-audit', async () => {
+            const db = liveDb();
+            if (!db) {
+              console.warn('[Main] SupabaseSyncAudit skipped — no open DB');
+              return;
+            }
+            await SupabaseSyncAudit.run(db);
           });
         };
 
@@ -5707,7 +5740,19 @@ async function initializeApp() {
     const { AuthManager } = require('./services/AuthManager');
     const auth = AuthManager.getInstance();
 
-    const fetchFallback = async () => {
+    // Single-flight: overlapping triggers for the same token share one fetch.
+    let fallbackInFlight: { token: string; promise: Promise<void> } | null = null;
+    const fetchFallback = (): Promise<void> => {
+      const token = auth.getIdToken();
+      if (!token) return Promise.resolve();
+      if (fallbackInFlight && fallbackInFlight.token === token) return fallbackInFlight.promise;
+      const promise = doFetchFallback().finally(() => {
+        if (fallbackInFlight?.promise === promise) fallbackInFlight = null;
+      });
+      fallbackInFlight = { token, promise };
+      return promise;
+    };
+    const doFetchFallback = async () => {
       try {
         const token = auth.getIdToken();
         if (token) {
@@ -5727,10 +5772,11 @@ async function initializeApp() {
       }
     };
 
+    // No separate 'signed-in' listener: AuthManager.setSession() emits
+    // 'auth-changed' on every new session — first sign-in included, just
+    // before 'signed-in' — so listening to both fetched twice on every launch.
     if (auth.isSignedIn()) {
-      fetchFallback();
-    } else {
-      auth.once('signed-in', fetchFallback);
+      void fetchFallback();
     }
 
     auth.on('auth-changed', (snap: any) => {
@@ -5784,6 +5830,11 @@ async function initializeApp() {
 
   // Launch-time perf samples (15 s / 60 s / 180 s) for "slow to open" reports.
   meetingPerformanceSampler.startStartupSampling()
+
+  // Non-critical startup work (catalog refresh, cropper pre-create, cloud
+  // backfill + sync audit) starts only now that the launcher exists, after a
+  // settle delay, one task at a time. See utils/deferredStartup.ts.
+  releaseDeferredStartupTasks()
 
   // If a deep link arrived before the window existed (cold start), deliver
   // it now that the renderer is up and listening.
