@@ -502,6 +502,8 @@ export class AppState {
   private isMeetingActive: boolean = false; // Guard for session state leaks
   /** True on weak hardware: heavy background warmups are postponed from launch to meeting start. */
   private deferHeavyWarmups: boolean = false;
+  /** Low-end only: intent-model warmup this long after meeting start. */
+  private static readonly LOW_END_INTENT_WARMUP_DELAY_MS = 45_000;
   private isMeetingPaused: boolean = false; // Pause guard — blocks audio and AI while paused
   private _isQuitting: boolean = false;
   private _verboseLogging: boolean = false;
@@ -733,16 +735,20 @@ export class AppState {
 
     this.setupIntelligenceEvents()
 
-    // Pre-warm the zero-shot intent classifier in the background — skipped at
-    // launch on <=8 GB RAM or <=4 threads; loads at meeting start instead.
+    // Pre-warm the zero-shot intent classifier (it loads in a worker thread, so
+    // it never blocks the main process — but the load is still CPU work):
+    //   - normal machines: via the deferred startup queue, after launch settles;
+    //   - <=8 GB RAM or <=4 threads: not at launch at all; it warms up a while
+    //     after a meeting starts (see startMeeting), and the first "What should
+    //     I say" before that loads it on demand.
     this.deferHeavyWarmups = isLowEndMachine({
       cpuThreads: nodeOs.cpus()?.length || null,
       totalRamGB: readTotalRamGB(nodeOs.totalmem()),
     })
     if (this.deferHeavyWarmups) {
-      console.log('[Main] Low-end hardware — deferring intent classifier warmup to meeting start')
+      console.log('[Main] Low-end hardware — deferring intent classifier warmup until after meeting start')
     } else {
-      warmupIntentClassifier()
+      scheduleDeferredStartupTask('intent-classifier-warmup', () => warmupIntentClassifier())
     }
 
     // Setup Ollama IPC
@@ -3690,7 +3696,14 @@ export class AppState {
     // on — that stamp is what lets main reject a result belonging to the call
     // that just ended.
     this.sendToMeetingSurfaces('session-reset', { meetingGeneration: this._meetingGeneration });
-    if (this.deferHeavyWarmups) warmupIntentClassifier();   // idempotent, fire-and-forget
+    // Low-end: warm the intent model only once the call has settled, so its
+    // CPU-heavy load doesn't land on top of overlay creation, audio init and
+    // the STT handshakes. Idempotent; skipped if the meeting already ended.
+    if (this.deferHeavyWarmups) {
+      setTimeout(() => {
+        if (this.isMeetingActive) void warmupIntentClassifier();
+      }, AppState.LOW_END_INTENT_WARMUP_DELAY_MS).unref?.();
+    }
 
     // ★ ASYNC AUDIO INIT: Return INSTANTLY so the IPC response goes back
     // to the renderer immediately, allowing the UI to switch to overlay
