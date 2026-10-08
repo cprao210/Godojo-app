@@ -39,7 +39,7 @@ const MarkdownBodyInner: React.FC<ChatMarkdownBodyProps> = ({ content, sourceMap
         onOpenAsset={onOpenAsset}
     >
         <ReactMarkdown remarkPlugins={REMARK_PLUGINS} rehypePlugins={REHYPE_PLUGINS} components={MARKDOWN_COMPONENTS}>
-            {content}
+            {ensureTableSpacing(content)}
         </ReactMarkdown>
     </CitationProvider>
 );
@@ -158,28 +158,7 @@ export const AssistantMessage: React.FC<AssistantMessageProps> = ({ content, isS
                             unverifiedCitations={unverifiedCitations}
                             onOpenMeeting={onOpenMeeting}
                             onOpenAsset={onOpenAsset}
-<<<<<<< Updated upstream
                         />
-=======
-                        >
-                            <ReactMarkdown
-                                // No math plugin here on purpose: sales answers are
-                                // dense with currency ("$204,000 and $173,400"),
-                                // which remark-math/KaTeX happily parses as an
-                                // inline $…$ equation — the mixed-font artifact in
-                                // pricing answers. All other markdown surfaces in
-                                // the app render plain GFM; stay consistent.
-                                remarkPlugins={[remarkGfm]}
-                                rehypePlugins={[rehypeCitations]}
-                                components={{
-                                    ...chatMarkdownComponents,
-                                    cite: CiteChip as any,
-                                }}
-                            >
-                                {ensureTableSpacing(content)}
-                            </ReactMarkdown>
-                        </CitationProvider>
->>>>>>> Stashed changes
                     </div>
                     {isStreaming && (
                         isPerformanceMode ? (

@@ -5,14 +5,8 @@ import { guardSession } from '@/lib/firebase';
 import { useStreamBuffer } from '@/hooks';
 import { usePerformanceMode } from '@/hooks';
 import { chatApi, statusLabel } from '@/api';
-<<<<<<< Updated upstream
 import { ChatMarkdownBody } from '@/features/chat/ChatMessage';
 import { indexSourceMap } from '@/features/chat/citations';
-=======
-import { chatMarkdownComponents } from '@/features/chat';
-import { ensureTableSpacing } from '@/features/chat/markdownTables';
-import { CitationProvider, indexSourceMap, rehypeCitations, CiteChip } from '@/features/chat/citations';
->>>>>>> Stashed changes
 import { ChatHistoryTurn, FloatingChatPanelProps, LiveTranscriptSegment, Message, StreamHandle } from '@/types';
 import { getDockSurfaceStyle } from '../dockSurfaceStyle';
 import { posthogAnalytics } from '@/lib/analytics/posthog.service';
@@ -201,25 +195,11 @@ const MessageBubble: React.FC<{ msg: Message }> = React.memo(({ msg }) => {
                                 </div>
                             )}
                             <div className="markdown-content" style={msg.rewriting ? { opacity: 0.55 } : undefined}>
-<<<<<<< Updated upstream
                                 <ChatMarkdownBody
                                     content={msg.text}
                                     sourceMap={msg.sourceMap}
                                     unverifiedCitations={msg.unverifiedCitations}
                                 />
-=======
-                                <CitationProvider
-                                    map={msg.sourceMap}
-                                    unverified={msg.unverifiedCitations}
-                                >
-                                    <ReactMarkdown remarkPlugins={[remarkGfm]} rehypePlugins={[rehypeCitations]} components={{
-                                        ...chatMarkdownComponents,
-                                        cite: CiteChip as any,
-                                    }}>
-                                        {ensureTableSpacing(msg.text)}
-                                    </ReactMarkdown>
-                                </CitationProvider>
->>>>>>> Stashed changes
                                 {msg.ragAnswer && (
                                     <div className="mt-2 text-[10px] text-white/35 flex items-center gap-2">
                                         <span>{Math.round(msg.ragAnswer.confidence * 100)}% confidence</span>
