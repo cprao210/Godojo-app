@@ -16,7 +16,6 @@ import { migrateLegacyDbFile } from './legacyDbMigration';
  */
 const MIRRORED_APP_STATE_KEYS = new Set<string>([
     'supabase_backfill_done',
-    'user_profile_summary',
     'onboarding_complete',
     'preferred_embedding_provider',
     'preferred_embedding_dim'
@@ -393,28 +392,6 @@ export class DatabaseManager {
                 );
 
                 CREATE INDEX IF NOT EXISTS idx_chunks_meeting ON chunks(meeting_id);
-
-                CREATE TABLE IF NOT EXISTS user_profile (
-                    id INTEGER PRIMARY KEY,
-                    structured_json TEXT NOT NULL,
-                    compact_persona TEXT NOT NULL,
-                    intro_short TEXT,
-                    intro_interview TEXT,
-                    created_at DATETIME DEFAULT CURRENT_TIMESTAMP
-                );
-
-                CREATE TABLE IF NOT EXISTS resume_nodes (
-                    id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    category TEXT,
-                    title TEXT,
-                    organization TEXT,
-                    start_date TEXT,
-                    end_date TEXT,
-                    duration_months INTEGER,
-                    text_content TEXT,
-                    tags TEXT,
-                    embedding BLOB
-                );
             `);
             this.db.pragma('user_version = 1');
         }
@@ -927,6 +904,20 @@ export class DatabaseManager {
                 );
             `);
             this.db.pragma('user_version = 23');
+        }
+
+        // resume_nodes and user_profile came from the upstream interview
+        // product (parsed resume entries / candidate persona). Nothing in
+        // GoDojo ever wrote to either — they are empty on every install — and
+        // neither is mirrored to Supabase any more, so drop both. A purpose-
+        // built profile table will be added by its own migration when needed.
+        if (version < 24) {
+            console.log('[DatabaseManager] Applying migration v23 → v24: drop unused resume_nodes and user_profile tables');
+            this.db.exec(`
+                DROP TABLE IF EXISTS resume_nodes;
+                DROP TABLE IF EXISTS user_profile;
+            `);
+            this.db.pragma('user_version = 24');
         }
     }
 

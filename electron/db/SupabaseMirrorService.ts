@@ -13,7 +13,7 @@
 //
 // Supabase schema expected (run the SQL in supabase/migrations):
 //   - Relational mirror: meetings, transcripts, ai_interactions, chunks,
-//     chunk_summaries, embedding_queue, app_state, user_profile, resume_nodes
+//     chunk_summaries, embedding_queue, app_state
 //   - Vector entities: rag_chunk_vectors_{dim} and rag_summary_vectors_{dim}
 //     for each dimension tier (768, 1536, 3072).
 
@@ -295,10 +295,6 @@ export class SupabaseMirrorService extends EventEmitter {
                 return null;
             case 'app_state':
                 return row.user_id != null && row.key != null ? 'user_id,key' : (row.key != null ? 'key' : null);
-            case 'user_profile':
-                return row.user_id != null ? 'user_id' : (row.id != null ? 'id' : null);
-            case 'resume_nodes':
-                return row.id != null && row.user_id != null ? 'user_id,id' : (row.id != null ? 'id' : null);
             case 'company_context':
                 return row.user_id != null ? 'user_id,id' : 'id';
             case 'company_assets':
@@ -896,30 +892,6 @@ CREATE TABLE IF NOT EXISTS app_state (
     PRIMARY KEY (user_id, key)
 );
 
--- user_profile: one row per user (PK is user_id directly)
-CREATE TABLE IF NOT EXISTS user_profile (
-    user_id          TEXT PRIMARY KEY REFERENCES users(firebase_uid) ON DELETE CASCADE,
-    structured_json  JSONB,
-    compact_persona  TEXT,
-    intro_short      TEXT,
-    intro_interview  TEXT,
-    created_at       TIMESTAMPTZ
-);
-
-CREATE TABLE IF NOT EXISTS resume_nodes (
-    user_id          TEXT NOT NULL REFERENCES users(firebase_uid) ON DELETE CASCADE,
-    id               BIGINT NOT NULL,
-    category         TEXT,
-    title            TEXT,
-    organization     TEXT,
-    start_date       TEXT,
-    end_date         TEXT,
-    duration_months  INTEGER,
-    text_content     TEXT,
-    tags             TEXT,
-    PRIMARY KEY (user_id, id)
-);
-
 CREATE TABLE IF NOT EXISTS company_asset_chunks (
     user_id     TEXT NOT NULL REFERENCES users(firebase_uid) ON DELETE CASCADE,
     id          BIGINT NOT NULL,
@@ -1039,7 +1011,7 @@ DECLARE
     scoped_tables TEXT[] := ARRAY[
         'meetings', 'transcripts', 'ai_interactions',
         'chunks', 'chunk_summaries', 'embedding_queue',
-        'app_state', 'user_profile', 'resume_nodes',
+        'app_state',
         'company_asset_chunks',
         'meeting_scorecards',
         'scoring_criteria',

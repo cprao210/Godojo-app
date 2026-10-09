@@ -66,8 +66,6 @@ export class SupabaseBackfill {
             await this._backfillTable(db, mirror, 'chunk_summaries', 'id', this._transformSummary);
             await this._backfillTable(db, mirror, 'embedding_queue', 'id');
             await this._backfillAppState(db, mirror);
-            await this._backfillTable(db, mirror, 'user_profile', 'id');
-            await this._backfillTable(db, mirror, 'resume_nodes', 'id');
             await this._backfillVectors(db, mirror);
 
             this._setState(db, BACKFILL_DONE_KEY, '1');
