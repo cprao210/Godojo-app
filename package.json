@@ -46,7 +46,11 @@
       "node_modules",
       "!**/native-module/target",
       "!**/native-module/src",
-      "!**/native-module/.cargo"
+      "!**/native-module/.cargo",
+      "!dist-electron/resources/**",
+      "!dist-electron/**/__tests__/**",
+      "!dist-electron/**/*.map",
+      "!**/node_modules/**/*.map"
     ],
     "asarUnpack": [
       "**/*.node",
@@ -102,7 +106,24 @@
         "NSMicrophoneUsageDescription": "GoDojo AI needs microphone access to transcribe your voice during meetings.",
         "NSAudioCaptureUsageDescription": "GoDojo AI needs system audio access to transcribe meeting audio."
       },
-      "artifactName": "GoDojo.AI-${version}-${arch}.${ext}"
+      "artifactName": "GoDojo.AI-${version}-${arch}.${ext}",
+      "files": [
+        "dist",
+        "!dist/**/*.map",
+        "dist-electron",
+        "native-module",
+        "package.json",
+        "node_modules",
+        "!**/native-module/target",
+        "!**/native-module/src",
+        "!**/native-module/.cargo",
+        "!dist-electron/resources/**",
+        "!dist-electron/**/__tests__/**",
+        "!dist-electron/**/*.map",
+        "!**/node_modules/**/*.map",
+        "!**/node_modules/onnxruntime-node/bin/napi-v3/win32/**",
+        "!**/node_modules/onnxruntime-node/bin/napi-v3/linux/**"
+      ]
     },
     "win": {
       "target": [
@@ -122,7 +143,24 @@
       ],
       "icon": "assets/icons/win/icon.ico",
       "requestedExecutionLevel": "asInvoker",
-      "artifactName": "GoDojo.AI-${version}.${ext}"
+      "artifactName": "GoDojo.AI-${version}.${ext}",
+      "files": [
+        "dist",
+        "!dist/**/*.map",
+        "dist-electron",
+        "native-module",
+        "package.json",
+        "node_modules",
+        "!**/native-module/target",
+        "!**/native-module/src",
+        "!**/native-module/.cargo",
+        "!dist-electron/resources/**",
+        "!dist-electron/**/__tests__/**",
+        "!dist-electron/**/*.map",
+        "!**/node_modules/**/*.map",
+        "!**/node_modules/onnxruntime-node/bin/napi-v3/darwin/**",
+        "!**/node_modules/onnxruntime-node/bin/napi-v3/linux/**"
+      ]
     },
     "linux": {
       "maintainer": "GoDojo AI <contact@godojo.ai>",
@@ -141,7 +179,24 @@
         }
       ],
       "icon": "assets/icons/png/",
-      "category": "Office"
+      "category": "Office",
+      "files": [
+        "dist",
+        "!dist/**/*.map",
+        "dist-electron",
+        "native-module",
+        "package.json",
+        "node_modules",
+        "!**/native-module/target",
+        "!**/native-module/src",
+        "!**/native-module/.cargo",
+        "!dist-electron/resources/**",
+        "!dist-electron/**/__tests__/**",
+        "!dist-electron/**/*.map",
+        "!**/node_modules/**/*.map",
+        "!**/node_modules/onnxruntime-node/bin/napi-v3/win32/**",
+        "!**/node_modules/onnxruntime-node/bin/napi-v3/darwin/**"
+      ]
     },
     "appImage": {
       "artifactName": "GoDojo.AI-${version}.${ext}"
@@ -181,6 +236,7 @@
     "@electron/notarize": "^3.1.1",
     "@electron/rebuild": "^4.0.3",
     "@napi-rs/cli": "^3.5.1",
+    "@radix-ui/react-toast": "^1.2.2",
     "@types/better-sqlite3": "^7.6.13",
     "@types/color": "^4.2.0",
     "@types/electron": "^1.4.38",
@@ -198,7 +254,20 @@
     "electron": "^33.2.0",
     "electron-builder": "^26.8.1",
     "electron-rebuild": "^3.2.9",
+    "firebase": "^10.13.2",
+    "framer-motion": "^12.29.2",
+    "jspdf": "^4.0.0",
+    "lucide-react": "^0.460.0",
+    "pdfjs-dist": "^4.10.38",
     "postcss": "^8.4.49",
+    "posthog-js": "^1.415.2",
+    "react": "^18.3.1",
+    "react-dom": "^18.3.1",
+    "react-icons": "^5.3.0",
+    "react-markdown": "^10.1.0",
+    "react-query": "^3.39.3",
+    "react-syntax-highlighter": "^15.6.1",
+    "remark-gfm": "^4.0.1",
     "rimraf": "^6.0.1",
     "sharp": "^0.33.5",
     "tailwindcss": "^3.4.15",
@@ -217,7 +286,6 @@
     "@google/genai": "^1.44.0",
     "@grpc/grpc-js": "^1.14.3",
     "@grpc/proto-loader": "^0.8.0",
-    "@radix-ui/react-toast": "^1.2.2",
     "@supabase/supabase-js": "^2.45.4",
     "@xenova/transformers": "^2.17.2",
     "axios": "^1.7.7",
@@ -225,23 +293,10 @@
     "dotenv": "^17.3.1",
     "electron-store": "^8.1.0",
     "electron-updater": "^6.7.3",
-    "firebase": "^10.13.2",
     "form-data": "^4.0.1",
-    "framer-motion": "^12.29.2",
     "groq-sdk": "^0.37.0",
-    "jspdf": "^4.0.0",
-    "lucide-react": "^0.460.0",
     "openai": "^6.22.0",
-    "pdfjs-dist": "^4.10.38",
-    "posthog-js": "^1.415.2",
     "posthog-node": "^5.48.1",
-    "react": "^18.3.1",
-    "react-dom": "^18.3.1",
-    "react-icons": "^5.3.0",
-    "react-markdown": "^10.1.0",
-    "react-query": "^3.39.3",
-    "react-syntax-highlighter": "^15.6.1",
-    "remark-gfm": "^4.0.1",
     "sqlite-vec": "^0.1.7-alpha.2",
     "tree-kill": "^1.2.2",
     "ws": "^8.20.1"
