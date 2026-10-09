@@ -30,17 +30,11 @@
  *   orchestrator.hydrate(snapshot)
  *   orchestrator.getContext()
  *   orchestrator.getStatus()
- *   orchestrator.getProfileData()              // legacy compat for profile:get-profile
  *   orchestrator.ingestDocument(params)
  *   orchestrator.deleteDocumentsByType(type)
  *   orchestrator.processQuestion(message)
  *   orchestrator.feedForDepthScoring(message)
  *   orchestrator.feedInterviewerUtterance(text) // optional, no-op for company mode
- *   orchestrator.getNegotiationTracker()        // stub — not used in company mode
- *   orchestrator.resetNegotiationSession()      // stub
- *   orchestrator.getNegotiationScript()         // stub
- *   orchestrator.generateNegotiationScriptOnDemand() // stub
- *   orchestrator.getCompanyResearchEngine()     // stub
  */
 
 import type { KnowledgeDatabaseManager, CompanyKnowledgeSnapshot } from './KnowledgeDatabaseManager';
@@ -188,7 +182,7 @@ export class KnowledgeOrchestrator {
         return this.snapshot;
     }
 
-    // ─── Status / profile (legacy compat for profile:get-status, profile:get-profile) ──
+    // ─── Status (legacy shape for profile:get-status) ──
 
     public getStatus(): {
         hasResume: boolean;
@@ -200,11 +194,6 @@ export class KnowledgeOrchestrator {
             activeMode: this.knowledgeModeActive,
             resumeSummary: null,
         };
-    }
-
-    public getProfileData(): null {
-        // Company knowledge orchestrator does not manage resume/JD profile data.
-        return null;
     }
 
     // ─── Document ingestion ───────────────────────────────────────────────────
@@ -332,30 +321,6 @@ export class KnowledgeOrchestrator {
      */
     public feedInterviewerUtterance(_text: string): void {
         // No-op in company knowledge mode.
-    }
-
-    // ─── Negotiation stubs (interface compat with premium profile orchestrator) ──
-
-    public getNegotiationTracker(): { getState: () => null; isActive: () => false } {
-        return { getState: () => null, isActive: () => false as const };
-    }
-
-    public resetNegotiationSession(): void { /* no-op */ }
-
-    public getNegotiationScript(): null { return null; }
-
-    public async generateNegotiationScriptOnDemand(): Promise<null> { return null; }
-
-    // ─── Company research engine stub ─────────────────────────────────────────
-
-    public getCompanyResearchEngine(): {
-        setSearchProvider: (_p: any) => void;
-        researchCompany: (_name: string, _ctx: any, _force: boolean) => Promise<null>;
-    } {
-        return {
-            setSearchProvider: (_p: any) => { /* no-op */ },
-            researchCompany: async (_name, _ctx, _force) => null,
-        };
     }
 
     // ─── Private helpers ──────────────────────────────────────────────────────

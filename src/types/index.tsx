@@ -50,14 +50,8 @@ export interface IncompatibleProviderWarning {
 }
 
 export interface AppLifecycleState {
-  hasProfile: boolean;
-  isPremiumActive: boolean;
-  setIsPremiumActive: (active: boolean) => void;
-  /** Rising edge each time a meeting finishes processing — feeds `useAdCampaigns`'s post-meeting ad timer. */
   isProcessingMeeting: boolean;
   setIsProcessingMeeting: (processing: boolean) => void;
-  lastMeetingEndTime: number | null;
-  appStartTime: number;
   ollamaPull: OllamaPullState;
   incompatibleWarning: IncompatibleProviderWarning | null;
   dismissIncompatibleWarning: () => void;
@@ -1786,23 +1780,6 @@ export interface CurlValidationResult {
   json?: any;
 }
 
-// --- src/lib/overlayAppearance.ts ---
-export type OverlayTheme = 'light' | 'dark';
-
-export interface OverlayAppearance {
-  shellStyle: React.CSSProperties;
-  pillStyle: React.CSSProperties;
-  transcriptStyle: React.CSSProperties;
-  subtleStyle: React.CSSProperties;
-  chipStyle: React.CSSProperties;
-  inputStyle: React.CSSProperties;
-  controlStyle: React.CSSProperties;
-  iconStyle: React.CSSProperties;
-  codeBlockStyle: React.CSSProperties;
-  codeHeaderStyle: React.CSSProperties;
-  dividerStyle: React.CSSProperties;
-}
-
 // --- src/pages/SignIn.tsx ---
 export type FieldValuesType = {
   icon: ForwardRefExoticComponent<Omit<LucideProps, "ref"> & RefAttributes<SVGSVGElement>>;
@@ -1812,23 +1789,6 @@ export type FieldValuesType = {
   /** Optional — only the sign-up fields (name, email) set this; sign-in's
    * single email field and phoneNumber intentionally leave it unset. */
   required?: boolean;
-}
-
-// --- src/types/index.tsx ---
-export interface Screenshot {
-  id: string
-  path: string
-  timestamp: number
-  thumbnail: string // Base64 thumbnail
-}
-
-export interface Solution {
-  problem_identifier_script: string;
-  brainstorm_script: string;
-  code: string;
-  dry_run_script: string;
-  time_complexity: string;
-  space_complexity: string;
 }
 
 // ============================================================
@@ -1870,17 +1830,6 @@ export interface ChatSessionSidebarProps {
   onSelectSession: (sessionId: string) => void;
   onNewChat: () => void;
   onDeleteSession: (sessionId: string) => void;
-}
-
-// --- src/features/common/AdCampaignToasters.tsx ---
-export interface AdCampaignToastersProps {
-  /** Only rendered on the launcher main view, with Settings closed. */
-  visible: boolean;
-  activeAd: unknown;
-  dismissAd: () => void;
-  onSetupProfile: () => void;
-  onSetupJD: () => void;
-  onUpgrade: () => void;
 }
 
 // --- src/features/common/EditableTextBlock.tsx ---
@@ -2369,8 +2318,6 @@ export interface CompanyContextTabProps {
   setCompanyError: (v: string) => void;
   assetUploading: string | null;
   setAssetUploading: (id: string | null) => void;
-  isPremium?: boolean;
-  setIsPremiumModalOpen?: (v: boolean) => void;
   isLight: boolean;
   /**
    * True when the current user is on a team but is NOT that team's admin.
@@ -2556,13 +2503,6 @@ export interface UserProfileButtonProps {
   email?: string | null;
   photoURL?: string | null;
   onSignOut: () => void;
-}
-
-// --- src/features/ui/KeyRecorder.tsx ---
-export interface KeyRecorderProps {
-  currentKeys: string[];
-  onSave: (keys: string[]) => void;
-  className?: string;
 }
 
 // --- src/features/ui/ModelSelector.tsx ---

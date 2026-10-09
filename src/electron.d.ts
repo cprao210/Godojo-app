@@ -83,7 +83,6 @@ export interface ElectronAPI {
   }>
   setPerformanceModePreference: (preference: 'auto' | 'on' | 'off') => Promise<{ ok: boolean }>
   onToggleExpand: (callback: () => void) => () => void
-  onResetView: (callback: () => void) => () => void
   moveWindowLeft: () => Promise<void>
   moveWindowRight: () => Promise<void>
   moveWindowUp: () => Promise<void>
@@ -130,17 +129,6 @@ export interface ElectronAPI {
   onCaptureAndProcess: (callback: (data: { path: string; preview: string }) => void) => () => void
   takeScreenshot: () => Promise<{ path: string; preview: string }>
   takeSelectiveScreenshot: () => Promise<{ path: string; preview: string; cancelled?: boolean }>
-  analyzeImageFile: (path: string) => Promise<void>
-  onProcessingNoScreenshots: (callback: () => void) => () => void
-  onProblemExtracted: (callback: (data: any) => void) => () => void
-  onSolutionsReady: (callback: (solutions: string) => void) => () => void
-  onSolutionStart: (callback: () => void) => () => void
-  onSolutionSuccess: (callback: (data: any) => void) => () => void
-  onSolutionError: (callback: (error: string) => void) => () => void
-  onDebugStart: (callback: () => void) => () => void
-  onDebugSuccess: (callback: (data: any) => void) => () => void
-  onDebugError: (callback: (error: string) => void) => () => void
-  onUnauthorized: (callback: () => void) => () => void
 
   // ===========================================================================
   // Undetectable / Disguise / Overlay Behavior
@@ -354,7 +342,6 @@ export interface ElectronAPI {
   submitManualQuestion: (question: string) => Promise<{ answer: string | null; question: string }>
   getIntelligenceContext: () => Promise<{ context: string; lastAssistantMessage: string | null; activeMode: string }>
   resetIntelligence: () => Promise<{ success: boolean; error?: string }>
-  generateSuggestion: (context: string, lastQuestion: string) => Promise<{ suggestion: string }>
   onSuggestionGenerated: (callback: (data: { question: string; suggestion: string; confidence: number }) => void) => () => void
   onSuggestionProcessingStart: (callback: () => void) => () => void
   onSuggestionError: (callback: (error: { error: string }) => void) => () => void
@@ -568,21 +555,10 @@ export interface ElectronAPI {
   companyGetCompleteness: () => Promise<number>
 
   // ===========================================================================
-  // Profile Engine (Resume, JD & Negotiation)
+  // Profile Engine (company-knowledge mode)
   // ===========================================================================
-  profileUploadResume: (filePath: string) => Promise<{ success: boolean; error?: string }>
   profileGetStatus: () => Promise<{ hasProfile: boolean; profileMode: boolean; name?: string; role?: string; totalExperienceYears?: number }>
-  profileGetMode: () => Promise<{ active: boolean }>
   profileSetMode: (enabled: boolean) => Promise<{ success: boolean; error?: string }>
-  profileDelete: () => Promise<{ success: boolean; error?: string }>
-  profileGetProfile: () => Promise<any>
-  profileSelectFile: () => Promise<{ success?: boolean; cancelled?: boolean; filePath?: string; error?: string }>
-  profileUploadJD: (filePath: string) => Promise<{ success: boolean; error?: string }>
-  profileDeleteJD: () => Promise<{ success: boolean; error?: string }>
-  profileResearchCompany: (companyName: string) => Promise<{ success: boolean; dossier?: any; error?: string }>
-  profileGenerateNegotiation: (force?: boolean) => Promise<{ success: boolean; script?: any; error?: string }>
-  profileGetNegotiationState: () => Promise<{ success: boolean; state?: any; isActive?: boolean; error?: string }>
-  profileResetNegotiation: () => Promise<{ success: boolean; error?: string }>
 
   // ===========================================================================
   // Calendar
@@ -719,10 +695,7 @@ export interface ElectronAPI {
   // ===========================================================================
   // License Management
   // ===========================================================================
-  licenseActivate: (key: string) => Promise<{ success: boolean; error?: string }>
   licenseCheckPremium: () => Promise<boolean>
-  licenseDeactivate: () => Promise<void>
-  licenseGetHardwareId: () => Promise<string>
 
   // ===========================================================================
   // Demo / Seed Data

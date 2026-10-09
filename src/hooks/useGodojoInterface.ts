@@ -25,8 +25,8 @@ import { qualityFields } from "@/lib/liveTranscript";
 
 export function useGodojoInterface({ overlayOpacity = OVERLAY_OPACITY_DEFAULT }: GodojoInterfaceProps) {
     // `overlayOpacity` is accepted for interface compatibility (App.tsx still
-    // passes it) but isn't consumed here — it only ever fed the overlay's
-    // rich-UI theming (`getOverlayAppearance`), which is currently disabled.
+    // passes it) but isn't consumed here — the opacity-driven rich-UI theming
+    // it used to feed has been removed.
     void overlayOpacity;
 
     const [isExpanded, setIsExpanded] = useState(true);

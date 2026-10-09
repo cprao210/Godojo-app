@@ -2,7 +2,7 @@ import { describe, it, expect } from 'vitest';
 import * as path from 'path';
 import * as fs from 'fs';
 
-// Replicate the guard logic from both IPC handlers as a pure function
+// Replicate the guard logic from the IPC handler as a pure function
 // so we can test it exhaustively without a live Electron runtime.
 function simulateGuard(userDataDir: string, filePath: string): { allowed: boolean; resolved: string } {
   const resolved = path.resolve(filePath);
@@ -26,23 +26,8 @@ describe('IPC path-traversal guards — source inspection', () => {
     expect(slice).toContain('userData');
   });
 
-  it('analyze-image-file handler contains userData path boundary check', () => {
-    const idx = handlersSource.indexOf('"analyze-image-file"');
-    expect(idx).toBeGreaterThan(-1);
-    const slice = handlersSource.slice(idx, idx + 600);
-    expect(slice).toContain('startsWith');
-    expect(slice).toContain('path.sep');
-    expect(slice).toContain('userData');
-  });
-
   it('delete-screenshot handler rejects with a "not allowed" error', () => {
     const idx = handlersSource.indexOf('"delete-screenshot"');
-    const slice = handlersSource.slice(idx, idx + 600);
-    expect(slice.includes("'Path not allowed'") || slice.includes('"Path not allowed"') || slice.includes('not allowed')).toBe(true);
-  });
-
-  it('analyze-image-file handler rejects with a "not allowed" error', () => {
-    const idx = handlersSource.indexOf('"analyze-image-file"');
     const slice = handlersSource.slice(idx, idx + 600);
     expect(slice.includes("'Path not allowed'") || slice.includes('"Path not allowed"') || slice.includes('not allowed')).toBe(true);
   });
@@ -123,11 +108,11 @@ describe('path-traversal guard logic: rejects adversarial paths', () => {
 
 });
 
-describe('path-traversal guard consistency between handlers', () => {
+describe('path-traversal guard pattern', () => {
 
-  it('both handlers use the same path.resolve + startsWith + path.sep pattern', () => {
+  it('delete-screenshot uses the path.resolve + startsWith + path.sep pattern', () => {
     const guardElements = ['path.resolve', 'startsWith', 'path.sep'];
-    for (const channel of ['delete-screenshot', 'analyze-image-file']) {
+    for (const channel of ['delete-screenshot']) {
       const idx = handlersSource.indexOf(`"${channel}"`);
       const slice = handlersSource.slice(idx, idx + 400);
       for (const el of guardElements) {

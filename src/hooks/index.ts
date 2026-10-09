@@ -55,7 +55,6 @@ import { useOverlayOpacitySettings } from "./useOverlayOpacitySettings";
 import { useAudioDeviceSettings } from "./useAudioDeviceSettings";
 import { useLanguageSettings } from "./useLanguageSettings";
 import { useTavilySettings } from "./useTavilySettings";
-import { useProfileIntelligenceSettings } from "./useProfileIntelligenceSettings";
 import { useCompanyContextSettings } from "./useCompanyContextSettings";
 import { useCalendarIntegrationSettings } from "./useCalendarIntegrationSettings";
 import { useTranscriptVisibility } from "./useTranscriptVisibility";
@@ -149,7 +148,6 @@ export {
     useLanguageSettings,
     useTavilySettings,
     useSttProviderSettings, STT_PROVIDER_KEY_URLS,
-    useProfileIntelligenceSettings,
     useCompanyContextSettings,
     useCalendarIntegrationSettings,
     useTranscriptVisibility,

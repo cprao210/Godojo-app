@@ -495,15 +495,6 @@ export class AppState {
   // default only matters for the brief window before the constructor runs.
   private isUndetectable: boolean = app.isPackaged ? true : false
 
-  private problemInfo: {
-    problem_statement: string
-    input_format: Record<string, any>
-    output_format: Record<string, any>
-    constraints: Array<Record<string, any>>
-    test_cases: Array<Record<string, any>>
-  } | null = null // Allow null
-
-  private hasDebugged: boolean = false
   private isMeetingActive: boolean = false; // Guard for session state leaks
   /** True on weak hardware: heavy background warmups are postponed from launch to meeting start. */
   private deferHeavyWarmups: boolean = false;
@@ -520,24 +511,6 @@ export class AppState {
   private _ollamaBootstrapPromise: Promise<void> | null = null;
   private screenshotCaptureInProgress: boolean = false;
 
-
-  // Processing events
-  public readonly PROCESSING_EVENTS = {
-    //global states
-    UNAUTHORIZED: "procesing-unauthorized",
-    NO_SCREENSHOTS: "processing-no-screenshots",
-
-    //states for generating the initial solution
-    INITIAL_START: "initial-start",
-    PROBLEM_EXTRACTED: "problem-extracted",
-    SOLUTION_SUCCESS: "solution-success",
-    INITIAL_SOLUTION_ERROR: "solution-error",
-
-    //states for processing the debugging
-    DEBUG_START: "debug-start",
-    DEBUG_SUCCESS: "debug-success",
-    DEBUG_ERROR: "debug-error"
-  } as const
 
   constructor() {
     // 1. Load boot-critical settings first (used by WindowHelpers)
@@ -4717,14 +4690,6 @@ export class AppState {
     return this.screenshotHelper
   }
 
-  public getProblemInfo(): any {
-    return this.problemInfo
-  }
-
-  public setProblemInfo(problemInfo: any): void {
-    this.problemInfo = problemInfo
-  }
-
   public getScreenshotQueue(): string[] {
     return this.screenshotHelper.getScreenshotQueue()
   }
@@ -4804,9 +4769,6 @@ export class AppState {
 
   public clearQueues(): void {
     this.screenshotHelper.clearQueues()
-
-    // Clear problem info
-    this.problemInfo = null
 
     // Reset view to initial state
     this.setView("queue")
@@ -5117,14 +5079,6 @@ export class AppState {
       this.tray.destroy();
       this.tray = null;
     }
-  }
-
-  public setHasDebugged(value: boolean): void {
-    this.hasDebugged = value
-  }
-
-  public getHasDebugged(): boolean {
-    return this.hasDebugged
   }
 
   public setUndetectable(state: boolean): void {

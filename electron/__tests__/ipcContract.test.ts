@@ -114,7 +114,7 @@ describe('IPC contract: preload channels vs handler registrations', () => {
   });
 
   it('security-sensitive file operation channels are registered', () => {
-    for (const ch of ['delete-screenshot', 'analyze-image-file']) {
+    for (const ch of ['delete-screenshot']) {
       expect(handlerChannels.has(ch), `"${ch}" must be registered`).toBe(true);
     }
   });
