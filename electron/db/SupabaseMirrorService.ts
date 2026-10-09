@@ -19,6 +19,7 @@
 
 import { EventEmitter } from 'events';
 import { SupabaseClientManager } from './SupabaseClient';
+import { isLocalOnlyRow, stripLocalOnlyColumns } from './supabaseSyncFilters';
 import { AuthManager } from '../services/AuthManager';
 import Database from 'better-sqlite3';
 
@@ -266,8 +267,8 @@ export class SupabaseMirrorService extends EventEmitter {
      *   the first. Omit only for genuinely one-shot / first-write calls.
      */
     upsertRow(table: string, row: Record<string, any>, ownerUid?: string | null): void {
-        if (!this.enabled) return;
-        this._enqueue({ op: 'upsert', table, payload: row, retries: 0 }, ownerUid);
+        if (!this.enabled || isLocalOnlyRow(table, row)) return;
+        this._enqueue({ op: 'upsert', table, payload: stripLocalOnlyColumns(table, row), retries: 0 }, ownerUid);
     }
 
     private _conflictTargetForTable(table: string, row: Record<string, any>): string | null {
@@ -387,14 +388,16 @@ export class SupabaseMirrorService extends EventEmitter {
      * is both faster (one request) and can't block later items for long.
      */
     upsertRows(table: string, rows: Record<string, any>[], ownerUid?: string | null): void {
-        if (!this.enabled || rows.length === 0) return;
-        this._enqueue({ op: 'upsertBatch', table, payload: rows, retries: 0 }, ownerUid);
+        if (!this.enabled) return;
+        const remote = rows.filter(r => !isLocalOnlyRow(table, r)).map(r => stripLocalOnlyColumns(table, r));
+        if (remote.length === 0) return;
+        this._enqueue({ op: 'upsertBatch', table, payload: remote, retries: 0 }, ownerUid);
     }
 
     /** Mirror a partial column update WITHOUT insert semantics — never creates a
       * row, so it can't materialize one with NULL/default columns it didn't send. */
     updateRow(table: string, pkMatch: Record<string, any>, changes: Record<string, any>, ownerUid?: string | null): void {
-        if (!this.enabled) return;
+        if (!this.enabled || isLocalOnlyRow(table, pkMatch)) return;
         this._enqueue({ op: 'update', table, payload: { pkMatch, changes }, retries: 0 }, ownerUid);
     }
 

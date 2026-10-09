@@ -15,28 +15,11 @@
 
 import Database from 'better-sqlite3';
 import { SupabaseMirrorService } from './SupabaseMirrorService';
+import { localOnlyRowFilter, stripLocalOnlyColumns } from './supabaseSyncFilters';
 
 const BATCH = 50;
 const BACKFILL_DONE_KEY = 'supabase_backfill_done';
 const BACKFILL_CURSOR_PREFIX = 'supabase_backfill_cursor_';
-
-// Columns that exist locally (SQLite) but not yet in the Supabase schema.
-// SELECT * pulls these in automatically; PostgREST rejects the ENTIRE upsert
-// if any column is unrecognized (PGRST204), so every row silently fails to
-// sync until these are stripped — matching what DatabaseManager.saveMeeting()
-// already does for the live mirror path. TODO(supabase): once these columns
-// are added to the cloud schema, delete the corresponding entry here.
-const LOCAL_ONLY_COLUMNS: Record<string, string[]> = {
-    meetings: ['meeting_types', 'owner_uid'],
-};
-
-function _stripLocalOnlyColumns(table: string, row: Record<string, any>): Record<string, any> {
-    const drop = LOCAL_ONLY_COLUMNS[table];
-    if (!drop) return row;
-    const clean = { ...row };
-    for (const col of drop) delete clean[col];
-    return clean;
-}
 
 export class SupabaseBackfill {
     /**
@@ -89,13 +72,14 @@ export class SupabaseBackfill {
         console.log(`[SupabaseBackfill] Backfilling ${table} from cursor=${cursor}`);
 
         while (true) {
+            const filter = localOnlyRowFilter(table);
             const rows: any[] = db.prepare(
-                `SELECT * FROM ${table} WHERE ${pkCol} > ? ORDER BY ${pkCol} ASC LIMIT ?`
-            ).all(cursor, BATCH);
+                `SELECT * FROM ${table} WHERE ${pkCol} > ? AND ${filter.sql} ORDER BY ${pkCol} ASC LIMIT ?`
+            ).all(cursor, ...filter.params, BATCH);
 
             if (rows.length === 0) break;
 
-            const mapped = rows.map(r => _stripLocalOnlyColumns(table, transform ? transform(r) : this._sanitizeRow(r)));
+            const mapped = rows.map(r => stripLocalOnlyColumns(table, transform ? transform(r) : this._sanitizeRow(r)));
             mirror.upsertRows(table, mapped);
 
             cursor = rows[rows.length - 1][pkCol];
@@ -127,13 +111,14 @@ export class SupabaseBackfill {
         console.log(`[SupabaseBackfill] Backfilling meetings from cursor='${cursor}'`);
 
         while (true) {
+            const filter = localOnlyRowFilter('meetings');
             const rows: any[] = db.prepare(
-                `SELECT * FROM meetings WHERE id > ? ORDER BY id ASC LIMIT ?`
-            ).all(cursor, BATCH);
+                `SELECT * FROM meetings WHERE id > ? AND ${filter.sql} ORDER BY id ASC LIMIT ?`
+            ).all(cursor, ...filter.params, BATCH);
 
             if (rows.length === 0) break;
 
-            mirror.upsertRows('meetings', rows.map(r => _stripLocalOnlyColumns('meetings', this._sanitizeRow(r))));
+            mirror.upsertRows('meetings', rows.map(r => stripLocalOnlyColumns('meetings', this._sanitizeRow(r))));
 
             cursor = rows[rows.length - 1].id;
             this._setState(db, cursorKey, cursor);

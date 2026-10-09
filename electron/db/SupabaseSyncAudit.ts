@@ -16,19 +16,10 @@
 
 import Database from 'better-sqlite3';
 import { SupabaseClientManager } from './SupabaseClient';
+import { localOnlyRowFilter, stripLocalOnlyColumns } from './supabaseSyncFilters';
 import { SupabaseMirrorService } from './SupabaseMirrorService';
 
 const PAGE = 1000;
-
-// Columns that exist locally (SQLite) but not yet in the Supabase schema.
-// Kept in sync with SupabaseBackfill.ts's LOCAL_ONLY_COLUMNS — both files
-// read full local rows via SELECT * and must strip the same columns before
-// forwarding to PostgREST, which rejects an entire upsert if any column is
-// unrecognized (PGRST204). TODO(supabase): delete an entry here once that
-// column is added to the cloud schema.
-const LOCAL_ONLY_COLUMNS: Record<string, string[]> = {
-    meetings: ['meeting_types'],
-};
 
 export interface SyncAuditResult {
     table: string;
@@ -73,8 +64,8 @@ export class SupabaseSyncAudit {
         // FK-safe order: meetings (parent) first so re-queued children always
         // have a parent present remotely by the time the outbox drains.
         const specs: TableSpec[] = [
-            { table: 'meetings', pkCol: 'id', transform: (r) => this._stripLocalOnly('meetings', this._sanitizeRow(r)) },
-            { table: 'transcripts', pkCol: 'id', transform: (r) => this._stripLocalOnly('transcripts', this._sanitizeRow(r)) },
+            { table: 'meetings', pkCol: 'id', transform: (r) => stripLocalOnlyColumns('meetings', this._sanitizeRow(r)) },
+            { table: 'transcripts', pkCol: 'id', transform: (r) => stripLocalOnlyColumns('transcripts', this._sanitizeRow(r)) },
             { table: 'ai_interactions', pkCol: 'id', transform: this._sanitizeRow },
             { table: 'chunks', pkCol: 'id', transform: this._transformChunk },
             { table: 'chunk_summaries', pkCol: 'id', transform: this._transformSummary },
@@ -102,9 +93,11 @@ export class SupabaseSyncAudit {
     ): Promise<SyncAuditResult> {
         const { table, pkCol, transform } = spec;
 
+        // The live-call placeholder meeting (and its rows) is local-only.
+        const filter = localOnlyRowFilter(table);
         const localIds: any[] = db
-            .prepare(`SELECT ${pkCol} FROM ${table}`)
-            .all()
+            .prepare(`SELECT ${pkCol} FROM ${table} WHERE ${filter.sql}`)
+            .all(...filter.params)
             .map((r: any) => r[pkCol]);
 
         const remoteIds = await this._fetchRemoteIds(table, pkCol, userId);
@@ -162,14 +155,6 @@ export class SupabaseSyncAudit {
         }
 
         return remoteIds;
-    }
-
-    private static _stripLocalOnly(table: string, row: Record<string, any>): Record<string, any> {
-        const drop = LOCAL_ONLY_COLUMNS[table];
-        if (!drop) return row;
-        const clean = { ...row };
-        for (const col of drop) delete clean[col];
-        return clean;
     }
 
     // ============================================
