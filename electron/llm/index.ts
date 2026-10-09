@@ -3,9 +3,7 @@
 
 export { AnswerLLM } from "./AnswerLLM";
 export { AssistLLM } from "./AssistLLM";
-export { BrainstormLLM } from "./BrainstormLLM";
 export { ClarifyLLM } from "./ClarifyLLM";
-export { CodeHintLLM } from "./CodeHintLLM";
 export { FollowUpLLM } from "./FollowUpLLM";
 export { FollowUpQuestionsLLM } from "./FollowUpQuestionsLLM";
 export { RecapLLM } from "./RecapLLM";
@@ -52,9 +50,6 @@ export {
     GROQ_SUMMARY_JSON_PROMPT,
     FOLLOWUP_EMAIL_PROMPT,
     GROQ_FOLLOWUP_EMAIL_PROMPT,
-    CODE_HINT_PROMPT,
-    buildCodeHintMessage,
-    BRAINSTORM_MODE_PROMPT,
     SUMMARY_VERIFICATION_PROMPT
 } from "./prompts";
 export { buildSummaryPrompt, buildCoachCallTypeSection } from "./summaryPrompt";

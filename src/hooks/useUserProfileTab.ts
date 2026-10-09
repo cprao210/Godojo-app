@@ -3,7 +3,7 @@
 // read the cached profile — e.g. Launcher, UserProfileButton) plus the hook
 // that owns the tab's own editing state. Kept separate from the component so
 // the component only owns rendering — same split as useProviderCard /
-// useCropper / useAIProvidersSettings.
+// useAIProvidersSettings.
 
 import { useCallback, useEffect, useRef, useState } from "react";
 import { getFirebaseAuth } from "@/lib/firebase";

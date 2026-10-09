@@ -5,13 +5,9 @@
 // sit behind kTCCServiceScreenCapture — the "Screen Recording" toggle — so the
 // app must resolve that permission before it constructs a SystemAudioCapture.
 //
-// This module is deliberately standalone (rather than living in main.ts) for
-// two reasons:
-//   1. ScreenshotHelper needs the identical dev-bypass policy. When the bypass
-//      predicate was private to main.ts, screenshots and audio disagreed about
-//      permission state in dev.
-//   2. Everything here is pure enough to unit-test with a mocked `electron`
-//      module. Reimplementing the logic inside the test (the previous approach
+// This module is deliberately standalone (rather than living in main.ts)
+// because everything here is pure enough to unit-test with a mocked `electron`
+// module. Reimplementing the logic inside the test (the previous approach
 //      in the sibling repo) let the test and the real code drift apart.
 
 import { app, desktopCapturer, systemPreferences } from 'electron';

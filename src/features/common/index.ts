@@ -1,4 +1,3 @@
-import Cropper from "@/features/common/Cropper";
 import EditableTextBlock from "@/features/common/EditableTextBlock";
 import ErrorBoundary from "@/features/common/ErrorBoundary";
 import { GhostGlowOverlay } from "@/features/common/GhostGlowOverlay";
@@ -16,4 +15,4 @@ import { WindowControlButton } from '@/features/common/WindowControlButton';
 
 export { MaximizeRestoreIcon, WindowControlButton };
 
-export { Cropper, EditableTextBlock, ErrorBoundary, GhostGlowOverlay, IncompatibleProviderBanner, Launcher, ModelSelectorWindow, GodojoInterface, TopSearchPill, WindowControls, AudioStatusTray, SystemAudioPermissionBanner };
+export { EditableTextBlock, ErrorBoundary, GhostGlowOverlay, IncompatibleProviderBanner, Launcher, ModelSelectorWindow, GodojoInterface, TopSearchPill, WindowControls, AudioStatusTray, SystemAudioPermissionBanner };

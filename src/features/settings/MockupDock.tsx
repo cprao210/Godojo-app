@@ -1,5 +1,5 @@
 import React from 'react';
-import { Camera, Eye, AlignLeft, Layers, Radio, Brain, Ghost, Pause, StopCircle, GripVertical, Settings } from 'lucide-react';
+import { Eye, AlignLeft, Layers, Radio, Brain, Ghost, Pause, StopCircle, GripVertical, Settings } from 'lucide-react';
 import { OVERLAY_OPACITY_MIN } from '@/lib/overlayAppearance';
 
 // Fake in-meeting settings panel + dock bar, rendered at the live preview
@@ -55,7 +55,6 @@ export const MockupDock: React.FC<{ opacity: number }> = ({ opacity }) => {
                 </div>
                 {/* Shortcut rows */}
                 {([
-                    { icon: <Camera size={13} strokeWidth={1.8} />, label: 'Screenshot', keys: ['⌘', 'H'] },
                     { icon: <Eye size={13} strokeWidth={1.8} />, label: 'Show / Hide', keys: ['⌘', '⇧', 'B'] },
                 ] as const).map(({ icon, label, keys }) => (
                     <div key={label} className="flex items-center justify-between px-4 py-2.5" style={{ borderBottom: '1px solid rgba(255,255,255,0.04)' }}>

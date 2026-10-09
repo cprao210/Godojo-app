@@ -27,7 +27,6 @@ import { useAudioStatusTray } from "./useAudioStatusTray";
 import { useTopSearchPill } from './useTopSearchPill';
 import { useModelSelectorWindow } from './useModelSelectorWindow';
 import { useEditableTextBlock } from "./useEditableTextBlock";
-import { useCropper } from "./useCropper";
 import { useFollowUpEmail } from "./useFollowUpEmail";
 import { useMeetingChat } from "./useMeetingChat";
 import { useMeetingDetails, isSummaryEmpty, cleanMarkdown, formatTime, formatTranscriptTimestamp } from "./useMeetingDetails";
@@ -101,7 +100,6 @@ export {
     useTopSearchPill,
     useModelSelectorWindow,
     useEditableTextBlock,
-    useCropper,
     useFollowUpEmail,
     useMeetingChat,
     useMeetingDetails,

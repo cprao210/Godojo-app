@@ -2,8 +2,7 @@
  * SettingsPopup.tsx
  *
  * The small tray/menu-bar popover with quick toggles (Undetectable, Fast
- * Response, Transcript, Interview Mode, Profile Mode) plus static shortcut
- * reference rows and a Donate link.
+ * Response, Transcript, Profile Mode) plus a static shortcut reference row.
  *
  * All state, IPC listeners, and the auto-resize ResizeObserver live in
  * useSettingsPopup; this component only owns rendering. Each row is built
@@ -12,7 +11,7 @@
  */
 
 import React from 'react';
-import { MessageSquare, Camera, Zap, User } from 'lucide-react';
+import { MessageSquare, Zap, User } from 'lucide-react';
 import { useSettingsPopup } from '@/hooks';
 import CustomGhostIcon from './CustomGhostIcon';
 import SettingsToggleRow from './SettingsToggleRow';
@@ -28,13 +27,11 @@ const SettingsPopup: React.FC = () => {
         hasProfile,
         isPremium,
         hasStoredKey,
-        actionButtonMode,
         showTranscript,
         contentRef,
         toggleUndetectable,
         toggleGroqFastText,
         toggleTranscript,
-        toggleInterviewMode,
         toggleProfileMode,
     } = useSettingsPopup();
 
@@ -107,35 +104,6 @@ const SettingsPopup: React.FC = () => {
                         labelInactiveClass={labelInactiveClass}
                     />
 
-                    {/* Interview Mode (Brainstorm) Toggle */}
-                    <SettingsToggleRow
-                        icon={
-                            <svg
-                                xmlns="http://www.w3.org/2000/svg"
-                                viewBox="0 0 24 24"
-                                fill="none"
-                                stroke="currentColor"
-                                strokeWidth="2"
-                                strokeLinecap="round"
-                                strokeLinejoin="round"
-                                className={`w-3.5 h-3.5 transition-colors ${actionButtonMode === 'brainstorm' ? 'text-violet-400' : iconInactiveClass}`}
-                            >
-                                <line x1="6" y1="3" x2="6" y2="15" />
-                                <circle cx="18" cy="6" r="3" />
-                                <circle cx="6" cy="18" r="3" />
-                                <path d="M18 9a9 9 0 0 1-9 9" />
-                            </svg>
-                        }
-                        label="Interview Mode"
-                        checked={actionButtonMode === 'brainstorm'}
-                        onToggle={toggleInterviewMode}
-                        activeTrackClass="bg-violet-500 shadow-[0_2px_10px_rgba(139,92,246,0.3)]"
-                        activeLabelClass={activeLabelClass}
-                        isLightTheme={isLightTheme}
-                        hoverClass={itemHoverClass}
-                        labelInactiveClass={labelInactiveClass}
-                    />
-
                     {/* Profile Mode Toggle — Pro-license gated, only shown once a profile exists */}
                     {hasProfile && (
                         <SettingsToggleRow
@@ -170,15 +138,6 @@ const SettingsPopup: React.FC = () => {
                         shortcutKeyClass={shortcutKeyClass}
                     />
 
-                    {/* Screenshot */}
-                    <ShortcutRow
-                        icon={<Camera className={`w-3.5 h-3.5 transition-colors ${iconInactiveClass}`} />}
-                        label="Screenshot"
-                        keys={shortcuts.takeScreenshot || ['⌘', 'H']}
-                        labelInactiveClass={labelInactiveClass}
-                        hoverClass={itemHoverClass}
-                        shortcutKeyClass={shortcutKeyClass}
-                    />
 
                 </div>
             </div>

@@ -16,21 +16,6 @@ interface ElectronAPI {
   }>
   setPerformanceModePreference: (preference: 'auto' | 'on' | 'off') => Promise<{ ok: boolean }>
   getRecognitionLanguages: () => Promise<Record<string, any>>
-  getScreenshots: () => Promise<Array<{ path: string; preview: string }>>
-  deleteScreenshot: (
-    path: string
-  ) => Promise<{ success: boolean; error?: string }>
-  onScreenshotTaken: (
-    callback: (data: { path: string; preview: string }) => void
-  ) => () => void
-  onScreenshotAttached: (
-    callback: (data: { path: string; preview: string }) => void
-  ) => () => void
-  onCaptureAndProcess: (
-    callback: (data: { path: string; preview: string }) => void
-  ) => () => void
-  takeScreenshot: () => Promise<void>
-  takeSelectiveScreenshot: () => Promise<{ path: string; preview: string; cancelled?: boolean }>
   moveWindowLeft: () => Promise<void>
   moveWindowRight: () => Promise<void>
   moveWindowUp: () => Promise<void>
@@ -359,7 +344,6 @@ interface ElectronAPI {
   onKeybindsUpdate: (callback: (keybinds: Array<any>) => void) => () => void
 
   // Global shortcut events (stealth: fired even when window is not focused)
-  onGlobalShortcut: (callback: (data: { action: string }) => void) => () => void
 
   // Profile Engine API
   profileGetStatus: () => Promise<{ hasProfile: boolean; profileMode: boolean; name?: string; role?: string; totalExperienceYears?: number }>;
@@ -409,11 +393,6 @@ interface ElectronAPI {
 
   // Arch
   getArch: () => Promise<string>;
-
-  // Cropper API
-  cropperConfirmed: (bounds: Electron.Rectangle) => void;
-  cropperCancelled: () => void;
-  onResetCropper: (callback: (data: { hudPosition: { x: number; y: number } }) => void) => () => void;
 
   // ===== Firebase Auth (renderer owns the SDK; main holds the current ID token) =====
   authSetIdToken: (session: {
@@ -465,11 +444,6 @@ contextBridge.exposeInMainWorld("electronAPI", {
   setPerformanceModePreference: (preference: 'auto' | 'on' | 'off') =>
     ipcRenderer.invoke("set-performance-mode-preference", preference),
   getRecognitionLanguages: () => ipcRenderer.invoke("get-recognition-languages"),
-  takeScreenshot: () => ipcRenderer.invoke("take-screenshot"),
-  takeSelectiveScreenshot: () => ipcRenderer.invoke("take-selective-screenshot"),
-  getScreenshots: () => ipcRenderer.invoke("get-screenshots"),
-  deleteScreenshot: (path: string) =>
-    ipcRenderer.invoke("delete-screenshot", path),
   logErrorToMain: (payload: {
     type?: string;
     context?: string;
@@ -489,37 +463,6 @@ contextBridge.exposeInMainWorld("electronAPI", {
   // wipes the user's DB file + cached session/credentials and relaunches.
   wipeLocalAccountData: (scope?: 'local' | 'full-delete') => ipcRenderer.invoke('dev:wipe-local-account-data', scope),
 
-  // Event listeners
-  onScreenshotTaken: (
-    callback: (data: { path: string; preview: string }) => void
-  ) => {
-    const subscription = (_: any, data: { path: string; preview: string }) =>
-      callback(data)
-    ipcRenderer.on("screenshot-taken", subscription)
-    return () => {
-      ipcRenderer.removeListener("screenshot-taken", subscription)
-    }
-  },
-  onScreenshotAttached: (
-    callback: (data: { path: string; preview: string }) => void
-  ) => {
-    const subscription = (_: any, data: { path: string; preview: string }) =>
-      callback(data)
-    ipcRenderer.on("screenshot-attached", subscription)
-    return () => {
-      ipcRenderer.removeListener("screenshot-attached", subscription)
-    }
-  },
-  onCaptureAndProcess: (
-    callback: (data: { path: string; preview: string }) => void
-  ) => {
-    const subscription = (_: any, data: { path: string; preview: string }) =>
-      callback(data)
-    ipcRenderer.on("capture-and-process", subscription)
-    return () => {
-      ipcRenderer.removeListener("capture-and-process", subscription)
-    }
-  },
   moveWindowLeft: () => ipcRenderer.invoke("move-window-left"),
   moveWindowRight: () => ipcRenderer.invoke("move-window-right"),
   moveWindowUp: () => ipcRenderer.invoke("move-window-up"),
@@ -806,23 +749,12 @@ contextBridge.exposeInMainWorld("electronAPI", {
   generateDiscovery: () => ipcRenderer.invoke("generate-discovery"), // DISCOVERY MODE
   generateObjectionHandler: () => ipcRenderer.invoke("generate-objection-handler"), // OBJECTION HANDLER MODE
   generateClarify: () => ipcRenderer.invoke("generate-clarify"),
-  generateCodeHint: (imagePaths?: string[], problemStatement?: string) => ipcRenderer.invoke("generate-code-hint", imagePaths, problemStatement),
-  generateBrainstorm: (imagePaths?: string[], problemStatement?: string) => ipcRenderer.invoke("generate-brainstorm", imagePaths, problemStatement),
   generateFollowUp: (intent: string, userRequest?: string) => ipcRenderer.invoke("generate-follow-up", intent, userRequest),
   generateFollowUpQuestions: () => ipcRenderer.invoke("generate-follow-up-questions"),
   generateRecap: () => ipcRenderer.invoke("generate-recap"),
   submitManualQuestion: (question: string) => ipcRenderer.invoke("submit-manual-question", question),
   getIntelligenceContext: () => ipcRenderer.invoke("get-intelligence-context"),
   resetIntelligence: () => ipcRenderer.invoke("reset-intelligence"),
-
-  // Action Button Mode (Dynamic Recap / Brainstorm toggle)
-  getActionButtonMode: () => ipcRenderer.invoke("get-action-button-mode"),
-  setActionButtonMode: (mode: 'recap' | 'brainstorm') => ipcRenderer.invoke("set-action-button-mode", mode),
-  onActionButtonModeChanged: (callback: (mode: 'recap' | 'brainstorm') => void) => {
-    const subscription = (_: any, mode: 'recap' | 'brainstorm') => callback(mode);
-    ipcRenderer.on('action-button-mode-changed', subscription);
-    return () => { ipcRenderer.removeListener('action-button-mode-changed', subscription); };
-  },
 
   // Meeting Lifecycle
   startMeeting: (metadata?: any) => ipcRenderer.invoke("start-meeting", metadata),
@@ -1384,15 +1316,6 @@ contextBridge.exposeInMainWorld("electronAPI", {
     }
   },
 
-  // Global shortcut listener — fired stealthily from main process without focusing the window
-  onGlobalShortcut: (callback: (data: { action: string }) => void) => {
-    const subscription = (_: any, data: { action: string }) => callback(data)
-    ipcRenderer.on('global-shortcut', subscription)
-    return () => {
-      ipcRenderer.removeListener('global-shortcut', subscription)
-    }
-  },
-
   // Profile Engine API
   profileGetStatus: () => ipcRenderer.invoke('profile:get-status'),
   profileSetMode: (enabled: boolean) => ipcRenderer.invoke('profile:set-mode', enabled),
@@ -1454,17 +1377,6 @@ contextBridge.exposeInMainWorld("electronAPI", {
 
   // Arch
   getArch: () => ipcRenderer.invoke('get-arch'),
-
-  // Cropper API
-  cropperConfirmed: (bounds: Electron.Rectangle) => ipcRenderer.send('cropper-confirmed', bounds),
-  cropperCancelled: () => ipcRenderer.send('cropper-cancelled'),
-  onResetCropper: (callback: (data: { hudPosition: { x: number; y: number } }) => void) => {
-    const subscription = (_: Electron.IpcRendererEvent, data: { hudPosition: { x: number; y: number } }) => callback(data)
-    ipcRenderer.on('reset-cropper', subscription)
-    return () => {
-      ipcRenderer.removeListener('reset-cropper', subscription)
-    }
-  },
 
   // ===== Firebase Auth =====
   authSetIdToken: (session: { idToken: string; refreshToken: string; uid: string; email?: string | null; displayName?: string | null; photoURL?: string | null; expiresAt: number }) =>

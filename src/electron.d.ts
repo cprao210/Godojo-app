@@ -113,8 +113,6 @@ export interface ElectronAPI {
   // ===========================================================================
   // Screenshots
   // ===========================================================================
-  getScreenshots: () => Promise<Array<{ path: string; preview: string }>>
-  deleteScreenshot: (path: string) => Promise<{ success: boolean; error?: string }>
   logErrorToMain: (payload: {
     type?: string
     context?: string
@@ -124,11 +122,6 @@ export interface ElectronAPI {
   }) => Promise<{ success: boolean; error?: string }>
   confirmDeleteAccount: (scope?: 'supabase-delete' | 'firebase-delete' | 'local' | 'full-delete') => Promise<{ confirmed: boolean }>,
   wipeLocalAccountData: (scope?: 'local' | 'full-delete') => Promise<{ success: boolean; error?: string }>
-  onScreenshotTaken: (callback: (data: { path: string; preview: string }) => void) => () => void
-  onScreenshotAttached: (callback: (data: { path: string; preview: string }) => void) => () => void
-  onCaptureAndProcess: (callback: (data: { path: string; preview: string }) => void) => () => void
-  takeScreenshot: () => Promise<{ path: string; preview: string }>
-  takeSelectiveScreenshot: () => Promise<{ path: string; preview: string; cancelled?: boolean }>
 
   // ===========================================================================
   // Undetectable / Disguise / Overlay Behavior
@@ -334,8 +327,6 @@ export interface ElectronAPI {
   generateAssist: () => Promise<{ insight: string | null }>
   generateWhatToSay: (question?: string, imagePaths?: string[]) => Promise<{ answer: string | null; question?: string; error?: string }>
   generateClarify: () => Promise<{ clarification: string | null }>
-  generateCodeHint: (imagePaths?: string[], problemStatement?: string) => Promise<{ hint: string | null }>
-  generateBrainstorm: (imagePaths?: string[], problemStatement?: string) => Promise<{ script: string | null }>
   generateFollowUp: (intent: string, userRequest?: string) => Promise<{ refined: string | null; intent: string }>
   generateFollowUpQuestions: () => Promise<{ questions: string | null }>
   generateRecap: () => Promise<{ summary: string | null }>
@@ -345,11 +336,6 @@ export interface ElectronAPI {
   onSuggestionGenerated: (callback: (data: { question: string; suggestion: string; confidence: number }) => void) => () => void
   onSuggestionProcessingStart: (callback: () => void) => () => void
   onSuggestionError: (callback: (error: { error: string }) => void) => () => void
-
-  // Dynamic Action Button Mode
-  getActionButtonMode: () => Promise<'recap' | 'brainstorm'>
-  setActionButtonMode: (mode: 'recap' | 'brainstorm') => Promise<{ success: boolean }>
-  onActionButtonModeChanged: (callback: (mode: 'recap' | 'brainstorm') => void) => () => void
 
   // What Am I Missing
   generateWhatAmIMissing: () => Promise<string | null>
@@ -624,14 +610,6 @@ export interface ElectronAPI {
   setKeybind: (id: string, accelerator: string) => Promise<boolean>
   resetKeybinds: () => Promise<Array<{ id: string; label: string; accelerator: string; isGlobal: boolean; defaultAccelerator: string }>>
   onKeybindsUpdate: (callback: (keybinds: Array<any>) => void) => () => void
-  onGlobalShortcut: (callback: (data: { action: string }) => void) => () => void
-
-  // ===========================================================================
-  // Cropper
-  // ===========================================================================
-  cropperConfirmed: (bounds: { x: number; y: number; width: number; height: number }) => void
-  cropperCancelled: () => void
-  onResetCropper: (callback: (data: { hudPosition: { x: number; y: number } }) => void) => () => void
 
   // ===========================================================================
   // Firebase Auth

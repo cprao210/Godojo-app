@@ -91,8 +91,7 @@ export class MeetingPopupWindowHelper extends EventEmitter {
     /**
      * The event the renderer will ask for via the `meeting-popup:ready`
      * handshake. We do NOT push it on did-finish-load: that can fire before
-     * React has mounted its listener, and the payload would be dropped (the
-     * same latent bug CropperWindowHelper has in its cold-start branch).
+     * React has mounted its listener, and the payload would be dropped.
      */
     private pendingEvent: CalendarEvent | null = null
 

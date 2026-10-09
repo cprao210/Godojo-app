@@ -41,8 +41,6 @@ const HANDLERS_IN_OTHER_FILES = new Set([
   'keybinds:get-all',   // electron/services/KeybindManager.ts
   'keybinds:set',       // electron/services/KeybindManager.ts
   'keybinds:reset',     // electron/services/KeybindManager.ts
-  'cropper-confirmed',  // electron/CropperWindowHelper.ts (ipcMain.on)
-  'cropper-cancelled',  // electron/CropperWindowHelper.ts (ipcMain.on)
 ]);
 
 // Channels with NO handler anywhere — real gaps to fix.
@@ -109,12 +107,6 @@ describe('IPC contract: preload channels vs handler registrations', () => {
   it('critical RAG channels are registered', () => {
     const rag = ['rag:query-meeting', 'rag:query-live', 'rag:query-global', 'rag:cancel-query', 'rag:is-meeting-processed', 'rag:get-queue-status', 'rag:retry-embeddings'];
     for (const ch of rag) {
-      expect(handlerChannels.has(ch), `"${ch}" must be registered`).toBe(true);
-    }
-  });
-
-  it('security-sensitive file operation channels are registered', () => {
-    for (const ch of ['delete-screenshot']) {
       expect(handlerChannels.has(ch), `"${ch}" must be registered`).toBe(true);
     }
   });

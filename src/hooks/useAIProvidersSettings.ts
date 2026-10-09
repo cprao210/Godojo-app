@@ -1,7 +1,7 @@
 // State + business logic for AIProvidersSettings. Split into small,
 // single-purpose sections below (standard providers, custom providers,
 // Ollama, default model) and combined into one hook so the component only
-// owns rendering — same split as useProviderCard / useCropper /
+// owns rendering — same split as useProviderCard /
 // useModelSelectorWindow.
 
 import { useCallback, useEffect, useMemo, useState } from "react";

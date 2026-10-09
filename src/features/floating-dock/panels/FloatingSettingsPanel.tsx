@@ -124,9 +124,7 @@ const PerformanceModeDropdown: React.FC<PerformanceModeDropdownProps> = ({ value
 const mod = isMac ? '⌘' : 'Ctrl';
 const shift = isMac ? '⇧' : 'Shift';
 const SETTINGS_FALLBACKS: Partial<ShortcutConfig> = {
-    takeScreenshot: [mod, 'H'],
     toggleVisibility: [mod, 'B'],
-    selectiveScreenshot: [mod, shift, 'H'],
     toggleMousePassthrough: [mod, shift, 'B'],
 };
 
@@ -229,7 +227,6 @@ export const FloatingSettingsPanel: React.FC<FloatingSettingsPanelProps> = ({
     const [localOpacity, setLocalOpacity] = useState(dockOpacity);
     const [isDragging, setIsDragging] = useState(false);
 
-    const screenshotKeys = shortcuts.takeScreenshot?.length ? shortcuts.takeScreenshot : buildSettingsFallback('takeScreenshot');
     const showHideKeys = shortcuts.toggleVisibility?.length ? shortcuts.toggleVisibility : buildSettingsFallback('toggleVisibility');
     const showClickThroughKeys = shortcuts.toggleMousePassthrough?.length ? shortcuts.toggleMousePassthrough : buildSettingsFallback('toggleMousePassthrough');
 
@@ -389,10 +386,6 @@ export const FloatingSettingsPanel: React.FC<FloatingSettingsPanelProps> = ({
                                 : 'Full visual effects with standard performance and usage.'}
                     </p>
                 </div>
-
-                {/* <SettingRow icon={<Camera size={18} strokeWidth={1.8} />} label="Screenshot" divider>
-                    <KeyBadge keys={screenshotKeys} />
-                </SettingRow> */}
 
                 <SettingRow icon={<Eye size={18} strokeWidth={1.8} />} label="Show / Hide" divider>
                     <KeyBadge keys={showHideKeys} />

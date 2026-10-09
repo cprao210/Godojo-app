@@ -3,7 +3,6 @@ import Groq from "groq-sdk"
 import OpenAI from "openai"
 import Anthropic from "@anthropic-ai/sdk"
 import fs from "fs"
-import sharp from "sharp"
 import { ModelVersionManager, ModelFamily, TextModelFamily } from './services/ModelVersionManager'
 import { MODE_TOKEN_LIMITS } from './llm/types'
 import {
@@ -13,7 +12,7 @@ import {
   CUSTOM_SYSTEM_PROMPT, CUSTOM_ANSWER_PROMPT, CUSTOM_WHAT_TO_ANSWER_PROMPT,
   CUSTOM_RECAP_PROMPT, CUSTOM_FOLLOWUP_PROMPT, CUSTOM_FOLLOW_UP_QUESTIONS_PROMPT, CUSTOM_ASSIST_PROMPT
 } from "./llm/prompts"
-import { deepVariableReplacer, getByPath, injectImageIntoMessages } from './utils/curlUtils';
+import { deepVariableReplacer, getByPath, injectImageIntoMessages, imageMimeTypeFromPath } from './utils/curlUtils';
 import curl2Json from "@bany/curl-to-json";
 import { CustomProvider, CurlProvider } from './services/CredentialsManager';
 import { exec } from 'child_process';
@@ -653,37 +652,17 @@ export class LLMHelper {
   }
 
   /**
-   * NEW: Helper to process image: resize to max 1536px and compress to JPEG 80%
-   * drastically reduces token usage and upload time.
+   * Read an image for a vision request. Images only reach this path when a
+   * caller passes explicit imagePaths (no in-app capture source remains since
+   * the screenshot tools were removed), so it is sent as-is rather than
+   * resized — which also keeps the native `sharp` dependency out of the app.
    */
   private async processImage(path: string): Promise<{ mimeType: string, data: string }> {
-    try {
-      const imageBuffer = await fs.promises.readFile(path);
-
-      // Resize and compress
-      const processedBuffer = await sharp(imageBuffer)
-        .resize({
-          width: 1536,
-          height: 1536,
-          fit: 'inside', // Maintain aspect ratio, max dimension 1536
-          withoutEnlargement: true
-        })
-        .jpeg({ quality: 80 }) // 80% quality JPEG is much smaller than PNG
-        .toBuffer();
-
-      return {
-        mimeType: "image/jpeg",
-        data: processedBuffer.toString("base64")
-      };
-    } catch (error) {
-      console.error("[LLMHelper] Failed to process image with sharp:", error);
-      // Fallback to raw read if sharp fails
-      const data = await fs.promises.readFile(path);
-      return {
-        mimeType: "image/png",
-        data: data.toString("base64")
-      };
-    }
+    const data = await fs.promises.readFile(path);
+    return {
+      mimeType: imageMimeTypeFromPath(path),
+      data: data.toString("base64")
+    };
   }
 
   public setKnowledgeOrchestrator(orchestrator: any): void {

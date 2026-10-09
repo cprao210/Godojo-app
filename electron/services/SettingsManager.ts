@@ -9,7 +9,6 @@ export interface AppSettings {
     isUndetectable?: boolean;
     disguiseMode?: 'terminal' | 'settings' | 'activity' | 'none';
     verboseLogging?: boolean;
-    actionButtonMode?: 'recap' | 'brainstorm';
     /**
      * Start recording automatically when a calendar meeting is about to begin,
      * unless the user cancels the countdown on the reminder card.

@@ -188,7 +188,6 @@
     "@types/react": "^18.3.12",
     "@types/react-dom": "^18.3.1",
     "@types/react-syntax-highlighter": "^15.5.13",
-    "@types/uuid": "^9.0.8",
     "@types/ws": "^8.18.1",
     "@typescript-eslint/eslint-plugin": "^8.14.0",
     "@typescript-eslint/parser": "^8.14.0",
@@ -201,6 +200,7 @@
     "electron-rebuild": "^3.2.9",
     "postcss": "^8.4.49",
     "rimraf": "^6.0.1",
+    "sharp": "^0.33.5",
     "tailwindcss": "^3.4.15",
     "typescript": "^5.6.3",
     "vite": "^5.4.11",
@@ -242,10 +242,8 @@
     "react-query": "^3.39.3",
     "react-syntax-highlighter": "^15.6.1",
     "remark-gfm": "^4.0.1",
-    "sharp": "^0.33.5",
     "sqlite-vec": "^0.1.7-alpha.2",
     "tree-kill": "^1.2.2",
-    "uuid": "^11.0.3",
     "ws": "^8.20.1"
   },
   "optionalDependencies": {

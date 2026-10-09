@@ -51,7 +51,7 @@ import { UpdateBanner } from "./features/updates";
 const App: React.FC = () => {
 
   // --- Window identity -------------------------------------------------
-  const { isSettingsWindow, isLauncherWindow, isOverlayWindow, isModelSelectorWindow, isCropperWindow, isDefault } = useWindowRoute();
+  const { isSettingsWindow, isLauncherWindow, isOverlayWindow, isModelSelectorWindow, isDefault } = useWindowRoute();
 
   // --- Cross-cutting app logic, lifted into hooks -----------------------
 
@@ -213,15 +213,6 @@ const App: React.FC = () => {
 
 
   // --- Render --------------------------------------------------------------
-
-  if (isCropperWindow) {
-    const Cropper = React.lazy(() => import("./features/common/Cropper"));
-    return (
-      <React.Suspense fallback={<div className="w-screen h-screen bg-transparent" />}>
-        <Cropper />
-      </React.Suspense>
-    );
-  }
 
   if (isSettingsWindow) {
     return (

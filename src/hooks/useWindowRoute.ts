@@ -16,15 +16,13 @@ export function useWindowRoute(): WindowRoute {
     const isLauncherWindow = windowParam === "launcher";
     const isOverlayWindow = windowParam === "overlay";
     const isModelSelectorWindow = windowParam === "model-selector";
-    const isCropperWindow = windowParam === "cropper";
-    const isDefault = !isSettingsWindow && !isOverlayWindow && !isModelSelectorWindow && !isCropperWindow;
+    const isDefault = !isSettingsWindow && !isOverlayWindow && !isModelSelectorWindow;
 
     return {
         isSettingsWindow,
         isLauncherWindow,
         isOverlayWindow,
         isModelSelectorWindow,
-        isCropperWindow,
         isDefault,
     };
 }

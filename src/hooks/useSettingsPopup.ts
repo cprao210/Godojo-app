@@ -9,7 +9,6 @@
 import { useEffect, useLayoutEffect, useRef, useState } from 'react';
 import { useShortcuts, useResolvedTheme, useTranscriptVisibility } from '@/hooks';
 
-type ActionButtonMode = 'recap' | 'brainstorm';
 
 export function useSettingsPopup() {
     const { shortcuts } = useShortcuts();
@@ -23,7 +22,6 @@ export function useSettingsPopup() {
     const [hasProfile, setHasProfile] = useState(false);
     const [isPremium, setIsPremium] = useState(false);
     const [hasStoredKey, setHasStoredKey] = useState<Record<string, boolean>>({});
-    const [actionButtonMode, setActionButtonModeState] = useState<ActionButtonMode>('recap');
     const { showTranscript, toggleTranscript } = useTranscriptVisibility();
 
     const isFirstRender = useRef(true);
@@ -130,21 +128,6 @@ export function useSettingsPopup() {
 
     // ── Cross-window transcript toggle sync is handled by useTranscriptVisibility ──
 
-    // ── Load action button mode and subscribe to changes from other windows ─
-    useEffect(() => {
-        // @ts-ignore
-        window.electronAPI?.getActionButtonMode?.()?.then((mode: ActionButtonMode) => {
-            setActionButtonModeState(mode ?? 'recap');
-        }).catch(() => { });
-        // @ts-ignore
-        if (!window.electronAPI?.onActionButtonModeChanged) return;
-        // @ts-ignore
-        const unsubscribe = window.electronAPI.onActionButtonModeChanged((mode: ActionButtonMode) => {
-            setActionButtonModeState(mode);
-        });
-        return () => unsubscribe();
-    }, []);
-
     // ── Auto-resize the Electron popup window to fit the content ────────────
     useLayoutEffect(() => {
         if (!contentRef.current) return;
@@ -181,17 +164,6 @@ export function useSettingsPopup() {
         setUseGroqFastText((v) => !v);
     };
 
-    const toggleInterviewMode = async () => {
-        const newMode: ActionButtonMode = actionButtonMode === 'brainstorm' ? 'recap' : 'brainstorm';
-        setActionButtonModeState(newMode);
-        try {
-            // @ts-ignore
-            await window.electronAPI?.setActionButtonMode?.(newMode);
-        } catch (e) {
-            console.error(e);
-        }
-    };
-
     const toggleProfileMode = async () => {
         if (!isPremium) return;
         const newState = !profileMode;
@@ -215,7 +187,6 @@ export function useSettingsPopup() {
         hasProfile,
         isPremium,
         hasStoredKey,
-        actionButtonMode,
         showTranscript,
         // refs
         contentRef,
@@ -223,7 +194,6 @@ export function useSettingsPopup() {
         toggleUndetectable,
         toggleGroqFastText,
         toggleTranscript,
-        toggleInterviewMode,
         toggleProfileMode,
     };
 }

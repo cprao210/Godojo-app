@@ -171,18 +171,6 @@ export type ResolvedTheme = 'light' | 'dark';
 
 // --- src/hooks/useShortcuts.ts ---
 export interface ShortcutConfig {
-  whatToAnswer: string[];
-  autoAnswerMode: string[];
-  clarify: string[];
-  followUp: string[];
-  dynamicAction4: string[];
-  answer: string[];
-  codeHint: string[];
-  brainstorm: string[];
-  shorten: string[];
-  recap: string[];
-  scrollUp: string[];
-  scrollDown: string[];
   // Window Movement
   moveWindowUp: string[];
   moveWindowDown: string[];
@@ -191,11 +179,6 @@ export interface ShortcutConfig {
   // General
   toggleVisibility: string[];
   toggleMousePassthrough: string[];
-  processScreenshots: string[];
-  captureAndProcess: string[];
-  resetCancel: string[];
-  takeScreenshot: string[];
-  selectiveScreenshot: string[];
 }
 
 // --- src/hooks/useTeamInvite.ts ---
@@ -220,7 +203,6 @@ export interface WindowRoute {
   isLauncherWindow: boolean;
   isOverlayWindow: boolean;
   isModelSelectorWindow: boolean;
-  isCropperWindow: boolean;
   /** No `?window=` param, or an unrecognized one — treated as the launcher (dev-mode safety). */
   isDefault: boolean;
 }
@@ -1884,27 +1866,6 @@ export interface LauncherProps {
 }
 
 // --- src/features/common/GodojoInterface.tsx ---
-
-export interface GodojoInterfaceMessage {
-  id: string;
-  role: 'user' | 'system' | 'client';
-  text: string;
-  isStreaming?: boolean;
-  hasScreenshot?: boolean;
-  screenshotPreview?: string;
-  isCode?: boolean;
-  intent?: string;
-  isNegotiationCoaching?: boolean;
-  negotiationCoachingData?: {
-    tacticalNote: string;
-    exactScript: string;
-    showSilenceTimer: boolean;
-    phase: string;
-    theirOffer: number | null;
-    yourTarget: number | null;
-    currency: string;
-  };
-}
 
 export interface GodojoInterfaceProps {
   onEndMeeting?: (meetingTypes?: ('discovery' | 'demo' | 'negotiation')[]) => void;

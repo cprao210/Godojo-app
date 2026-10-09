@@ -373,10 +373,8 @@ import { initializeIpcHandlers } from "./ipcHandlers"
 import { WindowHelper, initRendererUrl } from "./WindowHelper"
 import { SettingsWindowHelper } from "./SettingsWindowHelper"
 import { ModelSelectorWindowHelper } from "./ModelSelectorWindowHelper"
-import { CropperWindowHelper } from "./CropperWindowHelper"
 import { MeetingPopupWindowHelper } from "./MeetingPopupWindowHelper"
 import { meetingPerformanceSampler } from "./services/MeetingPerformanceSampler"
-import { ScreenshotHelper } from "./ScreenshotHelper"
 import { KeybindManager } from "./services/KeybindManager"
 import { ProcessingHelper } from "./ProcessingHelper"
 
@@ -417,20 +415,6 @@ type STTProvider = (GoogleSTT | RestSTT | DeepgramStreamingSTT | SonioxStreaming
   notifySpeechEnded?: () => void;
 };
 
-type ScreenshotWindowMode = 'launcher' | 'overlay';
-type ScreenshotCaptureKind = 'full' | 'selective';
-
-interface ScreenshotCaptureSession {
-  captureKind: ScreenshotCaptureKind;
-  wasMainWindowVisible: boolean;
-  windowMode: ScreenshotWindowMode;
-  wasSettingsVisible: boolean;
-  wasModelSelectorVisible: boolean;
-  overlayBounds: Electron.Rectangle | null;
-  overlayDisplayId: number | null;
-  restoreWithoutFocus: boolean;
-}
-
 // Premium: Knowledge modules loaded conditionally
 let KnowledgeOrchestratorClass: any = null;
 let KnowledgeDatabaseManagerClass: any = null;
@@ -455,9 +439,7 @@ export class AppState {
   private windowHelper: WindowHelper
   public settingsWindowHelper: SettingsWindowHelper
   public modelSelectorWindowHelper: ModelSelectorWindowHelper
-  public cropperWindowHelper: CropperWindowHelper
   public meetingPopupWindowHelper: MeetingPopupWindowHelper
-  private screenshotHelper: ScreenshotHelper
   public processingHelper: ProcessingHelper
 
   private intelligenceManager: IntelligenceManager
@@ -488,8 +470,6 @@ export class AppState {
   private _pendingLiveAnalysisGeneration: number | null = null;
   private speakerNameMap: { user: string, client: string };
 
-  // View management
-  private view: "queue" | "solutions" = "queue"
   // Overwritten unconditionally in the constructor below (which reads the
   // persisted setting with an app.isPackaged-based default) — this field
   // default only matters for the brief window before the constructor runs.
@@ -509,7 +489,6 @@ export class AppState {
   private _dockDebounceTimer: NodeJS.Timeout | null = null; // Debounce dock state changes
   private _dockReassertTimers: NodeJS.Timeout[] = []; // Re-assert dock-hidden state after show+focus
   private _ollamaBootstrapPromise: Promise<void> | null = null;
-  private screenshotCaptureInProgress: boolean = false;
 
 
   constructor() {
@@ -534,7 +513,6 @@ export class AppState {
     this.windowHelper = new WindowHelper(this)
     this.settingsWindowHelper = new SettingsWindowHelper()
     this.modelSelectorWindowHelper = new ModelSelectorWindowHelper()
-    this.cropperWindowHelper = new CropperWindowHelper()
     this.meetingPopupWindowHelper = new MeetingPopupWindowHelper()
     // The popup refuses to auto-start while a meeting is already running, but
     // it must not import AppState to find that out (require cycle).
@@ -545,30 +523,13 @@ export class AppState {
     })
 
     // 3. Initialize other helpers
-    this.screenshotHelper = new ScreenshotHelper(this.view)
     this.processingHelper = new ProcessingHelper(this)
 
     this.windowHelper.setContentProtection(this.isUndetectable);
     this.settingsWindowHelper.setContentProtection(this.isUndetectable);
     this.modelSelectorWindowHelper.setContentProtection(this.isUndetectable);
-    this.cropperWindowHelper.setContentProtection(this.isUndetectable);
     this.meetingPopupWindowHelper.setContentProtection(this.isUndetectable);
 
-    // The cropper pre-creation is a full hidden renderer (whole app bundle,
-    // spanning every display), so it no longer competes with the launcher:
-    //   - <=8 GB RAM: not pre-created at all — showCropper() creates it on
-    //     first use (the same cold path Linux always takes) and then keeps it
-    //     hidden for reuse. Same rule as the overlay/settings/popup windows.
-    //   - otherwise: pre-created via the deferred startup queue, so later
-    //     screenshots are still instant. If the user screenshots first,
-    //     preload() sees the live window and does nothing.
-    if (process.platform === 'win32' || process.platform === 'darwin') {
-      if (isLowMemoryMachine(readTotalRamGB(nodeOs.totalmem()))) {
-        console.log('[Main] Low-memory machine — cropper window will be created on first use');
-      } else {
-        scheduleDeferredStartupTask('cropper-preload', () => this.cropperWindowHelper.preload());
-      }
-    }
 
     // Initialize KeybindManager
     const keybindManager = KeybindManager.getInstance();
@@ -586,79 +547,6 @@ export class AppState {
         } else if (actionId === 'general:toggle-mouse-passthrough') {
           // Adapted from public PR #113 — verify premium interaction
           this.toggleOverlayMousePassthrough();
-        } else if (actionId === 'general:take-screenshot') {
-          const screenshotPath = await this.takeScreenshot(false);
-          const preview = await this.getImagePreview(screenshotPath);
-          const mainWindow = this.getMainWindow();
-          if (mainWindow) {
-            mainWindow.webContents.send("screenshot-taken", {
-              path: screenshotPath,
-              preview
-            });
-          }
-        } else if (actionId === 'general:selective-screenshot') {
-          const screenshotPath = await this.takeSelectiveScreenshot(false);
-          const preview = await this.getImagePreview(screenshotPath);
-          const mainWindow = this.getMainWindow();
-          if (mainWindow) {
-            // preload.ts maps 'screenshot-attached' to onScreenshotAttached
-            mainWindow.webContents.send("screenshot-attached", {
-              path: screenshotPath,
-              preview
-            });
-          }
-        } else if (actionId === 'general:capture-and-process') {
-          // Single-trigger: capture current screen then immediately request AI analysis
-          const screenshotPath = await this.takeScreenshot(false);
-          const preview = await this.getImagePreview(screenshotPath);
-          // Ensure the window is visible so the user can see the response without stealing focus
-          this.showMainWindow(true);
-          // win.focus() can cause macOS to re-activate the app. Re-hide the dock
-          // if we are in undetectable mode.
-          if (process.platform === 'darwin' && this.isUndetectable) {
-            app.dock.hide();
-          }
-          const mainWindow = this.getMainWindow();
-          if (mainWindow) {
-            mainWindow.webContents.send("capture-and-process", {
-              path: screenshotPath,
-              preview
-            });
-          }
-
-          // --- STEALTH SHORTCUTS: no focus, no show, pure IPC dispatch ---
-
-          // Chat actions — fire into the renderer without focusing the window
-        } else if (
-          actionId === 'chat:whatToAnswer' ||
-          actionId === 'chat:clarify' ||
-          actionId === 'chat:followUp' ||
-          actionId === 'chat:answer' ||
-          actionId === 'chat:codeHint' ||
-          actionId === 'chat:brainstorm' ||
-          actionId === 'chat:dynamicAction4' ||
-          actionId === 'chat:scrollUp' ||
-          actionId === 'chat:scrollDown'
-        ) {
-          const actionMap: Record<string, string> = {
-            'chat:whatToAnswer': 'whatToAnswer',
-            'chat:clarify': 'clarify',
-            'chat:followUp': 'followUp',
-            'chat:answer': 'answer',
-            'chat:codeHint': 'codeHint',
-            'chat:brainstorm': 'brainstorm',
-            'chat:dynamicAction4': 'dynamicAction4',
-            'chat:scrollUp': 'scrollUp',
-            'chat:scrollDown': 'scrollDown',
-          };
-          const action = actionMap[actionId];
-          // Send to all windows without focusing — stealth operation
-          const allWindows = BrowserWindow.getAllWindows();
-          allWindows.forEach(win => {
-            if (!win.isDestroyed()) {
-              win.webContents.send('global-shortcut', { action });
-            }
-          });
 
           // Window movement — move window position without focus change
         } else if (actionId === 'window:move-up') {
@@ -669,27 +557,9 @@ export class AppState {
           this.windowHelper.moveWindowLeft();
         } else if (actionId === 'window:move-right') {
           this.windowHelper.moveWindowRight();
-
-          // General actions that are now global (stealth)
-        } else if (actionId === 'general:process-screenshots') {
-          const allWindows = BrowserWindow.getAllWindows();
-          allWindows.forEach(win => {
-            if (!win.isDestroyed()) {
-              win.webContents.send('global-shortcut', { action: 'processScreenshots' });
-            }
-          });
-        } else if (actionId === 'general:reset-cancel') {
-          const allWindows = BrowserWindow.getAllWindows();
-          allWindows.forEach(win => {
-            if (!win.isDestroyed()) {
-              win.webContents.send('global-shortcut', { action: 'resetCancel' });
-            }
-          });
         }
       } catch (e: any) {
-        if (e.message !== "Selection cancelled" && e.message !== "Screenshot capture already in progress") {
-          console.error(`[Main] Error handling global shortcut ${actionId}:`, e);
-        }
+        console.error(`[Main] Error handling global shortcut ${actionId}:`, e);
       }
     });
 
@@ -4673,29 +4543,8 @@ export class AppState {
     return this.knowledgeOrchestrator;
   }
 
-  public getView(): "queue" | "solutions" {
-    return this.view
-  }
-
-  public setView(view: "queue" | "solutions"): void {
-    this.view = view
-    this.screenshotHelper.setView(view)
-  }
-
   public isVisible(): boolean {
     return this.windowHelper.isVisible()
-  }
-
-  public getScreenshotHelper(): ScreenshotHelper {
-    return this.screenshotHelper
-  }
-
-  public getScreenshotQueue(): string[] {
-    return this.screenshotHelper.getScreenshotQueue()
-  }
-
-  public getExtraScreenshotQueue(): string[] {
-    return this.screenshotHelper.getExtraScreenshotQueue()
   }
 
   public getSpeakerNameMap(): { user: string; client: string } {
@@ -4742,13 +4591,6 @@ export class AppState {
   }
 
   public toggleMainWindow(): void {
-    console.log(
-      "Screenshots: ",
-      this.screenshotHelper.getScreenshotQueue().length,
-      "Extra screenshots: ",
-      this.screenshotHelper.getExtraScreenshotQueue().length
-    )
-
     const mode = this.windowHelper.getCurrentWindowMode();
 
     if (mode === 'launcher') {
@@ -4765,155 +4607,6 @@ export class AppState {
 
   public setWindowDimensions(width: number, height: number): void {
     this.windowHelper.setWindowDimensions(width, height)
-  }
-
-  public clearQueues(): void {
-    this.screenshotHelper.clearQueues()
-
-    // Reset view to initial state
-    this.setView("queue")
-  }
-
-  private createScreenshotCaptureSession(
-    captureKind: ScreenshotCaptureKind,
-    restoreFocus: boolean
-  ): ScreenshotCaptureSession {
-    const settingsWindow = this.settingsWindowHelper.getSettingsWindow();
-    const modelSelectorWindow = this.modelSelectorWindowHelper.getWindow();
-
-    return {
-      captureKind,
-      wasMainWindowVisible: this.windowHelper.isVisible(),
-      windowMode: this.windowHelper.getCurrentWindowMode(),
-      wasSettingsVisible: !!settingsWindow && !settingsWindow.isDestroyed() && settingsWindow.isVisible(),
-      wasModelSelectorVisible: !!modelSelectorWindow && !modelSelectorWindow.isDestroyed() && modelSelectorWindow.isVisible(),
-      overlayBounds: this.windowHelper.getLastOverlayBounds(),
-      overlayDisplayId: this.windowHelper.getLastOverlayDisplayId(),
-      restoreWithoutFocus: process.platform === 'darwin' || !restoreFocus
-    };
-  }
-
-  private getDisplayById(displayId: number | null): Electron.Display | undefined {
-    if (displayId === null) return undefined;
-    return screen.getAllDisplays().find(display => display.id === displayId);
-  }
-
-  private getTargetDisplayForFullScreenshot(session: ScreenshotCaptureSession): Electron.Display {
-    if (session.windowMode === 'overlay' && session.overlayBounds) {
-      return screen.getDisplayMatching(session.overlayBounds);
-    }
-
-    const lastOverlayDisplay = this.getDisplayById(session.overlayDisplayId);
-    if (lastOverlayDisplay) {
-      return lastOverlayDisplay;
-    }
-
-    return screen.getDisplayNearestPoint(screen.getCursorScreenPoint());
-  }
-
-  private hideWindowsForScreenshot(session: ScreenshotCaptureSession): void {
-    if (session.wasModelSelectorVisible) {
-      this.modelSelectorWindowHelper.hideWindow();
-    }
-
-    if (session.wasSettingsVisible) {
-      this.settingsWindowHelper.closeWindow();
-    }
-
-    if (session.wasMainWindowVisible) {
-      this.hideMainWindow();
-    }
-  }
-
-  private restoreWindowsAfterScreenshot(session: ScreenshotCaptureSession): void {
-    const activate = !session.restoreWithoutFocus;
-    const shouldRestoreMainWindow = session.wasMainWindowVisible;
-
-    if (shouldRestoreMainWindow) {
-      if (session.windowMode === 'overlay') {
-        this.windowHelper.switchToOverlay(!activate);
-      } else {
-        this.windowHelper.switchToLauncher(!activate);
-      }
-    }
-
-    if (session.wasSettingsVisible) {
-      const settingsWindow = this.settingsWindowHelper.getSettingsWindow();
-      if (settingsWindow && !settingsWindow.isDestroyed()) {
-        const { x, y } = settingsWindow.getBounds();
-        this.settingsWindowHelper.showWindow(x, y, { activate });
-      }
-    }
-
-    if (session.wasModelSelectorVisible) {
-      const modelSelectorWindow = this.modelSelectorWindowHelper.getWindow();
-      if (modelSelectorWindow && !modelSelectorWindow.isDestroyed()) {
-        const { x, y } = modelSelectorWindow.getBounds();
-        this.modelSelectorWindowHelper.showWindow(x, y, { activate });
-      }
-    }
-  }
-
-  private async withScreenshotCaptureSession<T>(
-    captureKind: ScreenshotCaptureKind,
-    restoreFocus: boolean,
-    capture: (session: ScreenshotCaptureSession) => Promise<T>
-  ): Promise<T> {
-    if (!this.getMainWindow()) {
-      throw new Error("No main window available");
-    }
-
-    if (this.screenshotCaptureInProgress) {
-      throw new Error("Screenshot capture already in progress");
-    }
-
-    const session = this.createScreenshotCaptureSession(captureKind, restoreFocus);
-    this.screenshotCaptureInProgress = true;
-
-    try {
-      this.hideWindowsForScreenshot(session);
-      await new Promise(resolve => setTimeout(resolve, 50));
-      return await capture(session);
-    } finally {
-      try {
-        this.restoreWindowsAfterScreenshot(session);
-      } finally {
-        this.screenshotCaptureInProgress = false;
-      }
-    }
-  }
-
-  // Screenshot management methods
-  public async takeScreenshot(restoreFocus: boolean = true): Promise<string> {
-    return this.withScreenshotCaptureSession('full', restoreFocus, (session) =>
-      this.screenshotHelper.takeScreenshot(this.getTargetDisplayForFullScreenshot(session))
-    )
-  }
-
-  public async takeSelectiveScreenshot(restoreFocus: boolean = true): Promise<string> {
-    return this.withScreenshotCaptureSession('selective', restoreFocus, async () => {
-      let captureArea: Electron.Rectangle | undefined;
-
-      if (process.platform === 'win32' || process.platform === 'darwin') {
-        captureArea = await this.cropperWindowHelper.showCropper();
-
-        if (!captureArea) {
-          throw new Error("Selection cancelled");
-        }
-      }
-
-      return this.screenshotHelper.takeSelectiveScreenshot(captureArea)
-    })
-  }
-
-  public async getImagePreview(filepath: string): Promise<string> {
-    return this.screenshotHelper.getImagePreview(filepath)
-  }
-
-  public async deleteScreenshot(
-    path: string
-  ): Promise<{ success: boolean; error?: string }> {
-    return this.screenshotHelper.deleteScreenshot(path)
   }
 
   // New methods to move the window
@@ -4994,9 +4687,6 @@ export class AppState {
     const isPaused = this.isMeetingPaused;
 
     const keybindManager = KeybindManager.getInstance();
-    const screenshotAccel = keybindManager.getKeybind('general:take-screenshot') || 'CommandOrControl+H';
-
-    console.log('[Main] updateTrayMenu called. Screenshot Accelerator:', screenshotAccel);
 
     // Update tooltip for verification
     this.tray.setToolTip('Godojo.ai');
@@ -5011,8 +4701,6 @@ export class AppState {
         .replace(/\+/g, '+');
     };
 
-    const displayScreenshot = formatAccel(screenshotAccel);
-    // We can also get the toggle visibility shortcut if desired
     const toggleKb = keybindManager.getKeybind('general:toggle-visibility');
     const toggleAccel = toggleKb || 'CommandOrControl+B';
     const displayToggle = formatAccel(toggleAccel);
@@ -5035,28 +4723,6 @@ export class AppState {
         label: `Toggle Window (${displayToggle})`,
         click: () => {
           this.toggleMainWindow()
-        }
-      },
-      {
-        type: 'separator'
-      },
-      {
-        label: `Take Screenshot (${displayScreenshot})`,
-        accelerator: screenshotAccel,
-        click: async () => {
-          try {
-            const screenshotPath = await this.takeScreenshot()
-            const preview = await this.getImagePreview(screenshotPath)
-            const mainWindow = this.getMainWindow()
-            if (mainWindow) {
-              mainWindow.webContents.send("screenshot-taken", {
-                path: screenshotPath,
-                preview
-              })
-            }
-          } catch (error) {
-            console.error("Error taking screenshot from tray:", error)
-          }
         }
       },
       {
@@ -5092,7 +4758,6 @@ export class AppState {
     this.windowHelper.setContentProtection(state)
     this.settingsWindowHelper.setContentProtection(state)
     this.modelSelectorWindowHelper.setContentProtection(state)
-    this.cropperWindowHelper.setContentProtection(state)
     this.meetingPopupWindowHelper.setContentProtection(state)
 
     // Persist state via SettingsManager
@@ -5804,7 +5469,7 @@ async function initializeApp() {
   // Launch-time perf samples (15 s / 60 s / 180 s) for "slow to open" reports.
   meetingPerformanceSampler.startStartupSampling()
 
-  // Non-critical startup work (catalog refresh, cropper pre-create, cloud
+  // Non-critical startup work (catalog refresh, cloud
   // backfill + sync audit) starts only now that the launcher exists, after a
   // settle delay, one task at a time. See utils/deferredStartup.ts.
   releaseDeferredStartupTasks()
@@ -6069,12 +5734,6 @@ async function initializeApp() {
     try { DatabaseManager.getInstance().close(); } catch { /* best-effort */ }
     console.log("App is quitting, cleaning up resources...");
     appState.setQuitting(true);
-
-    // Dispose CropperWindowHelper to clean up IPC listeners and prevent memory leaks
-    // This is critical to prevent resource leaks and ensure proper cleanup
-    if (appState?.cropperWindowHelper) {
-      appState.cropperWindowHelper.dispose();
-    }
 
     // Kill Ollama if we started it
     OllamaManager.getInstance().stop();

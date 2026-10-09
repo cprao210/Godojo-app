@@ -303,69 +303,6 @@ export function initializeIpcHandlers(appState: AppState): void {
   })
 
 
-  safeHandle("delete-screenshot", async (event, filePath: string) => {
-    // Guard: only allow deletion of files within the app's own userData directory
-    const userDataDir = app.getPath('userData');
-    const resolved = path.resolve(filePath);
-    if (!resolved.startsWith(userDataDir + path.sep)) {
-      console.warn('[IPC] delete-screenshot: path outside userData rejected:', filePath);
-      return { success: false, error: 'Path not allowed' };
-    }
-    return appState.deleteScreenshot(resolved);
-  })
-
-  safeHandle("take-screenshot", async () => {
-    try {
-      const screenshotPath = await appState.takeScreenshot()
-      const preview = await appState.getImagePreview(screenshotPath)
-      return { path: screenshotPath, preview }
-    } catch (error) {
-      console.error("Error taking screenshot:", error)
-      throw error
-    }
-  })
-
-  safeHandle("take-selective-screenshot", async () => {
-    try {
-      const screenshotPath = await appState.takeSelectiveScreenshot()
-      const preview = await appState.getImagePreview(screenshotPath)
-      return { path: screenshotPath, preview }
-    } catch (error) {
-      // EC-04 fix: cast unknown error to Error before accessing .message
-      if ((error as Error).message === "Selection cancelled") {
-        return { cancelled: true }
-      }
-      throw error
-    }
-  })
-
-  safeHandle("get-screenshots", async () => {
-    // console.log({ view: appState.getView() })
-    try {
-      let previews = []
-      if (appState.getView() === "queue") {
-        previews = await Promise.all(
-          appState.getScreenshotQueue().map(async (path) => ({
-            path,
-            preview: await appState.getImagePreview(path)
-          }))
-        )
-      } else {
-        previews = await Promise.all(
-          appState.getExtraScreenshotQueue().map(async (path) => ({
-            path,
-            preview: await appState.getImagePreview(path)
-          }))
-        )
-      }
-      // previews.forEach((preview: any) => console.log(preview.path))
-      return previews
-    } catch (error) {
-      // console.error("Error getting screenshots:", error)
-      throw error
-    }
-  })
-
   safeHandle("toggle-window", async () => {
     appState.toggleMainWindow()
   })
@@ -397,17 +334,6 @@ export function initializeIpcHandlers(appState: AppState): void {
   // the live transcript. Returns null outside an active meeting.
   safeHandle("get-meeting-metadata", async () => {
     return appState.getIntelligenceManager().getMeetingMetadata() ?? null;
-  })
-
-  safeHandle("reset-queues", async () => {
-    try {
-      appState.clearQueues()
-      // console.log("Screenshot queues have been cleared.")
-      return { success: true }
-    } catch (error: any) {
-      // console.error("Error resetting queues:", error)
-      return { success: false, error: error.message }
-    }
   })
 
   safeHandle("finalize-mic-stt", async () => {
@@ -649,7 +575,7 @@ export function initializeIpcHandlers(appState: AppState): void {
 
   // The renderer's answer to a 'run-upload-analysis' request. ipcMain.on, not
   // handle: main is the one waiting on a reply here, not the renderer, so this
-  // is the reply leg of a main→renderer request (same shape as the cropper's).
+  // is the reply leg of a main→renderer request.
   ipcMain.on('upload-analysis-result', (_event, payload) => {
     handleUploadAnalysisResult(payload);
   });
@@ -2377,50 +2303,6 @@ export function initializeIpcHandlers(appState: AppState): void {
     }
   });
 
-  safeHandle("generate-code-hint", async (_, imagePaths?: string[], problemStatement?: string) => {
-    try {
-      // If no explicit images were passed from the frontend, fall back to the
-      // screenshot queue so the AI can always "see" the user's screen.
-      const resolvedImagePaths: string[] =
-        imagePaths && imagePaths.length > 0
-          ? imagePaths
-          : appState.getScreenshotQueue();
-
-      console.log(`[IPC] generate-code-hint: using ${resolvedImagePaths.length} image(s) (${imagePaths?.length ? 'explicit' : 'queue fallback'})`);
-
-      const intelligenceManager = appState.getIntelligenceManager();
-      const hint = await intelligenceManager.runCodeHint(
-        resolvedImagePaths.length > 0 ? resolvedImagePaths : undefined,
-        problemStatement
-      );
-      return { hint };
-    } catch (error: any) {
-      throw error;
-    }
-  });
-
-  safeHandle("generate-brainstorm", async (_, imagePaths?: string[], problemStatement?: string) => {
-    try {
-      // If no explicit images were passed from the frontend, fall back to the
-      // screenshot queue so the AI can always "see" the user's screen.
-      const resolvedImagePaths: string[] =
-        imagePaths && imagePaths.length > 0
-          ? imagePaths
-          : appState.getScreenshotQueue();
-
-      console.log(`[IPC] generate-brainstorm: using ${resolvedImagePaths.length} image(s) (${imagePaths?.length ? 'explicit' : 'queue fallback'})`);
-
-      const intelligenceManager = appState.getIntelligenceManager();
-      const script = await intelligenceManager.runBrainstorm(
-        resolvedImagePaths.length > 0 ? resolvedImagePaths : undefined,
-        problemStatement
-      );
-      return { script };
-    } catch (error: any) {
-      throw error;
-    }
-  });
-
   // Auto-start meetings from the calendar reminder countdown.
   // Defaults to ON — see AppSettings.autoStartMeetings.
   safeHandle("get-auto-start-meetings", () => {
@@ -2435,27 +2317,6 @@ export function initializeIpcHandlers(appState: AppState): void {
     BrowserWindow.getAllWindows().forEach(win => {
       if (!win.isDestroyed()) {
         win.webContents.send('auto-start-meetings-changed', enabled);
-      }
-    });
-
-    return { success: true };
-  });
-
-  // Dynamic Action Button Mode (Recap vs Brainstorm)
-  safeHandle("get-action-button-mode", () => {
-    const { SettingsManager } = require('./services/SettingsManager');
-    const sm = SettingsManager.getInstance();
-    return sm.get('actionButtonMode') ?? 'recap';
-  });
-
-  safeHandle("set-action-button-mode", (_, mode: 'recap' | 'brainstorm') => {
-    const { SettingsManager } = require('./services/SettingsManager');
-    const sm = SettingsManager.getInstance();
-    sm.set('actionButtonMode', mode);
-
-    BrowserWindow.getAllWindows().forEach(win => {
-      if (!win.isDestroyed()) {
-        win.webContents.send('action-button-mode-changed', mode);
       }
     });
 

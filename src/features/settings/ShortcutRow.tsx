@@ -11,7 +11,7 @@ interface ShortcutRowProps {
 }
 
 // One row = icon + label + a row of keycap badges showing the shortcut.
-// Used by "Show/Hide" and "Screenshot" — both display-only, no toggle state.
+// Used by the "Show/Hide" row — display-only, no toggle state.
 const ShortcutRow: React.FC<ShortcutRowProps> = ({ icon, label, keys, labelInactiveClass, hoverClass, shortcutKeyClass }) => (
     <div className={`flex items-center justify-between px-3 py-2 rounded-lg transition-colors duration-200 group interaction-base interaction-press ${hoverClass}`}>
         <div className="flex items-center gap-3">
