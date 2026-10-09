@@ -27,7 +27,7 @@
   "build": {
     "generateUpdatesFilesForAllChannels": true,
     "appId": "com.electron.meeting-notes",
-    "afterPack": "./scripts/ad-hoc-sign.js",
+    "afterPack": "./scripts/after-pack.js",
     "productName": "GoDojo AI",
     "protocols": [
       {
@@ -158,7 +158,8 @@
         "!dist-electron/**/*.map",
         "!**/node_modules/**/*.map",
         "!**/node_modules/onnxruntime-node/bin/napi-v3/darwin/**",
-        "!**/node_modules/onnxruntime-node/bin/napi-v3/linux/**"
+        "!**/node_modules/onnxruntime-node/bin/napi-v3/linux/**",
+        "!**/node_modules/onnxruntime-node/bin/napi-v3/win32/arm64/**"
       ]
     },
     "linux": {

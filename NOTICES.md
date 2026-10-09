@@ -17,6 +17,10 @@ crate metadata in a source checkout, or contact legal@godojo.ai.
 - **Electron** — MIT License. Copyright (c) Electron contributors / OpenJS Foundation.
 - **Chromium** — BSD-style License. Copyright The Chromium Authors.
 - **Node.js** — MIT License.
+- **Microsoft Visual C++ Runtime** (`msvcp140.dll`, `vcruntime140.dll`,
+  `vcruntime140_1.dll`, Windows builds only) — redistributed app-locally under
+  the Microsoft Visual Studio redistributable license terms; required by
+  ONNX Runtime. Copyright (c) Microsoft Corporation.
 
 ## Bundled machine-learning models
 
@@ -30,10 +34,8 @@ crate metadata in a source checkout, or contact legal@godojo.ai.
 ## Data & storage
 
 - **better-sqlite3** — MIT License.
-- **sqlite3** — BSD-3-Clause.
 - **SQLite** (bundled engine) — Public Domain.
 - **sqlite-vec** — Apache-2.0 / MIT (dual-licensed).
-- **keytar** — MIT License.
 
 ## AI provider SDKs (client libraries; used with user-supplied API keys)
 
@@ -42,12 +44,10 @@ crate metadata in a source checkout, or contact legal@godojo.ai.
 - **@google/genai**, **@google-cloud/speech** — Apache-2.0.
 - **groq-sdk** — Apache-2.0.
 - **@deepgram/sdk** — MIT License.
-- **@elevenlabs/client**, **@elevenlabs/elevenlabs-js** — MIT License.
 
-## Media / imaging / OCR
+## Media / imaging
 
-- **sharp** (libvips bindings) — Apache-2.0.
-- **tesseract.js** — Apache-2.0.
+- **sharp** (libvips bindings, used by Transformers.js) — Apache-2.0.
 
 ## Updates
 
@@ -59,8 +59,8 @@ Licensed under MIT and/or Apache-2.0 unless noted:
 
 - **napi-rs** (napi, napi-derive) — MIT License.
 - **cpal** — Apache-2.0.
-- **ringbuf**, **rubato**, **once_cell**, **anyhow**, **rand**, **sha2**,
-  **serde_json**, **reqwest**, **tracing**, **machine-uid** — MIT / Apache-2.0.
+- **ringbuf**, **rubato**, **once_cell**, **anyhow**, **rand**,
+  **serde_json**, **tracing** — MIT / Apache-2.0.
 - **webrtc-vad**, **webrtc-audio-processing** — BSD-3-Clause (upstream WebRTC).
 - **cidre** (macOS system framework bindings) — MIT / Apache-2.0.
 - **wasapi**, **windows** (Windows audio/system bindings) — MIT / Apache-2.0.
