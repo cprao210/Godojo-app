@@ -130,8 +130,7 @@
         {
           "target": "nsis",
           "arch": [
-            "x64",
-            "ia32"
+            "x64"
           ]
         },
         {
@@ -234,7 +233,6 @@
   "license": "UNLICENSED",
   "devDependencies": {
     "@electron/notarize": "^3.1.1",
-    "@electron/rebuild": "^4.0.3",
     "@napi-rs/cli": "^3.5.1",
     "@radix-ui/react-toast": "^1.2.2",
     "@types/better-sqlite3": "^7.6.13",
@@ -253,7 +251,6 @@
     "cross-env": "^7.0.3",
     "electron": "^33.2.0",
     "electron-builder": "^26.8.1",
-    "electron-rebuild": "^3.2.9",
     "firebase": "^10.13.2",
     "framer-motion": "^12.29.2",
     "jspdf": "^4.0.0",

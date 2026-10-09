@@ -331,7 +331,7 @@ jobs:
 
   # ─── Windows: .exe installer (nsis) + portable ───────────────────────────────
   build-windows:
-    name: Build Windows (x64 + ia32)
+    name: Build Windows (x64)
     runs-on: windows-latest
     needs: resolve-platform
     if: needs.resolve-platform.outputs.platform == 'all' || needs.resolve-platform.outputs.platform == 'windows'
