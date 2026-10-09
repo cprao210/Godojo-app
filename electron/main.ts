@@ -2617,10 +2617,6 @@ export class AppState {
     helper.getLauncherWindow()?.webContents.send('native-audio-transcript', payload);
     helper.getOverlayWindow()?.webContents.send('native-audio-transcript', payload);
 
-    // Feed final recruiter (system audio) transcripts to negotiation tracker
-    if (segment.isFinal && speaker === 'client') {
-      this.knowledgeOrchestrator?.feedInterviewerUtterance?.(segment.text);
-    }
   }
 
   private async setupSystemAudioPipeline(inputDeviceId?: string, outputDeviceId?: string): Promise<void> {
@@ -3292,7 +3288,7 @@ export class AppState {
     };
 
     // System-audio probe, wired alongside the mic test so Settings → Audio can
-    // verify the interviewer-audio path BEFORE a meeting starts. Runs
+    // verify the system-audio path BEFORE a meeting starts. Runs
     // independently: a screen-recording denial reports itself and leaves the
     // mic meter working.
     const attachSystemTestListeners = (capture: SystemAudioCapture) => {

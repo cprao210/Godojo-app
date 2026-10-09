@@ -22,7 +22,7 @@ export function useGodojoInterface({ overlayOpacity = OVERLAY_OPACITY_DEFAULT }:
     const [isExpanded, setIsExpanded] = useState(true);
     const { shortcuts, isShortcutPressed } = useShortcuts();
     const [showTranscript, setShowTranscript] = useState(() => {
-        const stored = localStorage.getItem('godojo_interviewer_transcript');
+        const stored = localStorage.getItem('godojo_show_transcript');
         return stored !== 'false';
     });
     const [isMeetingPaused, setIsMeetingPaused] = useState(false);
@@ -131,7 +131,7 @@ export function useGodojoInterface({ overlayOpacity = OVERLAY_OPACITY_DEFAULT }:
     // Sync transcript setting
     useEffect(() => {
         const handleStorage = () => {
-            const stored = localStorage.getItem('godojo_interviewer_transcript');
+            const stored = localStorage.getItem('godojo_show_transcript');
             setShowTranscript(stored !== 'false');
         };
         window.addEventListener('storage', handleStorage);

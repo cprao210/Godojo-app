@@ -1,6 +1,6 @@
 // electron/llm/transcriptCleaner.ts
 // Deterministic transcript cleaner - NO LLM calls
-// Fast string-based processing for interview copilot
+// Fast string-based processing for the live-call copilot
 
 export interface TranscriptTurn {
     role: 'client' | 'user' | 'assistant';

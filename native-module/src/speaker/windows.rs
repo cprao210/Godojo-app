@@ -63,7 +63,7 @@ fn find_device_by_id(direction: &Direction, device_id: &str) -> Option<wasapi::D
 ///
 /// Owned by the capture thread and REPLACED IN PLACE when the render endpoint
 /// moves. Everything here is bound to a single endpoint at initialize time —
-/// which is exactly why plugging in a headset used to kill interviewer audio
+/// which is exactly why plugging in a headset used to kill system audio
 /// until the meeting was paused and resumed: the client kept happily reading
 /// from an endpoint nothing was playing to any more.
 struct LoopbackSession {

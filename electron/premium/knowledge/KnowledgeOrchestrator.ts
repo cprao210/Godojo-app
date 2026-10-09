@@ -32,8 +32,6 @@
  *   orchestrator.ingestDocument(params)
  *   orchestrator.deleteDocumentsByType(type)
  *   orchestrator.processQuestion(message)
- *   orchestrator.feedForDepthScoring(message)
- *   orchestrator.feedInterviewerUtterance(text) // optional, no-op for company mode
  */
 
 import type { KnowledgeDatabaseManager, CompanyKnowledgeSnapshot } from './KnowledgeDatabaseManager';
@@ -53,18 +51,11 @@ interface IndexedChunk {
 // ─── processQuestion return shape (matches LLMHelper expectations) ─────────────
 
 export interface KnowledgeResult {
-    /** When present, LLMHelper short-circuits and returns this directly */
-    isIntroQuestion?: boolean;
-    introResponse?: string;
-
     /** Splice into the system prompt when knowledge mode is on */
     systemPromptInjection?: string;
 
     /** Prepend to the user-visible context block */
     contextBlock?: string;
-
-    /** Negotiation coaching response (not used in company mode) */
-    liveNegotiationResponse?: string | null;
 }
 
 // ─── ingestDocument params ────────────────────────────────────────────────────
@@ -283,29 +274,11 @@ export class KnowledgeOrchestrator {
             return {
                 systemPromptInjection: KNOWLEDGE_MODE_SYSTEM_PROMPT,
                 contextBlock,
-                liveNegotiationResponse: null,
             };
         } catch (err: any) {
             console.warn('[KnowledgeOrchestrator] processQuestion failed:', err.message);
             return null;
         }
-    }
-
-    /**
-     * Feed a message to the depth scorer. In this company-mode orchestrator,
-     * depth scoring is not implemented — this is a no-op that satisfies the
-     * interface expected by LLMHelper.
-     */
-    public feedForDepthScoring(_message: string): void {
-        // No-op in company knowledge mode.
-    }
-
-    /**
-     * Feed an interviewer/prospect utterance. No-op in company mode —
-     * this interface exists for the recruiter/interview version of the orchestrator.
-     */
-    public feedInterviewerUtterance(_text: string): void {
-        // No-op in company knowledge mode.
     }
 
     // ─── Private helpers ──────────────────────────────────────────────────────

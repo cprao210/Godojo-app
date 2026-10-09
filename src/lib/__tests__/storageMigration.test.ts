@@ -12,6 +12,21 @@ class MemoryStorage implements Storage {
 }
 
 describe('migrateLegacyStorageKeys', () => {
+    it('renames the transcript-visibility key from either old name', () => {
+        const a = new MemoryStorage();
+        a.setItem('godojo_interviewer_transcript', 'false');
+        migrateLegacyStorageKeys(a);
+        expect(a.getItem('godojo_show_transcript')).toBe('false');
+        expect(a.getItem('godojo_interviewer_transcript')).toBeNull();
+
+        const b = new MemoryStorage();
+        b.setItem('natively_interviewer_transcript', 'false');
+        migrateLegacyStorageKeys(b);
+        expect(b.getItem('godojo_show_transcript')).toBe('false');
+        expect(b.getItem('natively_interviewer_transcript')).toBeNull();
+        expect(b.getItem('godojo_interviewer_transcript')).toBeNull();
+    });
+
     it('moves every natively_* key to godojo_* and removes the old one', () => {
         const s = new MemoryStorage();
         s.setItem('natively_resolved_theme', 'light');

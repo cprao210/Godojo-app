@@ -7,7 +7,7 @@
 //
 // Rule (mirrors AppState._dispatchTranscript):
 //   - user turns        → names.user
-//   - client/interviewer
+//   - client (or 'interviewer' in transcripts saved by older versions)
 //     + 2+ distinct far-end indices seen → `${clientDiarized} · Speaker N`
 //       (clientDiarized is the company-only / generic base set by
 //        SessionTracker — "Raksham", "Other Party" — never a full name, so

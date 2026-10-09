@@ -1,6 +1,6 @@
 // macOS TCC (Transparency, Consent and Control) permission helpers.
 //
-// System/interviewer audio on macOS is captured by the Rust native module via
+// System audio (the other side of the call) on macOS is captured by the Rust native module via
 // a CoreAudio Process Tap (macOS 14.4+) with a ScreenCaptureKit fallback. BOTH
 // sit behind kTCCServiceScreenCapture — the "Screen Recording" toggle — so the
 // app must resolve that permission before it constructs a SystemAudioCapture.
@@ -266,12 +266,12 @@ export function formatPermissionMessage(reason: PermissionReason, extra?: { devi
   switch (reason) {
     case 'screen-recording-denied':
       return isMac
-        ? 'Screen Recording permission denied. Interviewer audio will not be captured. Enable it in System Settings → Privacy & Security → Screen Recording, then restart GoDojo AI.'
-        : 'System audio capture is unavailable. Interviewer audio will not be captured. Check your audio device routing in Settings and restart the meeting.';
+        ? 'Screen Recording permission denied. The other side of the call will not be captured. Enable it in System Settings → Privacy & Security → Screen Recording, then restart GoDojo AI.'
+        : 'System audio capture is unavailable. The other side of the call will not be captured. Check your audio device routing in Settings and restart the meeting.';
 
     case 'mac-screen-recording-restricted':
       if (!isMac) return formatPermissionMessage('system-audio-stuck');
-      return 'Screen Recording is restricted by device policy. Interviewer audio will not be captured. Contact your administrator to allow screen capture for GoDojo AI.';
+      return 'Screen Recording is restricted by device policy. The other side of the call will not be captured. Contact your administrator to allow screen capture for GoDojo AI.';
 
     case 'mac-screen-recording-revoked-rebuild':
       // Defence in depth: all call sites are darwin-gated (see the `mac-`

@@ -873,7 +873,7 @@ export class IntelligenceEngine extends EventEmitter {
 
             const rawContext = this.session.getFormattedContext(180);
             // If no transcript yet, use a generic prompt — the LLM will ask a scoping question
-            const context = rawContext || '[No transcript available yet. The candidate just joined the interview. Generate an opening clarifying question to understand the scope and constraints of the upcoming problem.]';
+            const context = rawContext || '[No transcript available yet. The call has just started. Generate an opening clarifying question to understand the scope and constraints of the upcoming problem.]';
 
             const generationId = ++this.currentGenerationId;
             let fullClarification = "";

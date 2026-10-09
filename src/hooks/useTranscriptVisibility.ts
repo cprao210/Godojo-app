@@ -4,7 +4,7 @@
 
 import { useEffect, useState } from 'react';
 
-const STORAGE_KEY = 'godojo_interviewer_transcript';
+const STORAGE_KEY = 'godojo_show_transcript';
 
 export function useTranscriptVisibility() {
     const [showTranscript, setShowTranscriptState] = useState(() => {

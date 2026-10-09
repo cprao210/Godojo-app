@@ -15,10 +15,10 @@ export type ConversationIntent =
     | 'clarification'      // "Can you explain that?"
     | 'follow_up'          // "What happened next?"
     | 'deep_dive'          // "Tell me more about X"
-    | 'behavioral'         // "Give me an example of..."
+    | 'proof_request'      // "Do you have customers like us?" / case studies / references
     | 'example_request'    // "Can you give a concrete example?"
     | 'summary_probe'      // "So to summarize..."
-    | 'coding'             // "Write code for X" or implementation questions
+    | 'technical'          // Integrations, API, security/compliance, deployment
     | 'general';           // Default fallback
 
 export interface IntentResult {
@@ -35,10 +35,10 @@ const INTENT_ANSWER_SHAPES: Record<ConversationIntent, string> = {
     clarification: 'Give a direct, focused 1-2 sentence clarification. No setup, no context-setting.',
     follow_up: 'Continue the narrative naturally. 1-2 sentences. No recap of what was already said.',
     deep_dive: 'Provide a structured but concise explanation. Use concrete specifics, not abstract concepts.',
-    behavioral: 'Lead with a specific example or story. Use the STAR pattern implicitly. Focus on actions and outcomes.',
+    proof_request: 'Lead with the most relevant customer story or proof point from the provided context (similar industry, size or use case) and the outcome it achieved. Never invent customer names or numbers; if none are in context, say so and offer to follow up with a reference or case study.',
     example_request: 'Provide ONE concrete, detailed example. Make it realistic and specific.',
     summary_probe: 'Confirm the summary briefly and add one clarifying point if needed.',
-    coding: 'Provide a FULL, complete, working and production-ready code implementation (including necessary boilerplate like Java imports/classes). Start with a brief approach description, then the fully runnable code block, then a concise explanation of why this approach works.',
+    technical: 'Answer the technical question in plain, confident language the rep can say aloud: what is supported and how it works, in 2-3 sentences. Only state capabilities found in the provided context; if the detail is not there, say so and offer to bring in a solutions engineer or send documentation.',
     general: 'Respond naturally based on context. Keep it conversational and direct.'
 };
 
@@ -54,10 +54,10 @@ const ZERO_SHOT_LABELS: Record<string, ConversationIntent> = {
     'asking for clarification or explanation': 'clarification',
     'asking about what happened next or follow-up': 'follow_up',
     'requesting more detail or deeper explanation': 'deep_dive',
-    'asking for a personal experience or behavioral example': 'behavioral',
+    'asking for customer proof, references or case studies': 'proof_request',
     'requesting a concrete example or instance': 'example_request',
     'summarizing or confirming understanding': 'summary_probe',
-    'asking about code, programming, or implementation': 'coding',
+    'asking a technical, security or integration question': 'technical',
     'general conversation or question': 'general',
 };
 
@@ -266,9 +266,9 @@ function detectIntentByPattern(lastClientTurn: string): IntentResult | null {
         return { intent: 'deep_dive', confidence: 0.85, answerShape: INTENT_ANSWER_SHAPES.deep_dive };
     }
 
-    // Behavioral patterns
-    if (/(give me an example|tell me about a time|describe a situation|when have you|share an experience)/i.test(text)) {
-        return { intent: 'behavioral', confidence: 0.9, answerShape: INTENT_ANSWER_SHAPES.behavioral };
+    // Proof / social-proof patterns
+    if (/(case stud|customers like (us|ours)|companies like (us|ours)|anyone (else )?like us|who else (uses|is using)|\breferences?\b|success stor|track record|similar (companies|customers|teams)|other customers in)/i.test(text)) {
+        return { intent: 'proof_request', confidence: 0.9, answerShape: INTENT_ANSWER_SHAPES.proof_request };
     }
 
     // Example request patterns
@@ -281,9 +281,9 @@ function detectIntentByPattern(lastClientTurn: string): IntentResult | null {
         return { intent: 'summary_probe', confidence: 0.85, answerShape: INTENT_ANSWER_SHAPES.summary_probe };
     }
 
-    // Coding patterns (Broad detection for programming/implementation)
-    if (/(write code|program|implement|function for|algorithm|how to code|setup a .* project|using .* library|debug this|snippet|boilerplate|example of .* in .*|optimize|refactor|best practice for .* code|utility method|component for|logic for)/i.test(text)) {
-        return { intent: 'coding', confidence: 0.9, answerShape: INTENT_ANSWER_SHAPES.coding };
+    // Technical / integration / security patterns
+    if (/(integrat|\bapis?\b|\bsso\b|single sign|\bsaml\b|soc ?2|\bgdpr\b|\bhipaa\b|iso ?27001|encrypt|data residency|where is (the|our) data|on-?prem|self-?host|architecture|tech stack|webhook|sandbox|uptime|\bsla\b|works with|connect (to|with))/i.test(text)) {
+        return { intent: 'technical', confidence: 0.9, answerShape: INTENT_ANSWER_SHAPES.technical };
     }
 
     return null; // No clear pattern detected

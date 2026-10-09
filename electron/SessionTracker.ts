@@ -270,7 +270,7 @@ export class SessionTracker {
 
     /**
      * Attempt to extract an opposite-party name from a meeting title.
-     * Handles common patterns like "Meeting with John Doe" or "John Doe - Interview".
+     * Handles common patterns like "Meeting with John Doe" or "John Doe - Intro Call".
      */
     private extractNameFromTitle(title: string): string | null {
         const patterns = [
