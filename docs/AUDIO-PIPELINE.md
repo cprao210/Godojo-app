@@ -597,7 +597,6 @@ synchronously — they're about to be replaced anyway.
    With diarization, a `· Speaker N` suffix is appended — but **only after a
    second speaker has actually been seen**, so ordinary 1:1 calls look unchanged
 4. send `native-audio-transcript` IPC to the launcher window *and* the overlay
-5. client finals only: `knowledgeOrchestrator.feedInterviewerUtterance(...)`
 
 > **`words` never crosses IPC.** The payload deliberately omits `segment.words`.
 > This stream runs at 10+ messages a second and word arrays would dominate the

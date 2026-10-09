@@ -5,6 +5,7 @@ import { autoUpdater } from "electron-updater"
 import * as nodeOs from "node:os"
 import { isLowEndMachine, isLowMemoryMachine, readTotalRamGB } from "../utils/performanceClassification"
 import { releaseDeferredStartupTasks, scheduleDeferredStartupTask } from "./utils/deferredStartup"
+import { removeLegacyScreenshotDirs } from "./utils/legacyScreenshotCleanup"
 import { waitForMeetingProcessingEnd } from "./utils/meetingProcessingProgress"
 import { onLLMUsage } from "./utils/llmUsageBus"
 
@@ -5171,6 +5172,10 @@ async function initializeApp() {
   } catch (e) {
     console.warn('[Main] Model catalog wiring failed (non-fatal):', e);
   }
+
+  // Delete screenshot folders left by the removed screenshot tools (no-op once gone).
+  scheduleDeferredStartupTask('legacy-screenshot-cleanup', () =>
+    removeLegacyScreenshotDirs(app.getPath('userData')));
 
   // 3a. Initialize cloud sync stack: Firebase Auth identity restore + Supabase client.
   //     The renderer's trySilentRestore() owns the actual refresh-token exchange
