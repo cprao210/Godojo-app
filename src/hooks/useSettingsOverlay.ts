@@ -13,7 +13,7 @@
 //   useTavilySettings               — Tavily key (company research)
 //   useCompanyContextSettings       — lifted state for <CompanyContextTab>
 //   useCalendarIntegrationSettings  — Google/Zoom calendar connect status
-//   useTranscriptVisibility         — shared with useSettingsPopup
+//   useTranscriptVisibility         — "show transcript" toggle (synced across windows)
 
 import { useEffect, useRef, useState } from 'react';
 import { useShortcuts } from './useShortcuts';
@@ -113,7 +113,6 @@ export function useSettingsOverlay({ isOpen, onClose, initialTab = 'general' }: 
         setIsAiLangDropdownOpen,
         aiLangDropdownRef,
 
-        // shared with SettingsPopup
         showTranscript,
         toggleTranscript,
 

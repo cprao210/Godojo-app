@@ -716,7 +716,6 @@ export class WindowHelper {
       if (this.launcherWindow) {
         const bounds = this.launcherWindow.getBounds()
         this.launcherPosition = { x: bounds.x, y: bounds.y }
-        this.appState.settingsWindowHelper.reposition(bounds)
       }
     })
 
@@ -724,7 +723,6 @@ export class WindowHelper {
       if (this.launcherWindow) {
         const bounds = this.launcherWindow.getBounds()
         this.launcherSize = { width: bounds.width, height: bounds.height }
-        this.appState.settingsWindowHelper.reposition(bounds)
       }
     })
 

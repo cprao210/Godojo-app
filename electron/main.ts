@@ -371,7 +371,6 @@ console.error = (...args: any[]) => {
 
 import { initializeIpcHandlers } from "./ipcHandlers"
 import { WindowHelper, initRendererUrl } from "./WindowHelper"
-import { SettingsWindowHelper } from "./SettingsWindowHelper"
 import { ModelSelectorWindowHelper } from "./ModelSelectorWindowHelper"
 import { MeetingPopupWindowHelper } from "./MeetingPopupWindowHelper"
 import { meetingPerformanceSampler } from "./services/MeetingPerformanceSampler"
@@ -437,7 +436,6 @@ export class AppState {
   private static instance: AppState | null = null
 
   private windowHelper: WindowHelper
-  public settingsWindowHelper: SettingsWindowHelper
   public modelSelectorWindowHelper: ModelSelectorWindowHelper
   public meetingPopupWindowHelper: MeetingPopupWindowHelper
   public processingHelper: ProcessingHelper
@@ -511,7 +509,6 @@ export class AppState {
 
     // 2. Initialize Helpers with loaded state
     this.windowHelper = new WindowHelper(this)
-    this.settingsWindowHelper = new SettingsWindowHelper()
     this.modelSelectorWindowHelper = new ModelSelectorWindowHelper()
     this.meetingPopupWindowHelper = new MeetingPopupWindowHelper()
     // The popup refuses to auto-start while a meeting is already running, but
@@ -526,7 +523,6 @@ export class AppState {
     this.processingHelper = new ProcessingHelper(this)
 
     this.windowHelper.setContentProtection(this.isUndetectable);
-    this.settingsWindowHelper.setContentProtection(this.isUndetectable);
     this.modelSelectorWindowHelper.setContentProtection(this.isUndetectable);
     this.meetingPopupWindowHelper.setContentProtection(this.isUndetectable);
 
@@ -564,7 +560,6 @@ export class AppState {
     });
 
     // Inject WindowHelper into other helpers
-    this.settingsWindowHelper.setWindowHelper(this.windowHelper);
     this.modelSelectorWindowHelper.setWindowHelper(this.windowHelper);
 
 
@@ -3263,7 +3258,6 @@ export class AppState {
 
     const broadcastTargets = (): BrowserWindow[] =>
       [
-        this.settingsWindowHelper.getSettingsWindow(),
         this.getWindowHelper().getLauncherWindow(),
         this.getWindowHelper().getOverlayWindow(),
       ].filter((win): win is BrowserWindow => !!win && !win.isDestroyed());
@@ -4756,7 +4750,6 @@ export class AppState {
 
     this.isUndetectable = state
     this.windowHelper.setContentProtection(state)
-    this.settingsWindowHelper.setContentProtection(state)
     this.modelSelectorWindowHelper.setContentProtection(state)
     this.meetingPopupWindowHelper.setContentProtection(state)
 
@@ -4794,19 +4787,11 @@ export class AppState {
         // if the user toggled again before the timer fired.
         const settled = this.isUndetectable;
 
-        const activeWindow = this.windowHelper.getMainWindow();
-        const settingsWindow = this.settingsWindowHelper.getSettingsWindow();
-        let targetFocusWindow = activeWindow;
-        if (settingsWindow && !settingsWindow.isDestroyed() && settingsWindow.isVisible()) {
-          targetFocusWindow = settingsWindow;
-        }
+        const targetFocusWindow = this.windowHelper.getMainWindow();
 
         const modelSelectorWindow = this.modelSelectorWindowHelper.getWindow();
         const isModelSelectorVisible = modelSelectorWindow && !modelSelectorWindow.isDestroyed() && modelSelectorWindow.isVisible();
 
-        if (targetFocusWindow && targetFocusWindow === settingsWindow) {
-          this.settingsWindowHelper.setIgnoreBlur(true);
-        }
         if (isModelSelectorVisible) {
           this.modelSelectorWindowHelper.setIgnoreBlur(true);
         }
@@ -4839,9 +4824,6 @@ export class AppState {
           // Do NOT call focus() — let the user's current app retain focus
         }
 
-        if (targetFocusWindow && targetFocusWindow === settingsWindow) {
-          setTimeout(() => { this.settingsWindowHelper.setIgnoreBlur(false); }, 500);
-        }
         if (isModelSelectorVisible) {
           setTimeout(() => { this.modelSelectorWindowHelper.setIgnoreBlur(false); }, 500);
         }
@@ -4998,7 +4980,6 @@ export class AppState {
         // Windows/Linux: Update all window icons
         this.windowHelper.getLauncherWindow()?.setIcon(image);
         this.windowHelper.getOverlayWindow()?.setIcon(image);
-        this.settingsWindowHelper.getSettingsWindow()?.setIcon(image);
       }
     } else {
       console.warn(`[AppState] Disguise icon not found: ${iconPath}`);
@@ -5015,12 +4996,6 @@ export class AppState {
     if (overlay && !overlay.isDestroyed()) {
       overlay.setTitle(appName.trim());
       overlay.webContents.send('disguise-changed', mode);
-    }
-
-    const settingsWin = this.settingsWindowHelper.getSettingsWindow();
-    if (settingsWin && !settingsWin.isDestroyed()) {
-      settingsWin.setTitle(appName.trim());
-      settingsWin.webContents.send('disguise-changed', mode);
     }
 
     // Cancel any stale forceUpdate timeouts from previous disguise changes
@@ -5052,7 +5027,6 @@ export class AppState {
       this.windowHelper.getMainWindow(),
       this.windowHelper.getLauncherWindow(),
       this.windowHelper.getOverlayWindow(),
-      this.settingsWindowHelper.getSettingsWindow(),
       this.modelSelectorWindowHelper.getWindow(),
     ];
     const sent = new Set<number>();
@@ -5592,9 +5566,6 @@ async function initializeApp() {
 
   // Register global shortcuts using KeybindManager
   KeybindManager.getInstance().registerGlobalShortcuts()
-
-  // Pre-create settings window in background for faster first open
-  appState.settingsWindowHelper.preloadWindow()
 
   // Calendar reminders (Google + Zoom)
   //

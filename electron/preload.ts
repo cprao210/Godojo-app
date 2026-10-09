@@ -207,7 +207,6 @@ interface ElectronAPI {
   updateSpeakerNames: (names: { user: string; client: string }) => Promise<{ success: boolean }>,
 
   // Settings Window
-  toggleSettingsWindow: (coords?: { x: number; y: number }) => Promise<void>
 
   // Team invite deep link (godojo://invite?token=...)
   onInviteDeepLink: (callback: (data: { token: string }) => void) => () => void
@@ -346,7 +345,6 @@ interface ElectronAPI {
   // Global shortcut events (stealth: fired even when window is not focused)
 
   // Profile Engine API
-  profileGetStatus: () => Promise<{ hasProfile: boolean; profileMode: boolean; name?: string; role?: string; totalExperienceYears?: number }>;
   profileSetMode: (enabled: boolean) => Promise<{ success: boolean; error?: string }>;
 
   // Company Context API
@@ -569,14 +567,6 @@ contextBridge.exposeInMainWorld("electronAPI", {
   },
   getDisplayName: (role: 'user' | 'client' | 'assistant') => ipcRenderer.invoke("get-display-name", role),
   getSpeakerNames: () => ipcRenderer.invoke("get-speaker-names"),
-
-  onSettingsVisibilityChange: (callback: (isVisible: boolean) => void) => {
-    const subscription = (_: any, isVisible: boolean) => callback(isVisible)
-    ipcRenderer.on("settings-visibility-changed", subscription)
-    return () => {
-      ipcRenderer.removeListener("settings-visibility-changed", subscription)
-    }
-  },
 
   onToggleExpand: (callback: () => void) => {
     const subscription = () => callback()
@@ -984,7 +974,6 @@ contextBridge.exposeInMainWorld("electronAPI", {
   forceRestartOllama: () => ipcRenderer.invoke('force-restart-ollama'),
 
   // Settings Window
-  toggleSettingsWindow: (coords?: { x: number; y: number }) => ipcRenderer.invoke('toggle-settings-window', coords),
 
   // Team invite deep link
   onInviteDeepLink: (callback: (data: { token: string }) => void) => {
@@ -1317,7 +1306,6 @@ contextBridge.exposeInMainWorld("electronAPI", {
   },
 
   // Profile Engine API
-  profileGetStatus: () => ipcRenderer.invoke('profile:get-status'),
   profileSetMode: (enabled: boolean) => ipcRenderer.invoke('profile:set-mode', enabled),
 
   // Company Context API
@@ -1357,9 +1345,6 @@ contextBridge.exposeInMainWorld("electronAPI", {
   setProviderPreferredModel: (provider: 'gemini' | 'groq' | 'openai' | 'claude', modelId: string) => ipcRenderer.invoke('set-provider-preferred-model', provider, modelId),
   // Live model-catalog snapshot (live /models cache > seeds) for dropdowns
   getModelCatalog: () => ipcRenderer.invoke('model-catalog:get'),
-
-  // License Management
-  licenseCheckPremium: () => ipcRenderer.invoke('license:check-premium'),
 
   // Overlay Opacity (Stealth Mode)
   setOverlayOpacity: (opacity: number) => ipcRenderer.invoke('set-overlay-opacity', opacity),

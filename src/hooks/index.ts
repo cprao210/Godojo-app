@@ -48,7 +48,6 @@ import { useCreateTeamModal } from "./useCreateTeamModal";
 import { useInviteUserModal, EMAIL_RE } from "./useInviteUserModal";
 import { useRowActionsMenu } from "./useRowActionsMenu";
 import { useMembersTable, MEMBERS_PAGE_SIZE, TABLE_GRID_COLS, avatarColorFor } from "./useMembersTable";
-import { useSettingsPopup } from "./useSettingsPopup";
 import { useGeneralSettings } from "./useGeneralSettings";
 import { useOverlayOpacitySettings } from "./useOverlayOpacitySettings";
 import { useAudioDeviceSettings } from "./useAudioDeviceSettings";
@@ -138,7 +137,6 @@ export {
     avatarColorFor,
     useMembersTable,
     MEMBERS_PAGE_SIZE, TABLE_GRID_COLS, EMAIL_RE,
-    useSettingsPopup,
     useCompanyContext, ALLOWED_EXTENSIONS, MAX_FILE_SIZE_BYTES, ASSET_CONFIG, STATUS_BADGE, normalizeContext,
     useGeneralSettings,
     useOverlayOpacitySettings,

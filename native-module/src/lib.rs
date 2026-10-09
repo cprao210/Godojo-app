@@ -17,7 +17,6 @@ pub mod apm_shim;
 pub mod audio_config;
 pub mod echo_align;
 pub mod echo_control;
-pub mod license;
 pub mod log_gate;
 pub mod microphone;
 pub mod output_route;

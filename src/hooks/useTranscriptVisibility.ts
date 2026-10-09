@@ -1,8 +1,6 @@
 // "Show meeting transcript" toggle. Lives in localStorage (not electronAPI)
 // because it's a same-machine, all-windows UI preference — every window
-// reads/writes the same key and syncs via the `storage` event. Shared by
-// SettingsPopup and SettingsOverlay, which both exposed this exact toggle
-// independently before.
+// reads/writes the same key and syncs via the `storage` event.
 
 import { useEffect, useState } from 'react';
 

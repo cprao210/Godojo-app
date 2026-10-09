@@ -23,7 +23,7 @@ import { ManagerDashboard } from "@/features/dashboard";
 import { CompanySelectModal } from "@/features/meetings";
 import { applyCompanyToCaches } from "@/lib/companyAssociation";
 import { InviteAccountMismatchBanner, TeamInviteNotification, InviteAcceptedNotifier } from "@/features/tenant";
-import { SettingsPopup, SettingsOverlay } from "@/features/settings"; // Keeping for legacy/specific window support if needed
+import { SettingsOverlay } from "@/features/settings";
 import { StartupSequence } from "@/features/onboarding";
 import { BirdLoader } from "@/features/ui/BirdLoader";
 // import UpdateBanner from "../features/updates/UpdateBanner";
@@ -51,7 +51,7 @@ import { UpdateBanner } from "./features/updates";
 const App: React.FC = () => {
 
   // --- Window identity -------------------------------------------------
-  const { isSettingsWindow, isLauncherWindow, isOverlayWindow, isModelSelectorWindow, isDefault } = useWindowRoute();
+  const { isLauncherWindow, isOverlayWindow, isModelSelectorWindow, isDefault } = useWindowRoute();
 
   // --- Cross-cutting app logic, lifted into hooks -----------------------
 
@@ -213,22 +213,6 @@ const App: React.FC = () => {
 
 
   // --- Render --------------------------------------------------------------
-
-  if (isSettingsWindow) {
-    return (
-      <ErrorBoundary context="SettingsPopup">
-        <div className="h-full min-h-0 w-full">
-          <QueryClientProvider client={queryClient}>
-            <ToastProvider>
-              <SettingsPopup />
-              <ToastViewport />
-              <DocumentViewerHost />
-            </ToastProvider>
-          </QueryClientProvider>
-        </div>
-      </ErrorBoundary>
-    );
-  }
 
   if (isModelSelectorWindow) {
     return (

@@ -27,8 +27,6 @@ export interface OutputRouteInfo {
 }
 
 export interface NativeModule {
-  getHardwareId(): string;
-  verifyGumroadKey(licenseKey: string): Promise<string>;
   getInputDevices(): Array<AudioDeviceInfo>;
   getOutputDevices(): Array<AudioDeviceInfo>;
   /**
@@ -82,7 +80,7 @@ export interface NativeModule {
   };
 }
 
-const REQUIRED_METHODS = ['getHardwareId', 'verifyGumroadKey', 'getInputDevices', 'getOutputDevices'];
+const REQUIRED_METHODS = ['getInputDevices', 'getOutputDevices'];
 const REQUIRED_CONSTRUCTORS = ['SystemAudioCapture', 'MicrophoneCapture'];
 
 /**

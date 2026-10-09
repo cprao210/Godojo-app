@@ -29,7 +29,6 @@
  *   orchestrator.isKnowledgeMode()
  *   orchestrator.hydrate(snapshot)
  *   orchestrator.getContext()
- *   orchestrator.getStatus()
  *   orchestrator.ingestDocument(params)
  *   orchestrator.deleteDocumentsByType(type)
  *   orchestrator.processQuestion(message)
@@ -180,20 +179,6 @@ export class KnowledgeOrchestrator {
      */
     public getContext(): CompanyKnowledgeSnapshot | null {
         return this.snapshot;
-    }
-
-    // ─── Status (legacy shape for profile:get-status) ──
-
-    public getStatus(): {
-        hasResume: boolean;
-        activeMode: boolean;
-        resumeSummary: null;
-    } {
-        return {
-            hasResume: !!(this.snapshot?.identity?.name),
-            activeMode: this.knowledgeModeActive,
-            resumeSummary: null,
-        };
     }
 
     // ─── Document ingestion ───────────────────────────────────────────────────

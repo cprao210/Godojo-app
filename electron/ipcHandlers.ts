@@ -199,15 +199,6 @@ export function initializeIpcHandlers(appState: AppState): void {
     return { success: false, error: 'test-release-fetch is dev-only' };
   });
 
-  safeHandle("license:check-premium", async () => {
-    try {
-      const { LicenseManager } = require('../premium/electron/services/LicenseManager');
-      return LicenseManager.getInstance().isPremium();
-    } catch {
-      return false;
-    }
-  });
-
   safeHandle("get-recognition-languages", async () => {
     return RECOGNITION_LANGUAGES;
   });
@@ -252,7 +243,6 @@ export function initializeIpcHandlers(appState: AppState): void {
       if (!width || !height) return
 
       const senderWebContents = event.sender
-      const settingsWin = appState.settingsWindowHelper.getSettingsWindow()
       const overlayWin = appState.getWindowHelper().getOverlayWindow()
       const launcherWin = appState.getWindowHelper().getLauncherWindow()
 
@@ -262,8 +252,6 @@ export function initializeIpcHandlers(appState: AppState): void {
         // One popup window per connected display can report this — the
         // helper applies whichever height it gets to every copy of the card.
         appState.meetingPopupWindowHelper.setWindowDimensions(width, height)
-      } else if (settingsWin && !settingsWin.isDestroyed() && settingsWin.webContents.id === senderWebContents.id) {
-        appState.settingsWindowHelper.setWindowDimensions(settingsWin, width, height)
       } else if (
         overlayWin && !overlayWin.isDestroyed() && overlayWin.webContents.id === senderWebContents.id
       ) {
@@ -734,15 +722,6 @@ export function initializeIpcHandlers(appState: AppState): void {
   safeHandle("window-is-maximized", async () => {
     return appState.getWindowHelper().isMainWindowMaximized();
   });
-
-  // Settings Window
-  safeHandle("toggle-settings-window", (event, { x, y } = {}) => {
-    appState.settingsWindowHelper.toggleWindow(x, y)
-  })
-
-  safeHandle("close-settings-window", () => {
-    appState.settingsWindowHelper.closeWindow()
-  })
 
 
 
@@ -3820,26 +3799,6 @@ export function initializeIpcHandlers(appState: AppState): void {
   // ==========================================
   // Profile Engine IPC Handlers
   // ==========================================
-
-  safeHandle("profile:get-status", async () => {
-    try {
-      const orchestrator = appState.getKnowledgeOrchestrator();
-      if (!orchestrator) {
-        return { hasProfile: false, profileMode: false };
-      }
-      // Map new KnowledgeStatus back to legacy UI shape temporarily
-      const status = orchestrator.getStatus();
-      return {
-        hasProfile: status.hasResume,
-        profileMode: status.activeMode,
-        name: status.resumeSummary?.name,
-        role: status.resumeSummary?.role,
-        totalExperienceYears: status.resumeSummary?.totalExperienceYears
-      };
-    } catch (error: any) {
-      return { hasProfile: false, profileMode: false };
-    }
-  });
 
   safeHandle("profile:set-mode", async (_, enabled: boolean) => {
     try {

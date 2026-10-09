@@ -156,9 +156,6 @@ export interface ElectronAPI {
   // ===========================================================================
   // Settings & Advanced Settings Windows
   // ===========================================================================
-  onSettingsVisibilityChange: (callback: (isVisible: boolean) => void) => () => void
-  toggleSettingsWindow: (coords?: { x: number; y: number }) => Promise<void>
-  closeSettingsWindow: () => Promise<void>
   toggleAdvancedSettings: () => Promise<void>
   closeAdvancedSettings: () => Promise<void>
   onInviteDeepLink: (callback: (data: { token: string }) => void) => () => void
@@ -543,7 +540,6 @@ export interface ElectronAPI {
   // ===========================================================================
   // Profile Engine (company-knowledge mode)
   // ===========================================================================
-  profileGetStatus: () => Promise<{ hasProfile: boolean; profileMode: boolean; name?: string; role?: string; totalExperienceYears?: number }>
   profileSetMode: (enabled: boolean) => Promise<{ success: boolean; error?: string }>
 
   // ===========================================================================
@@ -669,11 +665,6 @@ export interface ElectronAPI {
   }>
   supabaseForceBackfill: () => Promise<{ success: boolean; error?: string }>
   supabaseSyncAudit: () => Promise<{ success: boolean; error?: string }>
-
-  // ===========================================================================
-  // License Management
-  // ===========================================================================
-  licenseCheckPremium: () => Promise<boolean>
 
   // ===========================================================================
   // Demo / Seed Data

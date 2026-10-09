@@ -199,7 +199,6 @@ export interface TenantState {
 
 // --- src/hooks/useWindowRoute.ts ---
 export interface WindowRoute {
-  isSettingsWindow: boolean;
   isLauncherWindow: boolean;
   isOverlayWindow: boolean;
   isModelSelectorWindow: boolean;
@@ -2401,14 +2400,6 @@ export interface SettingsOverlayProps {
   tenantId?: string | null;
   /** True only for the tenant's owner/admin. Irrelevant when tenantId is unset. */
   isAdmin?: boolean;
-}
-
-// --- src/features/settings/components/SettingsPopup.tsx ---
-export interface CustomGhostProps {
-  className?: string;
-  fill?: string;
-  stroke?: string;
-  eyeColor?: string;
 }
 
 // --- src/features/settings/components/UserProfileTab.tsx ---
