@@ -1178,14 +1178,21 @@ pub fn on_mic_start(proc: &Processor) {
 }
 
 pub fn on_mic_stop() {
-    // Guard against underflow if stop() is called twice.
-    let _ = ACTIVE_MIC_CAPTURES.fetch_update(Ordering::AcqRel, Ordering::Acquire, |v| {
-        if v > 0 {
-            Some(v - 1)
-        } else {
-            None
+    // Saturating decrement — guards against underflow if stop() is called twice.
+    // A plain CAS loop rather than fetch_update/try_update: fetch_update is
+    // deprecated on newer toolchains and try_update doesn't exist on older ones.
+    let mut current = ACTIVE_MIC_CAPTURES.load(Ordering::Acquire);
+    while current > 0 {
+        match ACTIVE_MIC_CAPTURES.compare_exchange_weak(
+            current,
+            current - 1,
+            Ordering::AcqRel,
+            Ordering::Acquire,
+        ) {
+            Ok(_) => break,
+            Err(actual) => current = actual,
         }
-    });
+    }
 }
 
 /// Snapshot the whole pipeline as JSON (napi: getAudioPipelineStats()).

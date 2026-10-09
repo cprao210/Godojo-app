@@ -46,9 +46,58 @@ function verifyArtifacts(expectedArtifacts) {
   }
 }
 
-function runCommand(command) {
+function runCommand(command, extraEnv) {
   console.log(`> ${command}`);
-  execSync(command, { stdio: 'inherit', cwd: nativeModulePath });
+  execSync(command, {
+    stdio: 'inherit',
+    cwd: nativeModulePath,
+    env: extraEnv ? { ...process.env, ...extraEnv } : process.env,
+  });
+}
+
+const MAC_TARGET_ARCH = { 'x86_64-apple-darwin': 'x86_64', 'aarch64-apple-darwin': 'arm64' };
+
+/**
+ * Environment for building one macOS target.
+ *
+ * webrtc-audio-processing-sys builds its bundled C++ library with meson and
+ * passes no cross file, so meson always compiles for the HOST. On an Apple
+ * Silicon machine the x86_64 build therefore got arm64 objects, which the
+ * linker skipped ("found architecture 'arm64', required architecture
+ * 'x86_64'") — and because the macOS rustflags allow undefined symbols
+ * (-undefined dynamic_lookup, needed for N-API), the build "succeeded" with
+ * the echo canceller missing. Pointing meson's compilers at the target arch
+ * makes it build the right objects. Running meson's sanity-check binary for
+ * x86_64 needs Rosetta 2 on Apple Silicon.
+ */
+function macTargetEnv(target) {
+  const arch = MAC_TARGET_ARCH[target];
+  const hostArch = os.arch() === 'arm64' ? 'arm64' : 'x86_64';
+  if (!arch || arch === hostArch) return undefined;
+  return { CC: `clang -arch ${arch}`, CXX: `clang++ -arch ${arch}` };
+}
+
+/**
+ * Fail the build if a macOS .node is the wrong architecture or still has
+ * unresolved WebRTC symbols (the crate prefixes them with "v2_"). Unresolved
+ * N-API symbols are expected — Node provides them at load time.
+ */
+function verifyMacArtifact(file, target) {
+  const full = path.join(nativeModulePath, file);
+  const arch = MAC_TARGET_ARCH[target];
+  const archs = execSync(`lipo -archs "${full}"`, { encoding: 'utf8' }).trim();
+  if (archs !== arch) {
+    throw new Error(`${file}: expected architecture ${arch}, got "${archs}"`);
+  }
+  const undefinedSyms = execSync(`nm -u "${full}"`, { encoding: 'utf8', maxBuffer: 64 * 1024 * 1024 })
+    .split('\n').map((s) => s.trim()).filter((s) => /^_?v2_/.test(s));
+  if (undefinedSyms.length > 0) {
+    throw new Error(
+      `${file}: ${undefinedSyms.length} unresolved WebRTC symbols (e.g. ${undefinedSyms.slice(0, 3).join(', ')}) — ` +
+      'the bundled webrtc-audio-processing library was built for the wrong architecture.'
+    );
+  }
+  console.log(`Verified ${file}: ${archs}, no unresolved WebRTC symbols`);
 }
 
 /**
@@ -134,10 +183,18 @@ if (os.platform() === 'darwin') {
     }
 
     console.log(`\n--- Building for ${target} ---`);
-    runCommand(`npx napi build --platform --target ${target} --release`);
+    const crossEnv = macTargetEnv(target);
+    if (crossEnv) {
+      // meson --reconfigure keeps the compiler chosen at first configure, so a
+      // cached (possibly wrong-arch) webrtc build must be discarded first.
+      runCommand(`cargo clean -p webrtc-audio-processing-sys --release --target ${target}`);
+      console.log(`Cross-building C/C++ dependencies for ${target}: CC="${crossEnv.CC}"`);
+    }
+    runCommand(`npx napi build --platform --target ${target} --release`, crossEnv);
   }
 
   verifyArtifacts(macTargets.map((target) => artifactMap[target]));
+  for (const target of macTargets) verifyMacArtifact(artifactMap[target], target);
 
 } else if (os.platform() === 'win32') {
   const prebuiltMap = {
