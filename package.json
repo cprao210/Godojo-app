@@ -71,7 +71,11 @@
       },
       {
         "from": "resources/models/",
-        "to": "models/"
+        "to": "models/",
+        "filter": [
+          "**/*",
+          "!Xenova/mobilebert-uncased-mnli/**"
+        ]
       },
       {
         "from": ".env",

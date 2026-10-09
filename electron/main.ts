@@ -3,7 +3,7 @@ import path from "path"
 import fs from "fs"
 import { autoUpdater } from "electron-updater"
 import * as nodeOs from "node:os"
-import { isLowEndMachine, isLowMemoryMachine, readTotalRamGB } from "../utils/performanceClassification"
+import { isLowMemoryMachine, readTotalRamGB } from "../utils/performanceClassification"
 import { releaseDeferredStartupTasks, scheduleDeferredStartupTask } from "./utils/deferredStartup"
 import { removeLegacyScreenshotDirs } from "./utils/legacyScreenshotCleanup"
 import { waitForMeetingProcessingEnd } from "./utils/meetingProcessingProgress"
@@ -405,7 +405,6 @@ import { ThemeManager } from "./ThemeManager"
 import { RAGManager } from "./rag/RAGManager"
 import { DatabaseManager } from "./db/DatabaseManager"
 import { routeLiveAnalysisWrite } from "./liveAnalysisRouting"
-import { warmupIntentClassifier } from "./llm"
 import { AudioDevices } from "./audio/AudioDevices";
 
 /** Unified type for all STT providers with optional extended capabilities */
@@ -475,10 +474,6 @@ export class AppState {
   private isUndetectable: boolean = app.isPackaged ? true : false
 
   private isMeetingActive: boolean = false; // Guard for session state leaks
-  /** True on weak hardware: heavy background warmups are postponed from launch to meeting start. */
-  private deferHeavyWarmups: boolean = false;
-  /** Low-end only: intent-model warmup this long after meeting start. */
-  private static readonly LOW_END_INTENT_WARMUP_DELAY_MS = 45_000;
   /** Upper bound on waiting for the summary before indexing a finished meeting. */
   private static readonly POST_MEETING_RAG_MAX_WAIT_MS = 10 * 60_000;
   private isMeetingPaused: boolean = false; // Pause guard — blocks audio and AI while paused
@@ -581,21 +576,11 @@ export class AppState {
 
     this.setupIntelligenceEvents()
 
-    // Pre-warm the zero-shot intent classifier (it loads in a worker thread, so
-    // it never blocks the main process — but the load is still CPU work):
-    //   - normal machines: via the deferred startup queue, after launch settles;
-    //   - <=8 GB RAM or <=4 threads: not at launch at all; it warms up a while
-    //     after a meeting starts (see startMeeting), and the first "What should
-    //     I say" before that loads it on demand.
-    this.deferHeavyWarmups = isLowEndMachine({
-      cpuThreads: nodeOs.cpus()?.length || null,
-      totalRamGB: readTotalRamGB(nodeOs.totalmem()),
-    })
-    if (this.deferHeavyWarmups) {
-      console.log('[Main] Low-end hardware — deferring intent classifier warmup until after meeting start')
-    } else {
-      scheduleDeferredStartupTask('intent-classifier-warmup', () => warmupIntentClassifier())
-    }
+    // The zero-shot intent classifier is NOT pre-warmed: its only consumer is
+    // the dormant "What should I say" mode, so nothing asks it anything today,
+    // and its model is not shipped (see build.extraResources). If that mode
+    // returns, classifyIntent() loads it on first use and falls back to the
+    // regex fast-path while it loads or if the model is missing.
 
     // Setup Ollama IPC
     this.setupOllamaIpcHandlers()
@@ -3537,14 +3522,6 @@ export class AppState {
     // on — that stamp is what lets main reject a result belonging to the call
     // that just ended.
     this.sendToMeetingSurfaces('session-reset', { meetingGeneration: this._meetingGeneration });
-    // Low-end: warm the intent model only once the call has settled, so its
-    // CPU-heavy load doesn't land on top of overlay creation, audio init and
-    // the STT handshakes. Idempotent; skipped if the meeting already ended.
-    if (this.deferHeavyWarmups) {
-      setTimeout(() => {
-        if (this.isMeetingActive) void warmupIntentClassifier();
-      }, AppState.LOW_END_INTENT_WARMUP_DELAY_MS).unref?.();
-    }
 
     // ★ ASYNC AUDIO INIT: Return INSTANTLY so the IPC response goes back
     // to the renderer immediately, allowing the UI to switch to overlay

@@ -26,8 +26,6 @@ crate metadata in a source checkout, or contact legal@godojo.ai.
 
 - **Xenova/all-MiniLM-L6-v2** (ONNX embeddings) — Apache-2.0. Based on
   sentence-transformers/all-MiniLM-L6-v2.
-- **Xenova/mobilebert-uncased-mnli** (ONNX zero-shot classification) — derived
-  from Google's MobileBERT; MobileBERT is Apache-2.0.
 - **@xenova/transformers** (Transformers.js) — Apache-2.0. Copyright (c) Xenova / Hugging Face.
 - **onnxruntime** (via transformers.js) — MIT License. Copyright (c) Microsoft Corporation.
 
