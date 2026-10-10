@@ -754,10 +754,15 @@ jobs:
       # the notes page already exists when the first app sees the update (the app fetches notes
       # the moment it announces one). Non-critical: a failure here must not stop the release, so
       # the feeds still publish afterwards. Skipped for manual runs (no real tag).
+      # Fills __VERSION__ / __CHANNEL__ and builds the Downloads section from the files this run
+      # actually built, linked at <R2 public URL>/<channel>/<os>/<file> — the same keys
+      # r2-release.sh uploaded — so test/beta/production releases each link their own builds.
       - name: Render release notes with actual version
         if: github.event_name == 'push'
         shell: bash
-        run: sed "s/__VERSION__/${VERSION}/g" .github/RELEASE_TEMPLATE.md > release-notes.md
+        env:
+          R2_PUBLIC_BASE_URL: ${{ secrets.R2_PUBLIC_BASE_URL }}
+        run: bash .github/scripts/render-release-notes.sh
 
       - name: Create GitHub release (notes only)
         if: github.event_name == 'push'
