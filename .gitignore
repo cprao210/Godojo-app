@@ -182,8 +182,9 @@ opencode.json
 **/AGENTS.md
 **/CLAUDE.md
 **/.claude/
+**/.freebuff/
+**/.zcode/
 
 # Temporary working files
 temp/
-planning/live-negotiation/temp/
 dev-update-feed/

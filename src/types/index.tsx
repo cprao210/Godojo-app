@@ -50,14 +50,8 @@ export interface IncompatibleProviderWarning {
 }
 
 export interface AppLifecycleState {
-  hasProfile: boolean;
-  isPremiumActive: boolean;
-  setIsPremiumActive: (active: boolean) => void;
-  /** Rising edge each time a meeting finishes processing — feeds `useAdCampaigns`'s post-meeting ad timer. */
   isProcessingMeeting: boolean;
   setIsProcessingMeeting: (processing: boolean) => void;
-  lastMeetingEndTime: number | null;
-  appStartTime: number;
   ollamaPull: OllamaPullState;
   incompatibleWarning: IncompatibleProviderWarning | null;
   dismissIncompatibleWarning: () => void;
@@ -177,18 +171,6 @@ export type ResolvedTheme = 'light' | 'dark';
 
 // --- src/hooks/useShortcuts.ts ---
 export interface ShortcutConfig {
-  whatToAnswer: string[];
-  autoAnswerMode: string[];
-  clarify: string[];
-  followUp: string[];
-  dynamicAction4: string[];
-  answer: string[];
-  codeHint: string[];
-  brainstorm: string[];
-  shorten: string[];
-  recap: string[];
-  scrollUp: string[];
-  scrollDown: string[];
   // Window Movement
   moveWindowUp: string[];
   moveWindowDown: string[];
@@ -197,11 +179,6 @@ export interface ShortcutConfig {
   // General
   toggleVisibility: string[];
   toggleMousePassthrough: string[];
-  processScreenshots: string[];
-  captureAndProcess: string[];
-  resetCancel: string[];
-  takeScreenshot: string[];
-  selectiveScreenshot: string[];
 }
 
 // --- src/hooks/useTeamInvite.ts ---
@@ -222,11 +199,9 @@ export interface TenantState {
 
 // --- src/hooks/useWindowRoute.ts ---
 export interface WindowRoute {
-  isSettingsWindow: boolean;
   isLauncherWindow: boolean;
   isOverlayWindow: boolean;
   isModelSelectorWindow: boolean;
-  isCropperWindow: boolean;
   /** No `?window=` param, or an unrecognized one — treated as the launcher (dev-mode safety). */
   isDefault: boolean;
 }
@@ -345,6 +320,9 @@ export interface SourceMapEntry {
   meeting_url?: string;
   asset_url?: string;
   preview_text?: string;
+  /** Highlight boxes for the quoted lines on the cited PDF page: page-relative 0..1
+   * [x0, y0, x1, y1], top-left origin. Digital PDFs indexed at pipeline v4+ only. */
+  bbox?: { page: number; bbox: [number, number, number, number] }[];
   /** Resolvable file URL for the asset (system-browser open). Absent today:
    * company_assets stores no file path, so doc chips fall back to preview. */
   file_url?: string;
@@ -826,6 +804,13 @@ export interface LiveAnalysisData {
    * ignores it if it rides back inside `previous_analysis`.
    */
   degraded?: boolean;
+  /** Objection detection was switched off for this call — 'internal': every invitee was on our
+   *  own domain. The Objections tab says so instead of showing an empty list. */
+  objectionDetectionOff?: 'internal';
+  /** Set when the desktop's local fallback analyser only read the start of the transcript
+   *  (see LOCAL_ANALYSIS_MAX_CHARS in electron/utils/uploadAnalysis.ts): the analysis covers
+   *  `analyzedChars` of `totalChars`, so anything later in the call is missing from it. */
+  truncated?: { analyzedChars: number; totalChars: number };
 }
 
 // --- src/features/meetings/api/meetingsApi.ts ---
@@ -1064,12 +1049,110 @@ export interface MeetingUsageEntry {
   items?: string[];
 }
 
+// --- Coach-ready summary additions (call-type-aware data layer) ---
+// All of these are optional and additive: summaries saved before this layer
+// existed simply don't have them, and every consumer must tolerate their
+// absence. See docs/ and electron/llm/summaryPrompt.ts for generation.
+
+/** The kind of call the meeting was, resolved from explicit/detected meeting
+ *  types (negotiation > demo > discovery). Distinct from dealStatus.stage. */
+export type CoachCallType = 'discovery' | 'demo' | 'negotiation';
+
+/** questionsToAsk entry. Old summaries store plain strings — do NOT rewrite
+ *  them; new summaries store { question, gap? } objects. Support both. */
+export type CoachQuestion =
+  | string
+  | {
+      question: string;
+      gap?: string;
+    };
+
+export type DemoReaction = {
+  feature: string;
+  verdict: 'landed' | 'follow_up';
+  quote: string;
+  speaker: string;
+  timestamp?: string;
+};
+
+export type DemoSuccessCriterion = {
+  metric: string;
+  target: string;
+  owner?: string;
+};
+
+export type CoachStakeholder = {
+  name: string;
+  role: string;
+  stance: 'champion' | 'needs_answer' | 'not_met';
+  note?: string;
+};
+
+export type NegotiationTerm = {
+  term: string;
+  theyAsked: string;
+  youOffered: string;
+  status: 'agreed' | 'open' | 'leaning' | 'must_have';
+};
+
+export type NegotiationTrade = {
+  give: string;
+  get: string;
+};
+
+export type NegotiationPathStep = {
+  date?: string;
+  step: string;
+  owner?: string;
+};
+
+export type CoachOpenLoop = {
+  concern: string;
+  suggestedAnswer?: string;
+};
+
+export type CoachDemoReview = {
+  reactions?: DemoReaction[];
+  successCriteria?: DemoSuccessCriterion[];
+};
+
+export type CoachNegotiation = {
+  terms?: NegotiationTerm[];
+  trades?: NegotiationTrade[];
+  limit?: string;
+  pathToSignature?: NegotiationPathStep[];
+};
+
+export type CoachPromise = {
+  text: string;
+  owner?: string;
+  dueDate?: string;
+};
+
+/** whatIDidRight entry. Old summaries store "Label: content" strings — do
+ *  NOT rewrite them; new summaries store film-review highlight objects
+ *  (time/skill/moment/why) describing the rep's own behavior. */
+export type CoachHighlight = {
+    /** Transcript timecode of the moment ("04:55"), when known. */
+    time?: string;
+    /** Conversation skill area — "Questioning", "Objection handling"… */
+    skill: string;
+    /** What the REP said or did at that moment (rep behavior, not deal facts). */
+    moment: string;
+    /** Why it worked — the thing to repeat next time. */
+    why: string;
+};
+
 export interface MeetingDetailedSummary {
   overview?: string;
   actionItems: string[];
   keyPoints: string[];
   actionItemsTitle?: string;
   keyPointsTitle?: string;
+
+  /** Resolved call type this summary was generated against (stamped by the
+   *  generator, never by the LLM). Absent on pre-coach summaries. */
+  coachCallType?: CoachCallType;
 
   leadName?: string;
   company?: string;
@@ -1111,18 +1194,40 @@ export interface MeetingDetailedSummary {
     fullEmail?: string;
   };
   salesCoachReview?: {
-    whatIDidRight?: string[];
+    whatIDidRight?: (string | CoachHighlight)[];
     whatICouldHaveDoneBetter?: string[];
     whatIMissedCompletely?: string[];
   };
   nextCallPlaybook?: {
+    callGoal?: string;
     openingRecap?: string;
-    questionsToAsk?: string[];
+    questionsToAsk?: CoachQuestion[];
     valueAndROI?: {
       quantitative?: string[];
       qualitative?: string[];
     };
   };
+
+  /** Customer questions/concerns/objections still unresolved after the call.
+   *  Derived from the live analysis's objection list (unresolved entries only)
+   *  during reconciliation — see summaryReconciliation.ts. */
+  openLoops?: CoachOpenLoop[];
+
+  /** Demo-call review: how each demonstrated feature landed + pilot success
+   *  criteria. Only generated for demo calls. */
+  demoReview?: CoachDemoReview;
+
+  /** Stakeholders identified in the conversation (demo + negotiation calls). */
+  stakeholders?: CoachStakeholder[];
+
+  /** Negotiation-call data. `limit` is only ever present when the rep
+   *  explicitly stated a walk-away point on the call. */
+  negotiation?: CoachNegotiation;
+
+  /** Structured commitments (rep promises / agreed follow-ups) with owners
+   *  and due dates when established. Complements — never replaces — the
+   *  plain-string actionItems list. */
+  promises?: CoachPromise[];
 
   // Tolerate extra summary keys (e.g. speakerNames) read via casts.
   [key: string]: any;
@@ -1316,6 +1421,11 @@ export interface KnowledgeAsset {
   status: 'mapped' | 'processing' | 'need_update';
   lastUpdated?: string;
   filePath?: string;
+  /** Staged upload only (not saved yet): base64 bytes held in the draft until Save commits them.
+   *  Lets the viewer preview the file before the server has a copy. */
+  fileData?: string;
+  fileName?: string;
+  mimeType?: string;
 }
 
 // --- src/api/intelligenceApi.ts ---
@@ -1651,23 +1761,6 @@ export interface CurlValidationResult {
   json?: any;
 }
 
-// --- src/lib/overlayAppearance.ts ---
-export type OverlayTheme = 'light' | 'dark';
-
-export interface OverlayAppearance {
-  shellStyle: React.CSSProperties;
-  pillStyle: React.CSSProperties;
-  transcriptStyle: React.CSSProperties;
-  subtleStyle: React.CSSProperties;
-  chipStyle: React.CSSProperties;
-  inputStyle: React.CSSProperties;
-  controlStyle: React.CSSProperties;
-  iconStyle: React.CSSProperties;
-  codeBlockStyle: React.CSSProperties;
-  codeHeaderStyle: React.CSSProperties;
-  dividerStyle: React.CSSProperties;
-}
-
 // --- src/pages/SignIn.tsx ---
 export type FieldValuesType = {
   icon: ForwardRefExoticComponent<Omit<LucideProps, "ref"> & RefAttributes<SVGSVGElement>>;
@@ -1677,23 +1770,6 @@ export type FieldValuesType = {
   /** Optional — only the sign-up fields (name, email) set this; sign-in's
    * single email field and phoneNumber intentionally leave it unset. */
   required?: boolean;
-}
-
-// --- src/types/index.tsx ---
-export interface Screenshot {
-  id: string
-  path: string
-  timestamp: number
-  thumbnail: string // Base64 thumbnail
-}
-
-export interface Solution {
-  problem_identifier_script: string;
-  brainstorm_script: string;
-  code: string;
-  dry_run_script: string;
-  time_complexity: string;
-  space_complexity: string;
 }
 
 // ============================================================
@@ -1735,17 +1811,6 @@ export interface ChatSessionSidebarProps {
   onSelectSession: (sessionId: string) => void;
   onNewChat: () => void;
   onDeleteSession: (sessionId: string) => void;
-}
-
-// --- src/features/common/AdCampaignToasters.tsx ---
-export interface AdCampaignToastersProps {
-  /** Only rendered on the launcher main view, with Settings closed. */
-  visible: boolean;
-  activeAd: unknown;
-  dismissAd: () => void;
-  onSetupProfile: () => void;
-  onSetupJD: () => void;
-  onUpgrade: () => void;
 }
 
 // --- src/features/common/EditableTextBlock.tsx ---
@@ -1801,35 +1866,9 @@ export interface LauncherProps {
 
 // --- src/features/common/GodojoInterface.tsx ---
 
-export interface GodojoInterfaceMessage {
-  id: string;
-  role: 'user' | 'system' | 'client';
-  text: string;
-  isStreaming?: boolean;
-  hasScreenshot?: boolean;
-  screenshotPreview?: string;
-  isCode?: boolean;
-  intent?: string;
-  isNegotiationCoaching?: boolean;
-  negotiationCoachingData?: {
-    tacticalNote: string;
-    exactScript: string;
-    showSilenceTimer: boolean;
-    phase: string;
-    theirOffer: number | null;
-    yourTarget: number | null;
-    currency: string;
-  };
-}
-
 export interface GodojoInterfaceProps {
   onEndMeeting?: (meetingTypes?: ('discovery' | 'demo' | 'negotiation')[]) => void;
   overlayOpacity?: number;
-}
-
-// --- src/features/common/SupportToaster.tsx ---
-export interface SupportToasterProps {
-  className?: string;
 }
 
 // --- src/features/common/TopSearchPill.tsx ---
@@ -2239,8 +2278,6 @@ export interface CompanyContextTabProps {
   setCompanyError: (v: string) => void;
   assetUploading: string | null;
   setAssetUploading: (id: string | null) => void;
-  isPremium?: boolean;
-  setIsPremiumModalOpen?: (v: boolean) => void;
   isLight: boolean;
   /**
    * True when the current user is on a team but is NOT that team's admin.
@@ -2365,14 +2402,6 @@ export interface SettingsOverlayProps {
   isAdmin?: boolean;
 }
 
-// --- src/features/settings/components/SettingsPopup.tsx ---
-export interface CustomGhostProps {
-  className?: string;
-  fill?: string;
-  stroke?: string;
-  eyeColor?: string;
-}
-
 // --- src/features/settings/components/UserProfileTab.tsx ---
 export interface UserProfileTabProps {
   isLight: boolean;
@@ -2426,13 +2455,6 @@ export interface UserProfileButtonProps {
   email?: string | null;
   photoURL?: string | null;
   onSignOut: () => void;
-}
-
-// --- src/features/ui/KeyRecorder.tsx ---
-export interface KeyRecorderProps {
-  currentKeys: string[];
-  onSave: (keys: string[]) => void;
-  className?: string;
 }
 
 // --- src/features/ui/ModelSelector.tsx ---

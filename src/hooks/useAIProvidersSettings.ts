@@ -1,7 +1,7 @@
 // State + business logic for AIProvidersSettings. Split into small,
 // single-purpose sections below (standard providers, custom providers,
 // Ollama, default model) and combined into one hook so the component only
-// owns rendering — same split as useProviderCard / useCropper /
+// owns rendering — same split as useProviderCard /
 // useModelSelectorWindow.
 
 import { useCallback, useEffect, useMemo, useState } from "react";
@@ -332,8 +332,7 @@ function useOllamaProviders() {
     const ensureOllamaStartup = useCallback(async () => {
         setOllamaStatus("checking");
         try {
-            // @ts-ignore
-            const result = await window.electronAPI?.invoke?.("ensure-ollama-running");
+            const result = await window.electronAPI?.ensureOllamaRunning?.();
             if (result && result.success) {
                 checkOllama(true);
             } else {
@@ -348,8 +347,7 @@ function useOllamaProviders() {
     const handleFixOllama = useCallback(async () => {
         setOllamaStatus("fixing");
         try {
-            // @ts-ignore
-            const result = await window.electronAPI?.invoke?.("force-restart-ollama");
+            const result = await window.electronAPI?.forceRestartOllama?.();
             if (result && result.success) {
                 setOllamaRestarted(true);
                 setTimeout(() => checkOllama(false), 2000);
@@ -408,7 +406,7 @@ function useDefaultModelSettings(hasGroqKey: boolean) {
             // @ts-ignore
             return window.electronAPI.onGroqFastTextChanged((enabled: boolean) => {
                 setFastResponseMode(enabled);
-                localStorage.setItem("natively_groq_fast_text", String(enabled));
+                localStorage.setItem("godojo_groq_fast_text", String(enabled));
             });
         }
     }, []);
@@ -426,7 +424,7 @@ function useDefaultModelSettings(hasGroqKey: boolean) {
         }
         const newState = !fastResponseMode;
         setFastResponseMode(newState);
-        localStorage.setItem("natively_groq_fast_text", String(newState));
+        localStorage.setItem("godojo_groq_fast_text", String(newState));
         // @ts-ignore
         await window.electronAPI?.setGroqFastTextMode(newState);
     }, [fastResponseMode, hasGroqKey]);
@@ -435,7 +433,7 @@ function useDefaultModelSettings(hasGroqKey: boolean) {
     useEffect(() => {
         if (!hasGroqKey && fastResponseMode) {
             setFastResponseMode(false);
-            localStorage.setItem("natively_groq_fast_text", "false");
+            localStorage.setItem("godojo_groq_fast_text", "false");
             // @ts-ignore
             window.electronAPI?.setGroqFastTextMode(false);
         }

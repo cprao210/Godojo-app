@@ -1,4 +1,5 @@
-import { BrowserWindow, screen, app, Menu } from "electron"
+import { BrowserWindow, screen, app, Menu, dialog } from "electron"
+import { SettingsManager } from "./services/SettingsManager"
 import { AppState } from "./main"
 import { KeybindManager } from "./services/KeybindManager"
 import { startStaticServer } from "./staticServer"
@@ -328,8 +329,8 @@ export class WindowHelper {
         if (mode === 'none') {
           if (isMac) {
             return app.isPackaged
-              ? path.join(process.resourcesPath, "natively.icns")
-              : path.resolve(__dirname, "../../assets/natively.icns");
+              ? path.join(process.resourcesPath, "godojo.icns")
+              : path.resolve(__dirname, "../../assets/godojo.icns");
           } else if (isWin) {
             return app.isPackaged
               ? path.join(process.resourcesPath, "assets/icons/win/icon.ico")
@@ -715,7 +716,6 @@ export class WindowHelper {
       if (this.launcherWindow) {
         const bounds = this.launcherWindow.getBounds()
         this.launcherPosition = { x: bounds.x, y: bounds.y }
-        this.appState.settingsWindowHelper.reposition(bounds)
       }
     })
 
@@ -723,7 +723,6 @@ export class WindowHelper {
       if (this.launcherWindow) {
         const bounds = this.launcherWindow.getBounds()
         this.launcherSize = { width: bounds.width, height: bounds.height }
-        this.appState.settingsWindowHelper.reposition(bounds)
       }
     })
 
@@ -1043,7 +1042,7 @@ export class WindowHelper {
     if (this.isWindowVisible) {
       this.hideMainWindow()
     } else {
-      // Always show without stealing focus — Natively is a ghost overlay.
+      // Always show without stealing focus — GoDojo is a ghost overlay.
       // The user is in another app; show the window on top but leave OS focus alone.
       // They can click the window to focus it if they need to type.
       this.showMainWindow(true)
@@ -1292,6 +1291,8 @@ export class WindowHelper {
     }
   }
 
+  private closePromptOpen = false;
+
   public closeWindow(): void {
     const win = this.launcherWindow;
     if (!win || win.isDestroyed()) return;
@@ -1300,15 +1301,65 @@ export class WindowHelper {
       // macOS convention: the red traffic-light close button hides the
       // window but leaves the app running (Dock icon stays) — unchanged.
       win.close();
-    } else {
-      // Windows/Linux: the titlebar ✕ button should fully exit the app,
-      // not minimize to tray. Mark quitting first so the 'close' listener's
-      // hide-to-tray guard in setupWindowListeners() lets this through,
-      // then quit so the process actually terminates and disappears from
-      // Task Manager (tray icon, background helpers, etc. all torn down
-      // via the existing "before-quit" cleanup in main.ts).
-      this.appState.setQuitting(true);
-      app.quit();
+      return;
     }
+
+    // Windows/Linux: the titlebar ✕ either hides GoDojo to the background
+    // (it keeps running, so calendar reminders still pop up and can auto-start
+    // the meeting) or fully quits. The user chooses once; it is remembered in
+    // settings and changeable in Settings → General.
+    const choice = SettingsManager.getInstance().get('closeToBackground');
+    if (choice === true) {
+      win.close(); // the 'close' listener hides instead of closing (not quitting)
+      return;
+    }
+    if (choice === false) {
+      this.quitFromCloseButton();
+      return;
+    }
+    if (this.closePromptOpen) return; // a second ✕ click while the dialog is up
+    void this.askCloseBehaviour(win);
+  }
+
+  /** First ✕ on Windows/Linux: ask once, remember, then act on the answer. */
+  private async askCloseBehaviour(win: BrowserWindow): Promise<void> {
+    this.closePromptOpen = true;
+    try {
+      const options: Electron.MessageBoxOptions = {
+        type: 'question',
+        title: 'Close GoDojo',
+        message: 'Keep GoDojo running in the background?',
+        detail:
+          'GoDojo needs to keep running to remind you about upcoming meetings and start them on time. ' +
+          'You can change this choice in Settings → General.',
+        buttons: ['Keep running in background', 'Quit GoDojo', 'Cancel'],
+        defaultId: 0,
+        cancelId: 2,
+        noLink: true,
+      };
+      const { response } = await dialog.showMessageBox(win, options);
+      if (response === 2) return; // Cancel / Esc — nothing changes, ask again next time
+      const keepRunning = response === 0;
+      SettingsManager.getInstance().set('closeToBackground', keepRunning);
+      if (win.isDestroyed()) return;
+      if (keepRunning) win.close(); // the 'close' listener hides it
+      else this.quitFromCloseButton();
+    } catch (e) {
+      // Never strand the user mid-close: fall back to the reminder-safe choice.
+      console.warn('[WindowHelper] Close prompt failed — keeping GoDojo running:', e);
+      if (!win.isDestroyed()) win.close();
+    } finally {
+      this.closePromptOpen = false;
+    }
+  }
+
+  // Mark quitting first so the 'close' listener's hide-to-tray guard in
+  // setupWindowListeners() lets this through, then quit so the process
+  // actually terminates and disappears from Task Manager (tray icon,
+  // background helpers, etc. all torn down via the existing "before-quit"
+  // cleanup in main.ts).
+  private quitFromCloseButton(): void {
+    this.appState.setQuitting(true);
+    app.quit();
   }
 }

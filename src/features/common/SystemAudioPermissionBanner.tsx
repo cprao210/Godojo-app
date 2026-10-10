@@ -5,7 +5,7 @@ import { useSystemAudioPermission } from '@/hooks';
 import type { SystemAudioPermissionBannerProps } from '@/types';
 
 /**
- * In-meeting warning that interviewer audio is not being captured.
+ * In-meeting warning that the other party's audio is not being captured.
  *
  * The meeting overlay is the one surface where this matters most and previously
  * had nothing: a denied Screen Recording grant produced a silently mic-only

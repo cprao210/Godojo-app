@@ -52,6 +52,26 @@ let _app: FirebaseApp | null = null;
 let _auth: Auth | null = null;
 let _bridgeInstalled = false;
 
+/**
+ * True for the window that owns the session hand-off to main: the launcher
+ * (or the default, param-less window). Same predicate useFirebaseAuth uses
+ * for the primary auth-state subscription.
+ *
+ * Every other window (overlay, model selector) still
+ * initializes the Firebase SDK and reads the signed-in user from the SDK's
+ * shared IndexedDB persistence for its own API calls — but it must NOT run
+ * the silent restore or forward tokens to main. Each such window used to
+ * mint its own fresh ID token, and every distinct token re-ran main's whole
+ * 'auth-changed' chain (fallback-key fetch, LLM/STT client rebuild, Supabase
+ * upsert + outbox drain, broadcast to every window, encrypted identity
+ * write) — 6-8 times in the first seconds of every launch, and again each
+ * time a window was created later (e.g. the overlay at meeting start).
+ */
+export function isPrimaryAuthWindow(): boolean {
+    const w = new URLSearchParams(window.location.search).get('window');
+    return w === 'launcher' || !['overlay', 'model-selector'].includes(w ?? '');
+}
+
 /** Lazily initialize Firebase. Safe to call repeatedly. */
 export function getFirebaseAuth(): Auth {
     if (_auth) return _auth;
@@ -60,7 +80,10 @@ export function getFirebaseAuth(): Auth {
     }
     _app = initializeApp(firebaseConfig);
     _auth = getAuth(_app);
-    installIdTokenBridge(_auth);
+    // Sign-out and token rotations in a secondary window still reach main:
+    // they propagate to the primary window through the SDK's shared
+    // persistence, and the primary window's bridge forwards them.
+    if (isPrimaryAuthWindow()) installIdTokenBridge(_auth);
     return _auth;
 }
 
@@ -287,7 +310,7 @@ export async function signUpWithEmailExtended(args: {
 
     try {
         if (phoneNumber) {
-            localStorage.setItem(`natively_signup_phone_${user.uid}`, phoneNumber);
+            localStorage.setItem(`godojo_signup_phone_${user.uid}`, phoneNumber);
         }
     } catch (_) {
         // localStorage unavailable — fine, this is best-effort metadata.
@@ -465,11 +488,24 @@ export async function verifySessionIsActive(): Promise<boolean> {
  * Call this once from App.tsx for the launcher window only.
  * Returns an unsubscribe function.
  */
+/**
+ * A token this young was just accepted by Firebase's servers, so a forced
+ * refresh would only prove what we already know — and the forced refresh
+ * itself mints a new token, which fires onIdTokenChanged again. Without this
+ * check every token change caused another one (a burst of rotations at
+ * launch, each forwarded to main). Worst case, a disabled account is now
+ * caught up to this much later.
+ */
+export const SESSION_GUARD_FRESH_TOKEN_MS = 10 * 60_000;
+
 export function installSessionGuard(onInvalidSession: (errorCode?: string) => void): () => void {
     const auth = getFirebaseAuth();
     const unsub = onIdTokenChanged(auth, async (user) => {
         if (!user) return; // null during init or after sign-out — not an error
         try {
+            const current = await user.getIdTokenResult(/* forceRefresh */ false);
+            const issuedAt = Date.parse(current.issuedAtTime);
+            if (Number.isFinite(issuedAt) && Date.now() - issuedAt < SESSION_GUARD_FRESH_TOKEN_MS) return;
             await getIdTokenWithRetry(user);
         } catch (e: any) {
             const code = e?.code || '';

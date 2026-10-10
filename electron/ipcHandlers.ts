@@ -10,6 +10,7 @@ import {
 } from './utils/macPermissions';
 import { GEMINI_FLASH_MODEL } from "./IntelligenceManager"
 import { DatabaseManager } from "./db/DatabaseManager"; // Import Database Manager
+import { getMeetingProcessingSnapshot } from "./utils/meetingProcessingProgress";
 import { SupabaseReadService } from "./db/SupabaseReadService";
 import * as path from "path";
 import * as os from "os";
@@ -22,6 +23,7 @@ import { syncCompanyIntel } from "./utils/backendCompanyIntel";
 import { searchCompany, clearCompanyCache } from "./services/TavilyManager";
 
 import { buildCompanyContextBlock } from './utils/salesBriefUtils';
+import { emitLLMUsage, type LLMUsageCall } from './utils/llmUsageBus';
 import { RECOGNITION_LANGUAGES, AI_RESPONSE_LANGUAGES } from "./config/languages"
 import { LiveAnalysisData } from "../src/types";
 import {
@@ -197,50 +199,6 @@ export function initializeIpcHandlers(appState: AppState): void {
     return { success: false, error: 'test-release-fetch is dev-only' };
   });
 
-  safeHandle("license:activate", async (event, key: string) => {
-    try {
-      const { LicenseManager } = require('../premium/electron/services/LicenseManager');
-      return await LicenseManager.getInstance().activateLicense(key);
-    } catch (err: any) {
-      // Only show generic message if the premium module itself is missing.
-      // activateLicense() returns {success:false, error} for all expected failures
-      // (bad key, network error, etc.) — it should never throw in normal operation.
-      console.error('[IPC] license:activate unexpected error:', err);
-      return { success: false, error: 'Premium features not available in this build.' };
-    }
-  });
-  safeHandle("license:check-premium", async () => {
-    try {
-      const { LicenseManager } = require('../premium/electron/services/LicenseManager');
-      return LicenseManager.getInstance().isPremium();
-    } catch {
-      return false;
-    }
-  });
-  safeHandle("license:deactivate", async () => {
-    try {
-      const { LicenseManager } = require('../premium/electron/services/LicenseManager');
-      LicenseManager.getInstance().deactivate();
-      // Auto-disable knowledge mode when license is removed
-      try {
-        const orchestrator = appState.getKnowledgeOrchestrator();
-        if (orchestrator) {
-          orchestrator.setKnowledgeMode(false);
-          console.log('[IPC] Knowledge mode auto-disabled due to license deactivation');
-        }
-      } catch (e) { /* ignore */ }
-    } catch { /* LicenseManager not available */ }
-    return { success: true };
-  });
-  safeHandle("license:get-hardware-id", async () => {
-    try {
-      const { LicenseManager } = require('../premium/electron/services/LicenseManager');
-      return LicenseManager.getInstance().getHardwareId();
-    } catch {
-      return 'unavailable';
-    }
-  });
-
   safeHandle("get-recognition-languages", async () => {
     return RECOGNITION_LANGUAGES;
   });
@@ -285,7 +243,6 @@ export function initializeIpcHandlers(appState: AppState): void {
       if (!width || !height) return
 
       const senderWebContents = event.sender
-      const settingsWin = appState.settingsWindowHelper.getSettingsWindow()
       const overlayWin = appState.getWindowHelper().getOverlayWindow()
       const launcherWin = appState.getWindowHelper().getLauncherWindow()
 
@@ -295,12 +252,10 @@ export function initializeIpcHandlers(appState: AppState): void {
         // One popup window per connected display can report this — the
         // helper applies whichever height it gets to every copy of the card.
         appState.meetingPopupWindowHelper.setWindowDimensions(width, height)
-      } else if (settingsWin && !settingsWin.isDestroyed() && settingsWin.webContents.id === senderWebContents.id) {
-        appState.settingsWindowHelper.setWindowDimensions(settingsWin, width, height)
       } else if (
         overlayWin && !overlayWin.isDestroyed() && overlayWin.webContents.id === senderWebContents.id
       ) {
-        // NativelyInterface logic - Resize ONLY the overlay window using dedicated method
+        // GodojoInterface logic - Resize ONLY the overlay window using dedicated method
         appState.getWindowHelper().setOverlayDimensions(width, height)
       } else if (
         launcherWin && !launcherWin.isDestroyed() && launcherWin.webContents.id === senderWebContents.id
@@ -336,69 +291,6 @@ export function initializeIpcHandlers(appState: AppState): void {
   })
 
 
-  safeHandle("delete-screenshot", async (event, filePath: string) => {
-    // Guard: only allow deletion of files within the app's own userData directory
-    const userDataDir = app.getPath('userData');
-    const resolved = path.resolve(filePath);
-    if (!resolved.startsWith(userDataDir + path.sep)) {
-      console.warn('[IPC] delete-screenshot: path outside userData rejected:', filePath);
-      return { success: false, error: 'Path not allowed' };
-    }
-    return appState.deleteScreenshot(resolved);
-  })
-
-  safeHandle("take-screenshot", async () => {
-    try {
-      const screenshotPath = await appState.takeScreenshot()
-      const preview = await appState.getImagePreview(screenshotPath)
-      return { path: screenshotPath, preview }
-    } catch (error) {
-      console.error("Error taking screenshot:", error)
-      throw error
-    }
-  })
-
-  safeHandle("take-selective-screenshot", async () => {
-    try {
-      const screenshotPath = await appState.takeSelectiveScreenshot()
-      const preview = await appState.getImagePreview(screenshotPath)
-      return { path: screenshotPath, preview }
-    } catch (error) {
-      // EC-04 fix: cast unknown error to Error before accessing .message
-      if ((error as Error).message === "Selection cancelled") {
-        return { cancelled: true }
-      }
-      throw error
-    }
-  })
-
-  safeHandle("get-screenshots", async () => {
-    // console.log({ view: appState.getView() })
-    try {
-      let previews = []
-      if (appState.getView() === "queue") {
-        previews = await Promise.all(
-          appState.getScreenshotQueue().map(async (path) => ({
-            path,
-            preview: await appState.getImagePreview(path)
-          }))
-        )
-      } else {
-        previews = await Promise.all(
-          appState.getExtraScreenshotQueue().map(async (path) => ({
-            path,
-            preview: await appState.getImagePreview(path)
-          }))
-        )
-      }
-      // previews.forEach((preview: any) => console.log(preview.path))
-      return previews
-    } catch (error) {
-      // console.error("Error getting screenshots:", error)
-      throw error
-    }
-  })
-
   safeHandle("toggle-window", async () => {
     appState.toggleMainWindow()
   })
@@ -432,71 +324,10 @@ export function initializeIpcHandlers(appState: AppState): void {
     return appState.getIntelligenceManager().getMeetingMetadata() ?? null;
   })
 
-  safeHandle("reset-queues", async () => {
-    try {
-      appState.clearQueues()
-      // console.log("Screenshot queues have been cleared.")
-      return { success: true }
-    } catch (error: any) {
-      // console.error("Error resetting queues:", error)
-      return { success: false, error: error.message }
-    }
-  })
-
-  // Donation IPC Handlers
-  safeHandle("get-donation-status", async () => {
-    const { DonationManager } = require('./DonationManager');
-    const manager = DonationManager.getInstance();
-    return {
-      shouldShow: manager.shouldShowToaster(),
-      hasDonated: manager.getDonationState().hasDonated,
-      lifetimeShows: manager.getDonationState().lifetimeShows
-    };
-  });
-
-  safeHandle("mark-donation-toast-shown", async () => {
-    const { DonationManager } = require('./DonationManager');
-    DonationManager.getInstance().markAsShown();
-    return { success: true };
-  });
-
-  safeHandle("set-donation-complete", async () => {
-    const { DonationManager } = require('./DonationManager');
-    DonationManager.getInstance().setHasDonated(true);
-    return { success: true };
-  });
-
-  // Generate suggestion from transcript - Natively-style text-only reasoning
-  safeHandle("generate-suggestion", async (event, context: string, lastQuestion: string) => {
-    try {
-      const suggestion = await appState.processingHelper.getLLMHelper().generateSuggestion(context, lastQuestion)
-      return { suggestion }
-    } catch (error: any) {
-      // console.error("Error generating suggestion:", error)
-      throw error
-    }
-  })
-
   safeHandle("finalize-mic-stt", async () => {
     appState.finalizeMicSTT();
   });
 
-  // IPC handler for analyzing image from file path
-  safeHandle("analyze-image-file", async (event, filePath: string) => {
-    // Guard: only allow reading files within the app's own userData directory
-    const userDataDir = app.getPath('userData');
-    const resolved = path.resolve(filePath);
-    if (!resolved.startsWith(userDataDir + path.sep)) {
-      console.warn('[IPC] analyze-image-file: path outside userData rejected:', filePath);
-      throw new Error('Path not allowed');
-    }
-    try {
-      const result = await appState.processingHelper.getLLMHelper().analyzeImageFiles([resolved])
-      return result
-    } catch (error: any) {
-      throw error
-    }
-  })
 
   safeHandle("gemini-chat", async (event, message: string, imagePaths?: string[], context?: string, options?: { skipSystemPrompt?: boolean }) => {
     try {
@@ -732,7 +563,7 @@ export function initializeIpcHandlers(appState: AppState): void {
 
   // The renderer's answer to a 'run-upload-analysis' request. ipcMain.on, not
   // handle: main is the one waiting on a reply here, not the renderer, so this
-  // is the reply leg of a main→renderer request (same shape as the cropper's).
+  // is the reply leg of a main→renderer request.
   ipcMain.on('upload-analysis-result', (_event, payload) => {
     handleUploadAnalysisResult(payload);
   });
@@ -892,15 +723,6 @@ export function initializeIpcHandlers(appState: AppState): void {
     return appState.getWindowHelper().isMainWindowMaximized();
   });
 
-  // Settings Window
-  safeHandle("toggle-settings-window", (event, { x, y } = {}) => {
-    appState.settingsWindowHelper.toggleWindow(x, y)
-  })
-
-  safeHandle("close-settings-window", () => {
-    appState.settingsWindowHelper.closeWindow()
-  })
-
 
 
   safeHandle("set-undetectable", async (_, state: boolean) => {
@@ -937,16 +759,29 @@ export function initializeIpcHandlers(appState: AppState): void {
   })
 
   safeHandle("set-open-at-login", async (_, openAtLogin: boolean) => {
-    app.setLoginItemSettings({
-      openAtLogin,
-      openAsHidden: false,
-      path: app.getPath('exe') // Explicitly point to executable for production reliability
-    });
+    // Same registry name as the startup registration — see utils/loginItem.ts
+    // for why a bare setLoginItemSettings() here could never turn it off.
+    const { applyOpenAtLogin } = require('./utils/loginItem');
+    applyOpenAtLogin(!!openAtLogin);
     // Remember what we registered. The OS getter below is unreliable in
     // packaged builds, so the persisted value is what the Settings toggle
     // actually reflects.
     const { SettingsManager } = require('./services/SettingsManager');
     SettingsManager.getInstance().set('openAtLogin', openAtLogin);
+    return { success: true };
+  });
+
+  // Title-bar ✕ behaviour (Windows/Linux): keep running in the background vs
+  // quit. null = not chosen yet (the first ✕ asks). See WindowHelper.closeWindow.
+  safeHandle("get-close-to-background", async () => {
+    const { SettingsManager } = require('./services/SettingsManager');
+    const v = SettingsManager.getInstance().get('closeToBackground');
+    return typeof v === 'boolean' ? v : null;
+  });
+
+  safeHandle("set-close-to-background", async (_, keepRunning: boolean) => {
+    const { SettingsManager } = require('./services/SettingsManager');
+    SettingsManager.getInstance().set('closeToBackground', !!keepRunning);
     return { success: true };
   });
 
@@ -962,11 +797,8 @@ export function initializeIpcHandlers(appState: AppState): void {
     const { SettingsManager } = require('./services/SettingsManager');
     const persisted = SettingsManager.getInstance().get('openAtLogin');
     if (typeof persisted === 'boolean') return persisted;
-    try {
-      return app.getLoginItemSettings({ path: app.getPath('exe') }).openAtLogin;
-    } catch {
-      return false;
-    }
+    const { readOsOpenAtLogin } = require('./utils/loginItem');
+    return readOsOpenAtLogin();
   });
 
   // Generic native toast for renderer-side watchers (invite-accepted, etc.) —
@@ -1039,21 +871,6 @@ export function initializeIpcHandlers(appState: AppState): void {
     } catch (error: any) {
       console.error("Error force restarting Ollama:", error);
       return { success: false, error: error.message };
-    }
-  });
-
-  safeHandle('restart-ollama', async () => {
-    try {
-      // First try to kill it if it's running
-      await appState.processingHelper.getLLMHelper().forceRestartOllama();
-
-      // The forceRestartOllama now calls OllamaManager.getInstance().init() internally
-      // so we don't need to do it again here.
-
-      return true;
-    } catch (error: any) {
-      console.error("[IPC restart-ollama] Failed to restart:", error);
-      return false;
     }
   });
 
@@ -1229,89 +1046,6 @@ export function initializeIpcHandlers(appState: AppState): void {
     }
   });
 
-  safeHandle("switch-to-custom-provider", async (_, providerId: string) => {
-    try {
-      const { CredentialsManager } = require('./services/CredentialsManager');
-      const cm = CredentialsManager.getInstance();
-      // BUG-05 fix: providers may be in either the curl or legacy custom store —
-      // merge both when looking up by id so neither store is silently ignored.
-      const provider = [
-        ...(cm.getCurlProviders() || []),
-        ...(cm.getCustomProviders() || [])
-      ].find((p: any) => p.id === providerId);
-
-      if (!provider) {
-        throw new Error("Provider not found");
-      }
-
-      const llmHelper = appState.processingHelper.getLLMHelper();
-      await llmHelper.switchToCustom(provider);
-
-      // Re-init IntelligenceManager (optional, but good for consistency)
-      appState.getIntelligenceManager().initializeLLMs();
-
-      return { success: true };
-    } catch (error: any) {
-      console.error("Error switching to custom provider:", error);
-      return { success: false, error: error.message };
-    }
-  });
-
-
-  // cURL Provider Handlers
-  safeHandle("get-curl-providers", async () => {
-    try {
-      const { CredentialsManager } = require('./services/CredentialsManager');
-      return CredentialsManager.getInstance().getCurlProviders();
-    } catch (error: any) {
-      console.error("Error getting curl providers:", error);
-      return [];
-    }
-  });
-
-  safeHandle("save-curl-provider", async (_, provider: any) => {
-    try {
-      const { CredentialsManager } = require('./services/CredentialsManager');
-      CredentialsManager.getInstance().saveCurlProvider(provider);
-      return { success: true };
-    } catch (error: any) {
-      console.error("Error saving curl provider:", error);
-      return { success: false, error: error.message };
-    }
-  });
-
-  safeHandle("delete-curl-provider", async (_, id: string) => {
-    try {
-      const { CredentialsManager } = require('./services/CredentialsManager');
-      CredentialsManager.getInstance().deleteCurlProvider(id);
-      return { success: true };
-    } catch (error: any) {
-      console.error("Error deleting curl provider:", error);
-      return { success: false, error: error.message };
-    }
-  });
-
-  safeHandle("switch-to-curl-provider", async (_, providerId: string) => {
-    try {
-      const { CredentialsManager } = require('./services/CredentialsManager');
-      const provider = CredentialsManager.getInstance().getCurlProviders().find((p: any) => p.id === providerId);
-
-      if (!provider) {
-        throw new Error("Provider not found");
-      }
-
-      const llmHelper = appState.processingHelper.getLLMHelper();
-      await llmHelper.switchToCurl(provider);
-
-      // Re-init IntelligenceManager (optional, but good for consistency)
-      appState.getIntelligenceManager().initializeLLMs();
-
-      return { success: true };
-    } catch (error: any) {
-      console.error("Error switching to curl provider:", error);
-      return { success: false, error: error.message };
-    }
-  });
 
   // Get stored API keys (masked for UI display)
   safeHandle("get-stored-credentials", async () => {
@@ -1984,7 +1718,7 @@ export function initializeIpcHandlers(appState: AppState): void {
       // Close the selector window if open
       appState.modelSelectorWindowHelper.hideWindow();
 
-      // Broadcast to all windows so NativelyInterface can update its selector (session-only update)
+      // Broadcast to all windows so GodojoInterface can update its selector (session-only update)
       BrowserWindow.getAllWindows().forEach(win => {
         if (!win.isDestroyed()) {
           win.webContents.send('model-changed', modelId);
@@ -2015,7 +1749,7 @@ export function initializeIpcHandlers(appState: AppState): void {
       // Close the selector window if open
       appState.modelSelectorWindowHelper.hideWindow();
 
-      // Broadcast to all windows so NativelyInterface can update its selector
+      // Broadcast to all windows so GodojoInterface can update its selector
       BrowserWindow.getAllWindows().forEach(win => {
         if (!win.isDestroyed()) {
           win.webContents.send('model-changed', modelId);
@@ -2239,6 +1973,14 @@ export function initializeIpcHandlers(appState: AppState): void {
     return DatabaseManager.getInstance().getMeetingDetails(id);
   });
 
+  // Live post-meeting processing steps (analysis → title → summary → save).
+  // Its own channel, deliberately NOT part of get-meeting-details: that read is
+  // about meeting content, this is about what main is doing right now. Returns
+  // null when nothing is being processed for this meeting.
+  safeHandle("get-meeting-processing-progress", async (_, id: string) => {
+    return getMeetingProcessingSnapshot(id);
+  });
+
   safeHandle("update-meeting-title", async (_, { id, title }: { id: string; title: string }) => {
     return DatabaseManager.getInstance().updateMeetingTitle(id, title);
   });
@@ -2442,50 +2184,6 @@ export function initializeIpcHandlers(appState: AppState): void {
     }
   });
 
-  safeHandle("generate-code-hint", async (_, imagePaths?: string[], problemStatement?: string) => {
-    try {
-      // If no explicit images were passed from the frontend, fall back to the
-      // screenshot queue so the AI can always "see" the user's screen.
-      const resolvedImagePaths: string[] =
-        imagePaths && imagePaths.length > 0
-          ? imagePaths
-          : appState.getScreenshotQueue();
-
-      console.log(`[IPC] generate-code-hint: using ${resolvedImagePaths.length} image(s) (${imagePaths?.length ? 'explicit' : 'queue fallback'})`);
-
-      const intelligenceManager = appState.getIntelligenceManager();
-      const hint = await intelligenceManager.runCodeHint(
-        resolvedImagePaths.length > 0 ? resolvedImagePaths : undefined,
-        problemStatement
-      );
-      return { hint };
-    } catch (error: any) {
-      throw error;
-    }
-  });
-
-  safeHandle("generate-brainstorm", async (_, imagePaths?: string[], problemStatement?: string) => {
-    try {
-      // If no explicit images were passed from the frontend, fall back to the
-      // screenshot queue so the AI can always "see" the user's screen.
-      const resolvedImagePaths: string[] =
-        imagePaths && imagePaths.length > 0
-          ? imagePaths
-          : appState.getScreenshotQueue();
-
-      console.log(`[IPC] generate-brainstorm: using ${resolvedImagePaths.length} image(s) (${imagePaths?.length ? 'explicit' : 'queue fallback'})`);
-
-      const intelligenceManager = appState.getIntelligenceManager();
-      const script = await intelligenceManager.runBrainstorm(
-        resolvedImagePaths.length > 0 ? resolvedImagePaths : undefined,
-        problemStatement
-      );
-      return { script };
-    } catch (error: any) {
-      throw error;
-    }
-  });
-
   // Auto-start meetings from the calendar reminder countdown.
   // Defaults to ON — see AppSettings.autoStartMeetings.
   safeHandle("get-auto-start-meetings", () => {
@@ -2500,27 +2198,6 @@ export function initializeIpcHandlers(appState: AppState): void {
     BrowserWindow.getAllWindows().forEach(win => {
       if (!win.isDestroyed()) {
         win.webContents.send('auto-start-meetings-changed', enabled);
-      }
-    });
-
-    return { success: true };
-  });
-
-  // Dynamic Action Button Mode (Recap vs Brainstorm)
-  safeHandle("get-action-button-mode", () => {
-    const { SettingsManager } = require('./services/SettingsManager');
-    const sm = SettingsManager.getInstance();
-    return sm.get('actionButtonMode') ?? 'recap';
-  });
-
-  safeHandle("set-action-button-mode", (_, mode: 'recap' | 'brainstorm') => {
-    const { SettingsManager } = require('./services/SettingsManager');
-    const sm = SettingsManager.getInstance();
-    sm.set('actionButtonMode', mode);
-
-    BrowserWindow.getAllWindows().forEach(win => {
-      if (!win.isDestroyed()) {
-        win.webContents.send('action-button-mode-changed', mode);
       }
     });
 
@@ -2849,35 +2526,79 @@ export function initializeIpcHandlers(appState: AppState): void {
       const myStreamId = ++_salesBriefStreamId;
       let fullResponse = '';
 
-      // 3. Try streaming first (fastest path)
+      // Observability: token usage behind this brief (utils/llmUsageBus — PostHog
+      // 'llm_generation_usage' + the renderer's dev-only usage chip). streamChat and
+      // chatWithGemini don't surface provider usage, so counts are chars/4 estimates.
+      // Cache hits above return early and consume no LLM calls, so nothing is emitted.
+      const briefUsage: LLMUsageCall[] = [];
+      const briefStartedAt = Date.now();
+      const estTokens = (text: string) => Math.ceil(text.length / 4);
+      const recordStreamUsage = () => {
+        if (!fullResponse) return; // nothing was produced — nothing to attribute
+        briefUsage.push({
+          provider: `${llmHelper.getCurrentProvider()} (stream)`,
+          model: llmHelper.getCurrentModel(),
+          inputTokens: estTokens(`${SALES_MEETING_BRIEF_PROMPT}\n${userMessage}`),
+          outputTokens: estTokens(fullResponse),
+          estimated: true,
+        });
+      };
+
       try {
-        const stream = llmHelper.streamChat(userMessage, undefined, undefined, SALES_MEETING_BRIEF_PROMPT, true);
+        // 3. Try streaming first (fastest path)
+        try {
+          const stream = llmHelper.streamChat(userMessage, undefined, undefined, SALES_MEETING_BRIEF_PROMPT, true);
 
-        for await (const token of stream) {
-          if (_salesBriefStreamId !== myStreamId) return null;
-          event.sender.send('sales-brief-stream-token', token);
-          fullResponse += token;
-        }
-      } catch (streamErr: any) {
-        console.warn('[IPC] Sales brief stream failed, falling back to non-streaming:', streamErr.message);
+          for await (const token of stream) {
+            if (_salesBriefStreamId !== myStreamId) { recordStreamUsage(); return null; } // superseded — still report what was spent
+            event.sender.send('sales-brief-stream-token', token);
+            fullResponse += token;
+          }
+          recordStreamUsage();
+        } catch (streamErr: any) {
+          console.warn('[IPC] Sales brief stream failed, falling back to non-streaming:', streamErr.message);
+          recordStreamUsage(); // partial output from a stream that died mid-way
 
-        // 4. Fallback: chatWithGemini has full retry + provider rotation (handles 503)
-        if (_salesBriefStreamId === myStreamId && !fullResponse) {
-          const geminiPrompt = `${SALES_MEETING_BRIEF_PROMPT}\n\n${userMessage}`;
-          const groqPrompt = `${GROQ_SALES_MEETING_BRIEF_PROMPT}\n\n${userMessage}`;
-          const result = await llmHelper.chatWithGemini(geminiPrompt, undefined, undefined, true, groqPrompt);
-          if (result && _salesBriefStreamId === myStreamId) {
-            event.sender.send('sales-brief-stream-token', result);
-            fullResponse = result;
+          // 4. Fallback: chatWithGemini has full retry + provider rotation (handles 503)
+          if (_salesBriefStreamId === myStreamId && !fullResponse) {
+            const geminiPrompt = `${SALES_MEETING_BRIEF_PROMPT}\n\n${userMessage}`;
+            const groqPrompt = `${GROQ_SALES_MEETING_BRIEF_PROMPT}\n\n${userMessage}`;
+            const result = await llmHelper.chatWithGemini(geminiPrompt, undefined, undefined, true, groqPrompt);
+            if (result) {
+              briefUsage.push({
+                provider: 'electron_native (gemini→groq)',
+                model: null,
+                inputTokens: estTokens(geminiPrompt),
+                outputTokens: estTokens(result),
+                estimated: true,
+              });
+            }
+            if (result && _salesBriefStreamId === myStreamId) {
+              event.sender.send('sales-brief-stream-token', result);
+              fullResponse = result;
+            }
           }
         }
-      }
 
-      if (_salesBriefStreamId === myStreamId) {
-        event.sender.send('sales-brief-stream-done');
-        if (fullResponse.trim()) salesBriefCache.set(eventId, fullResponse);
+        if (_salesBriefStreamId === myStreamId) {
+          event.sender.send('sales-brief-stream-done');
+          if (fullResponse.trim()) salesBriefCache.set(eventId, fullResponse);
+        }
+        return { success: true };
+      } finally {
+        // Runs on success, error and superseded streams alike — tokens were spent either way.
+        if (briefUsage.length > 0) {
+          emitLLMUsage({
+            meetingId: String(eventId ?? 'sales_brief:unknown'),
+            kind: 'sales_brief',
+            calls: briefUsage,
+            totalInputTokens: briefUsage.reduce((n, c) => n + c.inputTokens, 0),
+            totalOutputTokens: briefUsage.reduce((n, c) => n + c.outputTokens, 0),
+            durationMs: Date.now() - briefStartedAt,
+            at: Date.now(),
+          });
+        }
       }
-      return { success: true };
     } catch (error: any) {
       console.error('[IPC] Error streaming sales brief:', error);
       event.sender.send('sales-brief-stream-error', error.message || 'Unknown error');
@@ -2948,13 +2669,51 @@ export function initializeIpcHandlers(appState: AppState): void {
       // the chat assistant's persona or the knowledge-mode intercept that
       // chatWithGemini applied to this extraction before.
       const llmHelper = appState.processingHelper.getLLMHelper();
-      const result = await generateCompanyIntel(
-        { companyName, domain },
-        {
-          search: createTavilySearch(tavilyApiKey),
-          generate: (prompt: string) => llmHelper.generateContentStructured(prompt),
-        },
-      );
+      // Observability: token usage behind this research run (utils/llmUsageBus
+      // — PostHog + the renderer's dev-only usage chip). Cached responses
+      // above return early and consume no LLM calls, so nothing is emitted.
+      // Reported in a `finally` below so a failed/rejected run is counted too.
+      const intelUsage: LLMUsageCall[] = [];
+      // Tavily web-search tally (credits estimated: basic = 1, advanced = 2, per answered request).
+      const tavilyTally = { searches: 0, advanced: 0, basic: 0, failed: 0, retries: 0, creditsEstimated: 0 };
+      const intelStartedAt = Date.now();
+      const emitIntelUsage = () => {
+        // Searches that returned nothing usable end the run before any LLM call — their
+        // Tavily credits were still spent, so report those too.
+        if (intelUsage.length === 0 && tavilyTally.searches === 0) return;
+        emitLLMUsage({
+          meetingId: `company:${(domain || companyName).toLowerCase()}`,
+          kind: 'company_insights',
+          calls: intelUsage,
+          totalInputTokens: intelUsage.reduce((n, c) => n + c.inputTokens, 0),
+          totalOutputTokens: intelUsage.reduce((n, c) => n + c.outputTokens, 0),
+          durationMs: Date.now() - intelStartedAt,
+          company: companyName,
+          tavily: tavilyTally.searches > 0 ? { ...tavilyTally } : undefined,
+          at: Date.now(),
+        });
+      };
+      let result: Awaited<ReturnType<typeof generateCompanyIntel>>;
+      try {
+        result = await generateCompanyIntel(
+          { companyName, domain },
+          {
+            search: createTavilySearch(tavilyApiKey, {
+              onSearch: ({ searchDepth, ok, attempts }) => {
+                tavilyTally.searches += 1;
+                tavilyTally.retries += Math.max(0, attempts - 1);
+                if (!ok) { tavilyTally.failed += 1; return; }
+                if (searchDepth === 'advanced') { tavilyTally.advanced += 1; tavilyTally.creditsEstimated += 2; }
+                else { tavilyTally.basic += 1; tavilyTally.creditsEstimated += 1; }
+              },
+            }),
+            generate: (prompt: string) => llmHelper.generateContentStructured(prompt, (call) => intelUsage.push(call)),
+          },
+        );
+      } finally {
+        // Also when research throws or is rejected after the model calls: those tokens were spent.
+        emitIntelUsage();
+      }
       if (result.success === false) return fallbackToExpired(result.error);
       const intel = result.intel;
 
@@ -3617,10 +3376,9 @@ export function initializeIpcHandlers(appState: AppState): void {
       const geminiPrompt = `${llmHelper.applyLanguageInstruction(FOLLOWUP_EMAIL_PROMPT)}\n\nMEETING DETAILS:\n${enrichedContext}`;
       const groqPrompt = `${llmHelper.applyLanguageInstruction(GROQ_FOLLOWUP_EMAIL_PROMPT)}\n\nMEETING DETAILS:\n${enrichedContext}`;
 
-      console.log("=> generate follow-up email (geminiPrompt): ", geminiPrompt);
-      console.log("=> generate follow-up email (groqPrompt): ", groqPrompt);
-
       // Use chatWithGemini with alternateGroqMessage for fallback
+      const usageStartedAt = Date.now();
+      const estTokens = (text: string) => Math.ceil(text.length / 4);
       try {
         const emailBody = await llmHelper.chatWithGemini(geminiPrompt, undefined, undefined, true, groqPrompt);
         if (!emailBody || !emailBody.trim()) {
@@ -3629,6 +3387,22 @@ export function initializeIpcHandlers(appState: AppState): void {
         posthogMain.capture('llm_generation_source', {
           task: 'followup_email',
           source: 'electron_native',
+        });
+        // chatWithGemini doesn't surface provider usage — estimated counts.
+        emitLLMUsage({
+          meetingId: input?.meeting_id ?? 'unknown',
+          kind: 'followup_email',
+          calls: [{
+            provider: 'electron_native (gemini→groq)',
+            model: null,
+            inputTokens: estTokens(`${geminiPrompt}\n${enrichedContext}`),
+            outputTokens: estTokens(emailBody),
+            estimated: true,
+          }],
+          totalInputTokens: estTokens(`${geminiPrompt}\n${enrichedContext}`),
+          totalOutputTokens: estTokens(emailBody),
+          durationMs: Date.now() - usageStartedAt,
+          at: Date.now(),
         });
         return emailBody;
       } catch (directError: any) {
@@ -3652,6 +3426,21 @@ export function initializeIpcHandlers(appState: AppState): void {
           source: 'backend_fallback',
           provider: data?.provider_order?.[0] ?? null,
         });
+        emitLLMUsage({
+          meetingId: input?.meeting_id ?? 'unknown',
+          kind: 'followup_email',
+          calls: [{
+            provider: 'backend_fallback',
+            model: data?.provider_order?.[0] ?? null,
+            inputTokens: estTokens(`${FOLLOWUP_EMAIL_PROMPT}\n${enrichedContext}`),
+            outputTokens: estTokens(String(data?.text ?? '')),
+            estimated: true,
+          }],
+          totalInputTokens: estTokens(`${FOLLOWUP_EMAIL_PROMPT}\n${enrichedContext}`),
+          totalOutputTokens: estTokens(String(data?.text ?? '')),
+          durationMs: Date.now() - usageStartedAt,
+          at: Date.now(),
+        });
         return data.text;
       }
     } catch (error: any) {
@@ -3673,7 +3462,7 @@ export function initializeIpcHandlers(appState: AppState): void {
   safeHandle("set-company-intel", async (_, intel: Record<string, any> | null) => {
     try {
       appState.setCompanyIntel(intel);
-      // Broadcast to all renderer windows so NativelyInterface can update its state
+      // Broadcast to all renderer windows so GodojoInterface can update its state
       const { BrowserWindow } = require('electron');
       BrowserWindow.getAllWindows().forEach((win: any) => {
         win.webContents.send('company-intel-updated', intel);
@@ -3913,57 +3702,6 @@ export function initializeIpcHandlers(appState: AppState): void {
   // Profile Engine IPC Handlers
   // ==========================================
 
-  safeHandle("profile:upload-resume", async (_, filePath: string) => {
-    try {
-      // Premium gate: require active license for profile features
-      const { LicenseManager } = require('../premium/electron/services/LicenseManager');
-      if (!LicenseManager.getInstance().isPremium()) {
-        return { success: false, error: 'Pro license required. Please activate a license key to use Profile Intelligence features.' };
-      }
-      console.log(`[IPC] profile:upload-resume called with: ${filePath}`);
-      const orchestrator = appState.getKnowledgeOrchestrator();
-      if (!orchestrator) {
-        return { success: false, error: 'Knowledge engine not initialized. Please ensure API keys are configured.' };
-      }
-      const { DocType } = require('./premium/knowledge/types');
-      const result = await orchestrator.ingestDocument(filePath, DocType.RESUME);
-      return result;
-    } catch (error: any) {
-      console.error('[IPC] profile:upload-resume error:', error);
-      return { success: false, error: error.message };
-    }
-  });
-
-  safeHandle("profile:get-status", async () => {
-    try {
-      const orchestrator = appState.getKnowledgeOrchestrator();
-      if (!orchestrator) {
-        return { hasProfile: false, profileMode: false };
-      }
-      // Map new KnowledgeStatus back to legacy UI shape temporarily
-      const status = orchestrator.getStatus();
-      return {
-        hasProfile: status.hasResume,
-        profileMode: status.activeMode,
-        name: status.resumeSummary?.name,
-        role: status.resumeSummary?.role,
-        totalExperienceYears: status.resumeSummary?.totalExperienceYears
-      };
-    } catch (error: any) {
-      return { hasProfile: false, profileMode: false };
-    }
-  });
-
-  safeHandle("profile:get-mode", async () => {
-    try {
-      const orchestrator = appState.getKnowledgeOrchestrator();
-      if (!orchestrator) return { active: false };
-      return { active: orchestrator.isKnowledgeMode() };
-    } catch {
-      return { active: false };
-    }
-  });
-
   safeHandle("profile:set-mode", async (_, enabled: boolean) => {
     try {
       const orchestrator = appState.getKnowledgeOrchestrator();
@@ -3974,173 +3712,6 @@ export function initializeIpcHandlers(appState: AppState): void {
       // Persist so the toggle survives app restarts
       const { CredentialsManager } = require('./services/CredentialsManager');
       CredentialsManager.getInstance().setKnowledgeModeActive(enabled);
-      return { success: true };
-    } catch (error: any) {
-      return { success: false, error: error.message };
-    }
-  });
-
-  safeHandle("profile:delete", async () => {
-    try {
-      const orchestrator = appState.getKnowledgeOrchestrator();
-      if (!orchestrator) {
-        return { success: false, error: 'Knowledge engine not initialized' };
-      }
-      const { DocType } = require('./premium/knowledge/types');
-      orchestrator.deleteDocumentsByType(DocType.RESUME);
-      return { success: true };
-    } catch (error: any) {
-      return { success: false, error: error.message };
-    }
-  });
-
-  safeHandle("profile:get-profile", async () => {
-    try {
-      const orchestrator = appState.getKnowledgeOrchestrator();
-      if (!orchestrator) return null;
-      return orchestrator.getProfileData();
-    } catch (error: any) {
-      return null;
-    }
-  });
-
-  safeHandle("profile:select-file", async () => {
-    try {
-      const result: any = await dialog.showOpenDialog({
-        properties: ['openFile'],
-        filters: [
-          { name: 'Resume Files', extensions: ['pdf', 'docx', 'txt'] }
-        ]
-      });
-
-      if (result.canceled || result.filePaths.length === 0) {
-        return { cancelled: true };
-      }
-
-      return { success: true, filePath: result.filePaths[0] };
-    } catch (error: any) {
-      return { success: false, error: error.message };
-    }
-  });
-
-  // ==========================================
-  // JD & Research IPC Handlers
-  // ==========================================
-
-  safeHandle("profile:upload-jd", async (_, filePath: string) => {
-    try {
-      const orchestrator = appState.getKnowledgeOrchestrator();
-      if (!orchestrator) {
-        return { success: false, error: 'Knowledge engine not initialized. Please ensure API keys are configured.' };
-      }
-      const { DocType } = require('./premium/knowledge/types');
-      const result = await orchestrator.ingestDocument(filePath, DocType.JD);
-      return result;
-    } catch (error: any) {
-      console.error('[IPC] profile:upload-jd error:', error);
-      return { success: false, error: error.message };
-    }
-  });
-
-  safeHandle("profile:delete-jd", async () => {
-    try {
-      const orchestrator = appState.getKnowledgeOrchestrator();
-      if (!orchestrator) {
-        return { success: false, error: 'Knowledge engine not initialized' };
-      }
-      const { DocType } = require('./premium/knowledge/types');
-      orchestrator.deleteDocumentsByType(DocType.JD);
-      return { success: true };
-    } catch (error: any) {
-      return { success: false, error: error.message };
-    }
-  });
-
-  safeHandle("profile:research-company", async (_, companyName: string) => {
-    try {
-      const orchestrator = appState.getKnowledgeOrchestrator();
-      if (!orchestrator) {
-        return { success: false, error: 'Knowledge engine not initialized' };
-      }
-      const engine = orchestrator.getCompanyResearchEngine();
-
-      // Wire Tavily Search provider if key is configured
-      const { CredentialsManager } = require('./services/CredentialsManager');
-      const cm = CredentialsManager.getInstance();
-      const tavilyApiKey = cm.getTavilyApiKey();
-      if (tavilyApiKey) {
-        const { TavilySearchProvider } = require('./premium/knowledge/TavilySearchProvider');
-        engine.setSearchProvider(new TavilySearchProvider(tavilyApiKey));
-      }
-
-      // Build full JD context so the dossier is tailored to the exact role
-      const profileData = orchestrator.getProfileData();
-      const activeJD = profileData?.activeJD;
-      const jdCtx = activeJD ? {
-        title: activeJD.title,
-        location: activeJD.location,
-        level: activeJD.level,
-        technologies: activeJD.technologies,
-        requirements: activeJD.requirements,
-        keywords: activeJD.keywords,
-        compensation_hint: activeJD.compensation_hint,
-        min_years_experience: activeJD.min_years_experience,
-      } : {};
-      const dossier = await engine.researchCompany(companyName, jdCtx, true);
-      return { success: true, dossier };
-    } catch (error: any) {
-      console.error('[IPC] profile:research-company error:', error);
-      return { success: false, error: error.message };
-    }
-  });
-
-  safeHandle("profile:generate-negotiation", async (_, force: boolean = false) => {
-    try {
-
-      const orchestrator = appState.getKnowledgeOrchestrator();
-      if (!orchestrator) {
-        return { success: false, error: 'Knowledge engine not initialized' };
-      }
-      const status = orchestrator.getStatus();
-      if (!status.hasResume) {
-        return { success: false, error: 'No resume loaded' };
-      }
-
-      // Use cache unless force-regenerating
-      let script = force ? null : orchestrator.getNegotiationScript();
-      if (!script) {
-        script = await orchestrator.generateNegotiationScriptOnDemand();
-      }
-      if (!script) {
-        return { success: false, error: 'Could not generate negotiation script. Ensure a resume and job description are uploaded.' };
-      }
-      return { success: true, script };
-    } catch (error: any) {
-      console.error('[IPC] profile:generate-negotiation error:', error);
-      return { success: false, error: error.message };
-    }
-  });
-
-  safeHandle("profile:get-negotiation-state", async () => {
-    try {
-      const orchestrator = appState.getKnowledgeOrchestrator();
-      if (!orchestrator) return { success: false, error: 'Engine not ready' };
-      const tracker = orchestrator.getNegotiationTracker();
-      return {
-        success: true,
-        state: tracker.getState(),
-        isActive: tracker.isActive(),
-      };
-    } catch (error: any) {
-      return { success: false, error: error.message };
-    }
-  });
-
-  safeHandle("profile:reset-negotiation", async () => {
-    try {
-      const orchestrator = appState.getKnowledgeOrchestrator();
-      if (!orchestrator) return { success: false };
-      orchestrator.resetNegotiationSession();
       return { success: true };
     } catch (error: any) {
       return { success: false, error: error.message };
@@ -4599,7 +4170,7 @@ export function initializeIpcHandlers(appState: AppState): void {
 
   // Used by 'dev:wipe-local-account-data': deletes this install's entire
   // userData directory itself — credentials.enc,
-  // settings.json, natively.db (+ its -wal/-shm files and Supabase mirror
+  // settings.json, the user's DB file (+ its -wal/-shm files and Supabase mirror
   // queue), cached auth session, the persist:google-auth partition, and
   // the godojo-ai/godojo-ai-dev folder that contains them (depending on
   // isPackaged) — then relaunches. Electron recreates an empty userData
@@ -4610,10 +4181,10 @@ export function initializeIpcHandlers(appState: AppState): void {
   async function wipeLocalUserDataAndRelaunch(logPrefix: string): Promise<{ success: boolean; error?: string }> {
     try {
       // Release the RAG vector-search worker's read-only connection to
-      // natively.db FIRST. That worker (electron/rag/vectorSearchWorker.ts)
+      // the user's DB file FIRST. That worker (electron/rag/vectorSearchWorker.ts)
       // opens its OWN sqlite handle, separate from DatabaseManager's — and on
-      // Windows an open handle keeps natively.db (+ its -wal/-shm) locked. If
-      // it isn't released, the rmSync below deletes files up to natively.db,
+      // Windows an open handle keeps the DB file (+ its -wal/-shm) locked. If
+      // it isn't released, the rmSync below deletes files up to the DB file,
       // then throws EPERM and leaves the godojo-ai/godojo-ai-dev folder
       // half-wiped (exactly the "files in use" you can only remove after
       // quitting the app).
@@ -4624,7 +4195,7 @@ export function initializeIpcHandlers(appState: AppState): void {
       }
 
       // Release the sqlite file handle before touching userData — on
-      // Windows the delete below fails (or leaves natively.db behind)
+      // Windows the delete below fails (or leaves the DB file behind)
       // if it's still open.
       try { DatabaseManager.getInstance().close(); } catch (e) {
         console.warn(`[ipc] ${logPrefix}: DatabaseManager.close() failed (continuing):`, e);
@@ -4717,7 +4288,7 @@ export function initializeIpcHandlers(appState: AppState): void {
         console.warn(`[ipc] ${logPrefix}: RAGManager.destroy() failed (continuing):`, e);
       }
 
-      // 2. Delete ONLY this user's DB files (natively-<uid>.db + -wal/-shm).
+      // 2. Delete ONLY this user's DB files (godojo-<uid>.db + -wal/-shm).
       try { DatabaseManager.getInstance().deleteCurrentUserDatabaseFiles(); } catch (e) {
         console.warn(`[ipc] ${logPrefix}: DB file delete failed (continuing):`, e);
       }
@@ -4759,7 +4330,7 @@ export function initializeIpcHandlers(appState: AppState): void {
   // a full reset this does NOT show its own confirm dialog — the
   // account deletion the user just confirmed is already irreversible by
   // the time this runs, and a second native prompt here would just leave
-  // local data behind (stale natively.db, cached session) if they misread
+  // local data behind (stale DB file, cached session) if they misread
   // it as a fresh, cancellable action.
   safeHandle('dev:wipe-local-account-data', async (_event, scope?: 'local' | 'full-delete') => {
     // Both "Local Record" and the local half of "Delete All" must affect ONLY

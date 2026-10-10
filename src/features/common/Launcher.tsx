@@ -23,6 +23,7 @@ import { LauncherHeader, GhostModeToggle, RefreshButton, StartMeetingButton, Oll
 import { CalendarConnectCard, RecentMeetingsHeader, MeetingsList, RefreshToast, TranscriptUploadModal, LoadMoreMeetingsButton, CompanyLinkFailureNotice } from './LauncherWidgets';
 import { LauncherProps, Meeting, SourceMapEntry } from '@/types';
 import { posthogAnalytics } from '@/lib/analytics/posthog.service';
+import { openDocumentViewer } from '@/features/documents/DocumentViewer';
 
 const Launcher: React.FC<LauncherProps> = ({ onStartMeeting, onOpenSettings, onCloseSettings, onOpenManagerDashboard, onCloseManagerDashboard, isManagerDashboardOpen = false, isSettingsOpen = false, onPageChange, ollamaPullStatus = 'idle', ollamaPullPercent = 0, ollamaPullMessage = '', authUser, onSignOut }) => {
 
@@ -64,16 +65,10 @@ const Launcher: React.FC<LauncherProps> = ({ onStartMeeting, onOpenSettings, onC
         handleOpenMeeting(meeting);
     };
 
-    // Doc citation chips: open the cited company asset. Only a resolvable
-    // file_url (system-browser open) is actionable today — the app-relative
-    // asset_url route doesn't exist in this Electron app, and CiteChip falls
-    // back to its pinned preview card when no resolvable URL applies.
+    // Doc citation chips: open the cited company asset in the in-app viewer.
     const handleOpenAsset = (src: SourceMapEntry) => {
-        if (src.file_url) {
-            window.open(src.file_url, '_blank');
-            return;
-        }
-        console.warn('[Launcher] Asset citation has no resolvable file_url:', src.id, src.asset_url);
+        // The stored original at the cited page, quoted lines highlighted.
+        openDocumentViewer(src);
     };
 
     useEffect(() => {
@@ -162,6 +157,10 @@ const Launcher: React.FC<LauncherProps> = ({ onStartMeeting, onOpenSettings, onC
                                     opacity: isMeetingsExpanded ? 0.45 : 1,
                                     filter: isMeetingsExpanded ? 'blur(1.5px)' : 'blur(0px)',
                                     y: isMeetingsExpanded ? -6 : 0,
+                                    // Even blur(0px) makes Chromium paint this whole
+                                    // section into a separate filter surface; drop the
+                                    // filter once collapsed so the resting state is plain.
+                                    transitionEnd: isMeetingsExpanded ? undefined : { filter: 'none' },
                                 }}
                                 transition={{ duration: 0.42, ease: [0.32, 0.72, 0, 1] }}
                             >

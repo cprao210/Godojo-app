@@ -19,33 +19,19 @@ import { useQuery, useMutation, useQueryClient } from 'react-query';
 import { meetingsApi, chatApi } from '@/api';
 import { isMeetingProcessing } from '@/api/meetingMapping';
 import { guardSession } from '@/lib/firebase';
-import type { CompanyRef, Meeting, MeetingTranscriptLine, MeetingScorecardResult, LiveAnalysisData } from '@/types';
-import { normalizeBant, normalizeMeddicc, confirmedOnly, fieldEvidenceList, fieldSummary, fieldText, BANT_ORDER, MEDDICC_ORDER } from '@/lib/bantMeddic';
+import { useMeetingProcessingProgress } from '@/hooks/useMeetingProcessingProgress';
+import type { CompanyRef, Meeting, MeetingTranscriptLine, MeetingScorecardResult } from '@/types';
+import { fieldEvidenceList, fieldSummary, fieldText } from '@/lib/bantMeddic';
 import { deriveProcessingStage, hasGeneratedSummary, PROCESSING_STALL_TIMEOUT_MS } from '@/lib/meetingLifecycle';
+import { filledCoachQuestions, coachQuestionText, coachPromises, parseCoachNoteItem, /* parseCoachHighlight, */ callInvolves, type ParsedCoachNote } from '@/lib/coachSummary';
 import { classifyLLMError } from '@/lib/utils';
 import { splitRepFollowUps } from '@/lib/objections';
 import { posthogAnalytics } from '@/lib/analytics/posthog.service';
+import { createSpeakerLabeler, formatTime, formatTranscriptForCopy, formatTranscriptTimestamp, transcriptTimesAreRelative as computeTranscriptTimesAreRelative } from '@/lib/transcriptLabels';
 
-export const formatTime = (ms: number) => {
-    const date = new Date(ms);
-    return date.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }).toLowerCase();
-};
-
-/**
- * Transcript row timestamp. Live-call segments carry absolute epoch ms (the
- * renderer formats those as wall-clock times); uploaded transcripts carry
- * RELATIVE ms since the call start ("12s", "1:15") — a transcript where any
- * positive timestamp is far below the epoch floor is the latter. Without this
- * split, an uploaded "[00:00:12]" rendered as a wall-clock time near midnight.
- */
-export const formatTranscriptTimestamp = (ms: number, relative: boolean): string => {
-    if (!relative) return formatTime(ms);
-    const totalSec = Math.floor(ms / 1000);
-    if (totalSec < 60) return `${totalSec}s`;
-    const m = Math.floor(totalSec / 60);
-    const s = totalSec % 60;
-    return `${m}:${String(s).padStart(2, '0')}`;
-};
+// Label/time formatting lives in lib/transcriptLabels so the PDF export renders transcripts
+// identically to the Transcript tab. Re-exported here for existing importers (@/hooks).
+export { formatTime, formatTranscriptTimestamp };
 
 export const cleanMarkdown = (content: string) => {
     if (!content) return '';
@@ -62,13 +48,18 @@ export function isSummaryEmpty(ds: NonNullable<Meeting['detailedSummary']>): boo
         !ds.overview?.trim() &&
         !hasContent(ds.keyPoints) &&
         !hasContent(ds.actionItems) &&
-        !ds.dealStatus?.stage?.trim() &&
-        !ds.dealStatus?.summary?.trim() &&
-        !ds.salesCoachReview?.whatIDidRight?.some(s => s?.trim()) &&
+        !ds.salesCoachReview?.whatIDidRight?.some(s => typeof s === 'string' ? s?.trim() : !!(s && (s.moment || s.why))) &&
         !ds.salesCoachReview?.whatICouldHaveDoneBetter?.some(s => s?.trim()) &&
         !ds.salesCoachReview?.whatIMissedCompletely?.some(s => s?.trim()) &&
+        !ds.nextCallPlaybook?.callGoal?.trim() &&
         !ds.nextCallPlaybook?.openingRecap?.trim() &&
-        !ds.nextCallPlaybook?.questionsToAsk?.some(s => s?.trim())
+        !filledCoachQuestions(ds.nextCallPlaybook?.questionsToAsk) &&
+        !(ds.nextCallPlaybook?.valueAndROI?.quantitative?.length || ds.nextCallPlaybook?.valueAndROI?.qualitative?.length) &&
+        !ds.openLoops?.length &&
+        !ds.promises?.length &&
+        !ds.demoReview?.reactions?.length &&
+        !ds.demoReview?.successCriteria?.length &&
+        !(ds.negotiation?.terms?.length || ds.negotiation?.trades?.length || ds.negotiation?.limit?.trim() || ds.negotiation?.pathToSignature?.length)
     );
 }
 
@@ -393,14 +384,11 @@ export function useMeetingDetails(initialMeeting: Meeting) {
             return res?.success ? (res.data ?? null) : null;
         },
         {
-            // Deliberately NOT gated on `!isProcessing` any more. processAndSaveMeeting
-            // persists the scorecard row as soon as scoring finishes, while the summary
-            // is still in its generate → verify loop — so this row appearing while
-            // `is_processed` is still 0 is the one real, observable signal of which half
-            // of the background work is left. Polling for it is what lets the UI say
-            // "Validating summary" honestly instead of animating a fake stage.
+            // One local read — no polling. Scorecard generation is disabled in
+            // processAndSaveMeeting, so no row can appear mid-processing; this only
+            // serves legacy meetings that were scored before. Processing progress
+            // comes from main's own step reports (useMeetingProcessingProgress).
             enabled: scorecardEnabled,
-            refetchInterval: isProcessing ? 2500 : false,
         },
     );
     // Prefer the dedicated-table scorecard; the summary_json-embedded blob is only the
@@ -510,7 +498,10 @@ export function useMeetingDetails(initialMeeting: Meeting) {
     const isLoadingAskDojo = askDojoEnabled
         ? isLoadingAiInteractions || (aiInteractionsUpdatedAt === 0 && !aiInteractionsError)
         : isProcessing;
-    const [query, setQuery] = useState('');
+    // The ask bar's text lives in AskDojoInput (local state), not here: this
+    // hook drives the whole MeetingDetails page, so holding it here re-rendered
+    // the entire page — full transcript and every AI answer's markdown — on
+    // every keystroke.
     const meetingInputRef = useRef<HTMLTextAreaElement>(null);
     const [isCopied, setIsCopied] = useState(false);
     const [isRegenerating, setIsRegenerating] = useState(false);
@@ -570,11 +561,18 @@ export function useMeetingDetails(initialMeeting: Meeting) {
         () =>
             deriveProcessingStage({
                 isProcessing,
-                hasScorecard: !!scorecard,
                 isDetailResolved: isDetailResolved && isScorecardResolved,
                 isStalled: isProcessingStalled,
             }),
-        [isProcessing, scorecard, isDetailResolved, isScorecardResolved, isProcessingStalled],
+        [isProcessing, isDetailResolved, isScorecardResolved, isProcessingStalled],
+    );
+
+    // What main is REALLY doing right now (analysis → title → summary → save).
+    // Own IPC channel, independent of every meeting-details read. Only listens
+    // while the meeting is processing and not stalled.
+    const processingProgress = useMeetingProcessingProgress(
+        initialMeeting.id,
+        isProcessing && !isProcessingStalled,
     );
 
     // The single gate for the Summary tab AND the score accordion inside it, so
@@ -604,121 +602,20 @@ export function useMeetingDetails(initialMeeting: Meeting) {
     const speakerNames = (meeting.detailedSummary as any)?.speakerNames as
         { user: string; client: string; clientDiarized?: string } | undefined;
 
-    // Diarization: suffix far-end labels only when 2+ distinct speaker indices
-    // were recorded for this meeting — 1:1 calls render exactly as before.
-    const hasMultipleClientSpeakers = useMemo(() => {
-        const seen = new Set<number>();
-        for (const seg of meeting.transcript || []) {
-            const idx = (seg as any).speakerIndex;
-            if (idx !== undefined && idx !== null && seg.speaker !== 'user') {
-                seen.add(idx);
-                if (seen.size >= 2) return true;
-            }
-        }
-        return false;
-    }, [meeting.transcript]);
-
-    // Auto-resize textarea
-    useEffect(() => {
-        const el = meetingInputRef.current;
-        if (!el) return;
-        el.style.height = 'auto';
-        el.style.height = `${Math.min(el.scrollHeight, 96)}px`; // max ~4 lines
-    }, [query]);
-
-    // Speaking Balance calls getSpeakerDisplayName('user'/'client') with no
-    // per-segment displayName (there's no single segment to derive one from
-    // for an aggregate stat), so without this it fell back straight past
-    // step 1 to speakerNames — which lags/is empty in some meetings even
-    // though individual transcript segments already carry a live-resolved
-    // displayName (e.g. "Nikhilbarot"). That's what produced the mismatch:
-    // transcript bubbles showed the resolved name while Speaking Balance sat
-    // on the generic "You"/"Other Party" fallback. Scanning the transcript
-    // once for the first non-generic displayName per role gives Speaking
-    // Balance the same answer the transcript itself is already showing.
-    const liveDisplayNames = useMemo(() => {
-        let user: string | undefined;
-        let client: string | undefined;
-        for (const seg of meeting.transcript || []) {
-            const raw = (seg as any).displayName as string | undefined;
-            if (!raw || raw === 'Me' || raw === 'Them') continue;
-            // Diarized rows carry a "· Speaker N" suffix; the aggregate stats
-            // need the BASE name only, so strip it before selecting a first
-            // non-generic per-role label. Without this, Speaking Balance would
-            // show "Raksham · Speaker 1" as the whole client-side aggregate.
-            const suffixIdx = raw.indexOf(' · Speaker ');
-            const name = suffixIdx === -1 ? raw : raw.slice(0, suffixIdx);
-            if (seg.speaker === 'user' && !user) user = name;
-            if ((seg.speaker === 'client' || seg.speaker === 'interviewer') && !client) client = name;
-            if (user && client) break;
-        }
-        return { user, client };
-    }, [meeting.transcript]);
+    // Same labelling the PDF export uses (lib/transcriptLabels) — one implementation, so the two
+    // can't drift. Speaking Balance calls it with no per-segment displayName; the labeler falls back
+    // to the live-resolved names found in the transcript.
+    const getSpeakerDisplayName = useMemo(
+        () => createSpeakerLabeler(meeting.transcript as any, speakerNames),
+        [meeting.transcript, speakerNames]
+    );
 
     // See formatTranscriptTimestamp — epoch ms is ~1.7e12, so a transcript
     // whose positive timestamps are all under a few decades is relative.
     const transcriptTimesAreRelative = useMemo(
-        () => (meeting.transcript || []).some(t => t.timestamp > 0 && t.timestamp < 1e11),
+        () => computeTranscriptTimesAreRelative(meeting.transcript),
         [meeting.transcript]
     );
-
-    // "Morgan (Raksham)" style labels embed the company in parentheses — the
-    // diarized base is the company part alone, matching SessionTracker's
-    // clientDiarized rule for 1-attendee-with-company meetings.
-    const companyFromLabel = (label?: string): string | undefined => {
-        if (!label) return undefined;
-        const m = label.match(/\(([^)]+)\)\s*$/);
-        return m?.[1]?.trim() || undefined;
-    };
-
-    const getSpeakerDisplayName = (speaker: string, displayName?: string, speakerIndex?: number): string => {
-        // Normalize legacy "Me"/"Them" stamps so old meetings render the same
-        // "You" / "Other Party" wording as new ones.
-        if (displayName === 'Me') displayName = undefined;
-        if (displayName === 'Them') displayName = undefined;
-        // Diarization first for far-end turns: when 2+ distinct client voices
-        // were recorded, the per-segment displayName is only meaningful if it
-        // already carries the "· Speaker N" suffix. Rows saved before that
-        // stamping existed (or via a source that flattened every client turn
-        // onto the plain name) must still re-derive the label — otherwise the
-        // plain stamp shadows the suffix and the tab loses the attribution the
-        // live call showed. Manual rename sets clientDiarized to the typed
-        // value, so the explicit override still wins here.
-        if (
-            (speaker === 'client' || speaker === 'interviewer') &&
-            hasMultipleClientSpeakers &&
-            speakerIndex !== undefined &&
-            speakerIndex !== null &&
-            !displayName?.includes(' · Speaker ')
-        ) {
-            const diarizedBase =
-                speakerNames?.clientDiarized ||
-                companyFromLabel(displayName) ||
-                'Other Party';
-            return `${diarizedBase} · Speaker ${speakerIndex + 1}`;
-        }
-        // 1. An explicit per-segment displayName (passed by the transcript
-        //    view) wins — it's the ground truth for that exact turn.
-        if (displayName) return displayName;
-        // 2. No segment displayName was passed in (e.g. Speaking Balance,
-        //    which shows one name per role rather than per turn) — fall back
-        //    to whatever live-resolved name the transcript itself used (base,
-        //    suffix stripped — see liveDisplayNames above), so this never
-        //    disagrees with what's rendered just below it.
-        if (speaker === 'user' && liveDisplayNames.user) return liveDisplayNames.user;
-        if ((speaker === 'client' || speaker === 'interviewer') && liveDisplayNames.client) {
-            return liveDisplayNames.client;
-        }
-        // 3. Use resolved calendar names saved in detailedSummary.speakerNames.
-        //    These are set by SessionTracker (e.g. "Nikhilbarot", "Salesforce").
-        //    Fall back to "You" / "Other Party" only when no calendar data was resolved.
-        if (speaker === 'user') return speakerNames?.user || 'You';
-        if (speaker === 'client' || speaker === "interviewer") {
-            return speakerNames?.client || 'Other Party';
-        }
-        if (speaker === 'assistant') return 'Assistant';
-        return speaker;
-    };
 
     useEffect(() => {
         if (!isProcessing) return;
@@ -734,10 +631,32 @@ export function useMeetingDetails(initialMeeting: Meeting) {
         // silently miss an event that already fired, leaving isProcessing stuck
         // true forever and permanently disabling the transcript/scorecard queries
         // above. So check immediately on mount too, not only on a future event
-        const unblockFromLocal = async () => {
+        //
+        // Reads the LOCAL row (SQLite, authoritative for a meeting processed on
+        // this device) — not GET /meetings/:id. The detail endpoint is for opening
+        // finished meetings; the processing view must not depend on it, and the
+        // placeholder shown for it must not appear here. Returns what it found so
+        // the caller only falls back to HTTP when this device has no row at all
+        // (a meeting processing on another device).
+        const unblockFromLocal = async (): Promise<'finished' | 'processing' | 'missing'> => {
             try {
-                const details = await window.electronAPI?.getMeetingDetails?.(initialMeeting.id);
-                if (details && !isMeetingProcessing(details)) {
+                const details = window.electronAPI?.getMeetingDetailsLocal
+                    ? await window.electronAPI.getMeetingDetailsLocal(initialMeeting.id)
+                    : await window.electronAPI?.getMeetingDetails?.(initialMeeting.id);
+                if (!details) return 'missing';
+                // Only unblock on POSITIVE proof the summary finished: the row is
+                // explicitly flagged processed, or real summary prose exists.
+                // `!isMeetingProcessing` alone is not proof — a row whose
+                // isProcessed is missing (or whose placeholder carries a real
+                // calendar title) reads as "not processing" while the summary is
+                // still being generated, which dropped the loader after a few
+                // seconds and painted "Summary data is empty".
+                const hasFinished =
+                    !!details &&
+                    !isMeetingProcessing(details) &&
+                    ((details as Meeting).isProcessed === true ||
+                        hasGeneratedSummary((details as Meeting).detailedSummary));
+                if (details && hasFinished) {
                     queryClient.setQueryData<Meeting>(meetingKey, (prev) => {
                         const base = prev ?? initialMeeting;
                         return {
@@ -751,9 +670,12 @@ export function useMeetingDetails(initialMeeting: Meeting) {
                     });
                     setIsProcessing(false);
                     void queryClient.invalidateQueries(scorecardKey);
+                    return 'finished';
                 }
+                return 'processing';
             } catch (e) {
                 console.log("[ERROR: Local getMeetingDetails fallback]: ", e);
+                return 'processing';
             }
         };
 
@@ -766,8 +688,10 @@ export function useMeetingDetails(initialMeeting: Meeting) {
         // landed in Supabase yet. Trusting isProcessed alone here was skipping
         // unblockFromLocal() even when updated.transcript was still empty,
         // permanently missing the transcript/scorecard tabs for that view.
+        // (No scorecard requirement: scorecard generation is disabled, so waiting for
+        // one would mean this never reported complete.)
         const isHttpResultComplete = (m: Meeting) =>
-            !!m.isProcessed && (m.transcript?.length ?? 0) > 0 && !!m.detailedSummary?.scorecard;
+            !!m.isProcessed && (m.transcript?.length ?? 0) > 0;
 
         // GET /meetings/:id is canonical for `company`, EXCEPT while an async
         // association (upload flow) is still in flight — then it legitimately
@@ -797,44 +721,42 @@ export function useMeetingDetails(initialMeeting: Meeting) {
                 })
                 .catch(() => void unblockFromLocal());
 
-        if (canUseHttp) {
-            void checkViaHttpThenLocal();
-        } else {
-            void unblockFromLocal();
-        }
+        // Local first. HTTP is only the fallback for "no local row" — never the
+        // driver of the processing view.
+        const check = () => {
+            void unblockFromLocal().then((result) => {
+                if (result === 'missing' && canUseHttp) void checkViaHttpThenLocal();
+            });
+        };
+        check();
 
         if (!window.electronAPI?.onMeetingsUpdated) return;
 
-        const unsubscribe = window.electronAPI.onMeetingsUpdated(() => {
-            if (canUseHttp) {
-                void checkViaHttpThenLocal();
-            } else {
-                void unblockFromLocal();
-            }
-        });
+        const unsubscribe = window.electronAPI.onMeetingsUpdated(check);
 
         return () => unsubscribe();
     }, [isProcessing, initialMeeting.id]);
 
-    const handleSubmitQuestion = () => {
-        if (query.trim()) {
-            setPendingQuery({ text: query.trim(), id: Date.now() });
-            if (!isChatOpen) {
-                setIsChatOpen(true);
-            }
-            setQuery('');
+    /** Ask bar submit. Returns true when the question was accepted, so the
+     *  input (which owns the text) knows to clear itself. */
+    const handleSubmitQuestion = (text: string): boolean => {
+        const trimmed = text.trim();
+        if (!trimmed) return false;
+        setPendingQuery({ text: trimmed, id: Date.now() });
+        if (!isChatOpen) {
+            setIsChatOpen(true);
         }
+        return true;
     };
 
-    const handleInputKeyDown = (e: React.KeyboardEvent) => {
-        // Shift+Enter inserts a newline — let the textarea handle it
-        // natively instead of submitting.
-        if (e.key === 'Enter' && e.shiftKey) {
-            return;
-        }
-        if (e.key === 'Enter' && query.trim()) {
-            e.preventDefault();
-            handleSubmitQuestion();
+    /** Opens the Ask Dojo chat with a caller-supplied prompt — used by the
+     *  Game Plan's "Practice with Dojo" buttons. Same path as the ask bar. */
+    const handlePracticeWithDojo = (prompt: string) => {
+        const text = prompt.trim();
+        if (!text) return;
+        setPendingQuery({ text, id: Date.now() });
+        if (!isChatOpen) {
+            setIsChatOpen(true);
         }
     };
 
@@ -842,114 +764,159 @@ export function useMeetingDetails(initialMeeting: Meeting) {
         let textToCopy = '';
 
         if (activeTab === 'summary' && meeting.detailedSummary) {
+            // Mirrors the Coach tab layout: Call Summary, the type panels
+            // (demo/negotiation, when those types are involved), the fixed
+            // Game Plan, Coach's notes, and legacy Action Items.
             const ds = meeting.detailedSummary;
+            const parts: string[] = [];
 
-            const formatList = (arr?: string[]) =>
-                arr && arr.length ? arr.map(i => `  • ${i}`).join('\n') : '  None';
+            parts.push([
+                meeting.title.toUpperCase(),
+                new Date(meeting.date).toLocaleDateString('en-US', { weekday: 'long', month: 'long', day: 'numeric', year: 'numeric' }),
+            ].join('\n'));
 
-            const la = (ds as any).liveAnalysis as LiveAnalysisData | undefined;
-            const normalizedBant = normalizeBant(la?.bant);
-            const normalizedMeddicc = normalizeMeddicc(la?.meddic);
+            // ── Call Summary ──
+            if (ds.keyPoints?.length) {
+                parts.push(['CALL SUMMARY', ...ds.keyPoints.map(p => `  • ${p}`)].join('\n'));
+            }
 
-            const formatBANT = () => {
-                const rows = confirmedOnly(normalizedBant, BANT_ORDER)
-                    .map(({ label, detail }) => `  ✅ ${label}: ${detail}`)
-                    .join('\n');
-                return rows || '  None confirmed yet';
-            };
+            const involvesDemo = callInvolves('demo', ds, meeting.meetingTypes, scorecard?.detectedTypes);
+            const involvesNegotiation = callInvolves('negotiation', ds, meeting.meetingTypes, scorecard?.detectedTypes);
 
-            const formatMEDDICC = () => {
-                const rows = confirmedOnly(normalizedMeddicc, MEDDICC_ORDER)
-                    .map(({ label, detail }) => `  ✅ ${label}: ${detail}`)
-                    .join('\n');
-                return rows || '  None confirmed yet';
-            };
+            // ── Follow up on the demo ──
+            if (involvesDemo) {
+                const demoParts: string[] = [];
+                const reactions = (ds.demoReview?.reactions ?? []).filter(r => r?.feature?.trim() && r?.quote?.trim());
+                if (reactions.length) {
+                    demoParts.push('  HOW IT LANDED');
+                    demoParts.push(...reactions.map(r => {
+                        const attribution = [r.speaker?.trim(), r.timestamp?.trim()].filter(Boolean).join(' · ');
+                        const verdict = r.verdict === 'landed' ? ' [LANDED]' : r.verdict === 'follow_up' ? ' [FOLLOW UP]' : '';
+                        return `    • ${r.feature}: "${r.quote.trim()}"${attribution ? ` — ${attribution}` : ''}${verdict}`;
+                    }));
+                }
+                const demoLoops = (ds.openLoops ?? []).filter(l => l?.concern?.trim());
+                if (demoLoops.length) {
+                    demoParts.push('  ANSWER WHAT YOU OWE THEM');
+                    for (const l of demoLoops) {
+                        demoParts.push(`    They asked: "${l.concern.trim()}"`);
+                        if (l.suggestedAnswer?.trim()) demoParts.push(`    Try saying: "${l.suggestedAnswer.trim()}"`);
+                    }
+                }
+                const criteria = (ds.demoReview?.successCriteria ?? []).filter(c => c?.metric?.trim() && c?.target?.trim());
+                if (criteria.length) {
+                    demoParts.push('  AGREE HOW THE PILOT IS JUDGED');
+                    demoParts.push(...criteria.map(c =>
+                        `    • ${c.target} — ${c.metric}${c.owner?.trim() ? ` (${c.owner.trim()}'s metric)` : ''}`));
+                }
+                if (demoParts.length) parts.push(['FOLLOW UP ON THE DEMO', ...demoParts].join('\n'));
+            }
 
-            const formatSalesCoachReview = () => {
-                if (!ds.salesCoachReview) return '';
+            // ── Move the deal to signature ──
+            if (involvesNegotiation) {
+                const negParts: string[] = [];
+                const terms = (ds.negotiation?.terms ?? []).filter(t => t?.term?.trim() && (t.theyAsked?.trim() || t.youOffered?.trim()));
+                if (terms.length) {
+                    negParts.push('  WHERE THE TERMS STAND');
+                    for (const t of terms) {
+                        const statusLabel =
+                            t.status === 'agreed' ? ' [AGREED]'
+                                : t.status === 'open' ? ' [OPEN]'
+                                    : t.status === 'leaning' ? ' [LEANING YES]'
+                                        : t.status === 'must_have' ? ' [MUST HAVE]'
+                                            : '';
+                        negParts.push(`    • ${t.term}${statusLabel}`);
+                        if (t.theyAsked?.trim()) negParts.push(`        They asked: ${t.theyAsked.trim()}`);
+                        if (t.youOffered?.trim()) negParts.push(`        You offered: ${t.youOffered.trim()}`);
+                    }
+                }
+                const trades = (ds.negotiation?.trades ?? []).filter(t => t?.give?.trim() && t?.get?.trim());
+                const limit = ds.negotiation?.limit?.trim();
+                if (trades.length || limit) {
+                    negParts.push('  TRADES TO OFFER');
+                    negParts.push(...trades.map(t => `    • If you give: ${t.give}\n      Ask for: ${t.get}`));
+                    if (limit) negParts.push(`    Your limit: ${limit}`);
+                }
+                const path = (ds.negotiation?.pathToSignature ?? []).filter(s => s?.step?.trim());
+                if (path.length) {
+                    negParts.push('  PATH TO SIGNATURE');
+                    negParts.push(...path.map(s =>
+                        `    • ${[s.date?.trim(), s.step.trim(), s.owner?.trim()].filter(Boolean).join(' — ')}`));
+                }
+                if (negParts.length) parts.push(['MOVE THE DEAL TO SIGNATURE', ...negParts].join('\n'));
+            }
 
-                const sections = [
-                    { label: '✅ WHAT I DID RIGHT', items: ds.salesCoachReview.whatIDidRight },
-                    { label: '⚠️ WHAT I COULD HAVE DONE BETTER', items: ds.salesCoachReview.whatICouldHaveDoneBetter },
-                    { label: '❌ WHAT I MISSED COMPLETELY', items: ds.salesCoachReview.whatIMissedCompletely },
+            // ── Your game plan for the next call (fixed structure) ──
+            const playbook = ds.nextCallPlaybook;
+            const goal = playbook?.callGoal?.trim();
+            const recap = playbook?.openingRecap?.trim();
+            const questions = (playbook?.questionsToAsk ?? [])
+                .map(q => ({
+                    text: coachQuestionText(q).trim(),
+                    gap: (typeof q === 'string' ? '' : q?.gap?.trim() ?? '') || null,
+                }))
+                .filter(q => q.text);
+            const loops = (ds.openLoops ?? []).filter(l => l?.concern?.trim());
+            const quant = (playbook?.valueAndROI?.quantitative ?? []).map(s => s?.trim() ?? '').filter(Boolean);
+            const qual = (playbook?.valueAndROI?.qualitative ?? []).map(s => s?.trim() ?? '').filter(Boolean);
+            const promises = coachPromises(ds);
+
+            if (goal || recap || questions.length || loops.length || quant.length || qual.length || promises.length) {
+                const planParts: string[] = [];
+                if (goal) {
+                    const closes = Array.from(new Set(questions.map(q => q.gap).filter(Boolean))) as string[];
+                    planParts.push(`  YOUR GOAL FOR THE CALL\n    ${goal}${closes.length ? `\n    Closes: ${closes.join(', ')}` : ''}`);
+                }
+                planParts.push(`  1. OPEN WITH — a 30-second recap in their words\n${recap ? `    "${recap}"` : '    (no recap captured)'}`);
+                planParts.push(`  2. ASK THESE — each one closes a gap in the deal${questions.length
+                    ? '\n' + questions.map(q => `    • ${q.gap ? `[${q.gap}] ` : ''}${q.text}`).join('\n')
+                    : '\n    (none captured)'}`);
+                planParts.push(`  3. CLOSE THE OPEN LOOPS — concerns they raised that aren't settled yet${loops.length
+                    ? '\n' + loops.map(l =>
+                        `    They asked: "${l.concern.trim()}"${l.suggestedAnswer?.trim() ? `\n    Try saying: "${l.suggestedAnswer.trim()}"` : ''}`).join('\n')
+                    : '\n    (none — all settled)'}`);
+                const valueLines = [
+                    ...(quant.length ? ['    In numbers:', ...quant.map(v => `      • ${v}`)] : []),
+                    ...(qual.length ? ['    In their words:', ...qual.map(v => `      • ${v}`)] : []),
                 ];
+                planParts.push(`  4. REINFORCE THE VALUE — numbers they already agreed with${valueLines.length ? '\n' + valueLines.join('\n') : '\n    (none captured)'}`);
+                planParts.push(`  5. PROMISES YOU MADE${promises.length
+                    ? '\n' + promises.map(p =>
+                        `    • ${p.text}${p.owner?.trim() ? ` (${p.owner.trim()})` : ''}${p.dueDate?.trim() ? ` — due ${p.dueDate.trim()}` : ''}`).join('\n')
+                    : '\n    (none made)'}`);
+                parts.push(['YOUR GAME PLAN FOR THE NEXT CALL', ...planParts].join('\n'));
+            }
 
-                return sections
-                    .map(({ label, items }) => {
-                        if (!items || items.length === 0) return null;
-                        return `  ${label}\n${items.map(item => `    • ${item}`).join('\n')}`;
-                    })
-                    .filter(Boolean)
-                    .join('\n\n');
+            // ── Coach's notes ──
+            const formatCoachNote = (n: ParsedCoachNote): string => {
+                const stamp = n.time ? `[${n.time}] ` : '';
+                const lines = [`    • ${stamp}${n.label ? `[${n.label}] ` : ''}${n.content || n.quote || ''}`];
+                if (n.content && n.quote) lines.push(`        Try saying: "${n.quote}"`);
+                return lines.join('\n');
             };
+            // REPLAY (disabled): "Replay these moments" is hidden from the copied text for now.
+            // const keepDoing = (ds.salesCoachReview?.whatIDidRight ?? [])
+            //     .map(parseCoachHighlight).filter((n): n is ParsedCoachNote => n !== null);
+            const tryNextTime = (ds.salesCoachReview?.whatICouldHaveDoneBetter ?? [])
+                .map(parseCoachNoteItem).filter((n): n is ParsedCoachNote => n !== null);
+            if (tryNextTime.length) {
+                const notes: string[] = [];
+                // REPLAY (disabled): if (keepDoing.length) notes.push('  REPLAY THESE MOMENTS\n' + keepDoing.map(formatCoachNote).join('\n'));
+                notes.push('  TRY NEXT TIME\n' + tryNextTime.map(formatCoachNote).join('\n'));
+                parts.push(["COACH'S NOTES", ...notes].join('\n'));
+            }
 
-            const formatNextCallPlaybook = () => {
-                if (!ds.nextCallPlaybook) return '';
+            // ── Legacy meetings keep their editable Action Items section ──
+            if (ds.salesCoachReview === undefined && ds.actionItems?.length) {
+                parts.push(['ACTION ITEMS', ...ds.actionItems.map(i => `  • ${i}`)].join('\n'));
+            }
 
-                const parts: string[] = [];
-
-                if (ds.nextCallPlaybook.openingRecap) {
-                    parts.push(`  OPENING RECAP:\n    ${ds.nextCallPlaybook.openingRecap}`);
-                }
-
-                if (ds.nextCallPlaybook.questionsToAsk?.length) {
-                    parts.push(`  CRITICAL GAP QUESTIONS:\n${ds.nextCallPlaybook.questionsToAsk.map(q => `    • "${q}"`).join('\n')}`);
-                }
-
-                if (ds.nextCallPlaybook.valueAndROI) {
-                    const roi = ds.nextCallPlaybook.valueAndROI;
-                    const roiParts: string[] = [];
-
-                    if (roi.quantitative?.length) {
-                        roiParts.push(`    Quantitative:\n${roi.quantitative.map(q => `      • ${q}`).join('\n')}`);
-                    }
-                    if (roi.qualitative?.length) {
-                        roiParts.push(`    Qualitative:\n${roi.qualitative.map(q => `      • ${q}`).join('\n')}`);
-                    }
-                    if (roiParts.length) {
-                        parts.push(`  VALUE & ROI:\n${roiParts.join('\n')}`);
-                    }
-                }
-
-                return parts.join('\n\n');
-            };
-
-            textToCopy = `
-${meeting.title.toUpperCase()}
-${new Date(meeting.date).toLocaleDateString()}
-
-OVERVIEW
-${ds.overview || 'No overview available.'}
-
-KEY POINTS
-${formatList(ds.keyPoints)}
-
-ACTION ITEMS
-${formatList(ds.actionItems)}
-
-BANT
-${formatBANT()}
-
-MEDDICC
-${formatMEDDICC()}
-
-DEAL STATUS
-  Stage: ${ds.dealStatus?.stage || 'Unknown'}
-  ${ds.dealStatus?.summary || ''}
-
-SALES COACH REVIEW
-${formatSalesCoachReview() || '  None'}
-
-NEXT CALL PLAYBOOK
-${formatNextCallPlaybook() || '  None'}
-            `
-                .trim();
+            textToCopy = parts.join('\n\n').trim();
 
         } else if (activeTab === 'transcript' && meeting.transcript) {
-            textToCopy = meeting.transcript
-                .filter(t => !['system', 'ai', 'assistant', 'model'].includes(t.speaker?.toLowerCase()))
-                .map(t => `[${formatTime(t.timestamp)}] ${getSpeakerDisplayName(t.speaker, t.displayName, (t as any).speakerIndex)}: ${t.text}`)
-                .join('\n');
+            // Same "Label (MM:SS): text" shape the Upload Transcript parser reads (format 7),
+            // for uploaded AND live-call transcripts — see formatTranscriptForCopy.
+            textToCopy = formatTranscriptForCopy(meeting.transcript as any, speakerNames);
 
         } else if (activeTab === 'usage' && meeting.usage) {
             textToCopy = meeting.usage
@@ -1139,6 +1106,7 @@ ${formatNextCallPlaybook() || '  None'}
         scorecard,
         // Lifecycle-derived render gates (see the block above).
         processingStage,
+        processingProgress,
         isProcessingStalled,
         isSummaryReady,
         isAnalysisReady,
@@ -1147,7 +1115,6 @@ ${formatNextCallPlaybook() || '  None'}
         activeTab, setActiveTab,
         aiInteractionsData, isLoadingAiInteractions,
         hasMoreAiInteractions, isLoadingMoreAiInteractions, loadMoreAiInteractions,
-        query, setQuery,
         isCopied,
         isRegenerating,
         regenError,
@@ -1160,7 +1127,7 @@ ${formatNextCallPlaybook() || '  None'}
         getSpeakerDisplayName,
         transcriptTimesAreRelative,
         handleSubmitQuestion,
-        handleInputKeyDown,
+        handlePracticeWithDojo,
         meetingInputRef,
         isChatBusy,
         handleChatBusyChange,

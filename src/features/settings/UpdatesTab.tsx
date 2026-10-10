@@ -2,6 +2,7 @@ import React from 'react';
 import { RefreshCw, CheckCircle2, Download, AlertCircle, Sparkles, ExternalLink } from 'lucide-react';
 import { UseUpdateStatusResult, formatUpdateSize } from '@/hooks';
 import { releasesPageUrl } from '@/../utils/updateFeed';
+import { API_BASE } from '@/lib/apiClient';
 
 interface UpdatesTabProps {
     isLight: boolean;
@@ -89,11 +90,11 @@ const UpdatesTab: React.FC<UpdatesTabProps> = ({ updateStatus: shared }) => {
             // self-install an unsigned mac build.
             return (
                 <button
-                    onClick={() => window.electronAPI?.openExternal?.(releasesPageUrl())}
+                    onClick={() => window.electronAPI?.openExternal?.(releasesPageUrl(API_BASE))}
                     className="whitespace-nowrap px-4 py-2 bg-text-primary hover:bg-white/90 text-bg-main text-xs font-bold rounded-lg transition-all shadow hover:shadow-lg hover:-translate-y-0.5 active:translate-y-0 flex items-center gap-2"
                 >
                     <ExternalLink size={14} />
-                    Open Releases Page
+                    Open Download Page
                 </button>
             );
         }

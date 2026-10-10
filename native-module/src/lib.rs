@@ -17,7 +17,7 @@ pub mod apm_shim;
 pub mod audio_config;
 pub mod echo_align;
 pub mod echo_control;
-pub mod license;
+pub mod env_flags;
 pub mod log_gate;
 pub mod microphone;
 pub mod output_route;
@@ -41,11 +41,11 @@ static WEBRTC_APM: Lazy<std::sync::Arc<crate::apm_shim::Processor>> =
 //
 // Raw stdout/stderr from this addon (println!/eprintln!) is NOT captured by
 // electron/main.ts's console.log override in a packaged build, so any
-// diagnostic printed only that way is invisible in natively_debug.log — the
+// diagnostic printed only that way is invisible in godojo_debug.log — the
 // one thing a field report actually contains. `native_log!` prints exactly as
 // before (dev console / `npm run app:dev` is unaffected) and additionally
 // forwards the same formatted line to a JS callback, when one is registered,
-// so it lands in natively_debug.log like every other log line.
+// so it lands in godojo_debug.log like every other log line.
 //
 // Registered once by nativeModuleLoader right after the addon loads. Absent
 // (e.g. a native unit-test binary, or before the JS side has wired it up),
@@ -77,7 +77,7 @@ pub fn __forward_native_log(line: String) {
 
 /// Prints a line exactly like `println!`, and additionally forwards the same
 /// formatted line to the JS logger if `set_native_log_callback` has been
-/// called — so it reaches `natively_debug.log` in a packaged build, where raw
+/// called — so it reaches `godojo_debug.log` in a packaged build, where raw
 /// native stdout does not. Use for anything a field report needs to show
 /// (backend init, format negotiation, permission failures); the per-frame DSP
 /// loop should keep using plain println!/eprintln! (or nothing).
@@ -125,7 +125,7 @@ fn i16_slice_to_le_bytes(samples: &[i16]) -> Vec<u8> {
 #[derive(Default)]
 pub struct CaptureOptions {
     /// Echo pipeline mode: "legacy" | "phase1" | "full_duplex".
-    /// Overrides the NATIVELY_ECHO_MODE env var. Unknown values are ignored.
+    /// Overrides the GODOJO_ECHO_MODE env var. Unknown values are ignored.
     pub echo_mode: Option<String>,
     /// Bypass the local RMS+VAD gate (see MicrophoneCapture docs).
     pub vad_disabled: Option<bool>,

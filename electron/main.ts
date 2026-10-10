@@ -3,7 +3,25 @@ import path from "path"
 import fs from "fs"
 import { autoUpdater } from "electron-updater"
 import * as nodeOs from "node:os"
-import { isLowEndMachine, readTotalRamGB } from "../utils/performanceClassification"
+import { isLowMemoryMachine, readTotalRamGB } from "../utils/performanceClassification"
+import { releaseDeferredStartupTasks, scheduleDeferredStartupTask } from "./utils/deferredStartup"
+import { removeLegacyScreenshotDirs } from "./utils/legacyScreenshotCleanup"
+import { waitForMeetingProcessingEnd } from "./utils/meetingProcessingProgress"
+import { onLLMUsage } from "./utils/llmUsageBus"
+
+// LLM usage observability: forward every summary/regenerate/followup-email
+// usage payload to the renderer (dev-only usage chip consumes it there; the
+// PostHog capture happens in the bus itself). Broadcast to all windows —
+// no coupling to window lifecycle.
+onLLMUsage((payload) => {
+  try {
+    for (const win of BrowserWindow.getAllWindows()) {
+      if (!win.isDestroyed()) win.webContents.send("llm-usage", payload)
+    }
+  } catch (e) {
+    console.warn("[main] llm-usage broadcast failed:", e)
+  }
+})
 
 // ─── Separate userData directories for dev vs. production ──────────────────
 // Electron's default userData folder name comes from app.getName(), which
@@ -25,6 +43,10 @@ import { isLowEndMachine, readTotalRamGB } from "../utils/performanceClassificat
 const userDataDirName = app.isPackaged ? 'godojo-ai' : 'godojo-ai-dev';
 app.setPath('userData', path.join(app.getPath('appData'), userDataDirName));
 console.log(`[Main] userData path: ${app.getPath('userData')} (isPackaged=${app.isPackaged})`);
+
+// Must load before AppState renames the app / changes its AUMID (disguise):
+// it captures the login-item registry name at import. See utils/loginItem.ts.
+import { applyOpenAtLogin } from "./utils/loginItem"
 
 // Load app-level config (Supabase, Google/Zoom OAuth client credentials, Firebase).
 // In dev this reads the repo-root `.env`. In a packaged build it reads the `.env`
@@ -179,7 +201,7 @@ let _logFile: string | null = null;
 const getLogFile = (): string | null => {
   if (_logFile) return _logFile;
   try {
-    _logFile = path.join(app.getPath('documents'), 'natively_debug.log');
+    _logFile = path.join(app.getPath('documents'), 'godojo_debug.log');
     return _logFile;
   } catch {
     // app.ready not yet fired — return null, logToFile will skip silently
@@ -350,12 +372,9 @@ console.error = (...args: any[]) => {
 
 import { initializeIpcHandlers } from "./ipcHandlers"
 import { WindowHelper, initRendererUrl } from "./WindowHelper"
-import { SettingsWindowHelper } from "./SettingsWindowHelper"
 import { ModelSelectorWindowHelper } from "./ModelSelectorWindowHelper"
-import { CropperWindowHelper } from "./CropperWindowHelper"
 import { MeetingPopupWindowHelper } from "./MeetingPopupWindowHelper"
 import { meetingPerformanceSampler } from "./services/MeetingPerformanceSampler"
-import { ScreenshotHelper } from "./ScreenshotHelper"
 import { KeybindManager } from "./services/KeybindManager"
 import { ProcessingHelper } from "./ProcessingHelper"
 
@@ -386,7 +405,6 @@ import { ThemeManager } from "./ThemeManager"
 import { RAGManager } from "./rag/RAGManager"
 import { DatabaseManager } from "./db/DatabaseManager"
 import { routeLiveAnalysisWrite } from "./liveAnalysisRouting"
-import { warmupIntentClassifier } from "./llm"
 import { AudioDevices } from "./audio/AudioDevices";
 
 /** Unified type for all STT providers with optional extended capabilities */
@@ -396,26 +414,12 @@ type STTProvider = (GoogleSTT | RestSTT | DeepgramStreamingSTT | SonioxStreaming
   notifySpeechEnded?: () => void;
 };
 
-type ScreenshotWindowMode = 'launcher' | 'overlay';
-type ScreenshotCaptureKind = 'full' | 'selective';
-
-interface ScreenshotCaptureSession {
-  captureKind: ScreenshotCaptureKind;
-  wasMainWindowVisible: boolean;
-  windowMode: ScreenshotWindowMode;
-  wasSettingsVisible: boolean;
-  wasModelSelectorVisible: boolean;
-  overlayBounds: Electron.Rectangle | null;
-  overlayDisplayId: number | null;
-  restoreWithoutFocus: boolean;
-}
-
-// Premium: Knowledge modules loaded conditionally
+// Company-knowledge modules loaded conditionally
 let KnowledgeOrchestratorClass: any = null;
 let KnowledgeDatabaseManagerClass: any = null;
 try {
-  KnowledgeOrchestratorClass = require('./premium/knowledge/KnowledgeOrchestrator').KnowledgeOrchestrator;
-  KnowledgeDatabaseManagerClass = require('./premium/knowledge/KnowledgeDatabaseManager').KnowledgeDatabaseManager;
+  KnowledgeOrchestratorClass = require('./knowledge/KnowledgeOrchestrator').KnowledgeOrchestrator;
+  KnowledgeDatabaseManagerClass = require('./knowledge/KnowledgeDatabaseManager').KnowledgeDatabaseManager;
 } catch {
   console.log('[Main] Knowledge modules not available — profile intelligence disabled.');
 }
@@ -432,11 +436,8 @@ export class AppState {
   private static instance: AppState | null = null
 
   private windowHelper: WindowHelper
-  public settingsWindowHelper: SettingsWindowHelper
   public modelSelectorWindowHelper: ModelSelectorWindowHelper
-  public cropperWindowHelper: CropperWindowHelper
   public meetingPopupWindowHelper: MeetingPopupWindowHelper
-  private screenshotHelper: ScreenshotHelper
   public processingHelper: ProcessingHelper
 
   private intelligenceManager: IntelligenceManager
@@ -467,25 +468,14 @@ export class AppState {
   private _pendingLiveAnalysisGeneration: number | null = null;
   private speakerNameMap: { user: string, client: string };
 
-  // View management
-  private view: "queue" | "solutions" = "queue"
   // Overwritten unconditionally in the constructor below (which reads the
   // persisted setting with an app.isPackaged-based default) — this field
   // default only matters for the brief window before the constructor runs.
   private isUndetectable: boolean = app.isPackaged ? true : false
 
-  private problemInfo: {
-    problem_statement: string
-    input_format: Record<string, any>
-    output_format: Record<string, any>
-    constraints: Array<Record<string, any>>
-    test_cases: Array<Record<string, any>>
-  } | null = null // Allow null
-
-  private hasDebugged: boolean = false
   private isMeetingActive: boolean = false; // Guard for session state leaks
-  /** True on weak hardware: heavy background warmups are postponed from launch to meeting start. */
-  private deferHeavyWarmups: boolean = false;
+  /** Upper bound on waiting for the summary before indexing a finished meeting. */
+  private static readonly POST_MEETING_RAG_MAX_WAIT_MS = 10 * 60_000;
   private isMeetingPaused: boolean = false; // Pause guard — blocks audio and AI while paused
   private _isQuitting: boolean = false;
   private _verboseLogging: boolean = false;
@@ -493,26 +483,7 @@ export class AppState {
   private _dockDebounceTimer: NodeJS.Timeout | null = null; // Debounce dock state changes
   private _dockReassertTimers: NodeJS.Timeout[] = []; // Re-assert dock-hidden state after show+focus
   private _ollamaBootstrapPromise: Promise<void> | null = null;
-  private screenshotCaptureInProgress: boolean = false;
 
-
-  // Processing events
-  public readonly PROCESSING_EVENTS = {
-    //global states
-    UNAUTHORIZED: "procesing-unauthorized",
-    NO_SCREENSHOTS: "processing-no-screenshots",
-
-    //states for generating the initial solution
-    INITIAL_START: "initial-start",
-    PROBLEM_EXTRACTED: "problem-extracted",
-    SOLUTION_SUCCESS: "solution-success",
-    INITIAL_SOLUTION_ERROR: "solution-error",
-
-    //states for processing the debugging
-    DEBUG_START: "debug-start",
-    DEBUG_SUCCESS: "debug-success",
-    DEBUG_ERROR: "debug-error"
-  } as const
 
   constructor() {
     // 1. Load boot-critical settings first (used by WindowHelpers)
@@ -534,9 +505,7 @@ export class AppState {
 
     // 2. Initialize Helpers with loaded state
     this.windowHelper = new WindowHelper(this)
-    this.settingsWindowHelper = new SettingsWindowHelper()
     this.modelSelectorWindowHelper = new ModelSelectorWindowHelper()
-    this.cropperWindowHelper = new CropperWindowHelper()
     this.meetingPopupWindowHelper = new MeetingPopupWindowHelper()
     // The popup refuses to auto-start while a meeting is already running, but
     // it must not import AppState to find that out (require cycle).
@@ -547,18 +516,12 @@ export class AppState {
     })
 
     // 3. Initialize other helpers
-    this.screenshotHelper = new ScreenshotHelper(this.view)
     this.processingHelper = new ProcessingHelper(this)
 
     this.windowHelper.setContentProtection(this.isUndetectable);
-    this.settingsWindowHelper.setContentProtection(this.isUndetectable);
     this.modelSelectorWindowHelper.setContentProtection(this.isUndetectable);
-    this.cropperWindowHelper.setContentProtection(this.isUndetectable);
     this.meetingPopupWindowHelper.setContentProtection(this.isUndetectable);
 
-    if (process.platform === 'win32' || process.platform === 'darwin') {
-      this.cropperWindowHelper.preload();
-    }
 
     // Initialize KeybindManager
     const keybindManager = KeybindManager.getInstance();
@@ -576,79 +539,6 @@ export class AppState {
         } else if (actionId === 'general:toggle-mouse-passthrough') {
           // Adapted from public PR #113 — verify premium interaction
           this.toggleOverlayMousePassthrough();
-        } else if (actionId === 'general:take-screenshot') {
-          const screenshotPath = await this.takeScreenshot(false);
-          const preview = await this.getImagePreview(screenshotPath);
-          const mainWindow = this.getMainWindow();
-          if (mainWindow) {
-            mainWindow.webContents.send("screenshot-taken", {
-              path: screenshotPath,
-              preview
-            });
-          }
-        } else if (actionId === 'general:selective-screenshot') {
-          const screenshotPath = await this.takeSelectiveScreenshot(false);
-          const preview = await this.getImagePreview(screenshotPath);
-          const mainWindow = this.getMainWindow();
-          if (mainWindow) {
-            // preload.ts maps 'screenshot-attached' to onScreenshotAttached
-            mainWindow.webContents.send("screenshot-attached", {
-              path: screenshotPath,
-              preview
-            });
-          }
-        } else if (actionId === 'general:capture-and-process') {
-          // Single-trigger: capture current screen then immediately request AI analysis
-          const screenshotPath = await this.takeScreenshot(false);
-          const preview = await this.getImagePreview(screenshotPath);
-          // Ensure the window is visible so the user can see the response without stealing focus
-          this.showMainWindow(true);
-          // win.focus() can cause macOS to re-activate the app. Re-hide the dock
-          // if we are in undetectable mode.
-          if (process.platform === 'darwin' && this.isUndetectable) {
-            app.dock.hide();
-          }
-          const mainWindow = this.getMainWindow();
-          if (mainWindow) {
-            mainWindow.webContents.send("capture-and-process", {
-              path: screenshotPath,
-              preview
-            });
-          }
-
-          // --- STEALTH SHORTCUTS: no focus, no show, pure IPC dispatch ---
-
-          // Chat actions — fire into the renderer without focusing the window
-        } else if (
-          actionId === 'chat:whatToAnswer' ||
-          actionId === 'chat:clarify' ||
-          actionId === 'chat:followUp' ||
-          actionId === 'chat:answer' ||
-          actionId === 'chat:codeHint' ||
-          actionId === 'chat:brainstorm' ||
-          actionId === 'chat:dynamicAction4' ||
-          actionId === 'chat:scrollUp' ||
-          actionId === 'chat:scrollDown'
-        ) {
-          const actionMap: Record<string, string> = {
-            'chat:whatToAnswer': 'whatToAnswer',
-            'chat:clarify': 'clarify',
-            'chat:followUp': 'followUp',
-            'chat:answer': 'answer',
-            'chat:codeHint': 'codeHint',
-            'chat:brainstorm': 'brainstorm',
-            'chat:dynamicAction4': 'dynamicAction4',
-            'chat:scrollUp': 'scrollUp',
-            'chat:scrollDown': 'scrollDown',
-          };
-          const action = actionMap[actionId];
-          // Send to all windows without focusing — stealth operation
-          const allWindows = BrowserWindow.getAllWindows();
-          allWindows.forEach(win => {
-            if (!win.isDestroyed()) {
-              win.webContents.send('global-shortcut', { action });
-            }
-          });
 
           // Window movement — move window position without focus change
         } else if (actionId === 'window:move-up') {
@@ -659,32 +549,13 @@ export class AppState {
           this.windowHelper.moveWindowLeft();
         } else if (actionId === 'window:move-right') {
           this.windowHelper.moveWindowRight();
-
-          // General actions that are now global (stealth)
-        } else if (actionId === 'general:process-screenshots') {
-          const allWindows = BrowserWindow.getAllWindows();
-          allWindows.forEach(win => {
-            if (!win.isDestroyed()) {
-              win.webContents.send('global-shortcut', { action: 'processScreenshots' });
-            }
-          });
-        } else if (actionId === 'general:reset-cancel') {
-          const allWindows = BrowserWindow.getAllWindows();
-          allWindows.forEach(win => {
-            if (!win.isDestroyed()) {
-              win.webContents.send('global-shortcut', { action: 'resetCancel' });
-            }
-          });
         }
       } catch (e: any) {
-        if (e.message !== "Selection cancelled" && e.message !== "Screenshot capture already in progress") {
-          console.error(`[Main] Error handling global shortcut ${actionId}:`, e);
-        }
+        console.error(`[Main] Error handling global shortcut ${actionId}:`, e);
       }
     });
 
     // Inject WindowHelper into other helpers
-    this.settingsWindowHelper.setWindowHelper(this.windowHelper);
     this.modelSelectorWindowHelper.setWindowHelper(this.windowHelper);
 
 
@@ -705,20 +576,12 @@ export class AppState {
 
     this.setupIntelligenceEvents()
 
-    // Pre-warm the zero-shot intent classifier in the background — skipped at
-    // launch on <=8 GB RAM or <=4 threads; loads at meeting start instead.
-    this.deferHeavyWarmups = isLowEndMachine({
-      cpuThreads: nodeOs.cpus()?.length || null,
-      totalRamGB: readTotalRamGB(nodeOs.totalmem()),
-    })
-    if (this.deferHeavyWarmups) {
-      console.log('[Main] Low-end hardware — deferring intent classifier warmup to meeting start')
-    } else {
-      warmupIntentClassifier()
-    }
+    // The zero-shot intent classifier is NOT pre-warmed: its only consumer is
+    // the dormant "What should I say" mode, so nothing asks it anything today,
+    // and its model is not shipped (see build.extraResources). If that mode
+    // returns, classifyIntent() loads it on first use and falls back to the
+    // regex fast-path while it loads or if the model is missing.
 
-    // Setup Ollama IPC
-    this.setupOllamaIpcHandlers()
 
     // --- NEW SYSTEM AUDIO PIPELINE (SOX + NODE GOOGLE STT) ---
     // LAZY INIT: Do not setup pipeline here to prevent launch volume surge.
@@ -1427,7 +1290,7 @@ export class AppState {
    *    its OWN read-only connection to that path.
    *  - cold start: AppState is constructed before any renderer exists, so
    *    AuthManager.getUid() is still null and DatabaseManager has resolved to
-   *    natively-anon.db. Until this runs, RAG and knowledge index into the anon
+   *    godojo-anon.db. Until this runs, RAG and knowledge index into the anon
    *    file for the entire session even for a normally signed-in user.
    *
    * Re-running initializeRAGManager() also re-hydrates the orchestrator from
@@ -1455,7 +1318,7 @@ export class AppState {
   }
 
   // Echo pipeline mode for the native gate ('legacy' | 'phase1' | 'full_duplex').
-  // Persisted in CredentialsManager; NATIVELY_ECHO_MODE env var wins for field debugging.
+  // Persisted in CredentialsManager; GODOJO_ECHO_MODE env var wins for field debugging.
   private _echoMode(): string {
     try {
       const { CredentialsManager } = require('./services/CredentialsManager');
@@ -1562,7 +1425,12 @@ export class AppState {
       if (this.isDevUpdatesEnabled()) {
         downloadSizeBytes = await this.fetchDevFeedInstallerSize()
       } else {
-        downloadSizeBytes = this.platformReleaseAssetSize(notes?.assets ?? [], info.version)
+        // Feed first: latest*.yml (served from R2) lists every file with its byte size, so the
+        // size no longer depends on a GitHub release carrying binaries. GitHub assets remain
+        // only as a fallback for feeds that omit sizes.
+        downloadSizeBytes =
+          this.updateFeedFileSize(info as { files?: { url: string; size?: number }[] })
+          ?? this.platformReleaseAssetSize(notes?.assets ?? [], info.version)
       }
       this.broadcast("update-available", {
         ...info,
@@ -1588,7 +1456,7 @@ export class AppState {
       // by a too-late update-not-available, and the update modal pops open
       // with a technical 404 for what is really a valid "up to date" state.
       if (this.isNoReleaseAvailableError(err)) {
-        console.log('[AutoUpdater] No published release found on GitHub — treating as up to date')
+        console.log('[AutoUpdater] No published release found on the update feed — treating as up to date')
         this.updateOpPhase = 'idle'
         this.broadcast('update-not-available', { version: app.getVersion() })
         return
@@ -1671,7 +1539,7 @@ export class AppState {
       this.scheduleAutoUpdateCheck(AppState.UPDATE_CHECK_INTERVAL_MS);
     } catch (err: any) {
       if (this.isNoReleaseAvailableError(err)) {
-        console.log('[AutoUpdater] No published release found on GitHub — treating as up to date');
+        console.log('[AutoUpdater] No published release found on the update feed — treating as up to date');
         this.broadcast('update-not-available', { version: app.getVersion() });
         this.autoCheckFailures = 0;
         this.scheduleAutoUpdateCheck(AppState.UPDATE_CHECK_INTERVAL_MS);
@@ -1744,7 +1612,7 @@ export class AppState {
     // Workaround: Open the folder containing the downloaded update so user can install manually
     if (process.platform === 'darwin') {
       try {
-        // Get the downloaded update file path (e.g., .../Natively-1.0.9-mac.zip)
+        // Get the downloaded update file path (e.g., .../GoDojo.AI-1.0.9-mac.zip)
         const updateFile = (autoUpdater as any).downloadedUpdateHelper?.file
         console.log('[AutoUpdater] Downloaded update file:', updateFile)
 
@@ -1788,8 +1656,32 @@ export class AppState {
   }
 
   /**
+   * Byte size of THIS platform's update artifact from the update feed itself
+   * (`files[]` of latest.yml / latest-mac.yml / latest-linux.yml on R2). Same picking rules
+   * as platformReleaseAssetSize below; null when the feed carries no usable size.
+   */
+  private updateFeedFileSize(info: { files?: { url: string; size?: number }[] }): number | null {
+    const files = (info.files ?? []).filter(f => f && typeof f.url === 'string' && (f.size ?? 0) > 0)
+    if (!files.length) return null
+    const pick = (pred: (url: string) => boolean): number | null => {
+      const hit = files.find(f => pred(f.url))
+      return hit ? (hit.size as number) : null
+    }
+    if (process.platform === 'win32') {
+      return pick(u => /setup.*\.exe$/i.test(u)) ?? pick(u => u.toLowerCase().endsWith('.exe'))
+    }
+    if (process.platform === 'darwin') {
+      const arch = process.arch === 'arm64' ? 'arm64' : 'x64'
+      return pick(u => new RegExp(`-${arch}\\.dmg$`, 'i').test(u))
+        ?? pick(u => u.toLowerCase().endsWith('.dmg'))
+        ?? pick(u => new RegExp(`-${arch}\\.zip$`, 'i').test(u))
+    }
+    return pick(u => u.toLowerCase().endsWith('.appimage'))
+  }
+
+  /**
    * Byte size of THIS platform's update artifact, picked from the GitHub
-   * release assets. Windows matches the NSIS setup exe (what electron-updater
+   * release assets (fallback — see updateFeedFileSize). Windows matches the NSIS setup exe (what electron-updater
    * downloads; with differential/blockmap download only the changed blocks
    * transfer, and the live progress total then reflects the smaller delta —
    * both are exposed and the UI prefers actual transferred bytes once known).
@@ -1855,7 +1747,7 @@ export class AppState {
       // releases, or before the first one is published. That's not a real
       // failure, it just means there's nothing to update to yet.
       if (this.isNoReleaseAvailableError(err)) {
-        console.log("[AutoUpdater] No published release found on GitHub — treating as up to date")
+        console.log("[AutoUpdater] No published release found on the update feed — treating as up to date")
         this.broadcast("update-not-available", { version: app.getVersion() })
         return
       }
@@ -1906,7 +1798,7 @@ export class AppState {
         : "We couldn't check for updates right now. Please check your internet connection and try again."
     }
     return isDownload
-      ? "The update couldn't be downloaded. Please try again, or download it from the releases page."
+      ? "The update couldn't be downloaded. Please try again, or download it from the download page."
       : "We couldn't check for the latest version right now. Please try again later."
   }
 
@@ -1918,11 +1810,11 @@ export class AppState {
     // installable file for those package types, so nothing ever downloads
     // and no error ever fires. Tell the user up front instead.
     if (process.platform === 'linux' && !process.env.APPIMAGE) {
-      this.broadcast('update-error', "Updates aren't supported for the .deb install. Please download the new version from the releases page.")
+      this.broadcast('update-error', "Updates aren't supported for the .deb install. Please download the new version from the download page.")
       return
     }
     if (process.platform === 'win32' && process.env.PORTABLE_EXECUTABLE_DIR) {
-      this.broadcast('update-error', "The portable version can't update itself. Please download the installer from the releases page.")
+      this.broadcast('update-error', "The portable version can't update itself. Please download the installer from the download page.")
       return
     }
     // Errors during download are surfaced via autoUpdater.on("error") which
@@ -2709,10 +2601,6 @@ export class AppState {
     helper.getLauncherWindow()?.webContents.send('native-audio-transcript', payload);
     helper.getOverlayWindow()?.webContents.send('native-audio-transcript', payload);
 
-    // Feed final recruiter (system audio) transcripts to negotiation tracker
-    if (segment.isFinal && speaker === 'client') {
-      this.knowledgeOrchestrator?.feedInterviewerUtterance?.(segment.text);
-    }
   }
 
   private async setupSystemAudioPipeline(inputDeviceId?: string, outputDeviceId?: string): Promise<void> {
@@ -3350,7 +3238,6 @@ export class AppState {
 
     const broadcastTargets = (): BrowserWindow[] =>
       [
-        this.settingsWindowHelper.getSettingsWindow(),
         this.getWindowHelper().getLauncherWindow(),
         this.getWindowHelper().getOverlayWindow(),
       ].filter((win): win is BrowserWindow => !!win && !win.isDestroyed());
@@ -3385,7 +3272,7 @@ export class AppState {
     };
 
     // System-audio probe, wired alongside the mic test so Settings → Audio can
-    // verify the interviewer-audio path BEFORE a meeting starts. Runs
+    // verify the system-audio path BEFORE a meeting starts. Runs
     // independently: a screen-recording denial reports itself and leaves the
     // mic meter working.
     const attachSystemTestListeners = (capture: SystemAudioCapture) => {
@@ -3550,7 +3437,7 @@ export class AppState {
   public async startMeeting(metadata?: any): Promise<void> {
     console.log('[Main] Starting Meeting...', metadata);
     // Field diagnostics: 60s process-metric samples for the duration of the
-    // call (natively_debug.log + sampled PostHog perf_sample events).
+    // call (godojo_debug.log + sampled PostHog perf_sample events).
     meetingPerformanceSampler.start();
 
     // Idempotency guard: a duplicate call (double-click on Start before the UI
@@ -3633,7 +3520,6 @@ export class AppState {
     // on — that stamp is what lets main reject a result belonging to the call
     // that just ended.
     this.sendToMeetingSurfaces('session-reset', { meetingGeneration: this._meetingGeneration });
-    if (this.deferHeavyWarmups) warmupIntentClassifier();   // idempotent, fire-and-forget
 
     // ★ ASYNC AUDIO INIT: Return INSTANTLY so the IPC response goes back
     // to the renderer immediately, allowing the UI to switch to overlay
@@ -3840,41 +3726,46 @@ export class AppState {
     void this._flushPendingSttResync();
 
     // ─── Background post-processing ──────────────────────────────────────────
-    // These are the previously blocking operations that caused the stop-button
-    // delay. They are pure background tasks with no UI dependency:
-    //   • stopLiveIndexing flushes the JIT RAG live stream
-    //   • processCompletedMeetingForRAG embeds the full meeting into the vector store
-    //   • deleteMeetingData cleans up provisional JIT chunks
-    // Chain them sequentially in the background so ordering is preserved,
-    // but the IPC call returns immediately and the UI transitions without delay.
+    // Pure background tasks with no UI dependency, chained so ordering holds
+    // while the IPC call returns immediately:
+    //   1. stop live indexing WITHOUT the final embed pass — the provisional
+    //      'live-meeting-current' chunks are discarded next, so embedding the
+    //      tail was wasted work in the busiest second of the call's end;
+    //   2. delete those provisional chunks right away (nothing queries them
+    //      once live indexing stops — query-live-meeting requires it active),
+    //      before a quickly-started next meeting could reuse the session key;
+    //   3. wait for the summary pipeline to finish, THEN index the finished
+    //      meeting. Running it immediately stacked chunking + embedding on top
+    //      of the summary LLM calls and DB saves — and it never saw the
+    //      summary, which processCompletedMeetingForRAG folds into the index
+    //      when present.
     const ragManager = this.ragManager;
+    const discardLiveChunks = async () => {
+      if (!ragManager) return;
+      await ragManager.stopLiveIndexing({ flush: false });
+      console.log('[Main] Live RAG indexing stopped.');
+      // Guard: if a new meeting has already started, 'live-meeting-current'
+      // now belongs to that session — leave it alone.
+      if (!this.isMeetingActive) {
+        ragManager.deleteMeetingData('live-meeting-current');
+        console.log('[Main] JIT RAG provisional chunks cleaned up.');
+      } else {
+        console.log('[Main] New meeting started during cleanup — skipping live-meeting-current deletion.');
+      }
+    };
     if (meetingId) {
       (async () => {
         try {
-          if (ragManager) {
-            await ragManager.stopLiveIndexing();
-            console.log('[Main] Live RAG indexing stopped.');
-          }
+          await discardLiveChunks();
+          await waitForMeetingProcessingEnd(meetingId, AppState.POST_MEETING_RAG_MAX_WAIT_MS);
           await this.processCompletedMeetingForRAG(meetingId);
-          // Guard: only delete live-meeting-current provisional chunks if no new
-          // meeting has started while we were processing. If a new meeting IS active,
-          // 'live-meeting-current' now belongs to that session — leave it alone.
-          if (ragManager && !this.isMeetingActive) {
-            ragManager.deleteMeetingData('live-meeting-current');
-            console.log('[Main] JIT RAG provisional chunks cleaned up.');
-          } else if (this.isMeetingActive) {
-            console.log('[Main] New meeting started during cleanup — skipping live-meeting-current deletion.');
-          }
         } catch (err) {
           console.error('[Main] Background post-meeting RAG processing failed:', err);
         }
       })();
     } else {
-      // Meeting was too short — still flush the live indexer and clean up
-      if (ragManager) {
-        ragManager.stopLiveIndexing().catch(() => { });
-        if (!this.isMeetingActive) ragManager.deleteMeetingData('live-meeting-current');
-      }
+      // Meeting was too short — nothing to index; just discard the live chunks
+      discardLiveChunks().catch(() => { });
     }
     // ─────────────────────────────────────────────────────────────────────────
 
@@ -4618,37 +4509,8 @@ export class AppState {
     return this.knowledgeOrchestrator;
   }
 
-  public getView(): "queue" | "solutions" {
-    return this.view
-  }
-
-  public setView(view: "queue" | "solutions"): void {
-    this.view = view
-    this.screenshotHelper.setView(view)
-  }
-
   public isVisible(): boolean {
     return this.windowHelper.isVisible()
-  }
-
-  public getScreenshotHelper(): ScreenshotHelper {
-    return this.screenshotHelper
-  }
-
-  public getProblemInfo(): any {
-    return this.problemInfo
-  }
-
-  public setProblemInfo(problemInfo: any): void {
-    this.problemInfo = problemInfo
-  }
-
-  public getScreenshotQueue(): string[] {
-    return this.screenshotHelper.getScreenshotQueue()
-  }
-
-  public getExtraScreenshotQueue(): string[] {
-    return this.screenshotHelper.getExtraScreenshotQueue()
   }
 
   public getSpeakerNameMap(): { user: string; client: string } {
@@ -4656,30 +4518,6 @@ export class AppState {
   }
 
   // Window management methods
-  public setupOllamaIpcHandlers(): void {
-    ipcMain.handle('get-ollama-models', async () => {
-      try {
-        const controller = new AbortController();
-        const timeoutId = setTimeout(() => controller.abort(), 2000); // 2s timeout for detection
-
-        const response = await fetch('http://localhost:11434/api/tags', {
-          signal: controller.signal
-        });
-        clearTimeout(timeoutId);
-
-        if (response.ok) {
-          const data = await response.json();
-          // data.models is an array of objects: { name: "llama3:latest", ... }
-          return data.models.map((m: any) => m.name);
-        }
-        return [];
-      } catch (error) {
-        // console.warn("Ollama detection failed:", error);
-        return [];
-      }
-    });
-  }
-
   public createWindow(): void {
     this.windowHelper.createWindow()
   }
@@ -4695,13 +4533,6 @@ export class AppState {
   }
 
   public toggleMainWindow(): void {
-    console.log(
-      "Screenshots: ",
-      this.screenshotHelper.getScreenshotQueue().length,
-      "Extra screenshots: ",
-      this.screenshotHelper.getExtraScreenshotQueue().length
-    )
-
     const mode = this.windowHelper.getCurrentWindowMode();
 
     if (mode === 'launcher') {
@@ -4718,158 +4549,6 @@ export class AppState {
 
   public setWindowDimensions(width: number, height: number): void {
     this.windowHelper.setWindowDimensions(width, height)
-  }
-
-  public clearQueues(): void {
-    this.screenshotHelper.clearQueues()
-
-    // Clear problem info
-    this.problemInfo = null
-
-    // Reset view to initial state
-    this.setView("queue")
-  }
-
-  private createScreenshotCaptureSession(
-    captureKind: ScreenshotCaptureKind,
-    restoreFocus: boolean
-  ): ScreenshotCaptureSession {
-    const settingsWindow = this.settingsWindowHelper.getSettingsWindow();
-    const modelSelectorWindow = this.modelSelectorWindowHelper.getWindow();
-
-    return {
-      captureKind,
-      wasMainWindowVisible: this.windowHelper.isVisible(),
-      windowMode: this.windowHelper.getCurrentWindowMode(),
-      wasSettingsVisible: !!settingsWindow && !settingsWindow.isDestroyed() && settingsWindow.isVisible(),
-      wasModelSelectorVisible: !!modelSelectorWindow && !modelSelectorWindow.isDestroyed() && modelSelectorWindow.isVisible(),
-      overlayBounds: this.windowHelper.getLastOverlayBounds(),
-      overlayDisplayId: this.windowHelper.getLastOverlayDisplayId(),
-      restoreWithoutFocus: process.platform === 'darwin' || !restoreFocus
-    };
-  }
-
-  private getDisplayById(displayId: number | null): Electron.Display | undefined {
-    if (displayId === null) return undefined;
-    return screen.getAllDisplays().find(display => display.id === displayId);
-  }
-
-  private getTargetDisplayForFullScreenshot(session: ScreenshotCaptureSession): Electron.Display {
-    if (session.windowMode === 'overlay' && session.overlayBounds) {
-      return screen.getDisplayMatching(session.overlayBounds);
-    }
-
-    const lastOverlayDisplay = this.getDisplayById(session.overlayDisplayId);
-    if (lastOverlayDisplay) {
-      return lastOverlayDisplay;
-    }
-
-    return screen.getDisplayNearestPoint(screen.getCursorScreenPoint());
-  }
-
-  private hideWindowsForScreenshot(session: ScreenshotCaptureSession): void {
-    if (session.wasModelSelectorVisible) {
-      this.modelSelectorWindowHelper.hideWindow();
-    }
-
-    if (session.wasSettingsVisible) {
-      this.settingsWindowHelper.closeWindow();
-    }
-
-    if (session.wasMainWindowVisible) {
-      this.hideMainWindow();
-    }
-  }
-
-  private restoreWindowsAfterScreenshot(session: ScreenshotCaptureSession): void {
-    const activate = !session.restoreWithoutFocus;
-    const shouldRestoreMainWindow = session.wasMainWindowVisible;
-
-    if (shouldRestoreMainWindow) {
-      if (session.windowMode === 'overlay') {
-        this.windowHelper.switchToOverlay(!activate);
-      } else {
-        this.windowHelper.switchToLauncher(!activate);
-      }
-    }
-
-    if (session.wasSettingsVisible) {
-      const settingsWindow = this.settingsWindowHelper.getSettingsWindow();
-      if (settingsWindow && !settingsWindow.isDestroyed()) {
-        const { x, y } = settingsWindow.getBounds();
-        this.settingsWindowHelper.showWindow(x, y, { activate });
-      }
-    }
-
-    if (session.wasModelSelectorVisible) {
-      const modelSelectorWindow = this.modelSelectorWindowHelper.getWindow();
-      if (modelSelectorWindow && !modelSelectorWindow.isDestroyed()) {
-        const { x, y } = modelSelectorWindow.getBounds();
-        this.modelSelectorWindowHelper.showWindow(x, y, { activate });
-      }
-    }
-  }
-
-  private async withScreenshotCaptureSession<T>(
-    captureKind: ScreenshotCaptureKind,
-    restoreFocus: boolean,
-    capture: (session: ScreenshotCaptureSession) => Promise<T>
-  ): Promise<T> {
-    if (!this.getMainWindow()) {
-      throw new Error("No main window available");
-    }
-
-    if (this.screenshotCaptureInProgress) {
-      throw new Error("Screenshot capture already in progress");
-    }
-
-    const session = this.createScreenshotCaptureSession(captureKind, restoreFocus);
-    this.screenshotCaptureInProgress = true;
-
-    try {
-      this.hideWindowsForScreenshot(session);
-      await new Promise(resolve => setTimeout(resolve, 50));
-      return await capture(session);
-    } finally {
-      try {
-        this.restoreWindowsAfterScreenshot(session);
-      } finally {
-        this.screenshotCaptureInProgress = false;
-      }
-    }
-  }
-
-  // Screenshot management methods
-  public async takeScreenshot(restoreFocus: boolean = true): Promise<string> {
-    return this.withScreenshotCaptureSession('full', restoreFocus, (session) =>
-      this.screenshotHelper.takeScreenshot(this.getTargetDisplayForFullScreenshot(session))
-    )
-  }
-
-  public async takeSelectiveScreenshot(restoreFocus: boolean = true): Promise<string> {
-    return this.withScreenshotCaptureSession('selective', restoreFocus, async () => {
-      let captureArea: Electron.Rectangle | undefined;
-
-      if (process.platform === 'win32' || process.platform === 'darwin') {
-        captureArea = await this.cropperWindowHelper.showCropper();
-
-        if (!captureArea) {
-          throw new Error("Selection cancelled");
-        }
-      }
-
-      return this.screenshotHelper.takeSelectiveScreenshot(captureArea)
-    })
-  }
-
-  public async getImagePreview(filepath: string): Promise<string> {
-    return this.screenshotHelper.getImagePreview(filepath)
-  }
-
-  public async deleteScreenshot(
-    path: string
-  ): Promise<{ success: boolean; error?: string }> {
-    return this.screenshotHelper.deleteScreenshot(path)
   }
 
   // New methods to move the window
@@ -4904,8 +4583,8 @@ export class AppState {
     // Potential paths for tray icon
     const templatePath = path.join(resourcesPath, 'assets', 'iconTemplate.png');
     const defaultIconPath = app.isPackaged
-      ? path.join(resourcesPath, 'src/components/icon.png')
-      : path.join(app.getAppPath(), 'src/components/icon.png');
+      ? path.join(resourcesPath, 'assets/icon.png')
+      : path.join(app.getAppPath(), 'assets/icon.png');
 
     let iconToUse = defaultIconPath;
 
@@ -4915,8 +4594,8 @@ export class AppState {
         iconToUse = templatePath;
         console.log('[Tray] Using template icon:', templatePath);
       } else {
-        // Also check src/components for dev
-        const devTemplatePath = path.join(app.getAppPath(), 'src/components/iconTemplate.png');
+        // Also check assets/ for dev
+        const devTemplatePath = path.join(app.getAppPath(), 'assets/iconTemplate.png');
         if (require('fs').existsSync(devTemplatePath)) {
           iconToUse = devTemplatePath;
           console.log('[Tray] Using dev template icon:', devTemplatePath);
@@ -4950,9 +4629,6 @@ export class AppState {
     const isPaused = this.isMeetingPaused;
 
     const keybindManager = KeybindManager.getInstance();
-    const screenshotAccel = keybindManager.getKeybind('general:take-screenshot') || 'CommandOrControl+H';
-
-    console.log('[Main] updateTrayMenu called. Screenshot Accelerator:', screenshotAccel);
 
     // Update tooltip for verification
     this.tray.setToolTip('Godojo.ai');
@@ -4967,8 +4643,6 @@ export class AppState {
         .replace(/\+/g, '+');
     };
 
-    const displayScreenshot = formatAccel(screenshotAccel);
-    // We can also get the toggle visibility shortcut if desired
     const toggleKb = keybindManager.getKeybind('general:toggle-visibility');
     const toggleAccel = toggleKb || 'CommandOrControl+B';
     const displayToggle = formatAccel(toggleAccel);
@@ -4997,28 +4671,6 @@ export class AppState {
         type: 'separator'
       },
       {
-        label: `Take Screenshot (${displayScreenshot})`,
-        accelerator: screenshotAccel,
-        click: async () => {
-          try {
-            const screenshotPath = await this.takeScreenshot()
-            const preview = await this.getImagePreview(screenshotPath)
-            const mainWindow = this.getMainWindow()
-            if (mainWindow) {
-              mainWindow.webContents.send("screenshot-taken", {
-                path: screenshotPath,
-                preview
-              })
-            }
-          } catch (error) {
-            console.error("Error taking screenshot from tray:", error)
-          }
-        }
-      },
-      {
-        type: 'separator'
-      },
-      {
         label: 'Quit',
         accelerator: 'Command+Q',
         click: () => {
@@ -5037,14 +4689,6 @@ export class AppState {
     }
   }
 
-  public setHasDebugged(value: boolean): void {
-    this.hasDebugged = value
-  }
-
-  public getHasDebugged(): boolean {
-    return this.hasDebugged
-  }
-
   public setUndetectable(state: boolean): void {
     // Guard: skip if state hasn't actually changed to prevent
     // duplicate dock hide/show cycles from renderer feedback loops
@@ -5054,9 +4698,7 @@ export class AppState {
 
     this.isUndetectable = state
     this.windowHelper.setContentProtection(state)
-    this.settingsWindowHelper.setContentProtection(state)
     this.modelSelectorWindowHelper.setContentProtection(state)
-    this.cropperWindowHelper.setContentProtection(state)
     this.meetingPopupWindowHelper.setContentProtection(state)
 
     // Persist state via SettingsManager
@@ -5093,28 +4735,20 @@ export class AppState {
         // if the user toggled again before the timer fired.
         const settled = this.isUndetectable;
 
-        const activeWindow = this.windowHelper.getMainWindow();
-        const settingsWindow = this.settingsWindowHelper.getSettingsWindow();
-        let targetFocusWindow = activeWindow;
-        if (settingsWindow && !settingsWindow.isDestroyed() && settingsWindow.isVisible()) {
-          targetFocusWindow = settingsWindow;
-        }
+        const targetFocusWindow = this.windowHelper.getMainWindow();
 
         const modelSelectorWindow = this.modelSelectorWindowHelper.getWindow();
         const isModelSelectorVisible = modelSelectorWindow && !modelSelectorWindow.isDestroyed() && modelSelectorWindow.isVisible();
 
-        if (targetFocusWindow && targetFocusWindow === settingsWindow) {
-          this.settingsWindowHelper.setIgnoreBlur(true);
-        }
         if (isModelSelectorVisible) {
           this.modelSelectorWindowHelper.setIgnoreBlur(true);
         }
 
         if (settled) {
-          // Capture whether Natively is currently the frontmost app BEFORE
+          // Capture whether GoDojo is currently the frontmost app BEFORE
           // dock.hide() — that call triggers an implicit macOS app-deactivation
           // which shifts keyboard focus to the next frontmost app (Chrome, etc.).
-          const nativelyWasFocused =
+          const godojoWasFocused =
             targetFocusWindow != null &&
             !targetFocusWindow.isDestroyed() &&
             targetFocusWindow.isFocused();
@@ -5123,12 +4757,12 @@ export class AppState {
           app.dock.hide();
           this.hideTray();
 
-          // If Natively was the focused window when the user toggled stealth,
+          // If GoDojo was the focused window when the user toggled stealth,
           // restore focus to our window after dock.hide() so macOS does not
           // hand control to Chrome / whatever is behind us.
           // We use win.focus() (not app.focus()) to avoid the heavy-handed
           // [NSApp activateIgnoringOtherApps:YES] side-effect.
-          if (nativelyWasFocused && targetFocusWindow && !targetFocusWindow.isDestroyed()) {
+          if (godojoWasFocused && targetFocusWindow && !targetFocusWindow.isDestroyed()) {
             targetFocusWindow.focus();
           }
         } else {
@@ -5138,9 +4772,6 @@ export class AppState {
           // Do NOT call focus() — let the user's current app retain focus
         }
 
-        if (targetFocusWindow && targetFocusWindow === settingsWindow) {
-          setTimeout(() => { this.settingsWindowHelper.setIgnoreBlur(false); }, 500);
-        }
         if (isModelSelectorVisible) {
           setTimeout(() => { this.modelSelectorWindowHelper.setIgnoreBlur(false); }, 500);
         }
@@ -5248,8 +4879,8 @@ export class AppState {
         appName = "Godojo.ai";
         if (isMac) {
           iconPath = app.isPackaged
-            ? path.join(process.resourcesPath, "natively.icns")
-            : path.join(app.getAppPath(), "assets/natively.icns");
+            ? path.join(process.resourcesPath, "godojo.icns")
+            : path.join(app.getAppPath(), "assets/godojo.icns");
         } else if (isWin) {
           iconPath = app.isPackaged
             ? path.join(process.resourcesPath, "assets/icons/win/icon.ico")
@@ -5281,7 +4912,7 @@ export class AppState {
     // 3. Update App User Model ID (Windows Taskbar grouping)
     if (isWin) {
       // Use unique AUMID per disguise to avoid grouping with the real app
-      app.setAppUserModelId(`com.natively.assistant.${mode}`);
+      app.setAppUserModelId(`com.godojo.assistant.${mode}`);
     }
 
     // 4. Update Icons
@@ -5297,7 +4928,6 @@ export class AppState {
         // Windows/Linux: Update all window icons
         this.windowHelper.getLauncherWindow()?.setIcon(image);
         this.windowHelper.getOverlayWindow()?.setIcon(image);
-        this.settingsWindowHelper.getSettingsWindow()?.setIcon(image);
       }
     } else {
       console.warn(`[AppState] Disguise icon not found: ${iconPath}`);
@@ -5314,12 +4944,6 @@ export class AppState {
     if (overlay && !overlay.isDestroyed()) {
       overlay.setTitle(appName.trim());
       overlay.webContents.send('disguise-changed', mode);
-    }
-
-    const settingsWin = this.settingsWindowHelper.getSettingsWindow();
-    if (settingsWin && !settingsWin.isDestroyed()) {
-      settingsWin.setTitle(appName.trim());
-      settingsWin.webContents.send('disguise-changed', mode);
     }
 
     // Cancel any stale forceUpdate timeouts from previous disguise changes
@@ -5351,7 +4975,6 @@ export class AppState {
       this.windowHelper.getMainWindow(),
       this.windowHelper.getLauncherWindow(),
       this.windowHelper.getOverlayWindow(),
-      this.settingsWindowHelper.getSettingsWindow(),
       this.modelSelectorWindowHelper.getWindow(),
     ];
     const sent = new Set<number>();
@@ -5452,11 +5075,7 @@ async function initializeApp() {
   if (app.isPackaged) {
     const sm = SettingsManager.getInstance();
     if (!sm.get('openAtLoginDefaultApplied')) {
-      app.setLoginItemSettings({
-        openAtLogin: true,
-        openAsHidden: false,
-        path: app.getPath('exe'),
-      });
+      applyOpenAtLogin(true);
       sm.set('openAtLoginDefaultApplied', true);
       // Record the registration the Settings toggle reads back — the OS
       // getter misreports false in packaged builds, which made this default
@@ -5470,13 +5089,16 @@ async function initializeApp() {
       // misreporting OS getter, and the toggle showed OFF while auto-launch
       // kept working. Re-assert once; after this the record exists, and any
       // later user toggle persists through set-open-at-login untouched.
-      app.setLoginItemSettings({
-        openAtLogin: true,
-        openAsHidden: false,
-        path: app.getPath('exe'),
-      });
+      applyOpenAtLogin(true);
       sm.set('openAtLogin', true);
       console.log('[Main] Backfilled openAtLogin=true for upgraded install');
+    } else {
+      // Reconcile the OS with the user's recorded choice on every launch.
+      // Repairs installs where the toggle was turned OFF but, because of the
+      // registry-name mismatch fixed in utils/loginItem.ts, the original
+      // 'electron.app.GoDojo AI' entry was never removed — so GoDojo kept
+      // opening at login. Idempotent, a few registry writes.
+      applyOpenAtLogin(sm.get('openAtLogin') === true);
     }
   }
 
@@ -5490,14 +5112,21 @@ async function initializeApp() {
   // (24h TTL). This is what lets auto model selection and retirement healing
   // track provider catalog changes (Groq Aug-2026, Gemini May-2026) without
   // another code change. Fire-and-forget — seeds cover the gap until it lands.
+  // The instance is still constructed here (it opens the local DB, which the
+  // mirror wiring below relies on); only the network refresh is deferred off
+  // the launch path — the seeds cover the extra seconds exactly as they cover
+  // a slow network today.
   try {
     const { ModelCatalog } = require('./services/ModelCatalog');
-    ModelCatalog.getInstance().refreshAll().catch((e: any) => {
-      console.warn('[Main] Model catalog refresh failed (non-fatal):', e);
-    });
+    const catalog = ModelCatalog.getInstance();
+    scheduleDeferredStartupTask('model-catalog-refresh', () => catalog.refreshAll());
   } catch (e) {
     console.warn('[Main] Model catalog wiring failed (non-fatal):', e);
   }
+
+  // Delete screenshot folders left by the removed screenshot tools (no-op once gone).
+  scheduleDeferredStartupTask('legacy-screenshot-cleanup', () =>
+    removeLegacyScreenshotDirs(app.getPath('userData')));
 
   // 3a. Initialize cloud sync stack: Firebase Auth identity restore + Supabase client.
   //     The renderer's trySilentRestore() owns the actual refresh-token exchange
@@ -5562,17 +5191,29 @@ async function initializeApp() {
       // checkpoints progress in app_state ('supabase_backfill_done') so it's a
       // no-op after the first successful run. Must wait for a Firebase session
       // because every upsert is RLS-scoped on auth.jwt() -> 'sub'.
+      //
+      // Both this and the sync audit below run through the deferred startup
+      // queue (after the launcher is up, one at a time), and both resolve the
+      // DB handle when they RUN. Capturing `sqliteDb` here was a bug: it is
+      // the anonymous DB opened at boot, and AuthManager.setSession() calls
+      // DatabaseManager.switchUser() — which closes that handle — before
+      // 'signed-in' fires, so both jobs ran against a closed connection.
+      const liveDb = () => DatabaseManager.getInstance().getDb();
       try {
         const { SupabaseBackfill } = require('./db/SupabaseBackfill');
         const { AuthManager } = require('./services/AuthManager');
         const auth = AuthManager.getInstance();
 
         const runBackfillOnce = () => {
-          // Fire-and-forget; SupabaseBackfill.run handles its own errors and
-          // re-checkpoints, so a transient failure just means we'll resume on
-          // the next launch.
-          SupabaseBackfill.run(sqliteDb).catch((err: any) => {
-            console.warn('[Main] SupabaseBackfill.run failed (non-fatal):', err);
+          // SupabaseBackfill.run handles its own errors and re-checkpoints, so
+          // a transient failure just means we'll resume on the next launch.
+          scheduleDeferredStartupTask('supabase-backfill', async () => {
+            const db = liveDb();
+            if (!db) {
+              console.warn('[Main] SupabaseBackfill skipped — no open DB');
+              return;
+            }
+            await SupabaseBackfill.run(db);
           });
         };
 
@@ -5589,15 +5230,20 @@ async function initializeApp() {
 
       // Gap detection: compare local SQLite IDs against Supabase and re-queue
       // any rows that never made it (silent outbox failures, pre-credentials
-      // writes, etc.). Runs concurrently with the backfill; fire-and-forget.
+      // writes, etc.). Queued after the backfill, so it diffs post-backfill.
       try {
         const { SupabaseSyncAudit } = require('./db/SupabaseSyncAudit');
         const { AuthManager } = require('./services/AuthManager');
         const auth = AuthManager.getInstance();
 
         const runAuditOnce = () => {
-          SupabaseSyncAudit.run(sqliteDb).catch((err: any) => {
-            console.warn('[Main] SupabaseSyncAudit.run failed (non-fatal):', err);
+          scheduleDeferredStartupTask('supabase-sync-audit', async () => {
+            const db = liveDb();
+            if (!db) {
+              console.warn('[Main] SupabaseSyncAudit skipped — no open DB');
+              return;
+            }
+            await SupabaseSyncAudit.run(db);
           });
         };
 
@@ -5663,7 +5309,19 @@ async function initializeApp() {
     const { AuthManager } = require('./services/AuthManager');
     const auth = AuthManager.getInstance();
 
-    const fetchFallback = async () => {
+    // Single-flight: overlapping triggers for the same token share one fetch.
+    let fallbackInFlight: { token: string; promise: Promise<void> } | null = null;
+    const fetchFallback = (): Promise<void> => {
+      const token = auth.getIdToken();
+      if (!token) return Promise.resolve();
+      if (fallbackInFlight && fallbackInFlight.token === token) return fallbackInFlight.promise;
+      const promise = doFetchFallback().finally(() => {
+        if (fallbackInFlight?.promise === promise) fallbackInFlight = null;
+      });
+      fallbackInFlight = { token, promise };
+      return promise;
+    };
+    const doFetchFallback = async () => {
       try {
         const token = auth.getIdToken();
         if (token) {
@@ -5683,10 +5341,11 @@ async function initializeApp() {
       }
     };
 
+    // No separate 'signed-in' listener: AuthManager.setSession() emits
+    // 'auth-changed' on every new session — first sign-in included, just
+    // before 'signed-in' — so listening to both fetched twice on every launch.
     if (auth.isSignedIn()) {
-      fetchFallback();
-    } else {
-      auth.once('signed-in', fetchFallback);
+      void fetchFallback();
     }
 
     auth.on('auth-changed', (snap: any) => {
@@ -5720,11 +5379,6 @@ async function initializeApp() {
   // NOTE: CredentialsManager.init() and loadStoredCredentials() are already called
   // above before this block — do NOT call them again here to avoid double key-load.
 
-  // Anonymous install ping - one-time, non-blocking
-  // See electron/services/InstallPingManager.ts for privacy details
-  const { sendAnonymousInstallPing } = require('./services/InstallPingManager');
-  sendAnonymousInstallPing();
-
   // Load stored Google Service Account path (for Speech-to-Text)
   const storedServiceAccountPath = CredentialsManager.getInstance().getGoogleServiceAccountPath();
   if (storedServiceAccountPath) {
@@ -5737,6 +5391,14 @@ async function initializeApp() {
   await initRendererUrl()
 
   appState.createWindow()
+
+  // Launch-time perf samples (15 s / 60 s / 180 s) for "slow to open" reports.
+  meetingPerformanceSampler.startStartupSampling()
+
+  // Non-critical startup work (catalog refresh, cloud
+  // backfill + sync audit) starts only now that the launcher exists, after a
+  // settle delay, one task at a time. See utils/deferredStartup.ts.
+  releaseDeferredStartupTasks()
 
   // If a deep link arrived before the window existed (cold start), deliver
   // it now that the renderer is up and listening.
@@ -5856,9 +5518,6 @@ async function initializeApp() {
 
   // Register global shortcuts using KeybindManager
   KeybindManager.getInstance().registerGlobalShortcuts()
-
-  // Pre-create settings window in background for faster first open
-  appState.settingsWindowHelper.preloadWindow()
 
   // Calendar reminders (Google + Zoom)
   //
@@ -5998,12 +5657,6 @@ async function initializeApp() {
     try { DatabaseManager.getInstance().close(); } catch { /* best-effort */ }
     console.log("App is quitting, cleaning up resources...");
     appState.setQuitting(true);
-
-    // Dispose CropperWindowHelper to clean up IPC listeners and prevent memory leaks
-    // This is critical to prevent resource leaks and ensure proper cleanup
-    if (appState?.cropperWindowHelper) {
-      appState.cropperWindowHelper.dispose();
-    }
 
     // Kill Ollama if we started it
     OllamaManager.getInstance().stop();

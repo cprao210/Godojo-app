@@ -101,11 +101,6 @@
   --overlay-control-bg: rgba(255, 255, 255, .04);
   --overlay-control-hover-bg: rgba(255, 255, 255, .08);
 
-  --overlay-code-bg: rgba(255, 255, 255, .02);
-  --overlay-code-border: rgba(255, 255, 255, .06);
-  --overlay-code-header-bg: rgba(255, 255, 255, .03);
-  --overlay-inline-code-bg: rgba(59, 130, 246, .12);
-
   --overlay-icon-bg: rgba(255, 255, 255, .03);
   --overlay-icon-hover-bg: rgba(255, 255, 255, .08);
 
@@ -204,11 +199,6 @@
 
   --overlay-control-bg: rgba(255, 255, 255, .24);
   --overlay-control-hover-bg: rgba(243, 244, 246, .38);
-
-  --overlay-code-bg: rgba(249, 250, 251, .22);
-  --overlay-code-border: rgba(0, 0, 0, .08);
-  --overlay-code-header-bg: rgba(243, 244, 246, .28);
-  --overlay-inline-code-bg: rgba(219, 234, 254, .42);
 
   --overlay-icon-bg: rgba(255, 255, 255, .22);
   --overlay-icon-hover-bg: rgba(243, 244, 246, .36);
@@ -338,16 +328,6 @@
   border-color: var(--overlay-border-soft);
 }
 
-.overlay-code-block-surface {
-  background: var(--overlay-code-bg);
-  border-color: var(--overlay-code-border);
-}
-
-.overlay-code-header-surface {
-  background: var(--overlay-code-header-bg);
-  border-bottom-color: var(--overlay-code-border);
-}
-
 .overlay-chip-surface {
   background: var(--overlay-chip-bg);
   border-color: transparent;
@@ -387,10 +367,6 @@
 
 .overlay-icon-surface-hover:hover {
   background: var(--overlay-icon-hover-bg);
-}
-
-.overlay-inline-code-surface {
-  background: var(--overlay-inline-code-bg);
 }
 
 /* ── Overlay Typography ── */
@@ -689,6 +665,15 @@ a {
    their near-opaque themed backgrounds — so readability holds on both
    themes with blur removed. */
 .perf-mode [class*="backdrop-blur"] {
+  backdrop-filter: none !important;
+  -webkit-backdrop-filter: none !important;
+}
+
+/* The launcher's search pill gets its glass from a custom class rather than a
+   Tailwind backdrop-blur-* one, so the selector above never matched it. It
+   sits on the launcher's own opaque background, so nothing is lost visually. */
+.perf-mode .overlay-pill-surface,
+.perf-mode .overlay-shell-surface {
   backdrop-filter: none !important;
   -webkit-backdrop-filter: none !important;
 }

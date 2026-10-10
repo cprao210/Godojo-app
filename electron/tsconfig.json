@@ -28,7 +28,6 @@
   "include": [
     "**/*.ts",
     "**/*.js",
-    "../premium/electron/**/*.ts",
     "../src/app/vite-env.d.ts",
     "../utils/updateFeed.ts"
   ],

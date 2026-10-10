@@ -16,8 +16,11 @@ import { PostHog } from 'posthog-node';
 import { AuthManager } from './AuthManager';
 import { tenantContext } from './TenantContext';
 
-const POSTHOG_KEY = process.env.VITE_POSTHOG_KEY ?? '';
-const POSTHOG_HOST = process.env.VITE_POSTHOG_HOST ?? 'https://us.i.posthog.com';
+// NOTE: the key/host are read inside init(), NOT at module load. main.ts loads the runtime
+// `.env` (dotenv) a few lines after its imports, and this module can be pulled in earlier by
+// any importer (e.g. utils/llmUsageBus at the very top of main.ts). A module-level read would
+// freeze an empty key forever and silently disable every main-process event.
+const DEFAULT_POSTHOG_HOST = 'https://us.i.posthog.com';
 
 // Fallback distinct_id when no user is signed in yet (e.g. a crash during
 // startup/auth). Not persisted — just keeps events from being dropped.
@@ -26,6 +29,7 @@ const ANONYMOUS_DISTINCT_ID = 'main-process-anonymous';
 class PostHogMainService {
     private static instance: PostHogMainService;
     private client: PostHog | null = null;
+    private warnedDropped = false;
 
     private constructor() { }
 
@@ -36,17 +40,19 @@ class PostHogMainService {
         return PostHogMainService.instance;
     }
 
-    public init(): void {
+    public init(quiet = false): void {
         if (this.client) return;
 
-        if (!POSTHOG_KEY) {
-            console.warn('[PostHogMain] VITE_POSTHOG_KEY not set — main-process error reporting disabled.');
+        const key = process.env.VITE_POSTHOG_KEY ?? '';
+        const host = process.env.VITE_POSTHOG_HOST || DEFAULT_POSTHOG_HOST;
+        if (!key) {
+            if (!quiet) console.warn('[PostHogMain] VITE_POSTHOG_KEY not set — main-process error reporting disabled.');
             return;
         }
 
         try {
-            this.client = new PostHog(POSTHOG_KEY, {
-                host: POSTHOG_HOST,
+            this.client = new PostHog(key, {
+                host,
                 // Main process is short-lived-flush-wise compared to a
                 // browser tab — flush eagerly rather than batching, so a
                 // crash right after capture() doesn't lose the event.
@@ -57,6 +63,21 @@ class PostHogMainService {
         } catch (error) {
             console.warn('[PostHogMain] Initialization failed:', error);
         }
+    }
+
+    /**
+     * Self-heal: if an event arrives before init() succeeded (env not loaded yet, or init never
+     * ran on this path), try to init now; if there is still no client, say so ONCE instead of
+     * dropping events silently.
+     */
+    private ensureClient(what: string): boolean {
+        if (!this.client) this.init(true);
+        if (this.client) return true;
+        if (!this.warnedDropped) {
+            this.warnedDropped = true;
+            console.warn(`[PostHogMain] No client (VITE_POSTHOG_KEY missing) -- main-process events are being dropped, first: "${what}".`);
+        }
+        return false;
     }
 
     private currentDistinctId(): string {
@@ -76,6 +97,7 @@ class PostHogMainService {
      * 'env_fallback_keys_status'.
      */
     public capture(eventName: string, properties?: Record<string, any>): void {
+        if (!this.ensureClient(eventName)) return;
         if (!this.client) return;
 
         try {
@@ -101,6 +123,7 @@ class PostHogMainService {
      * renderer-side $exception events.
      */
     public captureException(error: Error | unknown, source: string, extra?: Record<string, any>): void {
+        if (!this.ensureClient(`exception:${source}`)) return;
         if (!this.client) return;
 
         try {

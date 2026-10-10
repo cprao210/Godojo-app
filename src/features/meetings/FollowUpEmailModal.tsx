@@ -12,6 +12,7 @@ import type { FollowUpEmailModalProps } from '@/types';
 import { useFollowUpEmail } from '@/hooks';
 import { BirdLoader } from '@/features/ui/BirdLoader';
 import { EmailPreview } from './EmailPreview';
+import LLMUsageChip from './LLMUsageChip';
 
 const FollowUpEmailModal: React.FC<FollowUpEmailModalProps> = ({ isOpen, onClose, meeting, isLight = false }) => {
     const {
@@ -52,7 +53,11 @@ const FollowUpEmailModal: React.FC<FollowUpEmailModalProps> = ({ isOpen, onClose
 
                             {/* ── Header ─────────────────────────────────────────────── */}
                             <div className={`flex px-6 py-4 justify-between items-center border-b ${isLight ? 'border-slate-200' : 'border-border-subtle'}`}>
-                                <h2 className="text-sm font-semibold tracking-wide text-text-primary">Draft Follow-up</h2>
+                                <div className="flex items-center gap-2">
+                                    <h2 className="text-sm font-semibold tracking-wide text-text-primary">Draft Follow-up</h2>
+                                    {/* DEV-ONLY: token usage behind this email's generation. */}
+                                    <LLMUsageChip meetingId={meeting.id} kinds={['followup_email']} isLight={isLight} />
+                                </div>
                                 <button
                                     onClick={onClose}
                                     className={`p-1.5 rounded-full transition-colors ${isLight ? 'text-slate-400 hover:text-slate-700 bg-slate-100 hover:bg-slate-200' : 'text-text-tertiary hover:text-text-primary bg-bg-item-surface hover:bg-bg-item-active'}`}

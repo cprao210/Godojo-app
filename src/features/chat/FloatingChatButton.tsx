@@ -2,6 +2,7 @@ import React from 'react';
 import { MessageCircle, X } from 'lucide-react';
 import { motion, AnimatePresence } from 'framer-motion';
 import { isMac } from '@/../utils/platformUtils';
+import { usePerformanceMode } from '@/hooks';
 import { FloatingChatButtonProps } from '@/types';
 
 // Bottom-right floating action button that toggles the Global Chat widget.
@@ -10,13 +11,14 @@ import { FloatingChatButtonProps } from '@/types';
 // separate assistant, not part of meeting search.
 const FloatingChatButton: React.FC<FloatingChatButtonProps> = ({ isOpen, onClick, label = 'Ask AI' }) => {
 
+    const { isPerformanceMode } = usePerformanceMode();
     const shortcutKeys = isMac ? ['⌘', 'Space'] : ['Ctrl', 'Space'];
 
     return (
         <div data-global-chat-fab className="group fixed bottom-6 right-6 z-[360] no-drag flex flex-col w-[50px] items-end gap-3">
             {/* Tooltip card — mirrors the app's glass surfaces, shows the keyboard shortcut */}
             {!isOpen && (
-                <div className="pointer-events-none opacity-0 translate-y-1 group-hover:opacity-100 group-hover:translate-y-0 transition-all duration-200 flex items-center gap-2 pl-3 pr-2 py-1.5 rounded-full bg-bg-elevated/95 backdrop-blur-xl border border-border-muted shadow-[0_8px_24px_rgba(0,0,0,0.25)]">
+                <div className="pointer-events-none opacity-0 translate-y-1 group-hover:opacity-100 group-hover:translate-y-0 transition-all duration-200 flex items-center gap-2 pl-3 pr-2 py-1.5 rounded-full bg-bg-elevated backdrop-blur-xl border border-border-muted shadow-[0_8px_24px_rgba(0,0,0,0.25)]">
                     <span className="text-[12px] font-medium text-text-primary whitespace-nowrap">{label}</span>
                     <span className="flex items-center gap-0.5">
                         {shortcutKeys.map((k) => (
@@ -40,8 +42,15 @@ const FloatingChatButton: React.FC<FloatingChatButtonProps> = ({ isOpen, onClick
                 className="relative w-14 h-14 rounded-full flex items-center justify-center focus:outline-none"
                 aria-label={isOpen ? 'Close chat' : label}
             >
-                {/* Idle breathing glow — subtle, invites the first click, hidden once open */}
-                {!isOpen && (
+                {/* Idle breathing glow — subtle, invites the first click, hidden once open.
+                    Performance Mode shows it static: an endless loop keeps the
+                    compositor drawing 60 frames a second on the home screen,
+                    which on a software-rendering machine costs about a full
+                    CPU core in the GPU process while the app sits idle. */}
+                {!isOpen && isPerformanceMode && (
+                    <span className="absolute inset-0 rounded-full bg-blue-500/20" />
+                )}
+                {!isOpen && !isPerformanceMode && (
                     <motion.span
                         className="absolute inset-0 rounded-full bg-blue-500/35 blur-[2px]"
                         animate={{ scale: [1, 1.28, 1], opacity: [0.45, 0, 0.45] }}

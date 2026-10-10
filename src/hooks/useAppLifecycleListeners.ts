@@ -3,15 +3,11 @@ import { useEffect, useState } from "react";
 
 /**
  * Wires up the grab-bag of one-shot status checks + IPC event listeners that
- * App.tsx needs on mount: profile/premium status (for ad targeting),
- * meetings-updated (drives the post-meeting ad delay timer), Ollama
- * auto-pull progress, and the "your AI provider changed" re-index warning.
+ * App.tsx needs on mount: meetings-updated (clears the "processing" flag),
+ * Ollama auto-pull progress, and the "your AI provider changed" re-index
+ * warning.
  */
 export function useAppLifecycleListeners(): AppLifecycleState {
-    const [hasProfile, setHasProfile] = useState(false);
-    const [isPremiumActive, setIsPremiumActive] = useState(false);
-    const [appStartTime] = useState<number>(Date.now());
-    const [lastMeetingEndTime, setLastMeetingEndTime] = useState<number | null>(null);
     const [isProcessingMeeting, setIsProcessingMeeting] = useState<boolean>(false);
 
     const [ollamaPull, setOllamaPull] = useState<OllamaPullState>({
@@ -26,17 +22,9 @@ export function useAppLifecycleListeners(): AppLifecycleState {
         // Clean up old local storage.
         localStorage.removeItem("useLegacyAudioBackend");
 
-        // Basic status check for ad-campaign targeting.
-        window.electronAPI?.profileGetStatus?.()
-            .then((s) => setHasProfile(s?.hasProfile || false))
-            .catch(() => { });
-        window.electronAPI?.licenseCheckPremium?.().then(setIsPremiumActive).catch(() => { });
-
-        // Meeting processing finished — starts the post-meeting ad delay timer.
+        // Meeting processing finished.
         const removeMeetingsListener = window.electronAPI?.onMeetingsUpdated?.(() => {
-            console.log("[useAppLifecycleListeners] Meetings updated (processing finished), starting ad delay timer");
             setIsProcessingMeeting(false);
-            setLastMeetingEndTime(Date.now());
         });
 
         // Ollama auto-pull progress.
@@ -81,13 +69,8 @@ export function useAppLifecycleListeners(): AppLifecycleState {
     };
 
     return {
-        hasProfile,
-        isPremiumActive,
-        setIsPremiumActive,
         isProcessingMeeting,
         setIsProcessingMeeting,
-        lastMeetingEndTime,
-        appStartTime,
         ollamaPull,
         incompatibleWarning,
         dismissIncompatibleWarning: () => setIncompatibleWarning(null),

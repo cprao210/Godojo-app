@@ -2,23 +2,14 @@ import { useEffect, useState } from "react";
 import { clampOverlayOpacity, OVERLAY_OPACITY_DEFAULT, getDefaultOverlayOpacity } from "../lib/overlayAppearance";
 
 const OPACITY_KEY = "gd_dock_opacity";
-const LEGACY_OPACITY_KEY = "natively_overlay_opacity"; // key used before the rename
 
 /**
- * Reads the last user-set overlay opacity from localStorage (migrating the
- * pre-rename key if present), falling back to the theme-aware default if
- * the user never explicitly set one.
+ * Reads the last user-set overlay opacity from localStorage (the pre-rename
+ * key is migrated at boot by lib/storageMigration), falling back to the
+ * theme-aware default if the user never explicitly set one.
  */
 function getInitialOverlayOpacity(): number {
-    let stored = localStorage.getItem(OPACITY_KEY);
-    if (stored === null) {
-        const legacy = localStorage.getItem(LEGACY_OPACITY_KEY);
-        if (legacy !== null) {
-            localStorage.setItem(OPACITY_KEY, legacy);
-            localStorage.removeItem(LEGACY_OPACITY_KEY);
-            stored = legacy;
-        }
-    }
+    const stored = localStorage.getItem(OPACITY_KEY);
 
     const parsed = stored ? parseFloat(stored) : NaN;
     // Treat missing value or the old default (0.65) as "not user-set".

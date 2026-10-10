@@ -3,6 +3,7 @@ import { motion, AnimatePresence } from 'framer-motion';
 import { Sparkles, X, Check, Download, Loader2, AlertCircle, HardDriveDownload, ExternalLink } from 'lucide-react';
 import { UpdateModalProps } from '@/types';
 import { releasesPageUrl } from '@/../utils/updateFeed';
+import { API_BASE } from '@/lib/apiClient';
 import { formatUpdateSize } from '@/hooks/useUpdateStatus';
 
 const CopyBlock = ({ command, isLight }: { command: string; isLight: boolean }) => {
@@ -64,7 +65,7 @@ const UpdateModal: React.FC<UpdateModalProps> = ({
     const displayVersion = formatVersion(updateInfo?.version);
     const showFallback = !parsedNotes || (!parsedNotes.summary && (!parsedNotes.sections || parsedNotes.sections.length === 0));
 
-    // Size shown BEFORE downloading = full package size (from the GitHub
+    // Size shown BEFORE downloading = full package size (from the update feed
     // release asset). Once downloading, electron-updater reports the ACTUAL
     // transfer total — on Windows differential updates that's the much
     // smaller delta, so the modal switches to it the moment it's known.
@@ -202,18 +203,18 @@ const UpdateModal: React.FC<UpdateModalProps> = ({
                                             </p>
                                         )}
                                         <p className={`text-[13px] break-words ${isLight ? 'text-slate-500' : 'text-white/45'}`}>
-                                            Check your internet connection or download the update manually from GitHub.
+                                            Check your internet connection or download the update manually.
                                         </p>
                                     </div>
                                     <div className="flex items-center gap-3 w-full">
                                         <button
-                                            onClick={() => window.electronAPI.openExternal(releasesPageUrl())}
+                                            onClick={() => window.electronAPI.openExternal(releasesPageUrl(API_BASE))}
                                             className={`flex-1 px-4 py-2.5 rounded-xl text-sm font-semibold transition-all flex items-center justify-center gap-2 border ${isLight
                                                 ? 'border-slate-200 text-slate-600 hover:bg-slate-50'
                                                 : 'border-white/10 text-white/70 hover:bg-white/[0.05] hover:text-white'
                                                 }`}
                                         >
-                                            <ExternalLink size={14} /> Releases page
+                                            <ExternalLink size={14} /> Download page
                                         </button>
                                         <button
                                             onClick={onDismiss}
@@ -264,10 +265,10 @@ const UpdateModal: React.FC<UpdateModalProps> = ({
                                             Done
                                         </button>
                                         <button
-                                            onClick={() => window.electronAPI.openExternal(releasesPageUrl())}
+                                            onClick={() => window.electronAPI.openExternal(releasesPageUrl(API_BASE))}
                                             className={`text-[11px] font-medium transition-colors ${isLight ? 'text-slate-400 hover:text-slate-600' : 'text-white/30 hover:text-white/55'}`}
                                         >
-                                            Having trouble? Open the Releases page instead
+                                            Having trouble? Download the installer instead
                                         </button>
                                     </div>
                                 </>

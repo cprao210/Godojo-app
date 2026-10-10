@@ -90,24 +90,21 @@ export class SessionTracker {
 
     // Rolling summarization: epoch summaries preserve early context when arrays are compacted
     private static readonly MAX_EPOCH_SUMMARIES = 5;
+    // Compact once the unsummarized tail exceeds THRESHOLD; each pass summarizes the oldest BATCH
+    static readonly COMPACT_THRESHOLD = 1800;
+    static readonly COMPACT_BATCH = 500;
     private transcriptEpochSummaries: string[] = [];
     private isCompacting: boolean = false;
+    // fullTranscript is never trimmed (it is what gets saved); LLM context starts at this index,
+    // everything before it is represented by transcriptEpochSummaries
+    private summarizedCount: number = 0;
+    // Bumped on reset() so a summary still in flight cannot write into the next session
+    private sessionGeneration: number = 0;
 
     // Track interim client segment
     private lastInterimClient: TranscriptSegment | null = null;
     // Track interim user (microphone) segment — flushed on meeting stop just like client
     private lastInterimUser: TranscriptSegment | null = null;
-
-    // Detected coding question from transcript or screenshot extraction
-    private detectedCodingQuestion: string | null = null;
-    private codingQuestionSource: 'screenshot' | 'transcript' | null = null;
-    private codingQuestionSetAt: number | null = null;
-
-    // Rolling buffer for multi-segment client question detection
-    private recentClientBuffer: { text: string; timestamp: number }[] = [];
-    private static readonly INTERVIEWER_BUFFER_WINDOW_MS = 5 * 60 * 1000; // 5 minutes
-    // Screenshot-detected question stays sticky for 3 min before transcript can override
-    private static readonly SCREENSHOT_STALE_MS = 3 * 60 * 1000;
 
     // Reference to RecapLLM for epoch summarization (injected later)
     private recapLLM: RecapLLM | null = null;
@@ -273,7 +270,7 @@ export class SessionTracker {
 
     /**
      * Attempt to extract an opposite-party name from a meeting title.
-     * Handles common patterns like "Meeting with John Doe" or "John Doe - Interview".
+     * Handles common patterns like "Meeting with John Doe" or "John Doe - Intro Call".
      */
     private extractNameFromTitle(title: string): string | null {
         const patterns = [
@@ -313,86 +310,6 @@ export class SessionTracker {
     }
 
     // ============================================
-    // Coding Question Tracking
-    // ============================================
-
-    /**
-     * Set the current coding question.
-     * Priority rules (avoids stale Q1 blocking Q2 detection in multi-question interviews):
-     *  - Screenshot → always stored immediately (explicit user action via Solve)
-     *  - Transcript → stored if nothing is known yet, OR if existing question is also from
-     *    transcript (newer detection = newer question), OR if screenshot question is stale
-     *    (> 3 min old — user likely moved to the next question)
-     */
-    setCodingQuestion(question: string, source: 'screenshot' | 'transcript'): void {
-        const now = Date.now();
-        const trimmed = question.trim();
-        if (!trimmed) return;
-
-        if (this.detectedCodingQuestion === null) {
-            // Nothing stored — accept any source
-            this.detectedCodingQuestion = trimmed;
-            this.codingQuestionSource = source;
-            this.codingQuestionSetAt = now;
-            console.log(`[SessionTracker] Coding question stored (source: ${source}): "${trimmed.substring(0, 80)}..."`);
-            return;
-        }
-
-        if (source === 'screenshot') {
-            // Screenshot always updates immediately (explicit user Solve action)
-            this.detectedCodingQuestion = trimmed;
-            this.codingQuestionSource = source;
-            this.codingQuestionSetAt = now;
-            console.log(`[SessionTracker] Coding question updated via screenshot: "${trimmed.substring(0, 80)}..."`);
-            return;
-        }
-
-        // source === 'transcript'
-        const isStale = this.codingQuestionSetAt !== null
-            && (now - this.codingQuestionSetAt) > SessionTracker.SCREENSHOT_STALE_MS;
-        const canOverride = this.codingQuestionSource === 'transcript' || isStale;
-
-        if (canOverride) {
-            this.detectedCodingQuestion = trimmed;
-            this.codingQuestionSource = source;
-            this.codingQuestionSetAt = now;
-            console.log(`[SessionTracker] Coding question updated via transcript (prev was ${this.codingQuestionSource}, stale=${isStale}): "${trimmed.substring(0, 80)}..."`);
-        } else {
-            console.log(`[SessionTracker] Transcript question ignored — screenshot question is recent (< ${SessionTracker.SCREENSHOT_STALE_MS / 1000}s)`);
-        }
-    }
-
-    getDetectedCodingQuestion(): { question: string | null; source: 'screenshot' | 'transcript' | null } {
-        return { question: this.detectedCodingQuestion, source: this.codingQuestionSource };
-    }
-
-    clearCodingQuestion(): void {
-        this.detectedCodingQuestion = null;
-        this.codingQuestionSource = null;
-        this.codingQuestionSetAt = null;
-        this.recentClientBuffer = [];
-    }
-
-    /**
-     * Heuristic to decide if an client statement looks like a coding question.
-     * Requires ≥2 of the signal patterns and minimum length to avoid false positives
-     * on casual conversation ("can you implement X?" → yes, "sounds good!" → no).
-     */
-    private looksLikeCodingQuestion(text: string): boolean {
-        if (text.length < 50) return false;
-        const patterns = [
-            /\b(implement|write|code|solve|design|build|create)\b/i,
-            /\b(given\s+(an?|the)\s+(array|string|list|tree|graph|matrix|number|integer|node|linked list|stack|queue|heap))\b/i,
-            /\b(return|find\s+(all|the|a|any)|count|check\s+if|determine|calculate|maximize|minimize|sort)\b/i,
-            /\b(function|method|algorithm|data structure|class)\b/i,
-            /\b(O\(n\)|time complexity|space complexity|optimal|efficient|brute force)\b/i,
-            /\b(two sum|three sum|binary search|dynamic programming|BFS|DFS|palindrome|anagram|substring|subarray|rotation)\b/i,
-        ];
-        const matchCount = patterns.filter(p => p.test(text)).length;
-        return matchCount >= 2;
-    }
-
-    // ============================================
     // Context Management
     // ============================================
 
@@ -428,8 +345,7 @@ export class SessionTracker {
         this.evictOldEntries();
 
         // Filter out internal system prompts that might be passed via IPC
-        const isInternalPrompt = text.startsWith("You are a real-time interview assistant") ||
-            text.startsWith("You are a helper") ||
+        const isInternalPrompt = text.startsWith("You are a helper") ||
             text.startsWith("CONTEXT:");
 
         if (!isInternalPrompt && segment.source !== 'chat') {
@@ -451,7 +367,7 @@ export class SessionTracker {
     addAssistantMessage(text: string): void {
         console.log(`[SessionTracker] addAssistantMessage called with:`, text.substring(0, 50));
 
-        // Natively-style filtering
+        // Filtering
         if (!text) return;
 
         const cleanText = text.trim();
@@ -529,22 +445,6 @@ export class SessionTracker {
                 this.lastInterimClient = segment;
             } else {
                 this.lastInterimClient = null;
-
-                // Add segment to rolling buffer and evict old entries
-                this.recentClientBuffer.push({ text: segment.text, timestamp: segment.timestamp });
-                const bufferCutoff = Date.now() - SessionTracker.INTERVIEWER_BUFFER_WINDOW_MS;
-                this.recentClientBuffer = this.recentClientBuffer.filter(e => e.timestamp >= bufferCutoff);
-
-                // Test single segment first; if no match, test accumulated recent turns
-                // (client may state a problem across multiple speech segments)
-                if (this.looksLikeCodingQuestion(segment.text)) {
-                    this.setCodingQuestion(segment.text, 'transcript');
-                } else if (this.recentClientBuffer.length > 1) {
-                    const combinedText = this.recentClientBuffer.map(e => e.text).join(' ');
-                    if (this.looksLikeCodingQuestion(combinedText)) {
-                        this.setCodingQuestion(combinedText, 'transcript');
-                    }
-                }
             }
         }
 
@@ -638,7 +538,7 @@ export class SessionTracker {
      */
     getFullSessionContext(): string {
         const multi = this.hasMultipleClientSpeakers();
-        const recentTranscript = this.fullTranscript.map(segment => {
+        const recentTranscript = this.fullTranscript.slice(this.summarizedCount).map(segment => {
             const role = this.mapSpeakerToRole(segment.speaker);
             const label = role === 'client'
                 ? (this.speakerNameMap.client || 'CLIENT').toUpperCase() + this.clientSpeakerSuffix(segment.speakerIndex, multi)
@@ -775,6 +675,9 @@ export class SessionTracker {
         this.fullTranscript = [];
         this.fullUsage = [];
         this.transcriptEpochSummaries = [];
+        this.summarizedCount = 0;
+        this.isCompacting = false;
+        this.sessionGeneration++;
         this.sessionStartTime = Date.now();
         this.totalPausedMs = 0;
         this.pauseStartedAt = null;
@@ -782,10 +685,6 @@ export class SessionTracker {
         this.assistantResponseHistory = [];
         this.lastInterimClient = null;
         this.lastInterimUser = null;
-        this.detectedCodingQuestion = null;
-        this.codingQuestionSource = null;
-        this.codingQuestionSetAt = null;
-        this.recentClientBuffer = [];
         this.speakerNameMap = { user: 'Me', client: 'Them', clientDiarized: 'Other Party' };
 
     }
@@ -815,13 +714,16 @@ export class SessionTracker {
      * Called instead of raw slice() to preserve early meeting context.
      */
     private async compactTranscriptIfNeeded(): Promise<void> {
-        if (this.fullTranscript.length <= 1800 || this.isCompacting) return;
+        if (this.fullTranscript.length - this.summarizedCount <= SessionTracker.COMPACT_THRESHOLD || this.isCompacting) return;
 
         this.isCompacting = true;
+        const generation = this.sessionGeneration;
+        const start = this.summarizedCount;
+        const summarizeCount = SessionTracker.COMPACT_BATCH;
+        let epochEntry: string;
         try {
-            // Take the oldest 500 entries to summarize
-            const summarizeCount = 500;
-            const oldEntries = this.fullTranscript.slice(0, summarizeCount);
+            // Take the oldest unsummarized entries to summarize
+            const oldEntries = this.fullTranscript.slice(start, start + summarizeCount);
             const summaryInput = oldEntries.map(seg => {
                 const role = this.mapSpeakerToRole(seg.speaker);
                 const label = role === 'client' ? (this.speakerNameMap.client || 'CLIENT').toUpperCase() :
@@ -836,36 +738,41 @@ export class SessionTracker {
                         `Summarize this conversation segment into 3-5 concise bullet points preserving key topics, decisions, and questions:\n\n${summaryInput}`
                     );
                     if (epochSummary && epochSummary.trim().length > 0) {
-                        this.transcriptEpochSummaries.push(epochSummary.trim());
-                        console.log(`[SessionTracker] Epoch summary created (${this.transcriptEpochSummaries.length} total)`);
+                        epochEntry = epochSummary.trim();
                     } else {
                         // Empty LLM response — store a basic marker so context is not lost
                         const marker = `[Earlier discussion: ${oldEntries.length} segments — ${oldEntries.slice(0, 3).map(s => s.text.substring(0, 40)).join('; ')}...]`;
-                        this.transcriptEpochSummaries.push(marker);
+                        epochEntry = marker;
                     }
                 } catch (e) {
                     // If summarization fails, store a simple marker
                     const fallback = `[Earlier discussion: ${oldEntries.length} segments, topics: ${oldEntries.slice(0, 3).map(s => s.text.substring(0, 40)).join('; ')}...]`;
-                    this.transcriptEpochSummaries.push(fallback);
+                    epochEntry = fallback;
                     console.warn('[SessionTracker] Epoch summarization failed, using fallback marker');
                 }
             } else {
                 // BUG-03 fix: recapLLM not yet available — always push a plain marker so early
                 // context is not silently discarded with no record in transcriptEpochSummaries.
                 const marker = `[Earlier discussion (no LLM): ${oldEntries.length} segments — ${oldEntries.slice(0, 3).map(s => s.text.substring(0, 40)).join('; ')}...]`;
-                this.transcriptEpochSummaries.push(marker);
+                epochEntry = marker;
                 console.warn('[SessionTracker] recapLLM not available — storing plain epoch marker');
             }
-
-            // Cap epoch summaries to prevent LLM context window overflow
-            if (this.transcriptEpochSummaries.length > SessionTracker.MAX_EPOCH_SUMMARIES) {
-                this.transcriptEpochSummaries = this.transcriptEpochSummaries.slice(-SessionTracker.MAX_EPOCH_SUMMARIES);
-            }
-
-            // Evict ONLY the exact 500 oldest entries that we just summarized
-            this.fullTranscript = this.fullTranscript.slice(summarizeCount);
         } finally {
-            this.isCompacting = false;
+            if (generation === this.sessionGeneration) this.isCompacting = false;
         }
+
+        // Session was reset while the summary was in flight — it belongs to a dead session
+        if (generation !== this.sessionGeneration) return;
+
+        this.transcriptEpochSummaries.push(epochEntry);
+        console.log(`[SessionTracker] Epoch summary created (${this.transcriptEpochSummaries.length} total)`);
+
+        // Cap epoch summaries to prevent LLM context window overflow
+        if (this.transcriptEpochSummaries.length > SessionTracker.MAX_EPOCH_SUMMARIES) {
+            this.transcriptEpochSummaries = this.transcriptEpochSummaries.slice(-SessionTracker.MAX_EPOCH_SUMMARIES);
+        }
+
+        // Drop the summarized entries from LLM context only; the saved transcript keeps them
+        this.summarizedCount = start + summarizeCount;
     }
 }

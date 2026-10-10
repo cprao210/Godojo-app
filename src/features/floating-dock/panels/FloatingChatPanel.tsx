@@ -1,14 +1,12 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
 import { Brain, Copy, Check, RotateCcw, Send, Square } from 'lucide-react';
-import ReactMarkdown from 'react-markdown';
 import { guardSession } from '@/lib/firebase';
-import remarkGfm from 'remark-gfm';
 import { useStreamBuffer } from '@/hooks';
 import { usePerformanceMode } from '@/hooks';
 import { chatApi, statusLabel } from '@/api';
-import { chatMarkdownComponents } from '@/features/chat';
-import { CitationProvider, indexSourceMap, rehypeCitations, CiteChip } from '@/features/chat/citations';
+import { ChatMarkdownBody } from '@/features/chat/ChatMessage';
+import { indexSourceMap } from '@/features/chat/citations';
 import { ChatHistoryTurn, FloatingChatPanelProps, LiveTranscriptSegment, Message, StreamHandle } from '@/types';
 import { getDockSurfaceStyle } from '../dockSurfaceStyle';
 import { posthogAnalytics } from '@/lib/analytics/posthog.service';
@@ -114,7 +112,11 @@ const TypingDots: React.FC<{ label?: string }> = ({ label }) => {
     );
 };
 
-const MessageBubble: React.FC<{ msg: Message }> = ({ msg }) => {
+// Memoized: the panel re-renders on every live-transcript update (it receives
+// the rolling transcript as props), and every one of those used to re-render
+// and re-parse every bubble. Message updates replace only the changed message
+// object (prev.map(... ? {...m} : m)), so untouched bubbles skip render.
+const MessageBubble: React.FC<{ msg: Message }> = React.memo(({ msg }) => {
     const [copied, setCopied] = useState(false);
 
     const handleCopy = async () => {
@@ -193,17 +195,11 @@ const MessageBubble: React.FC<{ msg: Message }> = ({ msg }) => {
                                 </div>
                             )}
                             <div className="markdown-content" style={msg.rewriting ? { opacity: 0.55 } : undefined}>
-                                <CitationProvider
-                                    map={msg.sourceMap}
-                                    unverified={msg.unverifiedCitations}
-                                >
-                                    <ReactMarkdown remarkPlugins={[remarkGfm]} rehypePlugins={[rehypeCitations]} components={{
-                                        ...chatMarkdownComponents,
-                                        cite: CiteChip as any,
-                                    }}>
-                                        {msg.text}
-                                    </ReactMarkdown>
-                                </CitationProvider>
+                                <ChatMarkdownBody
+                                    content={msg.text}
+                                    sourceMap={msg.sourceMap}
+                                    unverifiedCitations={msg.unverifiedCitations}
+                                />
                                 {msg.ragAnswer && (
                                     <div className="mt-2 text-[10px] text-white/35 flex items-center gap-2">
                                         <span>{Math.round(msg.ragAnswer.confidence * 100)}% confidence</span>
@@ -231,7 +227,7 @@ const MessageBubble: React.FC<{ msg: Message }> = ({ msg }) => {
             </div>
         </motion.div>
     );
-};
+});
 
 // Memoized: this panel stays mounted for the rest of the call once it has been
 // opened once (so chat history survives a panel switch), which means every
@@ -258,100 +254,13 @@ export const FloatingChatPanel: React.FC<FloatingChatPanelProps> = React.memo(({
     const currentAssistantIdRef = useRef<string | null>(null);
     const currentBufferRef = useRef('');
 
-    // Auto-scroll
+    // Auto-scroll. While an answer streams this runs on every flush (~60/s);
+    // restarting a smooth-scroll animation each time kept the compositor busy,
+    // so jump instantly during streaming and animate only for discrete adds.
     useEffect(() => {
-        messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
+        const streaming = messages.some(m => m.isStreaming);
+        messagesEndRef.current?.scrollIntoView({ behavior: streaming ? 'auto' : 'smooth' });
     }, [messages]);
-
-    // Stream event listeners
-    // useEffect(() => {
-    //     const cleanups: (() => void)[] = [];
-
-    //     // ── Gemini free-form chat stream (onGeminiStreamToken / onGeminiStreamDone) ──
-    //     if (window.electronAPI?.onGeminiStreamToken) {
-    //         cleanups.push(window.electronAPI.onGeminiStreamToken((token: string) => {
-    //             setMessages(prev => {
-    //                 const last = prev[prev.length - 1];
-    //                 if (last?.isStreaming && last.role === 'system' && !last.intent) {
-    //                     const updated = [...prev];
-    //                     updated[prev.length - 1] = { ...last, text: last.text + token };
-    //                     return updated;
-    //                 }
-    //                 return [...prev, { id: Date.now().toString(), role: 'system', text: token, isStreaming: true }];
-    //             });
-    //         }));
-    //     }
-
-    //     if (window.electronAPI?.onGeminiStreamDone) {
-    //         cleanups.push(window.electronAPI.onGeminiStreamDone(() => {
-    //             setIsProcessing(false);
-    //             setMessages(prev => {
-    //                 const last = prev[prev.length - 1];
-    //                 if (last?.isStreaming && !last.intent) {
-    //                     return [...prev.slice(0, -1), { ...last, isStreaming: false }];
-    //                 }
-    //                 return prev;
-    //             });
-    //         }));
-    //     }
-
-    //     if (window.electronAPI?.onGeminiStreamError) {
-    //         cleanups.push(window.electronAPI.onGeminiStreamError((error: string) => {
-    //             setIsProcessing(false);
-    //             setMessages(prev => {
-    //                 // Remove the empty streaming placeholder and add error
-    //                 const last = prev[prev.length - 1];
-    //                 if (last?.isStreaming) {
-    //                     return [...prev.slice(0, -1), { id: Date.now().toString(), role: 'system', text: `❌ ${error}` }];
-    //                 }
-    //                 return [...prev, { id: Date.now().toString(), role: 'system', text: `❌ ${error}` }];
-    //             });
-    //         }));
-    //     }
-
-    //     // ── RAG stream (used when ragQueryLive handles the question) ──
-    //     if (window.electronAPI?.onRAGStreamChunk) {
-    //         cleanups.push(window.electronAPI.onRAGStreamChunk((data) => {
-    //             setMessages(prev => {
-    //                 const last = prev[prev.length - 1];
-    //                 if (last?.isStreaming && last.role === 'system' && !last.intent) {
-    //                     const updated = [...prev];
-    //                     updated[prev.length - 1] = { ...last, text: last.text + data.chunk };
-    //                     return updated;
-    //                 }
-    //                 return prev;
-    //             });
-    //         }));
-    //     }
-
-    //     if (window.electronAPI?.onRAGStreamComplete) {
-    //         cleanups.push(window.electronAPI.onRAGStreamComplete(() => {
-    //             setIsProcessing(false);
-    //             setMessages(prev => {
-    //                 const last = prev[prev.length - 1];
-    //                 if (last?.isStreaming && !last.intent) {
-    //                     return [...prev.slice(0, -1), { ...last, isStreaming: false }];
-    //                 }
-    //                 return prev;
-    //             });
-    //         }));
-    //     }
-
-    //     if (window.electronAPI?.onTavilySearching) {
-    //         cleanups.push(window.electronAPI.onTavilySearching((data) => {
-    //             setTavilySearchingFor(data.entity);
-    //         }));
-    //     }
-
-    //     if (window.electronAPI?.onTavilySearchDone) {
-    //         cleanups.push(window.electronAPI.onTavilySearchDone(() => {
-    //             setTavilySearchingFor(null);
-    //         }));
-    //     }
-
-    //     return () => cleanups.forEach(fn => fn());
-
-    // }, []);
 
     // Abort any in-flight stream on unmount (panel switch, meeting end) AND
     // finalize its bubble: streamSSE resolves silently on abort (no onDone),
@@ -382,45 +291,6 @@ export const FloatingChatPanel: React.FC<FloatingChatPanelProps> = React.memo(({
         el.style.height = 'auto';
         el.style.height = `${Math.min(el.scrollHeight, 96)}px`; // max ~4 lines
     }, [inputValue]);
-
-    // const addUserMessage = (text: string) => {
-    //     setMessages(prev => [...prev, { id: Date.now().toString(), role: 'user', text }]);
-    //     setMessages(prev => [...prev, { id: (Date.now() + 1).toString(), role: 'system', text: '', isStreaming: true }]);
-    //     setIsProcessing(true);
-    // };
-
-    // const handleSend = async () => {
-    //     const text = inputValue.trim();
-    //     if (!text || isProcessing) return;
-    //     setInputValue('');
-    //     addUserMessage(text);
-    //     try {
-
-    //         const sessionActive = await guardSession();
-    //         if (!sessionActive) {
-    //             setIsProcessing(false);
-    //             return;
-    //         }
-
-    //         // Try RAG first (context-aware live query)
-    //         const ragResult = await window.electronAPI?.ragQueryLive?.(text);
-    //         if (ragResult?.success) {
-    //             // Response streams via onRAGStreamChunk / onRAGStreamComplete
-    //             return;
-    //         }
-    //         // Fallback to direct Gemini chat
-    //         await window.electronAPI?.streamGeminiChat(text, undefined, undefined, undefined);
-    //     } catch (err: any) {
-    //         setIsProcessing(false);
-    //         setMessages(prev => {
-    //             const last = prev[prev.length - 1];
-    //             if (last?.isStreaming) {
-    //                 return [...prev.slice(0, -1), { id: Date.now().toString(), role: 'system', text: `❌ Error: ${err?.message}` }];
-    //             }
-    //             return [...prev, { id: Date.now().toString(), role: 'system', text: `❌ Error: ${err?.message}` }];
-    //         });
-    //     }
-    // };
 
     // Build the {role, content} history the endpoint expects from our local
     // Message[] shape. 'client' rows are rolling-transcript display only —
@@ -466,6 +336,10 @@ export const FloatingChatPanel: React.FC<FloatingChatPanelProps> = React.memo(({
         let localBuffer = '';
         currentBufferRef.current = '';
         let rafId: number | null = null;
+        // The status label / rewrite dim only needs clearing once per stream
+        // phase. Doing it on EVERY token rebuilt the messages array (a new
+        // array even when nothing changed) and re-rendered the panel per token.
+        let statusCleared = false;
         const flush = () => {
             rafId = null;
             setMessages(prev => prev.map(m => m.id === assistantId ? { ...m, text: localBuffer, rewriting: false } : m));
@@ -478,6 +352,7 @@ export const FloatingChatPanel: React.FC<FloatingChatPanelProps> = React.memo(({
             calendarEventMetadata,
             {
                 onStatus: (status) => {
+                    statusCleared = false;
                     const label = statusLabel(status);
                     setMessages(prev => prev.map(m => m.id === assistantId ? { ...m, status: label } : m));
                 },
@@ -488,6 +363,7 @@ export const FloatingChatPanel: React.FC<FloatingChatPanelProps> = React.memo(({
                 // the message here, so a retry that returns none must not
                 // leave the previous attempt's chips on screen.
                 onRetry: (attempt, max) => {
+                    statusCleared = false;
                     setMessages(prev => prev.map(m =>
                         m.id === assistantId
                             ? { ...m, status: `Reconnecting… (${attempt}/${max})`, sourceMap: undefined }
@@ -515,6 +391,7 @@ export const FloatingChatPanel: React.FC<FloatingChatPanelProps> = React.memo(({
                     // 'Rewriting…' badge instead of wiping the bubble —
                     // mid-call, a vanishing answer reads as a glitch.
                     localBuffer = '';
+                    statusCleared = false;
                     if (rafId !== null) {
                         cancelAnimationFrame(rafId);
                         rafId = null;
@@ -529,7 +406,10 @@ export const FloatingChatPanel: React.FC<FloatingChatPanelProps> = React.memo(({
                     if (rafId === null) rafId = requestAnimationFrame(flush);
                     // First token has arrived — clear the status label and
                     // the rewrite dim so real content replaces both.
-                    setMessages(prev => prev.map(m => (m.id === assistantId && (m.status || m.rewriting)) ? { ...m, status: undefined, rewriting: false } : m));
+                    if (!statusCleared) {
+                        statusCleared = true;
+                        setMessages(prev => prev.map(m => (m.id === assistantId && (m.status || m.rewriting)) ? { ...m, status: undefined, rewriting: false } : m));
+                    }
                 },
                 onRagAnswer: (rag) => {
                     // Structured answer arrives whole — render as a complete

@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 
-import { buildUploadAnalysisPrompt, normalizeUploadAnalysis } from '../utils/uploadAnalysis';
+import { buildUploadAnalysisPrompt, clipForLocalAnalysis, LOCAL_ANALYSIS_MAX_CHARS, normalizeUploadAnalysis } from '../utils/uploadAnalysis';
 import { stableId } from '../../src/lib/objections';
 
 const qual = (
@@ -227,5 +227,29 @@ describe('normalizeUploadAnalysis — signals + dealOptimizer gate', () => {
         expect(out.dealOptimizer).toHaveLength(1);
         expect(out.dealOptimizer![0]!.moves).toEqual([]);
         expect(out.dealOptimizer![0]!.intensity).toBe('medium');
+    });
+});
+
+describe('clipForLocalAnalysis', () => {
+    it('passes a transcript that fits through untouched and unflagged', () => {
+        const text = 'REP: Hi\nPROSPECT: Hello';
+        expect(clipForLocalAnalysis(text)).toEqual({ text });
+    });
+
+    it('cuts a long transcript back to the last whole turn and flags how much it covers', () => {
+        const turn = 'PROSPECT: we run eighteen guards across two sites and budget is tight.\n';
+        const text = turn.repeat(1200); // ~85k chars, the size of the upload that lost its analysis
+        const out = clipForLocalAnalysis(text);
+
+        expect(out.text.length).toBeLessThanOrEqual(LOCAL_ANALYSIS_MAX_CHARS);
+        expect(text.startsWith(out.text)).toBe(true);
+        expect(out.text.endsWith('tight.')).toBe(true); // no half turn
+        expect(out.truncated).toEqual({ analyzedChars: out.text.length, totalChars: text.length });
+    });
+
+    it('falls back to a hard cut when there is no line break to cut at', () => {
+        const out = clipForLocalAnalysis('x'.repeat(LOCAL_ANALYSIS_MAX_CHARS + 50));
+        expect(out.text.length).toBe(LOCAL_ANALYSIS_MAX_CHARS);
+        expect(out.truncated?.totalChars).toBe(LOCAL_ANALYSIS_MAX_CHARS + 50);
     });
 });

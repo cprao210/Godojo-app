@@ -21,8 +21,10 @@ const useLiveAnalysisImpl: LiveAnalysisHook = LIVE_ANALYSIS_V2_ENABLED
     ? (useLiveAnalysisV2 as unknown as LiveAnalysisHook)
     : useLiveAnalysis;
 import { useObjectionWatch } from './useObjectionWatch';
-import { ActivePanel, ChatMessage, LiveAnalysisData, MeetingType } from '@/types';
+import { ActivePanel, CalendarEvent, ChatMessage, LiveAnalysisData, MeetingType } from '@/types';
 import { objectionsOnlyAnalysis } from '@/lib/objections';
+import { isInternalMeeting } from '@/lib/companyCandidates';
+import { getFirebaseAuth } from '@/lib/firebase';
 import { posthogAnalytics } from '@/lib/analytics/posthog.service';
 import { getMeetingGeneration, setMeetingGeneration } from '@/lib/meetingGeneration';
 import { decideFinalAnalysis, decideAutoRefresh } from '@/lib/meetingLifecycle';
@@ -56,9 +58,21 @@ interface UseFloatingDockArgs {
     transcriptRef: TranscriptRef;
     isMeetingPaused: boolean;
     companyIntel?: Record<string, any> | null;
+    /** The current meeting's calendar event (a one-item list), used to recognise an internal
+     *  meeting — see `isInternalMeeting`. */
+    calendarEventMetadata?: CalendarEvent[];
 }
 
-export function useFloatingDock({ transcriptRef, isMeetingPaused, companyIntel }: UseFloatingDockArgs) {
+/** The signed-in user's email, or null. Never throws — no email just means "can't tell". */
+const currentUserEmail = (): string | null => {
+    try {
+        return getFirebaseAuth().currentUser?.email ?? null;
+    } catch {
+        return null;
+    }
+};
+
+export function useFloatingDock({ transcriptRef, isMeetingPaused, companyIntel, calendarEventMetadata }: UseFloatingDockArgs) {
     // ── Panel switching + freeze mode ────────────────────────────────────────
     const [activePanel, setActivePanel] = useState<ActivePanel>(null);
     // Remembers the last panel that was open so the brand bar's ▽ chevron can
@@ -158,13 +172,24 @@ export function useFloatingDock({ transcriptRef, isMeetingPaused, companyIntel }
     // Owns the objection list outright (delta-in/delta-out contract with
     // /intelligence/objection-handler). Lifted here for the same reason the analysis
     // session is: it must survive panel switches and remounts.
+    //
+    // Off for an internal meeting (every invitee on our own domain): in a team review of our
+    // own product every colleague on system audio is labelled PROSPECT, and one such call ended
+    // with 80 "objections".
+    const calendarEvent = calendarEventMetadata?.[0];
+    const isInternal = useMemo(
+        () => isInternalMeeting(calendarEvent, { userEmail: currentUserEmail() }),
+        [calendarEvent],
+    );
+    const isInternalRef = useRef(isInternal);
+    useEffect(() => { isInternalRef.current = isInternal; }, [isInternal]);
     const {
         active: activeObjections,
         resolved: resolvedObjections,
         objectionsRef,
         isEnabled: objectionWatchEnabled,
         resetObjections,
-    } = useObjectionWatch(transcriptRef, isMeetingPaused);
+    } = useObjectionWatch(transcriptRef, isMeetingPaused, { internal: isInternal });
 
     // ── Lifted analysis session — survives panel switches/remounts ──────────
     const { analysisData, isLoading: analysisLoading, error: analysisError, runAnalysis, resetAnalysis, isRefreshRun, getAnalysisProgress, changedFields, sendFieldFeedback, finalizeAnalysis } =
@@ -191,12 +216,16 @@ export function useFloatingDock({ transcriptRef, isMeetingPaused, companyIntel }
     // ~1.5s and the rep would still see the countdown placeholder.
     const displayAnalysisData = useMemo<LiveAnalysisData | null>(() => {
         if (!objectionWatchEnabled) return analysisData;
+        if (isInternal) {
+            // The panel says why its Objections tab is empty instead of "Listening…".
+            return analysisData ? { ...analysisData, objections: [], objectionDetectionOff: 'internal' } : null;
+        }
         const watched = [...activeObjections, ...resolvedObjections];
         if (analysisData) return { ...analysisData, objections: watched };
         // Stay null on an empty list so the panel keeps showing its countdown /
         // waiting placeholder instead of an all-missing shell with nothing in it.
         return watched.length > 0 ? objectionsOnlyAnalysis(watched) : null;
-    }, [analysisData, activeObjections, resolvedObjections, objectionWatchEnabled]);
+    }, [analysisData, activeObjections, resolvedObjections, objectionWatchEnabled, isInternal]);
 
     // Objections tick far more often than live analysis runs, so re-push the composed
     // result to the main process in between — that's what ends up in
@@ -210,6 +239,11 @@ export function useFloatingDock({ transcriptRef, isMeetingPaused, companyIntel }
     // analysisData explicitly — the objections-only shell must never be persisted.
     // Debounced so a burst of ticks is one IPC call. Tagged with the meeting
     // generation: this fires on a timer, so it can land after the call ended.
+    //
+    // The snapshot is exactly what the panel shows: when the end-of-call pass can't answer, it is
+    // what the meeting keeps, and the saved meeting must not disagree with the panel. (The list is
+    // gated, deduped and capped by the watcher — src/lib/objections.ts — so "exactly what the
+    // panel shows" is no longer the 80-item running list it once was.)
     useEffect(() => {
         if (!analysisData || !displayAnalysisData) return;
         const generation = getMeetingGeneration();
@@ -322,14 +356,11 @@ export function useFloatingDock({ transcriptRef, isMeetingPaused, companyIntel }
     // placeholder meeting is saved. The overlay is the one place that holds both
     // the v2 signed state and the full transcript with original text + turn ids,
     // and its API client owns the auth token — so the request is served here.
-    // The final pass returns objections for the whole call; if it found none but
-    // the live watcher did, the watcher's list is kept rather than dropped.
+    // The final pass already holds every objection and buying signal the rep saw live, graded,
+    // plus what the pass found beyond them (keepLiveAddMissed in finalizeAnalysis) — so the saved
+    // meeting shows what the panel showed. An internal meeting keeps no objections.
     const finalizeRef = useRef(finalizeAnalysis);
     useEffect(() => { finalizeRef.current = finalizeAnalysis; }, [finalizeAnalysis]);
-    const watchedObjectionsRef = useRef<LiveAnalysisData['objections']>([]);
-    useEffect(() => {
-        watchedObjectionsRef.current = [...activeObjections, ...resolvedObjections];
-    }, [activeObjections, resolvedObjections]);
     useEffect(() => {
         if (!LIVE_ANALYSIS_V2_ENABLED) return;
         const off = window.electronAPI?.onRunFinalAnalysisV2?.((request) => {
@@ -342,8 +373,8 @@ export function useFloatingDock({ transcriptRef, isMeetingPaused, companyIntel }
                         window.electronAPI?.respondFinalAnalysisV2?.(requestId, { ok: false, error: 'no final analysis' });
                         return;
                     }
-                    const merged = data.objections.length === 0 && watchedObjectionsRef.current.length > 0
-                        ? { ...data, objections: watchedObjectionsRef.current }
+                    const merged: LiveAnalysisData = isInternalRef.current
+                        ? { ...data, objections: [], objectionDetectionOff: 'internal' }
                         : data;
                     window.electronAPI?.respondFinalAnalysisV2?.(requestId, { ok: true, data: merged });
                 } catch (e: any) {

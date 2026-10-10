@@ -16,19 +16,10 @@
 
 import Database from 'better-sqlite3';
 import { SupabaseClientManager } from './SupabaseClient';
+import { localOnlyRowFilter, stripLocalOnlyColumns } from './supabaseSyncFilters';
 import { SupabaseMirrorService } from './SupabaseMirrorService';
 
 const PAGE = 1000;
-
-// Columns that exist locally (SQLite) but not yet in the Supabase schema.
-// Kept in sync with SupabaseBackfill.ts's LOCAL_ONLY_COLUMNS — both files
-// read full local rows via SELECT * and must strip the same columns before
-// forwarding to PostgREST, which rejects an entire upsert if any column is
-// unrecognized (PGRST204). TODO(supabase): delete an entry here once that
-// column is added to the cloud schema.
-const LOCAL_ONLY_COLUMNS: Record<string, string[]> = {
-    meetings: ['meeting_types'],
-};
 
 export interface SyncAuditResult {
     table: string;
@@ -72,16 +63,12 @@ export class SupabaseSyncAudit {
 
         // FK-safe order: meetings (parent) first so re-queued children always
         // have a parent present remotely by the time the outbox drains.
-        // user_profile is special-cased below: local PK is INTEGER `id`, remote
-        // PK is `user_id` (Firebase UID) — they can't be set-diffed, so we do a
-        // presence check instead.
         const specs: TableSpec[] = [
-            { table: 'meetings', pkCol: 'id', transform: (r) => this._stripLocalOnly('meetings', this._sanitizeRow(r)) },
-            { table: 'transcripts', pkCol: 'id', transform: (r) => this._stripLocalOnly('transcripts', this._sanitizeRow(r)) },
+            { table: 'meetings', pkCol: 'id', transform: (r) => stripLocalOnlyColumns('meetings', this._sanitizeRow(r)) },
+            { table: 'transcripts', pkCol: 'id', transform: (r) => stripLocalOnlyColumns('transcripts', this._sanitizeRow(r)) },
             { table: 'ai_interactions', pkCol: 'id', transform: this._sanitizeRow },
             { table: 'chunks', pkCol: 'id', transform: this._transformChunk },
             { table: 'chunk_summaries', pkCol: 'id', transform: this._transformSummary },
-            { table: 'resume_nodes', pkCol: 'id', transform: this._sanitizeRow },
         ];
 
         const results: SyncAuditResult[] = [];
@@ -92,15 +79,6 @@ export class SupabaseSyncAudit {
             } catch (e) {
                 console.error(`[SupabaseSyncAudit] ${spec.table} audit failed:`, e);
             }
-        }
-
-        // user_profile: presence check — if a local row exists but no remote row
-        // exists for this user, re-queue it.
-        try {
-            const result = await this._auditUserProfile(db, mirror, userId);
-            results.push(result);
-        } catch (e) {
-            console.error('[SupabaseSyncAudit] user_profile audit failed:', e);
         }
 
         return results;
@@ -115,9 +93,11 @@ export class SupabaseSyncAudit {
     ): Promise<SyncAuditResult> {
         const { table, pkCol, transform } = spec;
 
+        // The live-call placeholder meeting (and its rows) is local-only.
+        const filter = localOnlyRowFilter(table);
         const localIds: any[] = db
-            .prepare(`SELECT ${pkCol} FROM ${table}`)
-            .all()
+            .prepare(`SELECT ${pkCol} FROM ${table} WHERE ${filter.sql}`)
+            .all(...filter.params)
             .map((r: any) => r[pkCol]);
 
         const remoteIds = await this._fetchRemoteIds(table, pkCol, userId);
@@ -175,55 +155,6 @@ export class SupabaseSyncAudit {
         }
 
         return remoteIds;
-    }
-
-    private static _stripLocalOnly(table: string, row: Record<string, any>): Record<string, any> {
-        const drop = LOCAL_ONLY_COLUMNS[table];
-        if (!drop) return row;
-        const clean = { ...row };
-        for (const col of drop) delete clean[col];
-        return clean;
-    }
-
-    /**
-     * user_profile presence check.
-     * Local PK is INTEGER `id`; remote PK is `user_id` (Firebase UID).
-     * The two schemas share no diffable key, so instead of a set-diff we just
-     * check: does the remote have ANY row for this user? If not, re-queue.
-     */
-    private static async _auditUserProfile(
-        db: Database.Database,
-        mirror: SupabaseMirrorService,
-        userId: string
-    ): Promise<SyncAuditResult> {
-        const localRows: any[] = db.prepare('SELECT * FROM user_profile').all();
-        const localCount = localRows.length;
-
-        const client = SupabaseClientManager.getClient();
-        let remoteCount = 0;
-        if (client) {
-            const { data, error } = await client
-                .from('user_profile')
-                .select('user_id')
-                .eq('user_id', userId)
-                .limit(1);
-            if (error) throw error;
-            remoteCount = data?.length ?? 0;
-        }
-
-        let gapsQueued = 0;
-        if (localCount > 0 && remoteCount === 0) {
-            // Re-queue the most recent local row (last written wins)
-            const row = localRows[localRows.length - 1];
-            mirror.upsertRow('user_profile', this._sanitizeRow(row));
-            gapsQueued = 1;
-        }
-
-        const gapsFound = localCount > 0 && remoteCount === 0 ? 1 : 0;
-        console.log(
-            `[SupabaseSyncAudit] user_profile: local=${localCount} remote=${remoteCount} gaps=${gapsFound} queued=${gapsQueued}`
-        );
-        return { table: 'user_profile', localCount, remoteCount, gapsFound, gapsQueued };
     }
 
     // ============================================

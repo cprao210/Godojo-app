@@ -61,38 +61,31 @@ describe('decideFinalAnalysis', () => {
 
 const processing = (over: Partial<ProcessingStageInput> = {}): ProcessingStageInput => ({
     isProcessing: true,
-    hasScorecard: false,
     isDetailResolved: false,
     isStalled: false,
     ...over,
 });
 
 describe('deriveProcessingStage', () => {
-    it('reports analyzing while nothing has been persisted yet', () => {
-        expect(deriveProcessingStage(processing()).stage).toBe('analyzing');
-    });
-
-    it('advances to validating once the scorecard row lands', () => {
-        // Real signal: scoring finished, so the remaining wait is the summary's
-        // generate → verify loop.
-        expect(deriveProcessingStage(processing({ hasScorecard: true })).stage).toBe('validating');
+    it('reports processing while the background run is in flight', () => {
+        expect(deriveProcessingStage(processing()).stage).toBe('processing');
     });
 
     it('reports finalizing once processing is done but the detail read has not landed', () => {
         // This is the gap that used to paint the score before the summary.
-        expect(deriveProcessingStage(processing({ isProcessing: false, hasScorecard: true })).stage)
+        expect(deriveProcessingStage(processing({ isProcessing: false })).stage)
             .toBe('finalizing');
     });
 
     it('is ready only when processing finished AND the detail read resolved', () => {
         expect(
-            deriveProcessingStage(processing({ isProcessing: false, hasScorecard: true, isDetailResolved: true })).stage,
+            deriveProcessingStage(processing({ isProcessing: false, isDetailResolved: true })).stage,
         ).toBe('ready');
     });
 
     it('stops promising a summary that is never coming', () => {
         // Overrides every other stage — a crashed run must not spin forever.
-        const view = deriveProcessingStage(processing({ isStalled: true, hasScorecard: true }));
+        const view = deriveProcessingStage(processing({ isStalled: true }));
         expect(view.stage).toBe('stalled');
         expect(view.detail).toMatch(/regenerate/i);
     });
@@ -127,13 +120,22 @@ describe('hasGeneratedSummary', () => {
         expect(hasGeneratedSummary({ overview: 'Discovery call with Acme.' })).toBe(true);
         expect(hasGeneratedSummary({ keyPoints: ['Budget approved'] })).toBe(true);
         expect(hasGeneratedSummary({ actionItems: ['Send pricing'] })).toBe(true);
-        expect(hasGeneratedSummary({ dealStatus: { stage: 'Discovery' } })).toBe(true);
-        expect(hasGeneratedSummary({ dealStatus: { summary: 'Late stage' } })).toBe(true);
         expect(hasGeneratedSummary({ salesCoachReview: { whatIDidRight: ['Strong open'] } })).toBe(true);
         expect(hasGeneratedSummary({ salesCoachReview: { whatICouldHaveDoneBetter: ['Rushed pricing'] } })).toBe(true);
         expect(hasGeneratedSummary({ salesCoachReview: { whatIMissedCompletely: ['No champion'] } })).toBe(true);
         expect(hasGeneratedSummary({ nextCallPlaybook: { openingRecap: 'Recap the ROI' } })).toBe(true);
         expect(hasGeneratedSummary({ nextCallPlaybook: { questionsToAsk: ['Who signs?'] } })).toBe(true);
+    });
+
+    it('dealStatus no longer counts — the coach fields do (incl. call-type blocks)', () => {
+        expect(hasGeneratedSummary({ dealStatus: { stage: 'Discovery' } } as any)).toBe(false);
+        expect(hasGeneratedSummary({ nextCallPlaybook: { callGoal: 'Get the CFO on the next call' } })).toBe(true);
+        expect(hasGeneratedSummary({ nextCallPlaybook: { valueAndROI: { quantitative: ['3 hrs saved/week'] } } })).toBe(true);
+        expect(hasGeneratedSummary({ openLoops: [{ concern: 'Pricing at scale' }] })).toBe(true);
+        expect(hasGeneratedSummary({ promises: [{ text: 'Send the deck' }] })).toBe(true);
+        expect(hasGeneratedSummary({ demoReview: { reactions: [{ feature: 'Reports', verdict: 'landed', quote: 'Nice', speaker: 'Dana' }] } })).toBe(true);
+        expect(hasGeneratedSummary({ negotiation: { terms: [{ term: 'Price', theyAsked: '20% off', youOffered: '10%', status: 'open' }] } })).toBe(true);
+        expect(hasGeneratedSummary({ negotiation: { limit: 'No discount beyond 15%' } })).toBe(true);
     });
 });
 

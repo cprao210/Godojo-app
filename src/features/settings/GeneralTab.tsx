@@ -1,5 +1,5 @@
 import React, { useState } from 'react';
-import { CalendarClock, Ghost, PointerOff, Power, Terminal, MessageSquare, Palette, Monitor, Sun, Moon, Globe, ChevronDown, Eye, Layout, Settings, Activity, Skull, Database, Flame, HardDrive, Trash2, Gauge } from 'lucide-react';
+import { BellRing, CalendarClock, Ghost, PointerOff, Power, Terminal, MessageSquare, Palette, Monitor, Sun, Moon, Globe, ChevronDown, Eye, Layout, Settings, Activity, Skull, Database, Flame, HardDrive, Trash2, Gauge } from 'lucide-react';
 import { usePerformanceMode, type PerformanceModePreference } from '@/hooks';
 import { OVERLAY_OPACITY_MIN } from '@/lib/overlayAppearance';
 import { useSettingsOverlay } from '@/hooks';
@@ -307,6 +307,29 @@ const GeneralTab: React.FC<{ overlay: SettingsOverlayHook }> = ({ overlay }) => 
                                     ariaLabel="Toggle open GoDojo at login"
                                 />
                             </div>
+
+                            {/* Title-bar ✕ keeps GoDojo running (Windows/Linux — on macOS closing never quits) */}
+                            {window.electronAPI?.platform !== 'darwin' && (
+                                <div className="flex items-center justify-between px-4 py-3">
+                                    <div className="flex items-center gap-4 flex-1 min-w-0">
+                                        <div className="w-10 h-10 shrink-0 bg-bg-item-surface rounded-lg border border-border-subtle flex items-center justify-center text-text-tertiary">
+                                            <BellRing size={20} />
+                                        </div>
+                                        <div>
+                                            <h3 className="text-sm font-bold text-text-primary">Keep GoDojo running when closed</h3>
+                                            <p className="text-xs text-text-secondary mt-0.5">
+                                                Closing the window keeps GoDojo in the background so meeting reminders still appear.
+                                                {general.closeToBackground === null && ' If you haven’t chosen yet, GoDojo asks the first time you close it.'}
+                                            </p>
+                                        </div>
+                                    </div>
+                                    <ToggleSwitch
+                                        checked={general.closeToBackground === true}
+                                        onChange={general.toggleCloseToBackground}
+                                        ariaLabel="Toggle keep GoDojo running when closed"
+                                    />
+                                </div>
+                            )}
 
                             {/* Auto-start meetings from the calendar reminder */}
                             <div className="flex items-center justify-between px-4 py-3">

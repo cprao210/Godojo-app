@@ -34,8 +34,8 @@ system's encrypted credential storage.
   (see "Third-Party Processors") to produce a transcript.
 - **Transcripts, meeting notes, summaries, scorecards, and AI interactions:**
   Generated from your sessions.
-- **Screenshots / screen content:** Captured only when you explicitly trigger a
-  screenshot or share call context.
+- **Screen content:** The app does not capture screenshots. On macOS, the
+  Screen Recording permission is used only to capture system (call) audio.
 - **Configuration and API keys:** Provider API keys you enter are stored locally
   on your device, encrypted using the OS credential store, and are **not** sent
   to us. They are transmitted directly to the corresponding provider when you

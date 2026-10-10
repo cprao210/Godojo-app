@@ -33,6 +33,9 @@ export function useGeneralSettings({ isOpen }: UseGeneralSettingsArgs) {
     // Defaults ON in main (AppSettings.autoStartMeetings) — mirror that here so
     // the row doesn't flash 'off' before the real value loads.
     const [autoStartMeetings, setAutoStartMeetingsState] = useState(true);
+    // Title-bar ✕ behaviour: true = keep running in the background (reminders
+    // keep working), false = quit, null = not chosen yet (first ✕ asks).
+    const [closeToBackground, setCloseToBackgroundState] = useState<boolean | null>(null);
 
     // ── Load current values from the main process whenever the overlay opens ─
     useEffect(() => {
@@ -43,6 +46,7 @@ export function useGeneralSettings({ isOpen }: UseGeneralSettingsArgs) {
         window.electronAPI?.getVerboseLogging?.().then(setVerboseLoggingState).catch(() => { });
         window.electronAPI?.getAutoStartMeetings?.().then(setAutoStartMeetingsState).catch(() => { });
         window.electronAPI?.getOpenAtLogin?.().then(setOpenOnLoginState).catch(() => { });
+        window.electronAPI?.getCloseToBackground?.().then(setCloseToBackgroundState).catch(() => { });
         window.electronAPI?.getThemeMode?.().then(({ mode }) => setThemeModeState(mode)).catch(() => { });
     }, [isOpen]);
 
@@ -81,6 +85,12 @@ export function useGeneralSettings({ isOpen }: UseGeneralSettingsArgs) {
         window.electronAPI?.setOpenAtLogin(newState);
     }, [openOnLogin]);
 
+    const toggleCloseToBackground = useCallback(() => {
+        const newState = closeToBackground !== true;
+        setCloseToBackgroundState(newState);
+        window.electronAPI?.setCloseToBackground?.(newState);
+    }, [closeToBackground]);
+
     const toggleVerboseLogging = useCallback(() => {
         const newState = !verboseLogging;
         setVerboseLoggingState(newState);
@@ -117,6 +127,8 @@ export function useGeneralSettings({ isOpen }: UseGeneralSettingsArgs) {
         verboseLogging,
         autoStartMeetings,
         toggleAutoStartMeetings,
+        closeToBackground,
+        toggleCloseToBackground,
         toggleUndetectable,
         toggleMousePassthrough,
         toggleOpenOnLogin,

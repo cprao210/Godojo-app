@@ -1,3 +1,6 @@
+// Must be the FIRST import: migrates natively_* localStorage keys to godojo_*
+// before any module below reads them while initialising.
+import "./lib/storageMigration";
 import React from "react";
 import ReactDOM from "react-dom/client";
 import { MotionConfig } from "framer-motion";
@@ -12,7 +15,7 @@ import "./index.css";
 // ---------------------------------------------------------------------------
 
 /** localStorage key used to cache the last resolved theme for flash-free boot. */
-const THEME_CACHE_KEY = "natively_resolved_theme";
+const THEME_CACHE_KEY = "godojo_resolved_theme";
 
 // ---------------------------------------------------------------------------
 // Pre-render DOM setup
@@ -79,15 +82,17 @@ function syncThemeWithMainProcess(): void {
  *
  * Lazily imported so Firebase's SDK doesn't block initial paint.
  *
- * Runs once per renderer: in multi-window setups (launcher + overlay) each
- * window calls this independently, and both bridges simply forward the same
- * token to main, which is idempotent.
+ * Every window initializes the SDK, but only the primary (launcher/default)
+ * window runs the silent restore and forwards tokens to main. Each restore
+ * mints a DIFFERENT ID token, so letting every window restore made main
+ * re-run its whole auth-changed chain once per window — see
+ * isPrimaryAuthWindow() in lib/firebase.
  */
 async function bootFirebaseAuthBridge(): Promise<void> {
   try {
-    const { getFirebaseAuth, trySilentRestore } = await import("./lib/firebase");
+    const { getFirebaseAuth, trySilentRestore, isPrimaryAuthWindow } = await import("./lib/firebase");
     getFirebaseAuth();
-    void trySilentRestore();
+    if (isPrimaryAuthWindow()) void trySilentRestore();
   } catch (error) {
     console.warn("[main.tsx] Firebase bootstrap failed (non-fatal):", error);
   }

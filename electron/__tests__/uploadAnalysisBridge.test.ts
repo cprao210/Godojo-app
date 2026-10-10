@@ -161,19 +161,19 @@ describe('requestUploadAnalysis', () => {
 });
 
 describe('isLocalUploadAnalysisForced', () => {
-    afterEach(() => { delete process.env.NATIVELY_UPLOAD_ANALYSIS_LOCAL; });
+    afterEach(() => { delete process.env.GODOJO_UPLOAD_ANALYSIS_LOCAL; delete process.env.NATIVELY_UPLOAD_ANALYSIS_LOCAL; });
 
     it('is off by default — uploads use the live-analysis API', () => {
         expect(isLocalUploadAnalysisForced()).toBe(false);
     });
 
     it('is read at call time, not at import time', () => {
-        process.env.NATIVELY_UPLOAD_ANALYSIS_LOCAL = '1';
+        process.env.GODOJO_UPLOAD_ANALYSIS_LOCAL = '1';
         expect(isLocalUploadAnalysisForced()).toBe(true);
     });
 
     it('only the exact opt-in value counts', () => {
-        process.env.NATIVELY_UPLOAD_ANALYSIS_LOCAL = 'true';
+        process.env.GODOJO_UPLOAD_ANALYSIS_LOCAL = 'true';
         expect(isLocalUploadAnalysisForced()).toBe(false);
     });
 });

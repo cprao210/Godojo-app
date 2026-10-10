@@ -53,23 +53,10 @@ export function buildGmailComposeUrl(to: string, subject: string, body: string):
 
 
 /**
- * Generate a suggested email subject from meeting title
- */
-export function generateEmailSubject(meetingTitle: string, meetingType: string = 'meeting'): string {
-    const cleanTitle = meetingTitle.replace(/["\*]/g, '').trim();
-
-    if (meetingType === 'interview') {
-        return `Following up on our conversation - ${cleanTitle}`;
-    }
-
-    return `Following up - ${cleanTitle}`;
-}
-
-/**
  * Build the input payload for follow-up email LLM generation
  */
 export interface FollowUpEmailInput {
-    meeting_type: 'interview' | 'call' | 'demo' | 'discussion' | 'meeting';
+    meeting_type: 'call' | 'demo' | 'discussion' | 'meeting';
     title: string;
     summary?: string;
     action_items?: string[];

@@ -2,7 +2,7 @@
 // the auto-save-after-5s-idle timer, the "auto-fetch models on mount if a
 // key is already stored" behavior, and the model dropdown's open/close +
 // outside-click handling. Kept separate from the component so the component
-// only owns rendering — same split as useCalendarConnections / useCropper /
+// only owns rendering — same split as useCalendarConnections /
 // useModelSelectorWindow.
 
 import { useCallback, useEffect, useRef, useState } from "react";

@@ -27,10 +27,10 @@ async function downloadModels() {
         await pipeline('feature-extraction', 'Xenova/all-MiniLM-L6-v2');
         console.log('[download-models] all-MiniLM-L6-v2 downloaded.');
 
-        // 2. Zero-shot classification model (Intent Classifier)
-        console.log('[download-models] Downloading Xenova/mobilebert-uncased-mnli...');
-        await pipeline('zero-shot-classification', 'Xenova/mobilebert-uncased-mnli');
-        console.log('[download-models] mobilebert-uncased-mnli downloaded.');
+        // The zero-shot intent classifier model (Xenova/mobilebert-uncased-mnli)
+        // is intentionally not downloaded or shipped: its only consumer, the
+        // "What should I say" mode, is dormant. Re-add it here and in
+        // package.json build.extraResources if that mode comes back.
 
         console.log('[download-models] All models downloaded successfully!');
     } catch (e) {

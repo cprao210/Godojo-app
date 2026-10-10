@@ -1,4 +1,5 @@
 import React, { useState, useRef, useEffect } from 'react';
+import { DocumentDetails } from '@/features/documents/DocumentDetails';
 import {
     Building2, Globe, Layers, FileText, RefreshCw, Trash2,
     AlertCircle, X, BarChart2,
@@ -491,6 +492,7 @@ export const KnowledgeBaseSection: React.FC<{
 }> = ({ assets, assetUploading, assetProgress = {}, onUpload, onDelete, onDeleteAll, onSync, isLight, readOnly = false }) => {
     const assetTypes: KnowledgeAsset['type'][] = ['sales_deck', 'product_specs', 'case_studies'];
 
+
     return (
         <div>
             <div className="flex items-center justify-between mb-2 px-1">
@@ -578,6 +580,7 @@ export const KnowledgeBaseSection: React.FC<{
                                         // staging spinner — the commit loop sets progress for one asset
                                         // at a time during Save.
                                         const progress = isUploading ? undefined : assetProgress[asset.id];
+
                                         return (
                                             <div
                                                 key={asset.id}
@@ -620,12 +623,23 @@ export const KnowledgeBaseSection: React.FC<{
                                                         </div>
                                                     )}
                                                 </div>
+                                                {!progress && !isUploading && (
+                                                    <DocumentDetails
+                                                        assetId={asset.id}
+                                                        label={asset.label}
+                                                        readOnly={readOnly}
+                                                        // Staged this session (not saved): preview the local bytes.
+                                                        localFile={asset.fileData
+                                                            ? { data: asset.fileData, mime: asset.mimeType, filename: asset.fileName || asset.label }
+                                                            : undefined}
+                                                    />
+                                                )}
                                                 {progress && (
                                                     <div className="mt-2">
                                                         <p className={`text-[10px] font-medium mb-1 ${isLight ? 'text-slate-500' : 'text-white/45'}`}>
                                                             {progress.phase === 'processing'
-                                                                ? `${progress.label || 'Indexing on server…'} — ${progress.percent}%`
-                                                                : `Uploading to server… ${progress.percent}%`}
+                                                                ? `${progress.label || 'Indexing on server…'} — ${progress.label ? `${progress.percent}%` : '8%'}`
+                                                                : `Uploading to server… `}
                                                         </p>
                                                         <div className={`h-1 overflow-hidden rounded-full ${isLight ? 'bg-slate-200' : 'bg-white/10'}`}>
                                                             <div
@@ -645,7 +659,7 @@ export const KnowledgeBaseSection: React.FC<{
                                                                     width: `${Math.max(
                                                                         progress.phase === 'processing'
                                                                             ? 15 + (progress.percent / 100) * 85
-                                                                            : (progress.percent / 100) * 15,
+                                                                            : progress.phase === 'uploading' ? 0 : (progress.percent / 100) * 15,
                                                                         4
                                                                     )}%`,
                                                                 }}

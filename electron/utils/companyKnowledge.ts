@@ -90,11 +90,11 @@ export function buildOwnCompanyContextBlock(ctx: CompanyKnowledgeContext | null 
 /**
  * Pull the current company context from the orchestrator and build the prompt block.
  *
- * `orchestrator` is typed `any` to avoid importing the premium module directly;
+ * `orchestrator` is typed `any` to avoid importing the knowledge module directly;
  * callers pass `appState.getKnowledgeOrchestrator()`.
  *
  * Returns '' when:
- *  - orchestrator is null (premium not available)
+ *  - orchestrator is null (knowledge module not available)
  *  - orchestrator has no `getContext` method (API mismatch)
  *  - context is empty / company has no name yet
  */

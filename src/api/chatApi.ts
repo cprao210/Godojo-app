@@ -376,10 +376,17 @@ function dispatchFrame(frame: string, handlers: ChatStreamHandlers, onDoneFrame?
  * rather than showing nothing. */
 export function statusLabel(status: string): string {
     switch (status) {
+        // "connected" arrives once the server has the question and is working
+        // out what it asks: "Connecting…" here read as a stuck connection for
+        // the several seconds that step can take.
         case "connected":
-            return "Connecting…";
+            return "Understanding your question…";
         case "searching":
             return "Searching meetings…";
+        // A question answered from whole calls (every call, one deal's calls,
+        // a comparison of companies) rather than a search.
+        case "reading_calls":
+            return "Reading your calls…";
         // Live-call statuses. During a call "searching meetings" is misleading —
         // the source is the conversation happening right now, not the archive.
         case "searching_transcript":

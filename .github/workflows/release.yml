@@ -20,37 +20,122 @@ on:
           - mac
           - windows
           - linux
+      channel:
+        description: 'Release channel for a manual run. "production" needs platform=all and a plain x.y.z tag.'
+        required: true
+        type: choice
+        default: 'test'
+        options:
+          - test
+          - beta
+          - production
+
+# One publish at a time: two overlapping releases must not interleave R2 uploads and
+# backend activation. Queued (not cancelled) so a running publish is never cut off half-way.
+concurrency:
+  group: release-publish
+  cancel-in-progress: false
 
 jobs:
-  # ─── Resolve which platform(s) to build, from either the tag name
-  # (v1.0.0 / v1.0.0-mac / v1.0.0-windows / v1.0.0-linux / v1.0.0-all)
-  # or the manual workflow_dispatch dropdown. Every build job reads this
-  # job's output instead of duplicating the same parsing logic three times.
+  # ─── Resolve WHAT to build and WHERE it may be published, from either the tag name
+  # or the manual workflow_dispatch inputs. Every other job reads this job's outputs
+  # instead of re-parsing the tag.
+  #
+  #   tag                      platform   channel      published to R2 under
+  #   v1.5.0                   all        production   production/   <- the ONLY way to reach users
+  #   v1.5.0-all               all        test         test/
+  #   v1.5.0-mac|-windows|-linux  one     test         test/         (platform-specific test releases)
+  #   v1.5.0-beta.1            all        beta         beta/
+  #   manual run               dropdown   dropdown     <channel>/    (production needs platform=all + x.y.z)
+  #
+  # Only the production channel touches production/ in R2 and the production backend
+  # metadata, so a test or beta build can never become what /download/* serves.
   # ─────────────────────────────────────────────────────────────────────
   resolve-platform:
-    name: Resolve target platform
+    name: Resolve target platform & channel
     runs-on: ubuntu-latest
     outputs:
       platform: ${{ steps.resolve.outputs.platform }}
+      channel: ${{ steps.resolve.outputs.channel }}
+      version: ${{ steps.resolve.outputs.version }}
     steps:
       - name: Resolve
         id: resolve
         shell: bash
+        env:
+          EVENT: ${{ github.event_name }}
+          INPUT_TAG: ${{ inputs.tag }}
+          INPUT_PLATFORM: ${{ inputs.platform }}
+          INPUT_CHANNEL: ${{ inputs.channel }}
+          REF_NAME: ${{ github.ref_name }}
         run: |
-          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
-            PLATFORM="${{ inputs.platform }}"
+          set -euo pipefail
+          SUFFIX=""
+          if [ "$EVENT" = "workflow_dispatch" ]; then
+            TAG="$INPUT_TAG"; PLATFORM="$INPUT_PLATFORM"; CHANNEL="$INPUT_CHANNEL"
           else
-            TAG="${{ github.ref_name }}"
+            TAG="$REF_NAME"
             case "$TAG" in
-              *-mac)     PLATFORM="mac" ;;
-              *-windows) PLATFORM="windows" ;;
-              *-linux)   PLATFORM="linux" ;;
-              *-all)     PLATFORM="all" ;;
-              *)         PLATFORM="all" ;;   # plain vX.Y.Z tag, no suffix — build everything, same as before
+              *-mac)     PLATFORM="mac";     SUFFIX="mac" ;;
+              *-windows) PLATFORM="windows"; SUFFIX="windows" ;;
+              *-linux)   PLATFORM="linux";   SUFFIX="linux" ;;
+              *-all)     PLATFORM="all";     SUFFIX="all" ;;
+              *)         PLATFORM="all" ;;
             esac
+            CHANNEL=""
           fi
-          echo "Resolved platform='$PLATFORM' (event=${{ github.event_name }}, tag=${{ github.ref_name }})"
-          echo "platform=$PLATFORM" >> "$GITHUB_OUTPUT"
+
+          # Strip the platform suffix — the app's own version never includes it.
+          CLEAN="${TAG%-mac}"; CLEAN="${CLEAN%-windows}"; CLEAN="${CLEAN%-linux}"; CLEAN="${CLEAN%-all}"
+          VERSION="${CLEAN#v}"
+          if ! [[ "$VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?$ ]]; then
+            echo "::error::'$TAG' does not contain a valid version (expected vX.Y.Z[-suffix])"; exit 1
+          fi
+
+          if [ -z "$CHANNEL" ]; then   # tag push: derive the channel from the tag
+            if [[ "$VERSION" == *-* ]]; then
+              if [[ "$VERSION" == *beta* ]]; then CHANNEL="beta"; else CHANNEL="test"; fi
+            elif [ -n "$SUFFIX" ]; then
+              CHANNEL="test"
+            else
+              CHANNEL="production"
+            fi
+          fi
+
+          if [ "$CHANNEL" = "production" ]; then
+            [ "$PLATFORM" = "all" ] || { echo "::error::production releases must build all platforms (got '$PLATFORM')"; exit 1; }
+            [[ "$VERSION" != *-* ]] || { echo "::error::production releases cannot use a pre-release version ('$VERSION')"; exit 1; }
+          fi
+
+          echo "Building GoDojo $VERSION  (platform=$PLATFORM, channel=$CHANNEL, event=$EVENT, tag=$TAG)"
+          {
+            echo "platform=$PLATFORM"
+            echo "channel=$CHANNEL"
+            echo "version=$VERSION"
+          } >> "$GITHUB_OUTPUT"
+
+      # Fail in seconds, not after a 40-minute build, if the R2/backend secrets were never added.
+      - name: Preflight — release secrets present
+        shell: bash
+        env:
+          R2_ACCOUNT_ID: ${{ secrets.R2_ACCOUNT_ID }}
+          R2_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
+          R2_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
+          R2_BUCKET_NAME: ${{ secrets.R2_BUCKET_NAME }}
+          R2_PUBLIC_BASE_URL: ${{ secrets.R2_PUBLIC_BASE_URL }}
+          API_BASE_URL: ${{ secrets.VITE_API_BASE_URL }}
+          ADMIN_CRON_KEY: ${{ secrets.ADMIN_CRON_KEY }}
+        run: |
+          missing=""
+          for k in R2_ACCOUNT_ID R2_ACCESS_KEY_ID R2_SECRET_ACCESS_KEY R2_BUCKET_NAME R2_PUBLIC_BASE_URL API_BASE_URL ADMIN_CRON_KEY; do
+            [ -n "${!k}" ] || missing="$missing $k"
+          done
+          if [ -n "$missing" ]; then
+            echo "::error::Missing GitHub Actions secrets:$missing (Settings > Secrets and variables > Actions; API_BASE_URL is the existing VITE_API_BASE_URL secret)"
+            exit 1
+          fi
+          case "$R2_PUBLIC_BASE_URL" in https://*) ;; *) echo "::error::R2_PUBLIC_BASE_URL must start with https://"; exit 1 ;; esac
+          echo "All release secrets present."
 
   # ─── macOS: .dmg + .zip for x64 and arm64 ───────────────────────────────────
   build-macos:
@@ -64,16 +149,10 @@ jobs:
       - name: Sync package.json version to the pushed tag
         shell: bash
         run: |
-          RAW_TAG="${{ github.ref_name || inputs.tag }}"
-          # Strip a platform suffix (-mac/-windows/-linux/-all) if present —
-          # the app's own version number should never include it.
-          CLEAN_TAG="${RAW_TAG%-mac}"
-          CLEAN_TAG="${CLEAN_TAG%-windows}"
-          CLEAN_TAG="${CLEAN_TAG%-linux}"
-          CLEAN_TAG="${CLEAN_TAG%-all}"
-          VERSION="${CLEAN_TAG#v}"   # v1.0.6 -> 1.0.6 (npm/electron-builder want no leading 'v')
+          # Resolved once by resolve-platform (tag suffix stripped, leading 'v' removed).
+          VERSION="${{ needs.resolve-platform.outputs.version }}"
           npm version "$VERSION" --no-git-tag-version --allow-same-version
-          echo "Building version: $VERSION"
+          echo "Building GoDojo $VERSION for channel '${{ needs.resolve-platform.outputs.channel }}'"
 
       - uses: actions/setup-node@v4
         with:
@@ -94,6 +173,13 @@ jobs:
 
       - name: Install Meson & Ninja
         run: brew install meson ninja
+
+      # The x86_64 native build compiles the bundled WebRTC library for x86_64
+      # (see macTargetEnv in scripts/build-native.js), and meson runs a small
+      # x86_64 sanity-check binary — which needs Rosetta 2 on Apple Silicon.
+      # No-op if it is already installed.
+      - name: Ensure Rosetta 2 (x86_64 cross-build)
+        run: /usr/sbin/softwareupdate --install-rosetta --agree-to-license || true
 
       - name: Install dependencies
         env:
@@ -175,9 +261,9 @@ jobs:
           npm run build:electron
 
       - name: Build native Rust module (x64 + arm64)
-        # NATIVELY_BUILD_ALL_MAC_ARCHES=1 tells build-native.js to compile both arches
+        # GODOJO_BUILD_ALL_MAC_ARCHES=1 tells build-native.js to compile both arches
         env:
-          NATIVELY_BUILD_ALL_MAC_ARCHES: "1"
+          GODOJO_BUILD_ALL_MAC_ARCHES: "1"
         run: |
           start=$(date +%s)
           npm run build:native
@@ -188,8 +274,10 @@ jobs:
         # ad-hoc-sign.js runs automatically as afterPack hook via package.json
         # identity: null in package.json = unsigned, no CSC secrets needed
         env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: npx electron-builder --mac --publish never
+          # Baked into the packaged app's app-update.yml: this build only ever looks for updates in
+          # ITS OWN channel + OS folder on R2 (a test build never sees production, and vice versa).
+          UPDATE_FEED_URL: ${{ secrets.R2_PUBLIC_BASE_URL }}/${{ needs.resolve-platform.outputs.channel }}/macos
+        run: npx electron-builder --mac --publish never -c.publish.url="$UPDATE_FEED_URL"
 
       - name: Verify .env bundled correctly in packaged app (macOS)
         # This is the check that actually matters for the "mac production build
@@ -243,7 +331,7 @@ jobs:
 
   # ─── Windows: .exe installer (nsis) + portable ───────────────────────────────
   build-windows:
-    name: Build Windows (x64 + ia32)
+    name: Build Windows (x64)
     runs-on: windows-latest
     needs: resolve-platform
     if: needs.resolve-platform.outputs.platform == 'all' || needs.resolve-platform.outputs.platform == 'windows'
@@ -253,16 +341,10 @@ jobs:
       - name: Sync package.json version to the pushed tag
         shell: bash
         run: |
-          RAW_TAG="${{ github.ref_name || inputs.tag }}"
-          # Strip a platform suffix (-mac/-windows/-linux/-all) if present —
-          # the app's own version number should never include it.
-          CLEAN_TAG="${RAW_TAG%-mac}"
-          CLEAN_TAG="${CLEAN_TAG%-windows}"
-          CLEAN_TAG="${CLEAN_TAG%-linux}"
-          CLEAN_TAG="${CLEAN_TAG%-all}"
-          VERSION="${CLEAN_TAG#v}"   # v1.0.6 -> 1.0.6 (npm/electron-builder want no leading 'v')
+          # Resolved once by resolve-platform (tag suffix stripped, leading 'v' removed).
+          VERSION="${{ needs.resolve-platform.outputs.version }}"
           npm version "$VERSION" --no-git-tag-version --allow-same-version
-          echo "Building version: $VERSION"
+          echo "Building GoDojo $VERSION for channel '${{ needs.resolve-platform.outputs.channel }}'"
 
       - uses: actions/setup-node@v4
         with:
@@ -369,8 +451,10 @@ jobs:
 
       - name: Package with electron-builder (Windows)
         env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: npx electron-builder --win --publish never
+          # Baked into the packaged app's app-update.yml: this build only ever looks for updates in
+          # ITS OWN channel + OS folder on R2 (a test build never sees production, and vice versa).
+          UPDATE_FEED_URL: ${{ secrets.R2_PUBLIC_BASE_URL }}/${{ needs.resolve-platform.outputs.channel }}/windows
+        run: npx electron-builder --win --publish never "-c.publish.url=$env:UPDATE_FEED_URL"
 
       - name: Upload Windows artifacts
         uses: actions/upload-artifact@v4
@@ -398,16 +482,10 @@ jobs:
       - name: Sync package.json version to the pushed tag
         shell: bash
         run: |
-          RAW_TAG="${{ github.ref_name || inputs.tag }}"
-          # Strip a platform suffix (-mac/-windows/-linux/-all) if present —
-          # the app's own version number should never include it.
-          CLEAN_TAG="${RAW_TAG%-mac}"
-          CLEAN_TAG="${CLEAN_TAG%-windows}"
-          CLEAN_TAG="${CLEAN_TAG%-linux}"
-          CLEAN_TAG="${CLEAN_TAG%-all}"
-          VERSION="${CLEAN_TAG#v}"   # v1.0.6 -> 1.0.6 (npm/electron-builder want no leading 'v')
+          # Resolved once by resolve-platform (tag suffix stripped, leading 'v' removed).
+          VERSION="${{ needs.resolve-platform.outputs.version }}"
           npm version "$VERSION" --no-git-tag-version --allow-same-version
-          echo "Building version: $VERSION"
+          echo "Building GoDojo $VERSION for channel '${{ needs.resolve-platform.outputs.channel }}'"
 
       - uses: actions/setup-node@v4
         with:
@@ -521,8 +599,10 @@ jobs:
 
       - name: Package with electron-builder (Linux)
         env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: npx electron-builder --linux --publish never
+          # Baked into the packaged app's app-update.yml: this build only ever looks for updates in
+          # ITS OWN channel + OS folder on R2 (a test build never sees production, and vice versa).
+          UPDATE_FEED_URL: ${{ secrets.R2_PUBLIC_BASE_URL }}/${{ needs.resolve-platform.outputs.channel }}/linux
+        run: npx electron-builder --linux --publish never -c.publish.url="$UPDATE_FEED_URL"
 
       - name: Upload Linux artifacts
         uses: actions/upload-artifact@v4
@@ -535,14 +615,31 @@ jobs:
             release/latest-linux.yml
           if-no-files-found: error
 
-  # ─── Publish: collect all artifacts → create draft GitHub Release ────────────
+  # ─── Publish: validate → upload to R2 → verify → activate → notes → switch on auto-update ──
+  #
+  # Order matters, and every step gates the next (a failure stops the job, so the previous
+  # production release stays active):
+  #   1. validate artifacts (nothing uploaded yet)
+  #   2. upload installers/zips/blockmaps to R2      (immutable, versioned filenames)
+  #   3. verify them (size in R2 + public r2.dev URL)
+  #   4. activate on the backend                     (/download/* now redirects to this release)
+  #   5. create the GitHub release page (notes only) (so the notes exist BEFORE the update is visible)
+  #   6. upload latest*.yml LAST and verify          (this is what the Electron updater reads)
+  # Update feeds go last on purpose: electron-updater reads them straight from R2, bypassing the
+  # backend, so publishing them before step 4 would let auto-update ship a release the backend
+  # never activated. The release notes (step 5) go just before the feeds so the notes page already
+  # exists at the moment an installed app first sees the update.
   publish:
-    name: Publish GitHub Release
+    name: Publish to Cloudflare R2
     runs-on: ubuntu-latest
-    needs: [build-macos, build-windows, build-linux]
+    needs: [resolve-platform, build-macos, build-windows, build-linux]
     if: always() && !cancelled() && !contains(needs.*.result, 'failure')
     permissions:
       contents: write
+    env:
+      CHANNEL: ${{ needs.resolve-platform.outputs.channel }}
+      VERSION: ${{ needs.resolve-platform.outputs.version }}
+      ARTIFACTS_DIR: artifacts
     steps:
       - uses: actions/checkout@v4
 
@@ -550,45 +647,41 @@ jobs:
         uses: actions/download-artifact@v4
         with:
           path: artifacts/
-          # merge-multiple isn't needed here since artifact names are already
-          # distinct (mac-release/win-release/linux-release); skipped jobs
-          # simply produce no artifact directory, download-artifact tolerates that.
+          # Artifact names are already distinct (mac-release/win-release/linux-release);
+          # skipped jobs simply produce no directory, download-artifact tolerates that.
 
       - name: List artifacts
         run: find artifacts/ -type f | sort
 
-      - name: Determine release completeness
-        id: completeness
+      - name: Check release completeness for this channel
         shell: bash
         run: |
-          # Require both the yml update-metadata file AND at least one binary
-          # for every platform before we let this release go public. A skipped
-          # job just means these globs match nothing, so this catches partial
-          # (single-platform) runs the same way it catches real failures.
-          missing=""
-          [ -f artifacts/mac-release/latest-mac.yml ] || missing="$missing mac:latest-mac.yml"
-          compgen -G "artifacts/mac-release/*.dmg" > /dev/null || missing="$missing mac:dmg"
-          [ -f artifacts/win-release/latest.yml ] || missing="$missing win:latest.yml"
-          compgen -G "artifacts/win-release/*.exe" > /dev/null || missing="$missing win:exe"
-          [ -f artifacts/linux-release/latest-linux.yml ] || missing="$missing linux:latest-linux.yml"
-          compgen -G "artifacts/linux-release/*.AppImage" > /dev/null || missing="$missing linux:AppImage"
-
-          if [ -z "$missing" ]; then
-            echo "All platforms present — release will be published (not draft)."
-            echo "all_present=true" >> "$GITHUB_OUTPUT"
+          echo "Release: GoDojo $VERSION -> channel '$CHANNEL'"
+          if [ "$CHANNEL" = "production" ]; then
+            # Production must ship BOTH desktop platforms (Linux rides along when it was built).
+            missing=""
+            [ -f artifacts/mac-release/latest-mac.yml ] || missing="$missing mac:latest-mac.yml"
+            [ -f "artifacts/mac-release/GoDojo.AI-${VERSION}-arm64.dmg" ] || missing="$missing mac:arm64.dmg"
+            [ -f "artifacts/mac-release/GoDojo.AI-${VERSION}-x64.dmg" ] || missing="$missing mac:x64.dmg"
+            [ -f artifacts/win-release/latest.yml ] || missing="$missing win:latest.yml"
+            compgen -G "artifacts/win-release/*Setup*.exe" > /dev/null || missing="$missing win:setup.exe"
+            if [ -n "$missing" ]; then
+              echo "::error::Refusing to publish to production — missing:$missing"
+              exit 1
+            fi
           else
-            echo "::warning::Missing for full publish:$missing — release will stay as a DRAFT."
-            echo "all_present=false" >> "$GITHUB_OUTPUT"
+            find artifacts -name 'latest*.yml' | grep -q . || { echo "::error::No build produced an update manifest"; exit 1; }
           fi
+          echo "Artifact set is complete for '$CHANNEL'."
 
       - name: Verify update-metadata filenames match actual binaries
         # Catches the class of bug that broke v1.0.1's Windows auto-update:
         # electron-builder writes latest*.yml with the LOCAL artifact
-        # filename, but GitHub Releases silently rewrites spaces in
-        # uploaded asset filenames to dots. If artifactName ever contains a
-        # space (or otherwise drifts from what's actually uploaded), the
-        # updater fetches a URL that 404s. This fails the job instead of
-        # letting a broken update ship.
+        # filename, and the updater requests exactly that name from the feed.
+        # If artifactName ever drifts from what is actually uploaded (spaces,
+        # renamed files), the updater fetches a URL that 404s. This fails the
+        # job BEFORE anything is uploaded to R2 instead of letting a broken
+        # update ship.
         shell: bash
         run: |
           set -euo pipefail
@@ -627,37 +720,87 @@ jobs:
           check_yml "artifacts/linux-release/latest-linux.yml" "artifacts/linux-release"
 
           if [ "$fail" -eq 1 ]; then
-            echo "::error::Update-metadata / binary filename mismatch detected — aborting before publish."
+            echo "::error::Update-metadata / binary filename mismatch detected — aborting before anything is uploaded to R2."
             exit 1
           fi
           echo "All update-metadata filenames match their binaries."
 
-      - name: Render release notes with actual version
+      - name: Upload installers to R2 and verify
         shell: bash
+        env:
+          R2_ACCOUNT_ID: ${{ secrets.R2_ACCOUNT_ID }}
+          R2_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
+          R2_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
+          R2_BUCKET_NAME: ${{ secrets.R2_BUCKET_NAME }}
+          R2_PUBLIC_BASE_URL: ${{ secrets.R2_PUBLIC_BASE_URL }}
         run: |
-          RAW_TAG="${{ github.ref_name || inputs.tag }}"
-          CLEAN_TAG="${RAW_TAG%-mac}"
-          CLEAN_TAG="${CLEAN_TAG%-windows}"
-          CLEAN_TAG="${CLEAN_TAG%-linux}"
-          CLEAN_TAG="${CLEAN_TAG%-all}"
-          VERSION="${CLEAN_TAG#v}"
-          sed "s/__VERSION__/${VERSION}/g" .github/RELEASE_TEMPLATE.md > release-notes.md
+          bash .github/scripts/r2-release.sh upload-binaries
+          bash .github/scripts/r2-release.sh verify-binaries
+          echo "R2 upload verification complete"
 
-      - name: Create GitHub Release
+      - name: Activate release on the backend
+        shell: bash
+        env:
+          R2_ACCOUNT_ID: ${{ secrets.R2_ACCOUNT_ID }}
+          R2_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
+          R2_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
+          R2_BUCKET_NAME: ${{ secrets.R2_BUCKET_NAME }}
+          R2_PUBLIC_BASE_URL: ${{ secrets.R2_PUBLIC_BASE_URL }}
+          API_BASE_URL: ${{ secrets.VITE_API_BASE_URL }}
+          ADMIN_CRON_KEY: ${{ secrets.ADMIN_CRON_KEY }}
+        run: bash .github/scripts/r2-release.sh activate
+
+      # Release NOTES only — no binaries are attached. Created BEFORE the update feeds go live so
+      # the notes page already exists when the first app sees the update (the app fetches notes
+      # the moment it announces one). Non-critical: a failure here must not stop the release, so
+      # the feeds still publish afterwards. Skipped for manual runs (no real tag).
+      # Fills __VERSION__ / __CHANNEL__ and builds the Downloads section from the files this run
+      # actually built, linked at <R2 public URL>/<channel>/<os>/<file> — the same keys
+      # r2-release.sh uploaded — so test/beta/production releases each link their own builds.
+      - name: Render release notes with actual version
+        if: github.event_name == 'push'
+        shell: bash
+        env:
+          R2_PUBLIC_BASE_URL: ${{ secrets.R2_PUBLIC_BASE_URL }}
+        run: bash .github/scripts/render-release-notes.sh
+
+      - name: Create GitHub release (notes only)
+        if: github.event_name == 'push'
+        continue-on-error: true
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: ${{ github.ref_name || inputs.tag }}
-          name: GoDojo AI ${{ github.ref_name || inputs.tag }}
+          tag_name: ${{ github.ref_name }}
+          name: GoDojo AI ${{ github.ref_name }}
           body_path: release-notes.md
-          draft: ${{ steps.completeness.outputs.all_present != 'true' }}
-          prerelease: false
+          draft: false
+          # Test/beta notes are flagged pre-release, which the app's announce-gate also honors.
+          prerelease: ${{ needs.resolve-platform.outputs.channel != 'production' }}
           generate_release_notes: true
-          files: |
-            artifacts/mac-release/*
-            artifacts/win-release/*
-            artifacts/linux-release/*
-          # softprops/action-gh-release silently ignores glob patterns that
-          # match nothing (e.g. artifacts/win-release/* when windows was
-          # skipped) — so this works unmodified for partial asset sets too
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Publish auto-update feeds (latest*.yml) and verify
+        shell: bash
+        env:
+          R2_ACCOUNT_ID: ${{ secrets.R2_ACCOUNT_ID }}
+          R2_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
+          R2_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
+          R2_BUCKET_NAME: ${{ secrets.R2_BUCKET_NAME }}
+          R2_PUBLIC_BASE_URL: ${{ secrets.R2_PUBLIC_BASE_URL }}
+        run: |
+          bash .github/scripts/r2-release.sh upload-manifests
+          bash .github/scripts/r2-release.sh verify-manifests
+          echo "Release $VERSION activated on channel '$CHANNEL'"
+
+      - name: Summary
+        shell: bash
+        env:
+          R2_PUBLIC_BASE_URL: ${{ secrets.R2_PUBLIC_BASE_URL }}
+        run: |
+          {
+            echo "### GoDojo $VERSION — channel \`$CHANNEL\`"
+            echo "- Windows feed: \`${R2_PUBLIC_BASE_URL%/}/$CHANNEL/windows/latest.yml\`"
+            echo "- macOS feed: \`${R2_PUBLIC_BASE_URL%/}/$CHANNEL/macos/latest-mac.yml\`"
+            [ "$CHANNEL" = "production" ] && echo "- Stable download endpoints: \`/download/windows\`, \`/download/macos\`"
+            echo "- Roll back with the **Rollback release** workflow (no rebuild)."
+          } >> "$GITHUB_STEP_SUMMARY"

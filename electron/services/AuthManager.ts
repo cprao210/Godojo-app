@@ -42,9 +42,21 @@ export interface AuthSnapshot {
     photoURL: string | null;
 }
 
+/**
+ * Same-uid token rotations arriving within this window are coalesced into ONE
+ * 'auth-changed'. At launch several sources rotate the token within ~2 s (the
+ * silent restore, the SDK's own restored token, the session guard's forced
+ * refresh in the launcher and overlay); each used to re-run the full
+ * auth-changed chain.
+ */
+export const ROTATION_COALESCE_MS = 1_500;
+
 export class AuthManager extends EventEmitter {
     private static instance: AuthManager;
     private session: FirebaseSession | null = null;
+    /** Pending coalesced emit for same-uid rotations (see ROTATION_COALESCE_MS). */
+    private rotationTimer: ReturnType<typeof setTimeout> | null = null;
+    private coalescedRotations = 0;
 
     private constructor() {
         super();
@@ -108,6 +120,21 @@ export class AuthManager extends EventEmitter {
         const isFirstSignIn = !this.session || this.session.uid !== session.uid;
         const uidChanged = this.session?.uid !== session.uid;
         const previousUid = this.session?.uid ?? null;
+
+        // Same-uid rotation: the new token is readable immediately (getIdToken
+        // is synchronous), but the expensive side effects — identity write and
+        // the 'auth-changed' chain — run once per burst, on the trailing edge.
+        if (!isFirstSignIn) {
+            this.session = session;
+            this.coalescedRotations += 1;
+            if (this.rotationTimer) clearTimeout(this.rotationTimer);
+            this.rotationTimer = setTimeout(() => this.flushRotation(), ROTATION_COALESCE_MS);
+            this.rotationTimer.unref?.();
+            return;
+        }
+
+        // A new identity supersedes any pending rotation of the previous one.
+        this.cancelPendingRotation();
         this.session = session;
 
         // Point the local DB at THIS user's file before anyone reacts to the
@@ -132,9 +159,42 @@ export class AuthManager extends EventEmitter {
             this.emit('user-switched', { previousUid, uid: session.uid });
         }
 
-        // Persist refresh token + identity for next-launch restore.
-        // ID tokens are NOT persisted — they expire in 1h and are re-minted
-        // from the refresh token on every app start.
+        this.persistIdentity(session);
+
+        console.log(`[AuthManager] Session established for uid=${session.uid}`);
+        this.emit('auth-changed', this.snapshot());
+        this.emit('signed-in', this.snapshot());
+    }
+
+    /** Trailing edge of a same-uid rotation burst. */
+    private flushRotation(): void {
+        this.rotationTimer = null;
+        const count = this.coalescedRotations;
+        this.coalescedRotations = 0;
+        if (!this.session) return;
+        this.persistIdentity(this.session);
+        console.log(`[AuthManager] Session refreshed for uid=${this.session.uid}` +
+            (count > 1 ? ` (${count} rotations coalesced)` : ''));
+        this.emit('auth-changed', this.snapshot());
+    }
+
+    /**
+     * Drop a pending rotation emit (sign-out / account switch). Its refresh
+     * token is still persisted first — while CredentialsManager points at
+     * that user — so the newest token is never lost.
+     */
+    private cancelPendingRotation(): void {
+        if (!this.rotationTimer) return;
+        clearTimeout(this.rotationTimer);
+        this.rotationTimer = null;
+        this.coalescedRotations = 0;
+        if (this.session) this.persistIdentity(this.session);
+    }
+
+    // Persist refresh token + identity for next-launch restore.
+    // ID tokens are NOT persisted — they expire in 1h and are re-minted
+    // from the refresh token on every app start.
+    private persistIdentity(session: FirebaseSession): void {
         try {
             CredentialsManager.getInstance().setFirebaseIdentity({
                 refreshToken: session.refreshToken,
@@ -146,10 +206,6 @@ export class AuthManager extends EventEmitter {
         } catch (e) {
             console.warn('[AuthManager] Failed to persist Firebase identity:', e);
         }
-
-        console.log(`[AuthManager] Session ${isFirstSignIn ? 'established' : 'refreshed'} for uid=${session.uid}`);
-        this.emit('auth-changed', this.snapshot());
-        if (isFirstSignIn) this.emit('signed-in', this.snapshot());
     }
 
     listAccounts() {
@@ -164,6 +220,7 @@ export class AuthManager extends EventEmitter {
     /** Called when the renderer signs the user out. */
     clearSession(): void {
         if (!this.session) return;
+        this.cancelPendingRotation();
         const previousUid = this.session.uid;
         this.session = null;
         try {

@@ -1,825 +1,327 @@
-# Audio Pipeline — End to End (Capture → Deepgram → UI)
+# Audio Pipeline: From Sound to Transcript
 
-A developer's map of how a spoken word becomes text on screen.
-
-Read **TL;DR** and **The two lanes** to get the shape of it. Everything after
-that is reference you can dip into.
+This page explains how GoDojo hears a sales call and turns it into a live transcript. It is written for people who are new to the project, so it uses plain language throughout. Technical terms are explained the first time they appear, and the glossary at the end lists them all.
 
 ---
 
-## TL;DR
+## 1. What the audio pipeline does
 
-There are **two separate audio lanes** that never mix:
+During a call, GoDojo listens to **two separate sources of sound** at the same time:
 
-| Lane | What it hears | Internal name |
+| Source | Who it is | Name in the code |
 | --- | --- | --- |
-| **System audio** | the other person, coming out of your speakers/headphones | `client` |
-| **Microphone** | you | `user` |
+| **Your microphone** | You, the salesperson | `user` |
+| **Your computer's audio** | The other people on the call, whose voices come out of your speakers or headphones | `client` |
 
-Each lane has its own capture, its own Deepgram WebSocket, and its own
-transcript stream. They only meet again at the very end — in the UI, and in the
-echo filter that stops your mic's copy of the other person from being
-transcribed twice.
+Each source is captured on its own, cleaned up, converted to one standard format, and sent to a **speech-to-text** service (a cloud service that turns spoken words into written text). The text comes back within a second or so. It then appears in the floating dock, the live analysis and chat use it, and the full transcript is saved when the call ends.
 
-Both lanes follow the same seven steps:
+The two sources stay separate from start to finish, and that is how the app knows who said what. Anything heard through the microphone is "you". Anything heard through the computer's audio is "them".
 
-```
-OS / hardware
-   |   raw samples at the device's native rate (44.1k, 48k, whatever)
-   v
-Rust native module            <- clean up, echo-cancel, resample
-   |   16 kHz mono 16-bit PCM, in 20 ms frames
-   v
-napi bridge (.node file)
-   |   Node Buffer
-   v
-Capture supervisor (TypeScript)  <- health checks + auto restart
-   |   'data' event
-   v
-main.ts wiring
-   |   stt.write(chunk)
-   v
-DeepgramStreamingSTT          <- WebSocket to Deepgram
-   |   'transcript' event
-   v
-main.ts transcript handler    <- echo filter, translate, fan out
-   |   IPC 'native-audio-transcript'
-   v
-Renderer (React)
+### The big picture
+
+```mermaid
+flowchart LR
+    Mic[Microphone - you]
+    Sys[Computer audio - them]
+    Native[Rust audio module]
+    App[App main process]
+    SttYou[Speech-to-text stream for you]
+    SttThem[Speech-to-text stream for them]
+    Clean[Echo check and translation]
+    Dock[Live transcript in the dock]
+    AI[Live analysis and chat]
+    Save[Saved meeting transcript]
+
+    Mic --> Native
+    Sys --> Native
+    Native --> App
+    App --> SttYou
+    App --> SttThem
+    SttYou --> Clean
+    SttThem --> Clean
+    Clean --> Dock
+    Clean --> AI
+    Clean --> Save
 ```
 
----
+In short:
 
-## The two lanes
-
-Everything is built twice, once per lane. When you are reading code and get
-lost, ask yourself "which lane am I in?" — that usually explains the behaviour.
-
-| | System audio (`client`) | Microphone (`user`) |
-| --- | --- | --- |
-| Native class | `SystemAudioCapture` | `MicrophoneCapture` |
-| Supervisor file | [SystemAudioCapture.ts](electron/audio/SystemAudioCapture.ts) | [MicrophoneCapture.ts](electron/audio/MicrophoneCapture.ts) |
-| STT instance in `main.ts` | `this.googleSTT` | `this.googleSTT_User` |
-| Wiring function | `wireSystemCapture()` | `wireMicrophoneCapture()` |
-| Level channel for the UI meter | `'system'` | `'mic'` |
-
-> **Naming trap:** the fields are called `googleSTT` and `googleSTT_User` for
-> historical reasons. They usually hold a **Deepgram** connection, not Google.
-> The actual class is chosen at runtime by `createSTTProvider()`.
+- The **Rust audio module** (the `native-module` folder) talks directly to the operating system to capture sound. It cleans the sound up and hands it to the app in small pieces called *chunks*, each about 20 milliseconds long. Rust is used because this part has to be fast and reliable.
+- The **app's main process** is the Electron "back end" of the desktop app. It forwards those chunks to two speech-to-text streams, one per source, and then sends the resulting text to the screens.
 
 ---
 
-## Step 1 — The OS hands us raw audio
+## 2. How sound is captured on each platform
 
-This all happens inside the Rust native module
-([native-module/src/lib.rs](native-module/src/lib.rs)).
+Capturing the microphone works much the same way everywhere. Capturing the *computer's* audio is different on each operating system.
 
-**Microphone** — same on every platform. We use **CPAL** to open the input
-device. The device is picked when the object is constructed, so changing mics
-means building a new capture (see *Device hot-swap* below). CPAL only tells us a
-device died through its stream error callback — there is no "device removed"
-event to subscribe to.
-
-**System audio** — completely different per platform:
-
-| Platform | How | Gotchas |
-| --- | --- | --- |
-| **Windows** | WASAPI **loopback**: we open the default *output* device as if it were an input | The endpoint can be re-opened in place, so restarts are cheap |
-| **macOS** | CoreAudio **Process Tap**, falling back to **ScreenCaptureKit** | Needs the *Screen Recording* permission. Takes 5–7 s to initialise |
-| **Linux** | PulseAudio **monitor source**: every output sink has a companion `<sink>.monitor` that carries whatever is being played to it | Needs a PulseAudio-compatible server running. `pipewire-pulse` counts, so modern distros work unchanged |
-
-The macOS permission is resolved **before** we construct the system capture. If
-we skipped that, every restart attempt would re-trigger the OS permission
-dialog, and a user who said "no" would be prompted every couple of seconds for
-the whole meeting.
-
-### A note on Linux
-
-Linux is the one platform where the sound server is not part of the OS, so it is
-worth spelling out what we talk to and why.
-
-We speak the **PulseAudio protocol**, not PipeWire's native API. That sounds
-backwards on a 2026 desktop, but `pipewire-pulse` ships enabled on every
-PipeWire system, so one client covers both worlds:
-
-- PulseAudio distros — Ubuntu ≤ 22.04, Debian, Mint
-- PipeWire distros — Ubuntu ≥ 22.10, Fedora, Arch
-
-The alternative — a PipeWire-native client — would drop Ubuntu 22.04 LTS, which
-is still very much in use. There is no kernel module to load (`snd-aloop`), no
-config file to edit, and nothing needs root.
-
-Three things are different from the Windows and macOS backends:
-
-**We ask for 16 kHz mono directly.** Pulse resamples and downmixes server-side,
-the same job WASAPI's `convert=true` does. So the DSP thread builds *no*
-resampler for this lane, and swapping output devices mid-meeting cannot change
-the rate the pipeline sees.
-
-**A monitor emits silence rather than nothing.** While a sink is merely idle, its
-monitor still produces real silent samples, which is exactly the keepalive
-behaviour the pipeline wants. If the sink is fully *suspended* it does go quiet,
-so a watchdog thread tops the ring up with synthesized silence — the same
-guarantee `getNativeFeatureLevel() === 2` makes on the other platforms.
-
-**Shutdown is bounded, not joined.** The reader thread can be parked inside a
-blocking `read()` on a suspended sink. `Drop` waits 1.5 s for both worker
-threads and then *detaches* them instead of blocking, so a restart from the JS
-supervisor can never hang on a stuck sink.
-
-Device hot-swap comes half for free: Pulse migrates streams itself when a sink
-disappears, and a watchdog polls the default sink every second to catch the other
-case — the user switching outputs while both devices still exist.
-
-If no sound server is reachable, the error we surface names the fix
-(`systemctl --user status pipewire-pulse`) and deliberately avoids the phrase
-`not supported on this platform`, so the supervisor keeps retrying and the lane
-heals itself if the server starts later.
-
-**Packages.** Building needs `libpulse-dev` and `libasound2-dev` (plus the C++
-toolchain for the echo canceller); `npm run build:native` preflights all of them
-and prints the right `apt` / `dnf` / `pacman` command if any are missing. At
-runtime the `.deb` depends on `libpulse0` and `libasound2 | libasound2t64` —
-both are hard dependencies, because the `.node` links against them and a missing
-one takes the whole native module down, not just system audio.
-
----
-
-## Step 2 — Rust cleans the audio up
-
-The audio-device callback runs on a real-time thread. You cannot do heavy work
-there without causing dropouts, so it does the minimum: push samples into a
-**lock-free ring buffer** (`ringbuf::HeapRb<f32>`, single producer / single
-consumer) and return.
-
-A separate **DSP thread** drains that buffer and works in **20 ms frames**
-(`native_rate / 1000 * 20` samples per frame). For each frame:
-
-**1. Silence suppression.** Decide whether the frame is real audio, or silence.
-The two lanes are tuned differently on purpose:
-
-| Setting | System audio | Microphone |
-| --- | --- | --- |
-| Amplitude threshold | 30 | 100 |
-| Hangover (keep sending after speech stops) | 300 ms | 150 ms |
-| Keepalive interval | 100 ms | 100 ms |
-| Noise-floor multiplier | 3.0 | 3.0 |
-| Minimum floor | 10.0 | 20.0 |
-| Envelope smoothing (EMA) | 0.02 | 0.02 |
-
-The mic is gated harder because it sits in a room full of noise; the far end
-arrives already clean and level-matched by the conferencing app.
-
-**2. Echo cancellation (mic lane only).** A shared WebRTC audio-processing
-module (AEC3) uses the *system audio* as its reference signal and removes it
-from the mic. A `MicGate` then decides `Emit` or `Duck` for the frame. This is
-what stops "your speakers leak into your mic" from producing a duplicate
-transcript. The real AEC3 runs on **macOS and Linux**; on Windows
-[apm_shim.rs](native-module/src/apm_shim.rs) swaps in no-op stand-ins with the
-same API, so the call sites need no `#[cfg]` branching.
-
-**3. Resample to 16 kHz mono.** `rubato` converts whatever the device gave us
-into **16 kHz, mono, 16-bit PCM**. This runs on **every** frame, even ones we
-are about to throw away, because AEC3 needs an unbroken timeline of what came
-out of the speakers. Skipping resampling on dropped frames would put a hole in
-that timeline and break echo alignment.
-
-**4. Emit, or emit silence.** The frame is sent to JavaScript, or replaced with
-bit-exact zeros (a *keepalive*), or the loop just waits.
-
-### The keepalive invariant (important)
-
-Even in total silence, **every healthy lane emits about 10 chunks per second**
-(one per 100 ms).
-
-Two consequences you will rely on constantly:
-
-- **No chunks = the stream is dead.** It never means "the user is quiet". Every
-  watchdog in the TypeScript layer is built on this.
-- **Silent chunks are not evidence of a problem.** A quiet meeting looks
-  byte-identical to a permission failure that zero-fills our buffer. To tell
-  them apart you need something else — see *Watchdogs* below.
-
-### Why 16 kHz mono matters so much
-
-Deepgram is told the sample rate **once**, in the WebSocket URL. Because Rust
-always outputs 16 kHz mono no matter what hardware is underneath, **restarting a
-capture never requires reconnecting to Deepgram.** That single design choice is
-what makes device hot-swapping invisible to the transcript.
-
----
-
-## Step 3 — Crossing into JavaScript
-
-The Rust module is compiled with **napi-rs** into a platform-specific `.node`
-file. Chunks reach JS through a `ThreadsafeFunction<Buffer>`, so the callback
-signature is `(err, chunk)` — check `err` first.
-
-What Rust exports:
-
-- `SystemAudioCapture` / `MicrophoneCapture` — each with `getSampleRate()`,
-  `start(onData, onSpeechEnded)`, `stop()`
-- `getInputDevices()`, `getOutputDevices()`, `getOutputRoute()`
-- `getAudioPipelineStats()` — JSON snapshot of the echo pipeline (ERLE, gate
-  state); handy when debugging echo
-- `getNativeFeatureLevel()` — capability probe, see *Watchdogs*
-
-[nativeModuleLoader.ts](electron/audio/nativeModuleLoader.ts) loads the `.node`
-file **by path**, not via `require('natively-audio')`. The npm-symlink approach
-breaks on Windows. It tries the dev path, one level up, and
-`app.asar.unpacked/native-module/` for packaged builds, then returns `null`
-rather than throwing — so a missing native build degrades instead of crashing.
-
-The newer methods (`getOutputRoute`, `getAudioPipelineStats`,
-`getNativeFeatureLevel`) are **optional** so an older `.node` binary still
-loads. Always call them with `?.` and have a fallback.
-
----
-
-## Step 4 — The capture supervisors
-
-`SystemAudioCapture.ts` and `MicrophoneCapture.ts` are thin TypeScript wrappers
-around the native classes whose real job is **staying alive**. They are
-`EventEmitter`s.
-
-Events they emit: `start`, `stop`, `data`, `speech_ended`, `error`,
-`sample-rate-detected`, `capture-failed`, `capture-recovered`.
-
-### Health model
-
-```ts
-interface CaptureHealth {
-  recording: boolean;         // is the native stream open right now
-  shouldBeRecording: boolean; // do we WANT it open (the meeting is live)
-  chunkCount: number;
-  msSinceLastChunk: number;
-  msSinceLastNonSilent: number;
-  restartAttempts: number;
-  degraded: boolean;          // dropped out of the fast-retry tier
-}
-```
-
-The gap between `recording` and `shouldBeRecording` is the whole point: it is
-what lets a supervisor notice "I am supposed to be capturing and I'm not" and
-fix it without anyone asking.
-
-### The supervisor loop
-
-A `setInterval` tick that **always re-arms**, so it cannot die quietly. Every
-failure — native error, stall, zero-chunk open — funnels into one method,
-`_onNativeError()`, which decides whether to reopen.
-
-Retry timing:
-
-- **Fast tier:** 250 ms → 500 ms → 1 s → 2 s → 4 s
-- **Slow tier:** 30 s, **forever**
-
-Retries never stop. Leaving the fast tier sets `degraded` and emits
-`capture-failed`, which is a *banner the user can act on*, not the end of the
-lane. When chunks come back, `capture-recovered` takes the banner down.
-
-The one exception is `PERMANENT_ERROR_RE` — `/not supported on this platform/i`.
-That phrase means a build with no backend for this OS at all, which no amount of
-retrying will fix, so we stop and report it as terminal. Every real backend keeps
-that phrase out of its error strings for exactly this reason — a Linux box with
-no sound server running, for instance, reports the missing server by name and
-stays on the retry path so it recovers when the server comes up.
-
-### Watchdogs and their timing
-
-| Watchdog | System audio | Microphone | Why |
+| | Windows | macOS | Linux |
 | --- | --- | --- | --- |
-| Start grace (ignore stalls right after opening) | 12 s on macOS, 8 s on Linux, 5 s elsewhere | 5 s | ScreenCaptureKit needs 5–7 s just to warm up; Linux does a sound-server handshake plus two introspection round-trips |
-| Stall window (no chunks for this long → restart) | 10 s if `getNativeFeatureLevel() >= 2`, else 3 s | 3 s (`LIVENESS_WINDOW_MS`) | Feature level ≥ 2 means the backend synthesises silence during idle (all three platforms do), so the shorter window would be trigger-happy |
-| "Non-silent" amplitude threshold | 8 | 8 | Feeds `msSinceLastNonSilent` |
+| **Microphone (you)** | Standard audio library (cpal) | Standard audio library (cpal) | Standard audio library (cpal) |
+| **Computer audio (them)** | WASAPI **loopback** | **ScreenCaptureKit** by default. A **CoreAudio process tap** is available as an alternative | PulseAudio / PipeWire **monitor** source |
+| **Permission needed** | Microphone privacy setting | Microphone **and** Screen Recording | None |
+| **Full echo cancellation** | No (uses the echo gate only) | Yes | Yes |
 
-If an open produces **zero** chunks and it isn't the first attempt, the monitor
-is dropped before retrying, so a broken endpoint can't hold the slot.
+Plain-language notes:
 
-### Sample-rate polling
+- **Loopback (Windows).** The app records whatever is playing on your default speakers or headphones, as if that output were a microphone. If the Windows default output device changes, the loopback reconnects itself to the new device.
+- **macOS.** When a meeting is started from the app, it uses Apple's ScreenCaptureKit (the system feature for recording the screen and its sound) by default. You can switch to the CoreAudio "process tap" in Settings. If the tap fails to start, the module falls back to ScreenCaptureKit on its own. In both cases the app requires **Screen Recording** permission before it captures computer audio. ScreenCaptureKit can take 5 to 7 seconds to warm up at the start of a call.
+- **Linux.** Every speaker output has a matching "monitor" source that carries a copy of what is being played. The app records that copy. This works with both PulseAudio and PipeWire (through PipeWire's PulseAudio compatibility layer), with no extra setup and no admin rights.
 
-A poll at 1 s then every 8 s reads the device's declared rate and emits
-`sample-rate-detected` **only when it actually changes**. `main.ts` forwards
-that to `stt.setSampleRate()`. In practice this fires rarely, because Rust
-already normalises to 16 kHz — it exists for the case where the *declared* rate
-was wrong at open time.
+**One standard format.** Microphones and sound cards all work at different quality settings. Before anything reaches speech-to-text, the Rust module converts every source to **16 kHz mono**: 16,000 samples per second on a single channel. This conversion is called **resampling**. Because the format never changes, the app can switch devices in the middle of a call without reconnecting to the speech-to-text service.
 
-### `restart(reason, rebindDevice)`
+**Build facts worth knowing:**
 
-The public entry point for recovery. `rebindDevice: true` means "re-resolve the
-device from the OS", which is what device hot-swap uses. `false` reopens the
-same endpoint.
-
----
-
-## Step 5 — main.ts wires captures to STT
-
-[wireSystemCapture()](electron/main.ts:809) and
-[wireMicrophoneCapture()](electron/main.ts:1018) attach the listeners. The
-`data` handler is short and every line of it matters:
-
-```ts
-capture.on('data', (chunk: Buffer) => {
-  if (this.microphoneCapture !== capture) return;   // 1. identity guard
-  this.sendAudioLevel('mic', chunk);                // 2. feed the UI meter
-  if (peakToPeak(chunk) > SILENCE_PEAK_TO_PEAK_THRESHOLD)
-    this._lastRealMicAudioAt = Date.now();          // 3. "real audio" timestamp
-  this.googleSTT_User?.write(chunk);                // 4. off to Deepgram
-});
-```
-
-**1. The identity guard.** `if (this.microphoneCapture !== capture) return;`
-appears in *every* handler. When a capture is replaced (device swap, restart),
-the old instance may still be draining. Without this guard two captures write to
-one Deepgram socket and you get two interleaved copies of the same speech.
-**Copy this pattern into any new handler you add.**
-
-**2. Audio levels for the UI.** `sendAudioLevel()` throttles to one message per
-**50 ms per channel** and computes a simple RMS level:
-
-```ts
-// electron/main.ts:757
-computeAudioRmsLevel(chunk) => Math.min(rms / 10000, 1.0)  // stride 10
-```
-
-It goes out as an `audio-level` IPC event and drives the wave meter in the
-floating dock. Note the `/10000` divisor is calibrated for the **loopback**
-lane; the mic lands roughly 2× lower for the same perceived loudness, which the
-renderer compensates for with a per-channel gain in
-[AudioWaveIndicator.tsx](src/features/floating-dock/AudioWaveIndicator.tsx).
-
-**3. The "real audio" timestamp.** Because of keepalives, chunk *rate* tells you
-nothing about whether anyone is talking. `_lastRealSystemAudioAt` and
-`_lastRealMicAudioAt` record the last time a chunk had actual amplitude. The
-far-end silence detector needs both.
-
-### Two extra detectors on the system lane
-
-**Stuck watchdog** — armed on `start`, disarmed by the very first chunk. If it
-fires, the capture opened successfully but produced literally nothing: wrong
-route, or a permission that was revoked. It is also exposed as
-`capture.__disarmStuckWatchdog` so `endMeeting()` can cancel it *before* calling
-`stop()` — otherwise a very short meeting raises a false alarm seconds after the
-user already stopped recording.
-
-**Zero-fill detector (macOS only)** — tracks a *rolling run* of silence, reset by
-any real audio. When the run gets long enough it actively re-probes the Screen
-Recording permission before saying anything, because an orphaned grant still
-reports `granted` while capturing nothing. Rate-limited to one probe a minute.
-Windows loopback doesn't zero-fill on permission change, so the detector has no
-value there and is skipped.
-
-### Choosing the STT provider
-
-[createSTTProvider(speaker)](electron/main.ts:1751) builds one STT instance per
-lane. The provider comes from `CredentialsManager.getInstance().getSttProvider()`:
-
-`deepgram` · `soniox` · `elevenlabs` · `openai` · `groq` / `azure` /
-`ibmwatson` (batched REST) · `GoogleSTT`
-
-**Every one of them falls back to `GoogleSTT` when its API key is missing.** If
-transcripts look unexpectedly different, check which provider actually got
-constructed before debugging Deepgram.
-
-Only the `client` lane may enable `diarize` (speaker separation) — it is a paid
-Deepgram add-on and the mic lane has exactly one speaker anyway.
+- Windows builds are **64-bit (x64) only**.
+- On Windows the Rust module is **statically linked** to the C runtime, which means the runtime is built into the module itself. It therefore does **not** need the Microsoft Visual C++ Redistributable and loads on a clean Windows install.
+- The macOS Intel (x86_64) build now compiles the bundled WebRTC echo-cancellation library for Intel. The build fails loudly if that library is missing, so an Intel Mac can no longer receive a module without echo cancellation.
+- The Rust module contains no licence or activation code. It deals only with audio.
 
 ---
 
-## Step 6 — DeepgramStreamingSTT
+## 3. Echo: why it matters and how it is handled
 
-[electron/audio/DeepgramStreamingSTT.ts](electron/audio/DeepgramStreamingSTT.ts)
+**The problem.** If you use speakers instead of headphones, your microphone also hears the other person's voice coming out of your speakers. That leaked sound is called **echo**. Without protection, their words would be transcribed twice: once correctly as "them", and once wrongly as "you", as if you had said the client's words. That spoils the transcript and confuses the live analysis.
 
-### Lifecycle
+GoDojo protects against echo in up to three layers:
 
-```
-start()   -> isActive = true
-write()   -> buffer or send   (SILENTLY DROPS when isActive === false)
-connect() -> open WebSocket, flush buffer, start keepalive
-stop()    -> isActive = false, close socket
-```
-
-> **Rule #1 — start STT *before* you start captures.**
->
-> `write()` begins with `if (!this.isActive) return;`. Audio pushed before
-> `start()` is **thrown away with no error and no log line**. This is why
-> `startMeeting()` and `resumeMeeting()` create and start the STT instances
-> first, and only then open the captures. There is a comment marking this at
-> [main.ts:2873](electron/main.ts:2873). If you ever reorder that, the first
-> seconds of every meeting go missing and nothing in the logs will tell you.
-
-`write()` lazily connects when the socket isn't open yet, and **buffers up to
-500 chunks** in the meantime. The buffer is flushed in order inside the `open`
-handler.
-
-### Connection parameters
-
-```ts
-{
-  Authorization: `Token ${apiKey}`,
-  model:          'nova-3',
-  encoding:       'linear16',
-  sample_rate:    this.sampleRate,     // 16000 in practice
-  channels:       this.numChannels,    // 1
-  language:       this.languageCode,
-  smart_format:   'true',              // punctuation, numbers, dates
-  interim_results:'true',              // live partials for the rolling UI
-  utterance_end_ms:'1500',
-  vad_events:     'true',
-  endpointing:    languageCode === 'multi' ? '100' : '500',
-  // diarize: 'true'  <- client lane only, when enabled
-}
-```
-
-`endpointing` is aggressive (100 ms) in multi-language mode because language
-switches otherwise get glued into one long window.
-
-### The connect handshake
-
-```ts
-const socket = deepgram.listen.live(queryParams);  // createConnection
-socket.on('open', ...); socket.on('message', ...); // handlers FIRST
-socket.connect();                                  // then handshake
-```
-
-Handlers are registered **before** `connect()`. The SDK's reconnecting
-WebSocket can otherwise fire `open` before you are listening, and the socket sits
-there connected but silent forever.
-
-### Generations: how superseded sockets are silenced
-
-Every `connect()` bumps `_connectGeneration` and captures the value in a local.
-Each handler starts with:
-
-```ts
-if (generation !== this._connectGeneration) return;
-```
-
-An old socket that is still closing must not mutate reconnect state, emit
-transcripts, or touch the timestamp anchors — those now describe a *different*
-socket's clock. Same idea as the capture identity guards.
-
-### Timing constants
-
-| Constant | Value | Meaning |
+| Layer | What it does | Where it runs |
 | --- | --- | --- |
-| `RECONNECT_BASE_DELAY_MS` | 1 000 | first retry delay |
-| `RECONNECT_MAX_DELAY_MS` | 30 000 | backoff ceiling |
-| `KEEPALIVE_INTERVAL_MS` | 5 000 | JSON keepalive so Deepgram doesn't time us out |
-| `STABLE_CONNECTION_MS` | 30 000 | uptime that "earns" a backoff reset |
-| `CONNECT_TIMEOUT_MS` | 15 000 | `_armConnectDeadline()` — stops `isConnecting` latching forever |
+| **1. Echo cancellation** | Uses the computer audio as a reference and subtracts it from the microphone signal, leaving only your voice. GoDojo uses Google's WebRTC echo canceller. | macOS and Linux only |
+| **2. Echo gate** | While the other side is playing through your **speakers**, it mutes or turns down the microphone so leaked sound isn't sent. If you talk over them loudly and clearly, your speech is let through. With **headphones** the gate is bypassed, because headphones don't leak. | All platforms |
+| **3. Transcript echo filter** | After speech-to-text, it compares each of "your" lines with what "they" just said. A line that is just their words picked up again is dropped, and a line that is only partly echo has the echoed words trimmed out. If an echoed line was already shown on screen, it is taken back down. | macOS only (default) |
 
-Backoff resets on **either** condition:
+**On Windows**, full echo cancellation is not built into the module, so layer 2 does all the echo work. Two practical results follow:
 
-1. the connection survived 30 s, **or**
-2. a real transcript arrived (proof it works, whatever the uptime)
+- When you use speakers, words you say *while the other person is talking* can sometimes be muted.
+- Using **headphones** gives the best results, because the gate then stays open.
 
-Without #2, a connection that had escalated to the 30 s cap would keep paying 30
-s per blip even while transcribing perfectly — up to 30 s of lost speech each
-time. A socket that opens but never transcribes still escalates, so genuine
-server flapping is still handled.
+> The transcript echo filter (layer 3) is switched on for macOS only by default. On Windows and Linux it currently passes everything through.
 
-A **429** sets `rateLimitedUntil = now + 30 s` and no reconnect happens before
-then. Hammering a rate-limited key just extends the outage.
+---
 
-### Word timestamps and the shared clock
+## 4. Speech-to-text
 
-Deepgram reports word times in *seconds since the start of this stream*. The
-transcript echo filter needs to compare mic words against client words, and the
-two lanes have different stream start times — so both need converting to
-wall-clock milliseconds.
+### Two live streams
 
-That is what `_sendTracked()` is for. It is the **only** place that calls
-`sendMedia()`, and on each send it:
+The app opens **two separate speech-to-text connections** for every call: one for your microphone and one for the computer audio. Each connection receives only its own audio, so the service never has to guess who is speaking.
 
-1. advances `_bytesSent`
-2. converts bytes → stream seconds (bytes / 2 / sample_rate for 16-bit mono)
-3. appends `{ streamSec, wallMs }` to the `_anchors` ring
+### Supported providers
 
-`convertStreamSecToWallMs()` then interpolates against that ring. **If you add a
-new send path, route it through `_sendTracked()`** — bypassing it silently
-desynchronises the clock and echo filtering starts missing.
+The provider is chosen in Settings. If the chosen provider has no API key, the app quietly falls back to Google speech-to-text.
 
-### Reading Deepgram's messages
-
-| Message | What we do |
+| Provider | Style |
 | --- | --- |
-| `SpeechStarted` | log only |
-| `Metadata` | ignore |
-| `UtteranceEnd` | safety-net flush of `_lastIsFinalText` (normally already empty) |
-| `Results` with `is_final: true` | **emit as final** |
-| `Results` without `is_final` | emit as interim (live display only) |
+| **Deepgram** (default) | Live stream (WebSocket), using the `nova-3` model |
+| Soniox | Live stream |
+| ElevenLabs | Live stream |
+| OpenAI | Live stream, with a non-streaming fallback |
+| Google | Fallback |
+| Groq Whisper, Azure, IBM Watson | **REST**: audio is sent in batches rather than as a continuous stream, so text appears a little later |
 
-Field semantics, which are easy to get wrong:
+### Interim vs final results
 
-- **`is_final: true`** — Deepgram has committed this window and will not revise
-  it. Can arrive mid-sentence for long speech. **This is the authoritative final
-  signal for both lanes.**
-- **`speech_final: true`** — an endpoint was detected. Always arrives *with*
-  `is_final`, never alone.
-- **`UtteranceEnd`** — in practice only fires reliably on the **mic** lane. On
-  the client lane, VAD-lockout restarts cut the audio stream before Deepgram ever
-  hears the closing silence, so it never arrives. If you build a feature on
-  `UtteranceEnd`, it will work for `user` and quietly never fire for `client`.
+- An **interim** result is the service's live guess while you are still speaking. It changes quickly and is replaced by later guesses. The dock shows interims so the text feels instant.
+- A **final** result is the settled version of a sentence or phrase, which the service will not change. Only finals are stored, used for analysis, or saved.
 
-Committed windows can span a speaker change when `diarize` is on, so
-`splitFinalBySpeaker()` breaks them into same-speaker runs. Interims are never
-split or speaker-labelled — their speaker indices are unstable and would flicker.
+### Translation to English
 
-The emitted shape:
+If **"translate transcripts to English"** is turned on and an AI key is configured (Groq, Gemini, OpenAI, or Claude), final lines written in a non-Latin script, such as Hindi in Devanagari, are translated into English before they are shown.
 
-```ts
-stt.emit('transcript', {
-  text: string,
-  isFinal: boolean,
-  confidence: number,
-  speakerIndex?: number,   // diarize only
-  words?: SttWord[],       // wall-clock ms, main-process only
-});
+- Latin-script lines are left untouched and cost nothing.
+- If translation fails or takes more than about 2.5 seconds, the original text is shown instead.
+- Lines are translated in the order they were spoken.
+- The original wording is kept alongside the translation.
+
+### Speaker names
+
+- If the call came from a calendar invite, the app uses real names from the attendee list, or the company name when several people from one company are on the call. You can also rename speakers by hand.
+- When no names are known, the generic labels are **Me / Them** in the main process. The dock's own default is **You / Other Party**.
+- With Deepgram's optional **diarization** (splitting one audio stream by voice), the "them" side can tell different voices apart. Once a second voice is detected, lines are labelled **"Other Party · Speaker 1"**, **"Speaker 2"**, and so on. A real person's name is not used at that point, because the app cannot be sure which voice belongs to whom. Diarization is only ever used on the "them" side.
+
+---
+
+## 5. Where the transcript goes
+
+Every transcript line goes through the main process. It is passed out from there:
+
+1. **Floating dock (live rolling transcript).** Your text and their text are kept on separate tracks. Interims update in place, and finals replace them. If the echo filter drops a line that was already on screen, the dock receives a "retract" message and removes it.
+2. **Live analysis and in-call chat.** The dock keeps a running list of final lines. The live analysis and the in-call assistant chat read from that list. The main process also keeps its own copy of the conversation for AI features, and adds each final line to a live search index so the assistant can look things up during the call.
+3. **Saving at the end of the call.** When you end the call, any half-finished interim line is saved as final so the last words aren't lost. The full transcript, with speaker names, is then written to the meeting record straight away, and the summary is generated in the background afterwards.
+
+---
+
+## 6. What happens when a meeting starts
+
+```mermaid
+sequenceDiagram
+    autonumber
+    participant User as User
+    participant UI as App window
+    participant Main as Main process
+    participant STT as Speech-to-text
+    participant Native as Rust audio module
+
+    User->>UI: Click Start
+    UI->>Main: Start meeting with chosen devices
+    Main->>Main: Check microphone permission on macOS
+    Main->>Main: Check Screen Recording on macOS
+    Main->>UI: Clear the previous transcript
+    Main-->>UI: Reply right away so the dock appears
+    Main->>Native: Prepare mic and computer audio captures
+    Main->>STT: Open both speech-to-text streams
+    Main->>Native: Start both captures
+    Native-->>Main: Steady stream of audio chunks
+    Main->>STT: Forward each chunk to its stream
+    STT-->>Main: Interim and final text
+    Main-->>UI: Show transcript lines
+    Main->>Main: Start device watcher and silence checks
+```
+
+Key points:
+
+- On macOS, a missing **microphone** permission stops the meeting from starting. A missing **Screen Recording** permission does not: the meeting runs in microphone-only mode and a warning is shown.
+- The speech-to-text streams are always opened **before** the captures start, so the first words of the call are not thrown away.
+- Audio setup runs in the background after the app has already replied, so the dock appears straight away even though macOS capture can take several seconds to warm up.
+- If audio setup fails completely, the meeting is marked as not running again.
+
+### Meeting lifecycle
+
+```mermaid
+stateDiagram-v2
+    [*] --> Idle
+    Idle --> Starting: Start clicked
+    Starting --> Recording: Audio pipeline running
+    Starting --> Idle: Audio failed to start
+    Recording --> Paused: Pause
+    Paused --> Recording: Resume
+    Recording --> Ending: End call
+    Paused --> Ending: End call
+    Ending --> Idle: Transcript saved
 ```
 
 ---
 
-## Step 7 — From transcript to screen
+## 7. Keeping it reliable
 
-One handler, registered per lane in
-[createSTTProvider()](electron/main.ts:1828). The order of operations is
-deliberate.
+Calls are long, and a lot can change during one: devices get plugged in or out, apps grab the microphone, and networks drop. The pipeline is built to repair itself quietly where it can.
 
-**Gate 1 — is this still wanted?** Dropped if the meeting is not active, or is
-paused (in-flight audio can land just after a pause).
-
-**Gate 2 — echo filtering.** On macOS with external speakers, your mic
-physically hears the other person, so their words appear in *both* lanes. The
-`TranscriptEchoFilter` compares mic text against recent client text:
-
-| Segment | Method | Possible outcomes |
-| --- | --- | --- |
-| mic **interim** | `filterUserInterim()` | pass · suppress |
-| mic **final** | `filterUserFinal()` | pass · **trim** (word-timestamp match removes just the echoed span) · **drop** (n-gram fallback drops the whole segment) |
-| client final | `addClientFinal()` | recorded as reference |
-| client interim | `addClientInterim()` | recorded as *provisional* reference |
-
-Client **interims** are used as reference too, which closes a real ordering gap:
-VAD-lockout restarts delay client *finals*, so mic echo often arrives before the
-client final does — but never before the client interim.
-
-Dropping a mic final needs two bits of cleanup, both easy to forget:
-
-1. push an empty final into `IntelligenceManager` so the pending interim slot is
-   cleared and can't be persisted on stop
-2. if a partial is currently on screen, send a `retract: true` payload so the UI
-   takes it back down
-
-This text-level gate is **macOS-only** (`echoPossible` defaults to
-`process.platform === 'darwin'`). Windows and Linux rely on the native AEC3
-stage alone. That is a deliberate trade: the filter can *drop real user speech*
-when it misfires, which is a worse failure than a little residual echo, so it
-stays off on platforms where it has not been tuned.
-
-> **Rule #2 — echo filtering happens *before* translation.**
->
-> The filter compares mic audio against far-end audio. Both are in the spoken
-> language. Translate first and the texts no longer match, so echo detection
-> stops working entirely. Everything above the `dispatch` line in the handler
-> runs on the **original** recognised text.
-
-**Gate 3 — optional translation.** When transcript translation is on, finals go
-through a per-speaker queue so they stay in spoken order (translation is async
-and would otherwise reorder them). Interims skip translation and dispatch
-synchronously — they're about to be replaced anyway.
-
-**Fan-out.** [`_dispatchTranscript()`](electron/main.ts:1964) does five things:
-
-1. `intelligenceManager.handleTranscript(...)` — session tracking, AI features
-2. finals only: `ragManager.feedLiveTranscript(...)` — just-in-time retrieval
-3. resolve a human display name (`Me` / `Them`, or the real names once known).
-   With diarization, a `· Speaker N` suffix is appended — but **only after a
-   second speaker has actually been seen**, so ordinary 1:1 calls look unchanged
-4. send `native-audio-transcript` IPC to the launcher window *and* the overlay
-5. client finals only: `knowledgeOrchestrator.feedInterviewerUtterance(...)`
-
-> **`words` never crosses IPC.** The payload deliberately omits `segment.words`.
-> This stream runs at 10+ messages a second and word arrays would dominate the
-> serialisation cost, for data the renderer has no use for.
-
-### On the renderer side
-
-| Hook | Job |
+| Safeguard | What it means in plain terms |
 | --- | --- |
-| [useMeetingSession.ts](src/hooks/useMeetingSession.ts:36) | buffers segments into `transcriptSegmentsRef` while a backend meeting id exists |
-| [useGodojoInterface.ts](src/hooks/useGodojoInterface.ts:537) | rolling transcript, handles `retract`, strips the pending partial at the `'  ·  '` separator |
-| [useLiveAudioLevels.ts](src/hooks/useLiveAudioLevels.ts) | `audio-level` events → the dock's wave meter |
-| [useSystemAudioPermission.ts](src/hooks/useSystemAudioPermission.ts:104) | consumes `onAudioCaptureFailed` and shows the banner |
+| **Silence keepalives** | Even when nobody is talking, each source sends a small "silent" chunk about 10 times a second. So **no chunks at all** always means something is broken, never just that the room is quiet. |
+| **Stalled-capture watchdog** | If a source stops sending chunks for a few seconds (3 seconds for the mic, up to 10 for computer audio), it is reopened automatically. It retries quickly at first (¼ s, ½ s, 1 s, 2 s, 4 s) and then every 30 seconds for as long as the call lasts. There is extra grace time at start-up: 5 seconds normally, 8 on Linux, and 12 on macOS. |
+| **"Never started" check** | If a source produces nothing at all within 12 seconds of starting, this is logged as a stuck capture. |
+| **macOS silent-audio check** | macOS can deliver perfect silence when the Screen Recording grant no longer applies, for example after an app update. If the computer audio is silent for a long stretch, the app tests whether screen capture really works, and shows a warning if it does not. |
+| **Device changes** | Every 1.5 seconds the app checks which speaker and microphone are the defaults. A change must show up on two checks in a row before the app acts on it, which avoids reacting to a device that is just flickering. When you plug in a headset, the app **re-binds** (reconnects) the capture to the new device. Only captures that follow the system default are moved; a device you picked yourself stays as it is. |
+| **Far-end silence check** | If your microphone hears you talking but the computer audio has been completely silent for **45 seconds**, the app may be listening to the wrong output. It re-binds the computer audio once. On macOS, if that doesn't help, it also shows an advisory. |
+| **Speech-to-text reconnect** | If the Deepgram connection drops, the app reconnects on its own, waiting longer between each try (1 s, rising to 30 s at most). If the service says "too many requests", the app waits 30 seconds before trying again. Audio arriving while the connection reopens is held briefly (up to 500 chunks) and sent once it is back. |
+| **Settings changes mid-call** | If you change the speech-to-text provider or key during a call, the change is held until the call ends so the live transcript isn't interrupted. |
 
-The preload bridge exposes three relevant channels
-([preload.ts](electron/preload.ts:751), typed in
-[electron.d.ts](src/electron.d.ts:247)):
+### Pause and resume
 
-- `onNativeAudioTranscript` — transcript segments
-- `onAudioLevel` — `{ channel: 'mic' | 'system', level: 0..1 }`
-- `onAudioCaptureFailed` — capture health banners
+- **Pause** stops both captures and both speech-to-text streams. Audio during a pause is **not sent anywhere**, any text that arrives late is thrown away, and paused time is **not counted** in the meeting length. The device watcher also stops.
+- **Resume** checks permissions again, re-binds any device that changed while paused (for example, a headset unplugged during the break), reopens speech-to-text first, and then restarts the captures. If resuming fails, the meeting stays paused and an error is reported.
 
----
+### Recovery at a glance
 
-## Reliability layers
+```mermaid
+flowchart TD
+    Watch[App watches both audio sources]
+    Q1{No chunks arriving?}
+    R1[Reopen capture, quick retries then every 30 s]
+    Q2{Default speaker or mic changed?}
+    R2[Re-bind capture to the new device]
+    Q3{You are talking but computer audio silent for 45 s?}
+    R3[Re-bind computer audio once]
+    Q4{Speech-to-text connection dropped?}
+    R4[Reconnect with growing wait times]
+    Warn[Show advisory on macOS]
 
-Four independent mechanisms, each catching a failure the others can't see.
-
-### 1. Capture supervisors
-
-Covered above. Catch: *the stream stopped producing chunks.*
-
-### 2. Device hot-swap
-
-[AudioDeviceWatcher.ts](electron/audio/AudioDeviceWatcher.ts) **polls** every
-**1 500 ms**. Polling, not OS callbacks — nowhere in the app do we register for
-device-change notifications, so this is the only source of truth.
-
-```ts
-interface DeviceSnapshot {
-  outputRoute: string;   // speakers vs headphones vs unknown
-  defaultInput: string;
-  inputIds: string[];
-  outputIds: string[];
-}
+    Watch --> Q1
+    Q1 -->|Yes| R1
+    Q1 -->|No| Q2
+    Q2 -->|Yes| R2
+    Q2 -->|No| Q3
+    Q3 -->|Yes| R3
+    Q3 -->|No| Q4
+    Q4 -->|Yes| R4
+    R1 --> Watch
+    R2 --> Watch
+    R4 --> Watch
+    R3 -->|Still silent| Warn
 ```
 
-A change must hold for **`STABLE_TICKS = 2`** consecutive polls before it counts.
-Device lists churn transiently while an OS switches endpoints; acting on the
-first reading restarts captures two or three times per swap.
+---
 
-Emits `output-default-changed`, `input-default-changed`, `devices-changed` (with
-`outputRouteKnown`). The handlers in
-[main.ts:2225–2404](electron/main.ts:2225) call
-`capture.restart(reason, /* rebindDevice */ true)`.
+## 8. Permissions and in-app warnings
 
-After we deliberately reconfigure audio ourselves, call **`resync()`** to
-re-baseline the snapshot. Skip it and the watcher sees our own change as external
-and restarts again — a feedback loop.
+**macOS**
 
-Catch: *the stream is fine but it's attached to a device the user stopped using.*
+- **Microphone.** Required. The app checks it when a meeting starts and asks for it if needed. If it is denied, the meeting does not start.
+- **Screen Recording.** Needed to capture the other side of the call. If it is denied, the meeting continues with your microphone only, and a banner explains how to turn it on in System Settings → Privacy & Security → Screen Recording. Granting it needs an app restart.
+- The banner offers buttons to open the right Settings page, and a "repair" option for when a permission looks granted but no longer works, as can happen after an update. The warning clears itself when you come back to the app after granting the permission, or when audio starts flowing again.
 
-### 3. Pause / resume reconciliation
+**Windows**
 
-[pauseMeeting()](electron/main.ts:3211) / [resumeMeeting()](electron/main.ts:3266)
+- Windows has no screen-recording gate. Computer-audio capture works without any permission.
+- The microphone depends on the Windows **Microphone privacy setting**. The app does not check this setting in advance. The "Settings" link opens Windows' Privacy → Microphone page.
 
-The watcher is stopped while paused, so a swap during the pause would be
-invisible. `snapshot()` is public precisely so pause can record the device state
-and resume can compare across the gap, rebinding if anything moved. Resume also
-restarts the watcher.
+**Linux**
 
-Catch: *the user unplugged their headset while the meeting was paused.*
+- There is no permission prompt. A PulseAudio or PipeWire sound server must be running.
 
-### 4. Far-end silence detector
-
-[main.ts:2433–2504](electron/main.ts:2433). Constants:
-`FAR_END_SILENCE_MS = 45 000`, `FAR_END_TICK_MS = 5 000`.
-
-Every 5 s it asks: *has the mic heard real audio recently (so a conversation is
-definitely happening), while the system lane has produced nothing but silence for
-45 seconds?* If so, our loopback capture is almost certainly bound to the wrong
-endpoint.
-
-This is the only layer that can catch that, because such a capture is **perfectly
-healthy** by every other measure: it is open, it is emitting chunks, no error
-ever fired. It just happens to be listening to an endpoint nothing is playing to.
-
-Real cause on Windows: the OS has separate **`eConsole`** and
-**`eCommunications`** default roles. Conferencing apps play to
-`eCommunications`; we bind `eConsole`. The device graph looks completely healthy
-while the call audio comes out somewhere else.
-
-The mic-activity precondition matters — without it this fires on every meeting
-where the other person simply hasn't spoken yet.
+**Which warnings actually appear.** The permission banner shows Screen Recording problems and capture failures that cannot be fixed by retrying. Short "stuck" moments are deliberately not shown, because they fire during perfectly normal quiet stretches. Those moments are still written to the log.
 
 ---
 
-## Rules you should not break
+## 9. Low-end machines and Performance Mode
 
-1. **Start STT before captures.** `write()` drops silently when inactive.
-2. **Rust always emits 16 kHz mono.** Keep it that way — it is what makes capture
-   restarts invisible to Deepgram. Never send device-native rates upstream.
-3. **Identity-guard every capture and socket handler.** `if (this.x !== x) return;`
-4. **Never read silence as "the user is quiet".** Keepalives make *no chunks*
-   unambiguous; *silent chunks* prove nothing on their own.
+Performance Mode, whether switched on by hand or automatically on weaker machines, **does not change audio capture or speech-to-text**. Its audio-related effects are only cosmetic or background:
 
-5. **Echo filter before translation.**
-6. **Route all media sends through `_sendTracked()`**, or the word clock drifts.
-7. **Call `deviceWatcher.resync()`** after any reconfigure you initiate.
-8. **Don't put `words` on the IPC stream.**
+- The dock's sound-wave meter animates at a lower frame rate and without its glow effect.
+- The live search index built from the transcript during a call updates less often.
+
+The sound-wave meter only shows that sound is arriving. It is separate from speech-to-text, so the meter can move even while a transcript is delayed.
 
 ---
 
-## Debugging cheat sheet
+## 10. Common problems and what they mean
 
-### Log prefixes
-
-| Prefix | Layer |
-| --- | --- |
-| `[nativeModuleLoader]` | `.node` loading — check this first if devices list empty |
-| `[Main] ` | capture wiring, watchdogs, device changes |
-| `[DeepgramStreaming:client]` / `[DeepgramStreaming:user]` | one WebSocket each — the role suffix tells you the lane |
-| `[Main] STT transcript (client\|user, final=…)` | every segment that survived the gates |
-
-### Symptom → where to look
-
-| Symptom | Likely layer | First thing to check |
+| What you see | What it usually means | What to try |
 | --- | --- | --- |
-| No transcripts at all, either lane | STT lifecycle | Was `start()` called before captures? Is an API key present, or did it silently fall back to `GoogleSTT`? |
-| Client transcripts stop mid-meeting, pause/resume fixes it | capture supervisor or wrong endpoint | `CaptureHealth.msSinceLastChunk` vs `msSinceLastNonSilent`. Chunks flowing + all silent = wrong endpoint, not a dead capture |
-| Nothing from the far end on macOS | Screen Recording permission | The zero-fill detector's probe result; an orphaned grant still reports `granted` |
-| Nothing from the far end on Linux | sound server | `systemctl --user status pipewire-pulse`, then `pactl list short sources \| grep monitor`. No monitor source means no sink to record |
-| `.node` fails to load on Linux | missing runtime library | `ldd native-module/index.linux-x64-gnu.node` — look for `libpulse.so.0` or `libasound.so.2` reported as *not found* |
-| Everything the other person says appears twice | echo filter | Client finals arriving *after* the mic echo — check `addClientInterim` is being fed |
-| A mic partial is stuck on screen | retraction path | Was `retract: true` emitted when the final was dropped? |
-| Wave meter animates for the client but barely for you | renderer gain, not capture | Per-channel gain in `AudioWaveIndicator.tsx`; the `/10000` divisor is loopback-calibrated |
-| Transcripts arrive but out of order | translation queue | Finals must go through the per-speaker queue; interims must not |
-| Reconnect storm in the logs | backoff | Look for a `429` — `rateLimitedUntil` should floor retries at 30 s |
-
-### Useful probes
-
-`getAudioPipelineStats()` returns a JSON snapshot of the echo pipeline (ERLE,
-gate state, alignment). `getNativeFeatureLevel()` tells you whether you are on a
-binary that synthesises idle silence — which changes the stall window from 3 s to
-10 s and therefore changes what "stalled" even means.
+| **No transcript for the other side** | **macOS:** Screen Recording is not granted, or the grant no longer applies after an update. **Windows:** the meeting app is playing sound to a different device than the Windows default (for example, a separate "communications" device). **Linux:** no sound server is running. | macOS: grant Screen Recording or use "repair", then restart the app. Windows: set the meeting app's speaker to your default output. Linux: check that PipeWire or PulseAudio is running. |
+| **The other person's words also appear as mine**, or lines show up twice | Echo: the speakers' sound is leaking into your microphone. This is more likely on Windows, which has no full echo cancellation. It also happens when a virtual or "loopback" microphone is selected. | Use headphones. Pick a real, physical microphone in Audio Settings. |
+| **Some of my words are missing while the client talks** | The echo gate muted your microphone because the other side was playing through speakers. | Use headphones, which bypass the gate. |
+| **Audio stops after plugging in headphones** | The device change is being picked up. Re-binding normally happens within a few seconds. If you chose a specific device yourself, the app keeps using that one on purpose. | Wait a few seconds. Otherwise, select the new device in Audio Settings, or pause and resume. |
+| **Other side goes quiet mid-call, but my side works** | The computer audio is still connected to an output nobody is using. The app re-binds once after 45 seconds of one-sided silence. | Switch the meeting app's output to your default device. |
+| **Nothing works on a fresh Windows PC** | Older builds needed the Visual C++ runtime. The current audio module is statically linked and no longer needs it, so on current builds this points to something else, such as the microphone privacy setting or the audio module failing to load. | Check Windows Privacy → Microphone. Check the app log for audio-module load errors. Windows builds are x64 only. |
+| **Transcript quality suddenly changed** | The chosen provider has no API key, so the app fell back to Google. | Check the speech-to-text key in Settings. |
+| **Transcript appears in the original language** | Translation is off, no AI key is configured, or translation timed out. Latin-script languages are never translated. | Turn on translation and add an AI key. |
 
 ---
 
-## Glossary
+## 11. Known gaps
+
+- **Some start-up audio messages are never shown on screen.** The main process sends "meeting audio error" and "meeting audio warning" messages in several cases: macOS microphone denied at start, audio pipeline failing to start, a suspected loopback or virtual microphone, and capture errors. No screen currently listens for these messages, so users don't see them. The failure is still logged, and a start failure is also reported back to the window that started the meeting.
+
+---
+
+## 12. Glossary
 
 | Term | Plain meaning |
 | --- | --- |
-| **AEC / AEC3** | Acoustic Echo Cancellation. Removes the speaker output from the mic signal. |
-| **Anchor** | A `{ streamSec, wallMs }` pair letting us convert Deepgram's stream-relative word times into wall-clock time. |
-| **Diarization** | Splitting one audio stream into "speaker 1 / speaker 2". Client lane only, paid add-on. |
-| **Endpointing** | Deepgram deciding a sentence has ended. |
-| **Final** | A transcript Deepgram has committed and will not revise (`is_final: true`). |
-| **Interim / partial** | A live guess that will be replaced. Display only — never store it. |
-| **Keepalive (audio)** | 100 ms of bit-exact zeros, so a healthy silent lane still emits ~10 chunks/s. |
-| **Keepalive (WebSocket)** | A JSON message every 5 s so Deepgram doesn't time the socket out. |
-| **linear16** | Uncompressed 16-bit signed PCM. What we send. |
-| **Loopback** | Recording a device's *output* as if it were an input. How Windows captures system audio. |
-| **napi-rs** | The Rust ↔ Node bridge. Produces the `.node` binary. |
-| **Ring buffer** | Fixed-size queue. Lets the real-time audio thread hand off samples without locking. |
-| **VAD** | Voice Activity Detection. "Is anyone speaking right now?" |
-| **VAD lockout** | Our own restart triggered by the silence gate, which is why the client lane never sees `UtteranceEnd`. |
-
----
-
-## File map
-
-| File | What lives there |
-| --- | --- |
-| [native-module/src/lib.rs](native-module/src/lib.rs) | napi exports + both DSP loops (system ~180–355, mic ~540–620) |
-| [native-module/src/silence_suppression.rs](native-module/src/silence_suppression.rs:65) | the two gate presets |
-| [native-module/src/speaker/windows.rs](native-module/src/speaker/windows.rs) | WASAPI loopback backend |
-| [native-module/src/speaker/linux.rs](native-module/src/speaker/linux.rs) | PulseAudio monitor backend (reader + watchdog threads) |
-| [native-module/src/speaker/pulse.rs](native-module/src/speaker/pulse.rs) | Pulse server introspection: sink list, default sink, active port |
-| [native-module/src/apm_shim.rs](native-module/src/apm_shim.rs) | real AEC3 on macOS/Linux, no-op stand-ins on Windows |
-| [nativeModuleLoader.ts](electron/audio/nativeModuleLoader.ts) | finds and validates the `.node` binary |
-| [SystemAudioCapture.ts](electron/audio/SystemAudioCapture.ts) | client-lane supervisor, watchdogs, restart ladder |
-| [MicrophoneCapture.ts](electron/audio/MicrophoneCapture.ts) | mic-lane supervisor, `vadDisabled` / echo options |
-| [AudioDeviceWatcher.ts](electron/audio/AudioDeviceWatcher.ts) | 1.5 s device polling, snapshot diffing |
-| [DeepgramStreamingSTT.ts](electron/audio/DeepgramStreamingSTT.ts) | WebSocket, params, reconnect, anchors, transcript events |
-| [GoogleSTT.ts](electron/audio/GoogleSTT.ts) | the no-API-key fallback provider |
-| [scripts/build-native.js](scripts/build-native.js) | per-platform native build, Linux dependency preflight |
-| [main.ts](electron/main.ts) | all the wiring — see the line map below |
-
-### `electron/main.ts` line map
-
-Line numbers drift — treat these as bookmarks, not addresses.
-
-| Line | What |
-| --- | --- |
-| [757](electron/main.ts:757) | `computeAudioRmsLevel()` |
-| [771](electron/main.ts:771) | `sendAudioLevel()` (50 ms throttle per channel) |
-| [809](electron/main.ts:809) | `wireSystemCapture()` |
-| [1018](electron/main.ts:1018) | `wireMicrophoneCapture()` |
-| [1751](electron/main.ts:1751) | `createSTTProvider()` |
-| [1828](electron/main.ts:1828) | the shared `transcript` handler (echo filter, translation) |
-| [1964](electron/main.ts:1964) | `_dispatchTranscript()` |
-| [2020](electron/main.ts:2020) | `setupSystemAudioPipeline()` |
-| [2118](electron/main.ts:2118) | `reconfigureAudio()` |
-| [2225](electron/main.ts:2225) | `_startDeviceWatcher()` + hot-swap handlers |
-| [2433](electron/main.ts:2433) | far-end silence detector |
-| [2774](electron/main.ts:2774) | `startMeeting()` |
-| [2873](electron/main.ts:2873) | the "start STT before captures" comment |
-| [3211](electron/main.ts:3211) | `pauseMeeting()` |
-| [3266](electron/main.ts:3266) | `resumeMeeting()` |
-
----
-
-## Adding a feature — a short checklist
-
-- **New STT provider?** Add it to `createSTTProvider()`, emit the same
-  `'transcript'` event shape, and keep the `GoogleSTT` fallback when the key is
-  missing.
-- **New capture event handler?** First line is the identity guard.
-- **New place that sends audio to Deepgram?** Go through `_sendTracked()`.
-- **Reconfiguring devices yourself?** Call `deviceWatcher.resync()` afterwards.
-- **Changing meeting start/stop order?** Re-read Rule #1.
-- **New watchdog?** Decide up front whether you are detecting *no chunks* (safe,
-  unambiguous) or *silent chunks* (needs a second signal before you can blame
-  anything).
-
+| **Chunk** | A small slice of audio, about 20 ms long, passed from the Rust module to the app. |
+| **Diarization** | Splitting one audio stream into different voices ("Speaker 1", "Speaker 2"). |
+| **Echo** | Your speakers' sound being picked up again by your microphone. |
+| **Echo cancellation** | Removing the speakers' sound from the microphone signal using the speaker audio as a reference. Uses the WebRTC library on macOS and Linux. |
+| **Echo gate** | A simpler protection that mutes or turns down the mic while the other side is playing through speakers. |
+| **Final result** | The settled text for a phrase. It won't change, and it is what gets saved. |
+| **Interim result** | A live, provisional guess shown while someone is still speaking. |
+| **Keepalive** | A small silent chunk sent regularly so a quiet but healthy stream never looks dead. |
+| **Loopback** | Recording what your computer is playing, as if the speakers were a microphone (Windows). |
+| **Monitor source** | Linux's built-in copy of what a speaker output is playing. |
+| **Re-bind** | Reconnecting a capture to a different audio device. |
+| **Resampling** | Converting audio to a different sample rate. Here it is always 16 kHz mono. |
+| **ScreenCaptureKit / CoreAudio tap** | Two macOS ways of recording the computer's sound. Both rely on the Screen Recording permission in this app. |
+| **Speech-to-text (STT)** | A service that turns spoken audio into written text. |
+| **Static linking** | Building required system code into the module itself, so it doesn't depend on extra installs. |

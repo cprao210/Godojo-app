@@ -13,12 +13,13 @@
 //
 // Supabase schema expected (run the SQL in supabase/migrations):
 //   - Relational mirror: meetings, transcripts, ai_interactions, chunks,
-//     chunk_summaries, embedding_queue, app_state, user_profile, resume_nodes
+//     chunk_summaries, embedding_queue, app_state
 //   - Vector entities: rag_chunk_vectors_{dim} and rag_summary_vectors_{dim}
 //     for each dimension tier (768, 1536, 3072).
 
 import { EventEmitter } from 'events';
 import { SupabaseClientManager } from './SupabaseClient';
+import { isLocalOnlyRow, stripLocalOnlyColumns } from './supabaseSyncFilters';
 import { AuthManager } from '../services/AuthManager';
 import Database from 'better-sqlite3';
 
@@ -266,8 +267,8 @@ export class SupabaseMirrorService extends EventEmitter {
      *   the first. Omit only for genuinely one-shot / first-write calls.
      */
     upsertRow(table: string, row: Record<string, any>, ownerUid?: string | null): void {
-        if (!this.enabled) return;
-        this._enqueue({ op: 'upsert', table, payload: row, retries: 0 }, ownerUid);
+        if (!this.enabled || isLocalOnlyRow(table, row)) return;
+        this._enqueue({ op: 'upsert', table, payload: stripLocalOnlyColumns(table, row), retries: 0 }, ownerUid);
     }
 
     private _conflictTargetForTable(table: string, row: Record<string, any>): string | null {
@@ -295,10 +296,6 @@ export class SupabaseMirrorService extends EventEmitter {
                 return null;
             case 'app_state':
                 return row.user_id != null && row.key != null ? 'user_id,key' : (row.key != null ? 'key' : null);
-            case 'user_profile':
-                return row.user_id != null ? 'user_id' : (row.id != null ? 'id' : null);
-            case 'resume_nodes':
-                return row.id != null && row.user_id != null ? 'user_id,id' : (row.id != null ? 'id' : null);
             case 'company_context':
                 return row.user_id != null ? 'user_id,id' : 'id';
             case 'company_assets':
@@ -391,14 +388,16 @@ export class SupabaseMirrorService extends EventEmitter {
      * is both faster (one request) and can't block later items for long.
      */
     upsertRows(table: string, rows: Record<string, any>[], ownerUid?: string | null): void {
-        if (!this.enabled || rows.length === 0) return;
-        this._enqueue({ op: 'upsertBatch', table, payload: rows, retries: 0 }, ownerUid);
+        if (!this.enabled) return;
+        const remote = rows.filter(r => !isLocalOnlyRow(table, r)).map(r => stripLocalOnlyColumns(table, r));
+        if (remote.length === 0) return;
+        this._enqueue({ op: 'upsertBatch', table, payload: remote, retries: 0 }, ownerUid);
     }
 
     /** Mirror a partial column update WITHOUT insert semantics — never creates a
       * row, so it can't materialize one with NULL/default columns it didn't send. */
     updateRow(table: string, pkMatch: Record<string, any>, changes: Record<string, any>, ownerUid?: string | null): void {
-        if (!this.enabled) return;
+        if (!this.enabled || isLocalOnlyRow(table, pkMatch)) return;
         this._enqueue({ op: 'update', table, payload: { pkMatch, changes }, retries: 0 }, ownerUid);
     }
 
@@ -752,7 +751,7 @@ export class SupabaseMirrorService extends EventEmitter {
     static getSupabaseSchemaSql(): string {
         return `
 -- ============================================================
--- Natively Mirror Schema for Supabase (Mode A + Firebase Auth + RLS)
+-- GoDojo Mirror Schema for Supabase (Mode A + Firebase Auth + RLS)
 -- Run this once in the Supabase SQL editor.
 --
 -- Prerequisites in Supabase Dashboard:
@@ -896,30 +895,6 @@ CREATE TABLE IF NOT EXISTS app_state (
     PRIMARY KEY (user_id, key)
 );
 
--- user_profile: one row per user (PK is user_id directly)
-CREATE TABLE IF NOT EXISTS user_profile (
-    user_id          TEXT PRIMARY KEY REFERENCES users(firebase_uid) ON DELETE CASCADE,
-    structured_json  JSONB,
-    compact_persona  TEXT,
-    intro_short      TEXT,
-    intro_interview  TEXT,
-    created_at       TIMESTAMPTZ
-);
-
-CREATE TABLE IF NOT EXISTS resume_nodes (
-    user_id          TEXT NOT NULL REFERENCES users(firebase_uid) ON DELETE CASCADE,
-    id               BIGINT NOT NULL,
-    category         TEXT,
-    title            TEXT,
-    organization     TEXT,
-    start_date       TEXT,
-    end_date         TEXT,
-    duration_months  INTEGER,
-    text_content     TEXT,
-    tags             TEXT,
-    PRIMARY KEY (user_id, id)
-);
-
 CREATE TABLE IF NOT EXISTS company_asset_chunks (
     user_id     TEXT NOT NULL REFERENCES users(firebase_uid) ON DELETE CASCADE,
     id          BIGINT NOT NULL,
@@ -1039,7 +1014,7 @@ DECLARE
     scoped_tables TEXT[] := ARRAY[
         'meetings', 'transcripts', 'ai_interactions',
         'chunks', 'chunk_summaries', 'embedding_queue',
-        'app_state', 'user_profile', 'resume_nodes',
+        'app_state',
         'company_asset_chunks',
         'meeting_scorecards',
         'scoring_criteria',

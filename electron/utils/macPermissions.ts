@@ -1,20 +1,17 @@
 // macOS TCC (Transparency, Consent and Control) permission helpers.
 //
-// System/interviewer audio on macOS is captured by the Rust native module via
+// System audio (the other side of the call) on macOS is captured by the Rust native module via
 // a CoreAudio Process Tap (macOS 14.4+) with a ScreenCaptureKit fallback. BOTH
 // sit behind kTCCServiceScreenCapture — the "Screen Recording" toggle — so the
 // app must resolve that permission before it constructs a SystemAudioCapture.
 //
-// This module is deliberately standalone (rather than living in main.ts) for
-// two reasons:
-//   1. ScreenshotHelper needs the identical dev-bypass policy. When the bypass
-//      predicate was private to main.ts, screenshots and audio disagreed about
-//      permission state in dev.
-//   2. Everything here is pure enough to unit-test with a mocked `electron`
-//      module. Reimplementing the logic inside the test (the previous approach
+// This module is deliberately standalone (rather than living in main.ts)
+// because everything here is pure enough to unit-test with a mocked `electron`
+// module. Reimplementing the logic inside the test (the previous approach
 //      in the sibling repo) let the test and the real code drift apart.
 
 import { app, desktopCapturer, systemPreferences } from 'electron';
+import { readEnv } from './env';
 
 export type MacScreenCaptureStatus = 'granted' | 'denied' | 'not-determined' | 'restricted';
 
@@ -79,17 +76,17 @@ export const SILENCE_PEAK_TO_PEAK_THRESHOLD = 100;
  * capture as 'granted' on every `npm run app:dev` launch regardless of real TCC
  * state, which makes the dominant production failure mode ("permissions look
  * granted but nothing transcribes") invisible while developing. Set
- * NATIVELY_DEV_BYPASS_SCREEN_TCC=1 for a frictionless local loop.
+ * GODOJO_DEV_BYPASS_SCREEN_TCC=1 (legacy NATIVELY_ name also accepted) for a frictionless local loop.
  */
 export function isDevTccBypassEnabled(): boolean {
-  return !app.isPackaged && process.env.NATIVELY_DEV_BYPASS_SCREEN_TCC === '1';
+  return !app.isPackaged && readEnv('DEV_BYPASS_SCREEN_TCC') === '1';
 }
 
 export function getMacScreenCaptureStatus(): MacScreenCaptureStatus {
   if (process.platform !== 'darwin') return 'granted';
 
   if (isDevTccBypassEnabled()) {
-    console.log('[Permissions] Dev TCC bypass enabled (NATIVELY_DEV_BYPASS_SCREEN_TCC=1) — reporting screen capture as granted');
+    console.log('[Permissions] Dev TCC bypass enabled (GODOJO_DEV_BYPASS_SCREEN_TCC=1) — reporting screen capture as granted');
     return 'granted';
   }
 
@@ -269,12 +266,12 @@ export function formatPermissionMessage(reason: PermissionReason, extra?: { devi
   switch (reason) {
     case 'screen-recording-denied':
       return isMac
-        ? 'Screen Recording permission denied. Interviewer audio will not be captured. Enable it in System Settings → Privacy & Security → Screen Recording, then restart GoDojo AI.'
-        : 'System audio capture is unavailable. Interviewer audio will not be captured. Check your audio device routing in Settings and restart the meeting.';
+        ? 'Screen Recording permission denied. The other side of the call will not be captured. Enable it in System Settings → Privacy & Security → Screen Recording, then restart GoDojo AI.'
+        : 'System audio capture is unavailable. The other side of the call will not be captured. Check your audio device routing in Settings and restart the meeting.';
 
     case 'mac-screen-recording-restricted':
       if (!isMac) return formatPermissionMessage('system-audio-stuck');
-      return 'Screen Recording is restricted by device policy. Interviewer audio will not be captured. Contact your administrator to allow screen capture for GoDojo AI.';
+      return 'Screen Recording is restricted by device policy. The other side of the call will not be captured. Contact your administrator to allow screen capture for GoDojo AI.';
 
     case 'mac-screen-recording-revoked-rebuild':
       // Defence in depth: all call sites are darwin-gated (see the `mac-`

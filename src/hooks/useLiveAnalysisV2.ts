@@ -7,6 +7,8 @@ import {
     buildTurns,
     EMPTY_VIEW,
     endResponseToAnalysis,
+    keepLiveAddMissed,
+    liveObjectionsForEnd,
     shouldTickV2,
     stateToAnalysis,
     V2_END_MAX_TURNS,
@@ -274,21 +276,29 @@ export const useLiveAnalysisV2 = (
         const startedAt = Date.now();
         setIsLoading(true);
         try {
+            // What the rep saw live — the saved meeting keeps all of it (keepLiveAddMissed).
+            const liveObjections = objectionsRef?.current ?? [];
+            const liveSignals = view0.state ? stateToAnalysis(view0.state).signals : [];
             const res = await intelligenceApi.endLiveAnalysisV2({
                 session_id: sessionIdRef.current,
                 state: view0.state,
                 state_sig: view0.sig,
                 meeting_types: meetingTypesRef.current,
                 turns,
+                live_objections: liveObjectionsForEnd(liveObjections),
             });
             if (sessionEpochRef.current !== epoch) return null;
             if (res.degraded?.length) console.warn('[useLiveAnalysisV2] end-of-call pass degraded:', res.degraded);
             cursorRef.current = entries.length;
             publish({ ...viewRef.current, state: res.state, sig: res.state_sig, traceId: res.trace_id ?? viewRef.current.traceId, changed: {} });
-            const data = endResponseToAnalysis(res, dealAlertsRef.current);
+            const data = keepLiveAddMissed(
+                endResponseToAnalysis(res, dealAlertsRef.current),
+                { objections: liveObjections, signals: liveSignals },
+            );
             console.log(
-                `[useLiveAnalysisV2] end-of-call pass: ${turns.length} turns, ${data.objections.length} objections, ` +
-                `${data.signals.length} signals in ${Date.now() - startedAt}ms`,
+                `[useLiveAnalysisV2] end-of-call pass: ${turns.length} turns, ${data.objections.length} objections ` +
+                `(${liveObjections.length} live), ${data.signals.length} signals (${liveSignals.length} live) ` +
+                `in ${Date.now() - startedAt}ms`,
             );
             return data;
         } catch (e: any) {
@@ -297,7 +307,7 @@ export const useLiveAnalysisV2 = (
         } finally {
             if (sessionEpochRef.current === epoch) setIsLoading(false);
         }
-    }, [transcriptRef, publish]);
+    }, [transcriptRef, publish, objectionsRef]);
 
     const resetAnalysis = useCallback(() => {
         finalizedRef.current = false;

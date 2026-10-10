@@ -112,8 +112,11 @@ export function useMeetingChat({ isOpen, onClose, onMessagesChange, messages, me
     }, [chatState]);
 
     // Auto-scroll to bottom on new messages
+    // Runs on every streamed flush; restarting a smooth-scroll animation each
+    // time kept the compositor busy, so jump instantly while streaming.
     useEffect(() => {
-        messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
+        const streaming = messages.some(m => m.isStreaming);
+        messagesEndRef.current?.scrollIntoView({ behavior: streaming ? 'auto' : 'smooth' });
     }, [messages]);
 
     // Submit initial query when overlay opens

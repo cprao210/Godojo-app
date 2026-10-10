@@ -3,3 +3,18 @@ rustflags = ["-C", "link-arg=-undefined", "-C", "link-arg=dynamic_lookup"]
 
 [target.aarch64-apple-darwin]
 rustflags = ["-C", "link-arg=-undefined", "-C", "link-arg=dynamic_lookup"]
+
+# Windows: link the MSVC C runtime statically. Without this the .node file
+# imports VCRUNTIME140.dll, which a clean Windows install doesn't have unless
+# the Visual C++ Redistributable was installed by something else. There it
+# fails to load with "The specified module could not be found" and the app
+# has no mic or system audio. Static linking adds ~100-200 KB and removes the
+# dependency; crates built through `cc` (e.g. webrtc-vad) follow it to /MT.
+[target.x86_64-pc-windows-msvc]
+rustflags = ["-C", "target-feature=+crt-static"]
+
+[target.i686-pc-windows-msvc]
+rustflags = ["-C", "target-feature=+crt-static"]
+
+[target.aarch64-pc-windows-msvc]
+rustflags = ["-C", "target-feature=+crt-static"]

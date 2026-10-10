@@ -60,7 +60,6 @@
   },
   "include": [
     "src",
-    "premium/src",
     "utils/pdfGenerator.ts"
   ],
   "references": [

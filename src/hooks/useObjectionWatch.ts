@@ -38,7 +38,17 @@ const NON_HUMAN_SPEAKERS = ['system', 'ai', 'assistant', 'model'];
 const humanTurnsOf = (transcript: TranscriptTurn[] | undefined): TranscriptTurn[] =>
     (transcript ?? []).filter(t => !NON_HUMAN_SPEAKERS.includes(t.speaker?.toLowerCase()));
 
-export const useObjectionWatch = (transcriptRef: TranscriptRef, isMeetingPaused: boolean) => {
+export interface ObjectionWatchOptions {
+    /** An internal meeting (every invitee on our own domain — see `isInternalMeeting`): no
+     *  ticks are sent, and turns spoken meanwhile are consumed so they are never sent later. */
+    internal?: boolean;
+}
+
+export const useObjectionWatch = (
+    transcriptRef: TranscriptRef,
+    isMeetingPaused: boolean,
+    { internal = false }: ObjectionWatchOptions = {},
+) => {
     // The single owned list — active and resolved together, newest first. Kept in a ref
     // as well as state so the tick loop (and useLiveAnalysis, which reads this ref at
     // RESPONSE time) never sees a stale closure.
@@ -58,11 +68,19 @@ export const useObjectionWatch = (transcriptRef: TranscriptRef, isMeetingPaused:
     const isMeetingPausedRef = useRef(isMeetingPaused);
 
     useEffect(() => { isMeetingPausedRef.current = isMeetingPaused; }, [isMeetingPaused]);
+    const internalRef = useRef(internal);
+    useEffect(() => { internalRef.current = internal; }, [internal]);
 
     const commit = useCallback((next: Objection[]) => {
         objectionsRef.current = next;
         setObjections(next);
     }, []);
+
+    // Recognised as internal mid-call (the calendar metadata can land after the first ticks):
+    // whatever was flagged until then was colleagues talking, not objections.
+    useEffect(() => {
+        if (internal && objectionsRef.current.length > 0) commit([]);
+    }, [internal, commit]);
 
     const resetObjections = useCallback(() => {
         abortRef.current?.abort();
@@ -90,6 +108,12 @@ export const useObjectionWatch = (transcriptRef: TranscriptRef, isMeetingPaused:
 
             // Transcript was reset out from under us (new session) — re-anchor.
             if (cursor > humanTurns.length) cursorRef.current = 0;
+
+            // Internal meeting: colleagues are not prospects. Consume the turns, send nothing.
+            if (internalRef.current) {
+                cursorRef.current = humanTurns.length;
+                return;
+            }
 
             const deltaTurns = humanTurns.slice(cursorRef.current);
             const hasNewProspectTurn = deltaTurns.some(

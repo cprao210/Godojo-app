@@ -278,18 +278,39 @@ export function useLauncher({ onStartMeeting, ollamaPullStatus = 'idle', onPageC
     // main has already committed the placeholder row by the time this IPC is
     // serviced, so the card no longer waits on GET /meetings (or on the Supabase
     // mirror having caught up).
-    const seedMeetingsFromLocal = React.useCallback(async () => {
-        try {
-            // Local SQLite only — getRecentMeetings would prefer the Supabase
-            // mirror, which is precisely the copy that hasn't caught up yet.
-            const localRows = await window.electronAPI?.getRecentMeetingsLocal?.();
-            if (!localRows || localRows.length === 0) return;
-            queryClient.setQueryData<Meeting[]>(['meetings'], (prev = []) =>
-                mergeLocalMeetings(prev, localRows as Meeting[]),
-            );
-        } catch {
-            // No electron API (web build) or the read failed — the HTTP list still applies.
+    // Single-flight + one trailing re-run. At call end this fires up to three
+    // times within ~1 s (meetings-updated, live-call-ended, the launcher
+    // becoming visible), and each call is a synchronous SQLite read in main
+    // that also JSON-parses up to 50 summaries. A call arriving while one is
+    // in flight is folded into ONE re-run after it, so the newest data still
+    // lands but a burst costs at most two reads.
+    const seedInFlight = React.useRef<Promise<void> | null>(null);
+    const seedAgain = React.useRef(false);
+    const seedMeetingsFromLocal = React.useCallback((): Promise<void> => {
+        if (seedInFlight.current) {
+            seedAgain.current = true;
+            return seedInFlight.current;
         }
+        const run = async () => {
+            do {
+                seedAgain.current = false;
+                try {
+                    // Local SQLite only — getRecentMeetings would prefer the Supabase
+                    // mirror, which is precisely the copy that hasn't caught up yet.
+                    const localRows = await window.electronAPI?.getRecentMeetingsLocal?.();
+                    if (localRows && localRows.length > 0) {
+                        queryClient.setQueryData<Meeting[]>(['meetings'], (prev = []) =>
+                            mergeLocalMeetings(prev, localRows as Meeting[]),
+                        );
+                    }
+                } catch {
+                    // No electron API (web build) or the read failed — the HTTP list still applies.
+                }
+            } while (seedAgain.current);
+        };
+        const p = run().finally(() => { seedInFlight.current = null; });
+        seedInFlight.current = p;
+        return p;
     }, [queryClient]);
 
     // Requirement: coming back to Home must show current meetings, not whatever

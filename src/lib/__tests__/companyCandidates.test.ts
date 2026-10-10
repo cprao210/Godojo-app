@@ -6,6 +6,7 @@ import {
     companyNameFromDomain,
     companyNameFromTitle,
     deriveCompanyCandidates,
+    isInternalMeeting,
     resolveActiveCompany,
     type CompanyCandidate,
 } from '../companyCandidates';
@@ -249,5 +250,40 @@ describe('resolveActiveCompany — ask before generating', () => {
 
     it('a stale/out-of-range index goes back to asking rather than guessing', () => {
         expect(resolveActiveCompany([acme, beta], 5, null).awaitingSelection).toBe(true);
+    });
+});
+
+describe('isInternalMeeting', () => {
+    const me = 'cp@geoserves.com';
+
+    it('is true when every other attendee is on our domain', () => {
+        const event = { attendees: [{ email: me, self: true }, { email: 'sahla@geoserves.com' }, { email: 'ayush@eu.geoserves.com' }] };
+        expect(isInternalMeeting(event, { userEmail: me })).toBe(true);
+    });
+
+    it('is false as soon as one outside attendee is invited', () => {
+        const event = { attendees: [{ email: me }, { email: 'sahla@geoserves.com' }, { email: 'buyer@oolka.in' }] };
+        expect(isInternalMeeting(event, { userEmail: me })).toBe(false);
+    });
+
+    it('ignores meeting rooms and people without an email', () => {
+        const event = { attendees: [
+            { email: me }, { email: 'sahla@geoserves.com' },
+            { email: 'room-3@resource.calendar.google.com' }, { displayName: 'Guest' },
+        ] };
+        expect(isInternalMeeting(event, { userEmail: me })).toBe(true);
+    });
+
+    it("is false when it can't tell", () => {
+        expect(isInternalMeeting(undefined, { userEmail: me })).toBe(false);
+        expect(isInternalMeeting({ attendees: [{ email: me }] }, { userEmail: me })).toBe(false); // nobody else
+        expect(isInternalMeeting({ attendees: [{ email: 'a@acme.com' }] }, {})).toBe(false);       // who are we?
+        // a consumer domain says nothing about who is a colleague
+        expect(isInternalMeeting({ attendees: [{ email: 'x@gmail.com' }] }, { userEmail: 'me@gmail.com' })).toBe(false);
+    });
+
+    it("falls back to the calendar's self flag for our domain", () => {
+        const event = { attendees: [{ email: 'cp@geoserves.com', self: true }, { email: 'sahla@geoserves.com' }] };
+        expect(isInternalMeeting(event, {})).toBe(true);
     });
 });

@@ -35,7 +35,7 @@ export interface AudioDeviceInfo {
 export interface CaptureOptions {
   /**
    * Echo pipeline mode: "legacy" | "phase1" | "full_duplex".
-   * Overrides the NATIVELY_ECHO_MODE env var. Unknown values are ignored.
+   * Overrides the GODOJO_ECHO_MODE env var. Unknown values are ignored.
    */
   echoMode?: string
   /** Bypass the local RMS+VAD gate (see MicrophoneCapture docs). */
@@ -61,12 +61,6 @@ export interface CaptureOptions {
  * telemetry / debug panel.
  */
 export declare function getAudioPipelineStats(): string
-
-/**
- * Returns a deterministic hardware fingerprint (SHA-256 hash of the machine UID).
- * This is used to lock license keys to a specific physical device.
- */
-export declare function getHardwareId(): string
 
 export declare function getInputDevices(): Array<AudioDeviceInfo>
 
@@ -122,10 +116,3 @@ export declare function setNativeLogCallback(callback: ((err: Error | null, arg:
  * side treats it as optional.
  */
 export declare function setNativeVerboseLogging(enabled: boolean): void
-
-/**
- * Validates a Gumroad license key by calling the Gumroad Licenses API.
- * Returns a Promise that resolves to "OK" on success, or an error message string on failure.
- * The HTTP call runs on a libuv worker thread to prevent blocking the Node.js event loop.
- */
-export declare function verifyGumroadKey(licenseKey: string): Promise<unknown>

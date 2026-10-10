@@ -17,6 +17,10 @@
  *     transcript window it was sent, or is it a degraded mirror to be retried?
  */
 
+// Type-only + pure-helper imports keep this module free of runtime dependencies.
+import type { CoachQuestion } from '../types';
+import { filledCoachQuestions } from './coachSummary';
+
 // ─── Final analysis at end of call ──────────────────────────────────────────
 
 export type FinalAnalysisAction =
@@ -172,13 +176,11 @@ export function shouldAdvanceCursor(
 
 // ─── Post-meeting processing stages ─────────────────────────────────────────
 
-export type ProcessingStage = 'analyzing' | 'validating' | 'finalizing' | 'ready' | 'stalled';
+export type ProcessingStage = 'processing' | 'finalizing' | 'ready' | 'stalled';
 
 export interface ProcessingStageInput {
     /** Row exists but `is_processed = 0` — background processing is running. */
     isProcessing: boolean;
-    /** A row landed in `meeting_scorecards`. Written as soon as scoring finishes. */
-    hasScorecard: boolean;
     /** Has the meeting-detail read actually completed (not just "not loading")? */
     isDetailResolved: boolean;
     /** Processing has been running far longer than it ever legitimately takes. */
@@ -194,17 +196,11 @@ export interface ProcessingStageView {
 /**
  * Map observable state onto a stage.
  *
- * The real order of events in MeetingPersistence.processAndSaveMeeting is:
- * placeholder row saved (with the full transcript) → scorecard and title/summary
- * generation start concurrently → the scorecard row is persisted as soon as it
- * is ready → the summary runs a generate → verify → regenerate loop → the final
- * save flips `is_processed` to 1.
- *
- * So the scorecard row appearing while `is_processed` is still 0 is a genuine
- * signal that the remaining wait is the summary's verification loop. That is
- * the entire basis for splitting "analyzing" from "validating" — there is no
- * per-attempt progress event from main, and inventing one would be exactly the
- * fake animation state this is meant to avoid.
+ * What `processing` actually consists of (analysis, title, summary generate →
+ * verify, final save) is reported live by main — see lib/postMeetingProgress and
+ * PostMeetingProcessingLoader. This function only decides which broad stage the
+ * view is in; it deliberately carries no per-step guesswork. Scorecard generation
+ * is disabled, so there is no scorecard-derived stage either.
  */
 export function deriveProcessingStage(input: ProcessingStageInput): ProcessingStageView {
     if (input.isStalled) {
@@ -215,17 +211,11 @@ export function deriveProcessingStage(input: ProcessingStageInput): ProcessingSt
         };
     }
     if (input.isProcessing) {
-        return input.hasScorecard
-            ? {
-                stage: 'validating',
-                label: 'Validating summary',
-                detail: 'Checking every claim against the transcript.',
-            }
-            : {
-                stage: 'analyzing',
-                label: 'Analyzing transcript',
-                detail: 'Scoring the call and drafting the summary.',
-            };
+        return {
+            stage: 'processing',
+            label: 'Processing your meeting',
+            detail: 'The summary is being generated in the background.',
+        };
     }
     if (!input.isDetailResolved) {
         return {
@@ -273,29 +263,51 @@ export function hasGeneratedSummary(
             overview?: string;
             keyPoints?: string[];
             actionItems?: string[];
-            dealStatus?: { stage?: string; summary?: string };
             salesCoachReview?: {
-                whatIDidRight?: string[];
+                // whatIDidRight: "Label: content" strings (old summaries) or
+                // film-review highlight objects (new summaries).
+                whatIDidRight?: (string | { moment?: string; why?: string })[];
                 whatICouldHaveDoneBetter?: string[];
                 whatIMissedCompletely?: string[];
             };
-            nextCallPlaybook?: { openingRecap?: string; questionsToAsk?: string[] };
+            // questionsToAsk: plain strings (old summaries) or { question, gap? } objects.
+            nextCallPlaybook?: {
+                callGoal?: string;
+                openingRecap?: string;
+                questionsToAsk?: CoachQuestion[];
+                valueAndROI?: { quantitative?: string[]; qualitative?: string[] };
+            };
+            openLoops?: unknown[];
+            promises?: unknown[];
+            demoReview?: { reactions?: unknown[]; successCriteria?: unknown[] };
+            negotiation?: { terms?: unknown[]; trades?: unknown[]; limit?: string; pathToSignature?: unknown[] };
         }
         | null
         | undefined,
 ): boolean {
     if (!ds) return false;
-    const filled = (arr?: string[]) => Array.isArray(arr) && arr.some((s) => s?.trim());
+    const filled = (arr?: (string | { moment?: string; why?: string })[]) =>
+        Array.isArray(arr) && arr.some((s) =>
+            typeof s === 'string' ? !!s?.trim() : !!(s && (s.moment || s.why)));
+    // dealStatus was dropped from the generation contract — emptiness is now
+    // judged on the fields the Coach tab actually renders, including the
+    // call-type blocks (a demo/negotiation meeting whose only content is its
+    // type panel is NOT an empty summary).
     return (
         !!ds.overview?.trim() ||
         filled(ds.keyPoints) ||
         filled(ds.actionItems) ||
-        !!ds.dealStatus?.stage?.trim() ||
-        !!ds.dealStatus?.summary?.trim() ||
         filled(ds.salesCoachReview?.whatIDidRight) ||
         filled(ds.salesCoachReview?.whatICouldHaveDoneBetter) ||
         filled(ds.salesCoachReview?.whatIMissedCompletely) ||
+        !!ds.nextCallPlaybook?.callGoal?.trim() ||
         !!ds.nextCallPlaybook?.openingRecap?.trim() ||
-        filled(ds.nextCallPlaybook?.questionsToAsk)
+        filledCoachQuestions(ds.nextCallPlaybook?.questionsToAsk) ||
+        !!(ds.nextCallPlaybook?.valueAndROI?.quantitative?.length || ds.nextCallPlaybook?.valueAndROI?.qualitative?.length) ||
+        !!ds.openLoops?.length ||
+        !!ds.promises?.length ||
+        !!ds.demoReview?.reactions?.length ||
+        !!ds.demoReview?.successCriteria?.length ||
+        !!(ds.negotiation?.terms?.length || ds.negotiation?.trades?.length || ds.negotiation?.limit?.trim() || ds.negotiation?.pathToSignature?.length)
     );
 }
