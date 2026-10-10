@@ -111,10 +111,13 @@ export class ProcessingHelper {
       }
     }
 
-    // Model discovery needs the new keys too.
-    this.llmHelper.initModelVersionManager().catch(err => {
-      console.warn('[ProcessingHelper] ModelVersionManager re-init failed (non-critical):', err.message);
-    });
+    // A newly added key should get its provider's live model list.
+    try {
+      const { ModelCatalog } = require('./services/ModelCatalog');
+      ModelCatalog.getInstance().refreshAll().catch((err: any) => {
+        console.warn('[ProcessingHelper] Model catalog refresh failed (non-critical):', err?.message);
+      });
+    } catch { /* catalog unavailable — seeds cover it */ }
 
     try {
       const { posthogMain } = require('./services/PostHogMainService');
@@ -174,11 +177,6 @@ export class ProcessingHelper {
       // CRITICAL: Cleanup stale queue items to prevent "Chunk not found" errors
       ragManager.cleanupStaleQueueItems();
     }
-
-    // Initialize self-improving model version manager (background, non-blocking)
-    this.llmHelper.initModelVersionManager().catch(err => {
-      console.warn('[ProcessingHelper] ModelVersionManager initialization failed (non-critical):', err.message);
-    });
 
     // NEW: Load Default Model Config
     const defaultModel = credManager.getDefaultModel();

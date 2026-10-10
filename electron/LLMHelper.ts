@@ -3,7 +3,6 @@ import Groq from "groq-sdk"
 import OpenAI from "openai"
 import Anthropic from "@anthropic-ai/sdk"
 import fs from "fs"
-import { ModelVersionManager, ModelFamily, TextModelFamily } from './services/ModelVersionManager'
 import { MODE_TOKEN_LIMITS } from './llm/types'
 import {
   HARD_SYSTEM_PROMPT, GROQ_SYSTEM_PROMPT, OPENAI_SYSTEM_PROMPT, CLAUDE_SYSTEM_PROMPT,
@@ -85,17 +84,11 @@ export class LLMHelper {
   // Rate limiters per provider to prevent 429 errors on free tiers
   private rateLimiters: ReturnType<typeof createProviderRateLimiters>;
 
-  // Self-improving model version manager for vision analysis
-  private modelVersionManager: ModelVersionManager;
-
   constructor(apiKey?: string, useOllama: boolean = false, ollamaModel?: string, ollamaUrl?: string, groqApiKey?: string, openaiApiKey?: string, claudeApiKey?: string) {
     this.useOllama = useOllama
 
     // Initialize rate limiters
     this.rateLimiters = createProviderRateLimiters();
-
-    // Initialize model version manager
-    this.modelVersionManager = new ModelVersionManager();
 
     // Initialize Groq client if API key provided
     if (groqApiKey) {
@@ -148,9 +141,6 @@ export class LLMHelper {
   }
 
   public setGroqApiKey(apiKey: string) {
-    // NOTE: this.groqApiKey used to be assigned only in the constructor, so a key
-    // set at runtime never reached initModelVersionManager() — model discovery ran
-    // with a stale/null Groq key.
     this.groqApiKey = apiKey;
     this.groqClient = new Groq({ apiKey });
     console.log("[LLMHelper] Groq API Key updated.");
@@ -201,40 +191,6 @@ export class LLMHelper {
   }
 
   /**
-   * Initialize the self-improving model version manager.
-   * Should be called after all API keys are configured.
-   * Triggers initial model discovery and starts background scheduler.
-   */
-  public async initModelVersionManager(): Promise<void> {
-    // Coalesce overlapping calls with the same keys: at boot,
-    // loadStoredCredentials() reaches this twice back-to-back (once via the
-    // key sync, once directly), which ran two concurrent discoveries. A call
-    // with DIFFERENT keys (e.g. fallback keys arriving) waits for the
-    // in-flight run, then runs again so discovery sees the new keys.
-    const keys = {
-      openai: this.openaiApiKey,
-      gemini: this.apiKey,
-      claude: this.claudeApiKey,
-      groq: this.groqApiKey,
-    };
-    const fingerprint = JSON.stringify(keys);
-    const inFlight = this.mvmInit;
-    if (inFlight && inFlight.fingerprint === fingerprint) return inFlight.promise;
-
-    const promise = (async () => {
-      if (inFlight) await inFlight.promise.catch(() => { });
-      this.modelVersionManager.setApiKeys(keys);
-      await this.modelVersionManager.initialize();
-      console.log(this.modelVersionManager.getSummary());
-    })().finally(() => {
-      if (this.mvmInit?.promise === promise) this.mvmInit = null;
-    });
-    this.mvmInit = { fingerprint, promise };
-    return promise;
-  }
-  private mvmInit: { fingerprint: string; promise: Promise<void> } | null = null;
-
-  /**
    * Scrub all API keys from memory to minimize exposure window.
    * Called on app quit.
    */
@@ -251,8 +207,6 @@ export class LLMHelper {
     if (this.rateLimiters) {
       Object.values(this.rateLimiters).forEach(rl => rl.destroy());
     }
-    // Stop model version manager background scheduler
-    this.modelVersionManager.stopScheduler();
     console.log('[LLMHelper] Keys scrubbed from memory');
   }
 
@@ -838,12 +792,13 @@ export class LLMHelper {
       type ProviderAttempt = { name: string; execute: () => Promise<string> };
       const providers: ProviderAttempt[] = [];
 
-      // Get auto-discovered text model IDs from ModelVersionManager
-      const textOpenAI = this.modelVersionManager.getTextTieredModels(TextModelFamily.OPENAI).tier1;
-      const textGeminiFlash = this.modelVersionManager.getTextTieredModels(TextModelFamily.GEMINI_FLASH).tier1;
-      const textGeminiPro = this.modelVersionManager.getTextTieredModels(TextModelFamily.GEMINI_PRO).tier1;
-      const textClaude = this.modelVersionManager.getTextTieredModels(TextModelFamily.CLAUDE).tier1;
-      const textGroq = this.modelVersionManager.getTextTieredModels(TextModelFamily.GROQ).tier1;
+      // Current model per provider from the live model catalog (seeds offline)
+      const modelCatalog = ModelCatalog.getInstance();
+      const textOpenAI = modelCatalog.resolve('openai', 'capable');
+      const textGeminiFlash = modelCatalog.resolve('gemini', 'fast');
+      const textGeminiPro = modelCatalog.resolve('gemini', 'capable');
+      const textClaude = modelCatalog.resolve('claude', 'capable');
+      const textGroq = modelCatalog.resolve('groq', 'capable');
 
       if (isMultimodal) {
         // MULTIMODAL PROVIDER ORDER: OpenAI -> Gemini Flash -> Claude -> Gemini Pro -> Groq -> Custom/Ollama
@@ -1478,8 +1433,8 @@ export class LLMHelper {
     }
 
     // ============================================================
-    // SMART DYNAMIC FALLBACK: Build provider list using auto-discovered
-    // text models from ModelVersionManager.
+    // SMART DYNAMIC FALLBACK: Build provider list using each provider's
+    // current model from ModelCatalog.
     // Multimodal requests EXCLUDE Groq (no vision support)
     // Text-only requests can use ALL providers
     // OpenAI/Claude use proper system+user message separation for quality
@@ -1491,12 +1446,13 @@ export class LLMHelper {
     const openaiSystemPrompt = skipSystemPrompt ? undefined : this.injectLanguageInstruction(OPENAI_SYSTEM_PROMPT);
     const claudeSystemPrompt = skipSystemPrompt ? undefined : this.injectLanguageInstruction(CLAUDE_SYSTEM_PROMPT);
 
-    // Get auto-discovered text model IDs from ModelVersionManager
-    const textOpenAI = this.modelVersionManager.getTextTieredModels(TextModelFamily.OPENAI).tier1;
-    const textGeminiFlash = this.modelVersionManager.getTextTieredModels(TextModelFamily.GEMINI_FLASH).tier1;
-    const textGeminiPro = this.modelVersionManager.getTextTieredModels(TextModelFamily.GEMINI_PRO).tier1;
-    const textClaude = this.modelVersionManager.getTextTieredModels(TextModelFamily.CLAUDE).tier1;
-    const textGroq = this.modelVersionManager.getTextTieredModels(TextModelFamily.GROQ).tier1;
+    // Current model per provider from the live model catalog (seeds offline)
+    const modelCatalog = ModelCatalog.getInstance();
+    const textOpenAI = modelCatalog.resolve('openai', 'capable');
+    const textGeminiFlash = modelCatalog.resolve('gemini', 'fast');
+    const textGeminiPro = modelCatalog.resolve('gemini', 'capable');
+    const textClaude = modelCatalog.resolve('claude', 'capable');
+    const textGroq = modelCatalog.resolve('groq', 'capable');
 
     if (isMultimodal) {
       // MULTIMODAL PROVIDER ORDER: OpenAI -> Gemini Flash -> Claude -> Gemini Pro -> Groq Scout 4

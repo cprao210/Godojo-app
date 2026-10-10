@@ -214,11 +214,11 @@ export class KnowledgeDatabaseManager {
      */
     public async loadAssetChunksFromSupabase(assetId: string): Promise<AssetChunkRow[]> {
         try {
-            const { SupabaseClientManager } = require('../../db/SupabaseClient');
+            const { SupabaseClientManager } = require('../db/SupabaseClient');
             const client = SupabaseClientManager.getClient();
             if (!client) return [];
 
-            const { AuthManager } = require('../../services/AuthManager');
+            const { AuthManager } = require('../services/AuthManager');
             const token = AuthManager.getInstance().getIdToken();
             if (!token) {
                 console.warn('[KnowledgeDatabaseManager] loadAssetChunksFromSupabase: no auth token — RLS will block query, skipping');
@@ -282,11 +282,11 @@ export class KnowledgeDatabaseManager {
      */
     public async loadAllChunksWithEmbeddingsFromSupabase(): Promise<Array<AssetChunkRow & { asset_type: string }>> {
         try {
-            const { SupabaseClientManager } = require('../../db/SupabaseClient');
+            const { SupabaseClientManager } = require('../db/SupabaseClient');
             const client = SupabaseClientManager.getClient();
             if (!client) return [];
 
-            const { AuthManager } = require('../../services/AuthManager');
+            const { AuthManager } = require('../services/AuthManager');
             const token = AuthManager.getInstance().getIdToken();
             if (!token) {
                 console.warn('[KnowledgeDatabaseManager] loadAssetChunksFromSupabase: no auth token — RLS will block query, skipping');

@@ -414,12 +414,12 @@ type STTProvider = (GoogleSTT | RestSTT | DeepgramStreamingSTT | SonioxStreaming
   notifySpeechEnded?: () => void;
 };
 
-// Premium: Knowledge modules loaded conditionally
+// Company-knowledge modules loaded conditionally
 let KnowledgeOrchestratorClass: any = null;
 let KnowledgeDatabaseManagerClass: any = null;
 try {
-  KnowledgeOrchestratorClass = require('./premium/knowledge/KnowledgeOrchestrator').KnowledgeOrchestrator;
-  KnowledgeDatabaseManagerClass = require('./premium/knowledge/KnowledgeDatabaseManager').KnowledgeDatabaseManager;
+  KnowledgeOrchestratorClass = require('./knowledge/KnowledgeOrchestrator').KnowledgeOrchestrator;
+  KnowledgeDatabaseManagerClass = require('./knowledge/KnowledgeDatabaseManager').KnowledgeDatabaseManager;
 } catch {
   console.log('[Main] Knowledge modules not available — profile intelligence disabled.');
 }

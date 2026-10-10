@@ -364,8 +364,7 @@ The part of the app that decides **which AI model** answers each request, and wh
 | Piece | What it does |
 | --- | --- |
 | **Provider clients** | One client each for Gemini, Groq, OpenAI and Claude. Also Ollama (a program that runs AI models on your own computer) and user-defined "custom" or cURL providers such as OpenRouter |
-| **Model Catalog** (newer) | Downloads each provider's current model list (cached for 24 hours), picks a model by tier (capable, fast, vision), and **heals** retired model IDs |
-| **Model Version Manager** (older) | Discovers models about every 14 days and keeps three tiers per model family. It still supplies the model names used in the main chat fallback chains |
+| **Model Catalog** | Downloads each provider's current model list (cached for 24 hours), picks a model by tier (capable, fast, vision), and **heals** retired model IDs. It also supplies the model names used in the main chat fallback chains |
 | **Backend LLM fallback** | Our own server's model endpoint, used as the last resort for summaries, titles and follow-up emails |
 | **Local embedding model** | A small built-in model (all-MiniLM-L6-v2) for search, used when no cloud embedding provider is available |
 
@@ -417,7 +416,6 @@ If the user picked an Ollama model as their default, chat goes straight to Ollam
 
 ### Things to know / gotchas
 
-- Two systems overlap here. The Model Catalog handles retirement healing and user-facing model choice. The older Model Version Manager still feeds model names into the chat chains. Changing one does not change the other.
 - The backend fallback needs a signed-in user, because it sends the Firebase token.
 
 ---
@@ -772,7 +770,7 @@ Yes, through a new numbered migration step. If the column should not go to Supab
 | --- | --- |
 | **Cloud sync and offline** | The outbox in depth, ordering and owner pinning, backfill cursors, the sync audit, cloud-first reads, account switching, and fixing gap 1 |
 | **Auth and account lifecycle** | Firebase in the windows, the token bridge to the main process, the saved identity store, switching database and key files on sign-in and sign-out, invite deep links |
-| **LLM routing and model catalog** | Every fallback chain, catalog tiers and seeds, retirement healing, the overlap with the Model Version Manager, the backend fallback, custom and cURL providers |
+| **LLM routing and model catalog** | Every fallback chain, catalog tiers and seeds, retirement healing, the backend fallback, custom and cURL providers |
 | **Window management, ghost mode and disguise** | Overlay pinning and recovery watchdogs, content protection per OS, dock and tray handling, macOS permission prompts |
 | **Local database schema** | Every table and migration step from version 1 to 24, vector tables and dimensions, indexes |
 | **Performance and diagnostics playbook** | Reading perf samples and the debug log, Performance Mode rules, the startup timeline on low-end machines |
