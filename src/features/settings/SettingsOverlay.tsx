@@ -1,5 +1,5 @@
 import React from 'react';
-import { Mic, Monitor, Keyboard, User, LogOut, ArrowLeft, Calendar, FlaskConical, Info, BarChart2, Users, Building2, RefreshCw } from 'lucide-react';
+import { Mic, Monitor, User, LogOut, ArrowLeft, Calendar, FlaskConical, Info, BarChart2, Users, Building2, RefreshCw } from 'lucide-react';
 import { motion, AnimatePresence } from 'framer-motion';
 import { AboutSection } from '@/features/onboarding';
 import { AIProvidersSettings } from '@/features/settings';
@@ -7,7 +7,6 @@ import { CompanyContextTab, ScoringCriteriaTab, UserProfileTab, UserRolesPermiss
 import { SettingsOverlayProps } from '@/types';
 import { useSettingsOverlay, useUpdateStatus } from '@/hooks';
 import GeneralTab from './GeneralTab';
-import KeybindsTab from './KeybindsTab';
 import AudioTab from './AudioTab';
 import CalendarTab from './CalendarTab';
 import { SettingsSaveToast } from './SettingsSaveToast';
@@ -24,7 +23,6 @@ const NAV_ITEMS = [
     { id: 'ai-providers', label: 'AI Providers', icon: FlaskConical, productionOnly: false },
     { id: 'calendar', label: 'Calendar', icon: Calendar, productionOnly: false },
     { id: 'audio', label: 'Audio', icon: Mic, productionOnly: false },
-    // { id: 'keybinds', label: 'Keybinds', icon: Keyboard, productionOnly: false },
     { id: 'company-context', label: 'Company Context', icon: Building2, productionOnly: false },
     // { id: 'scoring-criteria', label: 'Scoring Criteria', icon: BarChart2, productionOnly: false },
     { id: 'user-roles-permissions', label: 'Roles & Management', icon: Users, productionOnly: false },
@@ -38,7 +36,7 @@ const NAV_ITEMS = [
 // All state/logic now lives in useSettingsOverlay (which itself composes
 // useGeneralSettings, useOverlayOpacitySettings, useAudioDeviceSettings,
 // useLanguageSettings, useSttProviderSettings, useTavilySettings,
-// useProfileIntelligenceSettings, useCompanyContextSettings, and
+// useCompanyContextSettings, and
 // useCalendarIntegrationSettings). This component only owns:
 //   - the modal shell (backdrop, panel, sidebar nav, content viewport)
 //   - routing `activeTab` to the right tab component
@@ -185,8 +183,6 @@ const SettingsOverlay: React.FC<SettingsOverlayProps> = ({
                                         />
                                     )}
 
-                                    {/* {activeTab === 'keybinds' && <KeybindsTab overlay={overlay} />} */}
-
                                     {activeTab === 'audio' && <AudioTab overlay={overlay} />}
 
                                     {activeTab === 'calendar' && <CalendarTab overlay={overlay} />}
@@ -207,8 +203,6 @@ const SettingsOverlay: React.FC<SettingsOverlayProps> = ({
                                                 setCompanyError={overlay.companyContext.setCompanyError}
                                                 assetUploading={overlay.companyContext.assetUploading}
                                                 setAssetUploading={overlay.companyContext.setAssetUploading}
-                                                isPremium={overlay.profile.isPremium}
-                                                setIsPremiumModalOpen={overlay.profile.setIsPremiumModalOpen}
                                                 isLight={isLight}
                                                 readOnly={isCompanyContextReadOnly}
                                             />

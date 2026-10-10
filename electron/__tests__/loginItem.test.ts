@@ -36,6 +36,12 @@ describe('loginItem', () => {
         expect(calls[0]).toMatchObject({ openAtLogin: false, name: 'electron.app.GoDojo AI' });
         const legacy = calls.slice(1);
         expect(legacy.map((o) => o.name)).toEqual([
+            // Current disguise AUMIDs…
+            'com.godojo.assistant.terminal',
+            'com.godojo.assistant.settings',
+            'com.godojo.assistant.activity',
+            'com.godojo.assistant.none',
+            // …and the pre-rebrand ones, still cleaned up for older installs.
             'com.natively.assistant.terminal',
             'com.natively.assistant.settings',
             'com.natively.assistant.activity',

@@ -83,7 +83,6 @@ export interface ElectronAPI {
   }>
   setPerformanceModePreference: (preference: 'auto' | 'on' | 'off') => Promise<{ ok: boolean }>
   onToggleExpand: (callback: () => void) => () => void
-  onResetView: (callback: () => void) => () => void
   moveWindowLeft: () => Promise<void>
   moveWindowRight: () => Promise<void>
   moveWindowUp: () => Promise<void>
@@ -114,8 +113,6 @@ export interface ElectronAPI {
   // ===========================================================================
   // Screenshots
   // ===========================================================================
-  getScreenshots: () => Promise<Array<{ path: string; preview: string }>>
-  deleteScreenshot: (path: string) => Promise<{ success: boolean; error?: string }>
   logErrorToMain: (payload: {
     type?: string
     context?: string
@@ -125,22 +122,6 @@ export interface ElectronAPI {
   }) => Promise<{ success: boolean; error?: string }>
   confirmDeleteAccount: (scope?: 'supabase-delete' | 'firebase-delete' | 'local' | 'full-delete') => Promise<{ confirmed: boolean }>,
   wipeLocalAccountData: (scope?: 'local' | 'full-delete') => Promise<{ success: boolean; error?: string }>
-  onScreenshotTaken: (callback: (data: { path: string; preview: string }) => void) => () => void
-  onScreenshotAttached: (callback: (data: { path: string; preview: string }) => void) => () => void
-  onCaptureAndProcess: (callback: (data: { path: string; preview: string }) => void) => () => void
-  takeScreenshot: () => Promise<{ path: string; preview: string }>
-  takeSelectiveScreenshot: () => Promise<{ path: string; preview: string; cancelled?: boolean }>
-  analyzeImageFile: (path: string) => Promise<void>
-  onProcessingNoScreenshots: (callback: () => void) => () => void
-  onProblemExtracted: (callback: (data: any) => void) => () => void
-  onSolutionsReady: (callback: (solutions: string) => void) => () => void
-  onSolutionStart: (callback: () => void) => () => void
-  onSolutionSuccess: (callback: (data: any) => void) => () => void
-  onSolutionError: (callback: (error: string) => void) => () => void
-  onDebugStart: (callback: () => void) => () => void
-  onDebugSuccess: (callback: (data: any) => void) => () => void
-  onDebugError: (callback: (error: string) => void) => () => void
-  onUnauthorized: (callback: () => void) => () => void
 
   // ===========================================================================
   // Undetectable / Disguise / Overlay Behavior
@@ -175,9 +156,6 @@ export interface ElectronAPI {
   // ===========================================================================
   // Settings & Advanced Settings Windows
   // ===========================================================================
-  onSettingsVisibilityChange: (callback: (isVisible: boolean) => void) => () => void
-  toggleSettingsWindow: (coords?: { x: number; y: number }) => Promise<void>
-  closeSettingsWindow: () => Promise<void>
   toggleAdvancedSettings: () => Promise<void>
   closeAdvancedSettings: () => Promise<void>
   onInviteDeepLink: (callback: (data: { token: string }) => void) => () => void
@@ -195,7 +173,8 @@ export interface ElectronAPI {
   setModel: (modelId: string) => Promise<{ success: boolean; error?: string }>
   setDefaultModel: (modelId: string) => Promise<{ success: boolean; error?: string }>
   toggleModelSelector: (coords: { x: number; y: number }) => Promise<void>
-  forceRestartOllama: () => Promise<void>
+  forceRestartOllama: () => Promise<{ success: boolean; error?: string }>
+  ensureOllamaRunning: () => Promise<{ success: boolean; message?: string }>
   onModelChanged: (callback: (modelId: string) => void) => () => void
   onOllamaPullProgress: (callback: (data: { status: string; percent: number }) => void) => () => void
   onOllamaPullComplete: (callback: () => void) => () => void
@@ -346,23 +325,15 @@ export interface ElectronAPI {
   generateAssist: () => Promise<{ insight: string | null }>
   generateWhatToSay: (question?: string, imagePaths?: string[]) => Promise<{ answer: string | null; question?: string; error?: string }>
   generateClarify: () => Promise<{ clarification: string | null }>
-  generateCodeHint: (imagePaths?: string[], problemStatement?: string) => Promise<{ hint: string | null }>
-  generateBrainstorm: (imagePaths?: string[], problemStatement?: string) => Promise<{ script: string | null }>
   generateFollowUp: (intent: string, userRequest?: string) => Promise<{ refined: string | null; intent: string }>
   generateFollowUpQuestions: () => Promise<{ questions: string | null }>
   generateRecap: () => Promise<{ summary: string | null }>
   submitManualQuestion: (question: string) => Promise<{ answer: string | null; question: string }>
   getIntelligenceContext: () => Promise<{ context: string; lastAssistantMessage: string | null; activeMode: string }>
   resetIntelligence: () => Promise<{ success: boolean; error?: string }>
-  generateSuggestion: (context: string, lastQuestion: string) => Promise<{ suggestion: string }>
   onSuggestionGenerated: (callback: (data: { question: string; suggestion: string; confidence: number }) => void) => () => void
   onSuggestionProcessingStart: (callback: () => void) => () => void
   onSuggestionError: (callback: (error: { error: string }) => void) => () => void
-
-  // Dynamic Action Button Mode
-  getActionButtonMode: () => Promise<'recap' | 'brainstorm'>
-  setActionButtonMode: (mode: 'recap' | 'brainstorm') => Promise<{ success: boolean }>
-  onActionButtonModeChanged: (callback: (mode: 'recap' | 'brainstorm') => void) => () => void
 
   // What Am I Missing
   generateWhatAmIMissing: () => Promise<string | null>
@@ -568,21 +539,9 @@ export interface ElectronAPI {
   companyGetCompleteness: () => Promise<number>
 
   // ===========================================================================
-  // Profile Engine (Resume, JD & Negotiation)
+  // Profile Engine (company-knowledge mode)
   // ===========================================================================
-  profileUploadResume: (filePath: string) => Promise<{ success: boolean; error?: string }>
-  profileGetStatus: () => Promise<{ hasProfile: boolean; profileMode: boolean; name?: string; role?: string; totalExperienceYears?: number }>
-  profileGetMode: () => Promise<{ active: boolean }>
   profileSetMode: (enabled: boolean) => Promise<{ success: boolean; error?: string }>
-  profileDelete: () => Promise<{ success: boolean; error?: string }>
-  profileGetProfile: () => Promise<any>
-  profileSelectFile: () => Promise<{ success?: boolean; cancelled?: boolean; filePath?: string; error?: string }>
-  profileUploadJD: (filePath: string) => Promise<{ success: boolean; error?: string }>
-  profileDeleteJD: () => Promise<{ success: boolean; error?: string }>
-  profileResearchCompany: (companyName: string) => Promise<{ success: boolean; dossier?: any; error?: string }>
-  profileGenerateNegotiation: (force?: boolean) => Promise<{ success: boolean; script?: any; error?: string }>
-  profileGetNegotiationState: () => Promise<{ success: boolean; state?: any; isActive?: boolean; error?: string }>
-  profileResetNegotiation: () => Promise<{ success: boolean; error?: string }>
 
   // ===========================================================================
   // Calendar
@@ -642,27 +601,12 @@ export interface ElectronAPI {
   getAppVersion: () => Promise<string>
 
   // ===========================================================================
-  // Donation
-  // ===========================================================================
-  getDonationStatus: () => Promise<{ shouldShow: boolean; hasDonated: boolean; lifetimeShows: number }>
-  markDonationToastShown: () => Promise<{ success: boolean }>
-  setDonationComplete: () => Promise<{ success: boolean }>
-
-  // ===========================================================================
   // Keybind Management
   // ===========================================================================
   getKeybinds: () => Promise<Array<{ id: string; label: string; accelerator: string; isGlobal: boolean; defaultAccelerator: string }>>
   setKeybind: (id: string, accelerator: string) => Promise<boolean>
   resetKeybinds: () => Promise<Array<{ id: string; label: string; accelerator: string; isGlobal: boolean; defaultAccelerator: string }>>
   onKeybindsUpdate: (callback: (keybinds: Array<any>) => void) => () => void
-  onGlobalShortcut: (callback: (data: { action: string }) => void) => () => void
-
-  // ===========================================================================
-  // Cropper
-  // ===========================================================================
-  cropperConfirmed: (bounds: { x: number; y: number; width: number; height: number }) => void
-  cropperCancelled: () => void
-  onResetCropper: (callback: (data: { hudPosition: { x: number; y: number } }) => void) => () => void
 
   // ===========================================================================
   // Firebase Auth
@@ -722,14 +666,6 @@ export interface ElectronAPI {
   }>
   supabaseForceBackfill: () => Promise<{ success: boolean; error?: string }>
   supabaseSyncAudit: () => Promise<{ success: boolean; error?: string }>
-
-  // ===========================================================================
-  // License Management
-  // ===========================================================================
-  licenseActivate: (key: string) => Promise<{ success: boolean; error?: string }>
-  licenseCheckPremium: () => Promise<boolean>
-  licenseDeactivate: () => Promise<void>
-  licenseGetHardwareId: () => Promise<string>
 
   // ===========================================================================
   // Demo / Seed Data

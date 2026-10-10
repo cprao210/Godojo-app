@@ -27,7 +27,6 @@ import { useAudioStatusTray } from "./useAudioStatusTray";
 import { useTopSearchPill } from './useTopSearchPill';
 import { useModelSelectorWindow } from './useModelSelectorWindow';
 import { useEditableTextBlock } from "./useEditableTextBlock";
-import { useCropper } from "./useCropper";
 import { useFollowUpEmail } from "./useFollowUpEmail";
 import { useMeetingChat } from "./useMeetingChat";
 import { useMeetingDetails, isSummaryEmpty, cleanMarkdown, formatTime, formatTranscriptTimestamp } from "./useMeetingDetails";
@@ -49,13 +48,11 @@ import { useCreateTeamModal } from "./useCreateTeamModal";
 import { useInviteUserModal, EMAIL_RE } from "./useInviteUserModal";
 import { useRowActionsMenu } from "./useRowActionsMenu";
 import { useMembersTable, MEMBERS_PAGE_SIZE, TABLE_GRID_COLS, avatarColorFor } from "./useMembersTable";
-import { useSettingsPopup } from "./useSettingsPopup";
 import { useGeneralSettings } from "./useGeneralSettings";
 import { useOverlayOpacitySettings } from "./useOverlayOpacitySettings";
 import { useAudioDeviceSettings } from "./useAudioDeviceSettings";
 import { useLanguageSettings } from "./useLanguageSettings";
 import { useTavilySettings } from "./useTavilySettings";
-import { useProfileIntelligenceSettings } from "./useProfileIntelligenceSettings";
 import { useCompanyContextSettings } from "./useCompanyContextSettings";
 import { useCalendarIntegrationSettings } from "./useCalendarIntegrationSettings";
 import { useTranscriptVisibility } from "./useTranscriptVisibility";
@@ -102,7 +99,6 @@ export {
     useTopSearchPill,
     useModelSelectorWindow,
     useEditableTextBlock,
-    useCropper,
     useFollowUpEmail,
     useMeetingChat,
     useMeetingDetails,
@@ -141,7 +137,6 @@ export {
     avatarColorFor,
     useMembersTable,
     MEMBERS_PAGE_SIZE, TABLE_GRID_COLS, EMAIL_RE,
-    useSettingsPopup,
     useCompanyContext, ALLOWED_EXTENSIONS, MAX_FILE_SIZE_BYTES, ASSET_CONFIG, STATUS_BADGE, normalizeContext,
     useGeneralSettings,
     useOverlayOpacitySettings,
@@ -149,7 +144,6 @@ export {
     useLanguageSettings,
     useTavilySettings,
     useSttProviderSettings, STT_PROVIDER_KEY_URLS,
-    useProfileIntelligenceSettings,
     useCompanyContextSettings,
     useCalendarIntegrationSettings,
     useTranscriptVisibility,

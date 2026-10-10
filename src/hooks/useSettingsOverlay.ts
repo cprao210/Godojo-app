@@ -11,10 +11,9 @@
 //   useLanguageSettings             — recognition + AI response language
 //   useSttProviderSettings          — STT provider + per-provider keys
 //   useTavilySettings               — Tavily key (company research)
-//   useProfileIntelligenceSettings  — resume/JD upload, research, negotiation script
 //   useCompanyContextSettings       — lifted state for <CompanyContextTab>
 //   useCalendarIntegrationSettings  — Google/Zoom calendar connect status
-//   useTranscriptVisibility         — shared with useSettingsPopup
+//   useTranscriptVisibility         — "show transcript" toggle (synced across windows)
 
 import { useEffect, useRef, useState } from 'react';
 import { useShortcuts } from './useShortcuts';
@@ -26,7 +25,6 @@ import { useAudioDeviceSettings } from './useAudioDeviceSettings';
 import { useLanguageSettings } from './useLanguageSettings';
 import { useSttProviderSettings } from './useSttProviderSettings';
 import { useTavilySettings } from './useTavilySettings';
-import { useProfileIntelligenceSettings } from './useProfileIntelligenceSettings';
 import { useCompanyContextSettings } from './useCompanyContextSettings';
 import { useCalendarIntegrationSettings } from './useCalendarIntegrationSettings';
 
@@ -48,7 +46,6 @@ export function useSettingsOverlay({ isOpen, onClose, initialTab = 'general' }: 
     const language = useLanguageSettings();
     const tavily = useTavilySettings();
     const stt = useSttProviderSettings({ isOpen, onTavilyKeyLoaded: tavily.setHasStoredTavilyKeyFromCredentials });
-    const profile = useProfileIntelligenceSettings({ isOpen, initialTab });
     const companyContext = useCompanyContextSettings();
     const calendar = useCalendarIntegrationSettings({ isOpen });
     const { showTranscript, toggleTranscript } = useTranscriptVisibility();
@@ -64,8 +61,6 @@ export function useSettingsOverlay({ isOpen, onClose, initialTab = 'general' }: 
                 companyContext.loadCompanyContext();
             }
         }
-        // profile.loadProfile() is already triggered for initialTab === 'profile'
-        // inside useProfileIntelligenceSettings itself.
         // eslint-disable-next-line react-hooks/exhaustive-deps
     }, [isOpen, initialTab]);
 
@@ -118,7 +113,6 @@ export function useSettingsOverlay({ isOpen, onClose, initialTab = 'general' }: 
         setIsAiLangDropdownOpen,
         aiLangDropdownRef,
 
-        // shared with SettingsPopup
         showTranscript,
         toggleTranscript,
 
@@ -129,7 +123,6 @@ export function useSettingsOverlay({ isOpen, onClose, initialTab = 'general' }: 
         language,
         stt,
         tavily,
-        profile,
         companyContext,
         calendar,
     };

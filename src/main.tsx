@@ -1,3 +1,6 @@
+// Must be the FIRST import: migrates natively_* localStorage keys to godojo_*
+// before any module below reads them while initialising.
+import "./lib/storageMigration";
 import React from "react";
 import ReactDOM from "react-dom/client";
 import { MotionConfig } from "framer-motion";
@@ -12,7 +15,7 @@ import "./index.css";
 // ---------------------------------------------------------------------------
 
 /** localStorage key used to cache the last resolved theme for flash-free boot. */
-const THEME_CACHE_KEY = "natively_resolved_theme";
+const THEME_CACHE_KEY = "godojo_resolved_theme";
 
 // ---------------------------------------------------------------------------
 // Pre-render DOM setup

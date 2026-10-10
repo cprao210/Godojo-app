@@ -65,7 +65,7 @@ beforeEach(() => {
   state.probeHangs = false;
   state.getMediaAccessStatusCalls = [];
   state.getSourcesCalls = 0;
-  delete process.env.NATIVELY_DEV_BYPASS_SCREEN_TCC;
+  delete process.env.GODOJO_DEV_BYPASS_SCREEN_TCC; delete process.env.NATIVELY_DEV_BYPASS_SCREEN_TCC;
   setPlatform('darwin');
 });
 
@@ -115,7 +115,7 @@ describe('getMacScreenCaptureStatus', () => {
 describe('isDevTccBypassEnabled', () => {
   it('stays off in a packaged build even with the env var set', () => {
     state.isPackaged = true;
-    process.env.NATIVELY_DEV_BYPASS_SCREEN_TCC = '1';
+    process.env.GODOJO_DEV_BYPASS_SCREEN_TCC = '1';
     expect(isDevTccBypassEnabled()).toBe(false);
   });
 
@@ -126,13 +126,13 @@ describe('isDevTccBypassEnabled', () => {
 
   it('turns on only for unpackaged builds with the env var set', () => {
     state.isPackaged = false;
-    process.env.NATIVELY_DEV_BYPASS_SCREEN_TCC = '1';
+    process.env.GODOJO_DEV_BYPASS_SCREEN_TCC = '1';
     expect(isDevTccBypassEnabled()).toBe(true);
   });
 
   it('makes a denied status read as granted when enabled', () => {
     state.isPackaged = false;
-    process.env.NATIVELY_DEV_BYPASS_SCREEN_TCC = '1';
+    process.env.GODOJO_DEV_BYPASS_SCREEN_TCC = '1';
     state.screenStatus = 'denied';
     vi.spyOn(console, 'log').mockImplementation(() => {});
     expect(getMacScreenCaptureStatus()).toBe('granted');
@@ -333,7 +333,7 @@ describe('confirmScreenCaptureWorks', () => {
 
   it('short-circuits to true under the dev bypass without probing', async () => {
     state.isPackaged = false;
-    process.env.NATIVELY_DEV_BYPASS_SCREEN_TCC = '1';
+    process.env.GODOJO_DEV_BYPASS_SCREEN_TCC = '1';
     state.screenSources = [];
     await expect(confirmScreenCaptureWorks('t')).resolves.toBe(true);
     expect(state.getSourcesCalls).toBe(0);

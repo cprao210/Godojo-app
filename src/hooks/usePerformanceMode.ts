@@ -36,7 +36,7 @@ import type { PerformanceClassification } from '../../utils/performanceClassific
 
 export type PerformanceModePreference = 'auto' | 'on' | 'off';
 
-const STORAGE_KEY = 'natively_performanceModePreference';
+const STORAGE_KEY = 'godojo_performanceModePreference';
 /** Same-window broadcast so every usePerformanceMode instance (the app-wide
  *  gate in main.tsx, the floating dock, and Settings → General) sees a change
  *  immediately. The cross-window case is covered by the native `storage`
@@ -56,7 +56,7 @@ const readStoredPreference = (): PerformanceModePreference => {
 /** Last resolved 'auto' classification, cached so the next launch can apply the
  *  right root class / initial state on first paint, before the async hardware
  *  query returns. Stored as JSON of the full PerformanceClassification. */
-const AUTO_CACHE_KEY = 'natively_performanceModeAutoClassification';
+const AUTO_CACHE_KEY = 'godojo_performanceModeAutoClassification';
 
 /** Validated read of the cached classification. Returns null on ANY problem
  *  (missing, unparsable, wrong shape, storage unavailable) — callers treat null

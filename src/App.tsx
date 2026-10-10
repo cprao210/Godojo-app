@@ -23,7 +23,7 @@ import { ManagerDashboard } from "@/features/dashboard";
 import { CompanySelectModal } from "@/features/meetings";
 import { applyCompanyToCaches } from "@/lib/companyAssociation";
 import { InviteAccountMismatchBanner, TeamInviteNotification, InviteAcceptedNotifier } from "@/features/tenant";
-import { SettingsPopup, SettingsOverlay } from "@/features/settings"; // Keeping for legacy/specific window support if needed
+import { SettingsOverlay } from "@/features/settings";
 import { StartupSequence } from "@/features/onboarding";
 import { BirdLoader } from "@/features/ui/BirdLoader";
 // import UpdateBanner from "../features/updates/UpdateBanner";
@@ -34,9 +34,8 @@ import { BirdLoader } from "@/features/ui/BirdLoader";
 import { ToastProvider, ToastViewport } from "@/features/ui/toast";
 import { DocumentViewerHost } from "@/features/documents/DocumentViewer";
 import { ModelSelectorWindow, GodojoInterface, Launcher, ErrorBoundary } from "@/features/common";
-import { IncompatibleProviderBanner, AdCampaignToasters, SystemAudioPermissionBanner, GhostGlowOverlay } from "@/features/common";
+import { IncompatibleProviderBanner, SystemAudioPermissionBanner, GhostGlowOverlay } from "@/features/common";
 import { AudioStatusTray } from "@/features/common";
-// import { SupportToaster } from "@/features/common";
 
 // ---------------------------------------------------------------------------
 // pages
@@ -44,10 +43,6 @@ import { AudioStatusTray } from "@/features/common";
 import { EmailVerification, SignIn } from "@/pages";
 import { AuthToastHost } from "@/features/auth/AuthToastHost";
 
-// ---------------------------------------------------------------------------
-// premium
-// ---------------------------------------------------------------------------
-import { PremiumUpgradeModal, useAdCampaigns } from "./premium";
 import { UpdateBanner } from "./features/updates";
 
 // Shared QueryClient (auth-error routing lives in lib/queryClient.ts) —
@@ -56,7 +51,7 @@ import { UpdateBanner } from "./features/updates";
 const App: React.FC = () => {
 
   // --- Window identity -------------------------------------------------
-  const { isSettingsWindow, isLauncherWindow, isOverlayWindow, isModelSelectorWindow, isCropperWindow, isDefault } = useWindowRoute();
+  const { isLauncherWindow, isOverlayWindow, isModelSelectorWindow, isDefault } = useWindowRoute();
 
   // --- Cross-cutting app logic, lifted into hooks -----------------------
 
@@ -105,8 +100,8 @@ const App: React.FC = () => {
   const [overlayOpacity] = useOverlayOpacity(isOverlayWindow);
 
   const AppLifecycleStates = useAppLifecycleListeners();
-  const { hasProfile, isPremiumActive, setIsPremiumActive, isProcessingMeeting, setIsProcessingMeeting } = AppLifecycleStates;
-  const { lastMeetingEndTime, appStartTime, ollamaPull, incompatibleWarning, dismissIncompatibleWarning, reindexIncompatibleMeetings } = AppLifecycleStates;
+  const { setIsProcessingMeeting } = AppLifecycleStates;
+  const { ollamaPull, incompatibleWarning, dismissIncompatibleWarning, reindexIncompatibleMeetings } = AppLifecycleStates;
 
   // Post-call company prompt — part of the meeting lifecycle, fired the
   // moment the call ends (NOT after AI processing). The end-meeting decision
@@ -199,7 +194,6 @@ const App: React.FC = () => {
   const [isSettingsOpen, setIsSettingsOpen] = useState(false);
   const [isManagerDashboardOpen, setIsManagerDashboardOpen] = useState(false);
   const [settingsInitialTab, setSettingsInitialTab] = useState("general");
-  const [showPremiumModal, setShowPremiumModal] = useState(false);
   const [isLauncherMainView, setIsLauncherMainView] = useState(true);
 
   const closeSettings = () => {
@@ -217,35 +211,8 @@ const App: React.FC = () => {
 
   const { deepLinkInviteToken, clearDeepLinkInviteToken, inviteMismatchEmail, dismissInviteMismatch } = useTeamInvite(authUser, openInviteSettingsTab);
 
-  const isAppReady = !isSettingsWindow && !isOverlayWindow && !isModelSelectorWindow && !showStartup && !isSettingsOpen && !isManagerDashboardOpen && isLauncherMainView;
-  const { activeAd, dismissAd } = useAdCampaigns(isPremiumActive, hasProfile, isAppReady, appStartTime, lastMeetingEndTime, isProcessingMeeting);
 
   // --- Render --------------------------------------------------------------
-
-  if (isCropperWindow) {
-    const Cropper = React.lazy(() => import("./features/common/Cropper"));
-    return (
-      <React.Suspense fallback={<div className="w-screen h-screen bg-transparent" />}>
-        <Cropper />
-      </React.Suspense>
-    );
-  }
-
-  if (isSettingsWindow) {
-    return (
-      <ErrorBoundary context="SettingsPopup">
-        <div className="h-full min-h-0 w-full">
-          <QueryClientProvider client={queryClient}>
-            <ToastProvider>
-              <SettingsPopup />
-              <ToastViewport />
-              <DocumentViewerHost />
-            </ToastProvider>
-          </QueryClientProvider>
-        </div>
-      </ErrorBoundary>
-    );
-  }
 
   if (isModelSelectorWindow) {
     return (
@@ -461,42 +428,10 @@ const App: React.FC = () => {
             />
 
             <UpdateBanner />
-            {/* <SupportToaster /> */}
 
             {inviteMismatchEmail && (
               <InviteAccountMismatchBanner invitedEmail={inviteMismatchEmail} onDismiss={dismissInviteMismatch} />
             )}
-
-            {/* <AdCampaignToasters
-              visible={isLauncherMainView && !isSettingsOpen}
-              activeAd={activeAd}
-              dismissAd={dismissAd}
-              onSetupProfile={() => {
-                setSettingsInitialTab("profile");
-                setIsSettingsOpen(true);
-              }}
-              onSetupJD={() => {
-                setSettingsInitialTab("profile");
-                setIsSettingsOpen(true);
-              }}
-              onUpgrade={() => setShowPremiumModal(true)}
-            />
-
-            <PremiumUpgradeModal
-              isOpen={showPremiumModal}
-              onClose={() => setShowPremiumModal(false)}
-              isPremium={isPremiumActive}
-              onActivated={() => {
-                setIsPremiumActive(true);
-                setShowPremiumModal(false);
-                // After activation, open settings to Profile Intelligence
-                setTimeout(() => {
-                  setSettingsInitialTab("profile");
-                  setIsSettingsOpen(true);
-                }, 300);
-              }}
-              onDeactivated={() => setIsPremiumActive(false)}
-            /> */}
           </>
         )}
       </div>

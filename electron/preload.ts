@@ -16,33 +16,6 @@ interface ElectronAPI {
   }>
   setPerformanceModePreference: (preference: 'auto' | 'on' | 'off') => Promise<{ ok: boolean }>
   getRecognitionLanguages: () => Promise<Record<string, any>>
-  getScreenshots: () => Promise<Array<{ path: string; preview: string }>>
-  deleteScreenshot: (
-    path: string
-  ) => Promise<{ success: boolean; error?: string }>
-  onScreenshotTaken: (
-    callback: (data: { path: string; preview: string }) => void
-  ) => () => void
-  onScreenshotAttached: (
-    callback: (data: { path: string; preview: string }) => void
-  ) => () => void
-  onCaptureAndProcess: (
-    callback: (data: { path: string; preview: string }) => void
-  ) => () => void
-  onSolutionsReady: (callback: (solutions: string) => void) => () => void
-  onResetView: (callback: () => void) => () => void
-  onSolutionStart: (callback: () => void) => () => void
-  onDebugStart: (callback: () => void) => () => void
-  onDebugSuccess: (callback: (data: any) => void) => () => void
-  onSolutionError: (callback: (error: string) => void) => () => void
-  onProcessingNoScreenshots: (callback: () => void) => () => void
-  onProblemExtracted: (callback: (data: any) => void) => () => void
-  onSolutionSuccess: (callback: (data: any) => void) => () => void
-
-  onUnauthorized: (callback: () => void) => () => void
-  onDebugError: (callback: (error: string) => void) => () => void
-  takeScreenshot: () => Promise<void>
-  takeSelectiveScreenshot: () => Promise<{ path: string; preview: string; cancelled?: boolean }>
   moveWindowLeft: () => Promise<void>
   moveWindowRight: () => Promise<void>
   moveWindowUp: () => Promise<void>
@@ -52,7 +25,6 @@ interface ElectronAPI {
   windowClose: () => Promise<void>
   windowIsMaximized: () => Promise<boolean>
 
-  analyzeImageFile: (path: string) => Promise<void>
   quitApp: () => Promise<void>
 
   // LLM Model Management
@@ -113,7 +85,6 @@ interface ElectronAPI {
   onSuggestionGenerated: (callback: (data: { question: string; suggestion: string; confidence: number }) => void) => () => void
   onSuggestionProcessingStart: (callback: () => void) => () => void
   onSuggestionError: (callback: (error: { error: string }) => void) => () => void
-  generateSuggestion: (context: string, lastQuestion: string) => Promise<{ suggestion: string }>
   getInputDevices: () => Promise<Array<{ id: string; name: string }>>
   getOutputDevices: () => Promise<Array<{ id: string; name: string }>>
   getPlatform: () => string
@@ -236,7 +207,6 @@ interface ElectronAPI {
   updateSpeakerNames: (names: { user: string; client: string }) => Promise<{ success: boolean }>,
 
   // Settings Window
-  toggleSettingsWindow: (coords?: { x: number; y: number }) => Promise<void>
 
   // Team invite deep link (godojo://invite?token=...)
   onInviteDeepLink: (callback: (data: { token: string }) => void) => () => void
@@ -373,21 +343,9 @@ interface ElectronAPI {
   onKeybindsUpdate: (callback: (keybinds: Array<any>) => void) => () => void
 
   // Global shortcut events (stealth: fired even when window is not focused)
-  onGlobalShortcut: (callback: (data: { action: string }) => void) => () => void
-
-  // Donation API
-  getDonationStatus: () => Promise<{ shouldShow: boolean; hasDonated: boolean; lifetimeShows: number }>;
-  markDonationToastShown: () => Promise<{ success: boolean }>;
-  setDonationComplete: () => Promise<{ success: boolean }>;
 
   // Profile Engine API
-  profileUploadResume: (filePath: string) => Promise<{ success: boolean; error?: string }>;
-  profileGetStatus: () => Promise<{ hasProfile: boolean; profileMode: boolean; name?: string; role?: string; totalExperienceYears?: number }>;
-  profileGetMode: () => Promise<{ active: boolean }>;
   profileSetMode: (enabled: boolean) => Promise<{ success: boolean; error?: string }>;
-  profileDelete: () => Promise<{ success: boolean; error?: string }>;
-  profileGetProfile: () => Promise<any>;
-  profileSelectFile: () => Promise<{ success?: boolean; cancelled?: boolean; filePath?: string; error?: string }>;
 
   // Company Context API
   companyGetContext: () => Promise<any>;
@@ -419,14 +377,6 @@ interface ElectronAPI {
   scoringSaveCriteria: (settings: any) => Promise<{ success: boolean; error?: string }>;
   scoringResetCriteria: () => Promise<{ success: boolean; error?: string }>;
 
-  // JD & Research API
-  profileUploadJD: (filePath: string) => Promise<{ success: boolean; error?: string }>;
-  profileDeleteJD: () => Promise<{ success: boolean; error?: string }>;
-  profileResearchCompany: (companyName: string) => Promise<{ success: boolean; dossier?: any; error?: string }>;
-  profileGenerateNegotiation: (force?: boolean) => Promise<{ success: boolean; script?: any; error?: string }>;
-  profileGetNegotiationState: () => Promise<{ success: boolean; state?: any; isActive?: boolean; error?: string }>;
-  profileResetNegotiation: () => Promise<{ success: boolean; error?: string }>;
-
   // Tavily Search API
   setTavilyApiKey: (apiKey: string) => Promise<{ success: boolean; error?: string }>;
   setCompanyIntel: (intel: Record<string, any> | null) => Promise<{ success: boolean; error?: string }>;
@@ -441,11 +391,6 @@ interface ElectronAPI {
 
   // Arch
   getArch: () => Promise<string>;
-
-  // Cropper API
-  cropperConfirmed: (bounds: Electron.Rectangle) => void;
-  cropperCancelled: () => void;
-  onResetCropper: (callback: (data: { hudPosition: { x: number; y: number } }) => void) => () => void;
 
   // ===== Firebase Auth (renderer owns the SDK; main holds the current ID token) =====
   authSetIdToken: (session: {
@@ -489,23 +434,6 @@ interface ElectronAPI {
   platform: NodeJS.Platform;
 }
 
-export const PROCESSING_EVENTS = {
-  //global states
-  UNAUTHORIZED: "procesing-unauthorized",
-  NO_SCREENSHOTS: "processing-no-screenshots",
-
-  //states for generating the initial solution
-  INITIAL_START: "initial-start",
-  PROBLEM_EXTRACTED: "problem-extracted",
-  SOLUTION_SUCCESS: "solution-success",
-  INITIAL_SOLUTION_ERROR: "solution-error",
-
-  //states for processing the debugging
-  DEBUG_START: "debug-start",
-  DEBUG_SUCCESS: "debug-success",
-  DEBUG_ERROR: "debug-error"
-} as const
-
 // Expose the Electron API to the renderer process
 contextBridge.exposeInMainWorld("electronAPI", {
   updateContentDimensions: (dimensions: { width: number; height: number }) =>
@@ -514,11 +442,6 @@ contextBridge.exposeInMainWorld("electronAPI", {
   setPerformanceModePreference: (preference: 'auto' | 'on' | 'off') =>
     ipcRenderer.invoke("set-performance-mode-preference", preference),
   getRecognitionLanguages: () => ipcRenderer.invoke("get-recognition-languages"),
-  takeScreenshot: () => ipcRenderer.invoke("take-screenshot"),
-  takeSelectiveScreenshot: () => ipcRenderer.invoke("take-selective-screenshot"),
-  getScreenshots: () => ipcRenderer.invoke("get-screenshots"),
-  deleteScreenshot: (path: string) =>
-    ipcRenderer.invoke("delete-screenshot", path),
   logErrorToMain: (payload: {
     type?: string;
     context?: string;
@@ -535,128 +458,9 @@ contextBridge.exposeInMainWorld("electronAPI", {
 
   // DEV-ONLY: local half of "Delete My Account". No confirm dialog (the
   // caller has already confirmed and completed the server-side deletion) —
-  // wipes natively.db + cached session/credentials and relaunches.
+  // wipes the user's DB file + cached session/credentials and relaunches.
   wipeLocalAccountData: (scope?: 'local' | 'full-delete') => ipcRenderer.invoke('dev:wipe-local-account-data', scope),
 
-  // Event listeners
-  onScreenshotTaken: (
-    callback: (data: { path: string; preview: string }) => void
-  ) => {
-    const subscription = (_: any, data: { path: string; preview: string }) =>
-      callback(data)
-    ipcRenderer.on("screenshot-taken", subscription)
-    return () => {
-      ipcRenderer.removeListener("screenshot-taken", subscription)
-    }
-  },
-  onScreenshotAttached: (
-    callback: (data: { path: string; preview: string }) => void
-  ) => {
-    const subscription = (_: any, data: { path: string; preview: string }) =>
-      callback(data)
-    ipcRenderer.on("screenshot-attached", subscription)
-    return () => {
-      ipcRenderer.removeListener("screenshot-attached", subscription)
-    }
-  },
-  onCaptureAndProcess: (
-    callback: (data: { path: string; preview: string }) => void
-  ) => {
-    const subscription = (_: any, data: { path: string; preview: string }) =>
-      callback(data)
-    ipcRenderer.on("capture-and-process", subscription)
-    return () => {
-      ipcRenderer.removeListener("capture-and-process", subscription)
-    }
-  },
-  onSolutionsReady: (callback: (solutions: string) => void) => {
-    const subscription = (_: any, solutions: string) => callback(solutions)
-    ipcRenderer.on("solutions-ready", subscription)
-    return () => {
-      ipcRenderer.removeListener("solutions-ready", subscription)
-    }
-  },
-  onResetView: (callback: () => void) => {
-    const subscription = () => callback()
-    ipcRenderer.on("reset-view", subscription)
-    return () => {
-      ipcRenderer.removeListener("reset-view", subscription)
-    }
-  },
-  onSolutionStart: (callback: () => void) => {
-    const subscription = () => callback()
-    ipcRenderer.on(PROCESSING_EVENTS.INITIAL_START, subscription)
-    return () => {
-      ipcRenderer.removeListener(PROCESSING_EVENTS.INITIAL_START, subscription)
-    }
-  },
-  onDebugStart: (callback: () => void) => {
-    const subscription = () => callback()
-    ipcRenderer.on(PROCESSING_EVENTS.DEBUG_START, subscription)
-    return () => {
-      ipcRenderer.removeListener(PROCESSING_EVENTS.DEBUG_START, subscription)
-    }
-  },
-
-  onDebugSuccess: (callback: (data: any) => void) => {
-    const subscription = (_: any, data: any) => callback(data)
-    ipcRenderer.on("debug-success", subscription)
-    return () => {
-      ipcRenderer.removeListener("debug-success", subscription)
-    }
-  },
-  onDebugError: (callback: (error: string) => void) => {
-    const subscription = (_: any, error: string) => callback(error)
-    ipcRenderer.on(PROCESSING_EVENTS.DEBUG_ERROR, subscription)
-    return () => {
-      ipcRenderer.removeListener(PROCESSING_EVENTS.DEBUG_ERROR, subscription)
-    }
-  },
-  onSolutionError: (callback: (error: string) => void) => {
-    const subscription = (_: any, error: string) => callback(error)
-    ipcRenderer.on(PROCESSING_EVENTS.INITIAL_SOLUTION_ERROR, subscription)
-    return () => {
-      ipcRenderer.removeListener(
-        PROCESSING_EVENTS.INITIAL_SOLUTION_ERROR,
-        subscription
-      )
-    }
-  },
-  onProcessingNoScreenshots: (callback: () => void) => {
-    const subscription = () => callback()
-    ipcRenderer.on(PROCESSING_EVENTS.NO_SCREENSHOTS, subscription)
-    return () => {
-      ipcRenderer.removeListener(PROCESSING_EVENTS.NO_SCREENSHOTS, subscription)
-    }
-  },
-
-  onProblemExtracted: (callback: (data: any) => void) => {
-    const subscription = (_: any, data: any) => callback(data)
-    ipcRenderer.on(PROCESSING_EVENTS.PROBLEM_EXTRACTED, subscription)
-    return () => {
-      ipcRenderer.removeListener(
-        PROCESSING_EVENTS.PROBLEM_EXTRACTED,
-        subscription
-      )
-    }
-  },
-  onSolutionSuccess: (callback: (data: any) => void) => {
-    const subscription = (_: any, data: any) => callback(data)
-    ipcRenderer.on(PROCESSING_EVENTS.SOLUTION_SUCCESS, subscription)
-    return () => {
-      ipcRenderer.removeListener(
-        PROCESSING_EVENTS.SOLUTION_SUCCESS,
-        subscription
-      )
-    }
-  },
-  onUnauthorized: (callback: () => void) => {
-    const subscription = () => callback()
-    ipcRenderer.on(PROCESSING_EVENTS.UNAUTHORIZED, subscription)
-    return () => {
-      ipcRenderer.removeListener(PROCESSING_EVENTS.UNAUTHORIZED, subscription)
-    }
-  },
   moveWindowLeft: () => ipcRenderer.invoke("move-window-left"),
   moveWindowRight: () => ipcRenderer.invoke("move-window-right"),
   moveWindowUp: () => ipcRenderer.invoke("move-window-up"),
@@ -668,7 +472,6 @@ contextBridge.exposeInMainWorld("electronAPI", {
   updateSpeakerNames: (names: { user: string; client: string }) =>
     ipcRenderer.invoke("update-speaker-names", names),
 
-  analyzeImageFile: (path: string) => ipcRenderer.invoke("analyze-image-file", path),
   quitApp: () => ipcRenderer.invoke("quit-app"),
   hardRefresh: (): Promise<{ success: boolean }> => ipcRenderer.invoke("hard-refresh"),
   reloadAllWindows: (): Promise<{ success: boolean }> => ipcRenderer.invoke("reload-all-windows"),
@@ -764,14 +567,6 @@ contextBridge.exposeInMainWorld("electronAPI", {
   },
   getDisplayName: (role: 'user' | 'client' | 'assistant') => ipcRenderer.invoke("get-display-name", role),
   getSpeakerNames: () => ipcRenderer.invoke("get-speaker-names"),
-
-  onSettingsVisibilityChange: (callback: (isVisible: boolean) => void) => {
-    const subscription = (_: any, isVisible: boolean) => callback(isVisible)
-    ipcRenderer.on("settings-visibility-changed", subscription)
-    return () => {
-      ipcRenderer.removeListener("settings-visibility-changed", subscription)
-    }
-  },
 
   onToggleExpand: (callback: () => void) => {
     const subscription = () => callback()
@@ -919,8 +714,6 @@ contextBridge.exposeInMainWorld("electronAPI", {
       ipcRenderer.removeListener("suggestion-error", subscription)
     }
   },
-  generateSuggestion: (context: string, lastQuestion: string) =>
-    ipcRenderer.invoke("generate-suggestion", context, lastQuestion),
 
   getNativeAudioStatus: () => ipcRenderer.invoke("native-audio-status"),
   getInputDevices: () => ipcRenderer.invoke("get-input-devices"),
@@ -946,23 +739,12 @@ contextBridge.exposeInMainWorld("electronAPI", {
   generateDiscovery: () => ipcRenderer.invoke("generate-discovery"), // DISCOVERY MODE
   generateObjectionHandler: () => ipcRenderer.invoke("generate-objection-handler"), // OBJECTION HANDLER MODE
   generateClarify: () => ipcRenderer.invoke("generate-clarify"),
-  generateCodeHint: (imagePaths?: string[], problemStatement?: string) => ipcRenderer.invoke("generate-code-hint", imagePaths, problemStatement),
-  generateBrainstorm: (imagePaths?: string[], problemStatement?: string) => ipcRenderer.invoke("generate-brainstorm", imagePaths, problemStatement),
   generateFollowUp: (intent: string, userRequest?: string) => ipcRenderer.invoke("generate-follow-up", intent, userRequest),
   generateFollowUpQuestions: () => ipcRenderer.invoke("generate-follow-up-questions"),
   generateRecap: () => ipcRenderer.invoke("generate-recap"),
   submitManualQuestion: (question: string) => ipcRenderer.invoke("submit-manual-question", question),
   getIntelligenceContext: () => ipcRenderer.invoke("get-intelligence-context"),
   resetIntelligence: () => ipcRenderer.invoke("reset-intelligence"),
-
-  // Action Button Mode (Dynamic Recap / Brainstorm toggle)
-  getActionButtonMode: () => ipcRenderer.invoke("get-action-button-mode"),
-  setActionButtonMode: (mode: 'recap' | 'brainstorm') => ipcRenderer.invoke("set-action-button-mode", mode),
-  onActionButtonModeChanged: (callback: (mode: 'recap' | 'brainstorm') => void) => {
-    const subscription = (_: any, mode: 'recap' | 'brainstorm') => callback(mode);
-    ipcRenderer.on('action-button-mode-changed', subscription);
-    return () => { ipcRenderer.removeListener('action-button-mode-changed', subscription); };
-  },
 
   // Meeting Lifecycle
   startMeeting: (metadata?: any) => ipcRenderer.invoke("start-meeting", metadata),
@@ -1190,9 +972,9 @@ contextBridge.exposeInMainWorld("electronAPI", {
   setDefaultModel: (modelId: string) => ipcRenderer.invoke('set-default-model', modelId),
   toggleModelSelector: (coords: { x: number; y: number }) => ipcRenderer.invoke('toggle-model-selector', coords),
   forceRestartOllama: () => ipcRenderer.invoke('force-restart-ollama'),
+  ensureOllamaRunning: () => ipcRenderer.invoke('ensure-ollama-running'),
 
   // Settings Window
-  toggleSettingsWindow: (coords?: { x: number; y: number }) => ipcRenderer.invoke('toggle-settings-window', coords),
 
   // Team invite deep link
   onInviteDeepLink: (callback: (data: { token: string }) => void) => {
@@ -1524,36 +1306,8 @@ contextBridge.exposeInMainWorld("electronAPI", {
     }
   },
 
-  // Global shortcut listener — fired stealthily from main process without focusing the window
-  onGlobalShortcut: (callback: (data: { action: string }) => void) => {
-    const subscription = (_: any, data: { action: string }) => callback(data)
-    ipcRenderer.on('global-shortcut', subscription)
-    return () => {
-      ipcRenderer.removeListener('global-shortcut', subscription)
-    }
-  },
-
-  // Donation API
-  getDonationStatus: () => ipcRenderer.invoke("get-donation-status"),
-  markDonationToastShown: () => ipcRenderer.invoke("mark-donation-toast-shown"),
-  setDonationComplete: () => ipcRenderer.invoke('set-donation-complete'),
-
   // Profile Engine API
-  profileUploadResume: (filePath: string) => ipcRenderer.invoke('profile:upload-resume', filePath),
-  profileGetStatus: () => ipcRenderer.invoke('profile:get-status'),
-  profileGetMode: () => ipcRenderer.invoke('profile:get-mode'),
   profileSetMode: (enabled: boolean) => ipcRenderer.invoke('profile:set-mode', enabled),
-  profileDelete: () => ipcRenderer.invoke('profile:delete'),
-  profileGetProfile: () => ipcRenderer.invoke('profile:get-profile'),
-  profileSelectFile: () => ipcRenderer.invoke('profile:select-file'),
-
-  // JD & Research API
-  profileUploadJD: (filePath: string) => ipcRenderer.invoke('profile:upload-jd', filePath),
-  profileDeleteJD: () => ipcRenderer.invoke('profile:delete-jd'),
-  profileResearchCompany: (companyName: string) => ipcRenderer.invoke('profile:research-company', companyName),
-  profileGenerateNegotiation: (force?: boolean) => ipcRenderer.invoke('profile:generate-negotiation', force),
-  profileGetNegotiationState: () => ipcRenderer.invoke('profile:get-negotiation-state'),
-  profileResetNegotiation: () => ipcRenderer.invoke('profile:reset-negotiation'),
 
   // Company Context API
   companyGetContext: () => ipcRenderer.invoke('company:getContext'),
@@ -1593,12 +1347,6 @@ contextBridge.exposeInMainWorld("electronAPI", {
   // Live model-catalog snapshot (live /models cache > seeds) for dropdowns
   getModelCatalog: () => ipcRenderer.invoke('model-catalog:get'),
 
-  // License Management
-  licenseActivate: (key: string) => ipcRenderer.invoke('license:activate', key),
-  licenseCheckPremium: () => ipcRenderer.invoke('license:check-premium'),
-  licenseDeactivate: () => ipcRenderer.invoke('license:deactivate'),
-  licenseGetHardwareId: () => ipcRenderer.invoke('license:get-hardware-id'),
-
   // Overlay Opacity (Stealth Mode)
   setOverlayOpacity: (opacity: number) => ipcRenderer.invoke('set-overlay-opacity', opacity),
   onOverlayOpacityChanged: (callback: (opacity: number) => void) => {
@@ -1615,17 +1363,6 @@ contextBridge.exposeInMainWorld("electronAPI", {
 
   // Arch
   getArch: () => ipcRenderer.invoke('get-arch'),
-
-  // Cropper API
-  cropperConfirmed: (bounds: Electron.Rectangle) => ipcRenderer.send('cropper-confirmed', bounds),
-  cropperCancelled: () => ipcRenderer.send('cropper-cancelled'),
-  onResetCropper: (callback: (data: { hudPosition: { x: number; y: number } }) => void) => {
-    const subscription = (_: Electron.IpcRendererEvent, data: { hudPosition: { x: number; y: number } }) => callback(data)
-    ipcRenderer.on('reset-cropper', subscription)
-    return () => {
-      ipcRenderer.removeListener('reset-cropper', subscription)
-    }
-  },
 
   // ===== Firebase Auth =====
   authSetIdToken: (session: { idToken: string; refreshToken: string; uid: string; email?: string | null; displayName?: string | null; photoURL?: string | null; expiresAt: number }) =>

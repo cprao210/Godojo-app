@@ -84,7 +84,9 @@ function normalizeSpeaker(speaker: string): string {
     if (lower === 'user' || lower === 'me') {
         return 'You';
     }
-    if (lower === 'assistant' || lower === 'natively') {
+    // 'natively' = the assistant's speaker label in transcripts saved before
+    // the rebrand; still recognised so old meetings index correctly.
+    if (lower === 'assistant' || lower === 'godojo' || lower === 'natively') {
         return 'Godojo.ai';
     }
     // Keep original if it looks like a name

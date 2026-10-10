@@ -19,6 +19,7 @@
 // or saved with a partial analysis presented as a whole one.
 
 import { randomUUID } from 'crypto';
+import { readEnv } from './env';
 import { LiveAnalysisData } from '../../src/types';
 
 /** A turn as the route wants it — the shape src/types calls LiveAnalysisTurn. */
@@ -64,13 +65,13 @@ const pending = new Map<string, PendingRequest>();
  * Is the local (pre-backend) analysis path forced on?
  *
  * Read at call time, not at module load, so a test or a relaunch-free toggle
- * takes effect. `NATIVELY_UPLOAD_ANALYSIS_LOCAL=1` pins uploads to
+ * takes effect. `GODOJO_UPLOAD_ANALYSIS_LOCAL=1` pins uploads to
  * ./uploadAnalysis and never asks the renderer — the behaviour every build
  * before this one had, kept reachable for offline use and for A/B-ing the two
  * producers against the same transcript.
  */
 export function isLocalUploadAnalysisForced(): boolean {
-    return process.env.NATIVELY_UPLOAD_ANALYSIS_LOCAL === '1';
+    return readEnv('UPLOAD_ANALYSIS_LOCAL') === '1';
 }
 
 /**

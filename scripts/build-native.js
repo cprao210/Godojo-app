@@ -4,9 +4,11 @@ const os = require('os');
 const path = require('path');
 
 const nativeModulePath = path.join(__dirname, '..', 'native-module');
-const buildAllMacTargets = process.env.NATIVELY_BUILD_ALL_MAC_ARCHES === '1';
-const forceNativeBuild = process.env.NATIVELY_FORCE_NATIVE_BUILD === '1';
-const skipNativeBuild = process.env.NATIVELY_SKIP_NATIVE_BUILD === '1';
+// GODOJO_* flags; the legacy NATIVELY_* names (pre-rebrand) are still accepted.
+const envFlag = (name) => (process.env[`GODOJO_${name}`] ?? process.env[`NATIVELY_${name}`]) === '1';
+const buildAllMacTargets = envFlag('BUILD_ALL_MAC_ARCHES');
+const forceNativeBuild = envFlag('FORCE_NATIVE_BUILD');
+const skipNativeBuild = envFlag('SKIP_NATIVE_BUILD');
 
 /** Newest mtime among the inputs that actually affect the compiled artifact. */
 function newestSourceMtime() {
@@ -22,7 +24,9 @@ function newestSourceMtime() {
     }
   };
   visit(path.join(nativeModulePath, 'src'));
-  for (const file of ['Cargo.toml', 'Cargo.lock', 'build.rs']) {
+  // .cargo/config.toml carries rustflags (e.g. Windows +crt-static), so a
+  // change there must also invalidate the prebuilt artifact.
+  for (const file of ['Cargo.toml', 'Cargo.lock', 'build.rs', path.join('.cargo', 'config.toml')]) {
     const full = path.join(nativeModulePath, file);
     if (fs.existsSync(full)) newest = Math.max(newest, fs.statSync(full).mtimeMs);
   }
@@ -42,9 +46,58 @@ function verifyArtifacts(expectedArtifacts) {
   }
 }
 
-function runCommand(command) {
+function runCommand(command, extraEnv) {
   console.log(`> ${command}`);
-  execSync(command, { stdio: 'inherit', cwd: nativeModulePath });
+  execSync(command, {
+    stdio: 'inherit',
+    cwd: nativeModulePath,
+    env: extraEnv ? { ...process.env, ...extraEnv } : process.env,
+  });
+}
+
+const MAC_TARGET_ARCH = { 'x86_64-apple-darwin': 'x86_64', 'aarch64-apple-darwin': 'arm64' };
+
+/**
+ * Environment for building one macOS target.
+ *
+ * webrtc-audio-processing-sys builds its bundled C++ library with meson and
+ * passes no cross file, so meson always compiles for the HOST. On an Apple
+ * Silicon machine the x86_64 build therefore got arm64 objects, which the
+ * linker skipped ("found architecture 'arm64', required architecture
+ * 'x86_64'") — and because the macOS rustflags allow undefined symbols
+ * (-undefined dynamic_lookup, needed for N-API), the build "succeeded" with
+ * the echo canceller missing. Pointing meson's compilers at the target arch
+ * makes it build the right objects. Running meson's sanity-check binary for
+ * x86_64 needs Rosetta 2 on Apple Silicon.
+ */
+function macTargetEnv(target) {
+  const arch = MAC_TARGET_ARCH[target];
+  const hostArch = os.arch() === 'arm64' ? 'arm64' : 'x86_64';
+  if (!arch || arch === hostArch) return undefined;
+  return { CC: `clang -arch ${arch}`, CXX: `clang++ -arch ${arch}` };
+}
+
+/**
+ * Fail the build if a macOS .node is the wrong architecture or still has
+ * unresolved WebRTC symbols (the crate prefixes them with "v2_"). Unresolved
+ * N-API symbols are expected — Node provides them at load time.
+ */
+function verifyMacArtifact(file, target) {
+  const full = path.join(nativeModulePath, file);
+  const arch = MAC_TARGET_ARCH[target];
+  const archs = execSync(`lipo -archs "${full}"`, { encoding: 'utf8' }).trim();
+  if (archs !== arch) {
+    throw new Error(`${file}: expected architecture ${arch}, got "${archs}"`);
+  }
+  const undefinedSyms = execSync(`nm -u "${full}"`, { encoding: 'utf8', maxBuffer: 64 * 1024 * 1024 })
+    .split('\n').map((s) => s.trim()).filter((s) => /^_?v2_/.test(s));
+  if (undefinedSyms.length > 0) {
+    throw new Error(
+      `${file}: ${undefinedSyms.length} unresolved WebRTC symbols (e.g. ${undefinedSyms.slice(0, 3).join(', ')}) — ` +
+      'the bundled webrtc-audio-processing library was built for the wrong architecture.'
+    );
+  }
+  console.log(`Verified ${file}: ${archs}, no unresolved WebRTC symbols`);
 }
 
 /**
@@ -130,10 +183,18 @@ if (os.platform() === 'darwin') {
     }
 
     console.log(`\n--- Building for ${target} ---`);
-    runCommand(`npx napi build --platform --target ${target} --release`);
+    const crossEnv = macTargetEnv(target);
+    if (crossEnv) {
+      // meson --reconfigure keeps the compiler chosen at first configure, so a
+      // cached (possibly wrong-arch) webrtc build must be discarded first.
+      runCommand(`cargo clean -p webrtc-audio-processing-sys --release --target ${target}`);
+      console.log(`Cross-building C/C++ dependencies for ${target}: CC="${crossEnv.CC}"`);
+    }
+    runCommand(`npx napi build --platform --target ${target} --release`, crossEnv);
   }
 
   verifyArtifacts(macTargets.map((target) => artifactMap[target]));
+  for (const target of macTargets) verifyMacArtifact(artifactMap[target], target);
 
 } else if (os.platform() === 'win32') {
   const prebuiltMap = {
@@ -157,7 +218,7 @@ if (os.platform() === 'darwin') {
   }
 
   if (skipNativeBuild && prebuiltExists) {
-    console.log(`[build-native] NATIVELY_SKIP_NATIVE_BUILD=1 — using ${prebuilt} as-is (may not match src/).`);
+    console.log(`[build-native] GODOJO_SKIP_NATIVE_BUILD=1 — using ${prebuilt} as-is (may not match src/).`);
   } else if (upToDate) {
     console.log(`[build-native] ${prebuilt} is newer than native-module/src — skipping Rust compilation.`);
   } else {
@@ -175,7 +236,7 @@ if (os.platform() === 'darwin') {
       // Do NOT fall back to the stale artifact: shipping a binary that does not
       // match src/ is the failure mode this check exists to prevent.
       console.error('[build-native] Rust compilation failed. Install the Rust MSVC toolchain (https://rustup.rs) and retry.');
-      console.error('[build-native] To build against the committed binary anyway, re-run with NATIVELY_SKIP_NATIVE_BUILD=1.');
+      console.error('[build-native] To build against the committed binary anyway, re-run with GODOJO_SKIP_NATIVE_BUILD=1.');
       throw err;
     }
 

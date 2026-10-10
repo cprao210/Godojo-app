@@ -33,7 +33,7 @@ const GodojoInterface: React.FC<GodojoInterfaceProps> = ({ onEndMeeting, overlay
 
     const handleToggleTranscript = React.useCallback((v: boolean) => {
         setShowTranscript(v);
-        localStorage.setItem('natively_interviewer_transcript', String(v));
+        localStorage.setItem('godojo_show_transcript', String(v));
     }, [setShowTranscript]);
 
     return (

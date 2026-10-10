@@ -66,7 +66,7 @@ export function deepVariableReplacer(
 
 /**
  * Detects MIME type from a file path's extension.
- * Defaults to "image/png" because the app's ScreenshotHelper exclusively produces .png files.
+ * Defaults to "image/png" for unknown extensions.
  */
 export function imageMimeTypeFromPath(filePath: string): string {
     // Extract only the final extension component, guarding against paths with no dot

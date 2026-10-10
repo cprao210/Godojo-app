@@ -38,7 +38,7 @@
   <!-- Synchronously apply cached theme before any render — prevents flash/mixed theme -->
   <script>
     try {
-      var t = localStorage.getItem('natively_resolved_theme');
+      var t = localStorage.getItem('godojo_resolved_theme') || localStorage.getItem('natively_resolved_theme'); // old key: first launch after rename
       if (t === 'light' || t === 'dark') document.documentElement.setAttribute('data-theme', t);
     } catch (e) { }
   </script>

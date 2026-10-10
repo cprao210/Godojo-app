@@ -21,7 +21,7 @@ import type { CalendarEvent } from "./services/CalendarManager"
  *     window is created shortly before it is needed and DESTROYED after
  *     dismissal — so there is no extra renderer process resident between
  *     meetings. Note the deliberate absence of `backgroundThrottling: false`
- *     here: unlike SettingsWindowHelper, we want a hidden popup throttled.
+ *     here: unlike the overlay window, we want a hidden popup throttled.
  *
  *  2. It must not steal focus. Every show path uses showInactive(), and
  *     setAlwaysOnTop is asserted ONCE at creation — re-asserting it on each
@@ -91,8 +91,7 @@ export class MeetingPopupWindowHelper extends EventEmitter {
     /**
      * The event the renderer will ask for via the `meeting-popup:ready`
      * handshake. We do NOT push it on did-finish-load: that can fire before
-     * React has mounted its listener, and the payload would be dropped (the
-     * same latent bug CropperWindowHelper has in its cold-start branch).
+     * React has mounted its listener, and the payload would be dropped.
      */
     private pendingEvent: CalendarEvent | null = null
 
@@ -109,7 +108,7 @@ export class MeetingPopupWindowHelper extends EventEmitter {
     /**
      * Lets the helper refuse to auto-start while a meeting is already running.
      * Injected by main.ts rather than importing AppState (require cycle), the
-     * same way SettingsWindowHelper receives its WindowHelper.
+     * same way ModelSelectorWindowHelper receives its WindowHelper.
      */
     private isMeetingActive: () => boolean = () => false
 

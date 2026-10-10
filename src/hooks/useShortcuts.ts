@@ -8,56 +8,22 @@ function buildDefaultShortcuts(): ShortcutConfig {
     const mod = isMac ? '⌘' : 'Ctrl';
     const shift = isMac ? '⇧' : 'Shift';
     return {
-        whatToAnswer: [mod, '1'],
-        autoAnswerMode: [mod, 'f'],
-        clarify: [mod, '2'],
-        dynamicAction4: [mod, '3'],
-        followUp: [mod, '4'],
-        answer: [mod, '5'],
-        codeHint: [mod, '6'],
-        brainstorm: [mod, '7'],
-        shorten: [],
-        recap: [],
-        scrollUp: ['↑'],
-        scrollDown: ['↓'],
         moveWindowUp: [mod, shift, '↑'],
         moveWindowDown: [mod, shift, '↓'],
         moveWindowLeft: [mod, shift, '←'],
         moveWindowRight: [mod, shift, '→'],
         toggleVisibility: [mod, 'B'],
         toggleMousePassthrough: [mod, shift, 'B'],
-        processScreenshots: [mod, 'Enter'],
-        captureAndProcess: [mod, shift, 'Enter'],
-        resetCancel: [mod, 'R'],
-        takeScreenshot: [mod, 'H'],
-        selectiveScreenshot: [mod, shift, 'H']
     };
 }
 
 export const DEFAULT_SHORTCUTS: ShortcutConfig = {
-    whatToAnswer: ['⌘', '1'],
-    autoAnswerMode: ['⌘', 'F'],
-    clarify: ['⌘', '2'],
-    dynamicAction4: ['⌘', '3'],   // slot 3 — matches KeybindManager
-    followUp: ['⌘', '4'],          // slot 4 — matches KeybindManager
-    answer: ['⌘', '5'],
-    codeHint: ['⌘', '6'],
-    brainstorm: ['⌘', '7'],
-    shorten: [],
-    recap: [],
-    scrollUp: ['↑'],
-    scrollDown: ['↓'],
     moveWindowUp: ['⌘', '⇧', '↑'],
     moveWindowDown: ['⌘', '⇧', '↓'],
     moveWindowLeft: ['⌘', '⇧', '←'],
     moveWindowRight: ['⌘', '⇧', '→'],
     toggleVisibility: ['⌘', 'B'],
     toggleMousePassthrough: ['⌘', '⇧', 'B'],
-    processScreenshots: ['⌘', 'Enter'],
-    captureAndProcess: ['⌘', '⇧', 'Enter'],
-    resetCancel: ['⌘', 'R'],
-    takeScreenshot: ['⌘', 'H'],
-    selectiveScreenshot: ['⌘', '⇧', 'H']
 };
 
 export const useShortcuts = () => {
@@ -73,33 +39,14 @@ export const useShortcuts = () => {
                 const keys = acceleratorToKeys(kb.accelerator);
 
                 // Map backend IDs to frontend keys
-                if (kb.id === 'chat:whatToAnswer') newShortcuts.whatToAnswer = keys;
-                else if (kb.id === 'app:toggle-global-overlay') newShortcuts.toggleGlobalOverlay = keys;
-                else if (kb.id === 'chat:followUp') newShortcuts.followUp = keys;
-                else if (kb.id === 'chat:followup') newShortcuts.followUp = keys; // backwards compat
-                else if (kb.id === 'chat:clarify') newShortcuts.clarify = keys;
-                else if (kb.id === 'chat:dynamicAction4') newShortcuts.dynamicAction4 = keys;
-                else if (kb.id === 'chat:answer') newShortcuts.answer = keys;
-                else if (kb.id === 'chat:codeHint') newShortcuts.codeHint = keys;
-                else if (kb.id === 'chat:brainstorm') newShortcuts.brainstorm = keys;
-                else if (kb.id === 'chat:shorten') newShortcuts.shorten = keys;
-                else if (kb.id === 'chat:recap') newShortcuts.recap = keys;
-                else if (kb.id === 'chat:scrollUp') newShortcuts.scrollUp = keys;
-                else if (kb.id === 'chat:scrollDown') newShortcuts.scrollDown = keys;
-                else if (kb.id === 'chat:auto-answer-mode') newShortcuts.autoAnswerMode = keys;
                 // Window
-                else if (kb.id === 'window:move-up') newShortcuts.moveWindowUp = keys;
+                if (kb.id === 'window:move-up') newShortcuts.moveWindowUp = keys;
                 else if (kb.id === 'window:move-down') newShortcuts.moveWindowDown = keys;
                 else if (kb.id === 'window:move-left') newShortcuts.moveWindowLeft = keys;
                 else if (kb.id === 'window:move-right') newShortcuts.moveWindowRight = keys;
                 // General
                 else if (kb.id === 'general:toggle-visibility') newShortcuts.toggleVisibility = keys;
                 else if (kb.id === 'general:toggle-mouse-passthrough') newShortcuts.toggleMousePassthrough = keys;
-                else if (kb.id === 'general:process-screenshots') newShortcuts.processScreenshots = keys;
-                else if (kb.id === 'general:capture-and-process') newShortcuts.captureAndProcess = keys;
-                else if (kb.id === 'general:reset-cancel') newShortcuts.resetCancel = keys;
-                else if (kb.id === 'general:take-screenshot') newShortcuts.takeScreenshot = keys;
-                else if (kb.id === 'general:selective-screenshot') newShortcuts.selectiveScreenshot = keys;
             });
 
             return newShortcuts;
@@ -137,18 +84,6 @@ export const useShortcuts = () => {
 
         // Map frontend key back to backend ID
         switch (actionId) {
-            case 'whatToAnswer': backendId = 'chat:whatToAnswer'; break;
-            case 'autoAnswerMode': backendId = 'chat:auto-answer-mode'; break;
-            case 'clarify': backendId = 'chat:clarify'; break;
-            case 'followUp': backendId = 'chat:followUp'; break;
-            case 'dynamicAction4': backendId = 'chat:dynamicAction4'; break;
-            case 'answer': backendId = 'chat:answer'; break;
-            case 'codeHint': backendId = 'chat:codeHint'; break;
-            case 'brainstorm': backendId = 'chat:brainstorm'; break;
-            case 'shorten': backendId = 'chat:shorten'; break;
-            case 'recap': backendId = 'chat:recap'; break;
-            case 'scrollUp': backendId = 'chat:scrollUp'; break;
-            case 'scrollDown': backendId = 'chat:scrollDown'; break;
             // Window
             case 'moveWindowUp': backendId = 'window:move-up'; break;
             case 'moveWindowDown': backendId = 'window:move-down'; break;
@@ -157,11 +92,6 @@ export const useShortcuts = () => {
             // General
             case 'toggleVisibility': backendId = 'general:toggle-visibility'; break;
             case 'toggleMousePassthrough': backendId = 'general:toggle-mouse-passthrough'; break;
-            case 'processScreenshots': backendId = 'general:process-screenshots'; break;
-            case 'captureAndProcess': backendId = 'general:capture-and-process'; break;
-            case 'resetCancel': backendId = 'general:reset-cancel'; break;
-            case 'takeScreenshot': backendId = 'general:take-screenshot'; break;
-            case 'selectiveScreenshot': backendId = 'general:selective-screenshot'; break;
             default: break;
         }
 

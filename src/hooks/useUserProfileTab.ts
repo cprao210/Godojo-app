@@ -3,7 +3,7 @@
 // read the cached profile — e.g. Launcher, UserProfileButton) plus the hook
 // that owns the tab's own editing state. Kept separate from the component so
 // the component only owns rendering — same split as useProviderCard /
-// useCropper / useAIProvidersSettings.
+// useAIProvidersSettings.
 
 import { useCallback, useEffect, useRef, useState } from "react";
 import { getFirebaseAuth } from "@/lib/firebase";
@@ -67,7 +67,7 @@ export function loadUserProfile(): UserProfileData {
     }
 
     // No saved profile yet — seed from Firebase auth user.
-    const savedPhone = uid ? (localStorage.getItem(`natively_signup_phone_${uid}`) ?? "") : "";
+    const savedPhone = uid ? (localStorage.getItem(`godojo_signup_phone_${uid}`) ?? "") : "";
 
     return {
         displayName: firebaseUser?.displayName ?? "",
@@ -108,7 +108,7 @@ export function useUserProfileTab() {
         if (!firebaseUser) return;
 
         const uid = firebaseUser.uid;
-        const savedPhone = localStorage.getItem(`natively_signup_phone_${uid}`) ?? "";
+        const savedPhone = localStorage.getItem(`godojo_signup_phone_${uid}`) ?? "";
 
         setProfile((prev) => ({
             ...prev,

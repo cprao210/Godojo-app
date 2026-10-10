@@ -26,8 +26,6 @@ export interface OutputRouteInfo {
 }
 
 export interface NativeModule {
-  getHardwareId(): string;
-  verifyGumroadKey(licenseKey: string): Promise<string>;
   getInputDevices(): Array<AudioDeviceInfo>;
   getOutputDevices(): Array<AudioDeviceInfo>;
   /**
@@ -48,7 +46,7 @@ export interface NativeModule {
    * Optional — present in .node binaries built after the native log bridge
    * was added. Registers a JS sink for native diagnostic lines (println!-style
    * logging in the speaker backends) that would otherwise never reach
-   * natively_debug.log in a packaged build, since raw addon stdout/stderr is
+   * godojo_debug.log in a packaged build, since raw addon stdout/stderr is
    * not captured there the way console.log is. loadNativeModule() wires this
    * up once, right after the binary loads.
    */
@@ -60,7 +58,7 @@ export interface NativeModule {
    * Wired from setVerboseLoggingFlag (electron/verboseLog.ts).
    */
   setNativeVerboseLogging?: (enabled: boolean) => void;
-  /** Optional — effective native verbose state, including the NATIVELY_VERBOSE override. */
+  /** Optional — effective native verbose state, including the GODOJO_VERBOSE override. */
   getNativeVerboseLogging?: () => boolean;
   SystemAudioCapture: new (
     deviceId?: string | null,
@@ -81,7 +79,7 @@ export interface NativeModule {
   };
 }
 
-const REQUIRED_METHODS = ['getHardwareId', 'verifyGumroadKey', 'getInputDevices', 'getOutputDevices'];
+const REQUIRED_METHODS = ['getInputDevices', 'getOutputDevices'];
 const REQUIRED_CONSTRUCTORS = ['SystemAudioCapture', 'MicrophoneCapture'];
 
 /**
@@ -122,8 +120,8 @@ let cached: NativeModule | null | undefined = undefined;
 /**
  * Loads the Rust native module directly from the .node binary file.
  *
- * We bypass `require('natively-audio')` intentionally. That approach relied on
- * npm creating a symlink from node_modules/natively-audio -> native-module/,
+ * We bypass `require('godojo-audio')` intentionally. That approach relied on
+ * npm creating a symlink from node_modules/godojo-audio -> native-module/,
  * which breaks on Windows (Git Bash produces POSIX-style symlinks that Node
  * can't resolve). Loading the .node file directly avoids npm entirely.
  *
@@ -180,7 +178,7 @@ export function loadNativeModule(): NativeModule | null {
             cached = mod;
             console.log(`[nativeModuleLoader] Loaded ${binary} from: ${filePath}`);
             // Route native diagnostic lines (CoreAudioTap/SpeakerInput/etc.)
-            // through the JS logger so they land in natively_debug.log in a
+            // through the JS logger so they land in godojo_debug.log in a
             // packaged build. Optional: older binaries built before this
             // bridge existed simply don't have the method.
             try {

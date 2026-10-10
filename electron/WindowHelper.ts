@@ -329,8 +329,8 @@ export class WindowHelper {
         if (mode === 'none') {
           if (isMac) {
             return app.isPackaged
-              ? path.join(process.resourcesPath, "natively.icns")
-              : path.resolve(__dirname, "../../assets/natively.icns");
+              ? path.join(process.resourcesPath, "godojo.icns")
+              : path.resolve(__dirname, "../../assets/godojo.icns");
           } else if (isWin) {
             return app.isPackaged
               ? path.join(process.resourcesPath, "assets/icons/win/icon.ico")
@@ -716,7 +716,6 @@ export class WindowHelper {
       if (this.launcherWindow) {
         const bounds = this.launcherWindow.getBounds()
         this.launcherPosition = { x: bounds.x, y: bounds.y }
-        this.appState.settingsWindowHelper.reposition(bounds)
       }
     })
 
@@ -724,7 +723,6 @@ export class WindowHelper {
       if (this.launcherWindow) {
         const bounds = this.launcherWindow.getBounds()
         this.launcherSize = { width: bounds.width, height: bounds.height }
-        this.appState.settingsWindowHelper.reposition(bounds)
       }
     })
 
@@ -1044,7 +1042,7 @@ export class WindowHelper {
     if (this.isWindowVisible) {
       this.hideMainWindow()
     } else {
-      // Always show without stealing focus — Natively is a ghost overlay.
+      // Always show without stealing focus — GoDojo is a ghost overlay.
       // The user is in another app; show the window on top but leave OS focus alone.
       // They can click the window to focus it if they need to type.
       this.showMainWindow(true)

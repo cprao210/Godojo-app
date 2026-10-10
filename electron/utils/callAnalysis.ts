@@ -9,7 +9,7 @@
 //
 // Order: the backend producer first (asked through the renderer — see
 // ./uploadAnalysisBridge; it is the live analysis v2 end-of-call pass), then the local one-shot
-// analyser in ./uploadAnalysis. NATIVELY_UPLOAD_ANALYSIS_LOCAL=1 skips the backend.
+// analyser in ./uploadAnalysis. GODOJO_UPLOAD_ANALYSIS_LOCAL=1 skips the backend.
 // Nothing here throws: a failed producer is logged and the next one runs, and null
 // means neither produced an analysis.
 
@@ -25,7 +25,7 @@ export interface CallAnalysisDeps {
     requestBackend: (turns: UploadAnalysisTurn[], meetingTypes: MeetingTypeHint[]) => Promise<LiveAnalysisData | null>;
     /** Local one-shot analyser over the whole transcript. */
     runLocal: (isNegotiation: boolean) => Promise<LiveAnalysisData | null>;
-    /** NATIVELY_UPLOAD_ANALYSIS_LOCAL=1 — never ask the backend. */
+    /** GODOJO_UPLOAD_ANALYSIS_LOCAL=1 — never ask the backend. */
     forceLocal?: boolean;
     warn?: (message: string) => void;
 }

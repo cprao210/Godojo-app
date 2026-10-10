@@ -290,7 +290,7 @@ const AudioTab: React.FC<{ overlay: SettingsOverlayHook }> = ({ overlay }) => {
                     </div>
 
                     {/*
-                      System-audio meter. This is the interviewer's side of the call,
+                      System-audio meter. This is the other party's side of the call,
                       captured on macOS via Screen Recording rather than the microphone
                       permission — so it can be completely dead while the Input Level
                       meter above bounces along happily. Showing them side by side is
@@ -300,7 +300,7 @@ const AudioTab: React.FC<{ overlay: SettingsOverlayHook }> = ({ overlay }) => {
                     <div>
                         <div className="flex justify-between text-xs text-text-secondary mb-2 px-1">
                             <span>System Audio Level</span>
-                            <span className="text-text-tertiary">Interviewer / meeting audio</span>
+                            <span className="text-text-tertiary">Other party / meeting audio</span>
                         </div>
                         <div className="h-1.5 bg-bg-item-surface rounded-full overflow-hidden">
                             <div

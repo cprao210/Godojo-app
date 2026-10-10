@@ -34,7 +34,7 @@ export function useFollowUpEmail(isOpen: boolean, meeting: Meeting) {
         const cleanTitle = meeting.title.replace(/["*]/g, '').trim();
         setSubject(`Follow up - ${cleanTitle}`);
 
-        const storedName = localStorage.getItem('natively_user_name');
+        const storedName = localStorage.getItem('godojo_user_name');
         if (storedName) setSenderName(storedName);
 
         let loadedRecipientEmail = '';
@@ -42,16 +42,14 @@ export function useFollowUpEmail(isOpen: boolean, meeting: Meeting) {
 
         try {
             if (meeting.calendarEventId) {
-                // @ts-ignore
-                const attendees = await window.electronAPI?.invoke('get-calendar-attendees', meeting.calendarEventId);
+                const attendees = await window.electronAPI?.getCalendarAttendees?.(meeting.calendarEventId);
                 if (attendees?.length > 0) {
                     loadedRecipientEmail = attendees[0].email;
                     if (attendees[0].name) loadedRecipientName = attendees[0].name.split(' ')[0];
                 }
             }
             if (!loadedRecipientEmail && meeting.transcript) {
-                // @ts-ignore
-                const extracted = await window.electronAPI?.invoke('extract-emails-from-transcript', meeting.transcript);
+                const extracted = await window.electronAPI?.extractEmailsFromTranscript?.(meeting.transcript);
                 if (extracted?.length > 0) loadedRecipientEmail = extracted[0];
             }
         } catch (e) {

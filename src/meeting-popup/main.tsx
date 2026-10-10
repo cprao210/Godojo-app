@@ -14,6 +14,8 @@
  * would pull the whole app graph back in and defeat the point — import leaf
  * modules directly instead.
  */
+// Must be the FIRST import (see src/lib/storageMigration.ts).
+import "../lib/storageMigration";
 import React from "react";
 import ReactDOM from "react-dom/client";
 

@@ -50,14 +50,8 @@ export interface IncompatibleProviderWarning {
 }
 
 export interface AppLifecycleState {
-  hasProfile: boolean;
-  isPremiumActive: boolean;
-  setIsPremiumActive: (active: boolean) => void;
-  /** Rising edge each time a meeting finishes processing — feeds `useAdCampaigns`'s post-meeting ad timer. */
   isProcessingMeeting: boolean;
   setIsProcessingMeeting: (processing: boolean) => void;
-  lastMeetingEndTime: number | null;
-  appStartTime: number;
   ollamaPull: OllamaPullState;
   incompatibleWarning: IncompatibleProviderWarning | null;
   dismissIncompatibleWarning: () => void;
@@ -177,18 +171,6 @@ export type ResolvedTheme = 'light' | 'dark';
 
 // --- src/hooks/useShortcuts.ts ---
 export interface ShortcutConfig {
-  whatToAnswer: string[];
-  autoAnswerMode: string[];
-  clarify: string[];
-  followUp: string[];
-  dynamicAction4: string[];
-  answer: string[];
-  codeHint: string[];
-  brainstorm: string[];
-  shorten: string[];
-  recap: string[];
-  scrollUp: string[];
-  scrollDown: string[];
   // Window Movement
   moveWindowUp: string[];
   moveWindowDown: string[];
@@ -197,11 +179,6 @@ export interface ShortcutConfig {
   // General
   toggleVisibility: string[];
   toggleMousePassthrough: string[];
-  processScreenshots: string[];
-  captureAndProcess: string[];
-  resetCancel: string[];
-  takeScreenshot: string[];
-  selectiveScreenshot: string[];
 }
 
 // --- src/hooks/useTeamInvite.ts ---
@@ -222,11 +199,9 @@ export interface TenantState {
 
 // --- src/hooks/useWindowRoute.ts ---
 export interface WindowRoute {
-  isSettingsWindow: boolean;
   isLauncherWindow: boolean;
   isOverlayWindow: boolean;
   isModelSelectorWindow: boolean;
-  isCropperWindow: boolean;
   /** No `?window=` param, or an unrecognized one — treated as the launcher (dev-mode safety). */
   isDefault: boolean;
 }
@@ -1799,23 +1774,6 @@ export interface CurlValidationResult {
   json?: any;
 }
 
-// --- src/lib/overlayAppearance.ts ---
-export type OverlayTheme = 'light' | 'dark';
-
-export interface OverlayAppearance {
-  shellStyle: React.CSSProperties;
-  pillStyle: React.CSSProperties;
-  transcriptStyle: React.CSSProperties;
-  subtleStyle: React.CSSProperties;
-  chipStyle: React.CSSProperties;
-  inputStyle: React.CSSProperties;
-  controlStyle: React.CSSProperties;
-  iconStyle: React.CSSProperties;
-  codeBlockStyle: React.CSSProperties;
-  codeHeaderStyle: React.CSSProperties;
-  dividerStyle: React.CSSProperties;
-}
-
 // --- src/pages/SignIn.tsx ---
 export type FieldValuesType = {
   icon: ForwardRefExoticComponent<Omit<LucideProps, "ref"> & RefAttributes<SVGSVGElement>>;
@@ -1825,23 +1783,6 @@ export type FieldValuesType = {
   /** Optional — only the sign-up fields (name, email) set this; sign-in's
    * single email field and phoneNumber intentionally leave it unset. */
   required?: boolean;
-}
-
-// --- src/types/index.tsx ---
-export interface Screenshot {
-  id: string
-  path: string
-  timestamp: number
-  thumbnail: string // Base64 thumbnail
-}
-
-export interface Solution {
-  problem_identifier_script: string;
-  brainstorm_script: string;
-  code: string;
-  dry_run_script: string;
-  time_complexity: string;
-  space_complexity: string;
 }
 
 // ============================================================
@@ -1883,17 +1824,6 @@ export interface ChatSessionSidebarProps {
   onSelectSession: (sessionId: string) => void;
   onNewChat: () => void;
   onDeleteSession: (sessionId: string) => void;
-}
-
-// --- src/features/common/AdCampaignToasters.tsx ---
-export interface AdCampaignToastersProps {
-  /** Only rendered on the launcher main view, with Settings closed. */
-  visible: boolean;
-  activeAd: unknown;
-  dismissAd: () => void;
-  onSetupProfile: () => void;
-  onSetupJD: () => void;
-  onUpgrade: () => void;
 }
 
 // --- src/features/common/EditableTextBlock.tsx ---
@@ -1949,35 +1879,9 @@ export interface LauncherProps {
 
 // --- src/features/common/GodojoInterface.tsx ---
 
-export interface GodojoInterfaceMessage {
-  id: string;
-  role: 'user' | 'system' | 'client';
-  text: string;
-  isStreaming?: boolean;
-  hasScreenshot?: boolean;
-  screenshotPreview?: string;
-  isCode?: boolean;
-  intent?: string;
-  isNegotiationCoaching?: boolean;
-  negotiationCoachingData?: {
-    tacticalNote: string;
-    exactScript: string;
-    showSilenceTimer: boolean;
-    phase: string;
-    theirOffer: number | null;
-    yourTarget: number | null;
-    currency: string;
-  };
-}
-
 export interface GodojoInterfaceProps {
   onEndMeeting?: (meetingTypes?: ('discovery' | 'demo' | 'negotiation')[]) => void;
   overlayOpacity?: number;
-}
-
-// --- src/features/common/SupportToaster.tsx ---
-export interface SupportToasterProps {
-  className?: string;
 }
 
 // --- src/features/common/TopSearchPill.tsx ---
@@ -2387,8 +2291,6 @@ export interface CompanyContextTabProps {
   setCompanyError: (v: string) => void;
   assetUploading: string | null;
   setAssetUploading: (id: string | null) => void;
-  isPremium?: boolean;
-  setIsPremiumModalOpen?: (v: boolean) => void;
   isLight: boolean;
   /**
    * True when the current user is on a team but is NOT that team's admin.
@@ -2513,14 +2415,6 @@ export interface SettingsOverlayProps {
   isAdmin?: boolean;
 }
 
-// --- src/features/settings/components/SettingsPopup.tsx ---
-export interface CustomGhostProps {
-  className?: string;
-  fill?: string;
-  stroke?: string;
-  eyeColor?: string;
-}
-
 // --- src/features/settings/components/UserProfileTab.tsx ---
 export interface UserProfileTabProps {
   isLight: boolean;
@@ -2574,13 +2468,6 @@ export interface UserProfileButtonProps {
   email?: string | null;
   photoURL?: string | null;
   onSignOut: () => void;
-}
-
-// --- src/features/ui/KeyRecorder.tsx ---
-export interface KeyRecorderProps {
-  currentKeys: string[];
-  onSave: (keys: string[]) => void;
-  className?: string;
 }
 
 // --- src/features/ui/ModelSelector.tsx ---

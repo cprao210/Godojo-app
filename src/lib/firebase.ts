@@ -57,7 +57,7 @@ let _bridgeInstalled = false;
  * (or the default, param-less window). Same predicate useFirebaseAuth uses
  * for the primary auth-state subscription.
  *
- * Every other window (overlay, settings, model selector, cropper) still
+ * Every other window (overlay, model selector) still
  * initializes the Firebase SDK and reads the signed-in user from the SDK's
  * shared IndexedDB persistence for its own API calls — but it must NOT run
  * the silent restore or forward tokens to main. Each such window used to
@@ -69,7 +69,7 @@ let _bridgeInstalled = false;
  */
 export function isPrimaryAuthWindow(): boolean {
     const w = new URLSearchParams(window.location.search).get('window');
-    return w === 'launcher' || !['settings', 'overlay', 'model-selector', 'cropper'].includes(w ?? '');
+    return w === 'launcher' || !['overlay', 'model-selector'].includes(w ?? '');
 }
 
 /** Lazily initialize Firebase. Safe to call repeatedly. */
@@ -310,7 +310,7 @@ export async function signUpWithEmailExtended(args: {
 
     try {
         if (phoneNumber) {
-            localStorage.setItem(`natively_signup_phone_${user.uid}`, phoneNumber);
+            localStorage.setItem(`godojo_signup_phone_${user.uid}`, phoneNumber);
         }
     } catch (_) {
         // localStorage unavailable — fine, this is best-effort metadata.

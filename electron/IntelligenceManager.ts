@@ -210,26 +210,6 @@ export class IntelligenceManager extends EventEmitter {
         return this.engine.runManualAnswer(question);
     }
 
-    async runCodeHint(imagePaths?: string[], problemStatement?: string): Promise<string | null> {
-        return this.engine.runCodeHint(imagePaths, problemStatement);
-    }
-
-    setCodingQuestion(question: string, source: 'screenshot' | 'transcript'): void {
-        this.session.setCodingQuestion(question, source);
-    }
-
-    getDetectedCodingQuestion(): { question: string | null; source: 'screenshot' | 'transcript' | null } {
-        return this.session.getDetectedCodingQuestion();
-    }
-
-    clearCodingQuestion(): void {
-        this.session.clearCodingQuestion();
-    }
-
-    async runBrainstorm(imagePaths?: string[], problemStatement?: string): Promise<string | null> {
-        return this.engine.runBrainstorm(imagePaths, problemStatement);
-    }
-
     // ============================================
     // State Management
     // ============================================

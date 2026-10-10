@@ -7,7 +7,8 @@
 // HKCU\Software\Microsoft\Windows\CurrentVersion\Run whose NAME defaults to the
 // app's current AppUserModelId. GoDojo changes that id at startup
 // (AppState.applyInitialDisguise → app.setAppUserModelId(
-// 'com.natively.assistant.<mode>')), and the first-run "enable" ran BEFORE that
+// 'com.godojo.assistant.<mode>'; 'com.natively.assistant.<mode>' before the
+// rebrand)), and the first-run "enable" ran BEFORE that
 // change while the Settings toggle ran AFTER it. So the toggle wrote/deleted a
 // differently-named value than the one actually registered: turning it off
 // never removed the real 'electron.app.GoDojo AI' entry (GoDojo kept opening at
@@ -29,8 +30,9 @@ import { app } from 'electron';
 const LOGIN_ITEM_NAME = `electron.app.${(process.platform === 'win32' ? path.win32 : path).parse(app.getPath('exe')).name}`;
 
 /** Names an older build may have registered under (the disguise AUMIDs). */
-const LEGACY_LOGIN_ITEM_NAMES = ['terminal', 'settings', 'activity', 'none']
-    .map((mode) => `com.natively.assistant.${mode}`)
+// Disguise AUMIDs — current (com.godojo.*) and pre-rebrand (com.natively.*).
+const LEGACY_LOGIN_ITEM_NAMES = ['godojo', 'natively']
+    .flatMap((brand) => ['terminal', 'settings', 'activity', 'none'].map((mode) => `com.${brand}.assistant.${mode}`))
     .filter((n) => n !== LOGIN_ITEM_NAME);
 
 const isWindows = process.platform === 'win32';

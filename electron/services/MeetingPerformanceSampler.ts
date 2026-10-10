@@ -7,7 +7,7 @@
  *     'startup', because "slow to open" reports need launch-time numbers;
  *   - meeting: every 60 seconds while a meeting is active; every 5th sample
  *     (≈5 min) goes to PostHog as `perf_sample` with phase 'meeting'.
- * Each sample also writes a one-line summary to natively_debug.log (via the
+ * Each sample also writes a one-line summary to godojo_debug.log (via the
  * intercepted console — main.ts pipes console.log into that file with
  * rotation). Samples carry Chromium's GPU feature status, so field data can
  * tell hardware-accelerated drawing apart from a software-rendering fallback.
@@ -173,7 +173,7 @@ class MeetingPerformanceSampler {
                 .map(([type, v]) => `${type}×${v.count} ${v.cpu}%/${v.cpuSec}s/${v.memMb}MB`)
                 .join(' · ');
             const when = phase === 'meeting' ? `t+${elapsedMin}min meeting` : `startup t+${sinceLaunchSec}s`;
-            // console.log is intercepted into natively_debug.log by main.ts.
+            // console.log is intercepted into godojo_debug.log by main.ts.
             console.log(
                 `[PERF-SAMPLE] ${when}: total ${summary.cpuTotal}% CPU / ${summary.cpuSecTotal}s CPU since start` +
                 ` / ${summary.memTotalMb} MB (${summary.privateTotalMb} MB private) / ${summary.processCount} processes` +

@@ -20,12 +20,11 @@ pub fn create_processor() -> Arc<Processor> {
 /// Apply the APM configuration for the active echo mode. Safe to call at any
 /// time (set_config takes effect on the next processed frame).
 pub fn apply_mode_config(p: &Processor, full_duplex: bool) {
-    // Opt-in escape hatch for field experiments: NATIVELY_APM_STREAM_DELAY_MS
+    // Opt-in escape hatch for field experiments: GODOJO_APM_STREAM_DELAY_MS
     // forces a fixed stream-delay hint in full_duplex. Default (unset) keeps
     // the hint off — the echo_align buffers + AEC3's own estimator own the
     // alignment, and a fixed hint would fight them.
-    let full_duplex_hint: Option<u16> = std::env::var("NATIVELY_APM_STREAM_DELAY_MS")
-        .ok()
+    let full_duplex_hint: Option<u16> = crate::env_flags::env_flag("APM_STREAM_DELAY_MS")
         .and_then(|v| v.parse::<u16>().ok());
     p.set_config(Config {
         // legacy/phase1: stream_delay_ms = 40 hints that echo arrives ~40ms

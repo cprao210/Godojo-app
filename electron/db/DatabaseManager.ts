@@ -7,6 +7,7 @@ import { SupabaseMirrorService } from './SupabaseMirrorService';
 import { SupabaseClientManager } from './SupabaseClient';
 import { AuthManager } from '../services/AuthManager';
 import { LiveAnalysisData } from '../../src/types';
+import { migrateLegacyDbFile } from './legacyDbMigration';
 
 /**
  * Allow-list of app_state keys that are safe to mirror to the cloud.
@@ -15,7 +16,6 @@ import { LiveAnalysisData } from '../../src/types';
  */
 const MIRRORED_APP_STATE_KEYS = new Set<string>([
     'supabase_backfill_done',
-    'user_profile_summary',
     'onboarding_complete',
     'preferred_embedding_provider',
     'preferred_embedding_dim'
@@ -163,15 +163,17 @@ export class DatabaseManager {
     /**
      * Per-user database file. A separate physical .db per Firebase uid is what
      * guarantees User A and User B on the same machine never see each other's
-     * meetings/transcripts — the previous single shared natively.db was the root
+     * meetings/transcripts — the previous single shared DB file was the root
      * cause of duplicate transcripts and cross-user data on account switch.
+     * Files are `godojo-<uid>.db`; older installs used `natively-<uid>.db`,
+     * which migrateLegacyDbFile() renames on first open.
      */
     private static resolveDbPath(uid: string | null): string {
         const userDataPath = app.getPath('userData');
         // Sanitize: Firebase uids are [A-Za-z0-9] but be defensive so a stray
         // value can never escape the userData dir or inject path separators.
         const safe = (uid ?? 'anon').replace(/[^A-Za-z0-9_-]/g, '');
-        return path.join(userDataPath, `natively-${safe || 'anon'}.db`);
+        return path.join(userDataPath, `godojo-${safe || 'anon'}.db`);
     }
 
 
@@ -189,7 +191,7 @@ export class DatabaseManager {
 
     // Releases the underlying sqlite file handle. Required before deleting
     // or moving the userData directory (e.g. "Reset app data") — on Windows
-    // in particular, natively.db stays locked until this is called, and the
+    // in particular, the user's DB file stays locked until this is called, and the
     // delete would otherwise fail or silently leave the .db file behind.
     public close(): void {
         if (this.db) {
@@ -247,6 +249,11 @@ export class DatabaseManager {
 
     private init() {
         try {
+            // Rename this user's pre-rebrand DB file if needed — before anything
+            // checks whether the file exists. If the rename can't complete, keep
+            // using the old file in place: never open an empty DB while the
+            // user's meetings sit in the old one.
+            this.dbPath = migrateLegacyDbFile(this.dbPath);
             console.log(`[DatabaseManager] Initializing database at ${this.dbPath}`);
             // Ensure directory exists (though userData usually does)
             const dir = path.dirname(this.dbPath);
@@ -385,28 +392,6 @@ export class DatabaseManager {
                 );
 
                 CREATE INDEX IF NOT EXISTS idx_chunks_meeting ON chunks(meeting_id);
-
-                CREATE TABLE IF NOT EXISTS user_profile (
-                    id INTEGER PRIMARY KEY,
-                    structured_json TEXT NOT NULL,
-                    compact_persona TEXT NOT NULL,
-                    intro_short TEXT,
-                    intro_interview TEXT,
-                    created_at DATETIME DEFAULT CURRENT_TIMESTAMP
-                );
-
-                CREATE TABLE IF NOT EXISTS resume_nodes (
-                    id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    category TEXT,
-                    title TEXT,
-                    organization TEXT,
-                    start_date TEXT,
-                    end_date TEXT,
-                    duration_months INTEGER,
-                    text_content TEXT,
-                    tags TEXT,
-                    embedding BLOB
-                );
             `);
             this.db.pragma('user_version = 1');
         }
@@ -919,6 +904,20 @@ export class DatabaseManager {
                 );
             `);
             this.db.pragma('user_version = 23');
+        }
+
+        // resume_nodes and user_profile came from the upstream interview
+        // product (parsed resume entries / candidate persona). Nothing in
+        // GoDojo ever wrote to either — they are empty on every install — and
+        // neither is mirrored to Supabase any more, so drop both. A purpose-
+        // built profile table will be added by its own migration when needed.
+        if (version < 24) {
+            console.log('[DatabaseManager] Applying migration v23 → v24: drop unused resume_nodes and user_profile tables');
+            this.db.exec(`
+                DROP TABLE IF EXISTS resume_nodes;
+                DROP TABLE IF EXISTS user_profile;
+            `);
+            this.db.pragma('user_version = 24');
         }
     }
 
@@ -2695,12 +2694,12 @@ export class DatabaseManager {
     }
 
     /**
-     * Delete ONLY this user's physical DB files: natively-<uid>.db plus its
+     * Delete ONLY this user's physical DB files: godojo-<uid>.db plus its
      * -wal / -shm sidecars. Closes the handle first (Windows lock). Does NOT
-     * touch any other user's natively-*.db file.
+     * touch any other user's godojo-*.db file.
      */
     public deleteCurrentUserDatabaseFiles(): void {
-        const base = this.dbPath; // natively-<uid>.db for the active user
+        const base = this.dbPath; // godojo-<uid>.db for the active user
         this.close();             // release WAL + handle before unlink
         for (const p of [base, `${base}-wal`, `${base}-shm`]) {
             try {

@@ -14,22 +14,6 @@ export const DEFAULT_KEYBINDS: KeybindConfig[] = [
     // General
     { id: 'general:toggle-visibility', label: 'Toggle Visibility', accelerator: 'CommandOrControl+B', isGlobal: true, defaultAccelerator: 'CommandOrControl+B' },
     { id: 'general:toggle-mouse-passthrough', label: 'Toggle Mouse Passthrough', accelerator: 'CommandOrControl+Shift+B', isGlobal: true, defaultAccelerator: 'CommandOrControl+Shift+B' },
-    { id: 'general:process-screenshots', label: 'Process Screenshots', accelerator: 'CommandOrControl+Enter', isGlobal: true, defaultAccelerator: 'CommandOrControl+Enter' },
-    { id: 'general:capture-and-process', label: 'Capture Screen & Ask AI (Global)', accelerator: 'CommandOrControl+Shift+Enter', isGlobal: true, defaultAccelerator: 'CommandOrControl+Shift+Enter' },
-    { id: 'general:reset-cancel', label: 'Reset / Cancel', accelerator: 'CommandOrControl+R', isGlobal: true, defaultAccelerator: 'CommandOrControl+R' },
-    { id: 'general:take-screenshot', label: 'Take Screenshot', accelerator: 'CommandOrControl+H', isGlobal: true, defaultAccelerator: 'CommandOrControl+H' },
-    { id: 'general:selective-screenshot', label: 'Selective Screenshot', accelerator: 'CommandOrControl+Shift+H', isGlobal: true, defaultAccelerator: 'CommandOrControl+Shift+H' },
-
-    // Chat - Global shortcuts (work even when app is not focused - stealth mode)
-    { id: 'chat:whatToAnswer', label: 'What to Answer', accelerator: 'CommandOrControl+1', isGlobal: true, defaultAccelerator: 'CommandOrControl+1' },
-    { id: 'chat:clarify', label: 'Clarify', accelerator: 'CommandOrControl+2', isGlobal: true, defaultAccelerator: 'CommandOrControl+2' },
-    { id: 'chat:dynamicAction4', label: 'Recap / Brainstorm', accelerator: 'CommandOrControl+3', isGlobal: true, defaultAccelerator: 'CommandOrControl+3' },
-    { id: 'chat:followUp', label: 'Follow Up', accelerator: 'CommandOrControl+4', isGlobal: true, defaultAccelerator: 'CommandOrControl+4' },
-    { id: 'chat:answer', label: 'Answer / Record', accelerator: 'CommandOrControl+5', isGlobal: true, defaultAccelerator: 'CommandOrControl+5' },
-    { id: 'chat:codeHint', label: 'Get Code Hint', accelerator: 'CommandOrControl+6', isGlobal: true, defaultAccelerator: 'CommandOrControl+6' },
-    { id: 'chat:brainstorm', label: 'Brainstorm Approaches', accelerator: 'CommandOrControl+7', isGlobal: true, defaultAccelerator: 'CommandOrControl+7' },
-    { id: 'chat:scrollUp', label: 'Scroll Up', accelerator: 'CommandOrControl+Up', isGlobal: true, defaultAccelerator: 'CommandOrControl+Up' },
-    { id: 'chat:scrollDown', label: 'Scroll Down', accelerator: 'CommandOrControl+Down', isGlobal: true, defaultAccelerator: 'CommandOrControl+Down' },
 
     // Window Movement - Global shortcuts (stealth window positioning)
     { id: 'window:move-up', label: 'Move Window Up', accelerator: 'CommandOrControl+Shift+Up', isGlobal: true, defaultAccelerator: 'CommandOrControl+Shift+Up' },
@@ -60,8 +44,6 @@ export class KeybindManager {
         // In launcher mode, only register specific shortcuts
         if (actionId === 'general:toggle-visibility') return true;
         if (actionId === 'general:toggle-mouse-passthrough') return true;
-        if (actionId === 'general:take-screenshot') return true;
-        if (actionId === 'general:selective-screenshot') return true;
         if (actionId.startsWith('window:move-')) return true;
         return false;
     }
@@ -108,17 +90,6 @@ export class KeybindManager {
         try {
             if (fs.existsSync(this.filePath)) {
                 const data = JSON.parse(fs.readFileSync(this.filePath, 'utf-8'));
-
-                // Migrate renamed IDs so saved user customizations survive renames
-                const ID_MIGRATIONS: Record<string, string> = {
-                    'chat:recap': 'chat:dynamicAction4',
-                    'chat:followup': 'chat:followUp',  // casing fix — persisted keybinds.json may have old casing
-                };
-                for (const fileKb of data) {
-                    if (ID_MIGRATIONS[fileKb.id]) {
-                        fileKb.id = ID_MIGRATIONS[fileKb.id];
-                    }
-                }
 
                 // Validate and merge
                 let hadConflicts = false;
