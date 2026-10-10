@@ -4,6 +4,7 @@ import { motion } from 'framer-motion';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import { chatMarkdownComponents } from './markdownComponents';
+import { ensureTableSpacing } from './markdownTables';
 import { CitationProvider, rehypeCitations, CiteChip } from './citations';
 import { SourceMapEntry } from '@/types';
 import { useResolvedTheme } from '@/hooks/useResolvedTheme';
@@ -38,7 +39,7 @@ const MarkdownBodyInner: React.FC<ChatMarkdownBodyProps> = ({ content, sourceMap
         onOpenAsset={onOpenAsset}
     >
         <ReactMarkdown remarkPlugins={REMARK_PLUGINS} rehypePlugins={REHYPE_PLUGINS} components={MARKDOWN_COMPONENTS}>
-            {content}
+            {ensureTableSpacing(content)}
         </ReactMarkdown>
     </CitationProvider>
 );
