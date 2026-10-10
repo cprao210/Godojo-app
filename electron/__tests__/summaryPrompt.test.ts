@@ -30,6 +30,24 @@ const LA: any = {
     signals: [],
 };
 
+describe('deal block (read by the backend to keep the deal up to date)', () => {
+    it.each(['discovery', 'demo', 'negotiation'] as const)('every prompt variant for a %s call asks for it', (callType) => {
+        for (const prompt of [
+            buildCoachCallTypeSection(callType),
+            buildSummaryPrompt(null, null, callType),
+        ]) {
+            expect(prompt).toContain('"deal": {');
+            for (const field of ['"stage"', '"amount"', '"currency"', '"expectedCloseDate"', '"competitors"', '"people"', '"nextSteps"']) {
+                expect(prompt).toContain(field);
+            }
+            expect(prompt).toContain('Closed Won / Closed Lost / Unknown');
+            expect(prompt).toContain('never estimate it from a budget range');
+            // sanitizeCoachSummary strips a top-level `stakeholders`; the prompt must not ask for one.
+            expect(prompt).not.toContain('"stakeholders"');
+        }
+    });
+});
+
 describe('buildCoachCallTypeSection', () => {
     it('discovery asks for no type-specific blocks', () => {
         const section = buildCoachCallTypeSection('discovery');

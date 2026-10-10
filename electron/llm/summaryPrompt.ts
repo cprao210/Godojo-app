@@ -51,6 +51,41 @@ Rules for negotiation:
 - Never invent dates, deadlines, or owners.`;
 
 /**
+ * The deal block. Not shown in the app: the backend reads it to keep one deal per customer
+ * company up to date (sales-ai-backend app/services/deals.py — stage, amount, close date,
+ * risk). It lives in the section appended to EVERY prompt variant, so recorded calls,
+ * uploaded transcripts and regenerated summaries all carry it.
+ *
+ * `deal.stage` is where the DEAL stands, deliberately separate from the call type (a
+ * Proposal-stage deal can have a demo call — see utils/coachCallType.ts). The key is
+ * `deal`, not the old `dealStatus`: that one was dropped from the generation contract
+ * as a dead key (nothing in the app read it) and stays dropped.
+ *
+ * The customer-side people are "people", not "stakeholders": sanitizeCoachSummary strips a
+ * top-level `stakeholders` key, and that name must stay out of the prompt.
+ */
+export const DEAL_SECTION = `"deal": {
+                "stage": "one of: Discovery / Qualification / Demo / Proposal / Negotiation / Closed Won / Closed Lost / Unknown — where the DEAL stands after this call, not the format of this call",
+                "summary": "1 sentence on where the deal stands right now",
+                "amount": "the deal value as a plain number (e.g. 50000) — only if a deal value was said on the call",
+                "currency": "3-letter code of that amount (USD, EUR, GBP, INR...) — only if stated or clear from the symbol",
+                "expectedCloseDate": "YYYY-MM-DD — only if the call states a calendar date for signing or closing",
+                "competitors": ["a competitor or alternative vendor named on the call"],
+                "people": [
+                    { "name": "a person on the customer's side", "role": "their title or role — only when stated", "stance": "champion" | "supporter" | "neutral" | "skeptic" | "blocker" | "unknown" }
+                ],
+                "nextSteps": [
+                    { "action": "a next step agreed on the call", "owner": "who will do it — only when stated", "dueDate": "the date or day agreed, as said (e.g. \\"Friday\\", \\"October 10\\") — only when one was agreed" }
+                ]
+            }
+            Rules for deal:
+            - Always include "stage" and "summary". Use "Unknown" for the stage when the call does not show it.
+            - "Closed Won" / "Closed Lost" only when the customer explicitly said yes or no to the deal on this call.
+            - "amount": never estimate it from a budget range, a discount, or a per-seat price. Omit it unless a deal value was said.
+            - "expectedCloseDate": never turn "next quarter", "soon" or "by year end" into a date. Omit it unless a calendar date was said.
+            - "competitors", "people", "nextSteps": only what was said on the call; "people" are on the customer's side, never the sales rep. Omit a key when there is nothing for it.`;
+
+/**
  * The call-type-specific block appended to EVERY summary prompt variant for a
  * given call type. Describes only the blocks relevant to that call type plus
  * the call-type-agnostic coaching fields (openLoops, promises, callGoal), so
@@ -87,6 +122,8 @@ export function buildCoachCallTypeSection(callType: CoachCallType): string {
             - Actual commitments only — distinguish them from generic recommendations and omit the rest.
             - Never invent owners or dates — omit the key instead.
             - Omit "promises" entirely when nothing was actually committed.
+
+            ${DEAL_SECTION}
 
             nextCallPlaybook.callGoal: one concise, actionable sentence naming the single most important outcome to secure on the next call, reflecting the current deal situation. If no goal can be established directly from the call, derive it from the weakest BANT/MEDDICC component. Never invent a goal the deal context does not support.
 

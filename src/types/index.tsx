@@ -1188,6 +1188,19 @@ export interface MeetingDetailedSummary {
     stage?: string;
     summary?: string;
   };
+  /** Where the deal stands after the call. Not rendered in the app — the backend reads it
+   *  to keep the deal of this meeting's company up to date (see DEAL_SECTION in
+   *  electron/llm/summaryPrompt.ts). */
+  deal?: {
+    stage?: string;
+    summary?: string;
+    amount?: number | string;
+    currency?: string;
+    expectedCloseDate?: string;
+    competitors?: string[];
+    people?: { name: string; role?: string; stance?: string }[];
+    nextSteps?: { action: string; owner?: string; dueDate?: string }[];
+  };
   bant?: {
     budget?: { status: string; detail: string };
     authority?: { status: string; detail: string };
