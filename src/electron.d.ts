@@ -173,7 +173,8 @@ export interface ElectronAPI {
   setModel: (modelId: string) => Promise<{ success: boolean; error?: string }>
   setDefaultModel: (modelId: string) => Promise<{ success: boolean; error?: string }>
   toggleModelSelector: (coords: { x: number; y: number }) => Promise<void>
-  forceRestartOllama: () => Promise<void>
+  forceRestartOllama: () => Promise<{ success: boolean; error?: string }>
+  ensureOllamaRunning: () => Promise<{ success: boolean; message?: string }>
   onModelChanged: (callback: (modelId: string) => void) => () => void
   onOllamaPullProgress: (callback: (data: { status: string; percent: number }) => void) => () => void
   onOllamaPullComplete: (callback: () => void) => () => void

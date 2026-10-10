@@ -332,8 +332,7 @@ function useOllamaProviders() {
     const ensureOllamaStartup = useCallback(async () => {
         setOllamaStatus("checking");
         try {
-            // @ts-ignore
-            const result = await window.electronAPI?.invoke?.("ensure-ollama-running");
+            const result = await window.electronAPI?.ensureOllamaRunning?.();
             if (result && result.success) {
                 checkOllama(true);
             } else {
@@ -348,8 +347,7 @@ function useOllamaProviders() {
     const handleFixOllama = useCallback(async () => {
         setOllamaStatus("fixing");
         try {
-            // @ts-ignore
-            const result = await window.electronAPI?.invoke?.("force-restart-ollama");
+            const result = await window.electronAPI?.forceRestartOllama?.();
             if (result && result.success) {
                 setOllamaRestarted(true);
                 setTimeout(() => checkOllama(false), 2000);

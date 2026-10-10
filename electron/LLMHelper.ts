@@ -7,10 +7,8 @@ import { ModelVersionManager, ModelFamily, TextModelFamily } from './services/Mo
 import { MODE_TOKEN_LIMITS } from './llm/types'
 import {
   HARD_SYSTEM_PROMPT, GROQ_SYSTEM_PROMPT, OPENAI_SYSTEM_PROMPT, CLAUDE_SYSTEM_PROMPT,
-  UNIVERSAL_SYSTEM_PROMPT, UNIVERSAL_ANSWER_PROMPT, UNIVERSAL_WHAT_TO_ANSWER_PROMPT,
-  UNIVERSAL_RECAP_PROMPT, UNIVERSAL_FOLLOWUP_PROMPT, UNIVERSAL_FOLLOW_UP_QUESTIONS_PROMPT, UNIVERSAL_ASSIST_PROMPT,
-  CUSTOM_SYSTEM_PROMPT, CUSTOM_ANSWER_PROMPT, CUSTOM_WHAT_TO_ANSWER_PROMPT,
-  CUSTOM_RECAP_PROMPT, CUSTOM_FOLLOWUP_PROMPT, CUSTOM_FOLLOW_UP_QUESTIONS_PROMPT, CUSTOM_ASSIST_PROMPT
+  UNIVERSAL_SYSTEM_PROMPT,
+  CUSTOM_SYSTEM_PROMPT
 } from "./llm/prompts"
 import { deepVariableReplacer, getByPath, injectImageIntoMessages, imageMimeTypeFromPath } from './utils/curlUtils';
 import curl2Json from "@bany/curl-to-json";
@@ -64,7 +62,6 @@ const CLAUDE_MAX_OUTPUT_TOKENS = 64000
 const CLAUDE_MAX_OUTPUT_TOKENS_NONSTREAM = 4096 // safe ceiling for non-streaming calls
 
 // Simple prompt for image analysis (kept separate from the live-call copilot)
-const IMAGE_ANALYSIS_PROMPT = `Analyze concisely. Be direct. No markdown formatting. Return plain text only.`
 
 export class LLMHelper {
   private client: GoogleGenAI | null = null
@@ -78,13 +75,10 @@ export class LLMHelper {
   private useOllama: boolean = false
   private ollamaModel: string = "llama3.2"
   private ollamaUrl: string = "http://localhost:11434"
-  private ollamaStartedByApp: boolean = false;
   private geminiModel: string = GEMINI_FLASH_MODEL
   private customProvider: CustomProvider | null = null;
-  private activeCurlProvider: CurlProvider | null = null;
   private groqFastTextMode: boolean = false;
   private knowledgeOrchestrator: any = null;
-  private customNotes: string = '';
   private aiResponseLanguage: string = 'auto';
   private sttLanguage: string = 'english-us';
 
@@ -348,7 +342,6 @@ export class LLMHelper {
       this.useOllama = true;
       this.ollamaModel = targetModelId.replace('ollama-', '');
       this.customProvider = null;
-      this.activeCurlProvider = null;
       console.log(`[LLMHelper] Switched to Ollama: ${this.ollamaModel}`);
       return;
     }
@@ -357,7 +350,6 @@ export class LLMHelper {
     if (custom) {
       this.useOllama = false;
       this.customProvider = custom;
-      this.activeCurlProvider = null;
       console.log(`[LLMHelper] Switched to Custom Provider: ${custom.name}`);
       return;
     }
@@ -372,13 +364,6 @@ export class LLMHelper {
     if (targetModelId === GEMINI_FLASH_MODEL) this.geminiModel = GEMINI_FLASH_MODEL;
 
     console.log(`[LLMHelper] Switched to Cloud Model: ${targetModelId}`);
-  }
-
-  public switchToCurl(provider: CurlProvider) {
-    this.useOllama = false;
-    this.customProvider = null;
-    this.activeCurlProvider = provider;
-    console.log(`[LLMHelper] Switched to cURL provider: ${provider.name}`);
   }
 
   private cleanJsonResponse(text: string): string {
@@ -473,28 +458,6 @@ export class LLMHelper {
   }
 
   /**
-   * Generate content using Gemini 3 Flash (text reasoning)
-   * Used by IntelligenceManager for mode-specific prompts
-   * NOTE: Migrated from Pro to Flash for consistency
-   */
-  public async generateWithPro(contents: any[]): Promise<string> {
-    if (!this.client) throw new Error("Gemini client not initialized")
-
-    await this.rateLimiters.gemini.acquire();
-    // console.log(`[LLMHelper] Calling ${GEMINI_FLASH_MODEL}...`)
-    const response = await this.healAndRetry('gemini', GEMINI_PRO_MODEL, (mid) =>
-      this.client.models.generateContent({
-        model: mid,
-        contents: contents,
-        config: {
-          maxOutputTokens: MAX_OUTPUT_TOKENS,
-          temperature: 0.3,      // Lower = faster, more focused
-        }
-      }))
-    return response.text || ""
-  }
-
-  /**
    * Generate content using Gemini 3 Flash (audio + fast multimodal)
    * CRITICAL: Audio input MUST use this model, not Pro
    */
@@ -522,9 +485,6 @@ export class LLMHelper {
   private processResponse(text: string): string {
     // Basic cleaning
     let clean = this.cleanJsonResponse(text);
-
-    // Truncation/clamping removed - prompts already handle response length
-    // clean = clampResponse(clean, 3, 60);
 
     // Filter out fallback phrases
     const fallbackPhrases = [
@@ -668,10 +628,6 @@ export class LLMHelper {
   public setKnowledgeOrchestrator(orchestrator: any): void {
     this.knowledgeOrchestrator = orchestrator;
     console.log('[LLMHelper] KnowledgeOrchestrator attached');
-  }
-
-  public setCustomNotes(notes: string): void {
-    this.customNotes = notes;
   }
 
   public getKnowledgeOrchestrator(): any {
@@ -840,10 +796,6 @@ export class LLMHelper {
 
       if (this.useOllama) {
         return await this.callOllama(combinedMessages.gemini, imagePaths?.[0]);
-      }
-
-      if (this.activeCurlProvider) {
-        return await this.chatWithCurl(message, skipSystemPrompt ? undefined : this.injectLanguageInstruction(CUSTOM_SYSTEM_PROMPT), imagePaths?.[0]);
       }
 
       if (this.customProvider) {
@@ -1091,11 +1043,6 @@ export class LLMHelper {
           ''
         )
       });
-    } else if (this.activeCurlProvider) {
-      providers.push({
-        name: `cURL Provider (${this.activeCurlProvider.name})`,
-        execute: () => this.chatWithCurl(message)
-      });
     }
 
     if (providers.length === 0) {
@@ -1142,103 +1089,6 @@ export class LLMHelper {
     }
 
     throw new Error('All reasoning models failed for structured generation after 3 attempts');
-  }
-
-  /**
-   * Dedicated method for live call analysis (BANT/MEDDIC/Signals/Objections extraction).
-   *
-   * Uses a FIXED provider order regardless of the user's selected model:
-   *   1. Gemini Flash — fast, large context, handles the full output schema well
-   *   2. Claude Sonnet — best structured JSON adherence, 200k context
-   *   3. GPT-4o        — reliable fallback, strong instruction following
-   *
-   * Groq is intentionally excluded: its 32k context ceiling, aggressive rate limits,
-   * and inferior schema compliance make it unsuitable for the live analysis JSON contract.
-   *
-   * Temperature is set to 0.1 (vs. 0.4 elsewhere) because the task is extraction
-   * and classification, not generation — lower temperature reduces hallucinated status
-   * upgrades and spurious signal captures.
-   */
-  public async generateLiveAnalysis(prompt: string): Promise<string> {
-    const LIVE_ANALYSIS_MAX_TOKENS = 4096; // full BANT+MEDDIC+signals+objections JSON fits in ~1500-2500 tokens
-    const LIVE_ANALYSIS_TEMPERATURE = 0.1;
-
-    type ProviderAttempt = { name: string; execute: () => Promise<string> };
-    const providers: ProviderAttempt[] = [];
-
-    // Priority 1: Gemini Flash — primary for live analysis
-    if (this.client) {
-      providers.push({
-        name: `Gemini Flash (${GEMINI_FLASH_MODEL})`,
-        execute: async () => {
-          const response = await this.withRetry(async () => {
-            // @ts-ignore
-            const res = await this.client!.models.generateContent({
-              model: GEMINI_FLASH_MODEL,
-              contents: [{ role: 'user', parts: [{ text: prompt }] }],
-              config: { maxOutputTokens: LIVE_ANALYSIS_MAX_TOKENS, temperature: LIVE_ANALYSIS_TEMPERATURE }
-            });
-            const candidate = res.candidates?.[0];
-            if (!candidate) return '';
-            if (res.text) return res.text;
-            const parts = candidate.content?.parts ?? [];
-            return (Array.isArray(parts) ? parts : [parts]).map((p: any) => p?.text ?? '').join('');
-          });
-          return response;
-        }
-      });
-    }
-
-    // Priority 2: Claude Sonnet — best structured output compliance
-    if (this.claudeClient) {
-      providers.push({
-        name: `Claude (${CLAUDE_MODEL})`,
-        execute: async () => {
-          const response = await this.claudeClient!.messages.create({
-            model: CLAUDE_MODEL,
-            max_tokens: LIVE_ANALYSIS_MAX_TOKENS,
-            messages: [{ role: 'user', content: prompt }],
-          });
-          const block = response.content.find((b: any) => b.type === 'text') as any;
-          return block?.text ?? '';
-        }
-      });
-    }
-
-    // Priority 3: OpenAI GPT — reliable tertiary fallback
-    if (this.openaiClient) {
-      providers.push({
-        name: `OpenAI (${OPENAI_MODEL})`,
-        execute: async () => {
-          const response = await this.openaiClient!.chat.completions.create({
-            model: OPENAI_MODEL,
-            messages: [{ role: 'user', content: prompt }],
-            max_completion_tokens: LIVE_ANALYSIS_MAX_TOKENS,
-          });
-          return response.choices[0]?.message?.content ?? '';
-        }
-      });
-    }
-
-    if (providers.length === 0) {
-      throw new Error('No provider available for live analysis. Configure a Gemini, Claude, or OpenAI API key.');
-    }
-
-    for (const provider of providers) {
-      try {
-        console.log(`[LLMHelper] 🔍 Live analysis: trying ${provider.name}...`);
-        const result = await provider.execute();
-        if (result && result.trim().length > 0) {
-          console.log(`[LLMHelper] ✅ Live analysis succeeded with ${provider.name}`);
-          return result;
-        }
-        console.warn(`[LLMHelper] ⚠️ ${provider.name} returned empty response for live analysis`);
-      } catch (error: any) {
-        console.warn(`[LLMHelper] ⚠️ Live analysis: ${provider.name} failed: ${error.message}`);
-      }
-    }
-
-    throw new Error('All providers failed for live analysis');
   }
 
   private async generateWithGroq(fullMessage: string, modelId: string = GROQ_MODEL): Promise<string> {
@@ -1321,70 +1171,6 @@ export class LLMHelper {
         this.rateLimiters.openai.markRateLimitError();
       }
       throw error;
-    }
-  }
-
-  // The handler for cURL requests
-  public async chatWithCurl(userMessage: string, systemPrompt?: string, imagePath?: string): Promise<string> {
-    if (!this.activeCurlProvider) throw new Error("No cURL provider active");
-
-    const { curlCommand, responsePath } = this.activeCurlProvider;
-
-    // 1. Parse cURL to config object
-    // @ts-ignore
-    const curlConfig = curl2Json(curlCommand);
-
-    // 2. Prepare Image (if any)
-    let base64Image = "";
-    if (imagePath) {
-      try {
-        const imageData = await fs.promises.readFile(imagePath);
-        base64Image = imageData.toString("base64");
-      } catch (e) {
-        console.warn("[LLMHelper] chatWithCurl: failed to read image:", e);
-      }
-    }
-
-    // 3. Prepare Variables
-    // We combine System Prompt + User Message into {{TEXT}} for simplicity in raw mode.
-    const fullPrompt = systemPrompt ? `${systemPrompt}\n\n${userMessage}` : userMessage;
-
-    const variables = {
-      TEXT: fullPrompt.replace(/\n/g, "\\n").replace(/"/g, '\\"'), // Basic escaping (pre-existing)
-      IMAGE_BASE64: base64Image,
-    };
-
-    // 4. Inject Variables into URL, Headers, and Body
-    const url = deepVariableReplacer(curlConfig.url, variables);
-    const headers = deepVariableReplacer(curlConfig.header || {}, variables);
-    let data = deepVariableReplacer(curlConfig.data || {}, variables);
-
-    // 4a. Auto-upgrade last user message to multimodal content array when an image is present.
-    if (base64Image && imagePath) {
-      data = injectImageIntoMessages(data, base64Image, imagePath);
-    }
-
-    // 5. Execute
-    try {
-      const response = await axios({
-        method: curlConfig.method || 'POST',
-        url: url,
-        headers: headers,
-        data: data
-      });
-
-      // 6. Extract Answer
-      // If user didn't specify a path, try to guess or dump string
-      if (!responsePath) return JSON.stringify(response.data);
-
-      const answer = getByPath(response.data, responsePath);
-
-      if (typeof answer === 'string') return answer;
-      return JSON.stringify(answer); // Fallback if they pointed to an object
-
-    } catch (error: any) {
-      console.error("[LLMHelper] cURL Execution Error:", error.message);
-      return `Error: ${error.message}`;
     }
   }
 
@@ -1571,23 +1357,6 @@ export class LLMHelper {
     return JSON.stringify(data);
   }
 
-  /**
-   * Map UNIVERSAL (local model) prompts to richer CUSTOM prompts.
-   * Custom providers can be any cloud model, so they get detailed prompts.
-   */
-  private mapToCustomPrompt(prompt: string): string {
-    // Map from concise UNIVERSAL to rich CUSTOM equivalents
-    if (prompt === UNIVERSAL_SYSTEM_PROMPT || prompt === HARD_SYSTEM_PROMPT) return CUSTOM_SYSTEM_PROMPT;
-    if (prompt === UNIVERSAL_ANSWER_PROMPT) return CUSTOM_ANSWER_PROMPT;
-    if (prompt === UNIVERSAL_WHAT_TO_ANSWER_PROMPT) return CUSTOM_WHAT_TO_ANSWER_PROMPT;
-    if (prompt === UNIVERSAL_RECAP_PROMPT) return CUSTOM_RECAP_PROMPT;
-    if (prompt === UNIVERSAL_FOLLOWUP_PROMPT) return CUSTOM_FOLLOWUP_PROMPT;
-    if (prompt === UNIVERSAL_FOLLOW_UP_QUESTIONS_PROMPT) return CUSTOM_FOLLOW_UP_QUESTIONS_PROMPT;
-    if (prompt === UNIVERSAL_ASSIST_PROMPT) return CUSTOM_ASSIST_PROMPT;
-    // If it's already a different override (e.g. user-supplied), pass through
-    return prompt;
-  }
-
   private async tryGenerateResponse(fullMessage: string, imagePaths?: string[], modelIdOverride?: string): Promise<string> {
     let rawResponse: string;
 
@@ -1658,228 +1427,6 @@ export class LLMHelper {
       }));
 
     return response.choices[0]?.message?.content || "";
-  }
-
-  /**
-   * Universal non-streaming fallback helper for internal operations (screenshot analysis, problem extraction, etc.)
-   *
-   * THREE-TIER RETRY ROTATION (self-improving):
-   *   Tier 1: Pinned stable models (promoted only when 2+ minor versions behind)
-   *   Tier 2: Latest auto-discovered models (updated every ~14 days) — 1st retry
-   *   Tier 3: Same as Tier 2 — 2nd retry (with backoff between tiers)
-   *
-   * Provider order per tier: OpenAI -> Gemini Flash -> Claude -> Gemini Pro -> Groq Scout
-   * After all cloud tiers: Custom Provider -> cURL Provider -> Ollama
-   */
-  private async generateWithVisionFallback(systemPrompt: string, userPrompt: string, imagePaths: string[] = []): Promise<string> {
-    type ProviderAttempt = { name: string; execute: () => Promise<string> };
-    const isMultimodal = imagePaths.length > 0;
-
-    // Helper: build a provider attempt for a given family + model ID
-    const buildProviderForFamily = (family: ModelFamily, modelId: string): ProviderAttempt | null => {
-      switch (family) {
-        case ModelFamily.OPENAI:
-          if (!this.openaiClient) return null;
-          return {
-            name: `OpenAI (${modelId})`,
-            execute: () => this.generateWithOpenai(userPrompt, systemPrompt, isMultimodal ? imagePaths : undefined, modelId)
-          };
-
-        case ModelFamily.GEMINI_FLASH:
-          if (!this.client) return null;
-          if (isMultimodal) {
-            return {
-              name: `Gemini Flash (${modelId})`,
-              execute: async () => {
-                const contents: any[] = [{ text: `${systemPrompt}\n\n${userPrompt}` }];
-                for (const p of imagePaths) {
-                  if (fs.existsSync(p)) {
-                    const { mimeType, data } = await this.processImage(p);
-                    contents.push({ inlineData: { mimeType, data } });
-                  }
-                }
-                return await this.generateContent(contents, modelId);
-              }
-            };
-          }
-          return {
-            name: `Gemini Flash (${modelId})`,
-            execute: () => this.generateContent([{ text: `${systemPrompt}\n\n${userPrompt}` }], modelId)
-          };
-
-        case ModelFamily.CLAUDE:
-          if (!this.claudeClient) return null;
-          return {
-            name: `Claude (${modelId})`,
-            execute: () => this.generateWithClaude(userPrompt, systemPrompt, isMultimodal ? imagePaths : undefined, modelId)
-          };
-
-        case ModelFamily.GEMINI_PRO:
-          if (!this.client) return null;
-          if (isMultimodal) {
-            return {
-              name: `Gemini Pro (${modelId})`,
-              execute: async () => {
-                const contents: any[] = [{ text: `${systemPrompt}\n\n${userPrompt}` }];
-                for (const p of imagePaths) {
-                  if (fs.existsSync(p)) {
-                    const { mimeType, data } = await this.processImage(p);
-                    contents.push({ inlineData: { mimeType, data } });
-                  }
-                }
-                return await this.generateContent(contents, modelId);
-              }
-            };
-          }
-          return {
-            name: `Gemini Pro (${modelId})`,
-            execute: () => this.generateContent([{ text: `${systemPrompt}\n\n${userPrompt}` }], modelId)
-          };
-
-        case ModelFamily.GROQ_LLAMA:
-          if (!this.groqClient) return null;
-          if (isMultimodal) {
-            return {
-              name: `Groq (${modelId})`,
-              execute: () => this.generateWithGroqMultimodal(userPrompt, imagePaths, systemPrompt)
-            };
-          }
-          return {
-            name: `Groq (${modelId})`,
-            execute: () => this.generateWithGroq(`${systemPrompt}\n\n${userPrompt}`, modelId)
-          };
-
-        default:
-          return null;
-      }
-    };
-
-    // ──────────────────────────────────────────────────────────────────
-    // Build 3-tier retry rotation from ModelVersionManager
-    // ──────────────────────────────────────────────────────────────────
-    const allTiers = this.modelVersionManager.getAllVisionTiers();
-
-    const buildTierProviders = (tierKey: 'tier1' | 'tier2' | 'tier3'): ProviderAttempt[] => {
-      const result: ProviderAttempt[] = [];
-      for (const entry of allTiers) {
-        const modelId = entry[tierKey];
-        const attempt = buildProviderForFamily(entry.family, modelId);
-        if (attempt) result.push(attempt);
-      }
-      return result;
-    };
-
-    const tier1Providers = buildTierProviders('tier1');
-    const tier2Providers = buildTierProviders('tier2');
-    const tier3Providers = buildTierProviders('tier3'); // Same as tier2 — pure retry
-
-
-    // ──────────────────────────────────────────────────────────────────
-    // Local fallback providers (appended after all cloud tiers)
-    // ──────────────────────────────────────────────────────────────────
-    const localProviders: ProviderAttempt[] = [];
-
-    if (this.customProvider) {
-      if (isMultimodal) {
-        localProviders.push({
-          name: `Custom Provider (${this.customProvider.name})`,
-          execute: () => this.executeCustomProvider(
-            this.customProvider!.curlCommand,
-            `${systemPrompt}\n\n${userPrompt}`,
-            systemPrompt,
-            userPrompt,
-            "",
-            imagePaths[0]
-          )
-        });
-      } else {
-        localProviders.push({
-          name: `Custom Provider (${this.customProvider.name})`,
-          execute: () => this.executeCustomProvider(
-            this.customProvider!.curlCommand,
-            `${systemPrompt}\n\n${userPrompt}`,
-            systemPrompt,
-            userPrompt,
-            ""
-          )
-        });
-      }
-    }
-
-    if (this.activeCurlProvider && !this.customProvider) {
-      localProviders.push({
-        name: `cURL Provider (${this.activeCurlProvider.name})`,
-        execute: () => this.chatWithCurl(userPrompt, systemPrompt, isMultimodal ? imagePaths[0] : undefined)
-      });
-    }
-
-    if (this.useOllama) {
-      localProviders.push({
-        name: `Ollama (${this.ollamaModel})`,
-        execute: () => this.callOllama(`${systemPrompt}\n\n${userPrompt}`, isMultimodal ? imagePaths[0] : undefined)
-      });
-    }
-
-    // ──────────────────────────────────────────────────────────────────
-    // Execute 3-tier rotation with exponential backoff between tiers
-    // ──────────────────────────────────────────────────────────────────
-    const tiers = [
-      { label: 'Tier 1 (Stable)', providers: tier1Providers },
-      { label: 'Tier 2 (Latest)', providers: tier2Providers },
-      { label: 'Tier 3 (Retry)', providers: tier3Providers },
-    ];
-
-    for (let tierIndex = 0; tierIndex < tiers.length; tierIndex++) {
-      const tier = tiers[tierIndex];
-
-      if (tier.providers.length === 0) continue;
-
-      // Exponential backoff between tiers (skip for first tier)
-      if (tierIndex > 0) {
-        const backoffMs = 1000 * Math.pow(2, tierIndex - 1);
-        console.log(`[LLMHelper] 🔄 Escalating to ${tier.label} after ${backoffMs}ms backoff...`);
-        await new Promise(resolve => setTimeout(resolve, backoffMs));
-      }
-
-      for (const provider of tier.providers) {
-        try {
-          const emoji = tierIndex === 0 ? '🚀' : tierIndex === 1 ? '🔁' : '🆘';
-          console.log(`[LLMHelper] ${emoji} [${tier.label}] Attempting ${provider.name}...`);
-          const result = await provider.execute();
-          if (result && result.trim().length > 0) {
-            console.log(`[LLMHelper] ✅ [${tier.label}] ${provider.name} succeeded.`);
-            return result;
-          }
-          console.warn(`[LLMHelper] ⚠️ [${tier.label}] ${provider.name} returned empty response`);
-        } catch (err: any) {
-          console.warn(`[LLMHelper] ⚠️ [${tier.label}] ${provider.name} failed: ${err.message}`);
-
-          // Event-driven discovery: trigger on 404 / model-not-found errors
-          const errMsg = (err.message || '').toLowerCase();
-          if (errMsg.includes('404') || errMsg.includes('not found') || errMsg.includes('deprecated')) {
-            this.modelVersionManager.onModelError(provider.name).catch(() => { });
-          }
-        }
-      }
-    }
-
-    // ──────────────────────────────────────────────────────────────────
-    // Local fallback — absolute last resort after all cloud tiers exhausted
-    // ──────────────────────────────────────────────────────────────────
-    for (const provider of localProviders) {
-      try {
-        console.log(`[LLMHelper] 🏠 [Local Fallback] Attempting ${provider.name}...`);
-        const result = await provider.execute();
-        if (result && result.trim().length > 0) {
-          console.log(`[LLMHelper] ✅ [Local Fallback] ${provider.name} succeeded.`);
-          return result;
-        }
-      } catch (err: any) {
-        console.warn(`[LLMHelper] ⚠️ [Local Fallback] ${provider.name} failed: ${err.message}`);
-      }
-    }
-
-    throw new Error("All AI providers failed across all 3 tiers and local fallbacks.");
   }
 
 
@@ -2147,20 +1694,6 @@ export class LLMHelper {
     // 2a. CustomProvider (switchToCustom path) — full SSE-capable streaming
     if (this.customProvider) {
       yield* this.streamWithCustom(message, context, imagePaths, finalSystemPrompt);
-      return;
-    }
-
-    // 2b. Custom Provider Streaming (via cURL - Non-streaming fallback for now)
-    if (this.activeCurlProvider) {
-      const response = await this.executeCustomProvider(
-        this.activeCurlProvider.curlCommand,
-        userContent,
-        finalSystemPrompt,
-        message,
-        context || "",
-        imagePaths?.[0]
-      );
-      yield response;
       return;
     }
 
@@ -2801,223 +2334,7 @@ export class LLMHelper {
 
   public getCurrentModel(): string {
     if (this.customProvider) return this.customProvider.name;
-    if (this.activeCurlProvider) return this.activeCurlProvider.id;
     return this.useOllama ? this.ollamaModel : this.currentModelId;
-  }
-
-  /**
-   * Get the Gemini client for mode-specific LLMs
-   * Used by AnswerLLM, AssistLLM, FollowUpLLM, RecapLLM
-   * RETURNS A PROXY client that handles retries and fallbacks transparently
-   */
-  public getGeminiClient(): GoogleGenAI | null {
-    if (!this.client) return null;
-    return this.createRobustClient(this.client);
-  }
-
-  /**
-   * Get the Groq client for mode-specific LLMs
-   */
-  public getGroqClient(): Groq | null {
-    return this.groqClient;
-  }
-
-  /**
-   * Check if Groq is available
-   */
-  public hasGroq(): boolean {
-    return this.groqClient !== null;
-  }
-
-  /**
-   * Get the OpenAI client for mode-specific LLMs
-   */
-  public getOpenaiClient(): OpenAI | null {
-    return this.openaiClient;
-  }
-
-  /**
-   * Get the Claude client for mode-specific LLMs
-   */
-  public getClaudeClient(): Anthropic | null {
-    return this.claudeClient;
-  }
-
-  /**
-   * Check if OpenAI is available
-   */
-  public hasOpenai(): boolean {
-    return this.openaiClient !== null;
-  }
-
-  /**
-   * Check if Claude is available
-   */
-  public hasClaude(): boolean {
-    return this.claudeClient !== null;
-  }
-
-  /**
-   * Stream with Groq using a specific prompt, with Gemini fallback
-   * Used by mode-specific LLMs (RecapLLM, FollowUpLLM, WhatToAnswerLLM)
-   * @param groqMessage - Message with Groq-optimized prompt
-   * @param geminiMessage - Message with Gemini prompt (for fallback)
-   * @param config - Optional temperature and max tokens
-   */
-  public async * streamWithGroqOrGemini(
-    groqMessage: string,
-    geminiMessage: string,
-    config?: { temperature?: number; maxTokens?: number }
-  ): AsyncGenerator<string, void, unknown> {
-    const temperature = config?.temperature ?? 0.3;
-    const maxTokens = config?.maxTokens ?? 8192;
-
-    // Try Groq first if available
-    if (this.groqClient) {
-      try {
-        console.log(`[LLMHelper] 🚀 Mode-specific Groq stream starting...`);
-        const stream = await this.groqClient.chat.completions.create({
-          model: GROQ_MODEL,
-          messages: [{ role: "user", content: groqMessage }],
-          stream: true,
-          temperature: temperature,
-          max_tokens: maxTokens,
-        });
-
-        for await (const chunk of stream) {
-          const content = chunk.choices[0]?.delta?.content;
-          if (content) {
-            yield content;
-          }
-        }
-        console.log(`[LLMHelper] ✅ Mode-specific Groq stream completed`);
-        return; // Success - done
-      } catch (err: any) {
-        console.warn(`[LLMHelper] ⚠️ Groq mode-specific failed: ${err.message}, falling back to Gemini`);
-      }
-    }
-
-    // Fallback to Gemini
-    if (this.client) {
-      console.log(`[LLMHelper] 🔄 Falling back to Gemini for mode-specific request...`);
-      yield* this.streamWithGeminiModel(geminiMessage, GEMINI_FLASH_MODEL);
-    } else {
-      throw new Error("No LLM provider available");
-    }
-  }
-
-  /**
-   * Creates a proxy around the real Gemini client to intercept generation calls
-   * and apply robust retry/fallback logic without modifying consumer code.
-   */
-  private createRobustClient(realClient: GoogleGenAI): GoogleGenAI {
-    // We proxy the 'models' property to intercept 'generateContent'
-    const modelsProxy = new Proxy(realClient.models, {
-      get: (target, prop, receiver) => {
-        if (prop === 'generateContent') {
-          return async (args: any) => {
-            return this.generateWithFallback(realClient, args);
-          };
-        }
-        return Reflect.get(target, prop, receiver);
-      }
-    });
-
-    // We proxy the client itself to return our modelsProxy
-    return new Proxy(realClient, {
-      get: (target, prop, receiver) => {
-        if (prop === 'models') {
-          return modelsProxy;
-        }
-        return Reflect.get(target, prop, receiver);
-      }
-    });
-  }
-
-  /**
-   * ROBUST GENERATION STRATEGY (SPECULATIVE PARALLEL EXECUTION)
-   * 1. Attempt with original model (Flash).
-   * 2. If it fails/empties:
-   *    - IMMEDIATELY launch two requests in parallel:
-   *      a) Retry Flash (Attempt 2)
-   *      b) Start Pro (Backup)
-   * 3. Return whichever finishes successfully first (prioritizing Flash if both fast).
-   * 4. If both fail, try Flash one last time (Attempt 3).
-   * 5. If that fails, throw error.
-   */
-  private async generateWithFallback(client: GoogleGenAI, args: any): Promise<any> {
-    const originalModel = args.model;
-
-    // Helper to check for valid content
-    const isValidResponse = (response: any) => {
-      const candidate = response.candidates?.[0];
-      if (!candidate) return false;
-      // Check for text content
-      if (response.text && response.text.trim().length > 0) return true;
-      if (candidate.content?.parts?.[0]?.text && candidate.content.parts[0].text.trim().length > 0) return true;
-      if (typeof candidate.content === 'string' && candidate.content.trim().length > 0) return true;
-      return false;
-    };
-
-    // 1. Initial Attempt (Flash)
-    try {
-      const response = await client.models.generateContent({
-        ...args,
-        model: originalModel
-      });
-      if (isValidResponse(response)) return response;
-      console.warn(`[LLMHelper] Initial ${originalModel} call returned empty/invalid response.`);
-    } catch (error: any) {
-      console.warn(`[LLMHelper] Initial ${originalModel} call failed: ${error.message}`);
-    }
-
-    console.log(`[LLMHelper] 🚀 Triggering Speculative Parallel Retry (Flash + Pro)...`);
-
-    // 2. Parallel Execution (Retry Flash vs Pro)
-    // We create promises for both but treat them carefully
-    const flashRetryPromise = (async () => {
-      // Small delay before retry to let system settle? No, user said "immediately"
-      try {
-        const res = await client.models.generateContent({ ...args, model: originalModel });
-        if (isValidResponse(res)) return { type: 'flash', res };
-        throw new Error("Empty Flash Response");
-      } catch (e) { throw e; }
-    })();
-
-    const proBackupPromise = (async () => {
-      try {
-        // Pro might be slower, but it's the robust backup
-        const res = await client.models.generateContent({ ...args, model: GEMINI_PRO_MODEL });
-        if (isValidResponse(res)) return { type: 'pro', res };
-        throw new Error("Empty Pro Response");
-      } catch (e) { throw e; }
-    })();
-
-    // 3. Race / Fallback Logic
-    try {
-      // We want Flash if it succeeds, but will accept Pro if Flash fails
-      // If Flash finishes first and success -> return Flash
-      // If Pro finishes first -> wait for Flash? Or return Pro?
-      // User said: "if the gemini 3 flash again fails the gemini 3 pro response can be immediatly displayed"
-      // This implies we prioritize Flash's *result*, but if Flash fails, we want Pro.
-
-      // We use Promise.any to get the first *successful* result
-      const winner = await Promise.any([flashRetryPromise, proBackupPromise]);
-      console.log(`[LLMHelper] Parallel race won by: ${winner.type}`);
-      return winner.res;
-
-    } catch (aggregateError) {
-      console.warn(`[LLMHelper] Both parallel retry attempts failed.`);
-    }
-
-    // 4. Last Resort: Flash Final Retry
-    console.log(`[LLMHelper] ⚠️ All parallel attempts failed. Trying Flash one last time...`);
-    try {
-      return await client.models.generateContent({ ...args, model: originalModel });
-    } catch (finalError) {
-      console.error(`[LLMHelper] Final retry failed.`);
-      throw finalError;
-    }
   }
 
   private async withTimeout<T>(promise: Promise<T>, timeoutMs: number, operationName: string): Promise<T> {
@@ -3144,7 +2461,7 @@ export class LLMHelper {
     };
 
     // ATTEMPT 0: Custom Provider (highest priority — user explicitly chose this)
-    if (this.customProvider || this.activeCurlProvider) {
+    if (this.customProvider) {
       try {
         console.log(`[LLMHelper] Attempting custom provider for summary...`);
         // Collect the async generator into a Promise so withTimeout works.
@@ -3369,32 +2686,6 @@ export class LLMHelper {
     console.log(`[LLMHelper] Switched to Custom Provider: ${provider.name}`);
   }
 
-  public async testConnection(): Promise<{ success: boolean; error?: string }> {
-    try {
-      if (this.useOllama) {
-        const available = await this.checkOllamaAvailable();
-        if (!available) {
-          return { success: false, error: `Ollama not available at ${this.ollamaUrl}` };
-        }
-        // Test with a simple prompt
-        await this.callOllama("Hello");
-        return { success: true };
-      } else {
-        if (!this.client) {
-          return { success: false, error: "No Gemini client configured" };
-        }
-        // Test with a simple prompt using the selected model
-        const text = await this.generateContent([{ text: "Hello" }])
-        if (text) {
-          return { success: true };
-        } else {
-          return { success: false, error: "Empty response from Gemini" };
-        }
-      }
-    } catch (error: any) {
-      return { success: false, error: error.message };
-    }
-  }
   /**
    * Universal Chat (Non-streaming)
    */

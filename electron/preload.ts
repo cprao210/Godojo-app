@@ -972,6 +972,7 @@ contextBridge.exposeInMainWorld("electronAPI", {
   setDefaultModel: (modelId: string) => ipcRenderer.invoke('set-default-model', modelId),
   toggleModelSelector: (coords: { x: number; y: number }) => ipcRenderer.invoke('toggle-model-selector', coords),
   forceRestartOllama: () => ipcRenderer.invoke('force-restart-ollama'),
+  ensureOllamaRunning: () => ipcRenderer.invoke('ensure-ollama-running'),
 
   // Settings Window
 

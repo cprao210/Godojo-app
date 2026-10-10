@@ -11,7 +11,6 @@ export { WhatToAnswerLLM } from "./WhatToAnswerLLM";
 export { WhatAmIMissingLLM } from "./WhatAmIMissing"; // WHAT AM I MISSING
 export { DiscoveryLLM } from "./DiscoveryLLM"; // DISCOVERY MODE
 export { ObjectionHandlerLLM } from "./ObjectionHandlerLLM"; // OBJECTION HANDLER MODE
-export { clampResponse, validateResponse } from "./postProcessor";
 export {
     verifySummaryAgainstTranscript,
     buildCorrectionAddendum
@@ -35,17 +34,11 @@ export {
     warmupIntentClassifier
 } from "./IntentClassifier";
 export type { ConversationIntent, IntentResult } from "./IntentClassifier";
-export { MODE_CONFIGS } from "./types";
-export type { GenerationConfig, GeminiContent, LLMClient } from "./types";
+export type { GenerationConfig, GeminiContent } from "./types";
 export {
     HARD_SYSTEM_PROMPT,
-    ANSWER_MODE_PROMPT,
     ASSIST_MODE_PROMPT,
-    FOLLOWUP_MODE_PROMPT,
-    RECAP_MODE_PROMPT,
-    WHAT_TO_ANSWER_PROMPT,
     WHAT_AM_I_MISSING_PROMPT, // WHAT AM I MISSING
-    TEMPORAL_CONTEXT_TEMPLATE,
     GROQ_TITLE_PROMPT,
     GROQ_SUMMARY_JSON_PROMPT,
     FOLLOWUP_EMAIL_PROMPT,

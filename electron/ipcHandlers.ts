@@ -874,21 +874,6 @@ export function initializeIpcHandlers(appState: AppState): void {
     }
   });
 
-  safeHandle('restart-ollama', async () => {
-    try {
-      // First try to kill it if it's running
-      await appState.processingHelper.getLLMHelper().forceRestartOllama();
-
-      // The forceRestartOllama now calls OllamaManager.getInstance().init() internally
-      // so we don't need to do it again here.
-
-      return true;
-    } catch (error: any) {
-      console.error("[IPC restart-ollama] Failed to restart:", error);
-      return false;
-    }
-  });
-
   safeHandle("ensure-ollama-running", async () => {
     try {
       const { OllamaManager } = require('./services/OllamaManager');
@@ -1061,89 +1046,6 @@ export function initializeIpcHandlers(appState: AppState): void {
     }
   });
 
-  safeHandle("switch-to-custom-provider", async (_, providerId: string) => {
-    try {
-      const { CredentialsManager } = require('./services/CredentialsManager');
-      const cm = CredentialsManager.getInstance();
-      // BUG-05 fix: providers may be in either the curl or legacy custom store —
-      // merge both when looking up by id so neither store is silently ignored.
-      const provider = [
-        ...(cm.getCurlProviders() || []),
-        ...(cm.getCustomProviders() || [])
-      ].find((p: any) => p.id === providerId);
-
-      if (!provider) {
-        throw new Error("Provider not found");
-      }
-
-      const llmHelper = appState.processingHelper.getLLMHelper();
-      await llmHelper.switchToCustom(provider);
-
-      // Re-init IntelligenceManager (optional, but good for consistency)
-      appState.getIntelligenceManager().initializeLLMs();
-
-      return { success: true };
-    } catch (error: any) {
-      console.error("Error switching to custom provider:", error);
-      return { success: false, error: error.message };
-    }
-  });
-
-
-  // cURL Provider Handlers
-  safeHandle("get-curl-providers", async () => {
-    try {
-      const { CredentialsManager } = require('./services/CredentialsManager');
-      return CredentialsManager.getInstance().getCurlProviders();
-    } catch (error: any) {
-      console.error("Error getting curl providers:", error);
-      return [];
-    }
-  });
-
-  safeHandle("save-curl-provider", async (_, provider: any) => {
-    try {
-      const { CredentialsManager } = require('./services/CredentialsManager');
-      CredentialsManager.getInstance().saveCurlProvider(provider);
-      return { success: true };
-    } catch (error: any) {
-      console.error("Error saving curl provider:", error);
-      return { success: false, error: error.message };
-    }
-  });
-
-  safeHandle("delete-curl-provider", async (_, id: string) => {
-    try {
-      const { CredentialsManager } = require('./services/CredentialsManager');
-      CredentialsManager.getInstance().deleteCurlProvider(id);
-      return { success: true };
-    } catch (error: any) {
-      console.error("Error deleting curl provider:", error);
-      return { success: false, error: error.message };
-    }
-  });
-
-  safeHandle("switch-to-curl-provider", async (_, providerId: string) => {
-    try {
-      const { CredentialsManager } = require('./services/CredentialsManager');
-      const provider = CredentialsManager.getInstance().getCurlProviders().find((p: any) => p.id === providerId);
-
-      if (!provider) {
-        throw new Error("Provider not found");
-      }
-
-      const llmHelper = appState.processingHelper.getLLMHelper();
-      await llmHelper.switchToCurl(provider);
-
-      // Re-init IntelligenceManager (optional, but good for consistency)
-      appState.getIntelligenceManager().initializeLLMs();
-
-      return { success: true };
-    } catch (error: any) {
-      console.error("Error switching to curl provider:", error);
-      return { success: false, error: error.message };
-    }
-  });
 
   // Get stored API keys (masked for UI display)
   safeHandle("get-stored-credentials", async () => {

@@ -57,42 +57,6 @@ export const MODE_TOKEN_LIMITS = {
 } as const;
 
 /**
- * Mode-specific generation configurations.
- * maxOutputTokens now sourced from MODE_TOKEN_LIMITS above.
- */
-export const MODE_CONFIGS = {
-    answer: {
-        maxOutputTokens: MODE_TOKEN_LIMITS.answer,
-        temperature: 0.25,
-        topP: 0.85,
-    } as GenerationConfig,
-
-    assist: {
-        maxOutputTokens: MODE_TOKEN_LIMITS.assist,
-        temperature: 0.25,
-        topP: 0.85,
-    } as GenerationConfig,
-
-    followUp: {
-        maxOutputTokens: MODE_TOKEN_LIMITS.followUp,
-        temperature: 0.25,
-        topP: 0.85,
-    } as GenerationConfig,
-
-    recap: {
-        maxOutputTokens: MODE_TOKEN_LIMITS.recap,
-        temperature: 0.25,
-        topP: 0.85,
-    } as GenerationConfig,
-
-    followUpQuestions: {
-        maxOutputTokens: MODE_TOKEN_LIMITS.followUpQuestions,
-        temperature: 0.4, // Slightly higher creative freedom
-        topP: 0.9,
-    } as GenerationConfig,
-} as const;
-
-/**
  * Gemini content structure
  */
 export interface GeminiContent {
@@ -100,9 +64,3 @@ export interface GeminiContent {
     parts: { text: string }[];
 }
 
-/**
- * LLM client interface for dependency injection
- */
-export interface LLMClient {
-    getGeminiClient(): GoogleGenAI | null;
-}
