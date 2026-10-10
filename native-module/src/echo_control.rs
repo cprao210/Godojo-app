@@ -22,7 +22,7 @@
 //                  far end, then fails OPEN if render never arrives.
 //
 // Mode source of truth: CaptureOptions.echoMode from JS, falling back to the
-// NATIVELY_ECHO_MODE env var, falling back to full_duplex (the default —
+// GODOJO_ECHO_MODE env var, falling back to full_duplex (the default —
 // phase1/legacy remain available as rollback modes).
 
 use std::collections::VecDeque;
@@ -81,8 +81,7 @@ impl EchoMode {
 }
 
 static MODE: Lazy<AtomicU8> = Lazy::new(|| {
-    let m = std::env::var("NATIVELY_ECHO_MODE")
-        .ok()
+    let m = crate::env_flags::env_flag("ECHO_MODE")
         .and_then(|v| EchoMode::parse(&v))
         .unwrap_or(EchoMode::FullDuplex);
     println!("[EchoControl] mode={}", m.as_str());
@@ -111,44 +110,42 @@ pub fn set_mode_from_str(s: &str) {
 }
 
 fn env_f32(name: &str, default: f32) -> f32 {
-    std::env::var(name)
-        .ok()
+    crate::env_flags::env_flag(name)
         .and_then(|v| v.parse::<f32>().ok())
         .unwrap_or(default)
 }
 
 fn env_u64(name: &str, default: u64) -> u64 {
-    std::env::var(name)
-        .ok()
+    crate::env_flags::env_flag(name)
         .and_then(|v| v.parse::<u64>().ok())
         .unwrap_or(default)
 }
 
 // Tunables (env-overridable for field tuning without rebuilds).
-static GATE_HANGOVER_MS: Lazy<u64> = Lazy::new(|| env_u64("NATIVELY_GATE_HANGOVER_MS", 120));
+static GATE_HANGOVER_MS: Lazy<u64> = Lazy::new(|| env_u64("GATE_HANGOVER_MS", 120));
 /// Extra hangover tail when no positive alignment estimate is available
 /// (covers quiet far-end passages + trailing reverb on reference-late rigs).
-static GATE_TAIL_MS: Lazy<u64> = Lazy::new(|| env_u64("NATIVELY_GATE_TAIL_MS", 150));
-static RENDER_ACTIVE_RMS: Lazy<f32> = Lazy::new(|| env_f32("NATIVELY_RENDER_ACTIVE_RMS", 15.0));
-static ERLE_ENTER_DB: Lazy<f32> = Lazy::new(|| env_f32("NATIVELY_ERLE_ENTER_DB", 8.0));
-static ERLE_EXIT_DB: Lazy<f32> = Lazy::new(|| env_f32("NATIVELY_ERLE_EXIT_DB", 5.0));
+static GATE_TAIL_MS: Lazy<u64> = Lazy::new(|| env_u64("GATE_TAIL_MS", 150));
+static RENDER_ACTIVE_RMS: Lazy<f32> = Lazy::new(|| env_f32("RENDER_ACTIVE_RMS", 15.0));
+static ERLE_ENTER_DB: Lazy<f32> = Lazy::new(|| env_f32("ERLE_ENTER_DB", 8.0));
+static ERLE_EXIT_DB: Lazy<f32> = Lazy::new(|| env_f32("ERLE_EXIT_DB", 5.0));
 /// Above this ERLE the converged gate trusts AEC3 fully and stops ducking.
-static ERLE_STRONG_DB: Lazy<f32> = Lazy::new(|| env_f32("NATIVELY_ERLE_STRONG_DB", 15.0));
-static TALKOVER_RMS_RATIO: Lazy<f32> = Lazy::new(|| env_f32("NATIVELY_TALKOVER_RMS_RATIO", 3.0));
+static ERLE_STRONG_DB: Lazy<f32> = Lazy::new(|| env_f32("ERLE_STRONG_DB", 15.0));
+static TALKOVER_RMS_RATIO: Lazy<f32> = Lazy::new(|| env_f32("TALKOVER_RMS_RATIO", 3.0));
 /// Minimum AEC evidence (Convergence ERLE EMA, dB) before the unconverged
 /// talk-over escape may open the mic. With ERLE≈0 the "post-AEC residual" is
 /// raw far-end speech — loud and voiced — so without this floor the escape
 /// leaks every far-end onset. Mute wins when we cannot tell double-talk from
 /// echo (accepted trade-off).
 static TALKOVER_MIN_ERLE_DB: Lazy<f32> =
-    Lazy::new(|| env_f32("NATIVELY_TALKOVER_MIN_ERLE_DB", 4.0));
+    Lazy::new(|| env_f32("TALKOVER_MIN_ERLE_DB", 4.0));
 /// A render frame within this window means the render pipeline is alive.
-static RENDER_ALIVE_MS: Lazy<u64> = Lazy::new(|| env_u64("NATIVELY_RENDER_ALIVE_MS", 500));
+static RENDER_ALIVE_MS: Lazy<u64> = Lazy::new(|| env_u64("RENDER_ALIVE_MS", 500));
 /// How long after mic-session start the gate holds closed waiting for the
 /// first render frame (SCK/tap init takes 5-7 s). After this, fail OPEN — a
 /// broken system capture must never permanently mute the mic.
 static RENDER_WAIT_MAX_MS: Lazy<u64> =
-    Lazy::new(|| env_u64("NATIVELY_RENDER_WAIT_MAX_MS", 10_000));
+    Lazy::new(|| env_u64("RENDER_WAIT_MAX_MS", 10_000));
 /// How long the full_duplex gate may hard-mute continuously, with AEC3 never
 /// having converged, before it falls back to the loud+VAD escape.
 ///
@@ -160,9 +157,9 @@ static RENDER_WAIT_MAX_MS: Lazy<u64> =
 /// escape is itself gated on ERLE evidence the hardware never produces. The
 /// mic was off by arithmetic, with no recovery path.
 static GATE_STARVATION_MS: Lazy<u64> =
-    Lazy::new(|| env_u64("NATIVELY_GATE_STARVATION_MS", 20_000));
+    Lazy::new(|| env_u64("GATE_STARVATION_MS", 20_000));
 static ALIGN_ENABLED: Lazy<bool> =
-    Lazy::new(|| std::env::var("NATIVELY_ECHO_ALIGN").map(|v| v != "off").unwrap_or(true));
+    Lazy::new(|| crate::env_flags::env_flag("ECHO_ALIGN").map(|v| v != "off").unwrap_or(true));
 
 // ============================================================================
 // Shared gate state (written by DSP threads, read anywhere)

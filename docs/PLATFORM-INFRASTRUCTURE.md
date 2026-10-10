@@ -612,7 +612,7 @@ GoDojo started from an older codebase called **Natively**. Several one-time step
 | **Database files** | `natively-<id>.db` and its two sidecar files are renamed to `godojo-<id>.db` the first time that account's database is opened. Sidecars move first and the main file last, so a crash part-way is completed on the next launch. If the rename fails, the old file is used where it is |
 | **Window settings in localStorage** | Keys starting `natively_` are copied to `godojo_` (a few go to special new names) and the old keys removed. A value already under the new name wins. This runs first thing in every window |
 | **Login item (Windows)** | Old "open at login" registry entries written under disguise names, both `com.natively.*` and `com.godojo.*`, are removed, and one entry under a fixed name is kept |
-| **Environment variable names** | Developer flags are now `GODOJO_*`. Old `NATIVELY_*` names still work, and `GODOJO_*` values are copied to the `NATIVELY_*` names the Rust module still reads |
+| **Environment variable names** | Developer flags are now `GODOJO_*`, in both the app and the Rust audio module. Old `NATIVELY_*` names still work as a fallback; when both are set, `GODOJO_*` wins |
 | **Pending live-chat file** | The old `natively-pending-live-chat.json` is carried over |
 | **Database schema** | Versioned migrations, currently at version 24 (section 3) |
 | **Old screenshot folders** | `screenshots` and `extra_screenshots`, left by a removed screenshot feature, are deleted. This job runs through the deferred queue on every launch and does nothing once the folders are gone |

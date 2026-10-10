@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it } from 'vitest';
-import { mirrorGodojoEnvForNativeModule, readEnv } from '../utils/env';
+import { readEnv } from '../utils/env';
 
 describe('readEnv', () => {
     afterEach(() => {
@@ -21,21 +21,5 @@ describe('readEnv', () => {
         process.env.GODOJO_TEST_FLAG = 'new';
         process.env.NATIVELY_TEST_FLAG = 'old';
         expect(readEnv('TEST_FLAG')).toBe('new');
-    });
-});
-
-describe('mirrorGodojoEnvForNativeModule', () => {
-    it('copies GODOJO_* onto NATIVELY_* for the Rust module', () => {
-        const env: NodeJS.ProcessEnv = { GODOJO_ECHO_MODE: 'half_duplex', GODOJO_VERBOSE: '1', PATH: 'x' };
-        mirrorGodojoEnvForNativeModule(env);
-        expect(env.NATIVELY_ECHO_MODE).toBe('half_duplex');
-        expect(env.NATIVELY_VERBOSE).toBe('1');
-        expect(env.NATIVELY_PATH).toBeUndefined();
-    });
-
-    it('never overrides an explicitly set NATIVELY_* value', () => {
-        const env: NodeJS.ProcessEnv = { GODOJO_ECHO_MODE: 'half_duplex', NATIVELY_ECHO_MODE: 'full_duplex' };
-        mirrorGodojoEnvForNativeModule(env);
-        expect(env.NATIVELY_ECHO_MODE).toBe('full_duplex');
     });
 });

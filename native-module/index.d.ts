@@ -35,7 +35,7 @@ export interface AudioDeviceInfo {
 export interface CaptureOptions {
   /**
    * Echo pipeline mode: "legacy" | "phase1" | "full_duplex".
-   * Overrides the NATIVELY_ECHO_MODE env var. Unknown values are ignored.
+   * Overrides the GODOJO_ECHO_MODE env var. Unknown values are ignored.
    */
   echoMode?: string
   /** Bypass the local RMS+VAD gate (see MicrophoneCapture docs). */

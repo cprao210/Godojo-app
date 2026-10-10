@@ -429,6 +429,29 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "0cc23270f6e1808e30a928bdc84dea0b9b4136a8bc82338574f23baf47bbd280"
 
 [[package]]
+name = "godojo-audio"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "cidre",
+ "cpal",
+ "libpulse-binding",
+ "libpulse-simple-binding",
+ "napi",
+ "napi-derive",
+ "once_cell",
+ "rand",
+ "ringbuf",
+ "rubato",
+ "serde_json",
+ "tracing",
+ "wasapi",
+ "webrtc-audio-processing",
+ "webrtc-vad",
+ "windows 0.52.0",
+]
+
+[[package]]
 name = "half"
 version = "2.7.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -688,29 +711,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "8eb602b84d7c1edae45e50bbf1374696548f36ae179dfa667f577e384bb90c2b"
 dependencies = [
  "libloading 0.9.0",
-]
-
-[[package]]
-name = "natively-audio"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "cidre",
- "cpal",
- "libpulse-binding",
- "libpulse-simple-binding",
- "napi",
- "napi-derive",
- "once_cell",
- "rand",
- "ringbuf",
- "rubato",
- "serde_json",
- "tracing",
- "wasapi",
- "webrtc-audio-processing",
- "webrtc-vad",
- "windows 0.52.0",
 ]
 
 [[package]]

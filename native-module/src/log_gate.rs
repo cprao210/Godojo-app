@@ -13,7 +13,7 @@
 //!
 //!   * `setNativeVerboseLogging(bool)` from JS — the authoritative switch, kept
 //!     in lockstep with the JS flag by `setVerboseLoggingFlag`.
-//!   * `NATIVELY_VERBOSE=1` in the environment — covers diagnostics that fire
+//!   * `GODOJO_VERBOSE=1` in the environment — covers diagnostics that fire
 //!     before any JS has run (module load, device enumeration, capture
 //!     construction) and gives field debugging a way in that needs no UI.
 //!
@@ -33,15 +33,15 @@ use once_cell::sync::Lazy;
 static VERBOSE: AtomicBool = AtomicBool::new(false);
 
 /// Read once, on first use. An env override cannot be turned off from the UI —
-/// that is the point: `NATIVELY_VERBOSE=1` is for a debugging session where the
+/// that is the point: `GODOJO_VERBOSE=1` is for a debugging session where the
 /// UI switch may not have been reached yet, or at all.
 static ENV_VERBOSE: Lazy<bool> = Lazy::new(|| {
     let on = matches!(
-        std::env::var("NATIVELY_VERBOSE").ok().as_deref(),
+        crate::env_flags::env_flag("VERBOSE").as_deref(),
         Some("1") | Some("true") | Some("TRUE")
     );
     if on {
-        println!("[LogGate] NATIVELY_VERBOSE set — native verbose logging forced on");
+        println!("[LogGate] GODOJO_VERBOSE set — native verbose logging forced on");
     }
     on
 });

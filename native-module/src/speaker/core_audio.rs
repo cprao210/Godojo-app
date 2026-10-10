@@ -57,7 +57,7 @@ impl SpeakerInput {
         );
 
         // 3. Create aggregate device descriptor
-        let agg_name = cf::String::from_str("NativelySystemAudioTap");
+        let agg_name = cf::String::from_str("GoDojoSystemAudioTap");
         let agg_uid = cf::Uuid::new().to_cf_string();
 
         // Assign arrays to variables first to prevent temporary lifetime drops

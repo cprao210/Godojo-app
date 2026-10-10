@@ -1,5 +1,4 @@
 import path from 'path';
-import { mirrorGodojoEnvForNativeModule } from '../utils/env';
 
 export interface AudioDeviceInfo {
   id: string;
@@ -121,8 +120,8 @@ let cached: NativeModule | null | undefined = undefined;
 /**
  * Loads the Rust native module directly from the .node binary file.
  *
- * We bypass `require('natively-audio')` intentionally. That approach relied on
- * npm creating a symlink from node_modules/natively-audio -> native-module/,
+ * We bypass `require('godojo-audio')` intentionally. That approach relied on
+ * npm creating a symlink from node_modules/godojo-audio -> native-module/,
  * which breaks on Windows (Git Bash produces POSIX-style symlinks that Node
  * can't resolve). Loading the .node file directly avoids npm entirely.
  *
@@ -144,10 +143,6 @@ let cached: NativeModule | null | undefined = undefined;
  */
 export function loadNativeModule(): NativeModule | null {
     if (cached !== undefined) return cached;
-
-    // The Rust side reads its env flags under the legacy NATIVELY_* names;
-    // make GODOJO_* flags visible to it before it loads (see utils/env).
-    mirrorGodojoEnvForNativeModule();
 
     // Lazily import app to avoid "Cannot use require of electron module" errors
     // when this module is accidentally imported in a renderer or worker context.
